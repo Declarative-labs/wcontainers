@@ -20,11 +20,11 @@ use wasmtime::{
 };
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_guest_cpu::{
-    Access, AccessBytes, AccessKind, Base, Bit, Class, CodeChanges, Comparison, Effects, Emitter,
-    Flow, FlowKind, GUEST_REASONS, Guest, GuestId, HookBody, HookDone, HookType, Induction, Locals,
-    MemoryAccess, MemoryFault, Personality, Reason as Runtime, Registers, ReturnAddress, StackMove,
-    StateBytes, SyscallRegisters, Target, Through, TrapDetail, TrapKind, TrapPc, Ty, Value,
-    WriteBack,
+    Access, AccessBytes, AccessKind, Base, Bit, BuiltAddress, Class, CodeChanges, Comparison,
+    Effects, Emitter, Flow, FlowKind, GUEST_REASONS, Guest, GuestId, HookBody, HookDone, HookType,
+    Induction, JumpTable, Locals, MemoryAccess, MemoryFault, Personality, Reason as Runtime,
+    Registers, ReturnAddress, StackMove, StateBytes, SyscallRegisters, Target, Through, TrapDetail,
+    TrapKind, TrapPc, Ty, Value, WriteBack,
 };
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
@@ -710,7 +710,7 @@ impl<const F: bool> Guest for Test<F> {
         _blob: &[u8],
         _code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Op)>,
-    ) -> Option<u64> {
+    ) -> Option<BuiltAddress> {
         None
     }
 
@@ -721,11 +721,17 @@ impl<const F: bool> Guest for Test<F> {
         _blob: &[u8],
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Op)>,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<JumpTable> {
         match before(at)? {
             (_, Op::Add(r, _)) if r == reg => {
                 let targets: Vec<u64> = (1..=4).map(|k| at + 2 * k).collect();
-                targets.iter().all(|t| code.contains(t)).then_some(targets)
+                targets
+                    .iter()
+                    .all(|t| code.contains(t))
+                    .then_some(JumpTable {
+                        targets,
+                        read: at..at,
+                    })
             }
             _ => None,
         }
@@ -733,6 +739,10 @@ impl<const F: bool> Guest for Test<F> {
 
     fn plain(i: &Op) -> bool {
         matches!(i, Op::Nop | Op::Add(..) | Op::Inc(_))
+    }
+
+    fn may_vary(_i: &Op) -> bool {
+        false
     }
 
     const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Stack { bytes: 8 };
@@ -861,6 +871,7 @@ fn every_translation_valid<const F: bool>() {
                 let translation = translate::<Test<F>>(
                     &blob,
                     0..blob.len() as u64,
+                    None,
                     &starts,
                     look_ahead,
                     optimise,
@@ -909,11 +920,11 @@ fn the_test_guest_decodes_its_program() {
 /// Where the program is placed.
 const LOAD: u64 = 0x10000;
 /// Readable and writable data, with nothing allowed in the page after it.
-const DATA: u64 = 0x40000;
+const DATA: u64 = LOAD << 2;
 /// The stack pointer at the start, the top of readable and writable pages from 0x70000.
-const STACK: u64 = 0x80000;
+const STACK: u64 = DATA << 1;
 const MEMORY_BYTES: u64 = 0x100000;
-const SLOTS_AT: usize = 8192;
+const SLOTS_AT: usize = runner::PERMISSIONS_AT as usize * 2;
 
 /// A hook call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1096,10 +1107,11 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
         .func_wrap(
             HOOKS,
             HOOK_MEMORY_FAULT,
-            move |mut caller: Caller<'_, Host>, address: i64, access: i32| {
+            move |mut caller: Caller<'_, Host>, address: i64, access: i32| -> i32 {
                 let pc = pc_of(&block(&caller));
                 let (address, write) = (address as u64, access == 1);
                 record(&mut caller, Event::Fault { address, write, pc });
+                UNWIND_LEAVE
             },
         )
         .unwrap();
@@ -1123,6 +1135,7 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                 let translation = translate::<Test<F>>(
                     &blob,
                     0..blob.len() as u64,
+                    None,
                     &[address - LOAD],
                     look_ahead,
                     optimise,
@@ -1250,7 +1263,7 @@ fn instantiate<const F: bool>(
             .expect("code instance");
         for &offset in &module.pieces {
             if !exact {
-                let at = SLOTS_AT + 4 * (offset / Test::<F>::ALIGN) as usize;
+                let at = SLOTS_AT + contract::slot_entry::<Test<F>>(offset) as usize;
                 write_shared(&state, at, &slot.to_le_bytes());
             }
             slot += 1;
@@ -1334,6 +1347,7 @@ fn run<const F: bool>(
     let translation = translate::<Test<F>>(
         code,
         0..code.len() as u64,
+        None,
         starts,
         look_ahead,
         optimise,

@@ -18,11 +18,12 @@
 //! check covers, kept runs of allowed pages, proofs over a loop's range, bounded indices) holds only until
 //! the next point where its thread can stop: a stop check whose hook runs, a system call, or leaving `run`.
 //! After any of those the piece checks again. The one exception is a stack frame checked when the stack
-//! pointer moved down: a change to a page of a running function's own frame, at or above the stack pointer,
-//! is noticed at the next function entry, not at once. Memory below the stack pointer is no frame and is
-//! checked at every access. So whoever changes a process's page permissions must first bring every other
-//! running thread of that process to a stop (raise its stop flag and wait until its hook runs or it has
-//! left `run`), as a real kernel interrupts the other processors before it changes a page table. The
+//! pointer moved down: a change to a page of a running function's own frame, at or above the stack pointer
+//! less the guest's red zone (`Guest::RED_ZONE`), is noticed at the next function entry, not at once; a runner
+//! that takes the write bits from a page a frame may cover, to lock it for code, makes that thread give up its
+//! WebAssembly frames. Memory below that is no frame and is checked at every access. So whoever changes a
+//! process's page permissions must first bring every other running thread of that process to a stop (raise
+//! its stop flag and wait until its hook runs or it has left `run`), as a real kernel interrupts the other processors before it changes a page table. The
 //! thread making the change is already stopped, in its system call or hook. With one host thread this
 //! happens by itself, because only a stopped thread lets the kernel run.
 
@@ -102,10 +103,13 @@ pub const RUN: &str = "run";
 /// after. To stop the thread, raise its stop flag and return.
 pub const HOOK_SYSCALL: &str = "syscall";
 /// Hook `() -> i32`: the stop flag was seen raised. Registers are saved and `pc` is the instruction about
-/// to run. Return 0 to carry on, anything else to leave.
+/// to run. Return 0 to carry on, or the unwind payload to unwind with: [`UNWIND_LEAVE`] to leave,
+/// [`UNWIND_GO_TO_EXACT`] to run the instruction at `pc` alone.
 pub const HOOK_STOP: &str = "stop";
-/// Hook `(address: i64, access: i32)`: an access the page permissions do not allow. Access is 0 for a read
-/// and 1 for a write. Registers are saved and `pc` is the instruction. The thread then leaves.
+/// Hook `(address: i64, access: i32) -> i32`: an access the page permissions do not allow. Access is 0 for a
+/// read and 1 for a write. Registers are saved and `pc` is the instruction. Returns the unwind payload:
+/// [`UNWIND_LEAVE`] to leave, or [`UNWIND_GO_TO_EXACT`] once the fault is settled, to run the instruction
+/// again alone.
 pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
 /// Hook `(address: i64, exact: i32) -> i32`: with `exact` 0, the lookup finds no piece for this address:
 /// put one there, translated from it (at bounded look-ahead). With `exact` 1, put the piece of the one
@@ -119,6 +123,7 @@ pub const HOOK_WARN: &str = "warn";
 /// says) stops the thread; see [`TrapKind`]. Registers are saved. The thread then leaves.
 pub const HOOK_TRAP: &str = "trap";
 
+/// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
 pub use wcontainers_guest_cpu::PROBE;
 // After these six, the guest's own hooks follow, as `Guest::HOOKS` names and types them.
 
@@ -150,6 +155,12 @@ pub const fn progress_count_offset<G: Guest>() -> usize {
 /// words of the CPU side's own, which start zero when the thread is made and which the kernel never sees.
 pub const fn thread_state_size<G: Guest>() -> usize {
     G::BLOCK_SIZE + G::PRIVATE_BYTES
+}
+
+/// Where, in bytes from [`SLOTS`], the array holds the i32 slot for the code `offset` bytes past
+/// [`TABLE_BASE`] (a multiple of `Guest::ALIGN`): entry `offset / ALIGN`.
+pub const fn slot_entry<G: Guest>(offset: u64) -> u64 {
+    4 * (offset / G::ALIGN)
 }
 
 /// Permission table byte: the page may be read.
@@ -190,10 +201,16 @@ pub fn permission_byte(
 /// use.
 pub const STACK_BUDGET: i64 = 128 * 1024;
 
+/// Tuning number: the most bytes one frame check covers. A move of the stack pointer down that a check this
+/// size cannot cover makes no frame, so the accesses below it are each checked, and the check's code (a test
+/// for each page) stays small.
+pub const FRAME_CHECK_BYTES: u64 = 16 * wcontainers_abi::PAGE_SIZE;
+
 /// Tuning number: a slow path warns once per address (or number), when its count there reaches this.
 pub const WARNING_THRESHOLD: u64 = 1;
 
-/// Name of the custom section describing a code module: format version (one byte, 4), look-ahead (one byte,
+/// Name of the custom section describing a code module: format version (one byte, 5), the guest (one byte,
+/// `GuestId`), the offer (`Guest::offer_key`, unsigned LEB128), look-ahead (one byte,
 /// 0 for none, 1 for full, 2 for bounded), what it is optimised for (one byte, 0 for speed, 1 for size), the
 /// look-ahead's N (unsigned LEB128, 0 unless bounded), the blob's BLAKE3 hash (32 bytes), the number of
 /// pieces and each piece's offset in the blob in slot order, as unsigned LEB128, then whether it keeps the

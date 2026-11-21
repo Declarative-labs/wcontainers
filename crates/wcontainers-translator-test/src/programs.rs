@@ -1,22 +1,19 @@
-//! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
+//! C programs built as flat blobs, run through the translator and on real Linux of the guest's CPU.
 
-use crate::layout::{REQUEST_END, REQUEST_SEPARATOR, SERVING_MODE, initial_stack};
+use crate::guest::GuestTest;
+use crate::layout::initial_stack;
 use crate::reference::{
-    DOCKER, GUEST_TRIPLE, IMAGE, PROGRAMS_FOLDER, REFERENCE_CONTAINER, RUNNER_FOLDER, RUNNER_NAME,
-    build as build_reference, container_name, mount, serving, target_folder,
+    BlobRan, BlobRequest, DOCKER, REFERENCE_CONTAINER, RUNNER_EXECUTABLE, container_name,
+    target_folder, with_reference,
 };
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
-use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
-use std::cell::RefCell;
-use std::io::{Read, Write};
+use linux_raw_sys::general::{SIGALRM, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_abi::{Exit, Permissions, RegisterBlock};
-use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::{Guest, Personality};
+use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
@@ -28,6 +25,61 @@ pub const STACK_TOP: u64 = 0x4810_0000;
 /// The stack a blob gets unless it asks for more.
 pub const STACK_BYTES: u64 = 1 << 20;
 
+/// How the code is generated: for the fixed address it is linked and loaded at, or position independent
+/// (`-fPIE`, a static position independent program that relocates itself at start), loaded away from where
+/// it is linked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Position {
+    Fixed,
+    Independent,
+}
+
+/// The C compiler's flags for code at a fixed address.
+const FIXED_C_FLAGS: [&str; 3] = ["-static", "-fno-pic", "-no-pie"];
+/// The C compiler's flags for position independent code.
+const INDEPENDENT_C_FLAGS: [&str; 3] = ["-static-pie", "-fPIE", "-Wl,-z,norelro"];
+/// rustc's flags for code at a fixed address.
+const FIXED_RUST_FLAGS: [&str; 2] = ["-C", "relocation-model=static"];
+/// rustc's flags for position independent code.
+const INDEPENDENT_RUST_FLAGS: [&str; 4] =
+    ["-C", "relocation-model=pie", "-C", "link-arg=-znorelro"];
+/// What the name of a blob of position independent code ends with.
+const INDEPENDENT_SUFFIX: &str = "-pic";
+
+impl Position {
+    /// The C compiler's flags for it.
+    pub fn flags(self) -> &'static [&'static str] {
+        match self {
+            Position::Fixed => &FIXED_C_FLAGS,
+            Position::Independent => &INDEPENDENT_C_FLAGS,
+        }
+    }
+
+    /// rustc's flags for it.
+    fn rust_flags(self) -> &'static [&'static str] {
+        match self {
+            Position::Fixed => &FIXED_RUST_FLAGS,
+            Position::Independent => &INDEPENDENT_RUST_FLAGS,
+        }
+    }
+
+    /// What a blob's name ends with.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Position::Fixed => "",
+            Position::Independent => INDEPENDENT_SUFFIX,
+        }
+    }
+
+    /// Where a blob of it is loaded.
+    pub fn load(self) -> u64 {
+        match self {
+            Position::Fixed => LOAD,
+            Position::Independent => MOVED,
+        }
+    }
+}
+
 /// A flat blob and how much of its start is code.
 pub struct Blob {
     /// The program and optimisation level, such as "hello-O2".
@@ -36,6 +88,11 @@ pub struct Blob {
     pub code_bytes: u64,
     /// Where it is placed in guest memory.
     pub load: u64,
+    /// Where its first byte is linked, when its code names its own addresses absolutely (see
+    /// `wcontainers_translator::translate`).
+    pub link_address: Option<u64>,
+    /// The blob offset of its program's `main`, from the ELF's symbols.
+    pub main: Option<u64>,
     /// Where in it its program's ELF program headers are, and how many: the runners tell the program.
     pub program_headers: Option<(u64, u64)>,
     /// How much stack it gets, below [`STACK_TOP`].
@@ -43,9 +100,10 @@ pub struct Blob {
 }
 
 impl Blob {
-    /// Whether the program's code reads FPSR, so that its flags are kept exact from its start.
-    pub fn reads_float_status(&self) -> bool {
-        wcontainers_arm64::reads_float_status(&self.bytes[..self.code_bytes as usize])
+    /// Whether the program's code reads the float status (ARM64's FPSR), so that its flags are kept exact
+    /// from its start.
+    pub fn reads_float_status<G: GuestTest>(&self) -> bool {
+        G::reads_float_status(&self.bytes[..self.code_bytes as usize])
     }
 
     /// Where the program headers are in guest memory, and how many.
@@ -76,12 +134,98 @@ pub fn source_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PROGRAMS)
 }
 
+/// The folder of the guest's own program sources and headers, `programs/<guest>`.
+fn guest_directory<G: GuestTest>() -> PathBuf {
+    source_directory().join(G::NAME)
+}
+
+/// The source of a program: `<name>.c` (or `.cpp`, `.rs`, `.S`) in the guest's own folder, else among the
+/// shared ones.
+pub fn source<G: GuestTest>(name: &str) -> PathBuf {
+    [guest_directory::<G>(), source_directory()]
+        .iter()
+        .flat_map(|directory| {
+            ["c", "cpp", "rs", "S"].map(|extension| directory.join(format!("{name}.{extension}")))
+        })
+        .find(|source| source.exists())
+        .unwrap_or_else(|| panic!("no program {name} for {}", G::NAME))
+}
+
+/// The longest one zig command may take. A build takes seconds; past this it is stuck, not slow.
+const ZIG_LIMIT: Duration = Duration::from_secs(600);
+
+/// Run zig with a cache of this checkout's own, so no zig process of another checkout holds its locks, and
+/// fail with a message when it does not end.
 pub(crate) fn zig(arguments: &[&str]) {
-    let status = Command::new("zig")
+    use wait_timeout::ChildExt;
+    let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/zig-cache");
+    let mut child = Command::new("zig")
         .args(arguments)
-        .status()
+        .env("ZIG_GLOBAL_CACHE_DIR", &cache)
+        .env("ZIG_LOCAL_CACHE_DIR", &cache)
+        .spawn()
         .expect("run zig (from the Nix shell)");
+    let Some(status) = child.wait_timeout(ZIG_LIMIT).expect("wait for zig") else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("zig {arguments:?} did not end in {ZIG_LIMIT:?}");
+    };
     assert!(status.success(), "zig {arguments:?} failed");
+}
+
+/// An ordinary static executable of a C program for zig's target `c_target` (such as "x86_64-linux-musl"),
+/// built at -O1 with the C library; `name` names its files while it is built.
+pub fn executable(c_target: &str, name: &str, source: &str) -> Vec<u8> {
+    let own = unique(name);
+    std::fs::create_dir_all(out_directory()).unwrap();
+    let (c, elf) = (
+        out_directory().join(format!("{own}.c")),
+        out_directory().join(format!("{own}.elf")),
+    );
+    std::fs::write(&c, source).unwrap();
+    let (c_path, elf_path) = (c.display().to_string(), elf.display().to_string());
+    zig(&[
+        "cc", "-target", c_target, "-O1", "-static", "-o", &elf_path, &c_path,
+    ]);
+    let bytes = std::fs::read(&elf).unwrap();
+    std::fs::remove_file(&c).unwrap();
+    std::fs::remove_file(&elf).unwrap();
+    bytes
+}
+
+/// Check that `run` runs ordinary executables for `c_target` as Linux starts a program: hello world's output
+/// (its name a blob's) and status, a write through a null pointer ended by SIGSEGV, and a loop that does not
+/// end ended by the time limit's SIGALRM.
+pub fn check_ordinary_programs(c_target: &str, mut run: impl FnMut(&[u8]) -> Ran) {
+    let hello = std::fs::read_to_string(source_directory().join("hello.c")).unwrap();
+    for (name, source, stdout, status) in [
+        (
+            "hello",
+            hello.as_str(),
+            &b"hello, world\n1 blob beef ! -1234567890123\n"[..],
+            3,
+        ),
+        (
+            "null",
+            "int main(void) { *(volatile int *)0 = 1; return 0; }",
+            b"",
+            SIGNALLED + SIGSEGV as i32,
+        ),
+        (
+            "forever",
+            "int main(void) { volatile int n = 0; for (;;) n++; }",
+            b"",
+            SIGNALLED + SIGALRM as i32,
+        ),
+    ] {
+        let ran = run(&executable(c_target, name, source));
+        assert_eq!(
+            (ran.stdout.as_slice(), ran.status),
+            (stdout, status),
+            "{name} on the reference, stderr {:?}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
 }
 
 /// What a program is built against.
@@ -97,13 +241,11 @@ pub enum Library {
 /// library code nothing calls, such as `fmal`, which reads FPSR and so would keep every program's flags exact.
 pub(crate) const LINK_ONLY_WHAT_IS_REACHED: &str = "-Wl,--gc-sections";
 
-/// zig's flags that build C for the guest: ARM64 Linux with musl.
-pub(crate) const ZIG_GUEST_TARGET: [&str; 2] = ["-target", "aarch64-linux-musl"];
+/// zig's flag that names the target to build C for, which `GuestTest::C_TARGET` follows.
+pub(crate) const ZIG_TARGET_FLAG: &str = "-target";
 /// zig's commands for C and for C++.
 pub(crate) const C_DRIVER: &str = "cc";
 const CPP_DRIVER: &str = "c++";
-/// The compiler's flags for a static executable at a fixed position.
-pub(crate) const FIXED_POSITION: [&str; 3] = ["-static", "-fno-pic", "-no-pie"];
 /// The compiler's flag that leaves out every sanitizer (zig turns some on by default).
 pub(crate) const NO_SANITIZERS: &str = "-fno-sanitize=all";
 /// The linker option, given through the compiler, that leaves out the build id.
@@ -132,17 +274,33 @@ const SOURCES: [(&str, Language); 4] = [
     ("S", Language::Assembly),
 ];
 
-/// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
-/// assembly) at an optimisation level, such as "-O2", into a flat blob.
-pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
-    build_with(name, optimisation, library, &[])
+/// The language of a source found by [`source`], from its extension.
+fn language(source: &Path) -> Language {
+    let extension = source.extension().and_then(|e| e.to_str());
+    SOURCES
+        .iter()
+        .find(|(known, _)| Some(*known) == extension)
+        .map(|(_, language)| *language)
+        .expect("a source of a known language")
 }
 
-/// [`build`] with preprocessor definitions, such as "SCALE=1".
-pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&str]) -> Blob {
+/// Build a program (see [`source`]: C, C++ with its library, Rust with its standard library, or assembly) at
+/// an optimisation level, such as "-O2", into a flat blob. The guest's folder is on the include path.
+pub fn build<G: GuestTest>(name: &str, optimisation: &str, library: Library) -> Blob {
+    build_with::<G>(name, optimisation, library, &[], Position::Fixed)
+}
+
+/// [`build`] with preprocessor definitions, such as "SCALE=1", for the code's position.
+pub fn build_with<G: GuestTest>(
+    name: &str,
+    optimisation: &str,
+    library: Library,
+    defines: &[&str],
+    position: Position,
+) -> Blob {
     let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
-    let mut stem = format!("{name}{optimisation}");
+    let mut stem = format!("{name}{optimisation}{}", position.suffix());
     for define in defines {
         stem.push('-');
         stem.push_str(&define.replace('=', ""));
@@ -151,45 +309,31 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
     let elf = out.join(&own).with_added_extension(ELF_EXTENSION);
-    let (source, language) = SOURCES
-        .iter()
-        .map(|(extension, language)| {
-            let source = source_directory()
-                .join(name)
-                .with_added_extension(extension);
-            (source, *language)
-        })
-        .find(|(source, _)| source.exists())
-        .expect("a program of that name");
+    let source = source::<G>(name);
+    let language = language(&source);
     let script = source_directory().join(FLAT_SCRIPT);
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if language == Language::Rust {
-        rust(&source, &elf, &script, optimisation);
+        rust::<G>(&source, &elf, &script, optimisation, position);
         return flatten(&elf, &own, stem);
     }
     let script = [LINK_SCRIPT, &text(&script)].concat();
+    let include = format!("-I{}", text(&guest_directory::<G>()));
     let driver = if language == Language::Cpp {
         CPP_DRIVER
     } else {
         C_DRIVER
     };
-    let mut arguments = vec![driver];
-    arguments.extend(ZIG_GUEST_TARGET);
-    arguments.push(optimisation);
-    arguments.extend(FIXED_POSITION);
-    arguments.extend([NO_SANITIZERS, &script, NO_BUILD_ID]);
+    let mut arguments = vec![driver, ZIG_TARGET_FLAG, G::C_TARGET, optimisation];
+    arguments.extend(position.flags());
+    arguments.extend([NO_SANITIZERS, &script, &include, NO_BUILD_ID]);
     if library == Library::C {
         arguments.push(LINK_ONLY_WHAT_IS_REACHED);
     }
     if library == Library::None {
-        arguments.extend([
-            "-ffreestanding",
-            "-nostdlib",
-            // zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
-            "-mcpu=generic-neon-fp_armv8",
-            "-fno-stack-protector",
-            "-fwrapv",
-        ]);
+        arguments.extend(["-ffreestanding", "-nostdlib"]);
+        arguments.extend(G::GENERAL_ONLY);
+        arguments.extend(["-fno-stack-protector", "-fwrapv"]);
     }
     arguments.extend(defines.iter().map(String::as_str));
     let (elf_text, source_text) = (text(&elf), text(&source));
@@ -199,12 +343,19 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
 }
 
 /// Build a Rust program with its standard library, statically, linked with `script`.
-fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
+fn rust<G: GuestTest>(
+    source: &Path,
+    elf: &Path,
+    script: &Path,
+    optimisation: &str,
+    position: Position,
+) {
     let level = optimisation.trim_start_matches("-O");
     let status = Command::new("rustc")
-        .args(["--edition", "2024", "--target", GUEST_TRIPLE])
+        .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
         .args(["-C", &format!("opt-level={level}")])
-        .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
+        .args(["-C", "panic=unwind"])
+        .args(position.rust_flags())
         .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
         .args([
             "-C",
@@ -222,9 +373,16 @@ fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
     assert!(status.success(), "rustc {} failed", source.display());
 }
 
-/// The flat blob of a linked program, `own` being the unique name its build works under. The ELF file is
-/// kept, under the blob's name, for looking at.
+/// The symbol of a program's main function.
+const MAIN: &str = "main";
+/// The section of a program's instructions.
+const TEXT_SECTION: &str = ".text";
+
+/// The flat blob of a linked program, `own` being the unique name its build works under, loaded at `MOVED`
+/// if the linker made it position independent. The ELF file is kept, under the blob's name, for looking at.
 pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
+    use object::read::elf::FileHeader;
+    use object::{Object, ObjectSection, ObjectSymbol};
     let out = out_directory();
     let text = |p: &Path| p.to_str().unwrap().to_string();
     let built = out.join(format!("{own}.bin"));
@@ -243,15 +401,30 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     let parsed =
         object::read::elf::ElfFile64::<object::Endianness>::parse(&*file).expect("an ELF file");
     let headers = parsed.elf_program_headers();
+    let position = if parsed.elf_header().e_type(parsed.endian()) == object::elf::ET_DYN {
+        Position::Independent
+    } else {
+        Position::Fixed
+    };
+    // The image starts with its instructions.
+    let text = parsed
+        .section_by_name(TEXT_SECTION)
+        .expect("a text section")
+        .address();
+    let main = parsed
+        .symbols()
+        .find(|s| s.name() == Ok(MAIN))
+        .map(|s| s.address() - text);
     let mut bytes = std::fs::read(&built).unwrap();
-    // An ELF64 program header's fields are 64 bit words.
-    bytes.resize(bytes.len().next_multiple_of(size_of::<u64>()), 0);
+    bytes.resize(bytes.len().next_multiple_of(align_of_val(headers)), 0);
     let at = bytes.len() as u64;
     bytes.extend_from_slice(object::pod::bytes_of_slice(headers));
     let blob = Blob {
         bytes,
         code_bytes: std::fs::metadata(&code).unwrap().len(),
-        load: LOAD,
+        load: position.load(),
+        link_address: (position == Position::Fixed).then_some(text),
+        main,
         program_headers: Some((at, headers.len() as u64)),
         name,
         stack_bytes: STACK_BYTES,
@@ -269,6 +442,18 @@ pub fn elf_path(name: &str) -> PathBuf {
         .with_added_extension(ELF_EXTENSION)
 }
 
+/// The offsets of the instructions in a range of code, decoding forward from its start; where nothing
+/// decodes, the next slot.
+pub fn boundaries<G: GuestTest>(code: &[u8]) -> Vec<u64> {
+    let mut at = 0;
+    let mut all = Vec::new();
+    while at < code.len() {
+        all.push(at as u64);
+        at += G::decode(&code[at..]).map_or(G::ALIGN as usize, |(_, length)| usize::from(length));
+    }
+    all
+}
+
 /// What a program did: its output and exit status.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ran {
@@ -278,6 +463,9 @@ pub struct Ran {
 }
 
 pub use crate::layout::SIGNALLED;
+
+/// The page after the first page of a blob: the data of the hand-made programs whose code fits one page.
+pub const PAGE_AFTER_LOAD: u64 = LOAD + PAGE_SIZE;
 
 /// Where a flat blob and its stack go in guest memory, the same for every runner.
 pub struct Placement {
@@ -290,9 +478,9 @@ pub struct Placement {
     pub stack: Vec<u8>,
 }
 
-pub fn placement(blob: &Blob) -> Placement {
-    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(wcontainers_abi::PAGE_SIZE);
-    let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory());
+pub fn placement<G: GuestTest>(blob: &Blob) -> Placement {
+    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(PAGE_SIZE);
+    let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory(), G::AUXILIARY);
     Placement {
         memory_bytes: STACK_TOP,
         regions: vec![
@@ -308,42 +496,45 @@ pub fn placement(blob: &Blob) -> Placement {
 }
 
 /// Run a blob through the translator in wasmtime, starting at its first byte, translated for speed.
-pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
-    translated_for(blob, (look_ahead, Optimise::Speed))
+pub fn translated<G: GuestTest>(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine<G>, G::Block) {
+    translated_for::<G>(blob, (look_ahead, Optimise::Speed))
 }
 
 /// [`translated`] for speed or for size.
-pub fn translated_for(blob: &Blob, how: (LookAhead, Optimise)) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = translated_omitting(blob, how, Omit::default());
+pub fn translated_for<G: GuestTest>(
+    blob: &Blob,
+    how: (LookAhead, Optimise),
+) -> (Ran, Machine<G>, G::Block) {
+    let (ran, machine, registers, _) = translated_omitting::<G>(blob, how, Omit::default());
     (ran, machine, registers)
 }
 
 /// [`translated`] without some checks, also giving how long the guest ran (translating and compiling not
 /// included).
-pub fn translated_omitting(
+pub fn translated_omitting<G: GuestTest>(
     blob: &Blob,
     how: (LookAhead, Optimise),
     omit: Omit,
-) -> (Ran, Machine, RegisterBlock, Duration) {
-    run_blob(blob, how, omit, false)
+) -> (Ran, Machine<G>, G::Block, Duration) {
+    run_blob::<G>(blob, how, omit, false)
 }
 
 /// [`translated_for`] with the thread stopping at every stop check it reaches and carrying on each time.
-pub fn translated_stopping_everywhere(
+pub fn translated_stopping_everywhere<G: GuestTest>(
     blob: &Blob,
     how: (LookAhead, Optimise),
-) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = run_blob(blob, how, Omit::default(), true);
+) -> (Ran, Machine<G>, G::Block) {
+    let (ran, machine, registers, _) = run_blob::<G>(blob, how, Omit::default(), true);
     (ran, machine, registers)
 }
 
-fn run_blob(
+fn run_blob<G: GuestTest>(
     blob: &Blob,
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     stop_everywhere: bool,
-) -> (Ran, Machine, RegisterBlock, Duration) {
-    let mut machine = ready_for(blob, look_ahead, optimise, omit);
+) -> (Ran, Machine<G>, G::Block, Duration) {
+    let mut machine = ready_for::<G>(blob, look_ahead, optimise, omit);
     if stop_everywhere {
         machine.stop_at_every_check();
     }
@@ -355,28 +546,38 @@ fn run_blob(
 }
 
 /// A machine with a blob placed, translated and ready to run from its first byte.
-pub fn ready(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine {
-    ready_for(blob, look_ahead, Optimise::Speed, omit)
+pub fn ready<G: GuestTest>(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine<G> {
+    ready_for::<G>(blob, look_ahead, Optimise::Speed, omit)
 }
 
 /// [`ready`], translated for `optimise`.
-pub fn ready_for(blob: &Blob, look_ahead: LookAhead, optimise: Optimise, omit: Omit) -> Machine {
-    ready_on(blob, (look_ahead, optimise), omit, crate::runner::probe())
+pub fn ready_for<G: GuestTest>(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    optimise: Optimise,
+    omit: Omit,
+) -> Machine<G> {
+    ready_on::<G>(
+        blob,
+        (look_ahead, optimise),
+        omit,
+        crate::runner::probe::<G>(),
+    )
 }
 
 /// [`ready`], translated for a host with these facts instead of the probe's.
-pub fn ready_on(
+pub fn ready_on<G: GuestTest>(
     blob: &Blob,
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
-    host: wcontainers_arm64::Host,
-) -> Machine {
-    ready_with(blob, host, |machine| {
+    host: G::Host,
+) -> Machine<G> {
+    ready_with::<G>(blob, host, |machine| {
         machine.optimise_for(optimise);
         machine.load_omitting(
             &blob.bytes,
             0..blob.code_bytes,
-            blob.load,
+            (blob.load, blob.link_address),
             &[0],
             look_ahead,
             omit,
@@ -390,14 +591,14 @@ pub fn ready_on(
 
 /// A machine with the blob's memory and permissions, its code put in place by `load`, and the stack and
 /// registers ready to run from its first byte.
-pub fn ready_with(
+pub fn ready_with<G: GuestTest>(
     blob: &Blob,
-    host: wcontainers_arm64::Host,
-    load: impl FnOnce(&mut Machine),
-) -> Machine {
+    host: G::Host,
+    load: impl FnOnce(&mut Machine<G>),
+) -> Machine<G> {
     // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
-    let slots = (blob.bytes.len() as u64).div_ceil(Arm64::ALIGN) as u32;
-    let place = placement(blob);
+    let slots = (blob.bytes.len() as u64).div_ceil(G::ALIGN) as u32;
+    let place = placement::<G>(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
     for (range, permissions) in place.regions {
@@ -405,49 +606,57 @@ pub fn ready_with(
     }
     load(&mut machine);
     machine.write(place.sp, &place.stack);
-    machine.set_registers(&Arm64::initial_block(blob.load, place.sp));
-    if blob.reads_float_status() {
+    machine.set_registers(&G::initial_block(blob.load, place.sp));
+    if blob.reads_float_status::<G>() {
         machine.track_float_flags();
     }
     machine
 }
 
 /// What a program did, from why its thread stopped. Panics if it stopped without exiting or faulting.
-pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &RegisterBlock) -> Ran {
-    let status = match stopped {
-        // Linux reports the low 8 bits of the status.
-        Stopped::Finished(status) => status & 0xff,
-        Stopped::Exit(Exit::MemoryFault { .. }) => SIGNALLED + SIGSEGV as i32,
-        Stopped::Exit(Exit::AlignmentFault { .. }) => SIGNALLED + SIGBUS as i32,
-        Stopped::Exit(Exit::IllegalInstruction) => SIGNALLED + SIGILL as i32,
-        Stopped::Exit(Exit::Breakpoint { .. }) => SIGNALLED + SIGTRAP as i32,
-        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => SIGNALLED + SIGFPE as i32,
-        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => SIGNALLED + SIGSEGV as i32,
-        Stopped::Fault(Fault::Stack) => SIGNALLED + SIGBUS as i32,
-        other => {
-            let at = registers.pc.wrapping_sub(blob.load) as usize;
-            let word = blob
-                .bytes
-                .get(at..at + 4)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-            panic!(
-                "the program stopped without exiting: {other:?} at {:#x}, word {word:#x?} ({:?})",
-                registers.pc,
-                word.map(wcontainers_arm64::decode)
-            )
-        }
-    };
-    Ran {
+pub fn ran<G: GuestTest>(
+    blob: &Blob,
+    machine: &Machine<G>,
+    stopped: Stopped,
+    registers: &G::Block,
+) -> Ran {
+    let finished = |status| Ran {
         stdout: machine.stdout().to_vec(),
         stderr: machine.stderr().to_vec(),
         status,
-    }
+    };
+    let signal = match stopped {
+        // Linux reports the low 8 bits of the status.
+        Stopped::Finished(status) => return finished(i32::from(status as u8)),
+        Stopped::Exit(Exit::MemoryFault { .. }) => SIGSEGV,
+        Stopped::Exit(Exit::AlignmentFault { .. }) => SIGBUS,
+        Stopped::Exit(Exit::IllegalInstruction) => SIGILL,
+        Stopped::Exit(Exit::Breakpoint { .. }) | Stopped::Fault(Fault::SingleStep) => SIGTRAP,
+        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => SIGFPE,
+        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => SIGSEGV,
+        Stopped::Fault(Fault::Stack) => SIGBUS,
+        other => {
+            let pc = u64::from_le_bytes(
+                zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..size_of::<u64>()]
+                    .try_into()
+                    .unwrap(),
+            );
+            let at = (pc.wrapping_sub(blob.load) as usize).min(blob.bytes.len());
+            let code = &blob.bytes[at..(at + G::MAX_LENGTH as usize).min(blob.bytes.len())];
+            panic!(
+                "the program stopped without exiting: {other:?} at {pc:#x}, bytes {code:02x?} ({})",
+                G::disassemble(code)
+            )
+        }
+    };
+    // A process killed by a signal is reported as a shell does, `SIGNALLED` plus the signal's number.
+    finished(SIGNALLED + signal as i32)
 }
 
 /// Every byte the guest may reach: the blob's pages, then the stack.
-pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
+pub fn reachable_memory<G: GuestTest>(machine: &mut Machine<G>, blob: &Blob) -> Vec<u8> {
     let mut bytes = Vec::new();
-    for (range, _) in placement(blob).regions {
+    for (range, _) in placement::<G>(blob).regions {
         let mut part = vec![0; (range.end - range.start) as usize];
         machine.read(range.start, &mut part);
         bytes.extend(part);
@@ -455,39 +664,13 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
     bytes
 }
 
-/// The shortest of `runs` native runs of a blob on ARM64 Linux in Docker, in seconds, each timed by the
-/// reference from making a child process to its end (so neither the container's nor the reference's start-up
-/// is counted).
-pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
-    let reference = build_reference();
-    let directory = native_directory();
-    let file = format!("{}.bin", unique(&blob.name));
-    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let script = format!(
-        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {:#x} {} > /dev/null",
-        blob.load,
-        blob.stack_bytes,
-        headers_arguments(blob).join(" ")
-    );
-    let output = run_container("timing", |command| {
-        mount(command, &reference, RUNNER_FOLDER);
-        mount(command, &directory, PROGRAMS_FOLDER);
-        command.args([IMAGE, "sh", "-c", &script]);
-    });
-    std::fs::remove_file(directory.join(&file)).unwrap();
-    let times: Vec<f64> = String::from_utf8_lossy(&output.stderr)
-        .lines()
-        .map(|l| l.parse().expect("a time from the reference"))
-        .collect();
-    assert_eq!(times.len(), runs as usize, "native timing runs");
-    times.into_iter().fold(f64::INFINITY, f64::min)
-}
+/// This machine's load averages, recorded beside every time.
+pub use crate::jobs::load;
 
-/// The reference's arguments for where a blob's program headers are and how many.
-fn headers_arguments(blob: &Blob) -> Vec<String> {
-    blob.headers_in_memory()
-        .map(|(at, count)| vec![format!("{at:#x}"), count.to_string()])
-        .unwrap_or_default()
+/// The shortest of `runs` native runs of a blob on the reference, in seconds, each timed by the reference
+/// from making a child process to its end (so the reference's start-up is not counted).
+pub fn native_seconds<G: GuestTest>(blob: &Blob, runs: u32) -> f64 {
+    on_reference::<G>(blob, runs.max(1)).seconds
 }
 
 /// Run a Linux container for `purpose` to its end, with the further `docker run` arguments `add` gives.
@@ -524,112 +707,71 @@ pub fn run_container(purpose: &str, add: impl FnOnce(&mut Command)) -> std::proc
 const DOCKER_FAILED: std::ops::RangeInclusive<i32> = 125..=127;
 const DOCKER_FAILED_SAYS: &[u8] = b"docker: Error response from daemon: ";
 
-/// Run a blob natively on ARM64 Linux in Docker, through this thread's blob server.
-pub fn native(blob: &Blob) -> Ran {
-    // Every run reads a file of its own that nothing replaces while the server reads it.
-    let directory = native_directory();
-    let file = format!("{}.bin", unique(&blob.name));
-    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let request: Vec<String> = [
-        format!("/p/{file}"),
-        format!("{:#x}", blob.load),
-        format!("{STACK_TOP:#x}"),
-        format!("{:#x}", blob.stack_bytes),
-    ]
-    .into_iter()
-    .chain(headers_arguments(blob))
-    .collect();
-    // Taken out while in use: a server that failed mid-answer is dropped, never used again.
-    let mut server = BLOB_SERVER
-        .with_borrow_mut(Option::take)
-        .unwrap_or_else(BlobServer::start);
-    let ran = server.run(&request);
-    BLOB_SERVER.with_borrow_mut(|kept| *kept = Some(server));
-    std::fs::remove_file(directory.join(&file)).unwrap();
-    // The runner's own failure is no result of the guest's: it fails the case, never compares.
+/// Run a blob natively on the reference.
+pub fn native<G: GuestTest>(blob: &Blob) -> Ran {
+    let ran = on_reference::<G>(blob, 0);
+    Ran {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        status: ran.status,
+    }
+}
+
+/// A blob run natively on the reference, with the signal, `si_code`, pc and general registers of the signal
+/// that ended it, if one did (`BlobRan::stop`).
+pub fn native_with_stop<G: GuestTest>(blob: &Blob) -> (Ran, Option<(u32, u32, Vec<u64>)>) {
+    let ran = on_reference::<G>(blob, 0);
+    let stop = ran.stop;
+    let ran = Ran {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        status: ran.status,
+    };
+    (ran, stop)
+}
+
+fn on_reference<G: GuestTest>(blob: &Blob, runs: u32) -> BlobRan {
+    let request = BlobRequest {
+        bytes: &blob.bytes,
+        load: blob.load,
+        stack_top: STACK_TOP,
+        stack_bytes: blob.stack_bytes,
+        headers: blob.headers_in_memory(),
+        auxiliary: G::AUXILIARY,
+        stdin: &[],
+        runs,
+    };
+    runner_did_not_fail(with_reference(&G::REFERENCE, |reference| {
+        reference.blob(&request)
+    }))
+}
+
+/// Run an ordinary static executable on the reference, as Linux starts a program.
+pub fn native_program<G: GuestTest>(executable: &[u8]) -> Ran {
+    let ran = runner_did_not_fail(with_reference(&G::REFERENCE, |reference| {
+        reference.program(executable)
+    }));
+    Ran {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        status: ran.status,
+    }
+}
+
+/// The result of a blob or a program. The runner's own failure, in its child or before, is no result of
+/// the guest's: it fails the case, never compares.
+fn runner_did_not_fail(ran: Result<BlobRan, String>) -> BlobRan {
+    let ran = ran.unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
+    let says = format!("{RUNNER_EXECUTABLE}{RUNNER_FAILED_AFTER_NAME}");
     assert!(
         !(ran.status == RUNNER_FAILED
-            && ran
-                .stderr
-                .windows(RUNNER_NAME.len())
-                .any(|w| w == RUNNER_NAME.as_bytes())),
+            && ran.stderr.windows(says.len()).any(|w| w == says.as_bytes())),
         "the reference runner failed: {}",
         String::from_utf8_lossy(&ran.stderr)
     );
     ran
 }
 
-/// Where blobs are written for the reference to read, mounted at `PROGRAMS_FOLDER`.
-fn native_directory() -> PathBuf {
-    let directory = out_directory().join(NATIVE_FOLDER);
-    std::fs::create_dir_all(&directory).unwrap();
-    directory
-}
-
-/// The folder of `out_directory` that holds blobs for the reference.
-const NATIVE_FOLDER: &str = "native";
-
-thread_local! {
-    static BLOB_SERVER: RefCell<Option<BlobServer>> = const { RefCell::new(None) };
-}
-
-/// A reference runner serving blobs (`SERVING_MODE`) in a container of its own, which ends when its input does.
-struct BlobServer {
-    client: Child,
-    requests: Option<ChildStdin>,
-    answers: ChildStdout,
-}
-
-impl BlobServer {
-    fn start() -> Self {
-        let mut client = serving(SERVING_MODE, SERVING_MODE, |command| {
-            mount(command, &native_directory(), PROGRAMS_FOLDER);
-        });
-        let requests = client.stdin.take();
-        let answers = client.stdout.take().unwrap();
-        BlobServer {
-            client,
-            requests,
-            answers,
-        }
-    }
-
-    fn run(&mut self, request: &[String]) -> Ran {
-        let requests = self.requests.as_mut().unwrap();
-        let mut line = request.join(&char::from(REQUEST_SEPARATOR).to_string());
-        line.push(char::from(REQUEST_END));
-        requests
-            .write_all(line.as_bytes())
-            .expect("send a blob to the reference");
-        requests.flush().unwrap();
-        let mut status = [0u8; size_of::<i32>()];
-        self.answers.read_exact(&mut status).expect(
-            "an answer from the blob server (Docker or the server failed; its stderr says why)",
-        );
-        let [stdout, stderr] = [(); 2].map(|()| {
-            let mut length = [0u8; size_of::<u32>()];
-            self.answers
-                .read_exact(&mut length)
-                .expect("an output's length");
-            let mut bytes = vec![0u8; u32::from_le_bytes(length) as usize];
-            self.answers.read_exact(&mut bytes).expect("an output");
-            bytes
-        });
-        Ran {
-            stdout,
-            stderr,
-            status: i32::from_le_bytes(status),
-        }
-    }
-}
-
-impl Drop for BlobServer {
-    fn drop(&mut self) {
-        // The server ends at the end of its input, and Docker then removes its container.
-        self.requests = None;
-        let _ = self.client.wait();
-    }
-}
-
-/// How the reference runner ends when it fails itself, after writing its name (`RUNNER_NAME`) on stderr.
+/// How the reference runner ends when it fails itself, after writing its name (`RUNNER_EXECUTABLE`) on stderr.
 const RUNNER_FAILED: i32 = 101;
+const RUNNER_FAILED_AFTER_NAME: &str = ": ";

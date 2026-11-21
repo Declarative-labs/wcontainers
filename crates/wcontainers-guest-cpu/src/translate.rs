@@ -10,6 +10,10 @@ use wasm_encoder::{InstructionSink, ValType};
 /// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
 pub const PROBE: &str = "probe";
 
+/// Byte sizes of the single and double precision float formats, as instructions give them.
+pub const SINGLE: u8 = size_of::<f32>() as u8;
+pub const DOUBLE: u8 = size_of::<f64>() as u8;
+
 /// Everything the translator needs that is true of one guest CPU only.
 pub trait Guest: Personality {
     // --- identity ---
@@ -134,8 +138,8 @@ pub trait Guest: Personality {
 
     // --- what the container offers beyond the default claims ---
     /// A container setting that changes what the CPU claims, given with every translation (`()` when there
-    /// is none).
-    type Offer: Copy + Eq + Hash + Debug + Send + Sync;
+    /// is none); its default is what the CPU claims when the container asks for nothing more.
+    type Offer: Copy + Eq + Hash + Debug + Default + Send + Sync;
     /// The offer as a number, for the cache key and the description section (0 for `()`).
     fn offer_key(offer: Self::Offer) -> u32;
 
@@ -150,7 +154,8 @@ pub trait Guest: Personality {
     const STEPS: bool = false;
     /// What the stop hook does about single stepping, worked out on the thread's state (`BLOCK_SIZE +
     /// PRIVATE_BYTES` bytes from the block). The runner asks it first at every stop hook call, with
-    /// `StepAt::Stop(pc)`, and with `StepAt::Kernel` whenever the kernel has had the thread.
+    /// `StepAt::Stop(pc)`, with `StepAt::Kernel` whenever the kernel has had the thread, and with
+    /// `StepAt::Retry(pc)` when the memory fault hook settled an access and runs its instruction again.
     fn step(state: &mut [u8], at: StepAt) -> Step {
         let _ = (state, at);
         Step::Off
@@ -165,17 +170,17 @@ pub trait Guest: Personality {
     fn accesses(i: &Self::Instruction) -> [Option<MemoryAccess<Self::Reg>>; 2];
     /// How the stack pointer moves, where the CPU knows; any other write of it is an unknown move.
     fn stack_move(i: &Self::Instruction) -> StackMove;
-    /// The blob offset of an address the instruction `i` at blob offset `at` builds into a register, for
-    /// code in `code`. `before` as for `jump_table`.
+    /// An address the instruction `i` at blob offset `at` builds into a register or memory, for code in
+    /// `code`. `before` as for `jump_table`.
     fn built_address(
         at: u64,
         i: &Self::Instruction,
         blob: &[u8],
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
-    ) -> Option<u64>;
-    /// The targets of the jump through `reg` at blob offset `at`, made from a switch statement, as blob
-    /// offsets, each once, in table order. `before(o)` is the function's instruction that falls through
+    ) -> Option<BuiltAddress>;
+    /// The jump table of the jump through `reg` at blob offset `at`, made from a switch statement: its
+    /// targets as blob offsets, each once, in table order, and the blob bytes it was read from. `before(o)` is the function's instruction that falls through
     /// into offset `o`, with its offset, or `None` at the start of a block more than one edge enters: the
     /// way back for a CPU whose code cannot be decoded backwards.
     fn jump_table(
@@ -184,10 +189,15 @@ pub trait Guest: Personality {
         blob: &[u8],
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
-    ) -> Option<Vec<u64>>;
+    ) -> Option<JumpTable>;
     /// Plain computation, which the flags' liveness may look past: registers from registers only (no memory,
     /// hook, control, trap or leaving).
     fn plain(i: &Self::Instruction) -> bool;
+    /// Whether a real CPU of this architecture may give a different result from the meaning's for this
+    /// instruction: the meaning fixes what the architecture leaves open to what the reference CPU does
+    /// (undefined flags), answers by design (cpuid, the time stamp counter), or estimates. A native output may
+    /// copy an instruction through only where this is false.
+    fn may_vary(i: &Self::Instruction) -> bool;
 
     // --- calls, returns and the stack ---
     /// Where a call leaves the return address.
@@ -256,6 +266,11 @@ pub trait Emitter<G: Guest> {
     fn set(&mut self, r: G::Reg);
     /// Push the guest address of this instruction plus `by`.
     fn this_address(&mut self, by: i64);
+    /// Whether anything may read the flags this instruction sets. When not, `set_flags` writes nothing and
+    /// a meaning need work out nothing only for them.
+    fn flags_live(&self) -> bool {
+        true
+    }
     fn set_flags(&mut self, flags: G::Flags);
     /// Push one flag as an i32 0 or 1.
     fn flag(&mut self, flag: G::Flag);
@@ -436,8 +451,13 @@ pub enum Index<R> {
     Register { reg: R, shift: u8, extend: Extend },
     /// x86 `bt`, `bts`, `btr`, `btc` with a register bit offset: whole operands of `width` bits from the
     /// operand's address, the register read signed at `width` and shifted right arithmetically by
-    /// log2(width), then left by log2(width / 8).
-    BitOffset { reg: R, width: u8 },
+    /// log2(width), then left by log2(width / 8). The operand's own index, when it has one, is `operand`:
+    /// a register shifted left.
+    BitOffset {
+        reg: R,
+        width: u8,
+        operand: Option<(R, u8)>,
+    },
     /// x86 VSIB (the gathers): each element's address takes one lane of this vector register, `lane_bits`
     /// (32 or 64) read signed, shifted left by `shift`.
     Lanes { reg: R, lane_bits: u8, shift: u8 },
@@ -543,6 +563,23 @@ impl Relation {
     }
 }
 
+/// An address an instruction builds, which may name code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltAddress {
+    /// Built relative to the instruction: a blob offset.
+    Offset(u64),
+    /// Written out in the instruction: names code only in a program linked at a fixed address.
+    Absolute(u64),
+}
+
+/// A switch's jump table: the targets, as blob offsets, each once in table order, and the blob bytes read
+/// for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpTable {
+    pub targets: Vec<u64>,
+    pub read: Range<u64>,
+}
+
 /// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to
 /// something unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -568,11 +605,13 @@ pub enum CodeChanges {
     Detected,
 }
 
-/// When `Guest::step` is asked: at a stop hook call with pc, or after the kernel has had the thread.
+/// When `Guest::step` is asked: at a stop hook call with pc, after the kernel has had the thread, or when
+/// the instruction at pc runs again from its start because the memory fault hook settled its access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepAt {
     Stop(u64),
     Kernel,
+    Retry(u64),
 }
 
 /// What the runner then does. `Off`: carry on, the stop flag lowered unless another reason holds it. `Run`:
@@ -626,6 +665,14 @@ pub struct HookType {
     pub body: HookBody,
 }
 
+impl HookType {
+    /// The most parameters a hook may have; the runners check every hook against it at compile time. The
+    /// browser passes each as an argument of its own, so every one more costs every call of every hook.
+    pub const MAX_PARAMS: usize = 4;
+    /// The most results, as many as `HookDone` holds.
+    pub const MAX_RESULTS: usize = 2;
+}
+
 /// `len` bytes of a thread's state from `at`, an offset from the start of the block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateBytes {
@@ -646,8 +693,9 @@ impl StateBytes {
 pub enum HookBody {
     /// The runner's clock, in nanoseconds.
     Clock,
-    /// The runner drops the pieces of the code at the address.
-    CodeChanged,
+    /// The runner drops the pieces of the `line` bytes (a power of two) holding the address the hook is
+    /// given, its one `i64` parameter.
+    CodeChanged { line: u32 },
     /// `Guest::run_hook`.
     Cpu,
 }
@@ -659,6 +707,12 @@ pub struct HookDone {
     pub results: [i64; 2],
     pub reason: Option<u32>,
 }
+
+/// The name of the slow path [`Reason::CodeWrittenWithoutAnnouncement`].
+pub const CODE_WRITTEN_WITHOUT_ANNOUNCEMENT: &str = "code written without announcement";
+
+/// The name of the slow path [`Reason::CodeTranslatedFromLiveStackFrame`].
+pub const CODE_TRANSLATED_FROM_LIVE_STACK_FRAME: &str = "code translated from a live stack frame";
 
 /// Every slow path of the translated code and its runners, with the fixed name its counter and warning
 /// carry.
@@ -681,10 +735,15 @@ pub enum Reason {
     LoopNotProven = 12,
     /// The engine's stack was nearly used up, so the thread left to the bottom loop (the unwind payload for it).
     StackNearlyFull = 13,
+    /// A page holding translated code was written without an announcement, so its pieces were dropped.
+    CodeWrittenWithoutAnnouncement = 14,
+    /// A page holding a frame a thread had proved writable was locked for code, so the thread gave up its
+    /// WebAssembly frames.
+    CodeTranslatedFromLiveStackFrame = 15,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 14] = [
+    pub const ALL: [Reason; 16] = [
         Reason::TranslatedAtRunTime,
         Reason::LeftToAddress,
         Reason::ContinuedAfterStackLoss,
@@ -699,6 +758,8 @@ impl Reason {
         Reason::FaultWithoutExactRegisters,
         Reason::LoopNotProven,
         Reason::StackNearlyFull,
+        Reason::CodeWrittenWithoutAnnouncement,
+        Reason::CodeTranslatedFromLiveStackFrame,
     ];
 
     pub fn from_i32(value: i32) -> Option<Self> {
@@ -734,6 +795,8 @@ impl Reason {
             Reason::FaultWithoutExactRegisters => "fault without exact registers",
             Reason::LoopNotProven => "loop not proven",
             Reason::StackNearlyFull => "engine stack nearly full",
+            Reason::CodeWrittenWithoutAnnouncement => CODE_WRITTEN_WITHOUT_ANNOUNCEMENT,
+            Reason::CodeTranslatedFromLiveStackFrame => CODE_TRANSLATED_FROM_LIVE_STACK_FRAME,
         }
     }
 }

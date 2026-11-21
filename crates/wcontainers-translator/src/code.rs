@@ -11,9 +11,10 @@ use wasm_encoder::{
     FunctionSection, GlobalSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module,
     TableType, TagKind, TagType, TypeSection, ValType,
 };
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
-    Access, Effects, Emitter, FlowKind, GUEST_REASONS, Guest, ReturnAddress, Target, TrapDetail,
-    TrapKind, TrapPc,
+    Access, BuiltAddress, Effects, Emitter, FlowKind, GUEST_REASONS, Guest, ReturnAddress, Target,
+    TrapDetail, TrapKind, TrapPc,
 };
 
 /// How much code the translator sees at once.
@@ -61,7 +62,7 @@ enum LookAheadCode {
 }
 
 /// The version of the description section's layout.
-const DESCRIPTION_VERSION: u8 = 4;
+const DESCRIPTION_VERSION: u8 = 5;
 
 /// What a translation is made with: the look-ahead, what it is optimised for, and the progress count.
 type How = (LookAhead, Optimise, ProgressCount);
@@ -146,6 +147,10 @@ pub enum Error {
 /// module would pass an engine's limits; code in one module reaches another's through the lookup.
 pub struct Translation {
     pub modules: Vec<CodeModule>,
+    /// The blob's bytes the translation was made from, as sorted ranges of blob offsets that neither
+    /// overlap nor touch: every instruction it decoded and every jump table it read. Its code is right only while these bytes stay as
+    /// they were.
+    pub read: Vec<Range<u64>>,
     /// How many of the pieces in the lookup table each means found, by [`Means`] number.
     pub found: [u64; Means::ALL.len()],
 }
@@ -391,11 +396,15 @@ pub(crate) fn depth_check<G: Guest>(
 }
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
-/// are blob offsets. The output never holds an absolute address.
+/// are blob offsets. `link_address` is the address the blob's first byte is linked at when the program is
+/// linked at a fixed address (an ELF of type `ET_EXEC`), whose code may name its functions by absolute
+/// addresses; `None` for code that may be loaded anywhere. It only adds entries: the output never holds an
+/// absolute address and runs wherever it is loaded.
 #[allow(clippy::too_many_arguments)]
 pub fn translate<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
+    link_address: Option<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -405,7 +414,8 @@ pub fn translate<G: Guest>(
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
     let how = (look_ahead, optimise, progress);
-    translate_within::<G>(blob, code, starts, how, (host, offer), omit, MODULE_BYTES)
+    let placed = (code, link_address);
+    translate_within::<G>(blob, placed, starts, how, (host, offer), omit, MODULE_BYTES)
 }
 
 /// [`translate`] without some checks at full look-ahead, only to measure what they cost. Look-ahead none
@@ -415,6 +425,7 @@ pub fn translate<G: Guest>(
 pub fn translate_omitting<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
+    link_address: Option<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -424,7 +435,8 @@ pub fn translate_omitting<G: Guest>(
     omit: Omit,
 ) -> Result<Translation, Error> {
     let how = (look_ahead, optimise, progress);
-    translate_within::<G>(blob, code, starts, how, (host, offer), omit, MODULE_BYTES)
+    let placed = (code, link_address);
+    translate_within::<G>(blob, placed, starts, how, (host, offer), omit, MODULE_BYTES)
 }
 
 /// [`translate`] split into modules of at most `module_bytes` of code each, only to test calls between
@@ -434,6 +446,7 @@ pub fn translate_omitting<G: Guest>(
 pub fn translate_in_modules<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
+    link_address: Option<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -444,12 +457,13 @@ pub fn translate_in_modules<G: Guest>(
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
     let how = (look_ahead, optimise, progress);
-    translate_within::<G>(blob, code, starts, how, (host, offer), omit, module_bytes)
+    let placed = (code, link_address);
+    translate_within::<G>(blob, placed, starts, how, (host, offer), omit, module_bytes)
 }
 
 fn translate_within<G: Guest>(
     blob: &[u8],
-    code: Range<u64>,
+    (code, link_address): (Range<u64>, Option<u64>),
     starts: &[u64],
     (look_ahead, optimise, progress): (LookAhead, Optimise, ProgressCount),
     (host, offer): (G::Host, G::Offer),
@@ -463,6 +477,7 @@ fn translate_within<G: Guest>(
     let blob_code = Code::<G> {
         blob,
         range: code,
+        link_address,
         host,
         offer,
         progress,
@@ -474,10 +489,17 @@ fn translate_within<G: Guest>(
     }
     let mut counts = [0; Means::ALL.len()];
     let given: BTreeSet<u64> = starts.iter().copied().collect();
+    let read: Vec<Range<u64>>;
     let modules = match look_ahead {
         LookAhead::Bounded(0) => return Err(Error::NoBound),
         LookAhead::None | LookAhead::Bounded(1) => {
             let found = none_found(&blob_code, starts, look_ahead == LookAhead::None);
+            read = spans(
+                found
+                    .iter()
+                    .map(|(o, d)| *o..*o + u64::from(d.length))
+                    .collect(),
+            );
             let entries: Vec<u64> = found.iter().map(|f| f.0).collect();
             for entry in &entries {
                 let means = if given.contains(entry) {
@@ -489,7 +511,7 @@ fn translate_within<G: Guest>(
             }
             let first = none_emit(&blob_code, &found, 0..found.len());
             let how = (look_ahead, optimise, progress);
-            modules::<G>(blob, how, &entries, first, module_bytes, |group| {
+            modules::<G>(blob, how, offer, &entries, first, module_bytes, |group| {
                 none_emit(&blob_code, &found, group)
             })
         }
@@ -506,6 +528,7 @@ fn translate_within<G: Guest>(
                 let first = planned.emit(0..entries.len());
                 let over: Vec<usize> = (0..first.len()).filter(|&i| first[i].too_large()).collect();
                 if over.is_empty() {
+                    read = spans(planned.read());
                     // Starts added to cut a function too large for an engine count as cuts.
                     for entry in &entries {
                         let means = match planned.means(*entry) {
@@ -516,7 +539,7 @@ fn translate_within<G: Guest>(
                     }
                     let emit = |group| planned.emit(group);
                     let how = (look_ahead, optimise, progress);
-                    break modules::<G>(blob, how, &entries, first, module_bytes, emit);
+                    break modules::<G>(blob, how, offer, &entries, first, module_bytes, emit);
                 }
                 for i in over {
                     starts.extend(planned.halves(i));
@@ -526,8 +549,22 @@ fn translate_within<G: Guest>(
     };
     Ok(Translation {
         modules,
+        read,
         found: counts,
     })
+}
+
+/// Byte ranges as sorted ranges that neither overlap nor touch.
+fn spans(mut all: Vec<Range<u64>>) -> Vec<Range<u64>> {
+    all.sort_unstable_by_key(|r| r.start);
+    let mut spans: Vec<Range<u64>> = Vec::new();
+    for r in all {
+        match spans.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => spans.push(r),
+        }
+    }
+    spans
 }
 
 /// The code modules of a translation whose pieces the lookup table holds are at `entries`: `first`, every
@@ -536,6 +573,7 @@ fn translate_within<G: Guest>(
 fn modules<G: Guest>(
     blob: &[u8],
     how: How,
+    offer: G::Offer,
     entries: &[u64],
     first: Vec<Unit>,
     module_bytes: usize,
@@ -560,17 +598,23 @@ fn modules<G: Guest>(
         }
     }
     if groups.len() <= 1 {
-        return vec![module::<G>(blob, how, entries, first)];
+        return vec![module::<G>(blob, how, offer, entries, first)];
     }
     drop(first);
     groups
         .into_iter()
-        .map(|group| module::<G>(blob, how, &entries[group.clone()], emit(group)))
+        .map(|group| module::<G>(blob, how, offer, &entries[group.clone()], emit(group)))
         .collect()
 }
 
 /// A code module holding these units, the table's pieces at `entries`.
-fn module<G: Guest>(blob: &[u8], how: How, entries: &[u64], units: Vec<Unit>) -> CodeModule {
+fn module<G: Guest>(
+    blob: &[u8],
+    how: How,
+    offer: G::Offer,
+    entries: &[u64],
+    units: Vec<Unit>,
+) -> CodeModule {
     let mut module = Module::new();
     module.section(&types::<G>(how.2));
     module.section(&imports::<G>());
@@ -613,7 +657,7 @@ fn module<G: Guest>(blob: &[u8], how: How, entries: &[u64], units: Vec<Unit>) ->
     module.section(&own_globals());
     module.section(&elements::<G>(entries.len() as u32));
     module.section(&code_section);
-    module.section(&description(blob, how, entries.iter()));
+    module.section(&description::<G>(blob, how, offer, entries.iter()));
     CodeModule {
         wasm: module.finish(),
         sites,
@@ -625,12 +669,25 @@ fn module<G: Guest>(blob: &[u8], how: How, entries: &[u64], units: Vec<Unit>) ->
 pub(crate) struct Code<'a, G: Guest> {
     pub blob: &'a [u8],
     pub range: Range<u64>,
+    /// See [`translate`].
+    pub link_address: Option<u64>,
     pub host: G::Host,
     pub offer: G::Offer,
     pub progress: ProgressCount,
 }
 
 impl<G: Guest> Code<'_, G> {
+    /// The blob offset an address the code builds names: a relative one's own, an absolute one's only in a
+    /// program linked at a fixed address.
+    pub fn built_offset(&self, built: BuiltAddress) -> Option<u64> {
+        match built {
+            BuiltAddress::Offset(offset) => Some(offset),
+            BuiltAddress::Absolute(address) => {
+                self.link_address.map(|link| address.wrapping_sub(link))
+            }
+        }
+    }
+
     /// Whether an instruction may start at this offset: aligned, with at least an alignment unit of code
     /// left. Targets can wrap below zero, so nothing here may overflow.
     pub fn inside(&self, offset: u64) -> bool {
@@ -982,7 +1039,7 @@ pub(crate) fn permission_exact<G: Guest>(
     exact: Exact,
 ) {
     // The table's bits reach only to the next page.
-    assert!(u64::from(len) <= wcontainers_abi::PAGE_SIZE && len > 0);
+    assert!(u64::from(len) <= PAGE_SIZE && len > 0);
     let Exact::InPlace(table, (page, allowed)) = exact else {
         s.local_get(at)
             .i32_const(len as i32)
@@ -1147,7 +1204,9 @@ pub(crate) fn types<G: Guest>(progress: ProgressCount) -> TypeSection {
         .ty()
         .function(vec![ValType::I64; syscall_values], [ValType::I64]);
     types.ty().function([], [ValType::I32]);
-    types.ty().function([ValType::I64, ValType::I32], []);
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32], [ValType::I32]);
     types
         .ty()
         .function([ValType::I64, ValType::I32], [ValType::I32]);
@@ -1287,6 +1346,23 @@ pub(crate) fn push_results<G: Guest>(
     }
     if kept(progress) {
         s.local_get(G::L_COUNT);
+    }
+}
+
+/// The registers passed into pieces but not out of them, each with its parameter: a callee may change them,
+/// so a return leaves them in the thread block and the caller takes them from there.
+pub(crate) fn passed_in_only<G: Guest>() -> impl Iterator<Item = (u32, u32)> {
+    G::PASSED_IN
+        .iter()
+        .enumerate()
+        .filter(|(_, bit)| !G::PASSED_OUT.contains(bit))
+        .map(|(i, &bit)| (i as u32, bit))
+}
+
+/// Store the registers passed in only (see [`passed_in_only`]) into the thread block, before a return.
+pub(crate) fn save_passed_in_only<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+    for (local, bit) in passed_in_only::<G>() {
+        Slot::of_bit::<G>(bit).store_from(s, block, local);
     }
 }
 
@@ -1478,6 +1554,18 @@ pub(crate) fn unwinder() -> wasm_encoder::Function {
     f
 }
 
+/// Call the stop hook and unwind with the payload it returns unless it is 0 (carry on); `payload` is an i32
+/// local.
+pub(crate) fn stop_hook<G: Guest>(s: &mut InstructionSink<'_>, payload: u32) {
+    s.call(F_STOP)
+        .local_tee(payload)
+        .if_(BlockType::Empty)
+        .local_get(payload)
+        .call(G::F_UNWIND)
+        .unreachable()
+        .end();
+}
+
 /// Put every piece in the lookup table at instantiation, in order from the slot base.
 pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
     let mut elements = ElementSection::new();
@@ -1492,13 +1580,16 @@ pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
     elements
 }
 
-pub(crate) fn description<'a>(
+pub(crate) fn description<'a, G: Guest>(
     blob: &[u8],
     (look_ahead, optimise, progress): How,
+    offer: G::Offer,
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
     let (kind, bound) = look_ahead.code();
-    let mut data = vec![DESCRIPTION_VERSION, kind, optimise as u8];
+    let mut data = vec![DESCRIPTION_VERSION, G::ID as u8];
+    u64::from(G::offer_key(offer)).encode(&mut data);
+    data.extend([kind, optimise as u8]);
     bound.encode(&mut data);
     data.extend_from_slice(blake3::hash(blob).as_bytes());
     (pieces.len() as u64).encode(&mut data);
@@ -1566,6 +1657,7 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn stop_check(&mut self, step: u64) {
         self.sites[Reason::StoppedByFlag as usize] += 1;
         let pc = self.offset + step;
+        let payload = self.local(ValType::I32);
         let (count, progress) = (self.count, self.progress());
         let mut s = self.sink();
         push_stop_wanted::<G>(&mut s, BLOCK, count);
@@ -1573,13 +1665,8 @@ impl<G: Guest> NoneEmitter<'_, G> {
         save::<G>(&mut s, progress, |s| {
             s.i64_const(pc as i64);
         });
-        s.call(F_STOP)
-            .if_(BlockType::Empty)
-            .i32_const(UNWIND_LEAVE)
-            .call(G::F_UNWIND)
-            .unreachable()
-            .end()
-            .end();
+        stop_hook::<G>(&mut s, payload);
+        s.end();
     }
 
     /// Save registers with `pc` at this instruction plus `step`.
@@ -1686,6 +1773,19 @@ pub(crate) fn pop_return_address<G: Guest>(s: &mut InstructionSink<'_>) {
             .i64_const(bytes.into())
             .i64_add()
             .local_set(G::L_SP);
+    }
+}
+
+/// Push whether the caller asks for the flags, as an i32 not zero when it does. A bit in the low word is
+/// read by wrapping; one above it by a compare.
+pub(crate) fn push_flags_wanted<G: Guest>(s: &mut InstructionSink<'_>) {
+    s.local_get(G::L_RETURN)
+        .i64_const(G::FLAGS_WANTED)
+        .i64_and();
+    if G::FLAGS_WANTED as u64 <= u64::from(u32::MAX) {
+        s.i32_wrap_i64();
+    } else {
+        s.i64_const(0).i64_ne();
     }
 }
 
@@ -1823,7 +1923,6 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         s.local_get(fault_at)
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
-            .i32_const(UNWIND_LEAVE)
             .call(G::F_UNWIND)
             .unreachable()
             .end()
@@ -1903,6 +2002,9 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
                 None => s.drop(),
             };
         }
+        for (local, bit) in passed_in_only::<G>() {
+            Slot::of_bit::<G>(bit).load_into(&mut s, BLOCK, local);
+        }
     }
 
     fn ret(&mut self, target: u32) {
@@ -1910,6 +2012,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         let progress = self.progress();
         let mut s = self.sink();
         pop_return_address::<G>(&mut s);
+        save_passed_in_only::<G>(&mut s, BLOCK);
         s.local_get(target);
         push_expected_return::<G>(&mut s);
         s.i64_eq().if_(BlockType::Empty);

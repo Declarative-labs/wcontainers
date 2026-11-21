@@ -131,6 +131,8 @@ const CACHE_WORD: usize = size_of::<u64>();
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
     hash: [u8; blake3::OUT_LEN],
+    /// Where the code is linked, for a program linked at a fixed address (see `translate`).
+    link_address: Option<u64>,
     starts: Vec<u64>,
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -210,6 +212,7 @@ impl<G: Guest> Compiler<G> {
         hasher.update(&key.offer.to_le_bytes());
         hasher.update(format!("{:?} {:?}", key.look_ahead, key.optimise).as_bytes());
         hasher.update(&key.hash);
+        hasher.update(format!("{:?}", key.link_address).as_bytes());
         for start in &key.starts {
             hasher.update(&start.to_le_bytes());
         }
@@ -288,7 +291,7 @@ impl<G: Guest> Compiler<G> {
     fn compiled(
         &self,
         bytes: &[u8],
-        hash: [u8; blake3::OUT_LEN],
+        (hash, link_address): ([u8; blake3::OUT_LEN], Option<u64>),
         mut starts: Vec<u64>,
         look_ahead: LookAhead,
         optimise: Optimise,
@@ -298,6 +301,7 @@ impl<G: Guest> Compiler<G> {
         starts.dedup();
         let key = Key {
             hash,
+            link_address,
             starts,
             look_ahead,
             optimise,
@@ -334,6 +338,7 @@ impl<G: Guest> Compiler<G> {
                 translate::<G>(
                     bytes,
                     0..length,
+                    key.link_address,
                     &key.starts,
                     look_ahead,
                     optimise,
@@ -1016,9 +1021,10 @@ where
         sources: Option<Sources>,
     ) -> Arc<Compiled> {
         let count = starts.len();
+        // No link address yet: the image's ELF type is not passed down to here.
         let (compiled, origin, slow) = self.compiler.compiled(
             &code.bytes,
-            code.hash,
+            (code.hash, None),
             starts,
             look_ahead,
             self.optimise,
@@ -2043,16 +2049,16 @@ impl<G: Guest<Block = RegisterBlock>> starts::Guest for Reader<'_, G> {
     }
 }
 
-/// The guest's own code changed hook (ARM64 `ic ivau`): drops the pieces of the line at the address,
-/// and of the same line wherever its block of shared pages is shown, as the instruction reaches every
-/// CPU.
-fn code_line_changed<G>(caller: &mut Caller<'_, Data<G>>, address: u64)
+/// The guest's own code changed hook (ARM64 `ic ivau`): drops the pieces of the `size` bytes (a power of
+/// two) at the address, and of the same line wherever its block of shared pages is shown, as the
+/// instruction reaches every CPU.
+fn code_line_changed<G>(caller: &mut Caller<'_, Data<G>>, address: u64, size: u64)
 where
     G: Guest<Block = RegisterBlock>,
 {
     let side = side(caller);
     let memory = caller.data().memory;
-    let line = address & !63;
+    let line = address & !(size - 1);
     let mut lines = vec![(memory, line)];
     if let Some((block, offset)) = side.shown_at(memory, line) {
         for (other, process) in &side.processes {
@@ -2067,7 +2073,7 @@ where
     lines.sort_unstable();
     lines.dedup();
     for (memory, line) in lines {
-        if side.forget(memory, line..line + 64) {
+        if side.forget(memory, line..line + size) {
             let process = side.processes.get_mut(&memory).expect("a memory");
             if let Some(range) = process.ranges.iter_mut().find(|r| r.range.contains(&line)) {
                 range.changed = true;
@@ -2123,8 +2129,9 @@ where
             contract::HOOK_MEMORY_FAULT,
             Func::wrap(
                 &mut *store,
-                |mut caller: Caller<'_, Data<G>>, address: i64, access: i32| {
-                    memory_fault(&mut caller, address as u64, access)
+                |mut caller: Caller<'_, Data<G>>, address: i64, access: i32| -> i32 {
+                    memory_fault(&mut caller, address as u64, access);
+                    contract::UNWIND_LEAVE
                 },
             ),
         ),
@@ -2168,10 +2175,10 @@ where
                 }
                 answer(&caller).clock(progress) as i64
             }),
-            HookBody::CodeChanged => Func::wrap(
+            HookBody::CodeChanged { line } => Func::wrap(
                 &mut *store,
-                |mut caller: Caller<'_, Data<G>>, address: i64| {
-                    code_line_changed(&mut caller, address as u64)
+                move |mut caller: Caller<'_, Data<G>>, address: i64| {
+                    code_line_changed(&mut caller, address as u64, u64::from(line))
                 },
             ),
             HookBody::Cpu => {

@@ -265,8 +265,7 @@ const FZ: u32 = 1 << 24;
 
 /// Byte sizes of the float formats, as instructions and operation codes give them.
 pub(crate) const HALF: u8 = size_of::<u16>() as u8;
-pub(crate) const SINGLE: u8 = size_of::<f32>() as u8;
-pub(crate) const DOUBLE: u8 = size_of::<f64>() as u8;
+pub(crate) use wcontainers_guest_cpu::{DOUBLE, SINGLE};
 
 /// How many operands an operation takes at most, as the float hook passes them.
 pub(crate) const OPERANDS: usize = 3;

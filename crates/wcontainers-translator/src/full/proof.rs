@@ -546,27 +546,59 @@ impl<G: Guest> FullEmitter<'_, G> {
         let mut s = self.sink();
         match c.relation {
             Relation::Ne => {
-                // The step must be 1 or -1; the turns are then (bound - counter) * step - ahead modulo the
-                // width, plus one.
+                // A step of size a = |step| (not 0, at most MAX_STEP) meets the bound after k further steps
+                // when ((bound - counter) * sign(step) - ahead * a) modulo the width is k * a exactly; that
+                // is the first meeting, since every earlier distance is a smaller nonzero multiple of a.
+                // Otherwise the loop is not proven. The turns are k plus one.
                 s.local_get(step)
-                    .i64_const(1)
+                    .i64_eqz()
+                    .local_get(step)
+                    .i64_const(MAX_STEP)
                     .i64_add()
-                    .i64_const(!2)
-                    .i64_and()
-                    .i64_const(0)
-                    .i64_ne()
+                    .i64_const(2 * MAX_STEP)
+                    .i64_gt_u()
+                    .i32_or()
                     .br_if(0);
-                s.local_get(y)
+                // x: the distance to the bound, negated with the step when the step is negative.
+                s.i64_const(0)
+                    .local_get(y)
                     .local_get(x)
                     .i64_sub()
+                    .local_tee(x)
+                    .i64_sub()
+                    .local_get(x)
+                    .local_get(step)
+                    .i64_const(0)
+                    .i64_lt_s()
+                    .select()
+                    .local_set(x)
+                    .i64_const(0)
+                    .local_get(step)
+                    .i64_sub()
+                    .local_get(step)
+                    .local_get(step)
+                    .i64_const(0)
+                    .i64_lt_s()
+                    .select()
+                    .local_set(step)
+                    .local_get(x)
+                    .i64_const(c.ahead)
                     .local_get(step)
                     .i64_mul()
-                    .i64_const(c.ahead)
                     .i64_sub();
                 if c.bits == U32_BITS {
                     s.i64_const(i64::from(u32::MAX)).i64_and();
                 }
-                s.local_tee(turns)
+                s.local_tee(x)
+                    .local_get(step)
+                    .i64_rem_u()
+                    .i64_const(0)
+                    .i64_ne()
+                    .br_if(0)
+                    .local_get(x)
+                    .local_get(step)
+                    .i64_div_u()
+                    .local_tee(turns)
                     .i64_const(MAX_TURNS)
                     .i64_ge_u()
                     .br_if(0)

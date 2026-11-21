@@ -18,7 +18,10 @@ unsafe impl Sync for Area {}
 unsafe impl GlobalAlloc for Area {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let base = self.bytes.get() as usize;
-        let start = (base + self.used.get()).next_multiple_of(layout.align());
+        // Aligned as malloc aligns everything (C's max_align_t, 16 bytes like u128): the unwinder writes its
+        // exception objects, which Rust allocates with a smaller alignment, with aligned vector stores.
+        let align = layout.align().max(align_of::<u128>());
+        let start = (base + self.used.get()).next_multiple_of(align);
         let end = start + layout.size();
         if end > base + (1 << 20) {
             return std::ptr::null_mut();

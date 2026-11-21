@@ -1,6 +1,7 @@
-//! Real ARM64 Linux binaries, for measuring the translator at scale: each file's code and every start address
+//! Real Linux binaries of a guest, for measuring the translator at scale: each file's code and every start address
 //! the file offers.
 
+use crate::guest::{GuestTest, Relocation};
 use crate::reference::{DOCKER, target_folder};
 use object::elf;
 use object::read::elf::{Dyn, ElfFile64, FileHeader, ProgramHeader, Rela, SectionHeader, Sym};
@@ -9,8 +10,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::process::Command;
-use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::Guest;
 
 /// A binary to measure: its name, the image it comes from, the Alpine packages to add first, and its path
 /// there.
@@ -21,45 +20,47 @@ pub struct Source {
     path: &'static str,
 }
 
-/// The binaries M5 measures: busybox, the C library, ripgrep and git from Alpine, Node from its own image on
-/// Alpine (with its libraries built in, the largest), and runtimes of other kinds: Python (its library holds
-/// the interpreter), Bun, a Java runtime and a Go program (Go's own tool).
-pub const SOURCES: [Source; 9] = [
-    Source::alpine("busybox", "", "/bin/busybox"),
-    Source::alpine("musl", "", "/lib/ld-musl-aarch64.so.1"),
-    Source::alpine("rg", "ripgrep", "/usr/bin/rg"),
-    Source::alpine("git", "git", "/usr/bin/git"),
-    Source {
-        name: "node",
-        image: "node:24-alpine3.22",
-        packages: "",
-        path: "/usr/local/bin/node",
-    },
-    Source {
-        name: "python",
-        image: "python:3.13-alpine3.22",
-        packages: "",
-        path: "/usr/local/lib/libpython3.13.so.1.0",
-    },
-    Source {
-        name: "bun",
-        image: "oven/bun:1.3-alpine",
-        packages: "",
-        path: "/usr/local/bin/bun",
-    },
-    Source {
-        name: "java",
-        image: "eclipse-temurin:21-jre-alpine",
-        packages: "",
-        path: "/opt/java/openjdk/lib/server/libjvm.so",
-    },
-    Source {
-        name: "go",
-        image: "golang:1.25-alpine3.22",
-        packages: "",
-        path: "/usr/local/go/bin/go",
-    },
-];
+/// The binaries M5 measures, built for the guest: busybox, the C library, ripgrep and git from Alpine, Node
+/// from its own image on Alpine (with its libraries built in, the largest), and runtimes of other kinds:
+/// Python (its library holds the interpreter), Bun, a Java runtime and a Go program (Go's own tool).
+pub fn sources<G: GuestTest>() -> [Source; 9] {
+    [
+        Source::alpine("busybox", "", "/bin/busybox"),
+        Source::alpine("musl", "", G::MUSL_LOADER),
+        Source::alpine("rg", "ripgrep", "/usr/bin/rg"),
+        Source::alpine("git", "git", "/usr/bin/git"),
+        Source {
+            name: "node",
+            image: "node:24-alpine3.22",
+            packages: "",
+            path: "/usr/local/bin/node",
+        },
+        Source {
+            name: "python",
+            image: "python:3.13-alpine3.22",
+            packages: "",
+            path: "/usr/local/lib/libpython3.13.so.1.0",
+        },
+        Source {
+            name: "bun",
+            image: "oven/bun:1.3-alpine",
+            packages: "",
+            path: "/usr/local/bin/bun",
+        },
+        Source {
+            name: "java",
+            image: "eclipse-temurin:21-jre-alpine",
+            packages: "",
+            path: "/opt/java/openjdk/lib/server/libjvm.so",
+        },
+        Source {
+            name: "go",
+            image: "golang:1.25-alpine3.22",
+            packages: "",
+            path: "/usr/local/go/bin/go",
+        },
+    ]
+}
 
 /// The folder under `target` that keeps the binaries taken from images.
 const BINARIES: &str = "binaries";
@@ -74,9 +75,10 @@ impl Source {
         }
     }
 
-    /// The file, taken from its image once (with Docker) and kept under `target/binaries`.
-    pub fn file(&self) -> PathBuf {
-        let directory = target_folder(BINARIES);
+    /// The guest's file, taken from its image for the guest's platform once (with Docker) and kept under
+    /// `target/binaries/<guest>`.
+    pub fn file<G: GuestTest>(&self) -> PathBuf {
+        let directory = target_folder(BINARIES).join(G::NAME);
         let file = directory.join(self.name);
         if file.exists() {
             return file;
@@ -84,11 +86,17 @@ impl Source {
         std::fs::create_dir_all(&directory).unwrap();
         let container = crate::reference::container_name(&format!("binary-{}", self.name));
         let mut create = Command::new(DOCKER);
+        let platform = [
+            wcontainers_docker::PLATFORM_OPTION,
+            G::REFERENCE.docker_platform,
+        ];
         if self.packages.is_empty() {
-            create.args(["create", "--name", &container, self.image, "true"]);
+            create.args(["create"]).args(platform);
+            create.args(["--name", &container, self.image, "true"]);
         } else {
             let add = format!("apk add --no-cache {}", self.packages);
-            create.args(["run", "--name", &container, self.image, "sh", "-c", &add]);
+            create.args(["run"]).args(platform);
+            create.args(["--name", &container, self.image, "sh", "-c", &add]);
         }
         let made = create.output().expect("run docker");
         assert!(
@@ -122,6 +130,8 @@ pub struct Binary {
     /// Where the code is in the image: from the start of the first section of instructions to the end of the
     /// last (the whole runnable segment if the file has no sections).
     pub code: Range<u64>,
+    /// The image's lowest address, for a file that is not moved when loaded (`ET_EXEC`).
+    pub link_address: Option<u64>,
     /// Start addresses (image offsets in the code) by where the file says they are.
     pub starts: Starts,
     /// Entries of the unwind tables that could not be read, each skipped.
@@ -167,9 +177,11 @@ impl Starts {
 type File<'a> = ElfFile64<'a, Endianness>;
 
 impl Binary {
-    pub fn read(name: &str, bytes: &[u8]) -> Binary {
-        let file = File::parse(bytes).expect("an ARM64 ELF file");
+    pub fn read<G: GuestTest>(name: &str, bytes: &[u8]) -> Binary {
+        let file = File::parse(bytes).expect("an ELF file");
         let endian = file.endian();
+        let machine = file.elf_header().e_machine(endian);
+        assert_eq!(machine, G::ELF_MACHINE, "{name} is not for this guest");
         let loads: Vec<_> = file
             .elf_program_headers()
             .iter()
@@ -203,23 +215,24 @@ impl Binary {
             let start = instructions.iter().map(|r| r.start).min().unwrap();
             start..instructions.iter().map(|r| r.end).max().unwrap()
         };
-        let code =
-            code.start.next_multiple_of(Arm64::ALIGN)..code.end / Arm64::ALIGN * Arm64::ALIGN;
+        let code = code.start.next_multiple_of(G::ALIGN)..code.end / G::ALIGN * G::ALIGN;
+        let fixed = file.elf_header().e_type(endian) == elf::ET_EXEC;
         let mut binary = Binary {
             name: name.to_string(),
             image,
             code,
+            link_address: fixed.then_some(base),
             starts: Starts::default(),
             unwind_errors: 0,
         };
-        binary.find_starts(&file, base);
+        binary.find_starts::<G>(&file, base);
         binary
     }
 
     /// An image offset for a guest address, if it is a whole instruction in the code.
-    fn in_code(&self, base: u64, address: u64) -> Option<u64> {
+    fn in_code<G: GuestTest>(&self, base: u64, address: u64) -> Option<u64> {
         let offset = address.checked_sub(base)?;
-        (self.code.contains(&offset) && offset.is_multiple_of(Arm64::ALIGN)).then_some(offset)
+        (self.code.contains(&offset) && offset.is_multiple_of(G::ALIGN)).then_some(offset)
     }
 
     fn word(&self, base: u64, address: u64) -> Option<u64> {
@@ -228,10 +241,10 @@ impl Binary {
         Some(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    fn find_starts(&mut self, file: &File<'_>, base: u64) {
+    fn find_starts<G: GuestTest>(&mut self, file: &File<'_>, base: u64) {
         let endian = file.endian();
         let mut starts = Starts::default();
-        let code = |address| self.in_code(base, address);
+        let code = |address| self.in_code::<G>(base, address);
 
         starts.entry.extend(code(file.entry()));
         let dynamic: Vec<(elf::DynamicTag, u64)> = file
@@ -278,14 +291,12 @@ impl Binary {
                     for rela in relas {
                         let place = rela.r_offset(endian);
                         let addend = rela.r_addend(endian) as u64;
-                        let value = match rela.r_type(endian, false) {
-                            elf::R_AARCH64_RELATIVE => Some(addend),
-                            elf::R_AARCH64_ABS64
-                            | elf::R_AARCH64_GLOB_DAT
-                            | elf::R_AARCH64_JUMP_SLOT => symbols
+                        let value = match G::relocation(rela.r_type(endian, false)) {
+                            Relocation::Relative => Some(addend),
+                            Relocation::Absolute => symbols
                                 .get(&rela.r_sym(endian, false))
                                 .map(|v| v.wrapping_add(addend)),
-                            _ => None,
+                            Relocation::Other => None,
                         };
                         if let Some(value) = value {
                             relocated.insert(place, value);
@@ -339,14 +350,14 @@ impl Binary {
             }
         }
 
-        (starts.unwind, self.unwind_errors) = self.unwind_starts(file, base);
+        (starts.unwind, self.unwind_errors) = self.unwind_starts::<G>(file, base);
         self.starts = starts;
     }
 
     /// The first address of every function the unwind tables (`.eh_frame`) describe, and how many entries
     /// could not be read, each warned of. An entry that cannot be read is skipped; reading stops only where an
     /// entry's length cannot be read, as nothing after it can be found.
-    fn unwind_starts(&self, file: &File<'_>, base: u64) -> (BTreeSet<u64>, u64) {
+    fn unwind_starts<G: GuestTest>(&self, file: &File<'_>, base: u64) -> (BTreeSet<u64>, u64) {
         use gimli::{Reader, UnwindSection};
         let mut found = BTreeSet::new();
         let mut errors = 0;
@@ -393,7 +404,7 @@ impl Binary {
                 gimli::EhFrameOffset(offset),
                 |section, bases, at| section.cie_from_offset(bases, at),
             ) {
-                Ok(fde) => found.extend(self.in_code(base, fde.initial_address())),
+                Ok(fde) => found.extend(self.in_code::<G>(base, fde.initial_address())),
                 Err(error) => warn(format!("a function's entry not read: {error}")),
             }
         }

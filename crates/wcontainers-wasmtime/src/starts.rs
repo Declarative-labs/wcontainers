@@ -33,7 +33,7 @@ pub trait Guest {
 const SEARCH_PAGES: u64 = 1 << 14;
 
 /// Bytes of an address in the image, a word of its arrays and data.
-const WORD: u64 = size_of::<u64>() as u64;
+use wcontainers_abi::WORD;
 
 /// Every instruction of the image starts at a multiple of this.
 const INSTRUCTION_ALIGN: u64 = <wcontainers_arm64::Arm64 as wcontainers_guest_cpu::Guest>::ALIGN;

@@ -1,5 +1,5 @@
 // Hello world through the C library: formatted printing, buffered output flushed at exit, and an exit
-// status. Output and exit status are checked against real ARM64 Linux.
+// status. Output and exit status are checked against real Linux.
 
 #include <stdio.h>
 

@@ -5,7 +5,7 @@
 use crate::Errno;
 
 /// Bytes in a KiB, the unit `/sys/kernel/mm/hugepages` names sizes in.
-pub(crate) const KIB: u64 = 1 << 10;
+pub(crate) use wcontainers_abi::KIB;
 
 /// The huge page sizes offered, in KiB, with the size each demotes to.
 pub(crate) const SIZES: [(u64, Option<u64>); 4] = [

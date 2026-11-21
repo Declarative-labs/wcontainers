@@ -4,17 +4,9 @@
 /// The exit status of a process that a signal ended is this plus the signal, as the shell and Docker give it.
 pub const SIGNALLED: i32 = 128;
 
-/// The reference runner's mode that runs blobs one after another, each in a child of its own, for requests on
-/// stdin: a blob's file, load address, stack top, stack bytes and optional program headers and
-/// count. Each answer is the status as a shell reports it (`i32`), then stdout and stderr, each as a `u32`
-/// length and its bytes.
-pub const SERVING_MODE: &str = "blobs";
-/// What separates a request's arguments, and what ends a request.
-pub const REQUEST_SEPARATOR: u8 = b' ';
-pub const REQUEST_END: u8 = b'\n';
-
-/// `AT_HWCAP` as the guest is told it; a test checks it against `wcontainers_abi::HWCAP`.
-pub const BLOB_HWCAP: u64 = 0x183;
+/// Auxiliary vector keys a guest's own entries use.
+pub const AT_HWCAP: u64 = 16;
+pub const AT_HWCAP2: u64 = 26;
 
 /// How long a program may run on Linux, in seconds, before the reference stops it.
 pub const BLOB_SECONDS: u32 = 20;
@@ -29,16 +21,19 @@ pub const PROGRAM_HEADER_BYTES: u64 = 56;
 /// argc, argv, an empty environment, the auxiliary vector, then the name and the 16 `AT_RANDOM` bytes.
 /// `headers` is where the blob's program headers are in guest memory and how many there are, given as
 /// `AT_PHDR` and `AT_PHNUM`, through which a position independent C program finds where it was placed.
+/// `auxiliary` holds the guest's own entries (what the CPU offers), given after `AT_PAGESZ`.
 /// Returns the stack pointer and the bytes to place from it up to `top`.
-pub fn initial_stack(top: u64, headers: Option<(u64, u64)>) -> (u64, Vec<u8>) {
+pub fn initial_stack(
+    top: u64,
+    headers: Option<(u64, u64)>,
+    auxiliary: &[(u64, u64)],
+) -> (u64, Vec<u8>) {
     const AT_NULL: u64 = 0;
     const AT_PHDR: u64 = 3;
     const AT_PHENT: u64 = 4;
     const AT_PHNUM: u64 = 5;
     const AT_PAGESZ: u64 = 6;
-    const AT_HWCAP: u64 = 16;
     const AT_RANDOM: u64 = 25;
-    const AT_HWCAP2: u64 = 26;
     const AT_EXECFN: u64 = 31;
     let random = top - 16;
     let name = (random - BLOB_NAME.len() as u64) & !15;
@@ -46,10 +41,9 @@ pub fn initial_stack(top: u64, headers: Option<(u64, u64)>) -> (u64, Vec<u8>) {
     if let Some((at, count)) = headers {
         words.extend([AT_PHDR, at, AT_PHENT, PROGRAM_HEADER_BYTES, AT_PHNUM, count]);
     }
-    words.extend([
-        AT_PAGESZ, 4096, AT_HWCAP, BLOB_HWCAP, AT_HWCAP2, 0, AT_RANDOM, random, AT_EXECFN, name,
-        AT_NULL, 0,
-    ]);
+    words.extend([AT_PAGESZ, 4096]);
+    words.extend(auxiliary.iter().flat_map(|&(key, value)| [key, value]));
+    words.extend([AT_RANDOM, random, AT_EXECFN, name, AT_NULL, 0]);
     let sp = (name - 8 * words.len() as u64) & !15;
     let mut bytes = vec![0u8; (top - sp) as usize];
     for (i, word) in words.iter().enumerate() {
@@ -71,48 +65,54 @@ pub const DATA_WRITABLE: u64 = 3 * 4096;
 pub const DATA_READ_ONLY: u64 = 4096;
 pub const DATA_BYTES: u64 = DATA_WRITABLE + DATA_READ_ONLY;
 
-/// Where the instruction under test sits. Everything from `CODE - CODE_SPAN` to `CODE + CODE_SPAN` may be read
-/// and run, and is zero apart from the instruction; zero is `udf #0`, so control stops wherever it lands.
+/// Where the instruction under test sits. The code area around it, `CODE - CODE_SPAN` to `CODE + CODE_SPAN`
+/// of the guest's, may be read and run and holds the guest's `FILLER` apart from the instruction, so that
+/// control stops wherever it lands.
 pub const CODE: u64 = 0x5000_0000;
-pub const CODE_SPAN: u64 = 128 << 20;
 
-/// x0 to x30, then sp, in a case's registers; the harness checks both counts against `RegisterBlock`.
-pub const GENERAL_REGISTERS: usize = 31;
-pub const CASE_SP: usize = GENERAL_REGISTERS;
-/// A request's registers after sp: the flags (at their `pstate` bits) and the thread pointer.
-pub const REQUEST_FLAGS: usize = CASE_SP + 1;
-pub const REQUEST_THREAD_POINTER: usize = REQUEST_FLAGS + 1;
-pub const REQUEST_REGISTERS: usize = REQUEST_THREAD_POINTER + 1;
-/// A result's registers after sp: pc, the flags and the thread pointer.
-pub const LANDED_PC: usize = CASE_SP + 1;
-pub const LANDED_FLAGS: usize = LANDED_PC + 1;
-pub const LANDED_THREAD_POINTER: usize = LANDED_FLAGS + 1;
-pub const LANDED_REGISTERS: usize = LANDED_THREAD_POINTER + 1;
-/// v0 to v31.
-pub const VECTOR_REGISTERS: usize = 32;
-/// FPSR and FPCR.
-pub const FLOAT_REGISTERS: usize = 2;
+/// ARM64's code area: zero is `udf #0`; a branch reaches 128 MiB.
+pub mod aarch64 {
+    pub const FILLER: u8 = 0;
+    pub const CODE_SPAN: u64 = 128 << 20;
+    /// Where the reference runner's own memory is: its image, linked at the start (the image base in
+    /// `reference/.cargo/config.toml`), and the heap Linux places up to 1 GiB after it, with room to grow;
+    /// the runner checks it is there at start. No case may reach it.
+    pub const RUNNER: core::ops::Range<u64> = 0x8000_0000..0xd000_0000;
+}
 
-/// A case: the instruction word, the data seed, then the request's registers, then v0 to v31, then FPSR and
-/// FPCR, all little endian; the request's fields start at these offsets.
-pub const REQUEST_SEED_AT: usize = size_of::<u32>();
-pub const REQUEST_REGISTERS_AT: usize = REQUEST_SEED_AT + size_of::<u64>();
-pub const REQUEST_VECTORS_AT: usize = REQUEST_REGISTERS_AT + REQUEST_REGISTERS * size_of::<u64>();
-pub const REQUEST_FLOAT_AT: usize = REQUEST_VECTORS_AT + VECTOR_REGISTERS * size_of::<u128>();
-pub const REQUEST_BYTES: usize = REQUEST_FLOAT_AT + FLOAT_REGISTERS * size_of::<u32>();
+/// x86-64's code area: `int3`, 32 KiB either side (a branch further out stops by the trap flag at its
+/// target before anything there is fetched).
+pub mod x86_64 {
+    pub const FILLER: u8 = 0xcc;
+    pub const CODE_SPAN: u64 = 32 << 10;
+    /// As ARM64's.
+    pub const RUNNER: core::ops::Range<u64> = 0x6000_0000..0xb000_0000;
+    /// The state's field of ds' selector; es', fs' and gs' follow it.
+    pub const SELECTORS: usize = 64;
+}
 
-/// A result: signal, `si_code`, `si_addr`, then the landed registers, then v0 to v31, then FPSR and FPCR,
-/// then the number of changed data bytes and each one as an offset from `DATA` and its new value; the header's
-/// fields start at these offsets.
-pub const RESULT_CODE_AT: usize = size_of::<u32>();
-pub const RESULT_ADDRESS_AT: usize = RESULT_CODE_AT + size_of::<u32>();
-pub const RESULT_REGISTERS_AT: usize = RESULT_ADDRESS_AT + size_of::<u64>();
-pub const RESULT_VECTORS_AT: usize = RESULT_REGISTERS_AT + LANDED_REGISTERS * size_of::<u64>();
-pub const RESULT_FLOAT_AT: usize = RESULT_VECTORS_AT + VECTOR_REGISTERS * size_of::<u128>();
-pub const RESULT_CHANGES_AT: usize = RESULT_FLOAT_AT + FLOAT_REGISTERS * size_of::<u32>();
-pub const RESULT_HEADER_BYTES: usize = RESULT_CHANGES_AT + size_of::<u32>();
-/// One changed data byte: its offset as a `u32`, then its value.
-pub const CHANGE_BYTES: usize = size_of::<u32>() + size_of::<u8>();
+/// The reference's wire: records both ways, each a little-endian u32 length and that many bytes. The runner
+/// first sends its hello: the number of state fields, each field's name (a byte of length, then the name),
+/// then the CPU's model name (a byte of length, then the name). A request starts with its kind.
+pub const RECORD_CASE: u8 = 0;
+pub const RECORD_BLOB: u8 = 1;
+/// An ordinary static executable, its bytes after the kind; its result is a blob's, with no stop record.
+pub const RECORD_PROGRAM: u8 = 2;
+/// A result starts with its status: the request ran, the runner could not run it, the CPU's Linux refused to
+/// set up the case's starting state, or the runner itself failed and ends (for the last three a message
+/// follows).
+pub const RESULT_RAN: u8 = 0;
+pub const RESULT_FAILED: u8 = 1;
+pub const RESULT_REFUSED: u8 = 2;
+pub const RESULT_RUNNER_FAILED: u8 = 3;
+
+/// Put `placed`'s bytes over the data from its offset, as far as the data reaches.
+pub fn place(placed: &(u32, Vec<u8>), into: &mut [u8]) {
+    let (at, bytes) = placed;
+    for (to, &byte) in into.iter_mut().skip(*at as usize).zip(bytes) {
+        *to = byte;
+    }
+}
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

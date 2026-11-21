@@ -19,6 +19,9 @@ pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
 pub use translate::*;
 
+/// What a thread's block size is a multiple of: the bytes of a 128-bit vector.
+pub const BLOCK_ALIGNMENT: usize = size_of::<u128>();
+
 /// What is true of one guest CPU that the kernel and the runners need without translating anything: the
 /// register block they see and where the thread's state words are.
 pub trait Personality: Sized + Send + Sync + 'static {
@@ -28,7 +31,7 @@ pub trait Personality: Sized + Send + Sync + 'static {
     const PC_OFFSET: usize;
     /// Where the i32 stop flag is, from the block's start (after the block).
     const STOP_FLAG_OFFSET: usize;
-    /// Bytes of the block and its stop flag, a multiple of 16.
+    /// Bytes of the block and its stop flag, a multiple of [`BLOCK_ALIGNMENT`].
     const BLOCK_SIZE: usize;
     /// Bytes after those that only the CPU side uses, zero when a thread is made. A thread's state is
     /// `BLOCK_SIZE + PRIVATE_BYTES` bytes.
@@ -146,7 +149,8 @@ pub enum TrapKind {
     /// x86 general protection raised by the instruction itself (a privileged instruction, a non-canonical
     /// branch target, a misaligned vector access, `int n`): `SIGSEGV`, `SI_KERNEL`, address 0. Detail 0.
     GeneralProtection = 5,
-    /// An unmasked floating point exception: `SIGFPE`. Detail: the `si_code`.
+    /// An unmasked floating point exception: `SIGFPE`. Detail: what the kernel works the `si_code` out from
+    /// as Linux does (on x86-64 the exception flags of MXCSR that are raised and unmasked).
     FloatException = 6,
     /// x86 `int 4` (`into` has no 64-bit form): `SIGSEGV`, `SI_KERNEL`, a trap with pc after the
     /// instruction, which the kernel tells from general protection by its trap number. Detail 0.
@@ -154,19 +158,39 @@ pub enum TrapKind {
 }
 
 impl TrapKind {
+    pub const ALL: &'static [Self] = &[
+        Self::Undefined,
+        Self::Unsupported,
+        Self::Breakpoint,
+        Self::Alignment,
+        Self::DivideError,
+        Self::GeneralProtection,
+        Self::FloatException,
+        Self::Overflow,
+    ];
+
     pub fn from_i32(value: i32) -> Option<Self> {
-        [
-            Self::Undefined,
-            Self::Unsupported,
-            Self::Breakpoint,
-            Self::Alignment,
-            Self::DivideError,
-            Self::GeneralProtection,
-            Self::FloatException,
-            Self::Overflow,
-        ]
-        .into_iter()
-        .find(|kind| *kind as i32 == value)
+        Self::ALL.iter().copied().find(|kind| *kind as i32 == value)
+    }
+
+    /// Each kind's name where a runner reports it as text, in `ALL`'s order.
+    pub const NAMES: &'static [&'static str] = &[
+        "undefined",
+        "unsupported",
+        "breakpoint",
+        "alignment",
+        "divide error",
+        "general protection",
+        "float exception",
+        "overflow",
+    ];
+
+    pub const fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|kind| kind.name() == name)
     }
 }
 
@@ -178,4 +202,8 @@ pub enum MemoryFault {
     Page,
     GeneralProtection,
     Stack,
+}
+
+impl MemoryFault {
+    pub const ALL: &'static [Self] = &[Self::Page, Self::GeneralProtection, Self::Stack];
 }

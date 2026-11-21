@@ -16,6 +16,8 @@ fn the_cores_build_without_the_standard_library() {
             "wcontainers-guest-cpu",
             "-p",
             "wcontainers-arm64",
+            "-p",
+            "wcontainers-x86",
         ])
         .args(["--no-default-features", TARGET_FLAG, "wasm32v1-none"])
         .arg(TARGET_FOLDER_FLAG)

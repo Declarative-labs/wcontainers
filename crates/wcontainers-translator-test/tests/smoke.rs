@@ -1,65 +1,53 @@
-//! The runner and look-ahead none on a few hand-encoded programs.
+//! The runner and look-ahead none on a few hand-made programs, each guest's own (`GuestTest::smoke`).
 
-use wcontainers_abi::{PAGE_SIZE, Permissions, RegisterBlock};
+use wcontainers_abi::{Exit, Permissions};
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
+use wcontainers_translator_test::guest::{GuestTest, UNKNOWN_SYSTEM_CALL};
+use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls, fields};
+use wcontainers_x86::X86_64;
 
 const LOAD: u64 = 0x10000;
+/// The one executable page the programs run in, and the stack's page below it.
+const PAGE: u64 = wcontainers_abi::PAGE_SIZE;
 
-fn run(words: &[u32]) -> (Stopped, RegisterBlock, Machine) {
-    run_with(words, |_| {})
+/// Load `code` at `LOAD` at `look_ahead`, every register 0 but the pc and the stack pointer, which is at the
+/// top of the writable page below.
+fn ready<G: GuestTest>(code: &[u8], look_ahead: LookAhead) -> Machine<G> {
+    let mut machine = Machine::<G>::new(1 << 20, LOAD, (PAGE / G::ALIGN) as u32, Syscalls::StandIn);
+    machine.set_permissions(LOAD..LOAD + PAGE, Permissions::READ | Permissions::EXECUTE);
+    machine.set_permissions(LOAD - PAGE..LOAD, Permissions::READ | Permissions::WRITE);
+    machine.load(code, 0..code.len() as u64, (LOAD, None), &[0], look_ahead);
+    machine.set_registers(&G::initial_block(LOAD, LOAD));
+    machine
 }
 
-/// Run after `prepare` has done something to the machine.
-fn run_with(words: &[u32], prepare: impl FnOnce(&Machine)) -> (Stopped, RegisterBlock, Machine) {
-    let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    let mut machine = Machine::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
-    machine.set_permissions(
-        LOAD..LOAD + PAGE_SIZE,
-        Permissions::READ | Permissions::EXECUTE,
-    );
-    machine.load(&blob, 0..blob.len() as u64, LOAD, &[0], LookAhead::None);
-    let mut registers = RegisterBlock::ZERO;
-    registers.pc = LOAD;
-    machine.set_registers(&registers);
+/// Run at none after `prepare` has done something to the machine; the stop and the fields after.
+fn run<G: GuestTest>(
+    code: &[u8],
+    prepare: impl FnOnce(&Machine<G>),
+) -> (Stopped, Vec<u128>, Machine<G>) {
+    let mut machine = ready::<G>(code, LookAhead::None);
     prepare(&machine);
     let (stopped, registers) = machine.run();
-    (stopped, registers, machine)
+    (stopped, fields::<G>(&registers).0, machine)
 }
 
-#[test]
-fn exit_status() {
-    // movz x0, #42; movz x8, #93; svc #0
-    let (stopped, _, _) = run(&[0xd280_0540, 0xd280_0ba8, 0xd400_0001]);
+fn exit_status<G: GuestTest>() {
+    let (stopped, _, _) = run::<G>(&G::smoke().exit, |_| {});
     assert_eq!(stopped, Stopped::Finished(42));
 }
 
-// x0 = 0; x1 = 10; loop: bl add; subs x1, x1, #1; b.ne loop; exit(x0)
-// add: add x0, x0, x1; ret
-const LOOP_AND_CALL: [u32; 9] = [
-    0xd280_0000, // movz x0, #0
-    0xd280_0141, // movz x1, #10
-    0x9400_0005, // bl +5 (add)
-    0xf100_0421, // subs x1, x1, #1
-    0x54ff_ffc1, // b.ne -2
-    0xd280_0ba8, // movz x8, #93
-    0xd400_0001, // svc #0
-    0x8b01_0000, // add x0, x0, x1
-    0xd65f_03c0, // ret
-];
-
-#[test]
-fn loop_and_call() {
-    let (stopped, _, machine) = run(&LOOP_AND_CALL);
+fn loop_and_call<G: GuestTest>() {
+    let (stopped, _, machine) = run::<G>(&G::smoke().loop_and_call, |_| {});
     assert_eq!(stopped, Stopped::Finished(55));
     assert_eq!(machine.count(Reason::StoppedByFlag), 0);
 }
 
 /// The stand-in behind the stop hook clears the flag and the thread carries on.
-#[test]
-fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on() {
-    let (stopped, _, machine) = run_with(&LOOP_AND_CALL, Machine::raise_stop_flag);
+fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on<G: GuestTest>() {
+    let (stopped, _, machine) = run::<G>(&G::smoke().loop_and_call, Machine::raise_stop_flag);
     assert_eq!(stopped, Stopped::Finished(55));
     assert_eq!(machine.count(Reason::StoppedByFlag), 1);
     let warnings: Vec<_> = machine
@@ -71,18 +59,8 @@ fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on() {
     assert_eq!(warnings, [LOAD]);
 }
 
-#[test]
-fn slow_paths_are_counted_and_warned_once_per_place() {
-    // movz x8, #999; svc #0; svc #0; movz x0, #3; movz x8, #93; svc #0
-    let words = [
-        0xd280_7ce8,
-        0xd400_0001,
-        0xd400_0001,
-        0xd280_0060,
-        0xd280_0ba8,
-        0xd400_0001,
-    ];
-    let (stopped, _, machine) = run(&words);
+fn slow_paths_are_counted_and_warned_once_per_place<G: GuestTest>() {
+    let (stopped, _, machine) = run::<G>(&G::smoke().unknown_call, |_| {});
     assert_eq!(stopped, Stopped::Finished(3));
     assert_eq!(machine.count(Reason::SystemCallNotImplemented), 2);
     let warnings: Vec<_> = machine
@@ -91,32 +69,15 @@ fn slow_paths_are_counted_and_warned_once_per_place() {
         .filter(|w| w.reason == Reason::SystemCallNotImplemented.name())
         .map(|w| (w.detail, w.count))
         .collect();
-    assert_eq!(warnings, [(999, 1)]);
+    assert_eq!(warnings, [(UNKNOWN_SYSTEM_CALL, 1)]);
 }
 
 /// A flag raised by another thread while a translated loop runs is seen, at every look-ahead: the check must
 /// read the flag from memory each time round.
-#[test]
-fn stop_flag_raised_while_running() {
-    // movz x0, #0x4000, lsl #16; loop: subs x0, x0, #1; b.ne loop; movz x8, #93; svc #0
-    let words = [
-        0xd2a8_0000,
-        0xf100_0400,
-        0x54ff_ffe1,
-        0xd280_0ba8,
-        0xd400_0001,
-    ];
-    let blob: Vec<u8> = words.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
+fn stop_flag_raised_while_running<G: GuestTest>() {
+    let smoke = G::smoke();
     for look_ahead in [LookAhead::None, LookAhead::Full] {
-        let mut machine = Machine::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
-        machine.set_permissions(
-            LOAD..LOAD + PAGE_SIZE,
-            Permissions::READ | Permissions::EXECUTE,
-        );
-        machine.load(&blob, 0..blob.len() as u64, LOAD, &[0], look_ahead);
-        let mut registers = RegisterBlock::ZERO;
-        registers.pc = LOAD;
-        machine.set_registers(&registers);
+        let mut machine = ready::<G>(&smoke.long_loop, look_ahead);
         let raise = machine.stop_flag_raiser();
         let raiser = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -127,38 +88,95 @@ fn stop_flag_raised_while_running() {
         assert_eq!(stopped, Stopped::Finished(0), "{look_ahead:?}");
         assert_eq!(machine.count(Reason::StoppedByFlag), 1, "{look_ahead:?}");
         // It was seen inside the loop, which then carried on to the end.
-        let seen_at = machine.warnings()[0].detail;
+        let seen_at = machine.warnings()[0].detail - LOAD;
         assert!(
-            [LOAD + 4, LOAD + 8].contains(&seen_at),
+            smoke.long_loop_body.contains(&seen_at),
             "{look_ahead:?}: {seen_at:#x}"
         );
-        assert_eq!(registers.x[0], 0);
+        assert_eq!(fields::<G>(&registers).0[smoke.long_loop_counter], 0);
     }
 }
 
 /// An instruction of a feature we do not offer raises illegal instruction, at the instruction, and is
-/// counted as unsupported; a word in no form raises it uncounted, as on any CPU.
-#[test]
-fn instructions_not_offered_are_illegal_and_counted() {
-    use wcontainers_abi::Exit;
-    for (word, counted) in [
-        (0x4e28_4820, 1), // aese v0.16b, v1.16b
-        (0x04a2_0020, 1), // add z0.s, z1.s, z2.s
-        (0x0000_0000, 0), // udf #0
-    ] {
-        // movz x0, #1; then the word
-        let (stopped, registers, machine) = run(&[0xd280_0020, word]);
+/// counted as unsupported; bytes in no form raise it uncounted, as on any CPU.
+fn instructions_not_offered_are_illegal_and_counted<G: GuestTest>() {
+    let smoke = G::smoke();
+    for (code, counted) in &smoke.illegal {
+        let what = G::disassemble(code);
+        let mut program = smoke.mark.clone();
+        program.extend(code);
+        let (stopped, fields, machine) = run::<G>(&program, |_| {});
+        assert_eq!(stopped, Stopped::Exit(Exit::IllegalInstruction), "{what}");
         assert_eq!(
-            stopped,
-            Stopped::Exit(Exit::IllegalInstruction),
-            "{word:#010x}"
+            fields[G::PC_FIELD],
+            u128::from(LOAD) + smoke.mark.len() as u128,
+            "{what}"
         );
-        assert_eq!(registers.pc, LOAD + 4, "{word:#010x}");
-        assert_eq!(registers.x[0], 1, "{word:#010x}");
+        assert_eq!(fields[smoke.marked], 1, "{what}");
         assert_eq!(
             machine.count(Reason::UnsupportedInstructionReached),
-            counted,
-            "{word:#010x}"
+            *counted,
+            "{what}"
         );
     }
+}
+
+#[test]
+fn exit_status_arm64() {
+    exit_status::<Arm64>();
+}
+
+#[test]
+fn loop_and_call_arm64() {
+    loop_and_call::<Arm64>();
+}
+
+#[test]
+fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on_arm64() {
+    a_raised_stop_flag_is_cleared_and_the_thread_carries_on::<Arm64>();
+}
+
+#[test]
+fn slow_paths_are_counted_and_warned_once_per_place_arm64() {
+    slow_paths_are_counted_and_warned_once_per_place::<Arm64>();
+}
+
+#[test]
+fn stop_flag_raised_while_running_arm64() {
+    stop_flag_raised_while_running::<Arm64>();
+}
+
+#[test]
+fn instructions_not_offered_are_illegal_and_counted_arm64() {
+    instructions_not_offered_are_illegal_and_counted::<Arm64>();
+}
+
+#[test]
+fn exit_status_x86_64() {
+    exit_status::<X86_64>();
+}
+
+#[test]
+fn loop_and_call_x86_64() {
+    loop_and_call::<X86_64>();
+}
+
+#[test]
+fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on_x86_64() {
+    a_raised_stop_flag_is_cleared_and_the_thread_carries_on::<X86_64>();
+}
+
+#[test]
+fn slow_paths_are_counted_and_warned_once_per_place_x86_64() {
+    slow_paths_are_counted_and_warned_once_per_place::<X86_64>();
+}
+
+#[test]
+fn stop_flag_raised_while_running_x86_64() {
+    stop_flag_raised_while_running::<X86_64>();
+}
+
+#[test]
+fn instructions_not_offered_are_illegal_and_counted_x86_64() {
+    instructions_not_offered_are_illegal_and_counted::<X86_64>();
 }

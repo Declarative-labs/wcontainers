@@ -1,20 +1,13 @@
 // Counted loops over memory, alone and inside each other, whose accesses move by a fixed step: some stay
 // inside the blob, the last runs onto the page after it, which allows nothing, and faults there. Each sum
-// is printed. Output and exit status are checked against real ARM64 Linux.
+// is printed. Output and exit status are checked against real Linux.
 
 typedef unsigned long u64;
 typedef long i64;
 typedef unsigned int u32;
 typedef unsigned char u8;
 
-static i64 syscall3(i64 number, i64 a, i64 b, i64 c) {
-    register i64 x8 __asm__("x8") = number;
-    register i64 x0 __asm__("x0") = a;
-    register i64 x1 __asm__("x1") = b;
-    register i64 x2 __asm__("x2") = c;
-    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-    return x0;
-}
+#include "syscall.h"
 
 // The first byte after the blob, from the linker script.
 extern char __blob_end[];
@@ -30,7 +23,7 @@ static void result(u64 value) {
     int at = 0;
     while (count) line[at++] = digits[--count];
     line[at++] = '\n';
-    syscall3(64, 1, (i64)line, at);
+    syscall3(SYS_write, 1, (i64)line, at);
 }
 
 static u8 bytes[3 * 4096];
@@ -78,7 +71,7 @@ __attribute__((section(".text._start"), noreturn)) void _start(void) {
     result(onto_the_edge(edge, 0, 8));
     result(onto_the_edge(edge, 0, 4096));
     result(onto_the_edge(edge, 64, 8));
-    syscall3(94, 5, 0, 0);
+    syscall3(SYS_exit_group, 5, 0, 0);
     for (;;) {
     }
 }

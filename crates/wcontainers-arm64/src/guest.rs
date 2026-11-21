@@ -15,10 +15,11 @@ use core::ops::Range;
 use wasm_encoder::{InstructionSink, ValType};
 use wcontainers_abi::RegisterBlock as B;
 use wcontainers_guest_cpu::{
-    AccessBytes, AccessKind, Base, Bit, Class, CodeChanges, Comparison, Effects, Extend, Flow,
-    FlowKind, Guest, GuestId, HookBody, HookDone, HookType, Index, Induction, Locals, MemoryAccess,
-    MemoryFault, Reason, Registers, Relation, ReturnAddress, StackMove, StateBytes,
-    SyscallRegisters, Through, TrapDetail, TrapKind, TrapPc, Ty, Value, WriteBack,
+    AccessBytes, AccessKind, Base, Bit, BuiltAddress, Class, CodeChanges, Comparison, Effects,
+    Extend, Flow, FlowKind, Guest, GuestId, HookBody, HookDone, HookType, Index, Induction,
+    JumpTable, Locals, MemoryAccess, MemoryFault, Reason, Registers, Relation, ReturnAddress,
+    StackMove, StateBytes, SyscallRegisters, Through, TrapDetail, TrapKind, TrapPc, Ty, Value,
+    WriteBack,
 };
 
 /// The float hook's bytes of the thread state: FPSR and FPCR in the block, through FPSR tracking after it.
@@ -459,7 +460,8 @@ impl Guest for Arm64 {
             results: &[],
             registers: Registers::NONE,
             state: StateBytes::NONE,
-            body: HookBody::CodeChanged,
+            // `ic ivau` works on the 64-byte line.
+            body: HookBody::CodeChanged { line: 64 },
         },
     ];
 
@@ -659,8 +661,8 @@ impl Guest for Arm64 {
         blob: &[u8],
         code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Instruction)>,
-    ) -> Option<u64> {
-        match *i {
+    ) -> Option<BuiltAddress> {
+        let built = match *i {
             Instruction::PcRelative {
                 page: false,
                 offset: by,
@@ -688,7 +690,8 @@ impl Guest for Arm64 {
                 }
             }
             _ => None,
-        }
+        };
+        built.map(BuiltAddress::Offset)
     }
 
     /// The 64 words before the jump that lie in the code, read from the blob, and [`habits::jump_table`].
@@ -698,7 +701,7 @@ impl Guest for Arm64 {
         blob: &[u8],
         code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Instruction)>,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<JumpTable> {
         let first = at.saturating_sub(Self::ALIGN * 64).max(code.start);
         let before: Vec<(u64, Instruction)> = (first..at)
             .step_by(INSTRUCTION_BYTES)
@@ -736,6 +739,12 @@ impl Guest for Arm64 {
                 | I::MulAdd { .. }
                 | I::Nothing
         )
+    }
+
+    /// Not yet audited instruction by instruction, so no ARM64 instruction is said to be the same on every
+    /// CPU.
+    fn may_vary(_i: &Instruction) -> bool {
+        true
     }
 
     /// `bl` and `blr` leave the return address in x30.

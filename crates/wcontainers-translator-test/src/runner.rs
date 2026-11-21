@@ -1,6 +1,7 @@
 //! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel that
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
+use crate::guest::GuestTest;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
@@ -12,11 +13,10 @@ use wasmtime::{
     SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{
-    Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET,
-    SystemCallRequest, Warning,
+    Access, CounterReading, Exit, PAGE_SIZE, Permissions, SystemCallRequest, Warning,
 };
-use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
+use wcontainers_guest_cpu::{CodeChanges, HookBody, HookType, MemoryFault, Step, StepAt};
+pub use wcontainers_translator::contract::thread_state_size;
 use wcontainers_translator::contract::{self, Reason, SLOT_BYTES, WASM_PAGE_BYTES};
 use wcontainers_translator::contract::{progress_count_offset, progress_limit_offset};
 use wcontainers_translator::{
@@ -26,7 +26,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 /// Where the thread block sits in the state memory.
 pub const BLOCK_AT: u32 = 0;
-/// Where the permission table starts in the state memory.
+/// Where the permission table starts in the state memory, after the thread state.
 pub const PERMISSIONS_AT: u32 = 4096;
 
 /// What a system call does in this runner.
@@ -66,6 +66,8 @@ pub enum Fault {
     Overflow,
     /// x86's stack fault: `SIGBUS`, `SI_KERNEL`.
     Stack,
+    /// A single step of the trap flag: `SIGTRAP`, `TRAP_TRACE`.
+    SingleStep,
 }
 
 /// Where the thread is paused when the pause function runs.
@@ -78,13 +80,19 @@ pub enum Pause {
 }
 
 /// What a pause function may look at and change while the thread is paused.
-pub struct Paused<'a, 'b> {
-    caller: &'a mut Caller<'b, Host>,
+pub struct Paused<'a, 'b, G: GuestTest> {
+    caller: &'a mut Caller<'b, Host<G>>,
+    at: Pause,
 }
 
-impl Paused<'_, '_> {
-    pub fn registers(&mut self) -> RegisterBlock {
-        snapshot(self.caller)
+impl<G: GuestTest> Paused<'_, '_, G> {
+    pub fn registers(&mut self) -> G::Block {
+        block::<G>(&snapshot(self.caller))
+    }
+
+    /// The guest's pc.
+    pub fn pc(&mut self) -> u64 {
+        pc_of::<G>(&snapshot(self.caller))
     }
 
     pub fn read(&mut self, address: u64, into: &mut [u8]) {
@@ -92,6 +100,26 @@ impl Paused<'_, '_> {
         memory
             .read(&*self.caller, address as usize, into)
             .expect("read inside guest memory");
+    }
+
+    /// At a stop: write guest memory as another thread of the process does while this one is stopped. A page
+    /// locked for code drops its pieces first, and this thread then gives up its WebAssembly frames, which
+    /// may run pieces of that page, and carries on from its registers.
+    pub fn write(&mut self, address: u64, bytes: &[u8]) {
+        let host = self.caller.data_mut();
+        if code_written_in(host, address, bytes.len()) {
+            assert_eq!(
+                self.at,
+                Pause::Stop,
+                "code written at a {:?} pause",
+                self.at
+            );
+            host.lose_stack = true;
+        }
+        let memory = host.memory.unwrap();
+        memory
+            .write(&mut *self.caller, address as usize, bytes)
+            .expect("write inside guest memory");
     }
 
     /// Say what a page aligned range allows, as a kernel would for another thread or a system call.
@@ -106,7 +134,7 @@ impl Paused<'_, '_> {
 
     /// The progress count now.
     pub fn progress_count(&mut self) -> u64 {
-        read_u64(self.caller, progress_count_offset::<Arm64>())
+        read_u64(self.caller, progress_count_offset::<G>())
     }
 
     /// The progress count the thread stops at from now on, after this stop.
@@ -147,17 +175,17 @@ impl Paused<'_, '_> {
 }
 
 /// Called at every pause of the thread.
-type PauseFunction = Box<dyn FnMut(Pause, &mut Paused<'_, '_>)>;
+type PauseFunction<G> = Box<dyn FnMut(Pause, &mut Paused<'_, '_, G>)>;
 
-pub struct Host {
+pub struct Host<G: GuestTest> {
     /// What the engine does where WebAssembly leaves results open; translations are made for it.
-    facts: wcontainers_arm64::Host,
+    facts: G::Host,
     /// When the machine was made, for the clock.
     started: Instant,
     syscalls: Syscalls,
     stopped: Option<Stopped>,
-    /// Registers at the moment the thread stopped.
-    snapshot: RegisterBlock,
+    /// The thread state at the moment the thread stopped.
+    snapshot: Vec<u8>,
     /// What the guest wrote to file descriptors 1 and 2.
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -197,9 +225,17 @@ pub struct Host {
     table_base: u64,
     /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
     stop_everywhere: bool,
-    /// What each page allows, as the permission table says.
+    /// What each page allows, as the kernel last said; the table leaves out what the locks hold back.
     permissions: Vec<Permissions>,
-    pause: Option<PauseFunction>,
+    /// The write locks the CPU side holds on each page, a bit for each reason (`LOCK_CODE`).
+    locks: Vec<u8>,
+    /// Translate the instruction at this address without locking its page, at the thread's next exact
+    /// `load_code` there: the write it faulted on runs once on the unlocked page.
+    exact_mark: Option<u64>,
+    /// Code translated at run time: the guest bytes each translation was made from, and the addresses it
+    /// gave its pieces.
+    run_time_loads: Vec<(Vec<Range<u64>>, Vec<u64>)>,
+    pause: Option<PauseFunction<G>>,
     /// No limit on instances and tables: each piece made at run time and each fresh thread instance is one.
     limits: wasmtime::StoreLimits,
     /// Whether translations keep the progress count.
@@ -208,8 +244,8 @@ pub struct Host {
     limit: u64,
 }
 
-pub struct Machine {
-    store: Store<Host>,
+pub struct Machine<G: GuestTest> {
+    store: Store<Host<G>>,
     memory: Memory,
     state: SharedMemory,
     run: TypedFunc<(), ()>,
@@ -221,37 +257,104 @@ fn engine() -> Engine {
     ENGINE.get_or_init(new_engine).clone()
 }
 
-/// The thread module for code with or without the progress count, each compiled once.
-fn thread_module(engine: &Engine, progress: ProgressCount) -> Module {
-    static ABSENT: OnceLock<Module> = OnceLock::new();
-    static KEPT: OnceLock<Module> = OnceLock::new();
-    let module = match progress {
-        ProgressCount::Absent => &ABSENT,
-        ProgressCount::Kept => &KEPT,
-    };
-    module
-        .get_or_init(|| {
-            Module::new(
-                engine,
-                wcontainers_translator::thread_module::<Arm64>(progress),
-            )
+/// The thread module for code with or without the progress count, each compiled once per guest.
+fn thread_module<G: GuestTest>(engine: &Engine, progress: ProgressCount) -> Module {
+    let make = || {
+        Module::new(engine, wcontainers_translator::thread_module::<G>(progress))
             .expect("thread module")
-        })
+    };
+    // The two are kept apart by the type they are made for.
+    match progress {
+        ProgressCount::Absent => per_guest::<(G, CountAbsent), _>(make),
+        ProgressCount::Kept => per_guest::<(G, CountKept), _>(make),
+    }
+}
+
+/// What [`thread_module`] keeps its two modules under.
+struct CountAbsent;
+struct CountKept;
+
+/// A value made once per process for each guest. A static inside a generic function is one for all of its
+/// instances, so each guest's is kept by its type.
+fn per_guest<G: 'static, T: Clone + Send + Sync + 'static>(make: impl FnOnce() -> T) -> T {
+    use std::any::{Any, TypeId};
+    use std::sync::Mutex;
+    type Made = HashMap<(TypeId, TypeId), Box<dyn Any + Send + Sync>>;
+    static MADE: OnceLock<Mutex<Made>> = OnceLock::new();
+    let key = (TypeId::of::<G>(), TypeId::of::<T>());
+    let made = MADE.get_or_init(Default::default);
+    if let Some(value) = made.lock().unwrap().get(&key) {
+        return value.downcast_ref::<T>().unwrap().clone();
+    }
+    let value = make();
+    made.lock()
+        .unwrap()
+        .entry(key)
+        .or_insert_with(|| Box::new(value))
+        .downcast_ref::<T>()
+        .unwrap()
         .clone()
 }
 
-/// The probe of this engine, run once per process.
-pub fn probe() -> wcontainers_arm64::Host {
-    static FACTS: OnceLock<wcontainers_arm64::Host> = OnceLock::new();
-    *FACTS.get_or_init(|| {
+/// A block's values as the state both sides of a comparison hold.
+pub fn fields<G: GuestTest>(block: &G::Block) -> crate::guest::State {
+    let mut thread = vec![0; thread_state_size::<G>()];
+    thread[..size_of::<G::Block>()].copy_from_slice(block.as_bytes());
+    G::to_state(&thread)
+}
+
+/// The guest's pc in a thread state.
+fn pc_of<G: GuestTest>(thread: &[u8]) -> u64 {
+    u64::from_le_bytes(
+        thread[G::PC_OFFSET..][..size_of::<u64>()]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+/// The guest's stack pointer in a thread state.
+fn stack_pointer_of<G: GuestTest>(thread: &[u8]) -> u64 {
+    let sp = G::BITS
+        .iter()
+        .find(|b| b.bit == G::SP_BIT)
+        .expect("the stack pointer's bit");
+    u64::from_le_bytes(
+        thread[usize::from(sp.offset)..][..size_of::<u64>()]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+/// The block at the start of a thread state.
+fn block<G: GuestTest>(thread: &[u8]) -> G::Block {
+    G::Block::read_from_bytes(&thread[..size_of::<G::Block>()]).expect("a thread block")
+}
+
+/// Names an answer the host probe can give, which then stands in for this engine's own, so that what the
+/// translator emits for another host runs and is checked here too.
+pub const PROBE_ANSWER_SETTING: &str = "WC_PROBE_ANSWER";
+
+/// The probe of this engine, run once per process, or the answer `PROBE_ANSWER_SETTING` names.
+pub fn probe<G: GuestTest>() -> G::Host {
+    per_guest::<G, _>(|| {
+        if let Some(answer) = std::env::var(PROBE_ANSWER_SETTING)
+            .ok()
+            .and_then(|v| v.parse::<i32>().ok())
+        {
+            assert!(
+                G::PROBE_ANSWERS.contains(&answer),
+                "{PROBE_ANSWER_SETTING} {answer} is not an answer of the probe"
+            );
+            return G::host_from_probe(answer);
+        }
         let engine = engine();
-        let module = Module::new(&engine, Arm64::probe_module()).expect("probe module");
+        let module = Module::new(&engine, G::probe_module()).expect("probe module");
         let mut store = Store::new(&engine, ());
         let instance = Instance::new(&mut store, &module, &[]).expect("probe instance");
         let probe = instance
             .get_typed_func::<(), i32>(&mut store, contract::PROBE)
             .expect("probe export");
-        Arm64::host_from_probe(probe.call(&mut store, ()).expect("probe runs"))
+        G::host_from_probe(probe.call(&mut store, ()).expect("probe runs"))
     })
 }
 
@@ -284,21 +387,27 @@ pub fn compile_time(wasm: &[u8]) -> std::time::Duration {
     start.elapsed()
 }
 
-impl Machine {
+impl<G: GuestTest> Machine<G> {
     /// A machine with `memory_bytes` of guest memory, nothing allowed anywhere, and an array of slots of
     /// `slots` entries, for the instructions from guest address `table_base`.
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
+        const {
+            assert!(
+                BLOCK_AT as usize + thread_state_size::<G>() <= PERMISSIONS_AT as usize,
+                "the thread state fits before the permission table"
+            )
+        };
         let engine = engine();
         // The table covers the whole memory, and one more byte, always zero, follows it.
         let permission_pages = memory_bytes.div_ceil(WASM_PAGE_BYTES) * WASM_PAGE_BYTES / PAGE_SIZE;
         let mut store = Store::new(
             &engine,
             Host {
-                facts: probe(),
+                facts: probe::<G>(),
                 started: Instant::now(),
                 syscalls,
                 stopped: None,
-                snapshot: RegisterBlock::ZERO,
+                snapshot: vec![0; thread_state_size::<G>()],
                 stdout: Vec::new(),
                 stderr: Vec::new(),
                 counters: FxHashMap::default(),
@@ -323,6 +432,9 @@ impl Machine {
                 table_base,
                 stop_everywhere: false,
                 permissions: vec![Permissions::empty(); permission_pages as usize],
+                locks: vec![0; permission_pages as usize],
+                exact_mark: None,
+                run_time_loads: Vec::new(),
                 pause: None,
                 limits: wasmtime::StoreLimitsBuilder::new()
                     .instances(usize::MAX)
@@ -364,6 +476,7 @@ impl Machine {
         let host = self.store.data_mut();
         host.exact_pieces.clear();
         host.placed.clear();
+        host.run_time_loads.clear();
         host.next_slot = contract::EXACT_SLOT as u32 + 1;
         let entries = host.slots as usize * SLOT_BYTES;
         write_shared(
@@ -374,7 +487,11 @@ impl Machine {
         let loads = std::mem::take(&mut host.loads);
         let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for load in &loads {
-            pieces.push(instantiate(&mut self.store, load, false));
+            pieces.push(if load.dropped {
+                HashMap::new()
+            } else {
+                instantiate(&mut self.store, load, false)
+            });
         }
         let picks = self.store.data().picks.clone();
         apply_picks(&mut self.store, &pieces, &picks);
@@ -387,7 +504,7 @@ impl Machine {
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         translations: &[(LookAhead, Optimise, Vec<u64>)],
         seed: u64,
     ) {
@@ -398,7 +515,7 @@ impl Machine {
             let load = translate_load(
                 &mut self.store,
                 (bytes, load_address),
-                code.clone(),
+                (code.clone(), link_address),
                 starts,
                 (*look_ahead, *optimise),
                 Omit::default(),
@@ -425,7 +542,10 @@ impl Machine {
         self.store.data_mut().picks.extend(picks);
     }
 
+    /// Write guest memory as the kernel does, past the page permissions; a page locked for code drops its
+    /// pieces first.
     pub fn write(&mut self, address: u64, bytes: &[u8]) {
+        code_written_in(self.store.data_mut(), address, bytes.len());
         self.memory
             .write(&mut self.store, address as usize, bytes)
             .expect("write inside guest memory");
@@ -444,24 +564,25 @@ impl Machine {
 
     /// From now on `pause` runs whenever the thread pauses at a stop check or after a system call, and may
     /// change page permissions there.
-    pub fn on_pause(&mut self, pause: impl FnMut(Pause, &mut Paused<'_, '_>) + 'static) {
+    pub fn on_pause(&mut self, pause: impl FnMut(Pause, &mut Paused<'_, '_, G>) + 'static) {
         self.store.data_mut().pause = Some(Box::new(pause));
     }
 
     /// Place a blob at `load_address`, translate it from `starts` (blob offsets) with a look-ahead and add its
-    /// pieces. Code reached at run time with no piece is translated as [`Machine::translate_at_run_time`] says.
+    /// pieces; `link_address` as `wcontainers_translator::translate` says. Code reached at run time with no
+    /// piece is translated as [`Machine::translate_at_run_time`] says.
     pub fn load(
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         starts: &[u64],
         look_ahead: LookAhead,
     ) {
         self.load_omitting(
             bytes,
             code,
-            load_address,
+            (load_address, link_address),
             starts,
             look_ahead,
             Omit::default(),
@@ -473,7 +594,7 @@ impl Machine {
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         starts: &[u64],
         look_ahead: LookAhead,
         omit: Omit,
@@ -483,7 +604,7 @@ impl Machine {
         let load = translate_load(
             &mut self.store,
             (bytes, load_address),
-            code,
+            (code, link_address),
             starts,
             (look_ahead, optimise),
             omit,
@@ -498,21 +619,22 @@ impl Machine {
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         starts: &[u64],
         module_bytes: usize,
     ) {
         self.place(bytes, code.clone(), load_address);
         let host = self.store.data();
-        let translation = translate_in_modules::<Arm64>(
+        let translation = translate_in_modules::<G>(
             bytes,
             code,
+            link_address,
             starts,
             LookAhead::Full,
             host.optimise,
             host.progress,
             host.facts,
-            (),
+            G::Offer::default(),
             module_bytes,
         )
         .expect("translate");
@@ -573,12 +695,12 @@ impl Machine {
         let block = BLOCK_AT as usize;
         write_shared(
             &self.state,
-            block + progress_limit_offset::<Arm64>(),
+            block + progress_limit_offset::<G>(),
             &u64::MAX.to_le_bytes(),
         );
         write_shared(
             &self.state,
-            block + progress_count_offset::<Arm64>(),
+            block + progress_count_offset::<G>(),
             &0u64.to_le_bytes(),
         );
     }
@@ -587,7 +709,7 @@ impl Machine {
     /// and at every one after it until a pause function sets another.
     pub fn set_progress_limit(&mut self, limit: u64) {
         self.store.data_mut().limit = limit;
-        let at = BLOCK_AT as usize + progress_limit_offset::<Arm64>();
+        let at = BLOCK_AT as usize + progress_limit_offset::<G>();
         write_shared(&self.state, at, &limit.to_le_bytes());
     }
 
@@ -596,7 +718,7 @@ impl Machine {
         let mut count = [0u8; size_of::<u64>()];
         read_shared(
             &self.state,
-            BLOCK_AT as usize + progress_count_offset::<Arm64>(),
+            BLOCK_AT as usize + progress_count_offset::<G>(),
             &mut count,
         );
         u64::from_le_bytes(count)
@@ -610,14 +732,14 @@ impl Machine {
 
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
     pub fn raise_stop_flag(&self) {
-        write_stop(&self.state, self.store.data().progress, None);
+        write_stop::<G>(&self.state, self.store.data().progress, None);
     }
 
     /// Something another host thread can call to raise the stop flag while the guest runs.
     pub fn stop_flag_raiser(&self) -> impl Fn() + Send + 'static {
         let state = self.state.clone();
         move || {
-            let word = &state.data()[BLOCK_AT as usize + STOP_FLAG_OFFSET];
+            let word = &state.data()[BLOCK_AT as usize + G::STOP_FLAG_OFFSET];
             // The flag is a 4 byte aligned word that both threads reach only through atomics or the guest's
             // own loads.
             let flag = unsafe { &*(word.get() as *const std::sync::atomic::AtomicU32) };
@@ -625,27 +747,44 @@ impl Machine {
         }
     }
 
-    pub fn set_registers(&mut self, registers: &RegisterBlock) {
+    pub fn set_registers(&mut self, registers: &G::Block) {
         write_shared(&self.state, BLOCK_AT as usize, registers.as_bytes());
     }
 
-    /// Keep FPSR's flags exact from now on, as if the program had written FPSR.
+    /// Set the whole thread state: the block and the CPU's private bytes.
+    pub fn set_thread_state(&mut self, thread: &[u8]) {
+        assert_eq!(thread.len(), thread_state_size::<G>());
+        write_shared(&self.state, BLOCK_AT as usize, thread);
+    }
+
+    /// Keep the float exception flags exact from now on, as if the program had written them.
     pub fn track_float_flags(&mut self) {
-        write_shared(
-            &self.state,
-            BLOCK_AT as usize + wcontainers_arm64::FLOAT_TRACKING,
-            &1u32.to_le_bytes(),
-        );
+        let mut thread = vec![0; thread_state_size::<G>()];
+        read_shared(&self.state, BLOCK_AT as usize, &mut thread);
+        G::track(&mut thread);
+        write_shared(&self.state, BLOCK_AT as usize, &thread);
+    }
+
+    /// The clock reads `nanos` now and runs on from there.
+    pub fn set_clock(&mut self, nanos: u64) {
+        self.store.data_mut().started = Instant::now()
+            .checked_sub(Duration::from_nanos(nanos))
+            .expect("a clock that far back");
     }
 
     /// Translate for other facts about the engine than the probe found, to test the paths other hosts
     /// take. Only blobs loaded afterwards are affected.
-    pub fn set_host(&mut self, facts: wcontainers_arm64::Host) {
+    pub fn set_host(&mut self, facts: G::Host) {
         self.store.data_mut().facts = facts;
     }
 
-    pub fn registers(&mut self) -> RegisterBlock {
-        snapshot(&mut self.store)
+    pub fn registers(&mut self) -> G::Block {
+        block::<G>(&snapshot(&mut self.store))
+    }
+
+    /// The whole thread state at the moment the thread last stopped.
+    pub fn stopped_state(&self) -> &[u8] {
+        &self.store.data().snapshot
     }
 
     pub fn stdout(&self) -> &[u8] {
@@ -682,14 +821,33 @@ impl Machine {
             .map_or(0, |c| c.0)
     }
 
+    /// How often the slow path of this name, the translator's or the guest's own, was taken.
+    pub fn count_named(&self, name: &str) -> u64 {
+        assert!(
+            Reason::ALL.into_iter().any(|r| r.name() == name)
+                || G::REASONS.iter().any(|r| r.1 == name),
+            "no slow path is named {name:?}"
+        );
+        self.store
+            .data()
+            .counters
+            .iter()
+            .filter(|&(&number, _)| Reason::name_of::<G>(number) == Some(name))
+            .map(|(_, c)| c.0)
+            .sum()
+    }
+
     /// The warnings raised so far.
     pub fn warnings(&self) -> &[Warning<'static>] {
         &self.store.data().warnings
     }
 
     /// Run from the registers set until the thread stops. Returns why, and the registers at that moment.
-    pub fn run(&mut self) -> (Stopped, RegisterBlock) {
+    pub fn run(&mut self) -> (Stopped, G::Block) {
         self.store.data_mut().stopped = None;
+        if G::STEPS && step_on::<G>(&self.state, StepAt::Kernel) == Step::Run {
+            self.raise_stop_flag();
+        }
         let mut outcome = self.run.call(&mut self.store, ());
         while outcome.is_ok() && std::mem::take(&mut self.store.data_mut().lose_stack) {
             self.fresh_thread();
@@ -698,7 +856,10 @@ impl Machine {
         match outcome {
             Ok(()) => {
                 let host = self.store.data();
-                (host.stopped.expect("left without a reason"), host.snapshot)
+                (
+                    host.stopped.expect("left without a reason"),
+                    block::<G>(&host.snapshot),
+                )
             }
             Err(error) => match error.downcast_ref::<Trap>() {
                 Some(Trap::MemoryOutOfBounds) => {
@@ -708,9 +869,11 @@ impl Machine {
                         0,
                         Duration::ZERO,
                     );
+                    let lost = vec![0; thread_state_size::<G>()];
+                    self.store.data_mut().snapshot = lost.clone();
                     (
                         Stopped::Exit(Exit::MemoryFaultWithoutRegisters),
-                        RegisterBlock::ZERO,
+                        block::<G>(&lost),
                     )
                 }
                 _ => panic!("engine stopped the guest: {error:?}"),
@@ -719,7 +882,7 @@ impl Machine {
     }
 }
 
-fn set_permissions(host: &mut Host, range: Range<u64>, permissions: Permissions) {
+fn set_permissions<G: GuestTest>(host: &mut Host<G>, range: Range<u64>, permissions: Permissions) {
     let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
     for page in pages.clone() {
         host.permissions[page as usize] = permissions;
@@ -727,20 +890,136 @@ fn set_permissions(host: &mut Host, range: Range<u64>, permissions: Permissions)
     let state = host.state.as_ref().unwrap();
     // Each byte also says what the page after it allows, so rewrite the one before the range too.
     for page in pages.start.saturating_sub(1)..pages.end.min(host.permissions.len() as u64) {
-        let next = host
-            .permissions
-            .get(page as usize + 1)
-            .copied()
-            .unwrap_or(Permissions::empty());
-        let byte = contract::permission_byte(host.permissions[page as usize], next);
-        write_shared(state, (u64::from(PERMISSIONS_AT) + page) as usize, &[byte]);
+        write_permission_byte(host, state, page);
     }
 }
 
+/// A write lock the CPU side holds on a page, a bit for each reason: the page holds code it translated.
+pub const LOCK_CODE: u8 = 1;
+
+/// What the table says a page allows: what the kernel said, without writing while a lock is held.
+fn allowed<G: GuestTest>(host: &Host<G>, page: u64) -> Permissions {
+    let Some(&permissions) = host.permissions.get(page as usize) else {
+        return Permissions::empty();
+    };
+    if host.locks[page as usize] != 0 {
+        permissions - Permissions::WRITE
+    } else {
+        permissions
+    }
+}
+
+/// Write the permission table's byte for a page from what it and the next page allow.
+fn write_permission_byte<G: GuestTest>(host: &Host<G>, state: &SharedMemory, page: u64) {
+    let byte = contract::permission_byte(allowed(host, page), allowed(host, page + 1));
+    write_shared(state, (u64::from(PERMISSIONS_AT) + page) as usize, &[byte]);
+}
+
+/// Take or give back a write lock on a page, and write the table's bytes that show it.
+fn set_lock<G: GuestTest>(host: &mut Host<G>, page: u64, lock: u8, held: bool) {
+    let locks = &mut host.locks[page as usize];
+    let before = *locks;
+    if held {
+        *locks |= lock;
+    } else {
+        *locks &= !lock;
+    }
+    if (before == 0) != (*locks == 0) {
+        let state = host.state.clone().unwrap();
+        write_permission_byte(host, &state, page);
+        if let Some(previous) = page.checked_sub(1) {
+            write_permission_byte(host, &state, previous);
+        }
+    }
+}
+
+/// Lock for code every page a translation was made from (guest addresses), where code changes are detected
+/// by such writes. Given the stack pointer of a thread in progress, whether a page newly locked may lie in a
+/// frame it proved writable (plan 5.7, "Frames"): at or above the stack pointer less the red zone, with every
+/// page from there to it readable and writable.
+fn lock_code<G: GuestTest>(host: &mut Host<G>, read: &[Range<u64>], sp: Option<u64>) -> bool {
+    if G::CODE_CHANGES != CodeChanges::Detected {
+        return false;
+    }
+    let pages: Vec<u64> = read
+        .iter()
+        .flat_map(|range| range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE))
+        .filter(|&page| (page as usize) < host.locks.len())
+        .collect();
+    let in_frame = sp.is_some_and(|sp| {
+        let first = sp.wrapping_sub(G::RED_ZONE) / PAGE_SIZE;
+        let Some(last) = pages.iter().copied().filter(|&p| p >= first).max() else {
+            return false;
+        };
+        let frame = Permissions::READ | Permissions::WRITE;
+        let end = (first..=last)
+            .find(|&p| !allowed(host, p).contains(frame))
+            .unwrap_or(last + 1);
+        pages.iter().any(|p| (first..end).contains(p))
+    });
+    for page in pages {
+        set_lock(host, page, LOCK_CODE, true);
+    }
+    in_frame
+}
+
+/// Code was written on a page locked for code: every piece translated from the page is dropped (the lookup
+/// forgets the addresses of every translation made from it), and the lock is given back. Counted.
+fn code_written<G: GuestTest>(host: &mut Host<G>, page: u64) {
+    let bytes = page * PAGE_SIZE..(page + 1) * PAGE_SIZE;
+    let touches = |read: &[Range<u64>]| {
+        read.iter()
+            .any(|r| r.start < bytes.end && bytes.start < r.end)
+    };
+    let mut forget: Vec<u64> = Vec::new();
+    for load in &mut host.loads {
+        if !load.dropped && touches(&load.read) {
+            load.dropped = true;
+            forget.extend(load.pieces.iter().map(|o| load.load_address + o));
+        }
+    }
+    host.run_time_loads.retain(|(read, addresses)| {
+        let stale = touches(read);
+        if stale {
+            forget.extend(addresses);
+        }
+        !stale
+    });
+    for address in forget {
+        set_slot(host, address, 0);
+    }
+    host.exact_pieces.clear();
+    set_lock(host, page, LOCK_CODE, false);
+    slow_path(
+        host,
+        Reason::CodeWrittenWithoutAnnouncement.number(),
+        page * PAGE_SIZE,
+        Duration::ZERO,
+    );
+}
+
+/// Bytes are about to be written past the permission table: every page of them locked for code takes the
+/// step. Whether any did.
+fn code_written_in<G: GuestTest>(host: &mut Host<G>, address: u64, length: usize) -> bool {
+    let pages = address / PAGE_SIZE..(address + length as u64).div_ceil(PAGE_SIZE);
+    let mut any = false;
+    for page in pages {
+        if host
+            .locks
+            .get(page as usize)
+            .is_some_and(|l| l & LOCK_CODE != 0)
+        {
+            code_written(host, page);
+            any = true;
+        }
+    }
+    any
+}
+
 /// Run the pause function, if there is one.
-fn pause(caller: &mut Caller<'_, Host>, at: Pause) {
+fn pause<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, at: Pause) {
     if let Some(mut function) = caller.data_mut().pause.take() {
-        function(at, &mut Paused { caller });
+        function(at, &mut Paused { caller, at });
         caller.data_mut().pause = Some(function);
     }
 }
@@ -760,12 +1039,12 @@ fn read_shared(memory: &SharedMemory, at: usize, into: &mut [u8]) {
     };
 }
 
-/// The registers, from the thread block, where they all are whenever a hook runs or the thread has left.
-fn snapshot(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> RegisterBlock {
-    let mut bytes = [0u8; size_of::<RegisterBlock>()];
+/// The thread state, where every register is whenever a hook runs or the thread has left.
+fn snapshot<G: GuestTest>(store: &mut impl wasmtime::AsContextMut<Data = Host<G>>) -> Vec<u8> {
+    let mut bytes = vec![0u8; thread_state_size::<G>()];
     let state = store.as_context().data().state.clone().unwrap();
     read_shared(&state, BLOCK_AT as usize, &mut bytes);
-    RegisterBlock::read_from_bytes(&bytes).unwrap()
+    bytes
 }
 
 /// The WebAssembly type of a hook's parameter or result.
@@ -779,11 +1058,14 @@ fn val_type(ty: wasm_encoder::ValType) -> wasmtime::ValType {
 
 /// The guest's own hook `I`: its work by `Guest::run_hook`, in place on the bytes of the thread's state it
 /// names, counted and warned as the slow path it says it was. `values` holds the arguments and takes the
-/// results. Made for each index at compile time (`REGISTER_CPU_HOOK`), so the hook's types and state range
+/// results. Made for each index at compile time (`CpuHooks::REGISTER`), so the hook's types and state range
 /// are constants here.
-fn cpu_hook<const I: usize>(caller: &mut Caller<'_, Host>, values: &mut [MaybeUninit<ValRaw>]) {
-    let hook = &Arm64::HOOKS[I];
-    let mut args = [0i64; MAX_HOOK_ARGS];
+fn cpu_hook<G: GuestTest, const I: usize>(
+    caller: &mut Caller<'_, Host<G>>,
+    values: &mut [MaybeUninit<ValRaw>],
+) {
+    let hook = &G::HOOKS[I];
+    let mut args = [0i64; HookType::MAX_PARAMS];
     for (i, ty) in hook.params.iter().enumerate() {
         // SAFETY: wasmtime has checked the arguments against the hook's type.
         let value = unsafe { values[i].assume_init() };
@@ -797,7 +1079,7 @@ fn cpu_hook<const I: usize>(caller: &mut Caller<'_, Host>, values: &mut [MaybeUn
     // SAFETY: the range is inside the memory, and the guest thread is in this hook, so nothing else touches
     // these bytes while the hook works on them in place.
     let bytes = unsafe { std::slice::from_raw_parts_mut(cells.as_ptr() as *mut u8, cells.len()) };
-    let done = Arm64::run_hook(I, &args[..hook.params.len()], bytes);
+    let done = G::run_hook(I, &args[..hook.params.len()], bytes);
     for (i, ty) in hook.results.iter().enumerate() {
         values[i] = MaybeUninit::new(match ty {
             wasm_encoder::ValType::I32 => ValRaw::i32(done.results[i] as i32),
@@ -815,12 +1097,9 @@ fn cpu_hook<const I: usize>(caller: &mut Caller<'_, Host>, values: &mut [MaybeUn
     }
 }
 
-/// The most arguments a guest's own hook has.
-const MAX_HOOK_ARGS: usize = 8;
-
 /// Registers the guest's own hook `I` with a closure made for that index.
-fn register_cpu_hook<const I: usize>(linker: &mut Linker<Host>) {
-    let hook = &Arm64::HOOKS[I];
+fn register_cpu_hook<G: GuestTest, const I: usize>(linker: &mut Linker<Host<G>>) {
+    let hook = &G::HOOKS[I];
     let ty = wasmtime::FuncType::new(
         linker.engine(),
         hook.params.iter().map(|&t| val_type(t)),
@@ -829,7 +1108,7 @@ fn register_cpu_hook<const I: usize>(linker: &mut Linker<Host>) {
     // SAFETY: `cpu_hook` reads the arguments and writes the results of exactly this type.
     unsafe {
         linker.func_new_unchecked(contract::HOOKS, hook.name, ty, |mut caller, values| {
-            cpu_hook::<I>(&mut caller, values);
+            cpu_hook::<G, I>(&mut caller, values);
             Ok(())
         })
     }
@@ -837,38 +1116,44 @@ fn register_cpu_hook<const I: usize>(linker: &mut Linker<Host>) {
 }
 
 /// `register_cpu_hook` for each index a guest's own hook may have.
-const REGISTER_CPU_HOOK: [fn(&mut Linker<Host>); 8] = [
-    register_cpu_hook::<0>,
-    register_cpu_hook::<1>,
-    register_cpu_hook::<2>,
-    register_cpu_hook::<3>,
-    register_cpu_hook::<4>,
-    register_cpu_hook::<5>,
-    register_cpu_hook::<6>,
-    register_cpu_hook::<7>,
-];
-const _: () = {
-    assert!(Arm64::HOOKS.len() <= REGISTER_CPU_HOOK.len());
-    let mut i = 0;
-    while i < Arm64::HOOKS.len() {
-        assert!(
-            Arm64::HOOKS[i].params.len() <= MAX_HOOK_ARGS && Arm64::HOOKS[i].results.len() <= 2
-        );
-        i += 1;
-    }
-};
+struct CpuHooks<G>(std::marker::PhantomData<G>);
+
+impl<G: GuestTest> CpuHooks<G> {
+    const REGISTER: [fn(&mut Linker<Host<G>>); 8] = [
+        register_cpu_hook::<G, 0>,
+        register_cpu_hook::<G, 1>,
+        register_cpu_hook::<G, 2>,
+        register_cpu_hook::<G, 3>,
+        register_cpu_hook::<G, 4>,
+        register_cpu_hook::<G, 5>,
+        register_cpu_hook::<G, 6>,
+        register_cpu_hook::<G, 7>,
+    ];
+    /// Every hook of the guest fits the closures made for it, checked when the runner is built for it.
+    const FIT: () = {
+        assert!(G::HOOKS.len() <= Self::REGISTER.len());
+        let mut i = 0;
+        while i < G::HOOKS.len() {
+            assert!(
+                G::HOOKS[i].params.len() <= HookType::MAX_PARAMS
+                    && G::HOOKS[i].results.len() <= HookType::MAX_RESULTS
+            );
+            i += 1;
+        }
+    };
+}
 
 /// The guest's bytes from `pc`, as many as an instruction may take and the memory has.
-fn code_at(caller: &mut Caller<'_, Host>, pc: u64) -> Vec<u8> {
+fn code_at<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, pc: u64) -> Vec<u8> {
     let memory = caller.data().memory.unwrap();
     let data = memory.data(&*caller);
     let at = (pc as usize).min(data.len());
-    data[at..(at + Arm64::MAX_LENGTH as usize).min(data.len())].to_vec()
+    data[at..(at + G::MAX_LENGTH as usize).min(data.len())].to_vec()
 }
 
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address
 /// when its count there reaches the threshold.
-fn slow_path(host: &mut Host, reason: u32, detail: u64, time: Duration) {
+fn slow_path<G: GuestTest>(host: &mut Host<G>, reason: u32, detail: u64, time: Duration) {
     let counter = host.counters.entry(reason).or_default();
     counter.0 += 1;
     counter.1 += time;
@@ -877,7 +1162,7 @@ fn slow_path(host: &mut Host, reason: u32, detail: u64, time: Duration) {
     *here += 1;
     if *here == contract::WARNING_THRESHOLD {
         let warning = Warning {
-            reason: Reason::name_of::<Arm64>(reason).expect("a known reason"),
+            reason: Reason::name_of::<G>(reason).expect("a known reason"),
             count: total,
             detail,
         };
@@ -890,49 +1175,65 @@ fn slow_path(host: &mut Host, reason: u32, detail: u64, time: Duration) {
 }
 
 /// Record why the thread leaves, with its registers now.
-fn stop(caller: &mut Caller<'_, Host>, stopped: Stopped) {
+fn stop<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, stopped: Stopped) {
     let registers = snapshot(caller);
     let host = caller.data_mut();
     host.snapshot = registers;
     host.stopped = Some(stopped);
 }
 
-fn raise_stop_flag(caller: &Caller<'_, Host>) {
+/// Ask the guest what single stepping does now, on the thread's state; `Off` for a CPU that cannot step.
+fn step<G: GuestTest>(caller: &Caller<'_, Host<G>>, at: StepAt) -> Step {
+    if !G::STEPS {
+        return Step::Off;
+    }
+    step_on::<G>(caller.data().state.as_ref().unwrap(), at)
+}
+
+fn step_on<G: GuestTest>(state: &SharedMemory, at: StepAt) -> Step {
+    let cells = &state.data()[BLOCK_AT as usize..][..thread_state_size::<G>()];
+    // SAFETY: the range is inside the memory, and the guest thread is stopped, so nothing else touches
+    // these bytes while the guest works on them in place.
+    let bytes = unsafe { std::slice::from_raw_parts_mut(cells.as_ptr() as *mut u8, cells.len()) };
+    G::step(bytes, at)
+}
+
+fn raise_stop_flag<G: GuestTest>(caller: &Caller<'_, Host<G>>) {
     let state = caller.data().state.clone().unwrap();
-    write_stop(&state, caller.data().progress, None);
+    write_stop::<G>(&state, caller.data().progress, None);
 }
 
 /// Raise the stop (`limit` none), or clear it: the stop flag, or with the progress count the limit (0 to
 /// raise it).
-fn write_stop(state: &SharedMemory, progress: ProgressCount, limit: Option<u64>) {
+fn write_stop<G: GuestTest>(state: &SharedMemory, progress: ProgressCount, limit: Option<u64>) {
     let block = BLOCK_AT as usize;
     match progress {
         ProgressCount::Absent => {
             let flag = u32::from(limit.is_none());
-            write_shared(state, block + STOP_FLAG_OFFSET, &flag.to_le_bytes());
+            write_shared(state, block + G::STOP_FLAG_OFFSET, &flag.to_le_bytes());
         }
         ProgressCount::Kept => {
-            let at = block + progress_limit_offset::<Arm64>();
+            let at = block + progress_limit_offset::<G>();
             write_shared(state, at, &limit.unwrap_or(0).to_le_bytes());
         }
     }
 }
 
 /// A u64 of the thread block, at `offset` from its start.
-fn read_u64(caller: &Caller<'_, Host>, offset: usize) -> u64 {
+fn read_u64<G: GuestTest>(caller: &Caller<'_, Host<G>>, offset: usize) -> u64 {
     let state = caller.data().state.clone().unwrap();
     let mut value = [0u8; size_of::<u64>()];
     read_shared(&state, BLOCK_AT as usize + offset, &mut value);
     u64::from_le_bytes(value)
 }
 
-fn hooks(linker: &mut Linker<Host>) {
+fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
     use contract::*;
     linker
         .func_wrap(
             HOOKS,
             HOOK_SYSCALL,
-            |mut caller: Caller<'_, Host>,
+            |mut caller: Caller<'_, Host<G>>,
              number: i64,
              a0: i64,
              a1: i64,
@@ -941,6 +1242,7 @@ fn hooks(linker: &mut Linker<Host>) {
              a4: i64,
              a5: i64|
              -> i64 {
+                caller.data_mut().exact_mark = None;
                 let call = SystemCallRequest {
                     number: number as u64,
                     arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
@@ -953,28 +1255,43 @@ fn hooks(linker: &mut Linker<Host>) {
                 let result = stand_in(&mut caller, call);
                 if caller.data().stopped.is_none() {
                     pause(&mut caller, Pause::Syscall);
+                    if step::<G>(&caller, StepAt::Kernel) == Step::Run {
+                        raise_stop_flag(&caller);
+                    }
                 }
                 result
             },
         )
         .unwrap();
     linker
-        .func_wrap(HOOKS, HOOK_STOP, |mut caller: Caller<'_, Host>| -> i32 {
+        .func_wrap(HOOKS, HOOK_STOP, |mut caller: Caller<'_, Host<G>>| -> i32 {
+            caller.data_mut().exact_mark = None;
             let state = caller.data().state.clone().unwrap();
             let host = caller.data();
-            write_stop(&state, host.progress, Some(host.limit));
+            write_stop::<G>(&state, host.progress, Some(host.limit));
             // The runner raised the flag itself to make the thread leave.
             if caller.data().stopped.is_some() {
-                return 1;
+                return UNWIND_LEAVE;
             }
             // Raised from outside: the stand-in clears it and the thread carries on.
             let mut pc = [0u8; size_of::<u64>()];
-            read_shared(
-                &state,
-                BLOCK_AT as usize + core::mem::offset_of!(RegisterBlock, pc),
-                &mut pc,
-            );
+            read_shared(&state, BLOCK_AT as usize + G::PC_OFFSET, &mut pc);
             let pc = u64::from_le_bytes(pc);
+            match step::<G>(&caller, StepAt::Stop(pc)) {
+                Step::Trap => {
+                    stop(&mut caller, Stopped::Fault(Fault::SingleStep));
+                    return UNWIND_LEAVE;
+                }
+                Step::Run => {
+                    raise_stop_flag(&caller);
+                    return 0;
+                }
+                Step::Exact => {
+                    raise_stop_flag(&caller);
+                    return UNWIND_GO_TO_EXACT;
+                }
+                Step::Off => {}
+            }
             slow_path(
                 caller.data_mut(),
                 Reason::StoppedByFlag.number(),
@@ -986,28 +1303,47 @@ fn hooks(linker: &mut Linker<Host>) {
             }
             pause(&mut caller, Pause::Stop);
             let host = caller.data();
-            i32::from(host.lose_stack || host.stopped.is_some())
+            if host.lose_stack || host.stopped.is_some() {
+                UNWIND_LEAVE
+            } else {
+                0
+            }
         })
         .unwrap();
     linker
         .func_wrap(
             HOOKS,
             HOOK_MEMORY_FAULT,
-            |mut caller: Caller<'_, Host>, address: i64, access: i32| {
+            |mut caller: Caller<'_, Host<G>>, address: i64, access: i32| -> i32 {
+                let page = address as u64 / PAGE_SIZE;
+                let host = caller.data_mut();
+                host.exact_mark = None;
+                let write = access != 0;
+                let locked_write = write
+                    && host
+                        .locks
+                        .get(page as usize)
+                        .is_some_and(|l| l & LOCK_CODE != 0)
+                    && host.permissions[page as usize].contains(Permissions::WRITE);
+                if locked_write {
+                    code_written(host, page);
+                    let pc = pc_of::<G>(&snapshot(&mut caller));
+                    caller.data_mut().exact_mark = Some(pc);
+                    step::<G>(&caller, StepAt::Retry(pc));
+                    return UNWIND_GO_TO_EXACT;
+                }
                 slow_path(
                     caller.data_mut(),
                     Reason::MemoryFault.number(),
                     address as u64,
                     Duration::ZERO,
                 );
-                let registers = snapshot(&mut caller);
-                let code = code_at(&mut caller, registers.pc);
-                let access = if access == 1 {
-                    Access::Write
-                } else {
-                    Access::Read
-                };
-                let stopped = match Arm64::memory_fault(address as u64, &code, &registers) {
+                let thread = snapshot(&mut caller);
+                let pc = pc_of::<G>(&thread);
+                let registers = block::<G>(&thread);
+                let code = code_at(&mut caller, pc);
+                let access = if write { Access::Write } else { Access::Read };
+                let stopped = match G::memory_fault(address as u64, &code, &registers) {
                     MemoryFault::Page => Stopped::Exit(Exit::MemoryFault {
                         address: address as u64,
                         access,
@@ -1016,6 +1352,7 @@ fn hooks(linker: &mut Linker<Host>) {
                     MemoryFault::Stack => Stopped::Fault(Fault::Stack),
                 };
                 stop(&mut caller, stopped);
+                UNWIND_LEAVE
             },
         )
         .unwrap();
@@ -1023,11 +1360,13 @@ fn hooks(linker: &mut Linker<Host>) {
         .func_wrap(
             HOOKS,
             HOOK_LOAD_CODE,
-            |mut caller: Caller<'_, Host>, address: i64, exact: i32| -> i32 {
+            |mut caller: Caller<'_, Host<G>>, address: i64, exact: i32| -> i32 {
                 let address = address as u64;
                 let table = lookup_table(&mut caller);
                 let exact_slot = contract::EXACT_SLOT as u64;
+                let unlocked = caller.data_mut().exact_mark.take() == Some(address) && exact == 1;
                 if exact == 1
+                    && !unlocked
                     && let Some(&piece) = caller.data().exact_pieces.get(&address)
                 {
                     table
@@ -1074,15 +1413,21 @@ fn hooks(linker: &mut Linker<Host>) {
                     .read(&caller, run.start as usize, &mut bytes)
                     .expect("code inside guest memory");
                 let offset = address - run.start;
-                if exact == 1 {
-                    let one = LookAhead::Bounded(1);
+                let sp = stack_pointer_of::<G>(&snapshot(&mut caller));
+                let in_frame = if exact == 1 {
+                    let one = (LookAhead::Bounded(1), sp);
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, one, true);
+                    let in_frame =
+                        instantiate_code(&mut caller, code, offset, one, (true, unlocked));
                     let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, exact_slot)
                     else {
                         panic!("the piece is in the exact slot");
                     };
-                    caller.data_mut().exact_pieces.insert(address, piece);
+                    // A piece of an unlocked page may be written over unseen, so it is not kept.
+                    if !unlocked {
+                        caller.data_mut().exact_pieces.insert(address, piece);
+                    }
+                    in_frame
                 } else {
                     // Code made at run time never takes the place of a piece the lookup finds.
                     assert_eq!(
@@ -1090,10 +1435,10 @@ fn hooks(linker: &mut Linker<Host>) {
                         0,
                         "code asked for at {address:#x}, which has a piece"
                     );
-                    let look_ahead = (caller.data_mut().run_time)();
+                    let look_ahead = ((caller.data_mut().run_time)(), sp);
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, look_ahead, false);
-                }
+                    instantiate_code(&mut caller, code, offset, look_ahead, (false, false))
+                };
                 let time = start.elapsed();
                 slow_path(
                     caller.data_mut(),
@@ -1101,6 +1446,18 @@ fn hooks(linker: &mut Linker<Host>) {
                     address,
                     time,
                 );
+                // A frame in progress may have been proved writable over the page just locked, so the
+                // thread gives up its frames and carries on from its registers (plan 5.7, "Frames").
+                if in_frame {
+                    slow_path(
+                        caller.data_mut(),
+                        Reason::CodeTranslatedFromLiveStackFrame.number(),
+                        address,
+                        Duration::ZERO,
+                    );
+                    caller.data_mut().lose_stack = true;
+                    return 0;
+                }
                 1
             },
         )
@@ -1109,7 +1466,7 @@ fn hooks(linker: &mut Linker<Host>) {
         .func_wrap(
             HOOKS,
             HOOK_WARN,
-            |mut caller: Caller<'_, Host>, reason: i32, detail: i64| {
+            |mut caller: Caller<'_, Host<G>>, reason: i32, detail: i64| {
                 slow_path(
                     caller.data_mut(),
                     reason as u32,
@@ -1119,34 +1476,38 @@ fn hooks(linker: &mut Linker<Host>) {
             },
         )
         .unwrap();
-    for (index, hook) in Arm64::HOOKS.iter().enumerate() {
+    for (index, hook) in G::HOOKS.iter().enumerate() {
         match hook.body {
             HookBody::Clock => {
                 linker
-                    .func_wrap(HOOKS, hook.name, |caller: Caller<'_, Host>| -> i64 {
+                    .func_wrap(HOOKS, hook.name, |caller: Caller<'_, Host<G>>| -> i64 {
                         caller.data().started.elapsed().as_nanos() as i64
                     })
                     .unwrap();
             }
-            HookBody::CodeChanged => {
+            HookBody::CodeChanged { line } => {
                 linker
                     .func_wrap(
                         HOOKS,
                         hook.name,
-                        |mut caller: Caller<'_, Host>, address: i64| {
-                            forget_code(&mut caller, address as u64);
+                        move |mut caller: Caller<'_, Host<G>>, address: i64| {
+                            forget_code(&mut caller, address as u64, u64::from(line));
                         },
                     )
                     .unwrap();
             }
-            HookBody::Cpu => REGISTER_CPU_HOOK[index](linker),
+            HookBody::Cpu => {
+                let () = CpuHooks::<G>::FIT;
+                CpuHooks::<G>::REGISTER[index](linker)
+            }
         }
     }
     linker
         .func_wrap(
             HOOKS,
             HOOK_TRAP,
-            |mut caller: Caller<'_, Host>, kind: i32, detail: i64| {
+            |mut caller: Caller<'_, Host<G>>, kind: i32, detail: i64| {
+                caller.data_mut().exact_mark = None;
                 let kind = TrapKind::from_i32(kind).expect("known trap");
                 let stopped = match kind {
                     TrapKind::Undefined | TrapKind::Unsupported => {
@@ -1165,7 +1526,7 @@ fn hooks(linker: &mut Linker<Host>) {
                 };
                 stop(&mut caller, stopped);
                 if kind == TrapKind::Unsupported {
-                    let pc = caller.data().snapshot.pc;
+                    let pc = pc_of::<G>(&caller.data().snapshot);
                     let reason = Reason::UnsupportedInstructionReached.number();
                     slow_path(caller.data_mut(), reason, pc, Duration::ZERO);
                 }
@@ -1175,7 +1536,7 @@ fn hooks(linker: &mut Linker<Host>) {
 }
 
 /// The run of pages around an address that allow running code, if its own page does.
-fn executable_run(host: &Host, address: u64) -> Option<Range<u64>> {
+fn executable_run<G: GuestTest>(host: &Host<G>, address: u64) -> Option<Range<u64>> {
     let executable = |page: u64| {
         host.permissions
             .get(page as usize)
@@ -1199,7 +1560,9 @@ fn executable_run(host: &Host, address: u64) -> Option<Range<u64>> {
 }
 
 /// The thread instance's lookup table.
-fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtime::Table {
+fn lookup_table<G: GuestTest>(
+    store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
+) -> wasmtime::Table {
     let thread = store.as_context().data().thread.unwrap();
     let Some(Extern::Table(table)) = thread.get_export(store, contract::LOOKUP) else {
         panic!("the thread module exports its lookup table");
@@ -1207,30 +1570,30 @@ fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtim
     table
 }
 
-/// `ic ivau`: the stand-in forgets the pieces the lookup finds for the 64 byte line, so the next jump there
-/// translates the code again.
-fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
-    let line = address & !63;
-    for at in (line..line + 64).step_by(Arm64::ALIGN as usize) {
+/// The stand-in forgets the pieces the lookup finds for the `line` bytes of code holding the address, so
+/// the next jump there translates the code again.
+fn forget_code<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, address: u64, line: u64) {
+    let start = address & !(line - 1);
+    for at in (start..start + line).step_by(G::ALIGN as usize) {
         caller.data_mut().exact_pieces.remove(&at);
         set_slot(caller.data(), at, 0);
     }
 }
 
 /// The guest addresses the array of slots covers.
-fn covered(host: &Host) -> Range<u64> {
-    host.table_base..host.table_base + Arm64::ALIGN * u64::from(host.slots)
+fn covered<G: GuestTest>(host: &Host<G>) -> Range<u64> {
+    host.table_base..host.table_base + G::ALIGN * u64::from(host.slots)
 }
 
 /// Where in the state memory the array holds the slot for an address, if it covers it.
-fn slot_entry(host: &Host, address: u64) -> Option<usize> {
-    (covered(host).contains(&address) && address.is_multiple_of(Arm64::ALIGN)).then(|| {
-        host.slots_at as usize + ((address - host.table_base) / Arm64::ALIGN) as usize * SLOT_BYTES
+fn slot_entry<G: GuestTest>(host: &Host<G>, address: u64) -> Option<usize> {
+    (covered(host).contains(&address) && address.is_multiple_of(G::ALIGN)).then(|| {
+        host.slots_at as usize + contract::slot_entry::<G>(address - host.table_base) as usize
     })
 }
 
 /// The lookup table slot of the piece for an address, 0 for none.
-fn slot(host: &Host, address: u64) -> u32 {
+fn slot<G: GuestTest>(host: &Host<G>, address: u64) -> u32 {
     slot_entry(host, address).map_or(0, |at| {
         let mut bytes = [0; SLOT_BYTES];
         read_shared(host.state.as_ref().unwrap(), at, &mut bytes);
@@ -1239,7 +1602,7 @@ fn slot(host: &Host, address: u64) -> u32 {
 }
 
 /// Give an address the piece in a lookup table slot, 0 for none.
-fn set_slot(host: &Host, address: u64, slot: u32) {
+fn set_slot<G: GuestTest>(host: &Host<G>, address: u64, slot: u32) {
     if let Some(at) = slot_entry(host, address) {
         write_shared(host.state.as_ref().unwrap(), at, &slot.to_le_bytes());
     }
@@ -1249,6 +1612,10 @@ fn set_slot(host: &Host, address: u64, slot: u32) {
 /// table.
 struct Load {
     load_address: u64,
+    /// The guest bytes the translation was made from.
+    read: Vec<Range<u64>>,
+    /// Code was written over what it was made from, so its pieces are gone.
+    dropped: bool,
     modules: Vec<Module>,
     /// The blob offsets of each module's pieces, in slot order.
     module_pieces: Vec<Vec<u64>>,
@@ -1256,24 +1623,25 @@ struct Load {
 }
 
 /// Translate the blob of `bytes` at a load address from `starts` and compile it.
-fn translate_load(
-    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+fn translate_load<G: GuestTest>(
+    store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     (bytes, load_address): (&[u8], u64),
-    code: Range<u64>,
+    (code, link_address): (Range<u64>, Option<u64>),
     starts: &[u64],
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
 ) -> Load {
     let host = store.as_context().data();
-    let translation = translate_omitting::<Arm64>(
+    let translation = translate_omitting::<G>(
         bytes,
         code,
+        link_address,
         starts,
         look_ahead,
         optimise,
         host.progress,
         host.facts,
-        (),
+        G::Offer::default(),
         omit,
     )
     .expect("translate");
@@ -1284,6 +1652,12 @@ fn translate_load(
 fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load {
     Load {
         load_address,
+        read: translation
+            .read
+            .iter()
+            .map(|r| load_address + r.start..load_address + r.end)
+            .collect(),
+        dropped: false,
         pieces: translation.pieces().collect(),
         module_pieces: translation
             .modules
@@ -1298,42 +1672,57 @@ fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load
     }
 }
 
-/// Translate and instantiate code reached at run time: the code bytes at a load address, from one start.
-fn instantiate_code(
-    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+/// Translate and instantiate code reached at run time by a thread with stack pointer `sp`: the code bytes at
+/// a load address, from one start. With `exact`, the one piece goes in the exact slot; with `unlocked` too,
+/// its page is not locked for code. Whether a page it locked may lie in a frame of the thread.
+fn instantiate_code<G: GuestTest>(
+    store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     code: (&[u8], u64),
     start: u64,
-    look_ahead: LookAhead,
-    exact: bool,
-) {
-    let range = 0..code.0.len() as u64;
+    (look_ahead, sp): (LookAhead, u64),
+    (exact, unlocked): (bool, bool),
+) -> bool {
+    // As in the runtime, code reached at run time is translated with no link address.
+    let range = (0..code.0.len() as u64, None);
     let how = (look_ahead, store.as_context().data().optimise);
     let load = translate_load(store, code, range, &[start], how, Omit::default());
-    instantiate(store, &load, exact);
+    let mut store = store.as_context_mut();
+    let in_frame = !unlocked && lock_code(store.data_mut(), &load.read, Some(sp));
+    let slots = instantiate(&mut store, &load, exact);
+    if !exact {
+        let addresses = slots.into_keys().collect();
+        store.data_mut().run_time_loads.push((load.read, addresses));
+    }
+    in_frame
 }
 
 /// Give each address picked the piece of the load picked for it, from each load's pieces by address and
 /// their slots.
-fn apply_picks(
-    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+fn apply_picks<G: GuestTest>(
+    store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     pieces: &[HashMap<u64, u32>],
     picks: &[(u64, usize)],
 ) {
     let host = store.as_context().data();
     for &(address, load) in picks {
-        set_slot(host, address, pieces[load][&address]);
+        if let Some(&slot) = pieces[load].get(&address) {
+            set_slot(host, address, slot);
+        }
     }
 }
 
 /// Instantiate a load's code modules, putting their pieces in new slots of the lookup table and giving each
 /// piece's address its slot. Returns the slot of each piece, by address. With `exact`, the load is one
 /// piece, put in [`contract::EXACT_SLOT`] and given to no address.
-fn instantiate(
-    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+fn instantiate<G: GuestTest>(
+    store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     load: &Load,
     exact: bool,
 ) -> HashMap<u64, u32> {
     let mut store = store.as_context_mut();
+    if !exact {
+        lock_code(store.data_mut(), &load.read, None);
+    }
     let table = lookup_table(&mut store);
     let host = store.data();
     let thread = host.thread.unwrap();
@@ -1381,7 +1770,7 @@ fn instantiate(
         (contract::SLOTS, Val::I32(store.data().slots_at as i32)),
         (
             contract::SLOTS_COVER,
-            Val::I64(Arm64::ALIGN as i64 * i64::from(store.data().slots)),
+            Val::I64(G::ALIGN as i64 * i64::from(store.data().slots)),
         ),
     ] {
         let ty = wasmtime::GlobalType::new(value.ty(&store).unwrap(), wasmtime::Mutability::Const);
@@ -1420,10 +1809,10 @@ fn instantiate(
 }
 
 /// Make a thread instance, with an empty lookup table, for the machine's memories; its run function.
-fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
+fn thread_instance<G: GuestTest>(store: &mut Store<Host<G>>) -> TypedFunc<(), ()> {
     let engine = store.engine().clone();
     let host = store.data();
-    let module = thread_module(&engine, host.progress);
+    let module = thread_module::<G>(&engine, host.progress);
     let state = host.state.clone().unwrap();
     let (table_base, slots_at, slots) = (host.table_base, host.slots_at, host.slots);
     let mut linker = Linker::new(&engine);
@@ -1431,7 +1820,7 @@ fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
     linker
         .define(&*store, contract::ENV, contract::STATE, state)
         .unwrap();
-    let constant = |store: &mut Store<Host>, value: Val| {
+    let constant = |store: &mut Store<Host<G>>, value: Val| {
         let ty = value.ty(&*store).unwrap();
         let ty = wasmtime::GlobalType::new(ty, wasmtime::Mutability::Const);
         Global::new(&mut *store, ty, value).unwrap()
@@ -1442,7 +1831,7 @@ fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
         (contract::SLOTS, Val::I32(slots_at as i32)),
         (
             contract::SLOTS_COVER,
-            Val::I64(Arm64::ALIGN as i64 * i64::from(slots)),
+            Val::I64(G::ALIGN as i64 * i64::from(slots)),
         ),
     ] {
         let global = constant(store, value);
@@ -1456,7 +1845,7 @@ fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
 }
 
 /// Where the stand-in sends what is written to a file descriptor.
-fn file(host: &mut Host, fd: u64) -> Option<&mut Vec<u8>> {
+fn file<G: GuestTest>(host: &mut Host<G>, fd: u64) -> Option<&mut Vec<u8>> {
     match fd {
         1 => Some(&mut host.stdout),
         2 => Some(&mut host.stderr),
@@ -1465,17 +1854,17 @@ fn file(host: &mut Host, fd: u64) -> Option<&mut Vec<u8>> {
 }
 
 /// The stand-in kernel.
-fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
+fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequest) -> i64 {
     // The error numbers, the vector limit and `iovec` are the same on every 64 bit architecture Linux has, so
     // the host's are the guest's.
-    use linux_raw_sys::errno::{EBADF, EFAULT, EINVAL, ENOSYS};
+    use linux_raw_sys::errno::{EBADF, EFAULT, EINVAL, ENOSYS, EPERM};
     use linux_raw_sys::general::{UIO_MAXIOV, iovec};
     let error = |errno: u32| -i64::from(errno);
     let [a0, a1, a2, ..] = call.arguments;
     let memory = caller.data().memory.unwrap();
     // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
     // that is only partly readable gives a fault and writes nothing.
-    let read = |caller: &mut Caller<'_, Host>, address: u64, length: u64| -> Option<Vec<u8>> {
+    let read = |caller: &mut Caller<'_, Host<G>>, address: u64, length: u64| -> Option<Vec<u8>> {
         if length > 0 {
             let last = address.checked_add(length - 1)?;
             if last >= memory.data_size(&*caller) as u64 {
@@ -1496,9 +1885,9 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
         memory.read(&*caller, address as usize, &mut bytes).ok()?;
         Some(bytes)
     };
+    let numbers = G::STAND_IN;
     match call.number {
-        // write
-        64 => {
+        n if n == numbers.write => {
             if file(caller.data_mut(), a0).is_none() {
                 return error(EBADF);
             }
@@ -1510,8 +1899,7 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
                 .extend_from_slice(&bytes);
             a2 as i64
         }
-        // writev
-        66 => {
+        n if n == numbers.writev => {
             if file(caller.data_mut(), a0).is_none() {
                 return error(EBADF);
             }
@@ -1551,16 +1939,26 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
                 .extend_from_slice(&gathered);
             gathered.len() as i64
         }
-        // exit, exit_group
-        93 | 94 => {
+        n if n == numbers.exit || n == numbers.exit_group => {
             stop(caller, Stopped::Finished(a0 as i32));
             raise_stop_flag(caller);
             0
         }
         // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
         // cannot.
-        214 => caller.data().program_break as i64,
+        n if n == numbers.brk => caller.data().program_break as i64,
         number => {
+            if let Some(set) = &numbers.set_base
+                && number == set.number
+                && let Some(&(_, at)) = set.bases.iter().find(|&&(code, _)| code == a0)
+            {
+                if a1 >= set.limit {
+                    return error(EPERM);
+                }
+                let state = caller.data().state.clone().unwrap();
+                write_shared(&state, BLOCK_AT as usize + at, &a1.to_le_bytes());
+                return 0;
+            }
             let reason = Reason::SystemCallNotImplemented.number();
             slow_path(caller.data_mut(), reason, number, Duration::ZERO);
             error(ENOSYS)

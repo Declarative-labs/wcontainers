@@ -12,7 +12,8 @@
 # From the repository root, detached (it runs for many hours):
 #   WC_LONG_DIR=<directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &
 # Knobs:
-#   WC_LONG_DIR      where the ledger (ledger.txt) and each chunk's log go; required.
+#   WC_LONG_DIR      where each guest's ledger (<guest>/ledger.txt) and chunk logs go; required.
+#   WC_LONG_GUEST    the guest whose tests run, the suffix of their names (default arm64).
 #   WC_LONG_PERCENT  how much of each bar to run, 1 to 100 (default 100).
 #   WC_LONG_LAYERS   which layers, comma separated (default 1,2,3).
 #   WC_LONG_SEED     the base seed (default 1): layer 1's chunk k runs seed SEED*1000+k; layers 2 and 3 run
@@ -30,14 +31,15 @@ set -u
 root=$(git rev-parse --show-toplevel)
 cd "$root" || exit 1
 dir=${WC_LONG_DIR:?set WC_LONG_DIR to the directory for the ledger and logs}
+guest=${WC_LONG_GUEST:-arm64}
 percent=${WC_LONG_PERCENT:-100}
 layers=${WC_LONG_LAYERS:-1,2,3}
 base=${WC_LONG_SEED:-1}
 jobs=${WC_LONG_JOBS:-6}
 limit=${WC_LONG_LIMIT:-90}
 accept=$(git rev-parse "${WC_LONG_ACCEPT:-HEAD}") || exit 1
-mkdir -p "$dir/logs"
-ledger=$dir/ledger.txt
+mkdir -p "$dir/$guest/logs"
+ledger=$dir/$guest/ledger.txt
 touch "$ledger"
 
 if [ -n "$(git status --porcelain -- crates Cargo.lock Cargo.toml flake.nix flake.lock rust-toolchain.toml)" ]; then
@@ -46,16 +48,15 @@ if [ -n "$(git status --porcelain -- crates Cargo.lock Cargo.toml flake.nix flak
 fi
 commit=$(git rev-parse HEAD)
 accepted=$( (echo "$accept"; git rev-list "$accept..HEAD") | sort)
-# The commit's own copy, built into one target directory shared by every copy.
+# The commit's own copy, built into a target directory of its own: copies from git archive carry the commit's
+# file times, so in a shared one cargo could take one commit's build for another's. A commit's target directory
+# may be removed once no run of that commit is left.
 tree=$dir/trees/${commit:0:12}
 if [ ! -f "$tree/Cargo.toml" ]; then
   rm -rf "$tree" && mkdir -p "$tree" && git archive HEAD | tar -x -C "$tree" || exit 1
 fi
 cd "$tree" || exit 1
-export CARGO_TARGET_DIR=$dir/target
-# zig's cache for the run alone: zig processes that rebuild the same entry of a shared cache at once can
-# deadlock on its manifest locks, and other jobs on the machine use the shared one (~/.cache/zig).
-export ZIG_GLOBAL_CACHE_DIR=$dir/zig-cache
+export CARGO_TARGET_DIR=$dir/target/${commit:0:12}
 # A chunk's cases run on a pool of its jobs' threads, which the translator and wasmtime share; anything run
 # outside that pool keeps to the same number.
 export RAYON_NUM_THREADS=$jobs
@@ -87,7 +88,7 @@ run_chunk() {
     ran=$passed
     return
   fi
-  local log="$dir/logs/layer$layer-$k${of:+-of-$of}-${commit:0:12}.log"
+  local log="$dir/$guest/logs/layer$layer-$k${of:+-of-$of}-${commit:0:12}.log"
   local command="$knobs $test_command --test layer$layer $filter -- --nocapture"
   local load_before started status
   load_before=$(loadavg)
@@ -104,8 +105,13 @@ run_chunk() {
   local result=pass
   if [ "$status" -eq 124 ]; then
     result=stopped
-    # The stopped run's reference containers; nothing else of this half runs beside the driver.
-    docker ps -aq --filter name=wc-translator- | xargs docker rm -f > /dev/null 2>&1
+    # The stopped run's containers: each name ends with its test process's id and a number, so only
+    # those whose process has ended go, never another run's.
+    docker ps -a --filter name=wc-x86- --format '{{.Names}}' | while read -r name; do
+      local pid=${name%-*}
+      pid=${pid##*-}
+      ps -p "$pid" > /dev/null 2>&1 || docker rm -f "$name" > /dev/null 2>&1
+    done
   elif [ "$status" -ne 0 ] || [ "$mismatches" != 0 ]; then
     result=fail
   fi
@@ -139,11 +145,11 @@ parse_layer1() {
   fi
   failing=$forms
   if [ -n "$forms" ]; then
-    replay="$knobs WC_LAYER1_FORMS=$forms $test_command --test layer1 every_covered_form_matches_the_cpu -- --nocapture"
+    replay="$knobs WC_LAYER1_FORMS=$forms $test_command --test layer1 every_form_matches_the_cpu_$guest -- --nocapture"
   fi
   if [ "$chrome_failing" != 0 ]; then
     failing="$failing in Chrome: $(echo "$chrome" | sed -E 's/.*failing: \[(.*)\]$/\1/; s/"//g; s/ //g')"
-    [ -n "$replay" ] || replay="$knobs $test_command --test layer1 sample_matches_the_cpu_in_chrome -- --nocapture"
+    [ -n "$replay" ] || replay="$knobs $test_command --test layer1 sample_matches_the_cpu_in_chrome_$guest -- --nocapture"
   fi
 }
 
@@ -158,7 +164,7 @@ parse_layer2() {
   if [ -n "$failing" ]; then
     local seed=${knobs#*WC_LAYER2_SEED=}
     seed=${seed%% *}
-    replay="WC_LAYER2_SEED=$seed WC_LAYER2_FROM=${failing%%,*} WC_LAYER2_CASES=1 WC_LAYER2_NATIVE=1 WC_LAYER2_CHROME=1 $test_command --test layer2 -- --nocapture"
+    replay="WC_LAYER2_SEED=$seed WC_LAYER2_FROM=${failing%%,*} WC_LAYER2_CASES=1 WC_LAYER2_NATIVE=1 WC_LAYER2_CHROME=1 $test_command --test layer2 _$guest -- --nocapture"
   fi
 }
 
@@ -173,11 +179,11 @@ parse_layer3() {
   if [ -n "$failing" ]; then
     local seed=${knobs#*WC_LAYER3_SEED=}
     seed=${seed%% *}
-    replay="WC_LAYER3_SEED=$seed WC_LAYER3_FROM=${failing%%,*} WC_LAYER3_CASES=1 WC_LAYER3_CHROME=1 $test_command --test layer3 csmith_programs_match_linux -- --nocapture"
+    replay="WC_LAYER3_SEED=$seed WC_LAYER3_FROM=${failing%%,*} WC_LAYER3_CASES=1 WC_LAYER3_CHROME=1 $test_command --test layer3 csmith_programs_match_linux_$guest -- --nocapture"
   fi
 }
 
-echo "long runs at $percent percent of the bars, layers $layers, base seed $base, commit $commit, $jobs at once; ledger $ledger"
+echo "long runs of $guest at $percent percent of the bars, layers $layers, base seed $base, commit $commit, $jobs at once; ledger $ledger"
 $test_command --no-run 2>&1 | tail -1
 [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
 all_started=$(date +%s)
@@ -190,7 +196,7 @@ if [[ ",$layers," == *,1,* ]]; then
   for ((k = 0; k < chunks; k++)); do
     cases=$(( k < chunks - 1 ? 1000 : total - 1000 * (chunks - 1) ))
     knobs="WC_LAYER1_SEED=$((base * 1000 + k)) WC_LAYER1_CASES=$cases WC_LAYER1_CHROME=$chrome WC_LAYER1_JOBS=$jobs"
-    run_chunk 1 $((k + 1)) "$chunks" "$knobs" ""
+    run_chunk 1 $((k + 1)) "$chunks" "$knobs" "_$guest"
   done
 fi
 
@@ -203,7 +209,7 @@ if [[ ",$layers," == *,2,* ]]; then
     cases=$(( k < chunks - 1 ? 25000 : total - 25000 * (chunks - 1) ))
     natives=$cases
     knobs="WC_LAYER2_SEED=$base WC_LAYER2_FROM=$((k * 25000)) WC_LAYER2_CASES=$cases WC_LAYER2_NATIVE=$natives WC_LAYER2_CHROME=$chrome WC_LAYER2_JOBS=$jobs"
-    run_chunk 2 $((k + 1)) "$chunks" "$knobs" ""
+    run_chunk 2 $((k + 1)) "$chunks" "$knobs" "_$guest"
   done
 fi
 
@@ -217,7 +223,7 @@ if [[ ",$layers," == *,3,* ]]; then
   compared=0
   for ((k = 0; compared < total && k < 2 * chunks; k++)); do
     knobs="WC_LAYER3_SEED=$base WC_LAYER3_FROM=$((k * 500)) WC_LAYER3_CASES=500 WC_LAYER3_CHROME=$chrome WC_LAYER3_JOBS=$jobs"
-    run_chunk 3 $((k + 1)) "" "$knobs" csmith_programs_match_linux
+    run_chunk 3 $((k + 1)) "" "$knobs" "csmith_programs_match_linux_$guest"
     compared=$(( compared + ran ))
   done
   echo "layer 3: $compared programs compared in $k chunks"

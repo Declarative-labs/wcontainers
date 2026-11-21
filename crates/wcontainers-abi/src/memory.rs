@@ -7,6 +7,10 @@ pub const PAGE_SIZE: u64 = 4096;
 /// log2 of [`PAGE_SIZE`], and the bits of an offset within a page.
 pub const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
 pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
+/// Bytes in a KiB.
+pub const KIB: u64 = 1 << 10;
+/// Bytes of a 64-bit word: an address, a general register.
+pub const WORD: u64 = size_of::<u64>() as u64;
 
 /// Nothing is ever placed below this address, so a null pointer always faults.
 pub const LOWEST_ADDRESS: u64 = 64 * 1024;

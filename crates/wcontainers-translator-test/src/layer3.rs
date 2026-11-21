@@ -2,20 +2,20 @@
 //! (zig's) or gcc (Alpine's, in Docker) at an optimisation level, as flat blobs of fixed position or
 //! position independent code, run on Linux and through the translator at none and full.
 
-use crate::layout::BLOB_SECONDS;
+use crate::guest::GuestTest;
 use crate::programs::{
-    Blob, C_DRIVER, ELF_EXTENSION, FIXED_POSITION, FLAT_SCRIPT, LINK_SCRIPT, NO_BUILD_ID,
-    NO_SANITIZERS, OUTPUT_FLAG, Ran, SIGNALLED, ZIG_GUEST_TARGET, flatten, native, out_directory,
-    run_container, source_directory, unique, zig,
+    Blob, C_DRIVER, ELF_EXTENSION, FLAT_SCRIPT, LINK_SCRIPT, NO_BUILD_ID, NO_SANITIZERS,
+    OUTPUT_FLAG, Ran, SIGNALLED, ZIG_TARGET_FLAG, flatten, native, native_program, out_directory,
+    source_directory, unique, zig,
 };
-use crate::reference::{DOCKER, IMAGE, REFERENCE_CONTAINER, container_name, mount, mount_writable};
+use crate::reference::{self, DOCKER, REFERENCE_CONTAINER, container_name, mount, mount_writable};
 use linux_raw_sys::general::SIGALRM;
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use wcontainers_docker::PLATFORM_OPTION;
 
-/// The Docker image with gcc and musl, made once from Alpine.
-const GCC_IMAGE: &str = "wc-translator-gcc";
 /// Where a container sees a program's source folder, the include folder, the link script's folder and the
 /// folder of built programs.
 const SOURCE_MOUNT: &str = "/s";
@@ -24,8 +24,6 @@ const SCRIPT_MOUNT: &str = "/l";
 const OUT_MOUNT: &str = "/o";
 /// The compiler's flags that add an include folder and give the link script, each joined to its value.
 const INCLUDE_FLAG: &str = "-I";
-/// The compiler's flags for a static executable that runs wherever it is placed.
-const INDEPENDENT_POSITION: [&str; 3] = ["-static-pie", "-fPIE", "-Wl,-z,norelro"];
 /// The compiler's flag that turns warnings off (Csmith's programs set many off).
 const NO_WARNINGS: &str = "-w";
 /// gcc's command, in its image.
@@ -38,14 +36,7 @@ pub enum Compiler {
     Gcc,
 }
 
-/// How the code is generated: for the fixed address it is linked and loaded at, or position independent
-/// (`-fPIE`, a static position independent program that relocates itself at start), loaded away from where
-/// it is linked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Position {
-    Fixed,
-    Independent,
-}
+pub use crate::programs::Position;
 
 pub const LEVELS: [&str; 6] = ["-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"];
 
@@ -76,21 +67,40 @@ fn csmith_include() -> PathBuf {
         .clone()
 }
 
-/// Make the gcc image if it is not there yet.
-fn gcc_image() {
-    static MADE: OnceLock<()> = OnceLock::new();
-    MADE.get_or_init(|| {
-        let present = Command::new(DOCKER)
-            .args(["image", "inspect", GCC_IMAGE])
-            .output()
-            .expect("run docker")
-            .status
-            .success();
-        if present {
-            return;
-        }
+/// The gcc image of the guest's platform, made if it is not there yet.
+fn gcc_image<G: GuestTest>() -> String {
+    static MADE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let dockerfile = format!(
+        "FROM {}\nRUN apk add --no-cache gcc musl-dev\n",
+        reference::IMAGE
+    );
+    // Named by its recipe, so a change of the recipe makes a new image.
+    let recipe = format!("{:x}", sha2::Sha256::digest(&dockerfile));
+    let image = format!("wc-x86-gcc-{}-{}", G::NAME, &recipe[..12]);
+    // Another guest's failed build must not fail this one's.
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if made.contains(&image) {
+        return image;
+    }
+    let present = Command::new(DOCKER)
+        .args(["image", "inspect", &image])
+        .output()
+        .expect("run docker")
+        .status
+        .success();
+    if !present {
         let mut child = Command::new(DOCKER)
-            .args(["build", "-q", "-t", GCC_IMAGE, "-"])
+            .args([
+                "build",
+                "-q",
+                PLATFORM_OPTION,
+                G::REFERENCE.docker_platform,
+                "-t",
+                &image,
+                "-",
+            ])
             .stdin(std::process::Stdio::piped())
             .spawn()
             .expect("run docker build");
@@ -99,13 +109,15 @@ fn gcc_image() {
             .stdin
             .take()
             .unwrap()
-            .write_all(format!("FROM {IMAGE}\nRUN apk add --no-cache gcc musl-dev\n").as_bytes())
+            .write_all(dockerfile.as_bytes())
             .unwrap();
         assert!(
             child.wait().unwrap().success(),
             "the gcc image did not build"
         );
-    });
+    }
+    made.push(image.clone());
+    image
 }
 
 /// Write a Csmith program for a seed; its name is `csmith-<seed>`.
@@ -131,37 +143,33 @@ pub fn csmith(seed: u64) -> PathBuf {
 }
 
 /// Build a C file with the C library into a flat blob.
-pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Blob {
-    let (elf, own, name) = compile(source, compiler, optimisation, position, true);
-    let mut blob = flatten(&elf, &own, name);
-    if position == Position::Independent {
-        blob.load = crate::programs::MOVED;
-    }
-    blob
+pub fn build<G: GuestTest>(
+    source: &Path,
+    compiler: Compiler,
+    optimisation: &str,
+    position: Position,
+) -> Blob {
+    let (elf, own, name) = compile::<G>(source, compiler, optimisation, position, true);
+    flatten(&elf, &own, name)
 }
 
-/// Build a C file as an ordinary static Linux executable and run it on Linux for at most 20 seconds, so a
-/// blob's fault can be told to be the program's own.
-pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Ran {
-    let (elf, ..) = compile(source, compiler, optimisation, position, false);
-    let output = run_container("ordinary", |command| {
-        mount(command, &out_directory(), OUT_MOUNT);
-        command.args([IMAGE, "sh", "-c"]).arg(format!(
-            "timeout -s KILL {BLOB_SECONDS} {}",
-            inside(OUT_MOUNT, &elf)
-        ));
-    });
+/// Build a C file as an ordinary static Linux executable and run it on the reference, so a blob's fault can
+/// be told to be the program's own.
+pub fn ordinary<G: GuestTest>(
+    source: &Path,
+    compiler: Compiler,
+    optimisation: &str,
+    position: Position,
+) -> Ran {
+    let (elf, ..) = compile::<G>(source, compiler, optimisation, position, false);
+    let executable = std::fs::read(&elf).unwrap();
     std::fs::remove_file(&elf).unwrap();
-    Ran {
-        stdout: output.stdout,
-        stderr: output.stderr,
-        status: output.status.code().expect("an exit status"),
-    }
+    native_program::<G>(&executable)
 }
 
 /// Compile and link a C file, for a flat blob (with `flat.ld`) or as an ordinary executable. Gives the ELF
 /// file, its own unique stem and the program's name.
-fn compile(
+fn compile<G: GuestTest>(
     source: &Path,
     compiler: Compiler,
     optimisation: &str,
@@ -175,20 +183,14 @@ fn compile(
             Compiler::Clang => "clang",
             Compiler::Gcc => GCC,
         },
-        match position {
-            Position::Fixed => "",
-            Position::Independent => "-pic",
-        }
+        position.suffix()
     );
     let out = out_directory();
     let own = unique(&name);
     let elf = out.join(&own).with_added_extension(ELF_EXTENSION);
     let script = source_directory().join(FLAT_SCRIPT);
     let include = csmith_include();
-    let code: &[&str] = match position {
-        Position::Fixed => &FIXED_POSITION,
-        Position::Independent => &INDEPENDENT_POSITION,
-    };
+    let code = position.flags();
     match compiler {
         Compiler::Clang => {
             let (script, include, elf, source) = (
@@ -197,9 +199,7 @@ fn compile(
                 elf.display().to_string(),
                 source.display().to_string(),
             );
-            let mut arguments = vec![C_DRIVER];
-            arguments.extend(ZIG_GUEST_TARGET);
-            arguments.push(optimisation);
+            let mut arguments = vec![C_DRIVER, ZIG_TARGET_FLAG, G::C_TARGET, optimisation];
             arguments.extend(code);
             arguments.extend([NO_SANITIZERS, NO_WARNINGS, &include]);
             arguments.push(crate::programs::LINK_ONLY_WHAT_IS_REACHED);
@@ -210,16 +210,20 @@ fn compile(
             zig(&arguments);
         }
         Compiler::Gcc => {
-            gcc_image();
+            let image = gcc_image::<G>();
             let source_directory = source.parent().unwrap();
             let mut command = Command::new(DOCKER);
-            command.args(REFERENCE_CONTAINER).arg(container_name(GCC));
+            command
+                .args(REFERENCE_CONTAINER)
+                .arg(container_name(GCC))
+                .arg(PLATFORM_OPTION)
+                .arg(G::REFERENCE.docker_platform);
             mount(&mut command, source_directory, SOURCE_MOUNT);
             mount(&mut command, &include, INCLUDE_MOUNT);
             mount(&mut command, script.parent().unwrap(), SCRIPT_MOUNT);
             mount_writable(&mut command, &out, OUT_MOUNT);
             command
-                .args([GCC_IMAGE, GCC, optimisation, NO_WARNINGS])
+                .args([image.as_str(), GCC, optimisation, NO_WARNINGS])
                 .args(code)
                 .arg([INCLUDE_FLAG, INCLUDE_MOUNT].concat());
             if flat {
@@ -244,9 +248,9 @@ fn inside(mount: &str, file: &Path) -> String {
 }
 
 /// The native run, or `None` when the program does not end in time (Csmith's programs may not).
-pub fn native_in_time(blob: &Blob) -> Option<Ran> {
-    let ran = native(blob);
-    // The reference's own limit: SIGALRM, as Docker reports it.
+pub fn native_in_time<G: GuestTest>(blob: &Blob) -> Option<Ran> {
+    let ran = native::<G>(blob);
+    // The reference's own limit: SIGALRM, as `SIGNALLED` plus its number.
     (ran.status != SIGNALLED + SIGALRM as i32).then_some(ran)
 }
 

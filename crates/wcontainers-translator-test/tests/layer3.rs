@@ -1,4 +1,4 @@
-//! Layer 3 against real ARM64 Linux: Csmith's random programs and the hand-picked ones, built with clang
+//! Layer 3 against real Linux on the guest's CPU: Csmith's random programs and the hand-picked ones, built with clang
 //! and gcc at every optimisation level, of fixed position and position independent code, at look-ahead none
 //! and full (for speed and for size, plain and with the thread stopping at every stop check), at bounded
 //! look-ahead of an N picked from the blob, and with pieces of all three mixed and events injected (see
@@ -15,18 +15,21 @@
 use linux_raw_sys::general::{SIGABRT, SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer3::{
     Compiler, LAYER3_CASE_STRIDE, LEVELS, Position, build, csmith_case, native_in_time, ordinary,
 };
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Ran, SIGNALLED, native, ran as outcome, reachable_memory, ready, source_directory,
-    translated_for, translated_stopping_everywhere,
+    Blob, Ran, SIGNALLED, check_ordinary_programs, native, native_program, ran as outcome,
+    reachable_memory, ready, translated_for, translated_stopping_everywhere,
 };
+use wcontainers_x86::X86_64;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -65,8 +68,8 @@ fn a_program_gone_astray_ends_the_same_by_any_of_its_signals() {
 /// Run a blob at none and full in both settings; compare with Linux, and full with none in registers and
 /// memory. Gives Linux's run, or nothing when the program did not end in time there. `ordinary` runs the
 /// program built as an ordinary Linux executable.
-fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, String> {
-    let Some(theirs) = native_in_time(blob) else {
+fn compare<G: GuestTest>(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, String> {
+    let Some(theirs) = native_in_time::<G>(blob) else {
         return Ok(None);
     };
     // A blob that Linux ends by a signal is compared only when the program, built as an ordinary
@@ -77,7 +80,7 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
         let program = ordinary();
         if !same_ending(program.status, theirs.status) {
             // Whether Linux does it again tells a fault of the blob from one of the reference.
-            let again: Vec<i32> = (0..3).map(|_| native(blob).status).collect();
+            let again: Vec<i32> = (0..3).map(|_| native::<G>(blob).status).collect();
             return Err(format!(
                 "{}: Linux ended the blob with status {}, then {again:?} when run again, the ordinary executable with status {}",
                 blob.name, theirs.status, program.status
@@ -94,9 +97,9 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
     ] {
         let how = (look_ahead, optimise);
         let (ours, mut machine, registers) = if stopping {
-            translated_stopping_everywhere(blob, how)
+            translated_stopping_everywhere::<G>(blob, how)
         } else {
-            translated_for(blob, how)
+            translated_for::<G>(blob, how)
         };
         if ours != theirs {
             return Err(format!(
@@ -111,7 +114,7 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
         if machine.count(Reason::UnsupportedInstructionReached) != 0 {
             return Err(format!("{}: unsupported instruction reached", blob.name));
         }
-        finals.push((registers, reachable_memory(&mut machine, blob)));
+        finals.push((registers, reachable_memory::<G>(&mut machine, blob)));
     }
     if finals[1..].iter().any(|full| *full != finals[0]) {
         return Err(format!("{}: full differs from none at the end", blob.name));
@@ -125,18 +128,18 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
     };
     let bound = 2 + (seed % 63) as u32;
     let look_ahead = LookAhead::Bounded(bound);
-    let mut machine = ready(blob, look_ahead, Default::default());
+    let mut machine = ready::<G>(blob, look_ahead, Default::default());
     machine.translate_at_run_time(move || look_ahead);
     let (stopped, registers) = machine.run();
-    let ours = outcome(blob, &machine, stopped, &registers);
-    if ours != theirs || (registers, reachable_memory(&mut machine, blob)) != finals[0] {
+    let ours = outcome::<G>(blob, &machine, stopped, &registers);
+    if ours != theirs || (registers, reachable_memory::<G>(&mut machine, blob)) != finals[0] {
         return Err(format!(
             "{} at bounded {bound} differs from none",
             blob.name
         ));
     }
-    let (ours, mut machine, registers, events) = mixed(blob, seed);
-    if ours != theirs || (registers, reachable_memory(&mut machine, blob)) != finals[0] {
+    let (ours, mut machine, registers, events) = mixed::<G>(blob, seed);
+    if ours != theirs || (registers, reachable_memory::<G>(&mut machine, blob)) != finals[0] {
         return Err(format!(
             "{} mixed from {seed} ({events:?}) differs from none",
             blob.name
@@ -146,13 +149,13 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
 }
 
 /// Run a blob in Chrome at none and at full for speed and for size, and compare with Linux's run.
-fn compare_in_chrome(blob: &Blob, theirs: &Ran) -> Result<(), String> {
+fn compare_in_chrome<G: GuestTest>(blob: &Blob, theirs: &Ran) -> Result<(), String> {
     for how in [
         (LookAhead::None, Optimise::Speed),
         (LookAhead::Full, Optimise::Speed),
         (LookAhead::Full, Optimise::Size),
     ] {
-        let ours = browser::translated_with(blob, how, Omit::default());
+        let ours = browser::translated_with::<G>(blob, how, Omit::default());
         if ours.ran != *theirs {
             return Err(format!(
                 "{} in Chrome at {how:?}: ours {:?} status {}, Linux {:?} status {}",
@@ -167,8 +170,7 @@ fn compare_in_chrome(blob: &Blob, theirs: &Ran) -> Result<(), String> {
     Ok(())
 }
 
-#[test]
-fn csmith_programs_match_linux() {
+fn csmith_programs_match_linux<G: GuestTest>() {
     let cases = setting("WC_LAYER3_CASES", 4);
     let seed = setting("WC_LAYER3_SEED", 1);
     let from = setting("WC_LAYER3_FROM", 0);
@@ -183,15 +185,15 @@ fn csmith_programs_match_linux() {
     at_once(jobs, cases, |i| {
         let number = seed.wrapping_mul(LAYER3_CASE_STRIDE).wrapping_add(from + i);
         let (source, compiler, level, position) = csmith_case(number);
-        let blob = build(&source, compiler, level, position);
-        if blob.reads_float_status() {
+        let blob = build::<G>(&source, compiler, level, position);
+        if blob.reads_float_status::<G>() {
             exact.fetch_add(1, Ordering::Relaxed);
         }
-        let own = || ordinary(&source, compiler, level, position);
-        let checked = compare(&blob, own).and_then(|theirs| match theirs {
+        let own = || ordinary::<G>(&source, compiler, level, position);
+        let checked = compare::<G>(&blob, own).and_then(|theirs| match theirs {
             Some(theirs) if chrome > 0 && i.is_multiple_of(chrome_every) => {
                 in_chrome.fetch_add(1, Ordering::Relaxed);
-                compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
+                compare_in_chrome::<G>(&blob, &theirs).map(|()| Some(theirs))
             }
             other => Ok(other),
         });
@@ -223,20 +225,18 @@ fn csmith_programs_match_linux() {
     assert!(failures.is_empty());
 }
 
-/// The hand-picked programs with the C library (number printing, sorting and the differences of section
-/// 8), with both compilers, every level and both positions.
-#[test]
-fn hand_picked_programs_match_linux() {
-    let directory = source_directory();
+/// The hand-picked programs `names` with the C library (number printing, sorting and, for ARM64, the
+/// differences of section 8), with both compilers, every level and both positions.
+fn hand_picked_programs_match_linux<G: GuestTest>(names: &[&str]) {
     let mut failures = Vec::new();
-    for name in ["hello", "differences"] {
+    for &name in names {
         for compiler in [Compiler::Clang, Compiler::Gcc] {
             for level in LEVELS {
                 for position in [Position::Fixed, Position::Independent] {
-                    let source = directory.join(format!("{name}.c"));
-                    let blob = build(&source, compiler, level, position);
-                    let own = || ordinary(&source, compiler, level, position);
-                    match compare(&blob, own) {
+                    let source = wcontainers_translator_test::programs::source::<G>(name);
+                    let blob = build::<G>(&source, compiler, level, position);
+                    let own = || ordinary::<G>(&source, compiler, level, position);
+                    match compare::<G>(&blob, own) {
                         Ok(Some(_)) => {}
                         Ok(None) => failures.push(format!("{}: did not end on Linux", blob.name)),
                         Err(report) => failures.push(report),
@@ -246,4 +246,39 @@ fn hand_picked_programs_match_linux() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The reference runs ordinary executables, which tell a blob's signal ending to be the program's own.
+fn ordinary_executables_run_on_the_reference<G: GuestTest>() {
+    check_ordinary_programs(G::C_TARGET, native_program::<G>);
+}
+
+#[test]
+fn ordinary_executables_run_on_the_reference_arm64() {
+    ordinary_executables_run_on_the_reference::<Arm64>();
+}
+
+#[test]
+fn csmith_programs_match_linux_arm64() {
+    csmith_programs_match_linux::<Arm64>();
+}
+
+#[test]
+fn hand_picked_programs_match_linux_arm64() {
+    hand_picked_programs_match_linux::<Arm64>(&["hello", "differences"]);
+}
+
+#[test]
+fn ordinary_executables_run_on_the_reference_x86_64() {
+    ordinary_executables_run_on_the_reference::<X86_64>();
+}
+
+#[test]
+fn csmith_programs_match_linux_x86_64() {
+    csmith_programs_match_linux::<X86_64>();
+}
+
+#[test]
+fn hand_picked_programs_match_linux_x86_64() {
+    hand_picked_programs_match_linux::<X86_64>(&["hello"]);
 }

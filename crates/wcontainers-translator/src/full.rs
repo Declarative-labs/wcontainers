@@ -51,6 +51,7 @@ pub(crate) fn plan<'a, G: Guest>(
     let mut finder = Finder {
         code,
         decoded: Decodes::default(),
+        tables_read: Default::default(),
         means: FxHashMap::default(),
         wholes: FxHashMap::default(),
     };
@@ -117,6 +118,15 @@ impl<G: Guest> Planned<'_, G> {
     /// The entries of the pieces the lookup table holds, in order.
     pub(crate) fn entries(&self) -> Vec<u64> {
         self.functions.iter().map(|f| f.entry).collect()
+    }
+
+    /// Every blob byte read while finding and planning: the instructions decoded and the jump tables.
+    pub(crate) fn read(&self) -> Vec<std::ops::Range<u64>> {
+        let decoded = self.finder.decoded.iter();
+        let mut read: Vec<std::ops::Range<u64>> =
+            decoded.map(|(&o, d)| o..o + u64::from(d.length)).collect();
+        read.extend(self.finder.tables_read.lock().unwrap().iter().cloned());
+        read
     }
 
     /// What made an entry one: [`Means::Given`] for every start of the plan.
@@ -272,6 +282,8 @@ impl Whole {
 struct Finder<'a, G: Guest> {
     code: &'a Code<'a, G>,
     decoded: Decodes<G>,
+    /// The blob bytes of every jump table read.
+    tables_read: std::sync::Mutex<Vec<std::ops::Range<u64>>>,
     /// What made each function's entry one, where it is not a start given.
     means: FxHashMap<u64, Means>,
     /// The function each part of a function cut in parts comes from, by the part's entry.
@@ -358,6 +370,17 @@ impl<G: Guest> Finder<'_, G> {
         }
     }
 
+    /// Whether a whole instruction starts at an offset, so that a function may: one that would run past the
+    /// end of the code gets no piece, and is translated from memory when it is reached.
+    fn whole(&self, offset: u64) -> bool {
+        self.code.inside(offset) && self.try_get(offset).is_some()
+    }
+
+    /// The offsets of `starts` where a whole instruction starts.
+    fn whole_at<'s>(&self, starts: &'s [u64]) -> impl Iterator<Item = u64> + use<'s, '_, G> {
+        starts.iter().copied().filter(|&s| self.whole(s))
+    }
+
     /// An instruction of a function found.
     fn get(&self, offset: u64) -> Decoded<G> {
         self.try_get(offset).expect("a whole instruction")
@@ -379,7 +402,7 @@ impl<G: Guest> Finder<'_, G> {
     /// the extra entries that keep every function's control flow reducible, and those that cut functions too
     /// large in parts.
     fn functions(&mut self, starts: &[u64]) -> Vec<Function> {
-        let mut entries: BTreeSet<u64> = starts.iter().copied().collect();
+        let mut entries: BTreeSet<u64> = self.whole_at(starts).collect();
         let mut explored = BTreeSet::new();
         loop {
             // In rounds: every entry not yet explored, all at once, then what they found.
@@ -397,7 +420,7 @@ impl<G: Guest> Finder<'_, G> {
                 work = Vec::new();
                 let mut round = Found::new();
                 for (offset, means) in found.into_iter().flatten() {
-                    if self.code.inside(offset) && !entries.contains(&offset) {
+                    if self.whole(offset) && !entries.contains(&offset) {
                         note(&mut round, offset, means);
                     }
                 }
@@ -472,7 +495,7 @@ impl<G: Guest> Finder<'_, G> {
     /// One stretch per start: what the code reaches from it in its first `limit` instructions, stopping at the
     /// other starts and at the blocks that would make its control flow irreducible.
     fn stretches(&mut self, starts: &[u64], limit: usize) -> Vec<Function> {
-        let starts: BTreeSet<u64> = starts.iter().copied().collect();
+        let starts: BTreeSet<u64> = self.whole_at(starts).collect();
         let mut bounds = starts.clone();
         loop {
             let stretches: Vec<Function> = starts
@@ -507,6 +530,8 @@ impl<G: Guest> Finder<'_, G> {
     ) -> Function {
         let mut body = BTreeMap::new();
         let mut leaders = BTreeSet::from([entry]);
+        // Where a jump enters, which no instruction before it falls through into alone.
+        let mut entered = BTreeSet::from([entry]);
         let mut tables: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
         // Addresses the code builds; those a jump table of this function goes to are its own blocks.
         let mut built = Vec::new();
@@ -537,9 +562,10 @@ impl<G: Guest> Finder<'_, G> {
                 note(found, offset.wrapping_add_signed(by), Means::Call);
             }
             let blob = self.code.blob;
-            let before = |o: u64| self.before(&body, &leaders, o);
+            let before = |o: u64| self.before(&body, &entered, o);
             if let Some(address) =
                 G::built_address(offset, &instruction, blob, self.code.range.clone(), before)
+                    .and_then(|built| self.code.built_offset(built))
             {
                 built.push(address);
             }
@@ -555,6 +581,7 @@ impl<G: Guest> Finder<'_, G> {
                 jumps.push(offset.wrapping_add_signed(by));
             }
             leaders.extend(&jumps);
+            entered.extend(&jumps);
             work.extend(jumps);
             // The next instruction is seen first, so a bounded stretch follows the code in order.
             if flow.falls_through {
@@ -641,15 +668,15 @@ impl<G: Guest> Finder<'_, G> {
         }
     }
 
-    /// The instruction of the walk so far that falls through into `offset`, with its offset; `None` when
-    /// none does, two do or a jump is known to enter there.
+    /// The instruction of the walk so far that falls through into `offset` (a conditional branch among
+    /// them), with its offset; `None` when none does, two do or a jump is known to enter there.
     fn before(
         &self,
         body: &BTreeMap<u64, u64>,
-        leaders: &BTreeSet<u64>,
+        entered: &BTreeSet<u64>,
         offset: u64,
     ) -> Option<(u64, G::Instruction)> {
-        if leaders.contains(&offset) {
+        if entered.contains(&offset) {
             return None;
         }
         let mut ending = ending_at::<G>(body, offset);
@@ -658,7 +685,8 @@ impl<G: Guest> Finder<'_, G> {
             return None;
         }
         let instruction = self.get(p).instruction;
-        (G::flow(&instruction).falls_through && !ends_block::<G>(&instruction))
+        G::flow(&instruction)
+            .falls_through
             .then_some((p, instruction))
     }
 
@@ -670,11 +698,12 @@ impl<G: Guest> Finder<'_, G> {
         r: G::Reg,
         before: impl Fn(u64) -> Option<(u64, G::Instruction)>,
     ) -> Option<Vec<u64>> {
-        let targets = G::jump_table(offset, r, self.code.blob, self.code.range.clone(), before)?;
-        targets
-            .iter()
-            .all(|&t| self.code.inside(t))
-            .then_some(targets)
+        let table = G::jump_table(offset, r, self.code.blob, self.code.range.clone(), before)?;
+        if !table.targets.iter().all(|&t| self.code.inside(t)) {
+            return None;
+        }
+        self.tables_read.lock().unwrap().push(table.read);
+        Some(table.targets)
     }
 }
 
@@ -771,6 +800,12 @@ fn irreducible(function: &Function) -> Vec<u64> {
 /// registers passed as parameters, and the flags, which have their own state.
 fn tracked<G: Guest>() -> Registers {
     G::TRACKED
+}
+
+/// What may be stale in the thread block after a system call: its result, when that lives in a local.
+fn dirty_after_syscall<G: Guest>() -> Registers {
+    let result = G::reg_bit(G::SYSCALL.result).expect("a result register");
+    Registers(1 << result).intersect(tracked::<G>())
 }
 
 /// Where the flags are known to be at a point: a set of flag state bits, one bit when it is known which:
@@ -903,22 +938,28 @@ fn aligned_after<G: Guest>(d: &Decoded<G>, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`. What is left below the red zone under the stack
-/// pointer is no frame, so it is dropped.
+/// Shift a frame to a stack pointer moved by `delta`. What a move up leaves below the red zone under the
+/// stack pointer is no frame, so it is dropped; below it after a move down is only what a check covered for
+/// the moves down that follow it (see [`frame_checked`]).
 fn shift<G: Guest>(frame: Frame, delta: i64) -> Frame {
     frame.and_then(|(lo, hi)| {
-        let (lo, hi) = ((lo - delta).max(-(G::RED_ZONE as i64)), hi - delta);
+        let lo = match lo - delta {
+            lo if delta > 0 => lo.max(-(G::RED_ZONE as i64)),
+            lo => lo,
+        };
+        let hi = hi - delta;
         (lo < hi).then_some((lo, hi))
     })
 }
 
-/// The frame after an instruction: moved as the stack pointer moves, and after a call that leaves its
-/// return address on the stack, back up past it, where the callee's return leaves the stack pointer.
+/// The frame after an instruction, from the frame before it with what its frame check covers
+/// ([`frame_checked`]): moved as the stack pointer moves, and after a call that leaves its return address on
+/// the stack, back up past it, where the callee's return leaves the stack pointer.
 fn frame_after<G: Guest>(d: &Decoded<G>, frame: Frame) -> Frame {
     let frame = match stack_move(d) {
         StackMove::None => frame,
         StackMove::Unknown => None,
-        StackMove::By { delta, .. } => shift::<G>(grow::<G>(frame, delta), delta),
+        StackMove::By { delta, .. } => shift::<G>(frame, delta),
     };
     match G::RETURN_ADDRESS {
         ReturnAddress::Stack { bytes } if d.effects.calls => shift::<G>(frame, bytes.into()),
@@ -1053,8 +1094,10 @@ impl<G: Guest> Plan<G> {
             }
         };
         let dirty_after = |d: &Decoded<G>, dirty: Registers| -> Registers {
-            if d.effects.calls || d.effects.syscall {
+            if d.effects.calls {
                 Registers::NONE
+            } else if d.effects.syscall {
+                dirty_after_syscall::<G>()
             } else {
                 dirty.union(d.effects.defs.intersect(tracked::<G>()))
             }
@@ -1126,12 +1169,13 @@ impl<G: Guest> Plan<G> {
                 let mut dirty = dirty_in[b];
                 let mut flags = flags_in[b];
                 let mut aligned = aligned_in[b];
-                for o in instructions(b) {
-                    let d = &decoded[&o];
+                let offsets = function.instructions(b);
+                for (i, o) in offsets.iter().enumerate() {
+                    let d = &decoded[o];
                     aligned = aligned_after(d, aligned);
                     dirty = dirty_after(d, dirty);
                     flags = flag_state(d, flags);
-                    frame = frame_after(d, frame);
+                    frame = frame_after(d, frame_checked(decoded, offsets, i, frame).1);
                 }
                 for &s in &blocks[b].succs {
                     let mut dirty = dirty;
@@ -1410,8 +1454,14 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
         // access, its start, and the bytes covered.
         let mut open: FxHashMap<(Option<u32>, Option<u32>, bool), usize> = FxHashMap::default();
         let mut groups: Vec<(AccessAt, i64, i64, i64, u32)> = Vec::new();
-        for &o in function.instructions(b) {
+        let offsets = function.instructions(b);
+        for (i, &o) in offsets.iter().enumerate() {
             let d = &decoded[&o];
+            let (check, before) = frame_checked(decoded, offsets, i, frame);
+            if let Some(check) = check {
+                frame_checks.insert(o, check);
+            }
+            frame = before;
             if d.effects.calls || d.effects.syscall {
                 moved.clear();
                 open.clear();
@@ -1420,13 +1470,6 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                 frame_across.insert(o);
             }
             let movement = stack_move(d);
-            if let StackMove::By { delta, .. } = movement
-                && delta < 0
-            {
-                // The red zone below the new stack pointer is part of the frame checked.
-                let low = delta - G::RED_ZONE as i64;
-                frame_checks.insert(o, (low, (-low) as u32));
-            }
             // An access that is not plain has no plan: it is checked by itself each time.
             let accesses = G::accesses(&d.instruction);
             let plain = accesses
@@ -1464,7 +1507,7 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                             StackMove::By {
                                 delta,
                                 before_access: true,
-                            } => shift::<G>(grow::<G>(frame, delta), delta),
+                            } => shift::<G>(frame, delta),
                             _ => frame,
                         };
                         if covers(known, at, at + i64::from(bytes)) {
@@ -1538,17 +1581,56 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
     }
 }
 
-/// A frame before the stack pointer moves by `delta`, with the part a move down checks added: down to the
-/// red zone below the new stack pointer.
-fn grow<G: Guest>(frame: Frame, delta: i64) -> Frame {
-    if delta >= 0 {
-        return frame;
+/// Whether an instruction is a call that writes its return address below the stack pointer. That write is
+/// its only use of the stack below, so it checks no frame for the callee, which checks its own.
+fn pushes_return<G: Guest>(d: &Decoded<G>) -> bool {
+    d.effects.calls && matches!(G::RETURN_ADDRESS, ReturnAddress::Stack { .. })
+}
+
+/// The frame check the instruction at `i` of a block makes, as (from, bytes) past the stack pointer before
+/// it, and the frame before it with what the check covers. A move down checks down to the red zone below the
+/// stack pointer unless the frame already covers that; the check reaches as far down as the moves that follow
+/// in the block before anything that calls, makes a system call, or moves the stack pointer up or by an
+/// unknown amount, so those need none; with nothing known it also covers the return address a call left at
+/// the stack pointer, so a return reads it unchecked. Nothing reaches past [`FRAME_CHECK_BYTES`].
+fn frame_checked<G: Guest>(
+    decoded: &Decodes<G>,
+    instructions: &[u64],
+    i: usize,
+    frame: Frame,
+) -> (Option<(i64, u32)>, Frame) {
+    let d = &decoded[&instructions[i]];
+    let StackMove::By { delta, .. } = stack_move(d) else {
+        return (None, frame);
+    };
+    let red_zone = G::RED_ZONE as i64;
+    if delta >= 0 || pushes_return(d) || covers(frame, delta - red_zone, 0) {
+        return (None, frame);
     }
-    let low = delta - G::RED_ZONE as i64;
-    match frame {
-        Some((lo, hi)) if lo <= 0 && hi >= 0 => Some((low.min(lo), hi)),
-        _ => Some((low, 0)),
+    let high = match (frame, G::RETURN_ADDRESS) {
+        (None, ReturnAddress::Stack { bytes }) => i64::from(bytes),
+        _ => 0,
+    };
+    let within = |descent: i64| high - (descent - red_zone) <= FRAME_CHECK_BYTES as i64;
+    if !within(delta) {
+        return (None, frame);
     }
+    let mut descent = delta;
+    for o in &instructions[i + 1..] {
+        let next = &decoded[o];
+        match stack_move(next) {
+            _ if next.effects.calls || next.effects.syscall => break,
+            StackMove::None => {}
+            StackMove::By { delta, .. } if delta < 0 && within(descent + delta) => descent += delta,
+            _ => break,
+        }
+    }
+    let low = descent - red_zone;
+    let checked = match frame {
+        Some((lo, hi)) if lo <= high && hi >= low => (lo.min(low), hi.max(high)),
+        _ => (low, high),
+    };
+    (Some((low, (high - low) as u32)), Some(checked))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2278,13 +2360,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             return;
         }
         self.save(pc, false);
-        self.sink()
-            .call(F_STOP)
-            .if_(BlockType::Empty)
-            .i32_const(UNWIND_LEAVE)
-            .call(G::F_UNWIND)
-            .unreachable()
-            .end();
+        let payload = self.temporary(ValType::I32);
+        crate::code::stop_hook::<G>(&mut self.sink(), payload);
+        let at = self.taken.iter().rposition(|&(_, l)| l == payload).unwrap();
+        let released = self.taken.swap_remove(at);
+        self.free.push(released);
         match after {
             AfterStop::Enter(f) => {
                 self.rare_arguments();
@@ -2670,8 +2750,15 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.address(offset);
     }
 
+    fn flags_live(&self) -> bool {
+        self.flags_needed_after(self.at.offset)
+    }
+
     fn set_flags(&mut self, flags: G::Flags) {
         self.written = true;
+        if !self.flags_live() {
+            return;
+        }
         let lazy = self.decoded().effects.flags.is_some();
         match G::shape(flags).filter(|_| lazy) {
             Some(shape) => {
@@ -2871,7 +2958,6 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 s.local_get(fault_at)
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
-                    .i32_const(UNWIND_LEAVE)
                     .call(G::F_UNWIND)
                     .unreachable()
                     .end()
@@ -3048,22 +3134,24 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
+        // The registers passed in only live in parameters, which liveness does not follow.
+        for (local, bit) in passed_in_only::<G>() {
+            Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
+        }
     }
 
     fn ret(&mut self, target: u32) {
         self.count_event();
         pop_return_address::<G>(&mut self.sink());
         self.write_back_registers();
+        let block = self.fixed(G_THREAD_BLOCK);
+        crate::code::save_passed_in_only::<G>(&mut self.sink(), block);
         // The flags go back only when the caller asks for them.
         let flags = self.at.flags;
         let wanted = |e: &mut Self| {
             if flags != 1 << FLAGS_IN_BLOCK {
-                e.sink()
-                    .local_get(G::L_RETURN)
-                    .i64_const(G::FLAGS_WANTED)
-                    .i64_and()
-                    .i32_wrap_i64()
-                    .if_(BlockType::Empty);
+                crate::code::push_flags_wanted::<G>(&mut e.sink());
+                e.sink().if_(BlockType::Empty);
                 e.write_back_flags(false);
                 e.at.flags = flags;
                 e.sink().end();
@@ -3110,7 +3198,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let result = G::reg_bit(registers.result).expect("a result register");
         let local = self.register(result);
         self.sink().local_set(local);
-        self.at.dirty = Registers(1 << result).intersect(tracked::<G>());
+        self.at.dirty = dirty_after_syscall::<G>();
         let live = self.plan.live_after[&self.at.offset];
         self.reload(live.minus(Registers(1 << result)), G::passed(result));
         // The kernel raises the flag during the call when the thread must not carry on.
