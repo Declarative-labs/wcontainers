@@ -725,14 +725,7 @@ pub fn bind<'a>(
     local: &LocalBinding<'a>,
     choose_now: bool,
 ) -> Result<Option<PortChoice<'a>>, HostError> {
-    let address = match local.address {
-        BindAddress::V4(address) => IpAddr::V4(address),
-        BindAddress::V6 { address, families } => {
-            sockopt::set_ipv6_v6only(socket, families == Ipv6Families::V6Only)
-                .map_err(host_error)?;
-            IpAddr::V6(address)
-        }
-    };
+    let address = bind_address(socket, &local.address)?;
     match local.port {
         LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => {
             rustix::net::bind(socket, &SocketAddr::new(address, port.0)).map_err(host_error)?;
@@ -751,6 +744,81 @@ pub fn bind<'a>(
             Ok(Some(choice))
         }
     }
+}
+
+/// The address of a binding, with the IPv6 families of an IPv6 one set on the socket.
+pub fn bind_address(socket: BorrowedFd<'_>, address: &BindAddress) -> Result<IpAddr, HostError> {
+    match *address {
+        BindAddress::V4(address) => Ok(IpAddr::V4(address)),
+        BindAddress::V6 { address, families } => {
+            sockopt::set_ipv6_v6only(socket, families == Ipv6Families::V6Only)
+                .map_err(host_error)?;
+            Ok(IpAddr::V6(address))
+        }
+    }
+}
+
+pub const PORTS_OUTSIDE_THE_HOSTS_RANGE: &str =
+    "ports an exit node chooses from outside the host's own range, tried one at a time";
+
+/// Where the host keeps its own range of ports to choose from, for the caller's network.
+const HOST_PORT_RANGE: &str = "/proc/sys/net/ipv4/ip_local_port_range";
+
+/// The host's own range of ports to choose from, `net.ipv4.ip_local_port_range`.
+pub fn host_port_range() -> Result<PortRange, HostError> {
+    let text = std::fs::read_to_string(HOST_PORT_RANGE)
+        .map_err(|error| HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO)))?;
+    let mut ports = text.split_whitespace().map(str::parse::<u16>);
+    match (ports.next(), ports.next()) {
+        (Some(Ok(first)), Some(Ok(last))) => Ok(PortRange {
+            first: Port(first),
+            last: Port(last),
+        }),
+        _ => Err(HostError::Errno(libc::EIO)),
+    }
+}
+
+/// Binds to a free port of the first allowed range of a choice that has one, at once: the kernel chooses in the
+/// part of a range inside the host's own range (Linux ignores a socket's range outside it), and each port of the
+/// rest is tried in turn, counted.
+pub fn bind_chosen_by_exit_node(
+    socket: BorrowedFd<'_>,
+    address: IpAddr,
+    choice: &PortChoice<'_>,
+    shortfalls: &Shortfalls,
+) -> Result<(), HostError> {
+    let host = host_port_range()?;
+    let in_host = host.first.0..=host.last.0;
+    for range in allowed_ranges(choice) {
+        let (first, last) = (
+            range.first.0.max(host.first.0),
+            range.last.0.min(host.last.0),
+        );
+        if first <= last {
+            set_port_range(
+                socket,
+                PortRange {
+                    first: Port(first),
+                    last: Port(last),
+                },
+            )?;
+            match rustix::net::bind(socket, &SocketAddr::new(address, u16::MIN)) {
+                Err(Errno::ADDRINUSE) => {}
+                other => return other.map_err(host_error),
+            }
+        }
+        let mut outside = (range.first.0..=range.last.0).filter(|port| !in_host.contains(port));
+        if let Some(port) = outside.next() {
+            shortfalls.count(PORTS_OUTSIDE_THE_HOSTS_RANGE);
+            for port in core::iter::once(port).chain(outside) {
+                match rustix::net::bind(socket, &SocketAddr::new(address, port)) {
+                    Err(Errno::ADDRINUSE) => {}
+                    other => return other.map_err(host_error),
+                }
+            }
+        }
+    }
+    Err(HostError::Errno(libc::EADDRINUSE))
 }
 
 /// The peer as the socket's family takes it, an IPv4 peer of an IPv6 socket mapped into IPv6.
