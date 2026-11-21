@@ -130,3 +130,43 @@ fn a_file_that_is_refused_is_a_slow_path() {
     assert!(matches!(origin, Origin::Disk(_)), "{origin:?}");
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// A file of the cache's earlier framing (its magic, then each count and length as a little-endian
+/// `u64`), though the modules in it are ones wasmtime loads, is refused, counted and warned; the
+/// translation is made again and kept in its place.
+#[test]
+fn a_file_of_the_earlier_framing_is_refused() {
+    const EARLIER_MAGIC: &[u8; 8] = b"wcxlate1";
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cache-test-earlier");
+    let _ = std::fs::remove_dir_all(&directory);
+    let (_, origin, _) = run_warned(Compiler::new(Some(directory.clone())), LookAhead::Full);
+    assert!(matches!(origin, Origin::Made { .. }), "{origin:?}");
+    for entry in std::fs::read_dir(&directory).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        let (magic, body) = bytes.split_at(EARLIER_MAGIC.len());
+        assert_ne!(magic, EARLIER_MAGIC);
+        let modules: Vec<(Vec<u64>, serde_bytes::ByteBuf)> = postcard::from_bytes(body).unwrap();
+        let mut earlier = EARLIER_MAGIC.to_vec();
+        earlier.extend((modules.len() as u64).to_le_bytes());
+        for (pieces, code) in &modules {
+            earlier.extend((pieces.len() as u64).to_le_bytes());
+            earlier.extend(pieces.iter().flat_map(|p| p.to_le_bytes()));
+            earlier.extend((code.len() as u64).to_le_bytes());
+            earlier.extend(code.as_slice());
+        }
+        std::fs::write(&path, earlier).unwrap();
+    }
+    let (value, origin, warnings) =
+        run_warned(Compiler::new(Some(directory.clone())), LookAhead::Full);
+    assert_eq!(value, 12);
+    assert!(matches!(origin, Origin::Made { .. }), "{origin:?}");
+    assert!(
+        warnings.iter().any(|w| w == reason::TRANSLATION_REFUSED),
+        "{warnings:?}"
+    );
+    let (value, origin) = run(Compiler::new(Some(directory.clone())), LookAhead::Full);
+    assert_eq!(value, 12);
+    assert!(matches!(origin, Origin::Disk(_)), "{origin:?}");
+    std::fs::remove_dir_all(&directory).unwrap();
+}

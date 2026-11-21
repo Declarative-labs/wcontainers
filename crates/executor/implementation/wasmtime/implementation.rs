@@ -6,6 +6,8 @@ pub mod cli;
 mod memory;
 pub mod starts;
 
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::io::Write;
@@ -120,11 +122,17 @@ fn output_form() -> String {
     )
 }
 
-/// The first bytes of a cache file.
-const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
+/// The first bytes of a cache file, before its body: the postcard of its `CacheModule`s.
+const CACHE_MAGIC: &[u8; 8] = b"wcxlate2";
 
-/// Bytes of each count and length in a cache file.
-const CACHE_WORD: usize = size_of::<u64>();
+/// A module of a cache file: its pieces, as blob offsets in slot order, and wasmtime's serialisation
+/// of it, borrowed from the file's bytes.
+#[derive(Serialize, Deserialize)]
+struct CacheModule<'a> {
+    pieces: Cow<'a, [u64]>,
+    #[serde(borrow, with = "serde_bytes")]
+    code: &'a [u8],
+}
 
 /// What a compiled translation is kept under.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -235,29 +243,14 @@ impl<G: Guest> Compiler<G> {
 
     /// A translation from a file's bytes; none when they are not whole or wasmtime refuses them.
     fn parse(engine: &Engine, bytes: &[u8]) -> Option<Compiled> {
-        let mut rest = bytes.strip_prefix(CACHE_MAGIC)?;
-        let mut take = |length: usize| -> Option<&[u8]> {
-            let (taken, after) = rest.split_at_checked(length)?;
-            rest = after;
-            Some(taken)
-        };
-        let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word"));
-        let count = word(take(CACHE_WORD)?);
+        let body: Vec<CacheModule> = postcard::from_bytes(bytes.strip_prefix(CACHE_MAGIC)?).ok()?;
         let (mut modules, mut pieces) = (Vec::new(), Vec::new());
-        for _ in 0..count {
-            let length = usize::try_from(word(take(CACHE_WORD)?)).ok()?;
-            let list: Vec<u64> = take(length.checked_mul(CACHE_WORD)?)?
-                .as_chunks::<CACHE_WORD>()
-                .0
-                .iter()
-                .map(|bytes| u64::from_le_bytes(*bytes))
-                .collect();
-            let length = usize::try_from(word(take(CACHE_WORD)?)).ok()?;
+        for CacheModule { pieces: list, code } in body {
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
-            let module = unsafe { Module::deserialize(engine, take(length)?) }.ok()?;
+            let module = unsafe { Module::deserialize(engine, code) }.ok()?;
             modules.push(module);
-            pieces.push(list);
+            pieces.push(list.into_owned());
         }
         Some(Compiled {
             modules,
@@ -268,15 +261,16 @@ impl<G: Guest> Compiler<G> {
 
     /// Keeps a translation in the cache's directory, written whole or not at all.
     fn store(&self, file: &Path, compiled: &Compiled) -> std::io::Result<()> {
-        let mut bytes = CACHE_MAGIC.to_vec();
-        bytes.extend((compiled.modules.len() as u64).to_le_bytes());
-        for (module, pieces) in compiled.modules.iter().zip(&compiled.pieces) {
-            bytes.extend((pieces.len() as u64).to_le_bytes());
-            bytes.extend(pieces.iter().flat_map(|p| p.to_le_bytes()));
-            let serialised = module.serialize().expect("a compiled module serialises");
-            bytes.extend((serialised.len() as u64).to_le_bytes());
-            bytes.extend(serialised);
-        }
+        let serialised: Vec<Vec<u8>> = (compiled.modules.iter())
+            .map(|module| module.serialize().expect("a compiled module serialises"))
+            .collect();
+        let body: Vec<CacheModule> = (serialised.iter().zip(&compiled.pieces))
+            .map(|(code, pieces)| CacheModule {
+                pieces: Cow::Borrowed(pieces),
+                code,
+            })
+            .collect();
+        let bytes = postcard::to_extend(&body, CACHE_MAGIC.to_vec()).expect("a cache file");
         let directory = file.parent().expect("a directory");
         std::fs::create_dir_all(directory)?;
         let mut partial = tempfile::NamedTempFile::new_in(directory)?;

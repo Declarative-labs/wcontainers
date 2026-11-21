@@ -35,6 +35,10 @@ wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
 pico-args = "0.5.0"
 # Writes a cache file whole under a name of its own, then puts it in place.
 tempfile = "3.27.0"
+# A cache file's body.
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_bytes = "0.11.19"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The fork copy: the system's own exact copy of a range of pages.
