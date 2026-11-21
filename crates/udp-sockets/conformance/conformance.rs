@@ -12,7 +12,12 @@
 //! - 198.51.100.0/24 routed through a gateway (link_scope_keeps_a_datagram_on_its_link);
 //! - loopback holding each datagram until its transmit time (a_transmit_time_holds_a_datagram_until_then);
 //! - the local addresses 127.0.0.2 and 2001:db8::2 routed with an MTU of 1500 bytes
-//!   (path_mtu_discovery_modes_take_the_routes_mtu).
+//!   (path_mtu_discovery_modes_take_the_routes_mtu, forbidden_fragmentation_refuses_what_would_be_fragmented,
+//!   an_ipv6_send_takes_its_source);
+//! - an interface with 203.0.113.1/24 and 2001:db8:1::1/64, this prefix's one public address, with a temporary
+//!   address made from it and temporary addresses preferred (connect_takes_its_route_selectors), whose queue
+//!   keeps a schedule of transmit times on the international atomic clock in strict mode and misses every time
+//!   it holds (Linux's etf qdisc with a delta of 0; rejected_transmit_times_are_reported_with_their_keys).
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU16;
@@ -31,8 +36,9 @@ use wcontainers_internet_protocol::{
     PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing, ProcessorIndex,
     PtpHardwareClockIndex, Report, RouteScope, RouteSelectors, SendError, SocketFilter,
     SourceAddressCheck, SourceFilter, SourcePreferences, TemporaryAddressPreference,
-    TimestampSource, Timestamping, TransmitEvent, TransmitReportKey, TransmitReportRequest,
-    TransmitStage, TransportPorts, UpperLayer, UpperLayerSelector,
+    TimestampSource, Timestamping, TransmitClock, TransmitEvent, TransmitReportKey,
+    TransmitReportRequest, TransmitStage, TransmitTime, TransmitTimeError, TransmitTimeMode,
+    TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_udp_sockets::{
@@ -52,6 +58,9 @@ const SILENCE: Duration = Duration::from_millis(200);
 /// How long a transmit time holds a datagram back.
 const HELD: Duration = Duration::from_millis(200);
 
+/// How far apart the transmit times of one check are, so that each rejection names one send.
+const APART: Duration = Duration::from_millis(10);
+
 /// 198.51.100.1, an address of TEST-NET-2 ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)), which the
 /// caller's network routes through a gateway.
 const BEYOND_A_GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
@@ -61,6 +70,17 @@ const BEYOND_A_GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
 const NARROW_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
 const ROUTE_MTU: u16 = 1500;
+
+/// The addresses of the interface with a schedule of transmit times, of TEST-NET-3 and the documentation prefix,
+/// an address its IPv4 route reaches and one its IPv6 prefix does, and the multicast interface's address.
+const SCHEDULED_V4: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 1);
+const SCHEDULED_V4_PEER: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 2);
+const PUBLIC_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 1);
+const PREFIX_V6_PEER: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0x99);
+const MULTICAST_INTERFACE_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 3);
+
+/// The segments of an IPv6 address that hold a /64 prefix.
+const PREFIX_SEGMENTS: usize = 4;
 
 /// The unit of a fragment's data and offset, [RFC 8200](https://www.rfc-editor.org/rfc/rfc8200#section-4.5).
 const FRAGMENT_UNIT: u16 = 8;
@@ -782,19 +802,22 @@ pub fn a_short_buffer_keeps_the_whole_length<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
-    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
     let mut whole = buffer();
     let length = receive_packet(&sockets, &receiver, &mut whole)
         .fields
         .length;
-    let mut short = vec![u8::MIN; length / 2];
-    assert_eq!(
-        receive_packet(&sockets, &receiver, &mut short)
-            .fields
-            .length,
-        length
-    );
-    assert_eq!(short[..], whole[..length / 2]);
+    // Cut inside the UDP header, then inside the payload, where the checksum is still the whole datagram's.
+    for cut in [length / 2, length - 1] {
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+        let mut short = vec![u8::MIN; cut];
+        assert_eq!(
+            receive_packet(&sockets, &receiver, &mut short)
+                .fields
+                .length,
+            length
+        );
+        assert_eq!(short[..], whole[..cut], "cut to {cut} bytes");
+    }
 }
 
 /// Receiving with nothing queued would block.
@@ -895,7 +918,7 @@ pub fn disconnect_keeps_the_binding<S: UdpSockets>(sockets: S) {
 }
 
 /// A UDP-Lite datagram whose checksum covers less than the receiver's minimum is dropped; one that covers enough
-/// arrives.
+/// arrives, and with no minimum any coverage does.
 pub fn udp_lite_coverage_below_the_minimum_is_dropped<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
@@ -910,7 +933,7 @@ pub fn udp_lite_coverage_below_the_minimum_is_dropped<S: UdpSockets>(sockets: S)
         UdpSocketSetting::MinimumChecksumCoverage(Some(ChecksumCoverage(minimum))),
     );
     let short = NonZeroU16::new(header_length).unwrap();
-    for (coverage, payload) in [(short, TOO_LITTLE_COVERED), (minimum, PAYLOAD)] {
+    let send_covered = |coverage, payload| {
         let lite = UdpDatagram {
             checksum: UdpChecksum::Partial(ChecksumCoverage(coverage)),
             segment_size: None,
@@ -924,10 +947,23 @@ pub fn udp_lite_coverage_below_the_minimum_is_dropped<S: UdpSockets>(sockets: S)
                 lite,
             )
             .unwrap();
-    }
+    };
+    send_covered(short, TOO_LITTLE_COVERED);
+    send_covered(minimum, PAYLOAD);
     let mut into = buffer();
     let packet = receive_packet(&sockets, &receiver, &mut into);
     assert_eq!(seen(&into[..packet.fields.length]).payload, PAYLOAD);
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::MinimumChecksumCoverage(None),
+    );
+    send_covered(short, TOO_LITTLE_COVERED);
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(
+        seen(&into[..packet.fields.length]).payload,
+        TOO_LITTLE_COVERED
+    );
 }
 
 /// The three segments of one send arrive as three datagrams of the segment size.
@@ -1433,7 +1469,39 @@ fn loopback_interface<S: UdpSockets>(sockets: &S) -> InterfaceIndex {
         .interface
 }
 
-/// A socket bound to an interface still sends over it; one bound to no interface that exists cannot be.
+/// The interface the IPv4 multicast route chooses, from a looped datagram to a group joined on no interface given.
+fn multicast_interface<S: UdpSockets>(sockets: &S) -> InterfaceIndex {
+    let group = IpAddr::V4(Ipv4Addr::from_bits(
+        linux_raw_sys::net::INADDR_MAX_LOCAL_GROUP,
+    ));
+    let receiver = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let port = sockets
+        .bind(&receiver, binding(unspecified(IpVersion::V4), u16::MIN))
+        .unwrap()
+        .port();
+    set(sockets, &receiver, membership(group, None, true));
+    let sender = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let from = sockets
+        .bind(&sender, binding(unspecified(IpVersion::V4), u16::MIN))
+        .unwrap();
+    set(
+        sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(true)),
+    );
+    let to = SocketAddr::new(group, port);
+    send(sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    receive_packet(sockets, &receiver, &mut buffer())
+        .fields
+        .interface
+}
+
+/// A socket bound to an interface still sends over it and takes only what arrives on it; one bound to no
+/// interface that exists cannot be.
 pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
     let interface = loopback_interface(&sockets);
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -1455,6 +1523,27 @@ pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
         &sender,
         UdpSocketSetting::Port(PortSetting::BoundInterface(None)),
     );
+    let elsewhere = multicast_interface(&sockets);
+    assert_ne!(elsewhere, interface);
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Port(PortSetting::BoundInterface(Some(elsewhere))),
+    );
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    assert!(
+        !arrives(&sockets, &receiver),
+        "a socket bound to another interface took a loopback datagram"
+    );
+    // No socket took it, so the sender is told the port is closed.
+    receive_packet(&sockets, &sender, &mut buffer());
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Port(PortSetting::BoundInterface(None)),
+    );
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    assert!(arrives(&sockets, &receiver));
     assert!(
         sockets
             .configure(
@@ -2356,6 +2445,270 @@ pub fn negative_route_advice_contract_holds<S: UdpSockets>(sockets: S) {
     wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, socket));
 }
 
+/// The time now on a clock, since its epoch.
+fn clock_now(clock: rustix::time::ClockId) -> Duration {
+    let now = rustix::time::clock_gettime(clock);
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap(),
+        u32::try_from(now.tv_nsec).unwrap(),
+    )
+}
+
+/// Connect takes its route's selectors: the IPv6 source preferences choose between the public and the temporary
+/// address, the host's choice being temporary, and an IPv4 interface given gives that interface's address.
+pub fn connect_takes_its_route_selectors<S: UdpSockets>(sockets: S) {
+    let connected = |version, route| {
+        let socket = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+        sockets.connect(&socket, route).expect("connect").ip()
+    };
+    let port = closed_port(&sockets, IpVersion::V6).port();
+    let from = SocketAddr::new(unspecified(IpVersion::V6), u16::MIN);
+    let peer = SocketAddr::new(IpAddr::V6(PREFIX_V6_PEER), port);
+    let preferring = |temporary| {
+        let mut route = ipv6_route(UdpProtocol::Udp, from, peer);
+        route.source_preferences.temporary = temporary;
+        connected(IpVersion::V6, RouteSelectors::V6(route))
+    };
+    assert_eq!(
+        preferring(TemporaryAddressPreference::Public),
+        IpAddr::V6(PUBLIC_V6)
+    );
+    let IpAddr::V6(temporary) = preferring(TemporaryAddressPreference::Temporary) else {
+        panic!("an IPv6 source")
+    };
+    assert_ne!(temporary, PUBLIC_V6);
+    assert_eq!(
+        temporary.segments()[..PREFIX_SEGMENTS],
+        PUBLIC_V6.segments()[..PREFIX_SEGMENTS],
+        "{temporary} is of the prefix"
+    );
+    assert_eq!(
+        preferring(TemporaryAddressPreference::SystemDefault),
+        IpAddr::V6(temporary)
+    );
+    let from = SocketAddr::new(unspecified(IpVersion::V4), u16::MIN);
+    let peer = SocketAddr::new(IpAddr::V4(SCHEDULED_V4_PEER), port);
+    assert_eq!(
+        connected(IpVersion::V4, route(UdpProtocol::Udp, from, peer)),
+        IpAddr::V4(SCHEDULED_V4)
+    );
+    let mut through = ipv4_route(UdpProtocol::Udp, from, peer);
+    through.interface = Some(multicast_interface(&sockets));
+    assert_eq!(
+        connected(IpVersion::V4, RouteSelectors::V4(through)),
+        IpAddr::V4(MULTICAST_INTERFACE_V4)
+    );
+}
+
+/// Local fragmentation forbidden refuses a datagram over the route's MTU that path MTU discovery would let be
+/// fragmented, and allowed fragments it.
+pub fn forbidden_fragmentation_refuses_what_would_be_fragmented<S: UdpSockets>(sockets: S) {
+    let receiver = sockets
+        .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let to = sockets
+        .bind(&receiver, binding(IpAddr::V6(NARROW_V6), u16::MIN))
+        .unwrap();
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let payload = vec![u8::MIN; usize::from(ROUTE_MTU) * 2];
+    let mut header = ipv6_header(ipv6_route(UdpProtocol::Udp, from, to));
+    header.path_mtu_discovery = PathMtuDiscovery::Want;
+    header.local_fragmentation = LocalFragmentation::Forbidden;
+    assert_eq!(
+        sockets.send_to(
+            &sender,
+            IpHeaderFields::V6(header.clone()),
+            plain_fields(),
+            datagram(&payload)
+        ),
+        Err(SendError::MessageTooLong {
+            maximum_transmission_unit: MaximumTransmissionUnit(u32::from(ROUTE_MTU))
+        })
+    );
+    header.local_fragmentation = LocalFragmentation::Allowed;
+    sockets
+        .send_to(
+            &sender,
+            IpHeaderFields::V6(header),
+            plain_fields(),
+            datagram(&payload),
+        )
+        .unwrap();
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert!(packet.fields.largest_fragment.is_some());
+    assert_eq!(seen(&into[..packet.fields.length]).payload, payload);
+}
+
+/// An IPv6 send from a socket bound to no address leaves from the source its header gives.
+pub fn an_ipv6_send_takes_its_source<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let sender = sockets
+        .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let from = sockets
+        .bind(&sender, binding(unspecified(IpVersion::V6), u16::MIN))
+        .unwrap();
+    let mut route = ipv6_route(UdpProtocol::Udp, from, to);
+    route.source = Some(NARROW_V6);
+    sockets
+        .send_to(
+            &sender,
+            IpHeaderFields::V6(ipv6_header(route)),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(
+        seen(&into[..packet.fields.length]).source,
+        SocketAddr::new(IpAddr::V6(NARROW_V6), from.port())
+    );
+}
+
+/// With its maximum pacing rate unset again, a socket's datagrams leave at once.
+pub fn an_unset_pacing_rate_holds_nothing<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::Timestamping(Timestamping {
+            receive_software: Report::Requested,
+            receive_hardware: Report::NotRequested,
+            bound_clock: None,
+        })),
+    );
+    for rate in [Some(PACING_RATE), None] {
+        set(
+            &sockets,
+            &sender,
+            UdpSocketSetting::Ip(IpSocketSetting::MaximumPacingRate(rate)),
+        );
+    }
+    let payload = vec![u8::MAX; PACED_LENGTH];
+    for _ in 0..PACED_DATAGRAMS {
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, &payload);
+    }
+    let mut into = buffer();
+    let times: Vec<Duration> = (0..PACED_DATAGRAMS)
+        .map(|_| {
+            receive_packet(&sockets, &receiver, &mut into)
+                .fields
+                .timestamps
+                .software
+                .expect("a receive time")
+        })
+        .collect();
+    let gaps = (PACED_DATAGRAMS - 1) * PACED_LENGTH;
+    let paced = Duration::from_secs_f64(gaps as f64 / PACING_RATE.0 as f64);
+    assert!(times[PACED_DATAGRAMS - 1] - times[0] < paced, "{times:?}");
+}
+
+/// A transmit time the interface's schedule cannot keep is reported with the key of its send and why: a time
+/// already past, or a clock or mode other than the schedule's, is invalid, and a time the schedule misses is
+/// missed, with the packet if asked; a send that did not ask for errors gets no report.
+pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(sockets: S) {
+    let sender = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let from = sockets
+        .bind(&sender, binding(unspecified(IpVersion::V4), u16::MIN))
+        .unwrap();
+    let to = SocketAddr::new(IpAddr::V4(SCHEDULED_V4_PEER), from.port());
+    let atomic = clock_now(rustix::time::ClockId::Tai);
+    let realtime = clock_now(rustix::time::ClockId::Realtime);
+    // Each send's clock, time, mode, whether it asks for errors, and what is reported; its key is its place.
+    let sends = [
+        (
+            TransmitClock::InternationalAtomicTime,
+            atomic + HELD,
+            TransmitTimeMode::Strict,
+            Report::NotRequested,
+            None,
+        ),
+        (
+            TransmitClock::InternationalAtomicTime,
+            HELD,
+            TransmitTimeMode::Strict,
+            Report::Requested,
+            Some(TransmitTimeError::InvalidParameter),
+        ),
+        (
+            TransmitClock::Realtime,
+            realtime + HELD,
+            TransmitTimeMode::Strict,
+            Report::Requested,
+            Some(TransmitTimeError::InvalidParameter),
+        ),
+        (
+            TransmitClock::InternationalAtomicTime,
+            atomic + HELD + APART,
+            TransmitTimeMode::Deadline,
+            Report::Requested,
+            Some(TransmitTimeError::InvalidParameter),
+        ),
+        (
+            TransmitClock::InternationalAtomicTime,
+            atomic + HELD - APART,
+            TransmitTimeMode::Strict,
+            Report::Requested,
+            Some(TransmitTimeError::Missed),
+        ),
+    ];
+    let key = |place: usize| TransmitReportKey(u32::try_from(place).unwrap());
+    // A missed time's report comes with the packet, which its send asks for.
+    let with_packet = |reason| reason == Some(TransmitTimeError::Missed);
+    for (place, &(clock, at, mode, errors, reason)) in sends.iter().enumerate() {
+        let mut fields = plain_fields();
+        fields.transmit_time = Some(TransmitTime {
+            clock,
+            at,
+            mode,
+            errors,
+        });
+        fields.transmit_reports.key = key(place);
+        if with_packet(reason) {
+            fields.transmit_reports.packet = Report::Requested;
+        }
+        match sockets.send_to(
+            &sender,
+            header(UdpProtocol::Udp, from, to),
+            fields,
+            datagram(PAYLOAD),
+        ) {
+            Ok(()) | Err(SendError::Host(_)) => {}
+            Err(error) => panic!("send {place}: {error:?}"),
+        }
+    }
+    let mut reported = Vec::new();
+    let mut into = buffer();
+    let start = Instant::now();
+    while start.elapsed() < HELD + SILENCE {
+        match sockets.receive(&sender, &mut into) {
+            Ok(UdpReceived::TransmitReport(report)) => {
+                let TransmitEvent::TransmitTimeRejected(reason) = report.event else {
+                    panic!("a rejection, not {report:?}")
+                };
+                assert_eq!(report.packet_length.is_some(), with_packet(Some(reason)));
+                reported.push((report.key, Some(reason)));
+            }
+            Ok(UdpReceived::Packet(packet)) => panic!("a report, not {packet:?}"),
+            Err(HostError::WouldBlock) => std::thread::yield_now(),
+            Err(error) => panic!("receive: {error:?}"),
+        }
+    }
+    reported.sort_by_key(|(key, _)| key.0);
+    let expected: Vec<_> = sends
+        .iter()
+        .enumerate()
+        .filter(|(_, send)| send.4.is_some())
+        .map(|(place, send)| (key(place), send.4))
+        .collect();
+    assert_eq!(reported, expected);
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -2378,6 +2731,11 @@ macro_rules! tests {
             coalescing_by_segment_size_gives_one_packet
             a_zero_checksum_arrives_only_where_accepted
             a_closed_port_answers_with_an_icmp_error
+            connect_takes_its_route_selectors
+            forbidden_fragmentation_refuses_what_would_be_fragmented
+            an_ipv6_send_takes_its_source
+            an_unset_pacing_rate_holds_nothing
+            rejected_transmit_times_are_reported_with_their_keys
             a_datagram_over_the_mtu_is_too_long
             transmit_reports_carry_the_key_of_their_send
             receive_timestamps_come_only_when_set

@@ -2,7 +2,7 @@
 
 use core::cell::RefCell;
 use core::cmp::Ordering;
-use std::collections::VecDeque;
+use core::mem::MaybeUninit;
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
@@ -14,8 +14,8 @@ use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BindAddress, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding,
-    LocalPort, MaximumTransmissionUnit, NonlocalAddresses, PortSetting, ProcessorIndex, Report,
-    RouteSelectors, SendError, UpperLayer, UpperLayerSelector,
+    LocalPort, NonlocalAddresses, PortSetting, ProcessorIndex, Received, Report, RouteSelectors,
+    SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
@@ -26,6 +26,7 @@ use wcontainers_udp_sockets::{
 };
 
 use shared::datagram::addresses::{for_family, local_address, unmapped};
+use shared::datagram::exchange::{ErrorQueue, send_message};
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{
     self as datagram_receive, Ancillary, ControlBuffer, Headers, Message,
@@ -56,17 +57,9 @@ struct SocketState {
     local: Option<SocketAddr>,
     peer: Option<SocketAddr>,
     drops: u32,
-    deferred: VecDeque<Deferred>,
-    /// Whether a send asked for reports that may still wait on the error queue.
-    reports_awaited: bool,
-}
-
-/// An error queue entry read while a send looked for its own, kept for the next receive.
-struct Deferred {
-    data: Vec<u8>,
-    control: Box<ControlBuffer>,
-    control_length: usize,
-    source: Option<SocketAddr>,
+    errors: ErrorQueue,
+    /// Whether the error queue may hold reports a send asked for or entries a send read, which come first.
+    errors_first: bool,
 }
 
 impl PartialEq for LinuxHostUdpSocket {
@@ -98,6 +91,9 @@ pub const SEND_BUFFER_CUT_BY_THE_HOST: &str =
     "a send buffer size above the host's net.core.wmem_max, which the host cuts to it";
 pub const RECEIVE_BUFFER_CUT_BY_THE_HOST: &str =
     "a receive buffer size above the host's net.core.rmem_max, which the host cuts to it";
+
+/// The largest payload of one receive: an IP packet's largest length.
+const LARGEST_PAYLOAD: usize = u16::MAX as usize;
 
 /// The receive control messages every socket turns on, by level.
 const IPV4_RECEIVE_OPTIONS: [u32; 7] = [
@@ -216,117 +212,6 @@ impl LinuxHostUdpSocket {
         Ok(())
     }
 
-    fn send_error(&self, state: &mut SocketState) -> SendError {
-        // A local error of the error queue carries the MTU a datagram was too long for.
-        loop {
-            let mut control = Box::new(ControlBuffer::new());
-            let mut data = vec![u8::MIN; usize::from(u16::MAX)];
-            let (length, control_length, source, error) = {
-                let Ok(message) =
-                    datagram_receive::receive(self.fd(), &mut data, &mut control, true)
-                else {
-                    return SendError::Host(HostError::Errno(libc::EMSGSIZE));
-                };
-                let ancillary = Ancillary::parse(message.control);
-                (
-                    message.length,
-                    message.control.len(),
-                    message.source,
-                    ancillary.error.map(|(error, _)| error),
-                )
-            };
-            match error {
-                Some(error)
-                    if error.ee_origin == libc::SO_EE_ORIGIN_LOCAL
-                        && error.ee_errno == libc::EMSGSIZE as u32 =>
-                {
-                    return SendError::MessageTooLong {
-                        maximum_transmission_unit: MaximumTransmissionUnit(error.ee_info),
-                    };
-                }
-                _ => {
-                    data.truncate(length);
-                    state.deferred.push_back(Deferred {
-                        data,
-                        control,
-                        control_length,
-                        source,
-                    });
-                }
-            }
-        }
-    }
-
-    /// A packet or report of the error queue, or `None` for an entry that has none.
-    fn error_entry(
-        &self,
-        sockets: &LinuxHostUdpSockets,
-        state: &mut SocketState,
-        into: &mut [u8],
-        message: &Message<'_>,
-    ) -> Result<Option<UdpReceived>, HostError> {
-        let ancillary = Ancillary::parse(message.control);
-        let Some((error, offender)) = ancillary.error else {
-            sockets.count(ERROR_OF_NO_REPORT);
-            return Ok(None);
-        };
-        let copied = message.length.min(into.len());
-        match error.ee_origin {
-            libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 => {
-                let local = self.local(state)?;
-                // Linux gives the quoted datagram from its payload on, after the destination it was sent to.
-                let Some(destination) = message.source.map(unmapped) else {
-                    sockets.count(ERROR_OF_NO_REPORT);
-                    return Ok(None);
-                };
-                let quoted = UdpHeader {
-                    source_port: local.port(),
-                    destination_port: destination.port(),
-                    length: u16::try_from(UdpHeader::LEN + copied)
-                        .map_err(|_| HostError::Errno(libc::EMSGSIZE))?,
-                    checksum: u16::MIN,
-                };
-                let packet = write_icmp_error(
-                    into,
-                    copied,
-                    &ancillary,
-                    &error,
-                    offender,
-                    unmapped(local).ip(),
-                    destination.ip(),
-                    self.protocol_number(),
-                    &quoted.to_bytes(),
-                );
-                Ok(packet.map(|length| {
-                    UdpReceived::Packet(UdpReceivedPacket {
-                        fields: ancillary.packet_fields(length, u32::MIN),
-                        segment_size: None,
-                    })
-                }))
-            }
-            libc::SO_EE_ORIGIN_TIMESTAMPING => {
-                let packet = (message.length > usize::MIN).then_some(message.length);
-                match ancillary.transmit_report(&error, packet) {
-                    Some(report) => Ok(Some(UdpReceived::TransmitReport(report))),
-                    None => {
-                        sockets.count(ERROR_OF_NO_REPORT);
-                        Ok(None)
-                    }
-                }
-            }
-            // The send that made a local error answered it.
-            libc::SO_EE_ORIGIN_LOCAL => Ok(None),
-            datagram_receive::SO_EE_ORIGIN_TXTIME => {
-                sockets.count(TRANSMIT_TIME_REJECTION_WITHOUT_KEY);
-                Ok(None)
-            }
-            _ => {
-                sockets.count(ERROR_OF_NO_REPORT);
-                Ok(None)
-            }
-        }
-    }
-
     /// The next packet or report of the error queue, skipping entries that have none.
     fn take_error_entry(
         &self,
@@ -334,14 +219,46 @@ impl LinuxHostUdpSocket {
         state: &mut SocketState,
         into: &mut [u8],
     ) -> Result<UdpReceived, HostError> {
+        let local = self.local(state)?;
+        let protocol = self.protocol_number();
         loop {
-            let mut control = ControlBuffer::new();
-            let message = datagram_receive::receive(self.fd(), into, &mut control, true)?;
-            if message.control_truncated {
-                sockets.count(datagram_receive::CONTROL_TRUNCATED);
-            }
-            if let Some(received) = self.error_entry(sockets, state, into, &message)? {
-                return Ok(received);
+            let entry = state.errors.next(self.fd(), &sockets.shortfalls)?;
+            let write =
+                |into: &mut [u8], copied, ancillary: &Ancillary<'_>, error: &_, offender| {
+                    // Linux gives the quoted datagram from its payload on, after the destination it was sent to.
+                    let destination = entry.source.map(unmapped)?;
+                    let quoted = UdpHeader {
+                        source_port: local.port(),
+                        destination_port: destination.port(),
+                        length: u16::try_from(UdpHeader::LEN + copied).ok()?,
+                        checksum: u16::MIN,
+                    };
+                    write_icmp_error(
+                        into,
+                        copied,
+                        ancillary,
+                        error,
+                        offender,
+                        unmapped(local).ip(),
+                        destination.ip(),
+                        protocol,
+                        &quoted.to_bytes(),
+                    )
+                };
+            match state
+                .errors
+                .received(&sockets.shortfalls, &entry, into, write)
+            {
+                Some(Received::Packet(fields)) => {
+                    return Ok(UdpReceived::Packet(UdpReceivedPacket {
+                        fields,
+                        segment_size: None,
+                    }));
+                }
+                Some(Received::TransmitReport(report)) => {
+                    return Ok(UdpReceived::TransmitReport(report));
+                }
+                None => {}
             }
         }
     }
@@ -350,6 +267,7 @@ impl LinuxHostUdpSocket {
         &self,
         state: &mut SocketState,
         into: &mut [u8],
+        tail: &[u8],
         message: &Message<'_>,
     ) -> Result<UdpReceived, HostError> {
         let ancillary = Ancillary::parse(message.control);
@@ -383,7 +301,6 @@ impl LinuxHostUdpSocket {
             }
             _ => return Err(HostError::Errno(libc::EAFNOSUPPORT)),
         }
-        let udp_start = headers.len();
         let length_field = match self.protocol {
             UdpProtocol::Udp => {
                 u16::try_from(udp_length).map_err(|_| HostError::Errno(libc::EMSGSIZE))?
@@ -391,27 +308,23 @@ impl LinuxHostUdpSocket {
             // The coverage a UDP-Lite sender chose is not given to the receiver: zero is the whole datagram.
             UdpProtocol::Lite => u16::MIN,
         };
-        let udp = UdpHeader {
+        let mut udp = UdpHeader {
             source_port: source.port(),
             destination_port: destination.port(),
             length: length_field,
             checksum: u16::MIN,
         };
-        headers.push(&udp.to_bytes());
         let copied = payload.min(into.len());
-        let placed = headers.place(into, copied);
-        if placed >= headers.len() {
-            let checksum = datagram_receive::udp_checksum(
-                source.ip(),
-                destination.ip(),
-                protocol,
-                udp_length,
-                &into[udp_start..headers.len()],
-                &into[headers.len()..placed],
-            );
-            let at = udp_start + UdpHeader::LEN - size_of_checksum();
-            into[at..at + size_of_checksum()].copy_from_slice(&checksum.to_be_bytes());
-        }
+        udp.checksum = datagram_receive::udp_checksum(
+            source.ip(),
+            destination.ip(),
+            protocol,
+            udp_length,
+            &udp.to_bytes(),
+            &[&into[..copied], tail],
+        );
+        headers.push(&udp.to_bytes());
+        headers.place(into, copied);
         let drops = match ancillary.drops {
             Some(total) => {
                 let since = total.wrapping_sub(state.drops);
@@ -446,10 +359,6 @@ fn apply_nonlocal(
         .ensure_flag(fd, freebind, nonlocal == NonlocalAddresses::Bindable)?;
     send.sticky
         .ensure_flag(fd, transparent, nonlocal == NonlocalAddresses::Transparent)
-}
-
-const fn size_of_checksum() -> usize {
-    core::mem::size_of::<u16>()
 }
 
 impl UdpSockets for LinuxHostUdpSockets {
@@ -491,8 +400,8 @@ impl UdpSockets for LinuxHostUdpSockets {
                 local: None,
                 peer: None,
                 drops: u32::MIN,
-                deferred: VecDeque::new(),
-                reports_awaited: false,
+                errors: ErrorQueue::default(),
+                errors_first: false,
             }),
         })
     }
@@ -642,26 +551,43 @@ impl UdpSockets for LinuxHostUdpSockets {
             );
         }
         let name = (state.peer != Some(destination)).then_some(destination);
-        match send_message(fd, name, datagram.payload, control.bytes(), flags) {
+        let sent = send_message(fd, name, datagram.payload, control.bytes(), flags);
+        // A transmit time Linux rejects at once fails the send with ENOBUFS and queues its rejection.
+        if let Some(time) = fields.transmit_time
+            && time.errors == Report::Requested
+            && matches!(sent, Ok(()) | Err(HostError::Errno(libc::ENOBUFS)))
+        {
+            let reports = &fields.transmit_reports;
+            state.errors.expect_transmit_time_errors(
+                u64::try_from(time.at.as_nanos()).unwrap_or(u64::MAX),
+                reports.key,
+                reports.packet == Report::Requested,
+            );
+            // Forgetting the sends that can no longer be rejected is tried again at the next receive.
+            let _ = state.errors.settle(fd, &self.shortfalls);
+            state.errors_first = true;
+        }
+        match sent {
             Ok(()) => {
                 if state.local.is_some_and(|local| local.port() == u16::MIN) {
                     state.local = None;
                 }
                 let reports = fields.transmit_reports;
-                state.reports_awaited |= [
+                state.errors_first |= [
                     reports.scheduled,
                     reports.software,
                     reports.hardware,
                     reports.acknowledgement,
                     reports.completion,
                 ]
-                .contains(&Report::Requested)
-                    || fields
-                        .transmit_time
-                        .is_some_and(|time| time.errors == Report::Requested);
+                .contains(&Report::Requested);
                 Ok(())
             }
-            Err(HostError::Errno(libc::EMSGSIZE)) => Err(socket.send_error(state)),
+            Err(HostError::Errno(libc::EMSGSIZE)) => {
+                let error = state.errors.message_too_long(fd, &self.shortfalls);
+                state.errors_first |= state.errors.holds_entries();
+                Err(error)
+            }
             Err(error) => Err(SendError::Host(error)),
         }
     }
@@ -670,33 +596,27 @@ impl UdpSockets for LinuxHostUdpSockets {
         let fd = socket.fd();
         let mut state = socket.state.borrow_mut();
         let state = &mut *state;
-        while let Some(deferred) = state.deferred.pop_front() {
-            let copied = deferred.data.len().min(into.len());
-            into[..copied].copy_from_slice(&deferred.data[..copied]);
-            let message = Message {
-                length: deferred.data.len(),
-                source: deferred.source,
-                control: &deferred.control.bytes()[..deferred.control_length],
-                control_truncated: false,
-            };
-            if let Some(received) = socket.error_entry(self, state, into, &message)? {
-                return Ok(received);
-            }
-        }
         // Reports a send asked for come before the datagrams that arrive after them.
-        if state.reports_awaited {
+        if state.errors_first {
+            let settled = state.errors.settle(fd, &self.shortfalls)?;
             match socket.take_error_entry(self, state, into) {
-                Err(HostError::WouldBlock) => state.reports_awaited = false,
+                Err(HostError::WouldBlock) => state.errors_first = !settled,
                 taken => return taken,
             }
         }
+        // What does not fit `into` lands here, so that the checksum covers the whole payload.
+        let mut tail = [const { MaybeUninit::<u8>::uninit() }; LARGEST_PAYLOAD];
         let mut control = ControlBuffer::new();
-        match datagram_receive::receive(fd, into, &mut control, false) {
+        match datagram_receive::receive_with_tail(fd, into, &mut tail, &mut control, false) {
             Ok(message) => {
                 if message.control_truncated {
                     self.count(datagram_receive::CONTROL_TRUNCATED);
                 }
-                socket.datagram(state, into, &message)
+                let beyond = message.length.saturating_sub(into.len()).min(tail.len());
+                // SAFETY: the kernel wrote the first `beyond` bytes of the tail.
+                let tail =
+                    unsafe { core::slice::from_raw_parts(tail.as_ptr().cast::<u8>(), beyond) };
+                socket.datagram(state, into, tail, &message)
             }
             // A pending socket error signals an ICMP error; a send may have taken that signal first.
             Err(error) => match socket.take_error_entry(self, state, into) {
@@ -726,47 +646,6 @@ impl UdpSockets for LinuxHostUdpSockets {
 
     fn close(&self, socket: Self::Socket) {
         drop(socket);
-    }
-}
-
-/// One `sendmsg` of a payload to a name, or to the connected peer when there is none.
-fn send_message(
-    fd: BorrowedFd<'_>,
-    name: Option<SocketAddr>,
-    payload: &[u8],
-    control: &[u8],
-    flags: c_int,
-) -> Result<(), HostError> {
-    let send = |name: *const libc::c_void, length: libc::socklen_t| {
-        let mut vector = libc::iovec {
-            iov_base: payload.as_ptr() as *mut _,
-            iov_len: payload.len(),
-        };
-        let mut header = shared::datagram::addresses::zeroed::<libc::msghdr>();
-        header.msg_name = name as *mut _;
-        header.msg_namelen = length;
-        header.msg_iov = &mut vector;
-        header.msg_iovlen = 1;
-        if !control.is_empty() {
-            header.msg_control = control.as_ptr() as *mut _;
-            header.msg_controllen = control.len() as _;
-        }
-        // SAFETY: every pointer in the header describes a buffer that outlives the call.
-        unsafe { libc::sendmsg(fd.as_raw_fd(), &header, flags) }
-    };
-    let sent = match name {
-        // SAFETY: rustix gives a pointer to `length` bytes of the socket address for the duration of the call.
-        Some(name) => unsafe {
-            rustix::net::addr::SocketAddrArg::with_sockaddr(&name, |pointer, length| {
-                send(pointer.cast(), length)
-            })
-        },
-        None => send(core::ptr::null(), libc::socklen_t::MIN),
-    };
-    if sent < 0 {
-        Err(last_host_error())
-    } else {
-        Ok(())
     }
 }
 
@@ -865,7 +744,10 @@ impl<'a> Configurable<LinuxHostUdpSocket, UdpSocketSetting<'a>> for LinuxHostUdp
                 fd,
                 uapi::IPPROTO_UDPLITE as u32,
                 UDP_LITE_RECEIVE_COVERAGE,
-                c_int::from(coverage.map_or(u16::MIN, |coverage| coverage.0.get())),
+                // A coverage of the UDP header alone takes every datagram Linux finds valid.
+                coverage.map_or(UdpHeader::LEN as c_int, |coverage| {
+                    c_int::from(coverage.0.get())
+                }),
             ),
         }
     }
