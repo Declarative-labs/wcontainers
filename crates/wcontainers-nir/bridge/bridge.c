@@ -1113,7 +1113,8 @@ workgroup_words(nir_shader *nir)
 }
 
 void
-wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms)
+wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms,
+                        uint32_t storage_base)
 {
    /* Block indices that are constants show as constants. */
    wc_optimize(nir);
@@ -1129,7 +1130,7 @@ wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t
    for (uint32_t j = 0; j < use.blocks; j++) {
       if (BITSET_TEST(use.reached, j))
          vars[uniforms + j] =
-            word_block(nir, nir_var_mem_ssbo, uniforms + j, 0, BITSET_TEST(use.written, j));
+            word_block(nir, nir_var_mem_ssbo, storage_base + j, 0, BITSET_TEST(use.written, j));
    }
    const struct word_blocks blocks = {
       .uniform = vars,
@@ -1252,7 +1253,8 @@ wc_nir_uniform_blocks_as_words(nir_shader *nir)
          blocks = MAX2(blocks, first + i + 1);
       }
    }
-   wc_nir_buffers_as_words(nir, bytes, blocks);
+   /* Storage blocks past the image units, which share their kind's bindings. */
+   wc_nir_buffers_as_words(nir, bytes, blocks, PIPE_MAX_SHADER_IMAGES);
    /* The default uniforms' own variables, which st/mesa keeps after their loads became block 0's. */
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
 }

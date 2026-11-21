@@ -137,6 +137,10 @@ fn texture_desc<B: Backend>(screen: &Screen<B>, template: &pipe_resource) -> Opt
     if uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL) {
         usage |= TextureUsage::RENDER;
     }
+    // OpenGL binds any texture as an image later (st/mesa names no image binding at creation).
+    if uses.contains(FormatUse::STORAGE_WRITE) && template.nr_samples <= 1 {
+        usage |= TextureUsage::STORAGE;
+    }
     let target = template.target();
     let (dimension, depth_or_layers) = if target == PIPE_TEXTURE_3D {
         (TextureDimension::D3, u32::from(template.depth0))

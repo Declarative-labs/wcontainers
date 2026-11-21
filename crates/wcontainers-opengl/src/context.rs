@@ -152,6 +152,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.set_framebuffer_state = Some(set_framebuffer_state::<B>);
     c.texture_barrier = Some(texture_barrier::<B>);
     c.memory_barrier = Some(texture_barrier::<B>);
+    c.launch_grid = Some(crate::compute::launch_grid::<B>);
     c.flush_resource = Some(flush_resource);
     c.create_query = Some(query::create_query::<B>);
     c.destroy_query = Some(query::destroy_query::<B>);
@@ -190,10 +191,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
         create_tes_state,
         bind_tes_state,
         delete_tes_state,
-        create_compute_state,
-        bind_compute_state,
-        delete_compute_state,
-        launch_grid,
     );
 }
 
@@ -207,6 +204,7 @@ unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
     // SAFETY: the uploader was made with this context.
     unsafe { u_upload_destroy(context.base.stream_uploader) };
     context.bound.release();
+    context.stages.release();
     let views = std::mem::take(&mut context.framebuffer.views);
     let screen = context.screen();
     for view in views {
@@ -558,7 +556,8 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
     }
 }
 
-/// Later draws see what earlier ones wrote: the open pass ends.
+/// Later draws see what earlier ones wrote, to targets or storage: the open pass ends (the host
+/// orders passes and dispatches after the ones before).
 unsafe extern "C" fn texture_barrier<B: Backend>(pipe: *mut pipe_context, _: c_uint) {
     // SAFETY: Mesa passes this driver's context.
     let context = unsafe { Context::<B>::of(pipe) };
@@ -582,6 +581,7 @@ pub fn stage(stage: mesa_shader_stage) -> Option<Stage> {
     match stage {
         MESA_SHADER_VERTEX => Some(Stage::Vertex),
         MESA_SHADER_FRAGMENT => Some(Stage::Fragment),
+        MESA_SHADER_COMPUTE => Some(Stage::Compute),
         _ => None,
     }
 }

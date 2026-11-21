@@ -110,7 +110,7 @@ pub fn deepest_level(ours: &Caps) -> u32 {
 /// The GLSL version st/mesa's GLSL compiler takes for this driver, and OpenGL ES's: the
 /// versions whose programs the NIR route converts and whose state the context draws with.
 const GLSL_VERSION: c_uint = 130;
-const ESSL_VERSION: c_uint = 300;
+const ESSL_VERSION: c_uint = 310;
 
 /// Stream output's limits: the stage helper's (every vertex output written to its records, into
 /// its four buffers), on back ends with compute work; none without.
@@ -162,6 +162,18 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
         caps.max_stream_output_buffers,
         caps.max_stream_output_interleaved_components,
     ) = stream_output(ours);
+    // Compute work, storage buffers and images (in compute programs), indirect draws (their
+    // arguments read back), multisampled textures, gathers, stencil texturing and framebuffers
+    // without attachments: OpenGL ES 3.1's.
+    caps.compute = ours.has(Features::COMPUTE);
+    caps.shader_buffer_offset_alignment = limits.min_storage_offset_alignment;
+    caps.max_shader_buffer_size =
+        c_uint::try_from(limits.max_storage_buffer_size).unwrap_or(c_uint::MAX);
+    caps.draw_indirect = true;
+    caps.texture_multisample =
+        ours.has(Features::MULTISAMPLE_READ) && ours.has(Features::SAMPLE_MASK);
+    caps.max_texture_gather_components = naga::VectorSize::Quad as c_uint;
+    caps.framebuffer_no_attachment = true;
     caps.npot_textures = true;
     caps.blend_equation_separate = true;
     let independent = ours.has(Features::INDEPENDENT_BLEND);
@@ -203,8 +215,23 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.gl_clamp = false;
 }
 
-/// The stages the driver takes programs for. Compute waits on the context's dispatch.
-const STAGES: &[mesa_shader_stage] = &[MESA_SHADER_VERTEX, MESA_SHADER_FRAGMENT];
+/// The stages the driver takes programs for.
+const STAGES: &[mesa_shader_stage] = &[
+    MESA_SHADER_VERTEX,
+    MESA_SHADER_FRAGMENT,
+    MESA_SHADER_COMPUTE,
+];
+
+/// The compute grid's limits, the interface's.
+fn fill_compute_caps(caps: &mut pipe_compute_caps, ours: &Caps) {
+    let limits = &ours.limits;
+    caps.address_bits = u32::BITS;
+    caps.grid_dimension = limits.compute_size.len() as c_uint;
+    caps.max_grid_size = limits.compute_size.map(|_| limits.max_dispatch);
+    caps.max_block_size = limits.compute_size;
+    caps.max_threads_per_block = limits.compute_invocations;
+    caps.max_local_size = limits.compute_workgroup_storage;
+}
 
 /// What a program of one stage may hold. The interface sets no bound on a program's size.
 fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours: &Caps) {
@@ -216,11 +243,22 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     caps.max_tex_indirections = unbounded;
     caps.max_control_flow_depth = unbounded;
     caps.max_temps = unbounded;
-    (caps.max_inputs, caps.max_outputs) = if stage == MESA_SHADER_VERTEX {
-        (limits.vertex_attributes, limits.inter_stage_slots)
-    } else {
-        (limits.inter_stage_slots, limits.color_targets)
+    (caps.max_inputs, caps.max_outputs) = match stage {
+        MESA_SHADER_VERTEX => (limits.vertex_attributes, limits.inter_stage_slots),
+        MESA_SHADER_FRAGMENT => (limits.inter_stage_slots, limits.color_targets),
+        _ => (0, 0),
     };
+    // Storage buffers and images in compute programs, within their shared binding range.
+    if stage == MESA_SHADER_COMPUTE {
+        let buffers = limits
+            .storage_buffers_per_stage
+            .min(PIPE_MAX_SHADER_BUFFERS);
+        caps.max_shader_buffers = buffers;
+        caps.max_shader_images = limits
+            .storage_textures_per_stage
+            .min(PIPE_MAX_SHADER_IMAGES)
+            .min(SlotKind::Storage.slots() - buffers);
+    }
     caps.max_const_buffer0_size = limits.max_uniform_buffer_size;
     // One of the stage's uniform buffers holds a converted program's helper constants.
     caps.max_const_buffers = limits.uniform_buffers_per_stage - 1;
@@ -273,6 +311,9 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
         .fill(wcontainers_nir::mesa::compiler_options().cast());
     for &stage in STAGES {
         fill_shader_caps(&mut base.shader_caps[stage as usize], stage, &ours);
+    }
+    if ours.has(Features::COMPUTE) {
+        fill_compute_caps(&mut base.compute_caps, &ours);
     }
     Box::into_raw(screen).cast()
 }

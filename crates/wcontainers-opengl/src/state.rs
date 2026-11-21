@@ -40,15 +40,17 @@ pub const COLOR_CHANNELS: usize = size_of::<pipe_blend_color>() / size_of::<f32>
 pub enum Stage {
     Vertex,
     Fragment,
+    Compute,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 2] = [Stage::Vertex, Stage::Fragment];
+    pub const ALL: [Stage; 3] = [Stage::Vertex, Stage::Fragment, Stage::Compute];
 
     pub fn nir(self) -> wcontainers_nir::mesa::Stage {
         match self {
             Stage::Vertex => wcontainers_nir::mesa::Stage::Vertex,
             Stage::Fragment => wcontainers_nir::mesa::Stage::Fragment,
+            Stage::Compute => wcontainers_nir::mesa::Stage::Compute,
         }
     }
 }
@@ -62,11 +64,33 @@ pub struct Constants {
     pub bytes: Vec<u8>,
 }
 
+/// One storage buffer a stage binds: a range of a resource, holding a reference on it.
+pub struct ShaderBuffer {
+    pub resource: *mut pipe_resource,
+    pub offset: u32,
+    pub size: u32,
+    pub writable: bool,
+}
+
+impl Default for ShaderBuffer {
+    fn default() -> Self {
+        ShaderBuffer {
+            resource: std::ptr::null_mut(),
+            offset: 0,
+            size: 0,
+            writable: false,
+        }
+    }
+}
+
 /// What one stage has bound.
 pub struct StageState<B: Backend> {
     pub constants: Vec<Constants>,
     pub views: Vec<*mut pipe_sampler_view>,
     pub samplers: Vec<*const Sampler<B>>,
+    pub buffers: Vec<ShaderBuffer>,
+    /// Gallium's image views, each holding a reference on its resource (null where unbound).
+    pub images: Vec<pipe_image_view>,
     pub shader: *const Shader,
 }
 
@@ -78,17 +102,35 @@ impl<B: Backend> Default for StageState<B> {
                 .collect(),
             views: vec![std::ptr::null_mut(); PIPE_MAX_SHADER_SAMPLER_VIEWS as usize],
             samplers: vec![std::ptr::null(); PIPE_MAX_SAMPLERS as usize],
+            buffers: (0..PIPE_MAX_SHADER_BUFFERS)
+                .map(|_| ShaderBuffer::default())
+                .collect(),
+            images: vec![pipe_image_view::default(); PIPE_MAX_SHADER_IMAGES as usize],
             shader: std::ptr::null(),
         }
     }
 }
 
-/// Both stages' bindings.
+impl<B: Backend> StageState<B> {
+    /// Drops the references the storage buffers and images hold.
+    fn release_storage(&mut self) {
+        for buffer in &mut self.buffers {
+            // SAFETY: each slot holds one reference or none.
+            unsafe { resource::reference(&mut buffer.resource, std::ptr::null_mut()) };
+        }
+        for image in &mut self.images {
+            // SAFETY: as above.
+            unsafe { resource::reference(&mut image.resource, std::ptr::null_mut()) };
+        }
+    }
+}
+
+/// Every stage's bindings.
 pub struct Stages<B: Backend>(pub [StageState<B>; Stage::ALL.len()]);
 
 impl<B: Backend> Default for Stages<B> {
     fn default() -> Self {
-        Stages([StageState::default(), StageState::default()])
+        Stages(std::array::from_fn(|_| StageState::default()))
     }
 }
 
@@ -99,6 +141,11 @@ impl<B: Backend> Stages<B> {
 
     fn get_mut(&mut self, stage: Stage) -> &mut StageState<B> {
         &mut self.0[stage as usize]
+    }
+
+    /// Drops the references every stage's storage holds, with the context.
+    pub fn release(&mut self) {
+        self.0.iter_mut().for_each(StageState::release_storage);
     }
 }
 
@@ -865,17 +912,17 @@ unsafe extern "C" fn delete_vertex_elements_state<B: Backend>(
 /// Gallium's helpers hand over) in the shape every variant starts from.
 fn create_shader(
     pipe: *mut pipe_context,
-    state: *const pipe_shader_state,
+    ir: pipe_shader_ir,
+    program: *const c_void,
     stage: Stage,
 ) -> *mut c_void {
-    // SAFETY: Mesa passes this driver's context and a shader state; its NIR is the driver's from
-    // now on.
-    let (state, screen) = unsafe { (&*state, (*pipe).screen) };
-    let raw: *mut c_void = match state.type_ {
-        // SAFETY: a NIR state's union holds its shader.
-        PIPE_SHADER_IR_NIR => unsafe { state.ir.nir }.cast(),
-        // SAFETY: a TGSI state's tokens; the converter reads the screen's NIR options.
-        PIPE_SHADER_IR_TGSI => unsafe { tgsi_to_nir(state.tokens.cast(), screen, false) }.cast(),
+    // SAFETY: Mesa passes this driver's context and a program; its NIR is the driver's from now
+    // on.
+    let screen = unsafe { (*pipe).screen };
+    let raw: *mut c_void = match ir {
+        PIPE_SHADER_IR_NIR => program.cast_mut(),
+        // SAFETY: a TGSI program's tokens; the converter reads the screen's NIR options.
+        PIPE_SHADER_IR_TGSI => unsafe { tgsi_to_nir(program.cast(), screen, false) }.cast(),
         _ => refuse(format_args!("a program neither in NIR nor in TGSI")),
     };
     if raw.is_null() {
@@ -896,6 +943,7 @@ fn create_shader(
             };
         }
         Stage::Fragment => nir.fragcolor_to_buffers(PIPE_MAX_COLOR_BUFS),
+        Stage::Compute => {}
     }
     object(Shader {
         stage,
@@ -904,18 +952,52 @@ fn create_shader(
     })
 }
 
+/// A graphics stage's program: its NIR, or its TGSI tokens.
+fn create_stage(
+    pipe: *mut pipe_context,
+    state: *const pipe_shader_state,
+    stage: Stage,
+) -> *mut c_void {
+    // SAFETY: Mesa passes a shader state; its union holds what its type names.
+    let state = unsafe { &*state };
+    let program: *const c_void = if state.type_ == PIPE_SHADER_IR_NIR {
+        // SAFETY: as above.
+        unsafe { state.ir.nir }.cast()
+    } else {
+        state.tokens.cast()
+    };
+    create_shader(pipe, state.type_, program, stage)
+}
+
 unsafe extern "C" fn create_vs_state(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_shader(pipe, state, Stage::Vertex)
+    create_stage(pipe, state, Stage::Vertex)
 }
 
 unsafe extern "C" fn create_fs_state(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_shader(pipe, state, Stage::Fragment)
+    create_stage(pipe, state, Stage::Fragment)
+}
+
+unsafe extern "C" fn create_compute_state(
+    pipe: *mut pipe_context,
+    state: *const pipe_compute_state,
+) -> *mut c_void {
+    // SAFETY: Mesa passes a compute state.
+    let state = unsafe { &*state };
+    create_shader(pipe, state.ir_type, state.prog, Stage::Compute)
+}
+
+unsafe extern "C" fn bind_compute_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+    // SAFETY: Mesa passes this driver's context.
+    unsafe { Context::<B>::of(pipe) }
+        .stages
+        .get_mut(Stage::Compute)
+        .shader = state.cast();
 }
 
 unsafe extern "C" fn bind_vs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
@@ -1069,6 +1151,79 @@ unsafe extern "C" fn set_sampler_views<B: Backend>(
     }
 }
 
+unsafe extern "C" fn set_shader_buffers<B: Backend>(
+    pipe: *mut pipe_context,
+    shader: mesa_shader_stage,
+    start: c_uint,
+    count: c_uint,
+    buffers: *const pipe_shader_buffer,
+    writable: c_uint,
+) {
+    // SAFETY: Mesa passes this driver's context and `count` buffers, or null.
+    let context = unsafe { Context::<B>::of(pipe) };
+    let Some(stage) = context::stage(shader) else {
+        return;
+    };
+    let slots = &mut context.stages.get_mut(stage).buffers;
+    for i in 0..count as usize {
+        let given = if buffers.is_null() {
+            None
+        } else {
+            // SAFETY: as above.
+            Some(unsafe { &*buffers.add(i) })
+        };
+        let Some(slot) = slots.get_mut(start as usize + i) else {
+            refuse(format_args!(
+                "a storage buffer past those the screen reports"
+            ));
+        };
+        let resource = given.map_or(std::ptr::null_mut(), |b| b.buffer);
+        // SAFETY: the buffer is null or live; the slot's reference moves to it.
+        unsafe { resource::reference(&mut slot.resource, resource) };
+        slot.offset = given.map_or(0, |b| b.buffer_offset);
+        slot.size = given.map_or(0, |b| b.buffer_size);
+        slot.writable = writable & (1 << i) != 0;
+    }
+}
+
+unsafe extern "C" fn set_shader_images<B: Backend>(
+    pipe: *mut pipe_context,
+    shader: mesa_shader_stage,
+    start: c_uint,
+    count: c_uint,
+    trailing: c_uint,
+    images: *const pipe_image_view,
+) {
+    // SAFETY: Mesa passes this driver's context and `count` images, or null.
+    let context = unsafe { Context::<B>::of(pipe) };
+    let Some(stage) = context::stage(shader) else {
+        return;
+    };
+    let slots = &mut context.stages.get_mut(stage).images;
+    for i in 0..(count + trailing) as usize {
+        let given = if images.is_null() || i >= count as usize {
+            pipe_image_view::default()
+        } else {
+            // SAFETY: as above.
+            unsafe { *images.add(i) }
+        };
+        let Some(slot) = slots.get_mut(start as usize + i) else {
+            refuse(format_args!("an image past those the screen reports"));
+        };
+        let mut held = std::mem::replace(&mut slot.resource, std::ptr::null_mut());
+        *slot = pipe_image_view {
+            resource: std::ptr::null_mut(),
+            ..given
+        };
+        // SAFETY: the image's resource is null or live; the slot takes its own reference and
+        // gives back the one it held.
+        unsafe {
+            resource::reference(&mut slot.resource, given.resource);
+            resource::reference(&mut held, std::ptr::null_mut());
+        }
+    }
+}
+
 unsafe extern "C" fn set_vertex_buffers<B: Backend>(
     pipe: *mut pipe_context,
     count: c_uint,
@@ -1138,4 +1293,9 @@ pub fn fill<B: Backend>(c: &mut pipe_context) {
     c.set_viewport_states = Some(set_viewport_states::<B>);
     c.set_sampler_views = Some(set_sampler_views::<B>);
     c.set_vertex_buffers = Some(set_vertex_buffers::<B>);
+    c.set_shader_buffers = Some(set_shader_buffers::<B>);
+    c.set_shader_images = Some(set_shader_images::<B>);
+    c.create_compute_state = Some(create_compute_state);
+    c.bind_compute_state = Some(bind_compute_state::<B>);
+    c.delete_compute_state = Some(delete_shader_state::<B>);
 }

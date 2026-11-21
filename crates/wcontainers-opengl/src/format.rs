@@ -92,6 +92,21 @@ const FORMATS: &[(pipe_format, Format)] = &[
 ];
 
 /// The interface's format of a Gallium format, if it holds it.
+/// The stencil of a depth-stencil format, as a sampler view names it (OpenGL's stencil texturing):
+/// a view of the texture's own format reading its stencil.
+const STENCIL_VIEWS: &[(pipe_format, Format)] = &[
+    (PIPE_FORMAT_X24S8_UINT, Format::Depth24PlusStencil8),
+    (PIPE_FORMAT_S8X24_UINT, Format::Depth32FloatStencil8),
+];
+
+/// The depth-stencil format whose stencil a view of `format` reads, for the stencil views.
+pub fn stencil_view(format: pipe_format) -> Option<Format> {
+    STENCIL_VIEWS
+        .iter()
+        .find(|&&(gallium, _)| gallium == format)
+        .map(|&(_, ours)| ours)
+}
+
 pub fn format(format: pipe_format) -> Option<Format> {
     FORMATS
         .iter()
@@ -170,6 +185,9 @@ const BINDINGS: &[(u32, FormatUse)] = &[
     (PIPE_BIND_DEPTH_STENCIL, FormatUse::DEPTH_STENCIL),
     (PIPE_BIND_SAMPLER_VIEW, FormatUse::SAMPLE),
     (PIPE_BIND_VERTEX_BUFFER, FormatUse::VERTEX),
+    // Images are written by programs; one read too needs the format's storage reads, which the
+    // bind checks.
+    (PIPE_BIND_SHADER_IMAGE, FormatUse::STORAGE_WRITE),
     // A frame is shown by copying its picture into the window's surface.
     (
         PIPE_BIND_DISPLAY_TARGET,
@@ -192,9 +210,23 @@ pub fn supported(
         let plain = PIPE_BIND_VERTEX_BUFFER
             | PIPE_BIND_INDEX_BUFFER
             | PIPE_BIND_CONSTANT_BUFFER
-            | PIPE_BIND_STREAM_OUTPUT;
+            | PIPE_BIND_STREAM_OUTPUT
+            | PIPE_BIND_SHADER_BUFFER
+            | PIPE_BIND_COMMAND_ARGS_BUFFER;
         return bindings & !plain == 0
             && (bindings & PIPE_BIND_VERTEX_BUFFER == 0 || vertex_format(format).is_some());
+    }
+    let sampled = samples.max(1);
+    // A framebuffer without attachments: the pass tracker's empty pass, of the samples its own
+    // attachment takes.
+    if format == PIPE_FORMAT_NONE {
+        return bindings == PIPE_BIND_RENDER_TARGET
+            && (sampled == 1 || caps.takes_samples(Format::R8Unorm, sampled));
+    }
+    if let Some(depth_stencil) = stencil_view(format) {
+        return bindings == PIPE_BIND_SAMPLER_VIEW
+            && sampled == 1
+            && caps.get(depth_stencil).contains(FormatUse::SAMPLE);
     }
     let Some(ours) = self::format(format) else {
         return false;
@@ -218,8 +250,9 @@ pub fn supported(
         | PIPE_TEXTURE_CUBE_ARRAY => true,
         _ => false,
     };
-    let sampled = samples.max(1);
+    let storage = bindings & PIPE_BIND_SHADER_IMAGE == 0 || sampled == 1;
     left == 0
+        && storage
         && dimension
         && caps.get(ours).contains(needed)
         && sampled == storage_samples.max(1)

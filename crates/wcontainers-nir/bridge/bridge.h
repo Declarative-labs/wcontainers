@@ -197,7 +197,8 @@ void wc_nir_split_resource_arrays(struct nir_shader *nir);
 
 /* Every uniform block access st/mesa hands over (load_ubo, the default uniforms as block 0) as
  * derefs of one array of words a block, sized by the block variables' explicit types; the default
- * uniforms' own variables, which nothing reads after it, removed. */
+ * uniforms' own variables, which nothing reads after it, removed. Storage block j is bound at
+ * PIPE_MAX_SHADER_IMAGES plus j, past the image units. */
 void wc_nir_uniform_blocks_as_words(struct nir_shader *nir);
 
 /* How a vertex program's position (and point size) is changed to meet the host's clip space,

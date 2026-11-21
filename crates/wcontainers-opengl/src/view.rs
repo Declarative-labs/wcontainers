@@ -113,6 +113,61 @@ pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut p
     unsafe { release(view) };
 }
 
+/// The interface's view of an image a program binds: one layer, or the layers it names (a cube's
+/// as a 2D array of its faces, which is how the common form holds a storage cube).
+pub fn image_view<B: Backend>(
+    backend: &mut B,
+    image: &pipe_image_view,
+) -> Result<B::TextureView, String> {
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let (texture, desc) = resource
+        .texture()
+        .ok_or("an image of a buffer (the screen reports none)")?;
+    let format = crate::format::format(image.format).ok_or("an image format the device lacks")?;
+    if format != desc.format {
+        return Err(format!(
+            "an image in {format:?} of a texture in {:?}, which the host does not reinterpret",
+            desc.format
+        ));
+    }
+    // SAFETY: the image of a texture holds its texture range.
+    let range = unsafe { image.u.tex };
+    let three_d = desc.dimension == TextureDimension::D3;
+    let (dimension, base_layer, layer_count) = if range.single_layer_view {
+        if three_d {
+            return Err("one slice of a 3D texture as a 2D image".to_owned());
+        }
+        (ViewDimension::D2, range.first_layer(), 1)
+    } else if three_d {
+        (ViewDimension::D3, 0, 1)
+    } else {
+        let layers = range.last_layer() - range.first_layer() + 1;
+        let dimension = match resource.base.target() {
+            PIPE_TEXTURE_1D_ARRAY
+            | PIPE_TEXTURE_2D_ARRAY
+            | PIPE_TEXTURE_CUBE
+            | PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::D2Array,
+            _ => ViewDimension::D2,
+        };
+        (dimension, range.first_layer(), layers)
+    };
+    backend
+        .create_view(
+            texture,
+            &TextureViewDesc {
+                format,
+                dimension,
+                base_mip: range.level(),
+                mip_count: 1,
+                base_layer,
+                layer_count,
+                stencil: false,
+            },
+        )
+        .map_err(|e| format!("an image's view: {e:?}"))
+}
+
 /// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a
 /// cube map's as a 2D array of its faces.
 fn texture_view<B: Backend>(
@@ -124,7 +179,10 @@ fn texture_view<B: Backend>(
     let (texture, desc) = resource
         .texture()
         .ok_or("a texel buffer (the screen reports none)")?;
-    let format = crate::format::format(view.format()).ok_or("a view format the device lacks")?;
+    let stencil = crate::format::stencil_view(view.format());
+    let format = stencil
+        .or_else(|| crate::format::format(view.format()))
+        .ok_or("a view format the device lacks")?;
     // SAFETY: the view of a texture holds its texture range.
     let range = unsafe { view.u.tex };
     let (first_layer, last_layer) = (range.first_layer(), range.last_layer());
@@ -155,7 +213,7 @@ fn texture_view<B: Backend>(
                 } else {
                     last_layer - first_layer + 1
                 },
-                stencil: false,
+                stencil: stencil.is_some(),
             },
         )
         .map_err(|_| "a view the device does not make")
@@ -187,8 +245,10 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: a live view, and a place for one swizzle a component.
     unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
     let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
-    let integer = crate::format::format(base.format())
-        .is_some_and(|f| matches!(f.kind(), FormatKind::Uint | FormatKind::Sint));
+    // A stencil view's texels are unsigned integers.
+    let integer = crate::format::stencil_view(base.format()).is_some()
+        || crate::format::format(base.format())
+            .is_some_and(|f| matches!(f.kind(), FormatKind::Uint | FormatKind::Sint));
     // SAFETY: a live view.
     let cube = unsafe { wc_sampler_view_target(&base) } == PIPE_TEXTURE_CUBE;
     let faces = (integer && cube).then(|| texture_view::<B>(&mut backend, resource, &base, true));

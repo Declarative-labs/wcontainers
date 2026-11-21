@@ -27,8 +27,8 @@ use crate::view::{IDENTITY, View};
 use crate::{indices, outputs, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
-struct Built<B: Backend> {
-    shader: B::Shader,
+pub(crate) struct Built<B: Backend> {
+    pub(crate) shader: B::Shader,
     bindings: Vec<ReflectedBinding>,
     /// The bytes each uniform block declares, by its binding in the converted program.
     uniform_sizes: HashMap<u32, u64>,
@@ -46,12 +46,12 @@ struct Built<B: Backend> {
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
-type ShaderId = usize;
+pub(crate) type ShaderId = usize;
 
 /// What a program is converted for beside its NIR: the position's transform (vertex programs) and
 /// the swizzles of the views bound where it samples.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-struct Variant {
+pub(crate) struct Variant {
     transform: PositionTransform,
     swizzles: Vec<TextureSwizzle>,
     /// How the fragment program it meets interpolates each input (vertex programs).
@@ -68,12 +68,26 @@ struct Variant {
     second_source: Option<u32>,
 }
 
+impl Variant {
+    /// The variant of a program that only samples what `bound` binds (a compute program), and
+    /// whether it rearranges what it samples.
+    pub(crate) fn sampling<B: Backend>(bound: &state::StageState<B>) -> (Variant, bool) {
+        let variant = Variant {
+            swizzles: swizzles(bound),
+            nearest: nearest_samplers(bound),
+            ..Variant::default()
+        };
+        let swizzled = !variant.swizzles.is_empty();
+        (variant, swizzled)
+    }
+}
+
 /// A value passed between stages at one location, and how it is interpolated.
 type Interpolated = (u32, Option<naga::Interpolation>, Option<naga::Sampling>);
 
 impl<B: Backend> Programs<B> {
     /// `shader` converted for `variant`, converted now if it was not before.
-    fn built_for(
+    pub(crate) fn built_for(
         &mut self,
         backend: &mut B,
         shader: &Shader,
@@ -92,6 +106,7 @@ pub struct Programs<B: Backend> {
     built: HashMap<(ShaderId, Variant), Built<B>>,
     programs: HashMap<(ShaderId, Variant, ShaderId, Variant), B::Program>,
     blends: HashMap<BlendDesc, B::Blend>,
+    pub(crate) compute: HashMap<(ShaderId, Variant), B::Program>,
     /// The stage helpers of vertex programs streamed, by program and variant.
     streamed: HashMap<(ShaderId, Variant), Stages<B>>,
 }
@@ -102,6 +117,7 @@ impl<B: Backend> Default for Programs<B> {
             built: HashMap::new(),
             programs: HashMap::new(),
             blends: HashMap::new(),
+            compute: HashMap::new(),
             streamed: HashMap::new(),
         }
     }
@@ -128,6 +144,12 @@ impl<B: Backend> Programs<B> {
                 screen.retire(Object::Program(p));
             }
         }
+        let compute: Vec<_> = self.compute.keys().filter(|k| k.0 == id).cloned().collect();
+        for key in compute {
+            if let Some(p) = self.compute.remove(&key) {
+                screen.retire(Object::Program(p));
+            }
+        }
         let streamed: Vec<_> = self
             .streamed
             .keys()
@@ -147,6 +169,9 @@ impl<B: Backend> Programs<B> {
             screen.retire(Object::Shader(b.shader));
         }
         for (_, p) in self.programs.drain() {
+            screen.retire(Object::Program(p));
+        }
+        for (_, p) in self.compute.drain() {
             screen.retire(Object::Program(p));
         }
         for (_, b) in self.blends.drain() {
@@ -571,7 +596,7 @@ enum Uniform<'a, B: Backend> {
 }
 
 /// A stream the vertex program fetches an input from itself.
-struct Pulled<'a, B: Backend> {
+pub(crate) struct Pulled<'a, B: Backend> {
     location: u32,
     buffer: &'a B::Buffer,
     /// The bytes of the buffer that hold data.
@@ -616,14 +641,16 @@ fn helper_block<B: Backend>(
 
 /// Binds every resource the programs read, one set a stage, as the route's reflection numbers
 /// them, with the streams the vertex program fetches itself and its helper constants; the vertex
-/// program's visible to `vertex_visible`.
-fn binding_sets<B: Backend>(
+/// program's visible to `vertex_visible`. The views made for images go to `made`, to destroy
+/// after the work that binds them.
+pub(crate) fn binding_sets<B: Backend>(
     backend: &mut B,
     stages: &state::Stages<B>,
     built: &[(Stage, &Built<B>)],
     pulled: &[Pulled<'_, B>],
     first_instance: u32,
     vertex_visible: StageSet,
+    made: &mut Vec<B::TextureView>,
 ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], String> {
     let mut sets = [const { None }; MAX_BINDING_SETS];
     let limits = &backend.caps().limits;
@@ -637,8 +664,8 @@ fn binding_sets<B: Backend>(
             (Stage::Vertex, _) => {
                 helpers = Some(helper_block(b, pulled, storage_align, first_instance)?);
             }
-            (Stage::Fragment, _) => {
-                return refused(format_args!("helper constants in a fragment program"));
+            (Stage::Fragment | Stage::Compute, _) => {
+                return refused(format_args!("helper constants in a {stage:?} program"));
             }
         }
     }
@@ -647,7 +674,9 @@ fn binding_sets<B: Backend>(
         let visible = match stage {
             Stage::Vertex => vertex_visible,
             Stage::Fragment => StageSet::FRAGMENT,
+            Stage::Compute => StageSet::COMPUTE,
         };
+        let images = image_views(backend, bound, built)?;
         // Uniform blocks the program reads that the frontend handed as bytes go through the
         // ring first, each grown to the block's declared size.
         let mut copies: Vec<Vec<u8>> = Vec::new();
@@ -787,7 +816,22 @@ fn binding_sets<B: Backend>(
                     // SAFETY: a bound sampler lives until Mesa unbinds and deletes it.
                     BindingResource::Sampler(unsafe { &(*sampler).sampler })
                 }
-                _ => return refused(format_args!("storage the screen does not report")),
+                SlotKind::Storage if b.register >= PIPE_MAX_SHADER_IMAGES => {
+                    storage_buffer(bound, b.register - PIPE_MAX_SHADER_IMAGES, largest_storage)?
+                }
+                SlotKind::Storage => {
+                    let (_, view, writable) = images
+                        .iter()
+                        .find(|(unit, ..)| *unit == b.register)
+                        .ok_or("an image the program reads is not bound")?;
+                    BindingResource::StorageTexture {
+                        view,
+                        writable: *writable,
+                    }
+                }
+                SlotKind::Counter => {
+                    return refused(format_args!("a storage counter in an OpenGL program"));
+                }
             };
             entries.push(BindingEntry {
                 binding: b.binding,
@@ -802,20 +846,72 @@ fn binding_sets<B: Backend>(
                     .map_err(|e| format!("{e:?}"))?,
             );
         }
-        if entries.is_empty() {
-            continue;
+        if !entries.is_empty() {
+            let set = wcontainers_nir::bind::stage_set(stage.nir().shader_stage()) as usize;
+            sets[set] = Some(
+                backend
+                    .create_binding_set(&entries)
+                    .map_err(|e| format!("{e:?}"))?,
+            );
         }
-        let set = wcontainers_nir::bind::stage_set(match stage {
-            Stage::Vertex => ShaderStage::Vertex,
-            Stage::Fragment => ShaderStage::Fragment,
-        }) as usize;
-        sets[set] = Some(
-            backend
-                .create_binding_set(&entries)
-                .map_err(|e| format!("{e:?}"))?,
-        );
+        drop(entries);
+        made.extend(images.into_iter().map(|(_, view, _)| view));
     }
     Ok(sets)
+}
+
+/// The storage buffer bound at `index` of a stage, as the interface binds it: its range rounded
+/// to whole words, within the buffer and the back end's largest binding.
+fn storage_buffer<'a, B: Backend>(
+    bound: &'a state::StageState<B>,
+    index: u32,
+    largest: u64,
+) -> Result<BindingResource<'a, B>, String> {
+    let slot = bound
+        .buffers
+        .get(index as usize)
+        .filter(|slot| !slot.resource.is_null())
+        .ok_or("a storage buffer the program reads is not bound")?;
+    // SAFETY: the slot holds a reference on a live resource.
+    let resource = unsafe { Resource::<B>::of(slot.resource) };
+    let buffer = resource
+        .buffer()
+        .ok_or("a storage buffer bound to a texture")?;
+    let bytes = u64::from(resource.base.width0).next_multiple_of(STORAGE_WORD);
+    let offset = u64::from(slot.offset);
+    let size = u64::from(slot.size).next_multiple_of(STORAGE_WORD);
+    Ok(BindingResource::StorageBuffer {
+        range: BufferRange {
+            buffer,
+            offset,
+            size: size.min(bytes.saturating_sub(offset)).min(largest),
+        },
+        writable: slot.writable,
+    })
+}
+
+/// A view of each image the program binds, by its unit, with whether the program may write it.
+fn image_views<B: Backend>(
+    backend: &mut B,
+    bound: &state::StageState<B>,
+    built: &Built<B>,
+) -> Result<Vec<(u32, B::TextureView, bool)>, String> {
+    let mut views = Vec::new();
+    for b in built
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Storage && b.register < PIPE_MAX_SHADER_IMAGES)
+    {
+        let image = bound
+            .images
+            .get(b.register as usize)
+            .filter(|image| !image.resource.is_null())
+            .ok_or("an image the program reads is not bound")?;
+        let view = crate::view::image_view(backend, image)?;
+        let writable = u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0;
+        views.push((b.register, view, writable));
+    }
+    Ok(views)
 }
 
 /// `pipe_context::draw_vbo`.
@@ -827,20 +923,96 @@ pub unsafe extern "C" fn draw_vbo<B: Backend>(
     draws: *const pipe_draw_start_count_bias,
     count: c_uint,
 ) {
-    if !indirect.is_null() {
-        refuse(format_args!("an indirect draw (the screen reports none)"));
-    }
-    // SAFETY: Mesa passes this driver's context, the draw and `count` ranges.
-    let (context, info, draws) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            &*info,
-            std::slice::from_raw_parts(draws, count as usize),
-        )
+    // SAFETY: Mesa passes this driver's context and the draw.
+    let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
+    let result = if indirect.is_null() {
+        // SAFETY: a direct draw comes with `count` ranges.
+        draw(context, info, unsafe {
+            std::slice::from_raw_parts(draws, count as usize)
+        })
+    } else {
+        // SAFETY: an indirect draw's arguments.
+        draw_indirect(context, info, unsafe { &*indirect })
     };
-    if let Err(reason) = draw(context, info, draws) {
+    if let Err(reason) = result {
         refuse(&reason);
     }
+}
+
+/// The words of one indirect draw's arguments: count, instances, first, the base vertex of an
+/// indexed draw, and the first instance.
+const INDIRECT_WORDS: usize = 4;
+const INDEXED_INDIRECT_WORDS: usize = 5;
+
+/// An indirect draw, its arguments read back now (`ReadBackWait`) and drawn as a direct draw, so
+/// that every rewrite a direct draw takes applies to it.
+fn draw_indirect<B: Backend>(
+    context: &mut Context<B>,
+    info: &pipe_draw_info,
+    indirect: &pipe_draw_indirect_info,
+) -> Result<(), String> {
+    if !indirect.count_from_stream_output.is_null() || !indirect.indirect_draw_count.is_null() {
+        return refused(format_args!(
+            "a draw counted by stream output or by a buffer (the screen reports neither)"
+        ));
+    }
+    let words = if info.index_size > 0 {
+        INDEXED_INDIRECT_WORDS
+    } else {
+        INDIRECT_WORDS
+    };
+    let word = size_of::<u32>();
+    let stride = (indirect.stride as usize).max(words * word);
+    let draws = indirect.draw_count as usize;
+    let span = (draws.saturating_sub(1) * stride + words * word) as u64;
+    // SAFETY: an indirect draw names a live buffer of this driver.
+    let resource = unsafe { Resource::<B>::of(indirect.buffer) };
+    let buffer = resource.buffer().ok_or("a draw's arguments in a texture")?;
+    let offset = u64::from(indirect.offset);
+    let mut args = vec![0; span.next_multiple_of(STORAGE_WORD) as usize];
+    let screen = context.screen();
+    {
+        let mut backend = screen.backend();
+        context
+            .tracker
+            .close(&mut backend)
+            .map_err(|e| format!("{e:?}"))?;
+        backend
+            .read_back_now(
+                &ReadSource::Buffer {
+                    buffer,
+                    offset,
+                    size: args.len() as u64,
+                },
+                &mut args,
+            )
+            .map_err(|e| format!("a draw's arguments: {e:?}"))?;
+    }
+    for d in 0..draws {
+        let at = |i: usize| {
+            let start = d * stride + i * word;
+            u32::from_le_bytes(args[start..start + word].try_into().expect("a word"))
+        };
+        let (start, index_bias, first_instance) = if info.index_size > 0 {
+            (at(2), at(3) as i32, at(4))
+        } else {
+            (at(2), 0, at(3))
+        };
+        let direct = pipe_draw_info {
+            instance_count: at(1),
+            start_instance: first_instance,
+            ..*info
+        };
+        let range = pipe_draw_start_count_bias {
+            start,
+            count: at(0),
+            index_bias,
+        };
+        if direct.instance_count > 0 {
+            draw(context, &direct, std::slice::from_ref(&range))?;
+        }
+    }
+    Ok(())
 }
 
 fn draw<B: Backend>(
@@ -871,8 +1043,7 @@ fn draw<B: Backend>(
     if raster.cull_both && triangles {
         return Ok(());
     }
-    let shaders = Stage::ALL.map(|s| context.stages.get(s).shader);
-    let [vs, fs] = shaders;
+    let [vs, fs] = [Stage::Vertex, Stage::Fragment].map(|s| context.stages.get(s).shader);
     if vs.is_null() || fs.is_null() {
         return refused(format_args!("a draw without a vertex or fragment program"));
     }
@@ -973,6 +1144,7 @@ fn draw<B: Backend>(
         );
     }
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?;
+    let mut images = Vec::new();
     let sets = binding_sets(
         backend,
         &context.stages,
@@ -980,6 +1152,7 @@ fn draw<B: Backend>(
         &fetched,
         info.start_instance,
         StageSet::VERTEX,
+        &mut images,
     )?;
     let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
     let layout = elements.block(backend, pulled_mask)?;
@@ -1111,6 +1284,9 @@ fn draw<B: Backend>(
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
     }
+    for view in images {
+        backend.destroy(Object::TextureView(view));
+    }
     Ok(())
 }
 
@@ -1225,6 +1401,7 @@ fn stream_out<B: Backend>(
     let made = programs.streamed.contains_key(&key);
     let built = programs.built_for(backend, vs, &variant)?;
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
+    let mut images = Vec::new();
     let sets = binding_sets(
         backend,
         &context.stages,
@@ -1232,6 +1409,7 @@ fn stream_out<B: Backend>(
         &fetched,
         info.start_instance,
         StageSet::VERTEX.union(StageSet::COMPUTE),
+        &mut images,
     )?;
     if !made {
         let converted = built
@@ -1278,6 +1456,9 @@ fn stream_out<B: Backend>(
     }
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
+    }
+    for view in images {
+        backend.destroy(Object::TextureView(view));
     }
     Ok(())
 }

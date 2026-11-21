@@ -6,6 +6,8 @@
 #[cfg(mesa)]
 mod blit;
 #[cfg(mesa)]
+mod compute;
+#[cfg(mesa)]
 mod context;
 #[cfg(mesa)]
 mod device;

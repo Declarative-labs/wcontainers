@@ -22,10 +22,11 @@ void wc_optimize(nir_shader *nir);
 /* OpenGL's buffer accesses (a block index and a byte offset: load_ubo, load_ssbo, store_ssbo, the
  * storage atomics, get_ssbo_size) as derefs of one variable a block, an array of 32-bit words.
  * `uniform_bytes` gives each uniform block's size by its index; uniform block i binds at i and
- * storage block j at the number of uniform blocks plus j. Workgroup memory, which the linker
+ * storage block j at `storage_base` plus j. Workgroup memory, which the linker
  * makes byte offsets too (load_shared, store_shared, the shared atomics), the same way: one
  * workgroup variable of words. */
-void wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms);
+void wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms,
+                             uint32_t storage_base);
 
 #ifdef __cplusplus
 }
