@@ -35,8 +35,9 @@
 - accept: `accept4` non-blocking; the SYN's header from `TCP_SAVED_SYN`, cut to the buffer; its fields from
   that header and what the accepted socket reports.
 - send: `sendmsg` with `MSG_NOSIGNAL` and `MSG_OOB`, `MSG_MORE`, `MSG_EOR` from the request; transmit reports as
-  an `SO_TIMESTAMPING` control message with the request's record flags and `SCM_TS_OPT_ID` for its key, the
-  socket's own option flags (`OPT_ID`, `OPT_TSONLY`, `OPT_STATS`) kept on by the implementation.
+  an `SO_TIMESTAMPING` control message with the request's record flags, the socket's own option flags (`OPT_ID`,
+  `OPT_TSONLY`, `OPT_STATS`) kept on by the implementation; Linux refuses `SCM_TS_OPT_ID` on TCP, so the guest's key
+  is kept by the byte offset the kernel reports for the send.
 - receive: `recvmsg` with `MSG_PEEK` (and `SO_PEEK_OFF` for an offset), `MSG_OOB`; timestamps from the
   control messages; `unread_after` from `TCP_CM_INQ` when unread-byte reports are on.
 - take_error_queue_entry: `recvmsg(MSG_ERRQUEUE)`, `sock_extended_err` and the control messages it comes with;
@@ -52,7 +53,8 @@
 - rearm_keep_alive_timer: `TCP_KEEPIDLE` written again with its current value, which re-times the probe from the
   last data or acknowledgement received when keep-alive is on.
 - send_window_probe: the only window probe Linux offers a program is the one `TCP_REPAIR` set to
-  `TCP_REPAIR_OFF` sends: repair on, then off; it needs CAP_NET_ADMIN (EPERM without it).
+  `TCP_REPAIR_OFF` sends: repair on, then off; it needs CAP_NET_ADMIN (EPERM without it). Leaving repair mode clears
+  `SO_REUSEADDR` and the repair mode, so both are put back (with the repair queue) as they were.
 - give_negative_route_advice: `SO_CNX_ADVICE` set to one, which calls `dst_negative_advice`.
 - set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). set_authentication_counters and the
   listener's: `TCP_AO_INFO` with its counter flag.
@@ -89,5 +91,13 @@
 - ICMP errors reach a TCP socket only in SYN-SENT: a check fills a listener of backlog 0, connects again, captures
   that SYN with a raw socket and answers it with an ICMP error from a raw socket (root), all on loopback.
 - Each setting is set once and then twice on fresh pairs, and the observable outcome (what the peer sees, what
-  later calls answer) is equal. A setting the implementation answers `NotSupported` must answer it twice.
+  later calls answer) is equal; settings an implementation may refuse are in these lists too, and must answer the
+  same twice.
+- Each setting's effect is checked where the traits or the wire can show it: a capture thread reads the host's
+  packet socket on loopback (each packet seen twice, once leaving and once arriving, and counted once) and the
+  checks look at headers, sequence numbers, windows, timestamps and timing; a peer made to drop everything (a
+  minimum hop limit of 255) leaves segments unanswered for the timer checks; how much a connection takes or a peer
+  sends while nothing is read shows the buffer settings.
+- The suite needs root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`, `net.ipv6.flowlabel_consistency=0` and
+  `dctcp`; run-conformance.sh makes that namespace.
 - `tests!` runs each function as its own test on a value made anew.

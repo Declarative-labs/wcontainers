@@ -162,9 +162,13 @@ const QUICK_WITHIN: Duration = Duration::from_millis(20);
 
 const DELAYED_ACKNOWLEDGEMENT_MAXIMUM: Duration = Duration::from_millis(5);
 
-/// The longest retransmission timeout of the check of the maximum, and how long that check watches retransmissions.
+/// The longest retransmission timeout of the check of the maximum, and how long the checks watch retransmissions.
 const RETRANSMISSION_CEILING: Duration = Duration::from_secs(1);
-const RETRANSMISSIONS_WATCHED: Duration = Duration::from_millis(2600);
+const RETRANSMISSIONS_WATCHED: Duration = Duration::from_millis(3200);
+
+/// How many times a segment leaves within the given time when its timeouts do not grow, more than when they double.
+const LINEAR_TRANSMISSIONS: usize = 6;
+const LINEAR_TRANSMISSIONS_WITHIN: Duration = Duration::from_millis(1200);
 
 const USER_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -500,38 +504,43 @@ struct Segment {
 }
 
 impl Segment {
-    fn parse(packet: &[u8], port: u16, at: Instant) -> Option<Self> {
-        let (hop_limit, dscp, ecn, flow_label, dont_fragment, transport) = if let Ok(header) =
-            Ipv4HeaderSlice::from_slice(packet)
-        {
-            let end = usize::from(header.total_len()).min(packet.len());
-            (header.protocol() == IpNumber::TCP).then_some((
-                header.ttl(),
-                Some(header.dcp()),
-                Some(header.ecn()),
-                None,
-                header.dont_fragment(),
-                &packet[header.slice().len()..end],
-            ))?
-        } else {
-            let header = Ipv6HeaderSlice::from_slice(packet).ok()?;
-            let end = (Ipv6Header::LEN + usize::from(header.payload_length())).min(packet.len());
-            (header.next_header() == IpNumber::TCP).then_some((
-                header.hop_limit(),
-                None,
-                None,
-                Some(header.flow_label().value()),
-                false,
-                &packet[Ipv6Header::LEN..end],
-            ))?
-        };
+    fn parse(packet: &[u8], listener: SocketAddr, at: Instant) -> Option<Self> {
+        let (source, destination, hop_limit, dscp, ecn, flow_label, dont_fragment, transport) =
+            if let Ok(header) = Ipv4HeaderSlice::from_slice(packet) {
+                let end = usize::from(header.total_len()).min(packet.len());
+                (header.protocol() == IpNumber::TCP).then_some((
+                    IpAddr::V4(header.source_addr()),
+                    IpAddr::V4(header.destination_addr()),
+                    header.ttl(),
+                    Some(header.dcp()),
+                    Some(header.ecn()),
+                    None,
+                    header.dont_fragment(),
+                    &packet[header.slice().len()..end],
+                ))?
+            } else {
+                let header = Ipv6HeaderSlice::from_slice(packet).ok()?;
+                let end =
+                    (Ipv6Header::LEN + usize::from(header.payload_length())).min(packet.len());
+                (header.next_header() == IpNumber::TCP).then_some((
+                    IpAddr::V6(header.source_addr()),
+                    IpAddr::V6(header.destination_addr()),
+                    header.hop_limit(),
+                    None,
+                    None,
+                    Some(header.flow_label().value()),
+                    false,
+                    &packet[Ipv6Header::LEN..end],
+                ))?
+            };
         let tcp = TcpHeaderSlice::from_slice(transport).ok()?;
-        if tcp.source_port() != port && tcp.destination_port() != port {
+        let to_listener = SocketAddr::new(destination, tcp.destination_port()) == listener;
+        if !to_listener && SocketAddr::new(source, tcp.source_port()) != listener {
             return None;
         }
         Some(Segment {
             at,
-            to_listener: tcp.destination_port() == port,
+            to_listener,
             hop_limit,
             dscp,
             ecn,
@@ -562,7 +571,7 @@ impl Segment {
     }
 }
 
-/// The segments to and from one listener's port, gathered by a thread reading the host's packet socket, which
+/// The segments to and from one listener, gathered by a thread reading the host's packet socket, which
 /// sees each loopback packet twice: once leaving and once arriving.
 struct Capture {
     segments: Arc<Mutex<Vec<Segment>>>,
@@ -577,7 +586,7 @@ const COPY_GAP: Duration = Duration::from_millis(5);
 const CAPTURE_BUFFER: usize = 1 << 24;
 
 impl Capture {
-    fn start(port: u16) -> Self {
+    fn start(listener: SocketAddr) -> Self {
         let socket = rustix::net::socket(
             AddressFamily::PACKET,
             SocketType::DGRAM,
@@ -604,7 +613,7 @@ impl Capture {
                     };
                     let at = Instant::now();
                     let packet = &buffer[..length];
-                    let Some(segment) = Segment::parse(packet, port, at) else {
+                    let Some(segment) = Segment::parse(packet, listener, at) else {
                         continue;
                     };
                     recent.retain(|(seen, _)| at.duration_since(*seen) < COPY_GAP);
@@ -710,7 +719,7 @@ fn watched_pair<S: TcpSockets>(
     listener_settings: &[TcpListenerSetting<'_>],
 ) -> (Pair<S>, Capture) {
     let (listener, local) = listen(sockets, address, listener_settings);
-    let capture = Capture::start(local.port());
+    let capture = Capture::start(local);
     let client = sockets
         .connect(
             TcpProtocol::Tcp,
@@ -1953,7 +1962,7 @@ fn fast_open_listener<S: TcpSockets>(
     let mut all = vec![TcpListenerSetting::FastOpenQueue(FAST_OPEN_QUEUE)];
     all.extend_from_slice(settings);
     let (listener, local) = listen(sockets, BindAddress::V4(address), &all);
-    let capture = Capture::start(local.port());
+    let capture = Capture::start(local);
     (listener, local, capture)
 }
 
@@ -2349,16 +2358,29 @@ pub fn retransmission_settings_time_the_retransmissions<S: TcpSockets>(sockets: 
     std::thread::sleep(RETRANSMISSIONS_WATCHED);
     for (setting, pair, capture, start) in watched {
         let times = transmissions(&capture, start);
-        assert!(times.len() > 4, "{setting:?}: {times:?}");
-        let gap = |index: usize| times[index] - times[index - 1];
+        let longest = times
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .max()
+            .unwrap_or_default();
         match setting {
-            TcpSetting::RetransmissionTimeoutMinimum(_) => {
-                assert!(gap(1) < SHORT_SETTING_TIME + QUICK_WITHIN * 2, "{times:?}")
-            }
-            TcpSetting::RetransmissionTimeoutMaximum(_) => {
-                assert!(gap(4) < RETRANSMISSION_CEILING + TIMER_SLACK, "{times:?}")
-            }
-            _ => assert!(gap(4) < gap(1) * 2, "{times:?}"),
+            TcpSetting::RetransmissionTimeoutMinimum(_) => assert!(
+                times.len() > 1 && times[1] - times[0] < SHORT_SETTING_TIME + QUICK_WITHIN * 2,
+                "{times:?}"
+            ),
+            TcpSetting::RetransmissionTimeoutMaximum(_) => assert!(
+                times.last() > Some(&(RETRANSMISSION_CEILING * 2))
+                    && longest < RETRANSMISSION_CEILING + TIMER_SLACK,
+                "{times:?}"
+            ),
+            _ => assert!(
+                times
+                    .iter()
+                    .filter(|time| **time < LINEAR_TRANSMISSIONS_WITHIN)
+                    .count()
+                    >= LINEAR_TRANSMISSIONS,
+                "{times:?}"
+            ),
         }
         close(&sockets, pair);
     }
@@ -2404,7 +2426,7 @@ pub fn synchronize_retries_end_an_unanswered_connect<S: TcpSockets>(sockets: S) 
             minimum: Some(HopLimit(u8::MAX)),
         })],
     );
-    let capture = Capture::start(local.port());
+    let capture = Capture::start(local);
     let client = sockets
         .connect(
             TcpProtocol::Tcp,
@@ -2941,7 +2963,7 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
         port: LocalPort::Requested(Port(port)),
     };
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
-    let capture = Capture::start(local.port());
+    let capture = Capture::start(local);
     let connected = sockets
         .connect(
             TcpProtocol::Tcp,

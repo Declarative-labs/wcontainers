@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::ffi::c_int;
 use std::mem::size_of;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -224,39 +224,17 @@ fn protocol_of(protocol: TcpProtocol) -> rustix::net::Protocol {
 /// The index of the host's interface that holds the address.
 fn interface_holding(address: IpAddr) -> Option<InterfaceIndex> {
     let address = address.to_canonical();
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: getifaddrs fills the list, walked read-only below and freed once.
-    if unsafe { libc::getifaddrs(&mut list) } != 0 {
-        return None;
-    }
-    let mut found = None;
-    let mut entry = list;
-    while !entry.is_null() && found.is_none() {
-        // SAFETY: every entry of the list and its address stay valid until freeifaddrs.
-        unsafe {
-            let held = (*entry).ifa_addr;
-            let matches = !held.is_null()
-                && match c_int::from((*held).sa_family) {
-                    libc::AF_INET => {
-                        let held = held.cast::<libc::sockaddr_in>().read_unaligned();
-                        IpAddr::from(Ipv4Addr::from(u32::from_be(held.sin_addr.s_addr))) == address
-                    }
-                    libc::AF_INET6 => {
-                        let held = held.cast::<libc::sockaddr_in6>().read_unaligned();
-                        IpAddr::from(held.sin6_addr.s6_addr) == address
-                    }
-                    _ => false,
-                };
-            if matches {
-                let index = libc::if_nametoindex((*entry).ifa_name);
-                found = (index != 0).then_some(InterfaceIndex(index));
-            }
-            entry = (*entry).ifa_next;
-        }
-    }
-    // SAFETY: the list came from getifaddrs and is not used after this.
-    unsafe { libc::freeifaddrs(list) };
-    found
+    let held = nix::ifaddrs::getifaddrs().ok()?.find(|entry| {
+        entry.address.is_some_and(|held| {
+            held.as_sockaddr_in()
+                .map(|held| IpAddr::V4(held.ip()))
+                .or_else(|| held.as_sockaddr_in6().map(|held| IpAddr::V6(held.ip())))
+                == Some(address)
+        })
+    })?;
+    nix::net::if_::if_nametoindex(held.interface_name.as_str())
+        .ok()
+        .map(InterfaceIndex)
 }
 
 /// The `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
