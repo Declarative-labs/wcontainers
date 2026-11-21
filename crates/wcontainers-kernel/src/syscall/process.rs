@@ -1314,8 +1314,11 @@ pub(super) fn prctl(
             kernel.thread_mut(tid).credentials.no_new_privileges = true;
             Ok(0)
         }
-        // Docker's profile puts every process in filter mode.
-        PR_GET_SECCOMP => Ok(crate::linux::ptrace::SECCOMP_MODE_FILTER.into()),
+        PR_GET_SECCOMP => Ok(crate::seccomp::mode(
+            kernel.docker_profile,
+            kernel.threads[&tid].filters.len(),
+        )
+        .into()),
         PR_SET_SECCOMP => super::seccomp::prctl_set(kernel, cx, tid, second, third),
         PR_SET_CHILD_SUBREAPER => {
             kernel.process_of_mut(tid).child_subreaper = second != 0;
@@ -1651,6 +1654,16 @@ pub(super) fn capset(
         credentials.ambient &= permitted & inheritable;
         Ok(0)
     })
+}
+
+/// Sets thread `tid`'s own personality, as its `personality` would.
+pub(crate) fn set_personality(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    persona: u32,
+) -> Result<(), Errno> {
+    personality(kernel, cx, tid, [persona.into(), 0, 0, 0, 0, 0]).map(drop)
 }
 
 pub(super) fn personality(

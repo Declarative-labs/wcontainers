@@ -84,6 +84,15 @@ const NAMESPACE_FLAGS: u64 = (CLONE_NEWNS
     | CLONE_NEWPID
     | CLONE_NEWNET) as u64;
 
+/// A thread's seccomp mode: filtering once Docker's profile or a filter of its own applies.
+pub(crate) fn mode(docker_profile: bool, filters: usize) -> u32 {
+    if docker_profile || filters > 0 {
+        SECCOMP_MODE_FILTER
+    } else {
+        SECCOMP_MODE_DISABLED
+    }
+}
+
 /// What the profile answers in place of Linux, if it stops the call. `known` says whether Linux has a
 /// call with this number.
 #[allow(non_upper_case_globals, reason = "Linux's names for call numbers")]

@@ -3,7 +3,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Write;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
@@ -19,6 +19,32 @@ use crate::linux_extra::{
 };
 use crate::memory::Backing;
 use crate::process::{Channel, Fs, Pid, Process, Thread, Tid};
+
+/// Parts a `status` field's name from its value.
+const STATUS_SEPARATOR: char = '\t';
+
+/// The `status` fields after the memory lines: threads, signals, powers and seccomp.
+const STATUS_POWERS: [&str; 12] = [
+    "Threads:",
+    "SigBlk:",
+    "SigIgn:",
+    "SigCgt:",
+    "CapInh:",
+    "CapPrm:",
+    "CapEff:",
+    "CapBnd:",
+    "CapAmb:",
+    "NoNewPrivs:",
+    "Seccomp:",
+    "Seccomp_filters:",
+];
+
+/// `value` in hexadecimal with a digit for every four of `bits`, as Linux's zero-padded `%x`
+/// shows it.
+fn full_hex(value: u64, bits: u32) -> String {
+    let shown = alloc::format!("{:x}", (1u128 << bits) | u128::from(value));
+    shown[1..].into()
+}
 
 /// What a walk through `/proc` needs to know about the kernel.
 pub(crate) struct View<'a> {
@@ -37,6 +63,7 @@ pub(crate) struct View<'a> {
     /// What is mounted over entries of the root, by name.
     pub masked: &'a [(&'static [u8], Node)],
     pub counters: &'a crate::counters::Counters,
+    pub docker_profile: bool,
 }
 
 /// The attributes of an entry outside the process directories after a change. Linux keeps them: the
@@ -131,6 +158,8 @@ pub(crate) enum ProcessFile {
     OomScore,
     OomScoreAdj,
     TimerslackNs,
+    /// `personality`: the task's execution domain and flags.
+    Personality,
     Maps,
     /// `mem`: the process's memory itself, read and written at the file's position.
     Mem,
@@ -307,6 +336,7 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"oom_adj", ProcessFile::OomAdj),
     (b"oom_score", ProcessFile::OomScore),
     (b"oom_score_adj", ProcessFile::OomScoreAdj),
+    (b"personality", ProcessFile::Personality),
     (b"stat", ProcessFile::Stat),
     (b"statm", ProcessFile::Statm),
     (b"status", ProcessFile::Status),
@@ -839,7 +869,10 @@ impl Entry {
                 | ProcessFile::OomScoreAdj,
             ) => S_IFREG | 0o644,
             Entry::ProcessFile(_, ProcessFile::TimerslackNs) => S_IFREG | 0o666,
-            Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
+            Entry::ProcessFile(
+                _,
+                ProcessFile::Environ | ProcessFile::Auxv | ProcessFile::Personality,
+            ) => S_IFREG | 0o400,
             Entry::ProcessFile(_, ProcessFile::Mem) => S_IFREG | 0o600,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
             Entry::SelfLink
@@ -2091,6 +2124,16 @@ fn process_file(
         ProcessFile::OomScoreAdj => {
             let _ = writeln!(out, "{}", process.oom_score_adj);
         }
+        // `proc_pid_personality`, behind `lock_trace`'s check.
+        ProcessFile::Personality => {
+            let (processes, threads) = (source.view.processes, source.view.threads);
+            if !ptrace_may_read(processes, threads, source.view.caller_thread, task.pid) {
+                return Err(Errno::EPERM);
+            }
+            let thread = threads.get(&task.tid).ok_or(Errno::ESRCH)?;
+            out.push_str(&full_hex(thread.personality.into(), u32::BITS));
+            out.push(PROC_LINE_END);
+        }
         ProcessFile::TimerslackNs => {
             let (processes, threads) = (source.view.processes, source.view.threads);
             timerslack_allowed(processes, threads, source.view.caller_thread, task.pid)?;
@@ -2293,24 +2336,27 @@ fn process_file(
                     memory_line(&mut out, name, bytes);
                 }
             }
-            let _ = write!(
-                out,
-                "Threads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\
-                 CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\nCapAmb:\t{:016x}\n\
-                 NoNewPrivs:\t{}\nSeccomp:\t2\nSeccomp_filters:\t{}\n",
-                thread_count(process),
-                shown.signal_mask,
-                ignored,
-                caught,
-                credentials.inheritable,
-                credentials.permitted,
-                credentials.effective,
-                credentials.bounding,
-                credentials.ambient,
-                u8::from(credentials.no_new_privileges),
+            let values = [
+                thread_count(process).to_string(),
+                full_hex(shown.signal_mask, u64::BITS),
+                full_hex(ignored, u64::BITS),
+                full_hex(caught, u64::BITS),
+                full_hex(credentials.inheritable, u64::BITS),
+                full_hex(credentials.permitted, u64::BITS),
+                full_hex(credentials.effective, u64::BITS),
+                full_hex(credentials.bounding, u64::BITS),
+                full_hex(credentials.ambient, u64::BITS),
+                u8::from(credentials.no_new_privileges).to_string(),
+                crate::seccomp::mode(source.view.docker_profile, shown.filters).to_string(),
                 // Docker's profile, then the first thread's own.
-                1 + shown.filters,
-            );
+                (usize::from(source.view.docker_profile) + shown.filters).to_string(),
+            ];
+            for (name, value) in STATUS_POWERS.iter().zip(values) {
+                out.push_str(name);
+                out.push(STATUS_SEPARATOR);
+                out.push_str(&value);
+                out.push(PROC_LINE_END);
+            }
         }
         ProcessFile::Mounts => out.push_str(&super::mounts::mounts(source.mounts)),
         ProcessFile::Mountinfo => out.push_str(&super::mounts::mountinfo(source.mounts)),

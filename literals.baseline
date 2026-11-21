@@ -4266,7 +4266,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Limit"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Name:\t{}"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Soft Limit"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"State:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\\n                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\… #ba8d1fc8c3b2a85e
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Threads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\\n                 CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\… #a15edc79758058d6
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Umask:\t{:04o}"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Units"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"unlimited"
@@ -4348,9 +4347,6 @@ code	crates/wcontainers-kernel/src/memory.rs	str	AddressMap::forced_reach	"[vvar
 code	crates/wcontainers-kernel/src/pipe.rs	int	round_size	31
 code	crates/wcontainers-kernel/src/process.rs	byte	Thread::set_name	b'/'
 code	crates/wcontainers-kernel/src/process.rs	int	Queued	128
-code	crates/wcontainers-kernel/src/schedule.rs	int	weight	-20
-code	crates/wcontainers-kernel/src/schedule.rs	int	weight	19
-code	crates/wcontainers-kernel/src/schedule.rs	int	weight	20
 code	crates/wcontainers-kernel/src/seccomp.rs	int	Data	16
 code	crates/wcontainers-kernel/src/seccomp.rs	int	Filter::new	3
 code	crates/wcontainers-kernel/src/seccomp.rs	int	Filter::new	3
@@ -5680,10 +5676,6 @@ code	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_getaffinity	8
 code	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_getaffinity	8
 code	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_getaffinity	8
 code	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_setaffinity	8
-code	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_setattr	-20
-code	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_setattr	19
-code	crates/wcontainers-kernel/src/syscall/system.rs	int	setpriority	-20
-code	crates/wcontainers-kernel/src/syscall/system.rs	int	setpriority	19
 code	crates/wcontainers-kernel/src/syscall/system.rs	int	setpriority	20
 code	crates/wcontainers-kernel/src/syscall/system.rs	int	uname	6
 code	crates/wcontainers-kernel/src/syscall/system.rs	int	uname	65

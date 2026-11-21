@@ -9,6 +9,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::linux::general::{SCHED_BATCH, SCHED_IDLE};
+use crate::linux_extra::{MAX_NICE, MIN_NICE};
 use crate::process::{Channel, Schedule, Tid};
 
 /// `sched_prio_to_weight`: the weight of nice -20 to 19.
@@ -37,7 +38,7 @@ pub(crate) fn weight(schedule: &Schedule) -> u64 {
     if schedule.policy == SCHED_IDLE {
         return IDLE_WEIGHT;
     }
-    WEIGHTS[(schedule.nice.clamp(-20, 19) + 20) as usize]
+    WEIGHTS[(schedule.nice.clamp(MIN_NICE, MAX_NICE) - MIN_NICE) as usize]
 }
 
 /// The run queue: runnable threads that are not running, by virtual runtime.

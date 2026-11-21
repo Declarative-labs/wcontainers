@@ -8,7 +8,9 @@ use super::{Args, guest};
 use crate::counters::reason;
 use crate::linux::general::*;
 use crate::linux::system::{__NEW_UTS_LEN, new_utsname};
-use crate::linux_extra::{SCHED_ATTR_SIZE_VER0, SCHED_ATTR_SIZE_VER1, sched_attr};
+use crate::linux_extra::{
+    MAX_NICE, MIN_NICE, SCHED_ATTR_SIZE_VER0, SCHED_ATTR_SIZE_VER1, sched_attr,
+};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 use wcontainers_abi::PAGE_SIZE;
@@ -537,16 +539,32 @@ pub(super) fn sched_setattr(
     {
         return Err(Errno::EINVAL);
     }
-    let nice = attributes.sched_nice.clamp(-20, 19);
     if (attributes.sched_policy as i32) < 0 {
         return Err(Errno::EINVAL);
     }
-    let keep_policy = attributes.sched_flags & u64::from(SCHED_FLAG_KEEP_POLICY) != 0;
     let target = scheduled(kernel, tid, pid)?;
+    let request = request_of(kernel, target, &attributes);
+    change_schedule(kernel, tid, target, &request)
+}
+
+/// Sets thread `tid`'s own scheduling to `attributes`, as its `sched_setattr` would.
+pub(crate) fn set_own_schedule(
+    kernel: &mut Kernel,
+    tid: Tid,
+    attributes: &sched_attr,
+) -> Result<(), Errno> {
+    let target = Task::Thread(tid);
+    let request = request_of(kernel, target, attributes);
+    change_schedule(kernel, tid, target, &request).map(drop)
+}
+
+/// What `attributes` ask of `target`'s scheduling, as `sched_setattr` reads them.
+fn request_of(kernel: &Kernel, target: Task, attributes: &sched_attr) -> Request {
+    let keep_policy = attributes.sched_flags & u64::from(SCHED_FLAG_KEEP_POLICY) != 0;
     let mut request = Request {
         policy: (!keep_policy).then_some(attributes.sched_policy),
         flags: attributes.sched_flags,
-        nice,
+        nice: attributes.sched_nice.clamp(MIN_NICE, MAX_NICE),
         priority: attributes.sched_priority,
         runtime: attributes.sched_runtime,
         deadline: attributes.sched_deadline,
@@ -564,7 +582,7 @@ pub(super) fn sched_setattr(
             request.runtime = kept.sched_runtime;
         }
     }
-    change_schedule(kernel, tid, target, &request)
+    request
 }
 
 pub(super) fn sched_getattr(
@@ -766,7 +784,7 @@ pub(super) fn setpriority(
     // Linux's `setpriority` and `set_one_prio`: each task that refuses leaves its error, the last one
     // stays; ESRCH only when nothing is named.
     let tasks = named_tasks(kernel, tid, which as u32, who)?;
-    let nice = (nice as i32).clamp(-20, 19);
+    let nice = (nice as i32).clamp(MIN_NICE, MAX_NICE);
     let caller = kernel.credentials(tid).clone();
     let powerful = caller.has(CAP_SYS_NICE);
     let mut result = Err(Errno::ESRCH);
@@ -836,6 +854,25 @@ pub(super) fn ioprio_get(
         .map(|task| u64::from(effective(task_schedule(kernel, task))))
         .min()
         .ok_or(Errno::ESRCH)
+}
+
+/// Sets thread `tid`'s own I/O priority, as its `ioprio_set` would.
+pub(crate) fn set_io_priority(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    priority: u32,
+) -> Result<(), Errno> {
+    let who_self = 0;
+    let arguments = [
+        crate::linux_extra::IOPRIO_WHO_PROCESS,
+        who_self,
+        priority.into(),
+        0,
+        0,
+        0,
+    ];
+    ioprio_set(kernel, cx, tid, arguments).map(drop)
 }
 
 pub(super) fn ioprio_set(

@@ -80,6 +80,14 @@ pub mod docker {
     pub const DOMAIN_NAME_OPTION: &str = "--domainname";
     /// The first process's `oom_score_adj` option.
     pub const OOM_SCORE_ADJ_OPTION: &str = "--oom-score-adj";
+    /// Adds a capability, by its name without `CAP_`.
+    pub const CAP_ADD_OPTION: &str = "--cap-add";
+    /// Drops a capability, likewise.
+    pub const CAP_DROP_OPTION: &str = "--cap-drop";
+    /// The security option that filters no call.
+    pub const SECCOMP_UNCONFINED: &str = "seccomp=unconfined";
+    /// Before the path of a seccomp profile, as a security option.
+    pub const SECCOMP_PROFILE: &str = "seccomp=";
 }
 
 /// Between the parts of a container's name.

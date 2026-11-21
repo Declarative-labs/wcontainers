@@ -66,8 +66,12 @@ pub(crate) const ACL_PERMISSIONS: u16 = 0x04 | 0x02 | 0x01;
 /// The id of an entry that names no user or group (`ACL_UNDEFINED_ID`).
 pub(crate) const ACL_UNDEFINED_ID: u32 = u32::MAX;
 
+/// `linux/sched/prio.h`'s `MIN_NICE` and `MAX_NICE`: the range of nice values.
+pub(crate) const MIN_NICE: i32 = -20;
+pub(crate) const MAX_NICE: i32 = 19;
+
 /// `linux/personality.h`'s `ADDR_NO_RANDOMIZE`: a new program's layout is not placed at random.
-pub(crate) const ADDR_NO_RANDOMIZE: u32 = 0x0040000;
+pub const ADDR_NO_RANDOMIZE: u32 = 0x0040000;
 /// `linux/personality.h`'s `ADDR_COMPAT_LAYOUT`: new mappings go up from a low base.
 pub(crate) const ADDR_COMPAT_LAYOUT: u32 = 0x0200000;
 
@@ -83,7 +87,7 @@ pub(crate) const PER_CLEAR_ON_SETID: u32 =
 #[derive(
     Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
 )]
-pub(crate) struct sched_attr {
+pub struct sched_attr {
     pub size: u32,
     pub sched_policy: u32,
     pub sched_flags: u64,
@@ -104,10 +108,10 @@ pub(crate) const SCHED_FLAG_SUGOV: u64 = 0x1000_0000;
 
 /// I/O priorities (`linux/ioprio.h`, which linux-raw-sys does not generate): the class sits above 13
 /// bits, the level in the lowest three.
-pub(crate) const IOPRIO_CLASS_SHIFT: u32 = 13;
+pub const IOPRIO_CLASS_SHIFT: u32 = 13;
 pub(crate) const IOPRIO_CLASS_NONE: u32 = 0;
 pub(crate) const IOPRIO_CLASS_RT: u32 = 1;
-pub(crate) const IOPRIO_CLASS_BE: u32 = 2;
+pub const IOPRIO_CLASS_BE: u32 = 2;
 pub(crate) const IOPRIO_CLASS_IDLE: u32 = 3;
 /// What `ioprio_get`'s `which` names: one process, a process group, or a user's processes.
 pub(crate) const IOPRIO_WHO_PROCESS: u64 = 1;

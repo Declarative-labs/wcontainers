@@ -41,6 +41,8 @@ mod xattr;
 
 use wcontainers_abi::SystemCallRequest;
 
+pub(crate) use process::set_personality;
+pub(crate) use system::{set_io_priority, set_own_schedule};
 pub(crate) use xattr::CAPABILITY;
 
 use crate::counters::reason;
@@ -435,7 +437,10 @@ pub(crate) fn dispatch(
             .counters
             .count(cx.host, reason::UNKNOWN_SYSCALL, number.into());
     }
-    let docker = crate::seccomp::docker_default(number, &call.arguments, known);
+    let docker = kernel
+        .docker_profile
+        .then(|| crate::seccomp::docker_default(number, &call.arguments, known))
+        .flatten();
     if !kernel.threads[&tid].filters.is_empty() {
         if let Some(outcome) = seccomp::filter_call(kernel, cx, tid, &call, docker) {
             return outcome;

@@ -78,6 +78,25 @@ pub(crate) struct Credentials {
     pub serial: u64,
 }
 
+/// A process's five capability sets, one bit per capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapabilitySets {
+    pub effective: u64,
+    pub permitted: u64,
+    pub inheritable: u64,
+    pub bounding: u64,
+    pub ambient: u64,
+}
+
+/// The capability sets of a default Docker container's first process.
+pub const DOCKER_CAPABILITY_SETS: CapabilitySets = CapabilitySets {
+    effective: DOCKER_DEFAULT,
+    permitted: DOCKER_DEFAULT,
+    inheritable: 0,
+    bounding: DOCKER_DEFAULT,
+    ambient: 0,
+};
+
 impl Credentials {
     /// Root with Docker's default powers and the given supplementary groups.
     pub fn container_root(mut groups: Vec<u32>) -> Self {
@@ -92,11 +111,11 @@ impl Credentials {
             sgid: 0,
             fsgid: 0,
             groups,
-            effective: DOCKER_DEFAULT,
-            permitted: DOCKER_DEFAULT,
-            inheritable: 0,
-            bounding: DOCKER_DEFAULT,
-            ambient: 0,
+            effective: DOCKER_CAPABILITY_SETS.effective,
+            permitted: DOCKER_CAPABILITY_SETS.permitted,
+            inheritable: DOCKER_CAPABILITY_SETS.inheritable,
+            bounding: DOCKER_CAPABILITY_SETS.bounding,
+            ambient: DOCKER_CAPABILITY_SETS.ambient,
             securebits: 0,
             no_new_privileges: false,
             serial: 0,
@@ -116,6 +135,24 @@ impl Credentials {
             fsgid: group,
             ..self
         }
+    }
+
+    /// The same credentials with the capability sets `sets`, as runc's `capset` and ambient raises
+    /// give them before the first exec: refused where Linux refuses a set beyond the others.
+    pub fn with_capabilities(self, sets: CapabilitySets) -> Result<Self, crate::Errno> {
+        if sets.effective & !sets.permitted != 0
+            || sets.ambient & !(sets.permitted & sets.inheritable) != 0
+        {
+            return Err(crate::Errno::EPERM);
+        }
+        Ok(Self {
+            effective: sets.effective,
+            permitted: sets.permitted,
+            inheritable: sets.inheritable,
+            bounding: sets.bounding,
+            ambient: sets.ambient,
+            ..self
+        })
     }
 
     /// The same credentials, set never to gain privileges through exec if `set`.

@@ -49,12 +49,16 @@ use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Next};
 
 pub use container::{
     Attributes, DEVPTS_PATH, DOCKER_DOMAIN_NAME, DOCKER_UMASK, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE,
-    EXIT_START_FAILED, FileRecord, NULL_PATH, NewFile, Start, StartOptions,
+    EXIT_START_FAILED, FileRecord, NULL_PATH, NewFile, Seccomp, Start, StartOptions,
 };
 pub use counters::reason;
-pub use credentials::{DOCKER_DEFAULT as DOCKER_CAPABILITIES, ROOT_GID, ROOT_UID};
+pub use credentials::{
+    CapabilitySets, DOCKER_CAPABILITY_SETS, DOCKER_DEFAULT as DOCKER_CAPABILITIES, ROOT_GID,
+    ROOT_UID,
+};
 pub use ends::Standard;
 pub use errno::Errno;
+pub use linux_extra::{ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, sched_attr};
 pub use memory::PLACEMENT_TIERS;
 pub use process::DOCKER_LIMITS;
 pub use suspend::{ContextOrigin, ProcessContext, SuspendedTask};
@@ -304,6 +308,8 @@ pub struct Kernel {
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
+    /// Whether Docker's default seccomp profile answers every call before the threads' filters.
+    docker_profile: bool,
     /// The wall clock time and the monotonic clock when the container started.
     boot: Time,
     boot_monotonic: u64,
@@ -433,6 +439,7 @@ impl Kernel {
             },
             hostname: Vec::new(),
             domainname: container::DOCKER_DOMAIN_NAME.to_vec(),
+            docker_profile: true,
             boot: Time::default(),
             boot_monotonic: 0,
             boot_id: [0; 16],
@@ -839,6 +846,7 @@ impl Kernel {
             kept: &self.files.proc_kept,
             masked: &self.files.proc_masked,
             counters: &self.counters,
+            docker_profile: self.docker_profile,
         };
         let walk = fs::Walk {
             root: &context.root,

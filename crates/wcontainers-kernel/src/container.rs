@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use wcontainers_abi::{Cpu, End, PAGE_SIZE, Resume};
 
 use crate::counters::reason;
-use crate::credentials::{Credentials, ROOT_GID, ROOT_UID};
+use crate::credentials::{CapabilitySets, Credentials, DOCKER_CAPABILITY_SETS, ROOT_GID, ROOT_UID};
 use crate::ends::Standard;
 use crate::file::{FdTable, OpenFile};
 use crate::fs::dev::DOCKER_DEVICES;
@@ -18,7 +18,8 @@ use crate::fs::{
     self, Content, Directory, FileSystem, Kind, New, Node, Numbers, Regular, Time, encode_device,
 };
 use crate::linux::general::*;
-use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RDONLY, ST_RELATIME};
+use crate::linux::ptrace::sock_filter;
+use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RDONLY, ST_RELATIME, sched_attr};
 use crate::loader::Image;
 use crate::process::{Pid, Process, SIGNALS, Thread, Tid, limits_from};
 use crate::{Context, Errno, Kernel};
@@ -103,6 +104,27 @@ pub struct StartOptions<'a> {
     pub oom_score_adj: i16,
     /// The container's NIS domain name (`--domainname`).
     pub domain_name: &'a [u8],
+    /// The first process's capability sets (`--cap-add`, `--cap-drop`).
+    pub capabilities: CapabilitySets,
+    /// What filters its calls (`--security-opt seccomp`).
+    pub seccomp: Seccomp<'a>,
+    /// Its scheduling, as `sched_setattr` takes it; none keeps Linux's default.
+    pub scheduler: Option<sched_attr>,
+    /// Its I/O priority, as `ioprio_set` takes it.
+    pub io_priority: u32,
+    /// Its execution domain and flags, as `personality` takes them.
+    pub personality: u32,
+}
+
+/// What answers a container's calls before Linux does.
+#[derive(Clone, Copy, Debug)]
+pub enum Seccomp<'a> {
+    /// Docker's default profile.
+    DockerProfile,
+    /// Nothing (`seccomp=unconfined`).
+    Unconfined,
+    /// A classic BPF program, installed as the first process's own filter before its program runs.
+    Filter(&'a [sock_filter]),
 }
 
 impl Default for StartOptions<'_> {
@@ -115,6 +137,11 @@ impl Default for StartOptions<'_> {
             no_new_privileges: false,
             oom_score_adj: 0,
             domain_name: DOCKER_DOMAIN_NAME,
+            capabilities: DOCKER_CAPABILITY_SETS,
+            seccomp: Seccomp::DockerProfile,
+            scheduler: None,
+            io_priority: 0,
+            personality: 0,
         }
     }
 }
@@ -746,6 +773,7 @@ impl Kernel {
             kept: &self.files.proc_kept,
             masked: &self.files.proc_masked,
             counters: &self.counters,
+            docker_profile: self.docker_profile,
         };
         let walk = fs::Walk {
             root: &self.files.root,
@@ -802,6 +830,7 @@ impl Kernel {
         self.machine.lowest_tier_top = crate::memory::first_tier_top(self.ceiling);
         self.hostname = start.hostname.to_vec();
         self.domainname = start.options.domain_name.to_vec();
+        self.docker_profile = matches!(start.options.seccomp, Seccomp::DockerProfile);
         for (end, sends) in start.standard.ends() {
             self.ends.name(end, sends);
         }
@@ -809,7 +838,15 @@ impl Kernel {
             self.mount_backend(path);
         }
 
-        let pid = match self.allocate_id(&mut cx) {
+        let credentials = Credentials::container_root(start.groups.to_vec())
+            .with_ids(start.options.user, start.options.group)
+            .without_new_privileges(start.options.no_new_privileges)
+            .with_capabilities(start.options.capabilities);
+        let pid = match credentials.as_ref().map_err(|error| *error) {
+            Ok(_) => self.allocate_id(&mut cx),
+            Err(error) => Err(error),
+        };
+        let pid = match pid {
             Ok(pid) => pid,
             Err(error) => {
                 self.start_failure = Some(error);
@@ -818,10 +855,8 @@ impl Kernel {
                 return Ok(());
             }
         };
+        let credentials = credentials.expect("checked before the id was taken");
         let root = self.files.root.clone();
-        let credentials = Credentials::container_root(start.groups.to_vec())
-            .with_ids(start.options.user, start.options.group)
-            .without_new_privileges(start.options.no_new_privileges);
         let process = Process {
             pid,
             parent: 0,
@@ -887,6 +922,15 @@ impl Kernel {
         }));
         let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
         self.threads.insert(pid, thread);
+        if let Err(error) = self.apply_start_options(&mut cx, pid, &start.options) {
+            self.processes.remove(&pid);
+            self.threads.remove(&pid);
+            self.ids_let_go.push(pid);
+            self.start_failure = Some(error);
+            self.finished = Some(start_failed(error));
+            self.close_unmade(&mut cx, &start.standard);
+            return Ok(());
+        }
         let owned = |strings: &[&[u8]]| strings.iter().map(|string| string.to_vec()).collect();
         self.starting = Some(Box::new(Starting {
             pid,
@@ -899,6 +943,26 @@ impl Kernel {
         }));
         self.run_start(&mut cx);
         self.settle(&mut cx);
+        Ok(())
+    }
+
+    /// Gives the first process the values runc sets before its program runs, each as the
+    /// process's own call would.
+    fn apply_start_options(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        options: &StartOptions<'_>,
+    ) -> Result<(), Errno> {
+        if let Some(attributes) = &options.scheduler {
+            crate::syscall::set_own_schedule(self, pid, attributes)?;
+        }
+        crate::syscall::set_io_priority(self, cx, pid, options.io_priority)?;
+        crate::syscall::set_personality(self, cx, pid, options.personality)?;
+        if let Seccomp::Filter(program) = options.seccomp {
+            let filter = crate::seccomp::Filter::new(program.into())?;
+            self.thread_mut(pid).filters.push(Rc::new(filter));
+        }
         Ok(())
     }
 
@@ -1447,6 +1511,7 @@ impl Kernel {
             kept: &self.files.proc_kept,
             masked: &self.files.proc_masked,
             counters: &self.counters,
+            docker_profile: self.docker_profile,
         };
         let proc_root = fs::proc::root(&view);
         fs::mount(proc_point, &proc_root);
