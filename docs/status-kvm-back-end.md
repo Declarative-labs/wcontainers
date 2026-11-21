@@ -12,6 +12,25 @@ and hardware-virtualization-inside.
   - speed: the compute part of the bar fails on the Neoverse V2 (+24.12% against +21.2%); the system-call part
     passes; the untranslated run (the virtual machine without translation) costs about 1%.
   The Mac's suite passes with the changes (below, "Results"). Not complete: both wait on the owner's ruling.
+- Run 3 built nothing new: no ruling had come. It ran the whole suite again on both hosts after another track's
+  commit 88d924b3 (the translation kept through tempfile's persist, in translate.rs), with the same results.
+
+## Results (run 3)
+
+- KVM (Graviton4; the checkout's working tree at 12:39 Pacific, after 88d924b3, other tracks' uncommitted edits
+  in it; load 4.4 at the start to 21.7 during interrupts, 8.3 at the end, of 96 cores; scratch
+  kvm-back-end/suite-run3.log): clippy with warnings denied clean; registers, floor (21 + 1, 0 failed; doorbell
+  round trip 1566 ns, stops median 3708 ns), exits, interrupts (15309, 0 failed, 175 s), native (32562 words, 0
+  failing), probe (9 forms of 16 bytes or fewer differ, as before), host_branches, kept, carry, busybox (56 of 56,
+  48 s), lib tests (12 and 3) pass; kernel fails at the one known assertion, as before.
+- Mac (M5 Max, a copy of commit 199c13e9 exported to scratch, because other tracks' edits in progress in the shared
+  checkout did not build then; load 15 to 29; mac-suite-run3.log): clippy clean; registers, floor, exits,
+  interrupts (15309, 0 failed, 22 s), native (0 failing), probe (0 forms of 16 bytes or fewer differ, 44 larger),
+  host_branches, kept, carry, busybox (56 of 56), kernel (ran alike to the end), lib tests (12 and 3) pass.
+- Why interrupts is slower on KVM, from the code, not measured: every software step of the runner sets and reads
+  back every general and vector register and eighteen others one at a time, and on KVM each is one
+  KVM_SET_ONE_REG or KVM_GET_ONE_REG system call (arm64 KVM has no call that moves them all), where
+  Hypervisor.framework's are calls within the process.
 
 ## Results (run 2)
 
@@ -135,7 +154,8 @@ kept, carry, lib tests pass.
   agrees: the blocks program gives the reference's output natively), and faults on the M5, as the WebAssembly output
   does. So the kernel test's count of memory faults differs there (8 against 10). Which one the defined machine does
   is yours: routing `dc cvau` (decision 14's way) would make the native output the WebAssembly output's on every host.
-  The test is left failing on that machine.
+  That change is not this track's: the guest crate routes every cache clean as a copy (`I::CleanCache` gives
+  `Route::Copy` in crates/wcontainers-arm64/src/native.rs). The test is left failing on that machine.
 - The speed bar's compute part fails on the Neoverse V2, +24.12% [+23.75 .. +24.47] against +21.2% (the Mac's last
   bar +20.09%). It is the translated code on that core, not KVM: the untranslated run in the same machine costs about
   1% (matrix 7.8%), and the workloads that cost more there are others than on the M5 (interpret +36.8% against
