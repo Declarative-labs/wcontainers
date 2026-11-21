@@ -4530,6 +4530,7 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
+ "polling",
  "rustix",
  "wcontainers-abi",
  "wcontainers-internet-protocol",
@@ -4979,7 +4980,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-udp-sockets-linux-host"
+name = "wcontainers-udp-sockets-host"
 version = "0.1.0"
 dependencies = [
  "etherparse",
