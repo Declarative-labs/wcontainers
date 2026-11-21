@@ -24,3 +24,5 @@ rustix = { version = "1.1.6", features = ["net"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 # Classic BPF's operation codes, for the filters the checks attach.
 libc = "0.2.191"
+# The host's interfaces, to find the loopback one by its flag.
+nix = { version = "0.31.3", default-features = false, features = ["net"] }

@@ -4893,6 +4893,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "libc",
+ "nix",
  "rustix",
  "wcontainers-abi",
  "wcontainers-configurable",

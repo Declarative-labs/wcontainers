@@ -29,6 +29,7 @@ use etherparse::{
     IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6Header, Ipv6HeaderSlice,
     Ipv6RawExtHeader, Ipv6RawExtHeaderSlice, TcpHeaderSlice, TcpOptionElement, icmpv4, icmpv6,
 };
+use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
@@ -70,9 +71,6 @@ const SHARING_PEERS: usize = 3;
 
 /// Connections the backlog check makes, more than the smallest backlog holds.
 const BACKLOG_OVERFLOW: usize = 3;
-
-/// The loopback interface's name on Linux.
-const LOOPBACK_INTERFACE: &str = "lo";
 
 /// The names of the keep-alive check's two intervals, for its messages.
 const PROBE: &str = "the probe";
@@ -3453,13 +3451,15 @@ const ANYCAST_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
 const FLOW_LABEL: u32 = 0xABCDE;
 const MARK: PacketMark = PacketMark(7);
 
-/// The index of the loopback interface.
+/// The index of the host's loopback interface, the one that says it is loopback.
 fn loopback_interface() -> InterfaceIndex {
-    let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
-        .expect("a socket to name interfaces with");
+    let loopback = nix::ifaddrs::getifaddrs()
+        .expect("the host's interfaces")
+        .find(|entry| entry.flags.contains(InterfaceFlags::IFF_LOOPBACK))
+        .expect("a loopback interface");
     InterfaceIndex(
-        rustix::net::netdevice::name_to_index(&socket, LOOPBACK_INTERFACE)
-            .expect("the loopback interface"),
+        nix::net::if_::if_nametoindex(loopback.interface_name.as_str())
+            .expect("the loopback interface's index"),
     )
 }
 
