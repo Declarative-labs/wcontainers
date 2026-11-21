@@ -39,6 +39,14 @@ pub(crate) const SMALL_FLOAT_EXPONENT_MASK: u32 = (1 << SMALL_FLOAT_EXPONENT_BIT
 pub(crate) const SMALL_FLOAT_EXPONENT_BIAS: u32 = SMALL_FLOAT_EXPONENT_MASK >> 1;
 /// Bits of a half float, the only small float with a sign.
 pub(crate) const HALF_BITS: u32 = u16::BITS;
+/// The largest finite half float: its largest finite exponent and every fraction bit.
+pub(crate) const HALF_MAX: f32 = {
+    let fraction_bits = HALF_BITS - 1 - SMALL_FLOAT_EXPONENT_BITS;
+    let fraction = ((1 << fraction_bits) - 1) << (F32_FRACTION_BITS - fraction_bits);
+    f32::from_bits(
+        ((F32_EXPONENT_BIAS + SMALL_FLOAT_EXPONENT_BIAS) << F32_FRACTION_BITS) | fraction,
+    )
+};
 /// The name of each program's helper constants and of their block's type.
 pub(crate) const HELPERS: &str = "helpers";
 pub(crate) const HELPERS_TYPE: &str = "Helpers";

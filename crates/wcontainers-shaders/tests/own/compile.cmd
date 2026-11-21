@@ -28,7 +28,7 @@ cd /d %~dp0
 "%DXC%" -nologo -T ps_6_0 -E ps_twospaces -D SPACES -Fo ps_twospaces.dxil twospaces.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_transform -Gis -Fo vs_transform.dxil own.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_textured -Gis -Fo ps_textured.dxil own.hlsl || exit /b 1
-for %%e in (ps_signed ps_offset ps_special ps_cases ps_pack) do (
+for %%e in (ps_signed ps_offset ps_special ps_half ps_cases ps_pack) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc signed.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil signed.hlsl || exit /b 1
 )

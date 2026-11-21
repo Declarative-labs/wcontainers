@@ -85,6 +85,7 @@ ps_filter.dxil	ok ; glsl compiles
 ps_ftoi.dxil	ok ; glsl compiles
 ps_gatheroff.dxil	ok ; glsl compiles
 ps_geometry.dxil	ok ; glsl compiles
+ps_half.dxil	ok ; glsl compiles
 ps_halves.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
 ps_helper.dxil	ok ; glsl needs SAMPLE_SHADING|FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
 ps_ids.dxil	ok ; glsl compiles

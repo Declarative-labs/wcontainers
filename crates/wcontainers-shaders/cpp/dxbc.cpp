@@ -63,6 +63,8 @@ int convert(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, u
   compile.scalarizeOptions.subDwordVectors = false;
   compile.arithmeticOptions.lowerDot = false;
   compile.arithmeticOptions.lowerUdiv = true;
+  // f32tof16's clamp is made in the lowering (src/lower.rs).
+  compile.arithmeticOptions.lowerF32toF16 = false;
   compile.bufferOptions.useTypedForSparseFeedback = true;
   compile.bufferIndexing.allowDynamicIndexing = true;
   compile.cseOptions.relocateDescriptorLoad = true;

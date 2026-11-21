@@ -52,6 +52,16 @@ float4 ps_special(VsOut i) : SV_Target0 {
                   any(isnan(w)) ? 0.5 : 0.0, any(isinf(-w)) ? 0.75 : 0.0);
 }
 
+// Halves of NaN, both infinities, finite values past the half's range and ordinary ones, picked by the
+// position and made at run time: Direct3D keeps only infinities infinite, clamping the rest.
+static const uint half_cases[8] = { 0x7fc00000, 0x7f800000, 0xff800000, 0x3f800000,
+                                    0x80000000, 0xbfc00000, 0x477fe000, 0x47800000 };
+uint4 ps_half(VsOut i) : SV_Target0 {
+    float x = asfloat(half_cases[(uint)i.position.x & 7]) * tint.x;
+    float y = asfloat(half_cases[(uint)i.position.y & 7]) * -tint.y;
+    return uint4(f32tof16(x), f32tof16(y), f32tof16(x * 4096.0), f32tof16(y * 0.5));
+}
+
 // A loop whose switch has cases that leave the switch early from inside an if, and the loop left by a
 // test after the switch.
 float4 ps_cases(VsOut i) : SV_Target0 {

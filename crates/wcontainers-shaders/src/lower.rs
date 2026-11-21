@@ -4974,7 +4974,30 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     )
                 }
             }
-            c::CONVERT_F32TO_PACKED_F16 => math(self, b, M::Pack2x16float, Scalar::F32)?,
+            c::CONVERT_F32TO_PACKED_F16 => {
+                // Direct3D rounds toward zero, so only infinities convert to infinities: finite
+                // values are clamped to the half's range first. Finiteness is a bit test, which
+                // no back end's compiler folds away as it may a float comparison with infinity.
+                let n = self.basic_of(r[0])?.size;
+                let x = self.get_as(b, r[0], Scalar::F32)?;
+                let bits = self.get_as(b, r[0], Scalar::U32)?;
+                let m = self.splat_lit(b, Literal::U32(!crate::build::F32_SIGN_MASK), n)?;
+                let magnitude = self.bin(b, B::And, bits, m);
+                let inf = self.splat_lit(b, Literal::U32(crate::build::F32_EXPONENT_MASK), n)?;
+                let finite = self.bin(b, B::Less, magnitude, inf);
+                let low = self.splat_lit(b, Literal::F32(-crate::build::HALF_MAX), n)?;
+                let high = self.splat_lit(b, Literal::F32(crate::build::HALF_MAX), n)?;
+                let clamped = self.math(b, M::Clamp, &[x, low, high]);
+                let x = self.add(
+                    b,
+                    Expression::Select {
+                        condition: finite,
+                        accept: clamped,
+                        reject: x,
+                    },
+                );
+                self.math(b, M::Pack2x16float, &[x])
+            }
             c::CONVERT_PACKED_F16TO_F32 => math(self, b, M::Unpack2x16float, Scalar::U32)?,
             other => return Err(malformed(format!("opcode {other}"))),
         })

@@ -89,6 +89,7 @@ ps_flat.dxbc	ok ; glsl compiles
 ps_ftoi.dxbc	ok ; glsl compiles
 ps_gatheroff.dxbc	ok ; glsl compiles
 ps_geometry.dxbc	ok ; glsl compiles
+ps_half.dxbc	ok ; glsl compiles
 ps_helper.dxbc	ok ; glsl needs SAMPLE_SHADING|FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
 ps_ids.dxbc	ok ; glsl compiles
 ps_integer.dxbc	ok ; glsl compiles
