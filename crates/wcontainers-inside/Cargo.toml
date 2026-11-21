@@ -18,7 +18,7 @@ wcontainers-kernel-linux = { path = "../kernel/implementation/linux" }
 # The loop, which runs inside beside the kernel.
 wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-kernel", default-features = false }
 # The kernel test crate's policy, for the test program `native-kernel` only.
-wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy", optional = true }
+wcontainers-system-seeded-test-policy = { path = "../system/implementation/seeded-test-policy", optional = true }
 # The container's files and start as the link carries them.
 serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
 # The position map, the container's files and its start as the link carries them.
@@ -44,7 +44,7 @@ talc = { version = "5.1.1", default-features = false }
 
 [features]
 # The test program `native-kernel`, which runs the kernel test crate's policy.
-kernel-test = ["dep:wcontainers-kernel-test-policy"]
+kernel-test = ["dep:wcontainers-system-seeded-test-policy"]
 
 [[bin]]
 name = "native-kernel"

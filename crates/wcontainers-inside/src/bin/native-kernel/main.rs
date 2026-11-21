@@ -21,8 +21,8 @@ mod kernel {
     use wcontainers_inside::link::Start;
     use wcontainers_inside::native::NativeCpu;
     use wcontainers_kernel_linux::Kernel;
-    use wcontainers_kernel_test_policy::{TestPolicy, Warned as Kept};
     use wcontainers_runtime_single_kernel::{Ending, System as _, drive};
+    use wcontainers_system_seeded_test_policy::{TestPolicy, Warned as Kept};
 
     use crate::protocol::{Ended, Policy, PolicySeeds, Warned};
 

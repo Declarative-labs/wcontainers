@@ -4192,8 +4192,8 @@ dependencies = [
  "wcontainers-inside",
  "wcontainers-kernel-linux",
  "wcontainers-kernel-test",
- "wcontainers-kernel-test-policy",
  "wcontainers-runtime-single-kernel",
+ "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
  "wcontainers-translator-test",
  "wcontainers-wasmtime",
@@ -4240,8 +4240,8 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-kernel-linux",
- "wcontainers-kernel-test-policy",
  "wcontainers-runtime-single-kernel",
+ "wcontainers-system-seeded-test-policy",
  "zerocopy",
 ]
 
@@ -4303,21 +4303,10 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-docker",
  "wcontainers-kernel-linux",
- "wcontainers-kernel-test-policy",
  "wcontainers-runtime-single-kernel",
+ "wcontainers-system-seeded-test-policy",
  "wcontainers-wasmtime",
  "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-kernel-test-policy"
-version = "0.1.0"
-dependencies = [
- "rand 0.9.5",
- "spin 0.10.1",
- "wcontainers-abi",
- "wcontainers-kernel-linux",
- "wcontainers-runtime-single-kernel",
 ]
 
 [[package]]
@@ -4523,6 +4512,17 @@ dependencies = [
  "domain",
  "wcontainers-kernel-interface",
  "wcontainers-system",
+]
+
+[[package]]
+name = "wcontainers-system-seeded-test-policy"
+version = "0.1.0"
+dependencies = [
+ "rand 0.9.5",
+ "spin 0.10.1",
+ "wcontainers-abi",
+ "wcontainers-kernel-linux",
+ "wcontainers-runtime-single-kernel",
 ]
 
 [[package]]

@@ -15,10 +15,10 @@ use wcontainers_kernel_linux::{
     AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
     SignalInformation, Standard, Start, System, SystemCallResponse, TaskId,
 };
-use wcontainers_kernel_test_policy::{
+use wcontainers_runtime_single_kernel::{Ending, Execution, TerminalSize, Turn};
+use wcontainers_system_seeded_test_policy::{
     PROGRESS_PICOSECONDS, REPEATABLE_START_NANOSECONDS, Schedule, TURN_NANOSECONDS,
 };
-use wcontainers_runtime_single_kernel::{Ending, Execution, TerminalSize, Turn};
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
 use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
