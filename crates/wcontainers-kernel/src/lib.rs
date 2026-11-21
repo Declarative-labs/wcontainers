@@ -47,9 +47,12 @@ use alloc::vec::Vec;
 
 use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Next};
 
+pub use cgroup::MOUNT as CGROUP_MOUNT;
 pub use container::{
-    Attributes, DEVPTS_PATH, DOCKER_DOMAIN_NAME, DOCKER_UMASK, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE,
-    EXIT_START_FAILED, FileRecord, NULL_PATH, NewFile, Seccomp, Start, StartOptions,
+    Attributes, DEV_MOUNT, DEVPTS_MOUNT, DEVPTS_PATH, DOCKER_DOMAIN_NAME, DOCKER_MASKED_PATHS,
+    DOCKER_MOUNTS, DOCKER_READ_ONLY_PATHS, DOCKER_UMASK, DockerMount, EXIT_NOT_FOUND,
+    EXIT_NOT_RUNNABLE, EXIT_START_FAILED, FileRecord, MQUEUE_MOUNT, NULL_PATH, NewFile, PROC_MOUNT,
+    SHM_MOUNT, SYS_MOUNT, Seccomp, Start, StartOptions,
 };
 pub use counters::reason;
 pub use credentials::{

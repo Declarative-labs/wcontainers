@@ -6,18 +6,13 @@ use alloc::string::{String, ToString};
 
 use crate::fs::proc::View;
 
-/// Docker's mount of it: where, its source and its file system's type, as the mount table shows.
-pub(crate) const MOUNT: Mount = Mount {
+/// Docker's mount of it.
+pub const MOUNT: crate::DockerMount = crate::DockerMount {
     point: "/sys/fs/cgroup",
     source: "cgroup",
     kind: "cgroup2",
+    options: "",
 };
-
-pub(crate) struct Mount {
-    pub point: &'static str,
-    pub source: &'static str,
-    pub kind: &'static str,
-}
 
 /// The controllers Docker enables in a container's cgroup, as the reference lists them.
 const CONTROLLERS: &str = "cpuset cpu io memory hugetlb pids rdma\n";

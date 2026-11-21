@@ -146,6 +146,76 @@ impl Default for StartOptions<'_> {
     }
 }
 
+/// A mount a default Docker container has: where, its source, its file system's type and the
+/// options Docker gives, as the mount table shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DockerMount {
+    pub point: &'static str,
+    pub source: &'static str,
+    pub kind: &'static str,
+    pub options: &'static str,
+}
+
+pub const PROC_MOUNT: DockerMount = DockerMount {
+    point: "/proc",
+    source: "proc",
+    kind: "proc",
+    options: "",
+};
+pub const DEV_MOUNT: DockerMount = DockerMount {
+    point: "/dev",
+    source: "tmpfs",
+    kind: "tmpfs",
+    options: "size=65536k,mode=755",
+};
+pub const DEVPTS_MOUNT: DockerMount = DockerMount {
+    point: DEVPTS_PATH,
+    source: "devpts",
+    kind: "devpts",
+    options: "gid=5,mode=620,ptmxmode=666",
+};
+pub const SYS_MOUNT: DockerMount = DockerMount {
+    point: "/sys",
+    source: "sysfs",
+    kind: "sysfs",
+    options: "",
+};
+pub const MQUEUE_MOUNT: DockerMount = DockerMount {
+    point: "/dev/mqueue",
+    source: "mqueue",
+    kind: "mqueue",
+    options: "",
+};
+pub const SHM_MOUNT: DockerMount = DockerMount {
+    point: "/dev/shm",
+    source: "shm",
+    kind: "tmpfs",
+    options: "size=65536k",
+};
+
+/// The mounts of a default Docker container besides its root and volumes, in Docker's order.
+pub const DOCKER_MOUNTS: [DockerMount; 7] = [
+    PROC_MOUNT,
+    DEV_MOUNT,
+    DEVPTS_MOUNT,
+    SYS_MOUNT,
+    crate::cgroup::MOUNT,
+    MQUEUE_MOUNT,
+    SHM_MOUNT,
+];
+
+/// The paths of Docker's read-only list, and of its masked list, that the container's file
+/// systems have; Docker leaves out those a file system lacks.
+pub const DOCKER_READ_ONLY_PATHS: [&str; 1] = ["/proc/sys"];
+pub const DOCKER_MASKED_PATHS: [&str; 6] = [
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/sys/firmware",
+];
+
 /// The file mode creation mask a default Docker container's first process starts with.
 pub const DOCKER_UMASK: u32 = 0o022;
 
@@ -1427,7 +1497,7 @@ impl Kernel {
             .directory()
             .expect("dev")
             .get(b"shm")
-            .expect("shm");
+            .expect("the dev mount holds its shared memory directory");
         let shm_space = self.new_space(docker_size, half);
         let shm = mount_tmpfs(
             &mut self.files.numbers,
@@ -1443,7 +1513,7 @@ impl Kernel {
             .directory()
             .expect("dev")
             .get(b"mqueue")
-            .expect("mqueue");
+            .expect("the dev mount holds its message queue directory");
         let mqueue = mount_tmpfs(
             &mut self.files.numbers,
             &mqueue_point,
@@ -1586,6 +1656,9 @@ impl Kernel {
             options,
             read_only_super: false,
         };
+        let docker = |fs: FileSystem, made: DockerMount| {
+            mount(fs, made.point, made.source, made.kind, made.options)
+        };
         let root_fs = fs_of(&self.files.root);
         let root = if root_fs.kind == Kind::Overlay {
             overlay_root_mount(root_fs)
@@ -1595,58 +1668,53 @@ impl Kernel {
         let volumes = core::mem::take(&mut self.files.mounts);
         self.files.mounts = alloc::vec![
             root,
-            mount(proc_root.borrow().fs.clone(), "/proc", "proc", "proc", ""),
-            mount(
-                fs_of(&dev),
-                "/dev",
-                "tmpfs",
-                "tmpfs",
-                "size=65536k,mode=755"
-            ),
-            mount(
-                fs_of(&pts),
-                DEVPTS_PATH,
-                "devpts",
-                "devpts",
-                "gid=5,mode=620,ptmxmode=666",
-            ),
+            docker(proc_root.borrow().fs.clone(), PROC_MOUNT),
+            docker(fs_of(&dev), DEV_MOUNT),
+            docker(fs_of(&pts), DEVPTS_MOUNT),
             Mount {
                 read_only_super: true,
-                ..mount(fs_of(&sys), "/sys", "sysfs", "sysfs", "")
+                ..docker(fs_of(&sys), SYS_MOUNT)
             },
-            mount(
-                fs_of(&cgroup),
-                crate::cgroup::MOUNT.point,
-                crate::cgroup::MOUNT.source,
-                crate::cgroup::MOUNT.kind,
-                ""
-            ),
-            mount(mqueue_fs, "/dev/mqueue", "mqueue", "mqueue", ""),
-            mount(fs_of(&shm), "/dev/shm", "shm", "tmpfs", "size=65536k"),
+            docker(fs_of(&cgroup), crate::cgroup::MOUNT),
+            docker(mqueue_fs, MQUEUE_MOUNT),
+            docker(fs_of(&shm), SHM_MOUNT),
         ];
         self.files.mounts.extend(volumes);
-        self.files.mounts.push(Mount {
-            root: "/sys",
-            ..mount(
-                FileSystem {
-                    flags: self.files.proc_fs.flags | crate::linux_extra::ST_RDONLY,
-                    ..self.files.proc_fs.clone()
-                },
-                "/proc/sys",
-                "proc",
-                "proc",
-                "",
-            )
-        });
+        for point in DOCKER_READ_ONLY_PATHS {
+            let below_proc = point
+                .strip_prefix(PROC_MOUNT.point)
+                .expect("Docker's read-only paths lie in the proc mount");
+            let read_only = FileSystem {
+                flags: self.files.proc_fs.flags | crate::linux_extra::ST_RDONLY,
+                ..self.files.proc_fs.clone()
+            };
+            self.files.mounts.push(Mount {
+                root: below_proc,
+                ..docker(
+                    read_only,
+                    DockerMount {
+                        point,
+                        ..PROC_MOUNT
+                    },
+                )
+            });
+        }
+        // A masked directory gets the empty read-only tmpfs, a masked file `/dev/null`.
         let dev_fs = fs_of(&dev);
-        for name in ["interrupts", "kcore", "keys", "scsi", "timer_list"] {
-            let point = alloc::format!("/proc/{name}").into_bytes();
-            self.files.mounts.push(if name == "scsi" {
+        let null_below_dev = NULL_PATH
+            .strip_prefix(DEV_MOUNT.point)
+            .expect("the null device lies in the dev mount");
+        for point in DOCKER_MASKED_PATHS {
+            let directory = point.starts_with(SYS_MOUNT.point)
+                || self.files.proc_masked.iter().any(|(name, node)| {
+                    point.as_bytes().ends_with(name) && node.borrow().is_directory()
+                });
+            self.files.mounts.push(if directory {
                 Mount {
                     read_only_super: true,
                     ..mount(
                         empty_fs.clone(),
-                        "",
+                        point,
                         "tmpfs",
                         "tmpfs",
                         "size=4k,nr_inodes=1",
@@ -1654,22 +1722,11 @@ impl Kernel {
                 }
             } else {
                 Mount {
-                    root: "/null",
-                    ..mount(dev_fs.clone(), "", "tmpfs", "tmpfs", "size=65536k,mode=755")
+                    root: null_below_dev,
+                    ..docker(dev_fs.clone(), DockerMount { point, ..DEV_MOUNT })
                 }
             });
-            self.files.mounts.last_mut().expect("just pushed").point = point;
         }
-        self.files.mounts.push(Mount {
-            read_only_super: true,
-            ..mount(
-                empty_fs,
-                "/sys/firmware",
-                "tmpfs",
-                "tmpfs",
-                "size=4k,nr_inodes=1",
-            )
-        });
     }
 }
 
