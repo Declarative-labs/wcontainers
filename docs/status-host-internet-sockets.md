@@ -2,7 +2,79 @@
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done), I2 ICMP
 and raw sockets (redone in run 1 after the reorganization and the async ruling of 2026-11-21; runs 2 and 3
-answered the independent checks' findings, below). Nothing of this track is in progress.
+answered the independent checks' findings, below; run 4 those of run 3's check). Nothing of this track is in progress.
+
+## I2 run 4: the independent check's findings, each
+- IPv6 router alert Off checked by nothing (blocking): an_ipv6_router_alert_takes_forwarded_packets now turns the
+  first socket's alert Off and changes another socket's value to the forwarded packet's, sends again, and expects the
+  packet at the changed socket only (and still at the other namespace's). The verifier's broken copy (no -1 written)
+  fails it.
+- Received IPv4 options checked by nothing (blocking): new ICMP check an_echo_reply_arrives_with_its_ipv4_options
+  sends an echo with a record route option of two slots; Linux echoes it, filled, and the reply must carry options
+  of that length and match the reply on loopback's wire byte for byte (but the identification and fragment fields).
+  The broken copy without `IP_RECVOPTS` fails it.
+- Source filters checked by nothing (blocking): the ICMP suite's `source_filters_are_written` joins a group with
+  Include of one source, of two, Exclude of one and Exclude of none, and reads the namespace's lists
+  (/proc/thread-self/net/mcfilter and mcfilter6: per source, how many sockets include and exclude it) after each.
+  It runs for IPv4 and IPv6 in the new ICMP check multicast_source_filters_are_written and the new raw check
+  multicast_source_filters_choose_the_senders, which also checks delivery on an IPv4 raw socket: a looped multicast
+  send from the dummy link's address arrives under Include of that address and Exclude of another, not under
+  Include of another or Exclude of it. IPv6 raw delivery cannot show a filter (an unbound IPv6 raw socket takes every
+  multicast packet of its protocol, and the interface has no bind); listed under Not honoured.
+- Forwarded-whole guess fooled by a crafted local packet (minor): not changed, recorded under Not honoured. Linux
+  gives nothing that tells a forwarded router alert packet (given from its IPv6 header) from a local one (given after
+  its headers): the destination, hop-by-hop header, length and source in the ancillary data are the same for both,
+  and IPV6_RECVORIGDSTADDR's port only moves the ambiguity. The exact answer is whether the destination is local
+  in the socket's namespace, a route lookup per such packet in a namespace a value may not be in (the suite opens
+  sockets of one value in two namespaces). The guess runs only for an IPPROTO_RAW socket with an IPv6 alert set, and
+  only a local packet of protocol 255 whose payload repeats its own IPv6 and hop-by-hop headers fools it.
+- Raw drops "since previous" unchecked (minor): ip_settings_are_taken now floods twice; each flood's received plus
+  told drops must be its own 63. The broken copy that tells the running total fails it. Found on the way: the
+  check's sender takes every packet too, and once both sockets were full Linux sent itself a protocol unreachable
+  error, which a receive answers as ENOPROTOOPT; the sender is now emptied after each flood. The flood part runs
+  before the fair queue is put on loopback.
+- Hold wakes untested (minor): new test tests/readiness.rs in the shared crate polls a wait until pending, holds an
+  error, and expects one wake and then the error; with nothing held a new wait is pending. The broken copy whose hold
+  wakes nothing fails it. Through the traits this can only be reached by a race, so it is tested on the readiness.
+- An error queue read before every receive (minor): gone. ICMP and raw now receive in the order of the shared new
+  `datagram::exchange::receive_in_order`, as the UDP track's receive does: the error queue first only while reports
+  a send asked for may wait there (`ErrorQueue::read_first`, until settled) or entries a send took are kept; else the
+  packet queue, and the error queue when Linux answers the receive with a socket error. Read in the kernel: every
+  ICMP error a ping or raw socket with IP_RECVERR queues sets the socket error (ping_err, raw_err, rawv6_err), a
+  receive answers it before any packet, and reading an entry off the queue sets it again while the next entry is an
+  ICMP error (sock_dequeue_err_skb). So a packet costs one recvmsg (ICMP also its SO_MEMINFO, counted). A send that
+  fails with an error other than would-block or too long keeps the host's entries, since Linux may have answered it
+  with that socket error: measured, a ping send after an unread ICMP error fails with EHOSTUNREACH. New checks in
+  both suites: icmp_errors_queued_together_each_arrive (three errors before any receive, each received, then
+  nothing), and in the ICMP suite an_icmp_error_a_send_met_still_arrives.
+- Status count of reviewed files (minor): 31, corrected below.
+- ICMP multicast loopback over IPv6 (minor): memberships_are_taken now sends an IPv6 echo to the joined group with
+  loopback off (no reply) and on (a reply), as for IPv4. IPv4 all-groups on a ping socket stays listed as without a
+  visible effect.
+
+## Independent check, run 4 (23:11 to 23:18 UTC, load 1.4 to 4.5, `independent-check-i2d.sh` then `findings-run4.sh`)
+- Clean build in a fresh target folder; clippy with warnings denied clean on the nine packages; three rounds, each
+  ICMP 51 of 51, raw 42 of 42, resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3 and the four crate
+  tests (34 s with the build); the shared crate's readiness test 1 of 1.
+- 57 broken copies, each caught (none failed to apply): the 43 of runs 1 to 3 and the 14 of this run (13 copies, two
+  of them run on both suites): IPv6 alert never taken off (an_ipv6_router_alert_takes_forwarded_packets),
+  IP_RECVOPTS off (an_echo_reply_arrives_with_its_ipv4_options), Include written as Exclude of none and Exclude's
+  sources dropped (multicast_source_filters_are_written, multicast_source_filters_choose_the_senders), raw drops told
+  as the total (ip_settings_are_taken), IPv6 multicast loop always on (memberships_are_taken), no error queue read
+  after a receive error (the ICMP error checks of both suites and icmp_errors_queued_together_each_arrive), a failed
+  ping send keeping no entries (an_icmp_error_a_send_met_still_arrives), reports not read first (both suites' transmit
+  report and rejected time checks), a hold that wakes nothing (a_held_error_wakes_a_waiting_call).
+- cargo tree (normal, build and dev edges) of the 15 interface crates and 13 conformance crates against the 17
+  implementation crates: none named (control: the raw implementation's tree names itself and the shared crate).
+- The UDP suite (75 and 5) passes with this run's shared crate change. The TCP suite failed once (99 of 100,
+  fixed_flow_label_marks_every_segment, its connect at line 789) and passed three times right after (101 of 101,
+  23:18 UTC, load 8 to 9; the suite had grown meanwhile): taken as the TCP track's, which the change here (new
+  functions and one field in `exchange.rs`) does not reach.
+- 40 rounds of both whole suites side by side (`flake-hunt.sh`, 23:15 to 23:18 UTC, load 1.4 to 4.5): no failure.
+- Reviewed files: no commit since 0033b9a1 changes any of the 31 files; in the working tree crates/abi/host.rs has
+  another track's uncommitted edit (10 lines removed), not this track's.
+- Literal check: no finding in this track's files (19 in all; three name this track's constants: the UDP suite's
+  copies of WAITED_SOCKETS and WAITS_ON_ONE, the TCP suite's restated LABEL).
 
 ## I2 run 3: the independent check's findings, each
 - Raw received mark and priority checked by nothing (blocking): new raw check
@@ -48,7 +120,7 @@ answered the independent checks' findings, below). Nothing of this track is in p
 - cargo tree (normal, build and dev edges) of the 15 interface crates and 13 conformance crates against the 17
   implementation crates: none named (control: the raw implementation's tree names itself and the shared crate).
 - The UDP suite (75 and 5) and the TCP suite (98) pass with this run's shared crate changes.
-- Reviewed files: none of the 32 files (every interface.rs and the data files beside them) differs since run 2's
+- Reviewed files: none of the 31 files (every interface.rs and the data files beside them) differs since run 2's
   0033b9a1 or in the working tree.
 - Literal check (after `cargo fetch` there): no finding in this track's files (8 in all; two are the UDP suite's
   copies of WAITED_SOCKETS and WAITS_ON_ONE).
@@ -98,6 +170,9 @@ answered the independent checks' findings, below). Nothing of this track is in p
   above). Then 150 rounds of each suite, 21:52 to 22:00 UTC, load 2.4 to 26.2 (a peak from other tracks at
   21:58): no failure of any check. So 190 rounds here, none of the wait checks failed.
 - Run 3: 60 more rounds of both suites on the edge-triggered readiness, no failure (250 rounds in all).
+- Run 4: seen once more, the raw an_icmp_error_ends_a_wait_for_data in round 2 of 3 at load 1.9 to 2.2 (23:05 UTC),
+  "woken by the ICMP error" (which address was not told then; the message now names it). The 40 rounds after, and
+  the 3 rounds of each later run, passed. Still no fault found; the shared readiness is the UDP track's.
 - Left as it is: no fault found to fix, and the check's patience (2 s for one local ICMP error) was not raised,
   since raising it would only hide a lost wake. If it fails again, flake-hunt.sh keeps the panic's text, which
   names the step (no capture, no wake, no error event, or the receive).
@@ -185,7 +260,9 @@ answered the independent checks' findings, below). Nothing of this track is in p
   - `independent-check-i2b.sh`: clean build with clippy, three rounds, 24 broken copies, cargo tree.
   - `independent-check-i2d.sh`: clean build with clippy, three rounds, the 43 broken copies of runs 1 to 3, cargo
     tree, then the UDP and TCP suites (the shared crate is theirs too).
-  - `findings-run2.sh`, `findings-run3.sh`: the broken copies of each run's findings alone.
+  - `findings-run2.sh`, `findings-run3.sh`, `findings-run4.sh`: the broken copies of each run's findings alone
+    (`TESTS` picks the test targets of a copy).
+  - `run4-suites.sh`: lint-and-suites.sh and the shared crate's readiness test.
   - `flake-hunt.sh`: both suites side by side, `ROUNDS` times (default 20), `FILTER` to pick checks, each
     failure's text printed.
   - `readiness-fix.sh`: the wait checks twenty times, then the UDP and TCP suites.
@@ -198,6 +275,9 @@ answered the independent checks' findings, below). Nothing of this track is in p
   `git reset -q -- <those paths> Cargo.lock` in the shared index.
 
 ## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores, 12 test threads)
+- Run 4, 23:20 UTC, load 6.1 to 10.9, final code: three rounds, each ICMP 51 of 51 (0.95 s), raw 42 of 42 (2.9 s),
+  resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3, the four crate tests and the shared readiness
+  test; clippy with warnings denied clean.
 - Run 3, 22:38 UTC, load 2.7 to 3.2, final code: three rounds, each ICMP 47 of 47 (0.61 s), raw 40 of 40 (2.87 s),
   resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3 and the four crate tests; clippy clean.
 - Run 3, on the edge-triggered readiness (d2c4f3ad), 22:31 to 22:35 UTC, load 1.5 to 3.3: 60 rounds of both whole
@@ -237,6 +317,9 @@ answered the independent checks' findings, below). Nothing of this track is in p
 - Literal check: no finding in this track's files (20 in all, elsewhere).
 
 ## Which check fails when a method breaks
+- Run 4 adds: receive (an_echo_reply_arrives_with_its_ipv4_options, icmp_errors_queued_together_each_arrive,
+  an_icmp_error_a_send_met_still_arrives; raw drops over two floods), configure (both source filter checks, the
+  IPv6 alert turned off and changed, ICMP IPv6 multicast loopback).
 - IcmpSockets: open (every check; owner: owner_selects_the_route), bind_identifier
   (identifiers_are_shared_only_when_both_ask, the_request_carries_the_bound_identifier), send_to (every sending
   check; each header and send field its own, below), receive (echo reply, ICMP error, short buffer of a reply or
@@ -257,7 +340,7 @@ answered the independent checks' findings, below). Nothing of this track is in p
   source, waived source check, interface, link scope, broadcast permission, mark and owner, ICMP type and code,
   path MTU modes, too long (`MessageTooLong` with the link MTU). IPv6 hop limit, DSCP, ECN, flow label, source
   preferences (a temporary address against the public one), local fragmentation and fragment MTU, and for raw sockets source, hop-by-hop, routing destination
-  and destination options and a segment routing header.
+  and destination options and a segment routing header. Received IPv4 options (an echoed record route).
 - Send fields: neighbour confirmation, priority (third band of a prio queue), transmit time (fq holds 300 ms;
   rejected times reported with their keys), transmit reports scheduled and software with key, with and without
   the packet.
@@ -267,8 +350,9 @@ answered the independent checks' findings, below). Nothing of this track is in p
   their start and whole length when cut.
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
   mobility header is sent by its type;
-  withdrawn reassembly; checksum offset; IPv4 and IPv6 router alerts with isolation; multicast routing.
-- Settings: multicast membership and loopback, IPv4 all-groups, anycast, pacing rate, send and receive buffer,
+  withdrawn reassembly; checksum offset; IPv4 and IPv6 router alerts with isolation, turned off and changed; multicast routing.
+- Settings: multicast membership, its source filters (as Linux lists them, and IPv4 raw delivery) and loopback
+  (both versions), IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
 - Waits: every event poll gives, through the host's poll.
 
@@ -283,7 +367,11 @@ answered the independent checks' findings, below). Nothing of this track is in p
 - ICMP errors: Linux gives no identification or fragment flags of an IPv4 one, nor (under a payload) the quoted
   header's fields but its addresses: written as zero and counted (ICMP_ERROR_FIELDS_NOT_GIVEN).
 - Multicast all-groups: no effect to see on a ping socket (it takes only echo replies) or an IPv6 raw socket
-  bound to no address (it takes every multicast packet of its protocol).
+  bound to no address (it takes every multicast packet of its protocol). The same holds for source filters' effect
+  on delivery: what Linux holds of them is checked from its lists, and their effect on IPv4 raw sockets.
+- A packet an IPv6 router alert socket of `IPPROTO_RAW` takes is told forwarded (given whole) by its bytes: Linux
+  gives no sign. A local packet of protocol 255 whose payload repeats its own IPv6 and hop-by-hop headers is taken
+  for a forwarded one and given without its outer headers (see I2 run 4).
 - Largest fragment and link-layer length: filled by the shared code as for UDP, whose suite checks them.
 - Wireless status reports: refused as in the UDP track. Acknowledgement reports are TCP's; hardware and
   completion reports need a device with a hardware clock, which the namespace has not.
@@ -292,6 +380,11 @@ answered the independent checks' findings, below). Nothing of this track is in p
   `IPV6_MTU` fragments nothing smaller than the path MTU; IPv6 router alerts reach only `IPPROTO_RAW` sockets.
 
 ## For the other socket tracks
+- UDP, new in I2 run 4: your receive order holds for several ICMP errors too, which I had doubted: reading an entry
+  off the error queue sets the socket error again while the next entry is an ICMP error (sock_dequeue_err_skb), so
+  each receive is answered with an error while one waits. ICMP and raw now use the same order through the shared
+  `datagram::exchange::receive_in_order` (with `ErrorQueue::read_first` and `reports_requested`); your code is
+  unchanged and could use it. The ICMP and raw suites' icmp_errors_queued_together_each_arrive checks it.
 - UDP and TCP: the readiness fix above (56f2302d) is in the shared crate; your suites pass with it.
 - UDP: the literal check now finds your WAITED_SOCKETS and WAITS_ON_ONE (32 and 3) redefine the ICMP suite's
   public ones; import them from wcontainers-icmp-sockets-conformance, or say which crate should own them.
