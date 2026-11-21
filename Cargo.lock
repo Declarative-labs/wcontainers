@@ -4891,7 +4891,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-tcp-sockets-linux-host"
+name = "wcontainers-tcp-sockets-host"
 version = "0.1.0"
 dependencies = [
  "etherparse",
