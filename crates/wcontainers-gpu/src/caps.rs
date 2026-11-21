@@ -1,0 +1,340 @@
+//! What a back end can do. Each back end fills one [`Caps`] when its device is made; fronts read it once
+//! and choose their route: the native way, a counted slow path, or reporting the feature absent through
+//! their own API's capability mechanism.
+
+use crate::format::Format;
+use alloc::string::String;
+use bitflags::bitflags;
+
+bitflags! {
+    /// Optional abilities. A missing bit means the guest-visible feature is either built by a front or a
+    /// shared helper as a counted slow path, or reported absent to the program.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct Features: u64 {
+        /// Compute programs and [`crate::Backend::dispatch`]. Also what geometry, hull and domain stages,
+        /// stream output and unusual vertex fetch are emulated with.
+        const COMPUTE = 1 << 0;
+        /// Vertex programs may read storage buffers (the pass-through vertex stage of emulated geometry).
+        const VERTEX_STORAGE_READ = 1 << 1;
+        /// Vertex programs may write storage buffers and textures (Direct3D 11.1 UAVs in every stage).
+        const VERTEX_STORAGE_WRITE = 1 << 2;
+        /// Fragment programs may write storage buffers and textures (pixel shader UAVs).
+        const FRAGMENT_STORAGE_WRITE = 1 << 3;
+        /// [`crate::Backend::capture_vertices`]: vertex results written to buffers by fixed hardware.
+        const TRANSFORM_FEEDBACK = 1 << 4;
+        /// [`crate::Backend::read_back_now`] answers without leaving the current task.
+        const READ_BACK_NOW = 1 << 5;
+        /// Triangle fans and line loops are drawn natively by [`crate::Backend::draw_fan_or_loop`].
+        const FAN_AND_LOOP = 1 << 6;
+        /// [`crate::FillMode::Line`].
+        const POLYGON_MODE = 1 << 7;
+        /// The last vertex of a primitive may be the provoking one.
+        const PROVOKING_VERTEX_LAST = 1 << 8;
+        /// The first vertex of a primitive may be the provoking one.
+        const PROVOKING_VERTEX_FIRST = 1 << 9;
+        /// Depth may be clamped instead of clipped ([`crate::RasterDesc::depth_clip`] false). Without it
+        /// fronts clamp in the program ([`crate::SlowPath::DepthClampInShader`]).
+        const DEPTH_CLAMP = 1 << 10;
+        /// Clip space depth from minus one to one, as OpenGL defines it, without rewriting shaders.
+        const CLIP_DEPTH_MINUS_ONE = 1 << 11;
+        /// User clip distances out of the last vertex stage. Without it fronts apply them in the program
+        /// ([`crate::SlowPath::ClipDistanceInShader`]).
+        const CLIP_DISTANCE = 1 << 12;
+        /// User cull distances out of the last vertex stage. Without it fronts hand the draw to the stage
+        /// helper ([`crate::SlowPath::CullDistanceAsGeometry`]).
+        const CULL_DISTANCE = 1 << 13;
+        /// Two fragment outputs feeding one blend (dual-source blending). Without it fronts blend in the
+        /// program ([`crate::SlowPath::BlendInShader`]).
+        const DUAL_SOURCE_BLEND = 1 << 14;
+        /// A different blend and write mask per color target. Without it a front whose targets differ
+        /// draws once per group of targets that agree (slow path [`crate::SlowPath::TargetsSplit`]).
+        const INDEPENDENT_BLEND = 1 << 15;
+        /// Logic operations instead of blending.
+        const LOGIC_OP = 1 << 16;
+        /// Lines wider than one pixel.
+        const WIDE_LINES = 1 << 17;
+        /// Points larger than one pixel, sized by the vertex program.
+        const POINT_SIZE = 1 << 18;
+        /// Fragment programs run per sample, and read and write the sample mask.
+        const SAMPLE_SHADING = 1 << 19;
+        /// [`crate::RasterDesc::sample_mask`] other than all ones on multisampled targets. Without it a
+        /// front with such a mask binds the program variant that writes the mask, which needs
+        /// [`Features::SAMPLE_SHADING`] (slow path [`crate::SlowPath::SampleMaskInShader`]); without
+        /// either, the front reports single-sample targets only.
+        const SAMPLE_MASK = 1 << 47;
+        /// Multisampled textures can be read in programs.
+        const MULTISAMPLE_READ = 1 << 20;
+        /// Query sets of [`crate::QueryKind::Occlusion`]: exact sample counts. Every back end has
+        /// [`crate::QueryKind::OcclusionAny`].
+        const OCCLUSION_COUNT = 1 << 21;
+        /// GPU timestamps, written between passes ([`crate::Backend::write_timestamp`]).
+        const TIMESTAMPS = 1 << 22;
+        /// Draw and dispatch arguments read from a buffer.
+        const INDIRECT = 1 << 23;
+        /// Indirect draws honour a non-zero first instance. Without it fronts read the arguments of
+        /// indirect draws back and draw them directly ([`crate::SlowPath::IndirectReadBack`]).
+        const INDIRECT_FIRST_INSTANCE = 1 << 24;
+        /// Direct draws honour a non-zero base vertex and first instance.
+        const BASE_VERTEX_INSTANCE = 1 << 25;
+        /// Primitive restart can be switched off for strips.
+        const RESTART_SWITCH = 1 << 26;
+        /// Views of a texture made with `reinterpret` may take any colour format of the same block size,
+        /// not only the sRGB twin. Depth and stencil formats are never reinterpreted.
+        const FORMAT_REINTERPRET = 1 << 27;
+        /// Views of a part of a texture (mip and layer ranges, other dimensions).
+        const TEXTURE_VIEWS = 1 << 29;
+        /// Separate textures and samplers in programs, any pairing.
+        const SEPARATE_SAMPLERS = 1 << 30;
+        /// 16-bit floats in programs.
+        const SHADER_F16 = 1 << 31;
+        /// Subgroup (wave) operations in programs.
+        const SUBGROUPS = 1 << 32;
+        /// The primitive index as a fragment input. Without it fronts hand the draw to the stage helper
+        /// ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
+        const PRIMITIVE_INDEX = 1 << 33;
+        /// 64-bit integers in programs.
+        const SHADER_I64 = 1 << 34;
+        /// 64-bit floats in programs.
+        const SHADER_F64 = 1 << 35;
+        /// Large tables of resources indexed in programs ([`crate::Backend::create_resource_table`]).
+        const RESOURCE_TABLES = 1 << 36;
+        /// Buffers stay mapped and coherent while the GPU uses them.
+        const PERSISTENT_MAPPING = 1 << 37;
+        /// Sampler border colors other than transparent black.
+        const BORDER_COLOR = 1 << 38;
+        /// Tiled (sparse) resources.
+        const SPARSE = 1 << 39;
+        /// [`crate::Backend::prepare`] builds a state combination in the background.
+        const BACKGROUND_PREPARE = 1 << 40;
+        /// The depth bounds test of [`crate::DepthStencilDesc::depth_bounds`].
+        const DEPTH_BOUNDS = 1 << 41;
+        /// A different stencil reference and masks for front and back faces in one draw.
+        const STENCIL_PER_FACE = 1 << 42;
+        /// [`crate::AddressMode::MirrorOnce`] in samplers.
+        const MIRROR_ONCE = 1 << 43;
+        /// Clip space depth from zero to one, as Direct3D and Vulkan define it, without rewriting shaders.
+        const CLIP_DEPTH_ZERO_ONE = 1 << 44;
+        /// [`crate::RasterDesc`]'s depth bias clamp. Without it a front whose draw has a non-zero clamp
+        /// applies the bias in the program (slow path [`crate::SlowPath::DepthBiasInShader`]).
+        const DEPTH_BIAS_CLAMP = 1 << 45;
+        /// Every block-compressed (BC) format is sampled natively. Without it a back end still declares
+        /// the BC formats it serves in [`FormatCaps`], storing them decoded (slow path
+        /// [`crate::SlowPath::BlockDecoded`]).
+        const BLOCK_COMPRESSION = 1 << 46;
+        /// Viewports at fractions of a pixel, kept to sub-pixel precision. Without it a front with a
+        /// fractional viewport sets the enclosing whole-pixel one and binds the program variant that
+        /// maps positions onto the fractional one, with the scissor cut to the pixels its API draws
+        /// (Direct3D's implicit scissor rounds each edge towards negative infinity; Vulkan's clip
+        /// volume holds the pixels whose centres it covers) (slow path
+        /// [`crate::SlowPath::ViewportInShader`]).
+        const FRACTIONAL_VIEWPORT = 1 << 48;
+        /// [`crate::Format::Depth24Plus`] and [`crate::Format::Depth24PlusStencil8`] are stored as 24-bit
+        /// unsigned normalised depth, so a constant depth bias moves depth by that many steps of 2^-24,
+        /// as Direct3D defines it for its 24-bit formats. Neither browser API says how it stores them, so
+        /// a back end learns it with a probe draw when its device is made (plan section 4.11). Without it
+        /// they are stored as 32-bit float, whose constant bias scales with each primitive's depth, and a
+        /// front drawing into one with a constant bias applies the bias in the program (slow path
+        /// [`crate::SlowPath::DepthBiasInShader`]).
+        const DEPTH24_UNORM = 1 << 49;
+        /// Programs can ask a texture its level count and a multisampled texture its sample count (WGSL's
+        /// `textureNumLevels` and `textureNumSamples`). Without it fronts bind the variant that reads them
+        /// from the helper constants ([`crate::VariantFlags::TEXTURE_INFO`], slow path
+        /// [`crate::SlowPath::TextureInfoInHelpers`]).
+        const TEXTURE_LEVEL_QUERY = 1 << 50;
+        /// 8-bit index values ([`crate::IndexFormat::U8`]).
+        const INDEX_U8 = 1 << 51;
+        /// A constant depth bias with a fraction ([`crate::RasterDesc::depth_bias`]; OpenGL's and
+        /// Vulkan's are floats). Without it a front whose bias has a fraction binds the program variant
+        /// that adds the bias to the fragment's depth (slow path [`crate::SlowPath::DepthBiasInShader`]).
+        const FRACTIONAL_DEPTH_BIAS = 1 << 52;
+        /// [`crate::BlendFactor::ConstantAlpha`] and [`crate::BlendFactor::OneMinusConstantAlpha`].
+        /// Without it a front uses [`crate::BlendFactor::Constant`] with the constant's alpha in all four
+        /// channels where its block uses no constant colour as well (exact), and otherwise blends in the
+        /// program (slow path [`crate::SlowPath::BlendInShader`]). WebGL forbids the constant colour
+        /// and the constant alpha as one target's colour source and destination factors together; its
+        /// back end refuses such a block with [`crate::GpuError::Absent`] of this bit, and the front
+        /// blends that block in the program.
+        const BLEND_CONSTANT_ALPHA = 1 << 53;
+        /// Per-instance streams that step other than once per instance
+        /// ([`crate::StepMode::Instance`] of any count, Direct3D's step rate). Without it a back end
+        /// refuses such a vertex layout with [`crate::GpuError::Absent`] of this bit, and fronts fetch
+        /// those streams in the program from the instance index (slow path
+        /// [`crate::SlowPath::InstanceRateInShader`]).
+        const INSTANCE_STEP_RATE = 1 << 54;
+        /// Typed buffers bound as [`crate::BindingResource::TexelBuffer`] and read natively by
+        /// programs ([`crate::TexelBufferRoute::Native`]). Without it a back end refuses such a binding
+        /// with [`crate::GpuError::Absent`] of this bit, and fronts take
+        /// [`crate::TexelBufferRoute::Storage`] or [`crate::TexelBufferRoute::Texture`].
+        const TEXEL_BUFFERS = 1 << 55;
+        /// [`crate::FillMode::Point`]. WebGL's polygon mode draws lines only.
+        const POLYGON_MODE_POINT = 1 << 56;
+        /// Fine derivatives in programs (WGSL's `dpdxFine`, `dpdyFine` and `fwidthFine`: each pixel
+        /// differenced within its own row or column of its 2 by 2 quad). Plain and coarse ones need no
+        /// bit. Without it a back end refuses such a shader with [`crate::GpuError::Absent`] of this
+        /// bit; Direct3D's feature levels below 11_0 have none.
+        const FINE_DERIVATIVES = 1 << 57;
+    }
+}
+
+/// Numeric limits. Each field says what it bounds; fronts compare them with what their API promises.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limits {
+    pub max_texture_2d: u32,
+    pub max_texture_cube: u32,
+    pub max_texture_3d: u32,
+    pub max_texture_layers: u32,
+    pub max_buffer_size: u64,
+    pub max_uniform_buffer_size: u32,
+    pub max_storage_buffer_size: u64,
+    /// Uniform buffers one stage may read, including the one that holds a converted program's helper
+    /// constants.
+    pub uniform_buffers_per_stage: u32,
+    /// Sampled textures one stage may read.
+    pub textures_per_stage: u32,
+    /// Samplers one stage may use. With combined samplers this bounds texture-sampler pairs instead.
+    pub samplers_per_stage: u32,
+    pub storage_buffers_per_stage: u32,
+    pub storage_textures_per_stage: u32,
+    pub vertex_streams: u32,
+    pub vertex_attributes: u32,
+    pub max_vertex_stride: u32,
+    pub color_targets: u32,
+    /// Bytes one sample may hold across all color targets of a pass, counted by
+    /// [`crate::color_target_bytes`] (WebGPU's 32 by default; back ends ask the adapter for its most). A front whose API allows fatter targets runs each draw once per group
+    /// of targets that fits, each run starting from a saved copy of depth and stencil, with storage writes
+    /// and queries kept only in the first run (slow path [`crate::SlowPath::TargetsSplit`]).
+    pub color_bytes_per_sample: u32,
+    /// Values passed from the vertex stage to the fragment stage, in four-component slots.
+    pub inter_stage_slots: u32,
+    pub min_uniform_offset_alignment: u32,
+    pub min_storage_offset_alignment: u32,
+    /// The granule of offsets and sizes the API itself copies, writes and clears buffers in (4 on WebGPU,
+    /// 1 on WebGL 2). The interface takes any byte range; a back end with a granule above one handles the
+    /// unaligned edges itself (slow path [`crate::SlowPath::UnalignedBufferEdge`]).
+    pub buffer_copy_alignment: u32,
+    /// Bytes of small per-draw constants ([`crate::DrawCall::immediates`]).
+    pub immediate_bytes: u32,
+    pub compute_workgroup_storage: u32,
+    pub compute_invocations: u32,
+    pub compute_size: [u32; 3],
+    pub max_dispatch: u32,
+    pub max_point_size: f32,
+    pub max_line_width: f32,
+    /// Largest anisotropy a sampler may ask for.
+    pub max_anisotropy: u16,
+    /// Targets of one [`crate::Backend::capture_vertices`] (and outputs it may write to separate
+    /// targets), when [`Features::TRANSFORM_FEEDBACK`] is set.
+    pub capture_buffers: u32,
+    /// 32-bit components a capture writes per vertex into one target holding every output (WebGL 2's
+    /// `MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS`, at least 64; Direct3D's stream output takes
+    /// 128), when [`Features::TRANSFORM_FEEDBACK`] is set. An output to a target of its own is at
+    /// most four, which every API takes.
+    pub capture_components: u32,
+}
+
+bitflags! {
+    /// What a format can be used for on this back end. A format the back end does not hold at all has
+    /// no bits; fronts then store it in another format (slow paths [`crate::SlowPath::FormatConverted`],
+    /// [`crate::SlowPath::NormAsInteger`], [`crate::SlowPath::BlockDecoded`]) or report it absent.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+    pub struct FormatUse: u16 {
+        /// Sampled and loaded in programs. For a format with depth and stencil, each aspect through its
+        /// own view ([`crate::TextureViewDesc::stencil`]); every back end serves both aspects.
+        const SAMPLE = 1 << 0;
+        const FILTER = 1 << 1;
+        const RENDER = 1 << 2;
+        const BLEND = 1 << 3;
+        /// A multisampled target of this format resolves into a single-sampled one.
+        const RESOLVE = 1 << 5;
+        const STORAGE_READ = 1 << 6;
+        const STORAGE_WRITE = 1 << 7;
+        const VERTEX = 1 << 8;
+        const DEPTH_STENCIL = 1 << 9;
+        /// Copies into a buffer for read back.
+        const COPY_OUT = 1 << 10;
+        /// Atomic operations on storage views (Direct3D requires them on `R32_UINT` and `R32_SINT`,
+        /// and exchange on `R32_FLOAT`, from 11_0). Without it a front reads and writes such a view
+        /// through a buffer holding its texels (slow path [`crate::SlowPath::AtomicsThroughBuffer`]).
+        const STORAGE_ATOMIC = 1 << 11;
+        /// Can be a surface's format in [`crate::Backend::configure_surface`]. Every back end takes
+        /// [`Format::Rgba8Unorm`].
+        const PRESENT = 1 << 12;
+    }
+}
+
+/// Per-format abilities, indexed by [`Format::index`]. A format with any use is served in every
+/// texture dimension: 1D where its blocks are one texel high, 2D, cube, and 3D but for depth and
+/// stencil formats. A back end whose API lacks a dimension for a format holds such textures decoded
+/// or converted (slow paths [`crate::SlowPath::BlockDecoded`], [`crate::SlowPath::FormatConverted`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormatCaps {
+    pub uses: [FormatUse; Format::COUNT],
+    /// The sample counts a texture of each format may have, a bit per count (bit n for 2^n samples, so
+    /// bit 0 is one sample), as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's sample count
+    /// flags ask per format.
+    pub samples: [u8; Format::COUNT],
+}
+
+impl FormatCaps {
+    /// What `format` can be used for.
+    pub fn get(&self, format: Format) -> FormatUse {
+        self.uses[format.index()]
+    }
+
+    /// Whether a texture of `format` may have `count` samples.
+    pub fn takes_samples(&self, format: Format, count: u32) -> bool {
+        count.is_power_of_two() && count <= 128 && self.samples[format.index()] & (count as u8) != 0
+    }
+}
+
+/// Which GPU a back end draws on, as its host names it, for the APIs' adapter descriptions
+/// (DXGI's `GetDesc`, Vulkan's device properties, OpenGL's `GL_RENDERER`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdapterInfo {
+    /// The host's name for it (WebGPU's `GPUAdapterInfo.description` or `device`, WebGL's unmasked
+    /// renderer, a native adapter's name).
+    pub name: String,
+    /// PCI vendor number, zero where the host does not say.
+    pub vendor: u32,
+    /// PCI device number, zero where the host does not say.
+    pub device: u32,
+    /// It draws on the CPU (WebGPU's fallback adapter, a software renderer).
+    pub software: bool,
+}
+
+/// Everything a back end declares about itself.
+#[derive(Clone, Debug)]
+pub struct Caps {
+    pub adapter: AdapterInfo,
+    pub features: Features,
+    pub limits: Limits,
+    pub formats: FormatCaps,
+}
+
+impl Caps {
+    /// Whether every feature in `f` is present.
+    pub fn has(&self, f: Features) -> bool {
+        self.features.contains(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_counts_are_per_format() {
+        let mut caps = FormatCaps {
+            uses: [FormatUse::empty(); Format::COUNT],
+            samples: [0b1; Format::COUNT],
+        };
+        caps.samples[Format::Rgba8Unorm.index()] = 0b1101;
+        assert!(caps.takes_samples(Format::Rgba8Unorm, 1));
+        assert!(caps.takes_samples(Format::Rgba8Unorm, 4));
+        assert!(caps.takes_samples(Format::Rgba8Unorm, 8));
+        assert!(!caps.takes_samples(Format::Rgba8Unorm, 2));
+        assert!(!caps.takes_samples(Format::Rgba8Unorm, 3));
+        assert!(!caps.takes_samples(Format::Rgba8Unorm, 256));
+        assert!(!caps.takes_samples(Format::R32Float, 4));
+    }
+}

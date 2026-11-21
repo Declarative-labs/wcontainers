@@ -1,0 +1,18 @@
+#!/bin/bash
+# Sets up the GPU desktop: puts this checkout's desktop scripts in C:\wc\rig, installs the tools
+# (desktop/install-tools.ps1), sets up the job queue (desktop/install-queue.ps1) and the watchers of
+# failed logons and display driver resets (desktop/install-watchers.ps1), and builds gt-desktop and gt-chrome from this checkout
+# for the jobs that present (desktop/install-desktop.ps1) and for Chrome for Testing with its
+# wrapper (desktop/install-chrome.ps1). Each step is skipped when already done, so it is safe to run again.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+connect
+rig_ssh "if not exist C:\\wc\\rig mkdir C:\\wc\\rig"
+rig_scp "$here"/desktop/* "$host:C:/wc/rig/"
+for script in install-tools install-queue install-watchers; do
+    rig_powershell "C:\\wc\\rig\\$script.ps1" || exit 1
+done
+ps='powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\wc\rig'
+"$here/remote" "cargo build -q -p wcontainers-graphics-test --bin gt-desktop --bin gt-chrome && $ps\\install-desktop.ps1 -Launcher %CARGO_TARGET_DIR%\\debug\\gt-desktop.exe && $ps\\install-chrome.ps1 -Wrapper %CARGO_TARGET_DIR%\\debug\\gt-chrome.exe"

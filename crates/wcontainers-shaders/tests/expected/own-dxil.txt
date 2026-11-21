@@ -1,0 +1,142 @@
+cs_atomics.dxil	ok ; glsl absent compute
+cs_buffer_array.dxil	unsupported ResourceArray
+cs_decrement.dxil	ok ; glsl absent compute
+cs_divide.dxil	ok ; glsl absent compute
+cs_escape.dxil	ok ; glsl absent compute
+cs_image_array.dxil	ok views:R32Float ; glsl absent compute
+cs_images.dxil	ok views:R32Float ; glsl absent compute
+cs_one_d.dxil	ok views:R32Float ; glsl absent compute
+cs_readonly.dxil	ok ; glsl absent compute
+cs_shared.dxil	ok ; glsl absent compute
+cs_texels.dxil	ok views:R32Float ; glsl absent compute
+cs_through.dxil	ok views:R32Float through ; glsl absent compute
+cs_typed_array.dxil	unsupported UnboundedResourceArray
+cs_view_kinds.dxil	ok views:R32Float ; glsl absent compute
+cs_view_sampled.dxil	ok views:R32Float ; glsl absent compute
+ds_line.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_quad.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_rows_gap.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+ds_tri.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_values.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+gs_adjacent.dxil	ok ; glsl absent compute
+gs_clip.dxil	ok ; glsl absent compute
+gs_cut.dxil	ok ; glsl absent compute
+gs_instances.dxil	ok ; glsl absent compute
+gs_line_adjacent.dxil	ok ; glsl absent compute
+gs_lines.dxil	ok ; glsl absent compute
+gs_points.dxil	ok ; glsl absent compute
+gs_quads.dxil	ok ; glsl absent compute
+gs_rows_lines.dxil	ok ; glsl absent compute
+gs_rows_streams.dxil	ok ; glsl absent compute
+gs_streams.dxil	ok ; glsl absent compute
+gs_tess_line.dxil	ok ; glsl absent compute
+gs_tess_point.dxil	ok ; glsl absent compute
+gs_tess_tri.dxil	ok ; glsl absent compute
+gs_unplaced.dxil	ok ; glsl absent compute
+gs_values_tess.dxil	ok ; glsl absent compute
+hs_line_even_line.dxil	ok ; glsl absent compute
+hs_line_even_point.dxil	ok ; glsl absent compute
+hs_line_integer_line.dxil	ok ; glsl absent compute
+hs_line_integer_point.dxil	ok ; glsl absent compute
+hs_line_odd_line.dxil	ok ; glsl absent compute
+hs_line_odd_point.dxil	ok ; glsl absent compute
+hs_line_pow2_line.dxil	ok ; glsl absent compute
+hs_line_pow2_point.dxil	ok ; glsl absent compute
+hs_quad_even_ccw.dxil	ok ; glsl absent compute
+hs_quad_even_cw.dxil	ok ; glsl absent compute
+hs_quad_even_point.dxil	ok ; glsl absent compute
+hs_quad_integer_ccw.dxil	ok ; glsl absent compute
+hs_quad_integer_cw.dxil	ok ; glsl absent compute
+hs_quad_integer_point.dxil	ok ; glsl absent compute
+hs_quad_odd_ccw.dxil	ok ; glsl absent compute
+hs_quad_odd_cw.dxil	ok ; glsl absent compute
+hs_quad_odd_point.dxil	ok ; glsl absent compute
+hs_quad_pow2_ccw.dxil	ok ; glsl absent compute
+hs_quad_pow2_cw.dxil	ok ; glsl absent compute
+hs_quad_pow2_point.dxil	ok ; glsl absent compute
+hs_tri_even_ccw.dxil	ok ; glsl absent compute
+hs_tri_even_cw.dxil	ok ; glsl absent compute
+hs_tri_even_point.dxil	ok ; glsl absent compute
+hs_tri_integer_ccw.dxil	ok ; glsl absent compute
+hs_tri_integer_cw.dxil	ok ; glsl absent compute
+hs_tri_integer_point.dxil	ok ; glsl absent compute
+hs_tri_odd_ccw.dxil	ok ; glsl absent compute
+hs_tri_odd_cw.dxil	ok ; glsl absent compute
+hs_tri_odd_point.dxil	ok ; glsl absent compute
+hs_tri_pow2_ccw.dxil	ok ; glsl absent compute
+hs_tri_pow2_cw.dxil	ok ; glsl absent compute
+hs_tri_pow2_point.dxil	ok ; glsl absent compute
+hs_values_even_cw.dxil	ok ; glsl absent compute
+hs_values_integer_point.dxil	ok ; glsl absent compute
+hs_values_odd_ccw.dxil	ok ; glsl absent compute
+ps_array.dxil	ok ; glsl compiles
+ps_cases.dxil	ok ; glsl compiles
+ps_clip.dxil	ok ; glsl compiles
+ps_coarse.dxil	ok ; glsl compiles
+ps_component.dxil	ok ; glsl compiles
+ps_contend.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ps_deriv.dxil	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
+ps_dual.dxil	ok ; glsl compiles
+ps_early.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ps_evaluate.dxil	unsupported InterpolateAt
+ps_fill.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+ps_filter.dxil	ok ; glsl compiles
+ps_ftoi.dxil	ok ; glsl compiles
+ps_gatheroff.dxil	ok ; glsl compiles
+ps_geometry.dxil	ok ; glsl compiles
+ps_halves.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+ps_helper.dxil	ok ; glsl needs SAMPLE_SHADING|FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
+ps_ids.dxil	ok ; glsl compiles
+ps_layer.dxil	ok ; glsl compiles
+ps_levels.dxil	ok ; glsl compiles
+ps_levels_past.dxil	ok ; glsl compiles
+ps_line.dxil	ok ; glsl compiles
+ps_mark.dxil	ok ; glsl compiles
+ps_mingather.dxil	ok ; glsl compiles
+ps_minlod.dxil	ok ; glsl compiles
+ps_mirror.dxil	ok ; glsl compiles
+ps_msarray.dxil	unsupported MultisampledArrayTexture
+ps_narrow.dxil	ok ; glsl compiles
+ps_narrow16.dxil	ok ; glsl compiles
+ps_negate.dxil	ok ; glsl compiles
+ps_offset.dxil	ok ; glsl compiles
+ps_pack.dxil	ok ; glsl compiles
+ps_primid.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
+ps_primitive.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
+ps_pull.dxil	ok ; glsl compiles
+ps_rows.dxil	ok ; glsl compiles
+ps_rows_io.dxil	ok ; glsl compiles
+ps_samples.dxil	unsupported SampleCount
+ps_shadow.dxil	ok ; glsl compiles
+ps_shadow_wide.dxil	ok ; glsl compiles
+ps_signed.dxil	ok ; glsl compiles
+ps_spaces.dxil	ok ; glsl compiles
+ps_special.dxil	ok ; glsl compiles
+ps_table.dxil	ok ; glsl compiles
+ps_texels.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ps_textured.dxil	ok ; glsl compiles
+ps_two.dxil	ok ; glsl compiles
+ps_twospaces.dxil	ok ; glsl compiles
+ps_wave.dxil	ok ; glsl needs SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(SUBGROUP_OPERATIONS)
+ps_wave_signed.dxil	ok ; glsl needs SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(SUBGROUP_OPERATIONS)
+vs_carry.dxil	ok ; glsl compiles
+vs_clip.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_clip_six.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_cull.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_deep.dxil	ok ; glsl compiles
+vs_early.dxil	ok ; glsl compiles
+vs_evaluate.dxil	ok ; glsl compiles
+vs_filter.dxil	ok ; glsl compiles
+vs_geometry.dxil	ok ; glsl compiles
+vs_ids.dxil	ok ; glsl compiles
+vs_line.dxil	ok ; glsl compiles
+vs_pack.dxil	ok ; glsl compiles
+vs_patch.dxil	ok ; glsl compiles
+vs_pull.dxil	ok ; glsl compiles
+vs_rows.dxil	ok ; glsl compiles
+vs_rows_io.dxil	ok ; glsl compiles
+vs_store_raw.dxil	unsupported VertexStorageWrite
+vs_store_texture.dxil	unsupported VertexStorageWrite (with views)
+vs_store_typed.dxil	unsupported VertexStorageWrite (with views)
+vs_texels.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+vs_transform.dxil	ok ; glsl compiles

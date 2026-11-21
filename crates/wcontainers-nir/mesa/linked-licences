@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# The licence of every Mesa source file linked into wcontainers-nir: the objects of Mesa's archives (which
+# Cargo bundles into the crate's library) that the linker keeps (its map of the route test's link,
+# where each kept section is named with its object), each traced to its source by Mesa's compile
+# commands, with the source's SPDX tag, or "MIT text" where the file carries the MIT permission text
+# instead, or "generated" for a file Mesa's build writes.
+#
+#   crates/wcontainers-nir/mesa/linked-licences [output file]
+#
+# Needs the pinned Mesa built (mesa/build). One line a file: licence, archive, source.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+repository=$(cd "$here/../../.." && pwd)
+target=${CARGO_TARGET_DIR:-$repository/target}
+export WCONTAINERS_MESA=$target/mesa/build
+map=$target/nir-route.map
+out=${1:-$target/nir-linked-licences.txt}
+
+cd "$repository"
+cargo rustc -q -p wcontainers-nir --test route -- -C "link-arg=-Wl,-Map=$map"
+python3 -I - "$map" "$WCONTAINERS_MESA" "$out" <<'EOF'
+import collections, json, os, re, sys
+
+map_file, build, out = sys.argv[1:]
+source_root = os.path.realpath(os.path.join(build, "..", "src"))
+commands = json.load(open(os.path.join(build, "compile_commands.json")))
+# An object by its archive's folder and its own name (`libnir.a.p/nir.c.o`), as the bundled library names it.
+by_object = {}
+for c in commands:
+    parts = c["output"].split("/")
+    by_object["/".join(parts[-2:])] = os.path.normpath(os.path.join(c["directory"], c["file"]))
+member = re.compile(r"\((lib[^/()]+\.a)\.p/([^()]+\.o)\):")
+linked = set()
+for line in open(map_file):
+    m = member.search(line)
+    if m:
+        linked.add((m.group(1), m.group(2)))
+spdx = re.compile(r"SPDX-License-Identifier:\s*(.+?)\s*(\*/)?$")
+counts = collections.Counter()
+lines = []
+for archive, obj in sorted(linked):
+    path = archive + ".p/" + obj
+    source = by_object.get(path)
+    if source is None:
+        licence, shown = "unknown object", path
+    else:
+        shown = os.path.relpath(source, source_root)
+        head = open(source, errors="replace").read()
+        tag = next((spdx.search(l).group(1) for l in head.splitlines() if spdx.search(l)), None)
+        if tag:
+            licence = tag
+        elif "Permission is hereby granted, free of charge" in head:
+            licence = "MIT text"
+        elif not os.path.realpath(source).startswith(source_root):
+            licence = "generated"
+        else:
+            licence = "no licence text"
+    counts[licence] += 1
+    lines.append(f"{licence}\t{archive}\t{shown}")
+with open(out, "w") as f:
+    f.write("\n".join(lines) + "\n")
+for licence, n in counts.most_common():
+    print(f"linked-licences: {n} {licence}")
+print(f"linked-licences: {len(lines)} files, {out}")
+EOF

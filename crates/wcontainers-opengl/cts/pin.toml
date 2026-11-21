@@ -1,0 +1,10 @@
+# The conformance suites wcontainers-opengl is held to, for testing only. One VK-GL-CTS release holds
+# both the OpenGL ES lists (tag opengl-es-cts-3.2.14.1) and the OpenGL lists (opengl-cts-4.6.8.1):
+# both tags name this commit.
+url = "https://github.com/KhronosGroup/VK-GL-CTS.git"
+tag = "opengl-cts-4.6.8.1"
+commit = "067e8832315e79817ede1c4863804e440f5d1c80"
+# The runner that shards the lists over processes and collects their results.
+runner_url = "https://gitlab.freedesktop.org/mesa/deqp-runner.git"
+runner_tag = "v0.23.3"
+runner_commit = "0fc692780b111c6f9f5dd7a2747f14aa674ab938"

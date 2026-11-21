@@ -1,0 +1,52 @@
+#!/bin/bash
+# Runs a short GPU job on the desktop through its queue, in this branch's copy there, and returns
+# the job's standard output, standard error and exit code once it has run. The copy must hold this
+# working tree as it is now; the job checks that and keeps `remote` from changing the copy while it
+# runs. With --build, the working tree is sent and the build command run in the copy first, as by
+# `remote`, and the job also checks that no other `remote` ran since, so the programs it runs were
+# built from this tree; without it, the job runs whatever the build directory holds. Higher
+# priorities start first (any integer); --alone waits until no other job runs and keeps the GPU to
+# itself, for timings. The queue decides which jobs run beside others (desktop/hazard.ps1): only the
+# rig's own runs of programs, scenes, the loop and Wine's tests on WARP, without replacement
+# libraries, on rig code that has already run once without a display driver reset; every other job
+# runs in the group hazard, one at a time (--reference is accepted and ignored). --desktop runs the
+# command on a hidden desktop of the session of the user
+# logged in at the desktop's console, for programs that present (the queue's own session refuses
+# swap chains); it fails when nobody is logged in. Commands are cmd.exe syntax; cargo's build
+# directory is C:\wc\target\<branch>.
+#   tools/graphics-rig/gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>
+set -euo pipefail
+priority=0
+alone=()
+desktop=()
+build=
+while [ $# -gt 0 ]; do
+    case $1 in
+        --priority) priority=$2; shift 2 ;;
+        --alone) alone=(-Alone); shift ;;
+        --reference) shift ;;
+        --desktop) desktop=(-Desktop); shift ;;
+        --build) build=$2; shift 2 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+[ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>" >&2; exit 2; }
+[[ $priority =~ ^-?[0-9]+$ ]] || { echo "gpu-job: the priority must be an integer" >&2; exit 2; }
+root=$(git rev-parse --show-toplevel)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$(dirname "$0")/common.sh"
+index=$(git rev-parse --absolute-git-dir)/gpu-job.$$.index
+trap 'rm -f "$index"' EXIT
+tree=$(cd "$root" && working_tree "$index")
+command=$(printf %s "$*" | base64 | tr -d '\n')
+built=()
+if [ -n "$build" ]; then
+    # `remote` removes the stamp before its command; this one writes it once the build has succeeded.
+    "$(dirname "$0")/remote" "($build) && git rev-parse HEAD: > %CARGO_TARGET_DIR%\\built-tree" || exit
+    built=(-Built)
+fi
+connect || exit 125
+set +e
+rig_powershell 'C:\wc\rig\submit.ps1' -Name "$name" -Tree "$tree" "-Priority:$priority" \
+    ${built[@]+"${built[@]}"} ${alone[@]+"${alone[@]}"} ${desktop[@]+"${desktop[@]}"} -Command "$command"

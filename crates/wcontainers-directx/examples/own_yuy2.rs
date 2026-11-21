@@ -1,0 +1,430 @@
+//! A small Direct3D 11 program using a YUY2 texture: made with initial data, viewed as
+//! `R8G8B8A8` (loaded, sampled and gathered by pixel shaders, cleared as a target, written
+//! through a storage view by a compute shader), written by
+//! `UpdateSubresource` and copied by `CopySubresourceRegion` at even and odd boxes, and written
+//! and read through staging maps. Prints each answer and the texture's bytes after each step (as
+//! hex, in the layout a map gives), for comparing with real Direct3D line by line.
+
+#[cfg(windows)]
+fn main() -> windows::core::Result<()> {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Direct3D11::*;
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
+    use windows::core::{PCSTR, s};
+
+    const VS: &[u8] =
+        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/common.vs_full.dxbc");
+    const SAMPLE: &[u8] =
+        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/textures.ps_mips.dxbc");
+    const LOAD: &[u8] =
+        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/textures.ps_load.dxbc");
+    const W: u32 = 8;
+    const H: u32 = 4;
+
+    let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
+    // Shaders compiled by the system's d3dcompiler_47.dll.
+    let entry = std::ffi::CString::new(wcontainers_shaders::ENTRY_POINT).unwrap();
+    let compile = |src: &str, target: PCSTR| -> Vec<u8> {
+        let mut blob = None;
+        unsafe {
+            D3DCompile(
+                src.as_ptr().cast(),
+                src.len(),
+                PCSTR::null(),
+                None,
+                None::<&ID3DInclude>,
+                PCSTR(entry.as_ptr().cast()),
+                target,
+                0,
+                0,
+                &mut blob,
+                None,
+            )
+        }
+        .expect("the shader compiles");
+        let blob = blob.unwrap();
+        unsafe {
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
+                .to_vec()
+        }
+    };
+    // Each texel's red and its neighbours' to the right and below, gathered at its centre.
+    // With the argument `sizes` the view's size is the one `GetDimensions` reports, otherwise its
+    // pairs and rows.
+    let size = if std::env::args().nth(1).as_deref() == Some("sizes") {
+        "uint w, h; t.GetDimensions(w, h);".to_string()
+    } else {
+        format!("uint w = {}, h = {H};", W / 2)
+    };
+    let gather_ps = compile(
+        &format!(
+            "Texture2D t : register(t0); SamplerState s : register(s0);\n\
+             float4 main(float4 p : SV_Position) : SV_Target {{\n\
+             {size} return t.GatherRed(s, p.xy / float2(w, h)); }}"
+        ),
+        s!("ps_4_1"),
+    );
+    // Each texel written through a storage view from its place.
+    let store_cs = compile(
+        "RWTexture2D<float4> o : register(u0);\n\
+         [numthreads(1, 1, 1)] void main(uint3 i : SV_DispatchThreadID) {\n\
+         o[i.xy] = float4((i.x + 1) / 9.0, (i.y + 1) / 7.0, (i.x + i.y + 1) / 11.0, 1.0); }",
+        s!("cs_5_0"),
+    );
+    let (mut device, mut context) = (None, None);
+    unsafe {
+        D3D11CreateDevice(
+            None::<&IDXGIAdapter>,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_FLAG(0),
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )?
+    };
+    let (device, context): (ID3D11Device, ID3D11DeviceContext) =
+        (device.unwrap(), context.unwrap());
+
+    let r = unsafe { device.CheckFormatSupport(DXGI_FORMAT_YUY2) };
+    let support = r.as_ref().map_or(0, |s| *s);
+    // The uses this program relies on; real drivers add video uses no browser has.
+    let used = (D3D11_FORMAT_SUPPORT_TEXTURE2D.0
+        | D3D11_FORMAT_SUPPORT_SHADER_LOAD.0
+        | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0
+        | D3D11_FORMAT_SUPPORT_RENDER_TARGET.0) as u32;
+    println!(
+        "CheckFormatSupport {:#010x} {:#x}",
+        code(r.map(|_| ())),
+        support & used
+    );
+
+    let texture = |w, h, format, usage, bind: u32, cpu: u32, init: Option<&[u8]>| {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: usage,
+            BindFlags: bind,
+            CPUAccessFlags: cpu,
+            ..Default::default()
+        };
+        let data = init.map(|bytes| D3D11_SUBRESOURCE_DATA {
+            pSysMem: bytes.as_ptr().cast(),
+            SysMemPitch: w * 2,
+            SysMemSlicePitch: 0,
+        });
+        let mut t = None;
+        let r = unsafe {
+            device.CreateTexture2D(&desc, data.as_ref().map(|d| d as *const _), Some(&mut t))
+        };
+        r.map(|_| t.unwrap())
+    };
+    let bound = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32;
+    let rw = (D3D11_CPU_ACCESS_READ.0 | D3D11_CPU_ACCESS_WRITE.0) as u32;
+    // Every byte differs: rows of Y0 U Y1 V.
+    let bytes: Vec<u8> = (0..W * H * 2).map(|i| (i * 37 + 11) as u8).collect();
+
+    for (w, h) in [(7, 4), (8, 3)] {
+        let r = texture(w, h, DXGI_FORMAT_YUY2, D3D11_USAGE_DEFAULT, bound, 0, None);
+        println!("CreateTexture2D({w}x{h}) {:#010x}", code(r.map(|_| ())));
+    }
+    let yuy2 = texture(
+        W,
+        H,
+        DXGI_FORMAT_YUY2,
+        D3D11_USAGE_DEFAULT,
+        bound,
+        0,
+        Some(&bytes),
+    )?;
+    let other = texture(
+        W,
+        H,
+        DXGI_FORMAT_YUY2,
+        D3D11_USAGE_DEFAULT,
+        bound,
+        0,
+        Some(&bytes),
+    )?;
+    let staging = texture(W, H, DXGI_FORMAT_YUY2, D3D11_USAGE_STAGING, 0, rw, None)?;
+
+    // The texture's bytes in the layout a map gives.
+    let show = |what: &str, t: &ID3D11Texture2D| {
+        unsafe { context.CopyResource(&staging, t) };
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        let r = unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) };
+        let ok = r.is_ok();
+        println!("{what}: Map {:#010x}", code(r));
+        if ok {
+            println!(
+                "{what}: whole image in the slice pitch {}",
+                mapped.DepthPitch >= mapped.RowPitch * H
+            );
+            for y in 0..H {
+                let row = unsafe {
+                    std::slice::from_raw_parts(
+                        mapped
+                            .pData
+                            .cast::<u8>()
+                            .add((y * mapped.RowPitch) as usize),
+                        (W * 2) as usize,
+                    )
+                };
+                let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
+                println!("{what}: row {y} {}", hex.join(""));
+            }
+            unsafe { context.Unmap(&staging, 0) };
+        }
+    };
+    show("initial", &yuy2);
+
+    // Views: only R8G8B8A8_UNORM and _UINT are taken.
+    let srv = |format| {
+        let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                },
+            },
+        };
+        let mut v = None;
+        let r = unsafe { device.CreateShaderResourceView(&yuy2, Some(&desc), Some(&mut v)) };
+        (r, v)
+    };
+    let mut none = None;
+    let r = unsafe { device.CreateShaderResourceView(&yuy2, None, Some(&mut none)) };
+    println!("CreateShaderResourceView(default) {:#010x}", code(r));
+    for (name, format) in [
+        ("YUY2", DXGI_FORMAT_YUY2),
+        ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM),
+        ("R8G8B8A8_UNORM_SRGB", DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
+        ("R8G8B8A8_UINT", DXGI_FORMAT_R8G8B8A8_UINT),
+        ("R8G8_UNORM", DXGI_FORMAT_R8G8_UNORM),
+    ] {
+        println!(
+            "CreateShaderResourceView({name}) {:#010x}",
+            code(srv(format).0)
+        );
+    }
+    let (r, pairs) = srv(DXGI_FORMAT_R8G8B8A8_UNORM);
+    println!("CreateShaderResourceView(R8G8B8A8_UNORM) {:#010x}", code(r));
+
+    // The pairs loaded and sampled into an RGBA target of half the width.
+    let sampler_desc = D3D11_SAMPLER_DESC {
+        Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+        AddressU: D3D11_TEXTURE_ADDRESS_WRAP,
+        AddressV: D3D11_TEXTURE_ADDRESS_WRAP,
+        AddressW: D3D11_TEXTURE_ADDRESS_WRAP,
+        ComparisonFunc: D3D11_COMPARISON_NEVER,
+        MaxLOD: f32::MAX,
+        ..Default::default()
+    };
+    let (mut sampler, mut vs, mut sample, mut load, mut gather) = (None, None, None, None, None);
+    unsafe {
+        device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
+        device.CreateVertexShader(VS, None, Some(&mut vs))?;
+        device.CreatePixelShader(SAMPLE, None, Some(&mut sample))?;
+        device.CreatePixelShader(LOAD, None, Some(&mut load))?;
+        device.CreatePixelShader(&gather_ps, None, Some(&mut gather))?;
+        context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context.VSSetShader(vs.as_ref(), None);
+        context.PSSetSamplers(0, Some(&[sampler.clone()]));
+    }
+    let target = texture(
+        W,
+        H,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_USAGE_DEFAULT,
+        D3D11_BIND_RENDER_TARGET.0 as u32,
+        0,
+        None,
+    )?;
+    let read = texture(
+        W,
+        H,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_USAGE_STAGING,
+        0,
+        D3D11_CPU_ACCESS_READ.0 as u32,
+        None,
+    )?;
+    let mut rtv = None;
+    unsafe { device.CreateRenderTargetView(&target, None, Some(&mut rtv))? };
+    for (plane, view, w, h) in [("pairs", &pairs, W / 2, H)] {
+        for (how, ps) in [
+            ("loaded", &load),
+            ("sampled", &sample),
+            ("gathered", &gather),
+        ] {
+            unsafe {
+                context.OMSetRenderTargets(Some(&[rtv.clone()]), None);
+                context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                    Width: w as f32,
+                    Height: h as f32,
+                    MaxDepth: 1.0,
+                    ..Default::default()
+                }]));
+                context.ClearRenderTargetView(rtv.as_ref().unwrap(), &[0.0, 0.0, 0.0, 0.0]);
+                context.PSSetShader(ps.as_ref(), None);
+                context.PSSetShaderResources(0, Some(std::slice::from_ref(view)));
+                context.Draw(3, 0);
+                context.PSSetShaderResources(0, Some(&[None]));
+                context.OMSetRenderTargets(None, None);
+                context.CopyResource(&read, &target);
+            }
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            let r = unsafe { context.Map(&read, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) };
+            let ok = r.is_ok();
+            println!("{plane} {how}: Map {:#010x}", code(r));
+            if ok {
+                for y in 0..h {
+                    let row = unsafe {
+                        std::slice::from_raw_parts(
+                            mapped
+                                .pData
+                                .cast::<u8>()
+                                .add((y * mapped.RowPitch) as usize),
+                            (w * 4) as usize,
+                        )
+                    };
+                    let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
+                    println!("{plane} {how}: row {y} {}", hex.join(""));
+                }
+                unsafe { context.Unmap(&read, 0) };
+            }
+        }
+    }
+
+    // Cleared through a target view of each format.
+    for (name, format, value) in [
+        ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM, 0.75f32),
+        ("YUY2", DXGI_FORMAT_YUY2, 0.5),
+        ("R8G8B8A8_UNORM", DXGI_FORMAT_R8G8B8A8_UNORM, 0.25),
+    ] {
+        let desc = D3D11_RENDER_TARGET_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_RENDER_TARGET_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_RTV { MipSlice: 0 },
+            },
+        };
+        let mut v = None;
+        let r = unsafe { device.CreateRenderTargetView(&other, Some(&desc), Some(&mut v)) };
+        println!("CreateRenderTargetView({name}) {:#010x}", code(r));
+        if let Some(v) = v {
+            unsafe { context.ClearRenderTargetView(&v, &[value, value / 2.0, 1.0, 0.0]) };
+        }
+    }
+    show("cleared", &other);
+
+    // UpdateSubresource and CopySubresourceRegion at even and odd boxes, in pixels.
+    let source: Vec<u8> = (0..4 * 2 * 2).map(|i| 0xa0 + i as u8).collect();
+    for (name, b, w) in [
+        ("even", (2u32, 2u32), 4u32),
+        ("odd left", (1, 2), 4),
+        ("odd top", (2, 1), 4),
+        ("odd width", (2, 1), 3),
+    ] {
+        let dst_box = D3D11_BOX {
+            left: b.0,
+            top: b.1,
+            front: 0,
+            right: b.0 + w,
+            bottom: b.1 + 2,
+            back: 1,
+        };
+        unsafe {
+            context.UpdateSubresource(&yuy2, 0, Some(&dst_box), source.as_ptr().cast(), 8, 0);
+        }
+        show(&format!("updated {name}"), &yuy2);
+        unsafe {
+            context.CopySubresourceRegion(&other, 0, b.0, b.1, 0, &yuy2, 0, Some(&dst_box));
+        }
+        show(&format!("copied {name}"), &other);
+    }
+
+    // Each plane written through a storage view of its format by a compute shader.
+    let stored = texture(
+        W,
+        H,
+        DXGI_FORMAT_YUY2,
+        D3D11_USAGE_DEFAULT,
+        (D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        0,
+        None,
+    );
+    println!(
+        "CreateTexture2D(unordered access) {:#010x}",
+        code(stored.as_ref().map(|_| ()).map_err(|e| e.clone()))
+    );
+    if let Ok(stored) = stored {
+        let mut cs = None;
+        unsafe { device.CreateComputeShader(&store_cs, None, Some(&mut cs))? };
+        let planes = [("R8G8B8A8_UNORM", DXGI_FORMAT_R8G8B8A8_UNORM, W / 2, H)];
+        for (name, format, w, h) in planes {
+            let desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                Format: format,
+                ViewDimension: D3D11_UAV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_UAV { MipSlice: 0 },
+                },
+            };
+            let mut v = None;
+            let r = unsafe { device.CreateUnorderedAccessView(&stored, Some(&desc), Some(&mut v)) };
+            println!("CreateUnorderedAccessView({name}) {:#010x}", code(r));
+            if let Some(v) = v {
+                unsafe {
+                    context.CSSetShader(cs.as_ref(), None);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&Some(v)), None);
+                    context.Dispatch(w, h, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&None), None);
+                }
+            }
+        }
+        show("stored", &stored);
+    }
+
+    // A staging texture written through a map and copied in whole.
+    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    let r = unsafe { context.Map(&staging, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped)) };
+    let ok = r.is_ok();
+    println!("Map(WRITE) {:#010x}", code(r));
+    if ok {
+        for y in 0..H {
+            for x in 0..W * 2 {
+                unsafe {
+                    *mapped
+                        .pData
+                        .cast::<u8>()
+                        .add((y * mapped.RowPitch + x) as usize) = (y * 16 + x) as u8;
+                }
+            }
+        }
+        unsafe {
+            context.Unmap(&staging, 0);
+            context.CopyResource(&yuy2, &staging);
+        }
+    }
+    show("mapped", &yuy2);
+    let r = unsafe { device.GetDeviceRemovedReason() };
+    println!("GetDeviceRemovedReason {:#010x}", code(r));
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn main() {}

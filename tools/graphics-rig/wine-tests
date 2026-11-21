@@ -1,0 +1,65 @@
+#!/bin/bash
+# Wine's and vkd3d's Direct3D conformance tests (LGPL, testing only; built and kept in C:\wc\wine on
+# the desktop, never part of the workspace), from the Mac.
+#   tools/graphics-rig/wine-tests build
+#       fetches llvm-mingw and Wine's and vkd3d's test sources at pinned commits and builds Wine's
+#       d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's vkd3d-d3d12,
+#       vkd3d-d3d12_invalid_usage, vkd3d-hlsl_d3d12 and vkd3d-shader_runner (each .shader_test file
+#       a test, named by its path under vkd3d's tests with + for /) (desktop/wine-tests.ps1); not a
+#       GPU job
+#   tools/graphics-rig/wine-tests list <file>
+#       prints the names of a file's tests
+#   tools/graphics-rig/wine-tests run [--warp] [--record] [--dll <name>=<path>]... [<file>[:<test>/<test>...]]...
+#       one GPU job on the hidden desktop running every test of the named files (all eight by
+#       default), or only the named tests, each in its own process, on the GPU or on WARP
+#       (desktop/wine-run.ps1). Tests in wine-excluded.txt never run (those marked (gpu) run on WARP only). --dll puts a replacement library
+#       beside the test programs (paths on the desktop, relative to its checkout). Prints each test's
+#       verdict against the baseline in tools/graphics-rig/wine-baseline (a test may fail only the
+#       checks it fails there) and exits 1 if one does not. --record runs on real Direct3D and copies the results into
+#       wine-baseline, to be committed. Logs stay in C:\wc\out\<branch>\wine\logs and are copied to
+#       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/<branch> on the Mac.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+usage="usage: wine-tests build | list <file> | run [--warp] [--record] [--dll <name>=<path>]... [<file>[:<test>/<test>...]]..."
+[ $# -gt 0 ] || { echo "$usage" >&2; exit 2; }
+script='powershell -NoProfile -ExecutionPolicy Bypass -File tools\graphics-rig\desktop'
+case $1 in
+    build) exec "$here/remote" "$script\\wine-tests.ps1" ;;
+    list) [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }; exec "$here/remote" "type C:\\wc\\wine\\build\\$2.tests" ;;
+    run) shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
+esac
+options=
+record=
+dlls=()
+tests=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --warp) options+=" -Warp"; shift ;;
+        --record) options+=" -Record"; record=1; shift ;;
+        --dll) dlls+=("$2"); shift 2 ;;
+        *) tests+=("$1"); shift ;;
+    esac
+done
+[ -z "$record" ] || [ ${#dlls[@]} -eq 0 ] || { echo "wine-tests: --record runs real Direct3D only" >&2; exit 2; }
+[ ${#tests[@]} -eq 0 ] || options+=" -Tests \"$(IFS=,; echo "${tests[*]}")\""
+[ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
+out="C:\\wc\\out\\$name\\wine"
+set +e
+"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test" -- \
+    "$script\\wine-run.ps1 -Out $out -Baseline tools\\graphics-rig\\wine-baseline -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
+code=$?
+set -e
+# Per branch: other checkouts run the same command at the same time.
+logs=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/$name
+rm -rf "$logs"
+mkdir -p "$logs"
+rig_scp "$host:C:/wc/out/$name/wine/logs/*.log" "$logs/" 2>/dev/null || true
+if [ -n "$record" ] && [ $code -eq 0 ]; then
+    mkdir -p "$here/wine-baseline"
+    rig_scp "$host:C:/wc/out/$name/wine/*.txt" "$host:C:/wc/out/$name/wine/*.failures" "$here/wine-baseline/"
+    echo "wine-tests: results copied into $here/wine-baseline"
+fi
+exit $code

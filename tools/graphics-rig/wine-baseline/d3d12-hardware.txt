@@ -1,0 +1,10 @@
+test_ordinals pass 6 0 0 0.26
+test_interfaces pass 28 0 0 0.38
+test_create_device pass 26 0 0 0.71
+test_draw pass 27 0 0 0.39
+test_swapchain_draw fail 172 6 0 0.43
+test_swapchain_refcount pass 39 0 0 0.4
+test_swapchain_size_mismatch fail 180 21 0 0.68
+test_swapchain_backbuffer_index fail 170 20 0 0.6
+test_desktop_window pass 20 0 0 0.49
+test_invalid_command_queue_types pass 30 0 0 0.49

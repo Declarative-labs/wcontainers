@@ -838,7 +838,7 @@ fn lock_pi_atomic(
 
 /// Linux's `max_lock_depth`: how many locks a chain of owners may run through before it is taken
 /// as a deadlock.
-const MAX_LOCK_DEPTH: usize = 1024;
+const LOCK_CHAIN_LIMIT: usize = 1024;
 
 /// The priority inheriting lock a thread waits on, if it does.
 fn pi_blocked_on(kernel: &Kernel, tid: Tid) -> Option<Key> {
@@ -861,7 +861,7 @@ fn pi_blocked_on(kernel: &Kernel, tid: Tid) -> Option<Key> {
 /// one longer than `max_lock_depth`.
 fn closes_chain(kernel: &Kernel, key: Key, tid: Tid) -> bool {
     let mut lock = key;
-    for _ in 0..MAX_LOCK_DEPTH {
+    for _ in 0..LOCK_CHAIN_LIMIT {
         let Some(&owner) = kernel.futexes.pi_owners.get(&lock) else {
             return false;
         };

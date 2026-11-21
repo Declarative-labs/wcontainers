@@ -1,0 +1,37 @@
+[package]
+name = "wcontainers-graphics-test-forward"
+description = "A d3d11.dll and d3d12.dll that logs each call and forwards it to the system's, to prove programs load a replacement placed beside them, and takes a census of a program's Direct3D calls and captures its frames on a clock that moves by frames."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Built as wcontainers_graphics_test_forward.dll and copied beside a program as d3d11.dll: built
+# under its own name, it would sit beside every program in the build directory and stand in for them all.
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(windows)'.dependencies]
+anyhow = "1.0.100"
+png = "0.18.1"
+retour = "0.3.1"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Memory",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
+
+[build-dependencies]
+object = { version = "0.41.0", default-features = false, features = ["read_core", "pe", "std"] }
+
+[lints]
+workspace = true

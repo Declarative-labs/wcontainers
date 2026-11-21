@@ -1,0 +1,3 @@
+test_invalid_resource_barriers pass 30 0 0 0.06
+test_invalid_copy_texture_region pass 22 0 0 0.04
+test_invalid_unordered_access_views pass 7 0 0 0.04

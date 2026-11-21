@@ -1,0 +1,14 @@
+# Builds ANGLE's libEGL.dll and libGLESv2.dll (Mozilla's ANGLE, through the mozangle crate) for the WebGL 2
+# back end's native tests on Windows. A test tool, never shipped; see build.cmd.
+[package]
+name = "wcontainers-angle-dlls"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+mozangle = { version = "=0.7.1", features = ["build_dlls"] }
+
+# A tool of its own, outside the repository's workspace.
+[workspace]

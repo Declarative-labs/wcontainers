@@ -1,0 +1,2782 @@
+# Status: graphics, shaders track (G6)
+
+Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6, 7, 8 and G6 in 12.
+The run-by-run record of runs 1 to 63 is in `docs/status-graphics-shaders-history.md` (history; where
+it disagrees with this file, this file holds).
+
+Milestone G6b (gap A6: DXIL geometry, hull and domain shaders): run 68 fixed the fourth check's
+findings (below) and it is ready for its check again. DXIL geometry, hull and domain shaders convert
+through the passes the DXBC route uses, arrays of rows among a geometry shader's values included,
+and draw equal to real Direct3D with dxc's builds. Of the four Direct3D 12 rig scenes that failed
+for A6, two draw equal to real Direct3D 12 (geometry, streamout); raster-fill and tessellation
+differ only in wireframe lines, put down to the line rule of the Direct3D 12 front's back end, not
+the converter (gap A6). So the milestone's "the four scenes draw equal" holds for two of them.
+G6a's check is passed.
+
+## G6b run 4 (run 68): the fourth check's findings
+
+Merged origin/phase-2-graphics-direct3d-11 (its round 4 run 4; nothing of this crate). Run 67's
+section is in the history file. Logs in scratch `graphics-shaders/g6b4`; GPU figures from the RTX
+3080 through the queue (other tracks' jobs beside).
+
+The check's findings, each:
+- Arrays among a DXIL geometry shader's values (blocking): the geometry pass refused any value but a
+  scalar or vector (`OutputArray`), so dxc's builds of `float3 c[2] : COLOR0` and `float2 w[3] :
+  TEXCOORD6` were refused where fxc's converted. Now a `GeometryValue` is a scalar or vector or an
+  array of them one register a row (`rows`, `row_at` in src/lower/geometry.rs): each row is a record
+  slot and a reflected output, inputs too (an input's outermost count is its vertices). An array of
+  arrays stays refused by name (`OutputArray`; no file of any corpus has one). The check's
+  `gs_c4_streams` and `gs_c4_lines` convert on both routes with the same outputs (probe,
+  x86-probe3.log). Own `geometry_rows.hlsl` (from the check's inputs): `vs_rows` writes arrays,
+  `gs_rows_lines` reads them (one row picked at run time) and writes `float2 w[3]`,
+  `gs_rows_streams` writes three point streams, an array and the position in the second. Its first
+  stream is not an array: real Direct3D 11 on the RTX 3080 refuses stream output from a geometry
+  shader of several streams whose first stream writes an array (E_OUTOFMEMORY, the debug layer
+  silent; the same shader with that stream flat is taken, and an array in the second stream is;
+  probe2.log). A matter for the Direct3D 11 front's reports, not this crate's.
+  Tests: `dxil_geometry_outputs_match_dxbc_on_every_stream` takes them; new
+  `geometry_shaders_with_rows_stream_as_direct3d_does` (tests/geometry_draw.rs) streams every row of
+  every value out on WebGPU and on the replay route (ANGLE), against Direct3D 11 running fxc's build
+  and Direct3D 12 running dxc's. On the replay route dxc's `gs_rows_lines` is refused by name
+  (`GeometryReplayArrayOfArrays`, src/stage/replay.rs, A5): its input arrays of rows are an array
+  per vertex, an array of arrays, which GLSL ES 3.00 lacks (naga: `MissingFeatures(ARRAY_OF_ARRAYS)`,
+  x86-aoa.log); before the refusal the back end failed those 8 cases unnamed (draw2.log, the
+  test's failure without it). fxc's build replays and streams equal.
+  Seeds 1 to 4 (draw4.log): 32 comparisons, 0 failed, 4 known (A22: dxc's `gs_rows_streams`, its
+  position in stream 1); every word of every row equal on both routes and both back ends; 8 replay
+  refusals of several streams and 8 of arrays of arrays, all by name.
+- A22's cause (minor): taken as the check measured it. Direct3D 12 on the RTX 3080 writes zeros for
+  the position of a geometry shader of several streams, whichever compiler built it and whichever
+  stream holds it. The streams tests now take each such zero from Direct3D 11 running fxc's build of
+  the same program (`reference_of_streams`; only words Direct3D 12 left zero at the position's places
+  of a buffer), so dxc's builds' positions are compared with a real reference, and the known pattern
+  is no longer stream 0's alone.
+  Seeds 1 to 4: 32 comparisons, 0 failed, 16 known, each dxc case 80 to 156 position words taken
+  (draw1-err.log); the check's seeds 8501 to 8516: 128, 0 failed, 64 known (probe1.log).
+- The 4-ulp allowance (minor): see A21. The allowance is now 4 units in the last place of the larger
+  of the two values and 1, the tests' operands' magnitude, where it was 4 ulp of the value: `gs_cut`'s
+  lerp from the centre takes a difference of values near 1.
+  At the check's seeds 8501 to 8516: replay route 384 comparisons, 0 failed; WebGPU 448, 0 failed
+  (probe1.log).
+- The DXBC domain shader returned as an invalid module (minor, before G6b): dxbc-spirv's bug (gap
+  A23, read in its IR); now refused by name (`ComponentPastVector`) with own `ds_rows_gap` in the
+  records. Not fixed: the fix is a line of dxbc-spirv, which this repository does not yet carry
+  patches of; the check's other cases (`ds_c4c`, `ds_m1` to `ds_m6`) still convert.
+- The milestone's claim of the four Direct3D 12 scenes (minor): the top of this file and A6 say two
+  draw equal and why the other two differ. Not rerun.
+- `hull_values_make_the_same_records_on_both_routes`' comment (minor): it now says the records are
+  the same for those programs only (the check's quad hulls give 5 constant locations from fxc's
+  build, 4 from dxc's) and that a front pairs stages of one build.
+- A10's figures at the check's seeds (minor): added under A10. Drawn again at the same seeds at
+  this run's code (probe1.log): the same 8 picture failures and 6 replay failures, case for case.
+
+Mutated copies (not committed; scratch x86-mutants.sh, x86-mutants.log): the outputs reflected for
+the first row only fails `dxil_geometry_outputs_match_dxbc_on_every_stream`; arrays refused again
+fails the own records (`gs_rows_*.dxil` "unsupported OutputArray"); the component guard removed
+fails the own records (`ds_rows_gap.dxbc` "convert invalid").
+On the RTX 3080 (draw2.log, in the job, restored after): every row read as the first
+(`b.field(v, 0)` in `location_vec4`) fails `geometry_shaders_with_rows_stream_as_direct3d_does`,
+32 comparisons, 20 failed.
+
+Runs at the tip:
+- x86 machine (96 processors, load 11 to 17, -j 64): clippy with warnings denied clean; the whole
+  suite with every corpus: every binary passes but gap A16's known failure (x86-suite2.log, at
+  c02bf001's tree; the last commit renames a test's type, Windows only).
+- Laptop (load about 1): the own records with glslang 8.13 (`vs_rows` compiles; laptop-own.log).
+- Desktop (RTX 3080, through the queue): Windows clippy with warnings denied clean; `geometry_draw`
+  9 passed and `tessellation_draw` 4 passed at seeds 1 to 4 (draw4.log, at 048f1e0a); the check's
+  seeds 8501 to 8516 (probe1.log, above) at a0c02830 with this run's test changes, before the
+  replay refusal and the flat first stream of `gs_rows_streams`, which no test drawn there reaches;
+  the rows test was skipped there.
+- Literal check (x86 machine, a clone of c02bf001): passes; this crate's lines in the baseline
+  unchanged (4,826 lines naming its paths, 395 of them under src; run 67's "530" counted otherwise).
+- Not run this run: the laptop's whole glslang suite (only the own records), WebAssembly, Chrome
+  on the new WGSL files.
+- Clean-up: this branch's build folders on the desktop (C:\wc\target\phase-2-graphics-shaders),
+  the laptop (~/wcontainers-graphics/target/phase-2-graphics-shaders) and the x86 machine
+  (/work/target/graphics-shaders, the literal clone and its build folder) deleted; the probes'
+  sources and logs kept in scratch g6b4; no build in the Mac checkout or scratch.
+
+## New for the owner
+
+- Run 68: a DXIL geometry shader's values may be arrays of rows (`float3 c[2] : COLOR0`), one
+  register a row, as fxc's builds of the same programs. New refusal `ComponentPastVector` (A23): a
+  DXBC program dxbc-spirv addresses past a vector's components, which `convert` returned as an
+  invalid module before. The stream tests take Direct3D 12's zero positions from Direct3D 11 (A22)
+  and allow dxc's builds 4 ulp at the operands' scale (A21). No interface change.
+- Run 67: stream output from a DXIL geometry shader of several streams works (each stream's
+  outputs at their own registers and semantics); `container::Element` has the stream. DXBC hull
+  shaders' patch constant functions read every output control point (dxbc-spirv's I/O bound check
+  off). Tests draw dxc's builds' stream output against real Direct3D 12. No interface change.
+- Run 66: DXIL hull and domain shaders convert (A6 closed), and a DXIL pixel shader reads its layer
+  and viewport. A DXBC domain shader's `StageExtras::Domain::input_control_points` is now its
+  declared count (it was 0). New refusal `DomainWithoutControlPoints`. `wcontainers_shaders::token`
+  is public (a DXBC instruction word's fields; the fuzz test imports it). No interface change.
+- Run 65: DXIL geometry shaders convert (A6's geometry part): a front gets the same compute and
+  replay forms, pass-through and reflection from dxc's build as from fxc's. Normalised codes
+  are encoded with halves toward zero, as the RTX 3080 does (the Direct3D 11 front's ask; A19).
+  `rewrite` refuses an array longer than its kind's slots by name (`BindingsBeyondLimit`).
+  `stage::LIST_VARIABLE` is public (a test reads it). No interface change.
+- `wcontainers_shaders::rewrite(module, reflection, &variant, &route_key)` (built in run 57,
+  src/lib.rs): the 15.4 rewrites (arrays of textures, storage textures and samplers split into an
+  element each, gathers at run-time offsets moved to a shifted coordinate, formatless storage
+  textures given the key's format) and every rewrite of 6.4's variant key, on a module another
+  route brought into the common form, with `cache::rewritten_key`. This is the public entry point
+  the NIR track asked for in the brief of 2026-11-19 night, and that track calls it on route B's
+  output since its run 14 (its status, "the 15.4 rewrites are now made on route B's output by the
+  shaders crate's `rewrite`"). Contract and tests: history, "Run 57"; drawn on the RTX 3080 by
+  `rewrite_draw`. It refuses a vertex program writing a storage buffer or a storage texture by
+  name (`refusal::VERTEX_STORAGE_WRITE`), as `convert` does: no back end runs one (gap A9).
+  Changed in G6a run 6:
+  - After a split it turns WGSL's derivative uniformity check off, as the DXBC and DXIL routes do
+    (`lower::derivatives_anywhere`, now kept below any filter the module has): an implicit-level
+    sample of an element picked at run time moves into a switch on the index, which Chrome refused
+    where the index may differ between lanes (the sixth check: a pixel program picking by a flat
+    input). Test `a_texture_picked_by_an_input_is_sampled_in_any_control_flow` (tests/rewrite.rs),
+    whose WGSL Chrome compiles (G6a run 6 above).
+  - `capabilities` adds `Capabilities::IMMEDIATES` for a module with an `AddressSpace::Immediate`
+    global, so `rewrite` validates the NIR route's push constants (its run 14: 20 of Godot's
+    RenderingDevice programs with arrays of textures refused "IMMEDIATES is not supported"). Test
+    `immediates_are_taken_and_named_as_a_capability`. The DXBC and DXIL routes make no such global.
+- `refusal::GLOBALLY_COHERENT` (`GloballyCoherent`, G6a run 5): a DXBC program declaring a
+  `globallycoherent` view is refused by name, as the DXIL route already refused it. No shader of
+  any corpus declares one.
+- For the NIR track: on its NIR-to-SPIR-V candidate route, three of the four 15.4 features cannot
+  reach `rewrite` yet, because the carried naga SPIR-V reader refuses glslang's SPIR-V for them
+  before a module exists (the third check, at 64787579): an array of combined image samplers
+  indexed at run time (`uniform sampler2D tex[4]; texture(tex[u.i], uv)`) gives `InvalidId(28)`,
+  a gather with a uniform offset gives `UnsupportedCapability(ImageGatherExtended)`, and a
+  formatless storage image gives `UnsupportedCapability(StorageImageWriteWithoutFormat)`. Route B
+  (NIR to the common form directly) does not pass through that reader. Taking the three in the
+  carried reader is this track's work (it carries naga's patches), new work after this
+  milestone's check.
+- The NIR track's other asks of this crate (its status, "Requests to other tracks", "Shaders
+  track"), not built, new work after this milestone's check: `rewrite` recomputing
+  `sampled_pairs` whatever it splits, or a public `sampled_pairs` of a module (its run 14; today
+  `rewrite` recomputes them only when it splits an array, and keeps the given pairs otherwise),
+  `stage::clip_unpositioned` and the draw's bases rewrite in the entry point, and naga's reader
+  rounding an array layer and keeping an unordered not-equal (findings for the DXBC and DXIL routes
+  too, which reach the same reader).
+
+## G6: the pass bar item by item, and the gap list (checked at G6a run 6; A10, A11 and A19 at run 65; A6 at run 66)
+
+The pass bar, item by item:
+
+1. The 191 corpus shaders and real game shaders (DXBC and DXIL) convert or fail with a named reason
+   (`tests/corpus.rs`, records in `tests/expected/`; each record is the whole verdict, refusal
+   reason and GLSL ES outcome included, and the test fails on any verdict that differs from its
+   record or is not a conversion or a named refusal). Met but for gap A1.
+   - Corpus (Wine's tests, DXBC): 185 of 191 convert; 6 named: `SampleCount` 4 (a pixel shader
+     asking the target's sample count, given by the front's `samples`; the corpus has no key),
+     `RenderTargetArrayIndex` 1 (a vertex shader writing the layer: absent, plan 4.12),
+     `StencilRef` 1 (absent on WebGPU and WebGL 2).
+   - Real programs' shaders (the rig's programs, `examples/containers.rs`): DXBC 527 of 529
+     convert, DXIL 441 of 443 (since run 55; 519 and 426 before, the rest views of mixed kinds,
+     now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
+     front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
+     as above).
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (149 and 138 records, 140 and 130
+     converting, at G6b run 3; the vertex shaders writing storage are `VertexStorageWrite`) and vkd3d's shader runner
+     files (1503 DXBC, 1517 DXIL). All at the tip in G6a run 5.
+2. Every converted shader compiles in Chrome for each back end that can run it
+   (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
+   since run 47 the corpus test writes it with the WebGL 2 back end's own writing
+   (`wcontainers_gpu_webgl::glsl::write`, on a module converted under the WebGL 2 front's key,
+   `TEXTURE_INFO` set, on a context with EXT_clip_control and NV_shader_noperspective_interpolation
+   as Chrome's on the RTX 3080), so the bitfield operations, gathers and loads at a level are the
+   back end's GLSL (run 46's gap A3 is gone). Each verdict names the features the back end's
+   `needs` reads from the shader beyond GLSL ES 3.00 (and a cube array view, which the interface
+   has no feature for); a GLSL failure is a named outcome only where such a need is named, any
+   other fails the test. Every shader with no such need compiles (glslang 8.13, and Chrome on the
+   files written at the tip: G6a run 5 above; each of Chrome's refusals is of a shader whose
+   record names the need).
+   Those with needs (absent at feature level 10_0 on WebGL 2, plan 4.11, or given by an extension):
+   storage written by or read in a fragment or vertex program (`FRAGMENT_STORAGE_WRITE`,
+   `VERTEX_STORAGE_READ`), compute, `SAMPLE_SHADING`, `SUBGROUPS`, `MULTISAMPLE_READ`,
+   `PRIMITIVE_INDEX`, `FINE_DERIVATIVES`, cube array views, and clip and cull distances (Chrome
+   has WEBGL_clip_cull_distance; glslang 8.13 lacks the extension). A vertex shader writing cull
+   distances (`vs_cull`) reaches WebGL 2 only through the stage helper there (gap A5). Since G6a
+   run 2 a glslang refusal is recorded with glslang's first error (so a new or other refusal
+   changes the record), and a write refusal is a named outcome only where a need is one the WebGL
+   2 back end never declares (not `DUAL_SOURCE_BLEND`, `POINT_SIZE` or `SAMPLE_SHADING`; the
+   test's own copy of that list, asked of the WebGL 2 track). Since G6a run 3 a write refusal's
+   record also gives naga's own reason (its GLSL ES 3.00 writer on the module as converted,
+   `; naga alone: ...`), so a write refusal with another cause changes the record. Of the 197, 184
+   end at the back end's "naga could not write the shader as GLSL ES 3.00"; naga's own reasons
+   across all 197 are features GLSL ES 3.00 lacks (storage buffers 143, image load and store 56,
+   subgroups 23, derivative control 7, cube array textures 5, each counted once per record naming
+   it). The other 13 (Godot DXIL pixel shaders, all needing `FRAGMENT_STORAGE_WRITE` too) end at
+   a path the WebGL 2 back end has not built: "one expression of a texture is sampled through two
+   samplers (not built)". They are named outcomes for their storage need, but that path is the
+   back end's own gap, told to its track under "Asked of other tracks".
+3. Each variant field and flag of 6.4 has a test showing the rewritten program's result equals the
+   unrewritten one's with the native feature, or real Direct3D's picture. Met for every field and
+   flag but four, and for `swizzled` but one case (gap A4). Where each is tested (drawn on the RTX 3080; test binaries of
+   `crates/wcontainers-shaders/tests`):
+   - `variant_draw` (`variants_draw_as_the_native_feature_does` unless named): `CLIP_DEPTH_REWRITE`
+     (WebGL 2 with and without EXT_clip_control against WebGPU), `VIEWPORT_DEPTH_FLIP`,
+     `DEPTH_BIAS` (24-bit step against real Direct3D 11), `COUNTING`, `DUAL_SOURCE` (native on
+     WebGPU), `SAMPLE_MASK` (native on WebGPU), `VIEWPORT_ADJUST` (native fractional viewport),
+     `TEXTURE_INFO` (native queries, and empty slots against Direct3D 11), `CLIP_DISTANCE` with
+     `linked` (native clip distances on wgpu's Vulkan path), `DEPTH_CLAMP` with `linked`,
+     `lod_bias`, `mirror_once_in_shader`, `constants_as_storage`, `constants_as_texture`,
+     `min_lod_clamped` (Direct3D 11's SetResourceMinLOD), `targets_in_shader`, `swizzled`,
+     `samples` (and `inputs_evaluated_elsewhere_match_direct3d`), `draw_base` (`Helpers` and
+     `Arguments`, non-zero bases, direct and indirect), `texel_formats` and `texel_buffers`
+     (`typed_buffers_draw_as_direct3d_does`; since run 55 every second seed binds both views of
+     the other kind), `texture_layers`
+     (`multisampled_array_layers_read_as_direct3d_does`), `targets_in_shader` into normalised
+     targets held as integers (since run 54, against Direct3D 11 drawing into the normalised
+     format, both back ends). Since run 56 `DEPTH_CLAMP` and `CLIP_DISTANCE` also without a pixel
+     shader, through `builtin::pixel_program_for_variant`, against Direct3D 11 drawing with none
+     (both routes, both back ends).
+   - `compute_draw`: `storage_formats` (`storage_textures_match_direct3d`, and since run 55
+     `storage_textures_of_another_kind_read_and_write_their_bits_as_direct3d_does`), `texel_buffers`
+     and `texel_formats` (`typed_buffers_match_direct3d`, and since run 55
+     `typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does`; since run 56
+     `textures_of_another_kind_load_their_bits_as_direct3d_does`: `texel_formats` at texture
+     slots, both routes),
+     `texels_through_buffer` (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
+     (`storage_views_at_any_first_element_match_direct3d`), `register_ranges`
+     (`buffer_arrays_use_the_elements_picked`: arrays of constant and typed buffers, two declared
+     without a length, sized by the ranges, DXBC; since run 55
+     `typed_buffer_arrays_use_the_elements_picked_on_both_routes`, typed buffers alone, DXBC and
+     DXIL; against Direct3D's rules, not against real Direct3D 12, which no drawn test here drives
+     yet).
+   - `filter_draw`: `filter_in_shader`, `border_in_shader`, `decoded` (since run 54: R16_UNORM,
+     R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their integer formats, every
+     sampling mode and loads; against real Direct3D 11 and WARP;
+     anisotropic filtering a known failure, Known gaps: since run 47 only the modes that take a
+     footprint from derivatives are counted as known, an explicit level or a gather must match;
+     the comparison against WebGPU's own sampler at seeds other than the defaults: gap A18).
+     `shadow_draw`: `filter_in_shader` on
+     depth textures compared and read plainly, `swizzled` on depth views.
+   - `pull_draw`: `pulled` (every vertex format against what Direct3D 11 fetches).
+   - `early_draw`: `EARLY_TESTS` (with storage writes, against Direct3D 11).
+   - `stage_draw`: `LINE_COVERAGE` (against the RTX 3080 within a stated allowance),
+     `PRIMITIVE_ID_FROM_STAGE`. `geometry_draw`: `LAYER_FROM_STAGE`
+     (`layers_past_the_views_draw_into_the_first_as_direct3d_11_does`), `CLIP_DISTANCE` behind a
+     geometry stage (met at the default seeds 1 to 4 only: gap A10), `DEPTH_CLAMP` behind a
+     geometry stage (since run 56, `depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`,
+     within four units in the last place of the interpolated depth at the default seeds 1 to 4
+     only: gap A12).
+   - `draw`: `output_interpolation` (every drawn pair links through it; `vs_shade`/`ps_flat` with
+     flat, linear and centroid values against Direct3D 11).
+   - `linked` is the place the flag-carried values travel; it is exercised by every test of
+     `CLIP_DISTANCE`, `DEPTH_CLAMP`, `LINE_COVERAGE`, `PRIMITIVE_ID_FROM_STAGE` and
+     `LAYER_FROM_STAGE`.
+4. Geometry, tessellation and stream output tests match real Direct3D on the RTX 3080: met on
+   WebGPU for DXBC (`geometry_draw`: geometry shaders, layered geometry, stream output;
+   `tessellation_draw`: the tessellator against the GPU's, tessellated patches, the rig's
+   tessellation scene, stream output after a domain stage; `stage_draw`). On WebGL 2 since run 52,
+   geometry shaders by replay (`geometry_draw`,
+   `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`, on ANGLE: every case of the WebGPU
+   test but the strips with adjacency, which the route refuses by name; indexed strips since run
+   54), and
+   stream output after them since run 53 (`stream_output_after_replay_matches_direct3d`), and
+   since run 58 stream output from a vertex shader alone there, drawn from its capture (the same
+   test and `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`).
+   DXIL since G6b: geometry, hull and domain shaders with dxc's builds (A6 closed); stream output
+   from dxc's builds against real Direct3D 12 running them since G6b run 3 (A21, A22).
+   Not met: the rest of WebGL 2 (tessellation, cull distances, lines: gap A5), some topologies and streams (A7), vertex shaders writing storage (A9), single texels on
+   the edges of clipped triangles and a few of culled lines (A10), clamped depth behind a
+   geometry stage at some seeds (A12), geometry shaders taking patches (A13), hull shaders
+   giving no control points (A14) and the written count of a stream with no buffer bound (A15).
+5. The built-in programs: the storage clear (`clear_draw`, every storage format and dimension
+   against WARP and the GPU's Direct3D 11), and since run 56 the pixel program of a pipeline
+   without a pixel shader (`builtin::pixel_program_for_variant`, `tests/builtin.rs` and the
+   `variant_draw` cases above). Met. The fronts do not use them yet (theirs).
+6. The cache of section 8 (`tests/cache.rs`): one file that round-trips
+   (`converted_shaders_round_trip_through_the_file`), merges by union in both orders
+   (`caches_merge_by_union_in_either_order`), survives a cut at seeded places
+   (`a_cut_file_keeps_every_whole_entry_before_the_cut`, `WCONTAINERS_CACHE_SEED`,
+   `WCONTAINERS_CACHE_CUTS`, default 10; since run 47 also every cut inside the header, which
+   loads as an empty cache with the cut bytes dropped) and a damaged entry (a damaged byte ends
+   the file at that entry by its CRC; a record damaged under a matching checksum decodes to a
+   conversion or an error natively, while in WebAssembly a panic in naga's validator can end the
+   instance: gap A16); state combinations recorded once. The header's and an entry's field offsets come from `#[repr(C)]` layouts.
+   Conversion gives the same bytes under each back end's keys: the corpus test converts every
+   shader under the WebGPU key, the WebGL 2 key (`TEXTURE_INFO`, since run 46), the bases from the
+   helpers and the view keys, twice each, and decodes each record back to the same bytes;
+   `cache.txt` holds each record's hash so the native and WebAssembly builds can be compared. Met
+   but for gaps A8 and A16.
+
+The gap list (every item of the pass bar not met):
+
+- A1. `hlsl+distance-4-ps.dxil` (runner corpus) ends "convert rejected: Unknown type!", not a named
+  refusal. Since G6a run 2 the corpus test names it as a known unnamed verdict with this gap
+  (`KNOWN_UNNAMED` in tests/corpus.rs): its verdict must still equal its record, and the runner
+  test passes and catches any other change. Cause: dxc
+  10.0.26100 writes a `PPC_FP128` record into the program's LLVM type table, which dxil-spirv's
+  bitcode reader does not know; the program never uses the type. Waits: nobody (a vkd3d runner file
+  of the Direct3D 12 track's runner; no real program seen with it). Takes: dxil-spirv's reader
+  taking the record (upstream, or a patch carried as naga's are).
+- A2. Closed in run 55: a typed buffer or storage texture bound as a view of another kind than
+  the program declares is read and written by its bits, as Direct3D gives it (no refusal by kind
+  is left), so every such shader converts under the corpus's one-kind view keys.
+- A3. Closed in run 47. Run 46 named the WebGL 2 back end's bitfield operations, gathers and loads
+  at a level as its cause, but that back end has written all three since its commit 2080826c; the
+  refusals came from the corpus test writing GLSL with naga itself. The test now uses the back
+  end's writing (item 2), and every shader needing nothing beyond GLSL ES 3.00 compiles.
+- A4. Four parts of the variant key, and one case of a fifth, are refused by name and have no test of
+  a result (`decoded` built in run 54):
+  - `PROVOKING_LAST` (`ProvokingRewrite`): no rewrite of the programs alone can give a flat input the
+    last vertex's value, since a pixel program sees one value per primitive. The exact route is the
+    front's (indices rotated per primitive, strips and fans made lists). Waits: nobody (both fronts
+    route it themselves or report it). Takes: a decision to drop the flag from the interface.
+  - `storage_packed` (`StoragePacked`): open question; separate guest buffers become one GPU buffer
+    only if the front keeps them in one arena, and the binding the packed buffer takes is not named.
+    Waits: nobody yet (programs with more storage views than the back end binds). Takes: settling
+    the arena with the interface track, then the program's offsets from the helpers.
+  - `layout` and a root signature (`RootSignatureLayout`): root constants read as immediates.
+    Waits: nobody (the Direct3D 12 front binds root constants as a uniform buffer). Takes: the
+    immediates in the program from the root signature's parameters.
+  - `TargetInShader::combine` (`BlendInShader`, and `LogicOpInShader` through the same field; plan
+    6.4 and 4.12): a target combined with its old value in the program, read from a copy of the
+    target at `TARGET_COPY_BINDING` plus the target, by the factors and operations of
+    `HelperValue::TargetCombine`. Refused by name (src/variant/targets.rs, `target_scalar`). Cause:
+    not built; `targets_in_shader` writes the output only. Waits: the Direct3D 11 front, to blend
+    into 16-bit normalised textures it holds as their integer twins (its status: "Blending into
+    integer twins (`BlendInShader`) once the shaders crate builds `combine`"; such formats are
+    reported without `BLENDABLE` meanwhile), and every front for logic operations and the blends
+    a back end lacks. Takes: the copy declared as a texture at that binding, the old value loaded
+    at the fragment's position and decoded as the target's format, the blend (or logic operation)
+    of the helper values applied before the encoding `targets_in_shader` already does, and a drawn
+    test against Direct3D 11 blending into R16_UNORM and R16G16B16A16_SNORM targets (the front
+    draws such a draw one primitive at a time where primitives overlap).
+  - `swizzled` on a depth texture (`SwizzledDepth`, src/variant/swizzle.rs, `depth_mapped` and
+    `swizzled`): a texture the program compares against, gathers from or reads as its depth alone,
+    whose view's component mapping moves red off the first component (a plain read of such a
+    texture takes any mapping since run 38, and a mapping keeping red first is exact); also any
+    mapping on a texture slot the program declares as neither sampled nor depth. Cause: a
+    comparison, a gather of a depth texture and a read used as its depth alone take the first
+    component; whether Direct3D applies the mapping before comparing was not measured, so no
+    rewrite was chosen. Waits: the Direct3D 12 front, from its shader runner (its status, "Asked of
+    other tracks": "`SwizzledDepth` moving red"; Godot's 3D platformer on Direct3D 12 met it before
+    run 38 took plain reads). Takes: real Direct3D 11 and 12 drawn with a depth view mapped
+    (red to green, red to a constant) and compared and gathered, to learn which value the mapping
+    gives, then that value composed before the comparison (or after it), and a drawn test against
+    it (`shadow_draw`'s `depth_views_with_component_mappings_read_as_mapped` is the place).
+- A5. The stage helper on WebGL 2 (plan section 7). Geometry shaders run there since run 52
+  (`stage::GeometryReplay`, `SlowPath::GeometryAsReplay`, drawn equal to Direct3D 11 on ANGLE).
+  Indexed strips run there since run 54 (listed on the host from their indices read back).
+  Not built, each refused by name or absent: strips with adjacency (`GeometryReplayAdjacentStrip`);
+  a replay form holding an array of arrays (`GeometryReplayArrayOfArrays`, since run 68: dxc's
+  build of a geometry shader whose inputs are arrays of rows, one array per vertex, which GLSL ES
+  3.00 cannot declare; fxc's build of the same program replays, its rows separate registers);
+  records wider than one capture target
+  (`GeometryReplayComponents`, past `capture_components`, 16 slots on WebGL 2's minimum);
+  layered geometry (`selects`, built on the same pass-through, not drawn on WebGL 2 yet); stream
+  output from a vertex shader alone runs since run 58 (`GeometryReplay::streamed`), refusing
+  adjacency (`StreamOutputAdjacency`, as the compute route) and cull distances
+  (`StreamOutCullDistance`); stream
+  output from a geometry shader writing several streams (`GeometryReplayStreams`: the replay runs
+  stream 0 only; stream output of stream 0 runs since run 53, `StreamOutAfterReplay`);
+  alpha-antialiased lines, cull distances,
+  primitive numbers and tessellation on WebGL 2 (each the vertex stage captured the same way;
+  the tessellator needs compute, so tessellation stays absent there). Waits: the Direct3D 11 front
+  at feature level 10_0 on WebGL 2 (its geometry shaders and their stream output now run; its
+  alpha-antialiased lines remain). Takes: each its route and its drawn test on ANGLE.
+- A6. Closed in G6b (runs 65, 66 and 68): DXIL geometry, hull and domain shaders convert through the
+  passes the DXBC route uses and draw equal to real Direct3D with dxc's builds of every program
+  (`geometry_draw`, `tessellation_draw`); a DXIL pixel shader reads its layer and viewport. Since
+  run 68 a geometry shader's inputs and outputs may be arrays of rows (`float3 c[2] : COLOR0`, which
+  dxc writes as one signature element of several rows), one register a row, on both routes; an array
+  of arrays among them is refused by name (`OutputArray`, no file of any corpus has one). Of the four
+  Direct3D 12 rig scenes that failed for A6, two (geometry, streamout) draw equal to real Direct3D 12;
+  raster-fill (64 of 16,384 pixels beyond 1) and tessellation (310 of 32,768 beyond 4) differ only in
+  wireframe lines, which this crate's own comparison draws equal on wgpu's Direct3D 12 path and the
+  Direct3D 12 front's library draws apart on its Vulkan path: the line rule of that back end, not the
+  converter's (history, G6b run 2). Not rerun since run 66. Waits on nothing of this track.
+- A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
+  which Direct3D does not allow; several streams of points convert since run 49); indexed strips
+  and triangle strips with adjacency run since run 50; indirect draws through the stages, the
+  primitive's number behind a geometry shader (the rig's geometry scene's `ps_id`, the Direct3D 11
+  front, which draws it with the back end's native primitive index today), typed buffers in
+  geometry shaders (`TypedBufferInGeometry`). Cull distances written by a geometry or domain shader
+  have no route: no stage helper program culls by them, and the pass-through writes them as the
+  built-in, which neither back end declares (`Features::CULL_DISTANCE`). Waits: the Direct3D 11
+  and 12 fronts' runner and Wine files named in their statuses; no real program seen with them.
+  Takes: each its route and a drawn test.
+- A8. The WebAssembly build converts 27 shaders, all DXBC, to modules whose expression order
+  differs from the native build's (G6a run 4, wasm.log, every corpus including the runner's; no
+  DXIL file differs). Five outside the runner corpus, as since G6a run 1: Wine's
+  `116_cs_group_index_code`, the games' `d599fbc7efa911be`, `bfa45b98c14fa486` and
+  `f092830b5c83e017`, our own `cs_one_d`. In the runner corpus, measured first in G6a run 4, 22
+  more: `arithmetic-int-uniform-1` to `-6` and `-8` to `-11`, `arithmetic-uint-5`,
+  `clip-cull-distance-1-11` to `-15` and `-17`, `eval-attrib-1`, `function-return-5` and `-6`,
+  `instance-id-3`, `interface-packing-8`. What differs: the two results of the unsigned divide
+  helper come out in the other order (11 of the 22 and the first five), the two comparisons of a
+  range check joined by a logical and come in the other order (9), and the loads of a select's
+  operands are made in the other order, which renumbers them (2, and with the and in 8). Same
+  meaning (read in four of the runner's, the rest sorted by the lines that differ); a cache made
+  natively and one made in the browser disagree on those entries (counted, the first kept),
+  against section 8's "same bytes on both". Cause: dxbc-spirv builds operands inside one call's
+  arguments, whose order C++ leaves free (gcc and MSVC right to left, clang left to right). Waits:
+  nobody until a native and a browser host share one cache. Takes: the operands sequenced in
+  dxbc-spirv (upstream, or a patch carried as naga's are).
+- A9. Vertex shaders writing storage buffers or storage textures (plan section 7,
+  `VertexStorageAsCompute`) are refused by name (`VertexStorageWrite`; runner and runner DXIL 1
+  each, depth-bounds-1-vs; own `vs_store_texture`, `vs_store_typed`, `vs_store_raw`, DXBC and
+  DXIL), by `convert` and `rewrite` alike. Storage textures only since G6a run 3: before it a
+  vertex program writing one (a storage texture under the view keys, or a typed buffer read as
+  one) was returned converted and failed only when the back end made the pipeline. Tests:
+  `a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it` (rewrite, a storage
+  buffer and a storage texture) and
+  `a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key` (the own files
+  under the default key, the view keys, and storage textures through buffers). Cause: WebGPU
+  forbids storage writes in vertex programs (buffers and textures alike) and WebGL 2 has no
+  storage, and the route section 7 gives (the vertex program run as compute by the stage helper,
+  then a pass-through draw, as the cull route does) is not built. Waits: the Direct3D 12 front's runner (depth-bounds); no real program seen with it.
+  Takes: `convert` keeping such a program for the stage helper only, `vertex_as_compute` taking its
+  storage writes, and a drawn test against Direct3D 11.
+- A10. Clip distances through the stage helper (`gs_clip` behind a geometry shader, `vs_cull` on
+  the cull route) match Direct3D 11 at the default seeds 1 to 4, but at other seeds a few texels
+  are drawn on one side only. The third check (seed 9001, 16 cases, at 64787579) found four more,
+  all this pattern: seed 9002 `gs_clip` TriangleStrip (10 of 693 texels, largest 60), 9002
+  `vs_cull` TriangleList indexed (5 of 868, largest 49), 9012 `vs_cull` TriangleStrip (3 of 1,140,
+  largest 4), 9013 `gs_clip` TriangleStrip (7 of 459, largest 147); the replay on WebGL 2 fails
+  9002 and 9013 `gs_clip`. G6a run 1 (gpu-all.log, `geometry_shaders_draw_as_direct3d_does` at
+  seed 4747, 12 cases): 336 comparisons, 8 failed. Four are this gap, the check's own: seed 4749
+  `vs_cull` TriangleList indexed, 4753 and 4756 `gs_clip` TriangleStrip, 4756 `vs_cull`
+  TriangleList indexed (largest 75, a few texels of 600 to 1,700 drawn). The other four are
+  scenes Direct3D itself draws nothing of (0 texels drawn, 0 differ: seed 4747 and 4758 `vs_cull`
+  TriangleStrip indexed, 4756 and 4758 `gs_adjacent` TriangleStripAdjacency indexed), which the
+  test counts as failures so that no case passes empty; the seeded scenes, not the conversion. The
+  texels seen in run 47 lie away from the clip line (texel (14, 41) of seed 4749 is 0.65 from
+  vs_cull's plane, (27, 48) of seed 4753 at least 0.16 from each of gs_clip's three), on the edges
+  of drawn triangles. G6a's check found more at seed 5101, 12 cases: 5106 `vs_cull` TriangleStrip
+  (1 of 1,158 texels, largest 147), 5108 `vs_cull` TriangleList indexed (2 of 762, largest 121),
+  5110 `gs_clip` TriangleList. The fourth check (seed 6201, 20 cases, at 2bc9756e) found four more
+  triangles of this pattern: 6205 `gs_clip` TriangleList (6 of 841 texels, largest 147), 6210
+  `gs_clip` TriangleList (6 of 602, largest 67), 6211 `gs_clip` TriangleStrip (7 of 516, largest
+  192), 6214 `gs_clip` TriangleStrip (7 of 335, largest 111); the replay on WebGL 2 fails the same
+  four. Cause, inferred and not measured: Direct3D clips the triangle into new
+  vertices, whose rounding moves its edges by a fraction of a texel, where the pixel program clips
+  by the interpolated distance and leaves the edges as drawn. Waits: nobody (a texel on an edge).
+  Takes: clipping the triangles in the stage helper's compute (the polygon cut at each plane, as
+  the rasteriser does), then the same seeds compared again. (Seeded strips are drawn again until
+  they hold a whole primitive since G6a run 2, so no scene is empty for want of one.)
+  On lines, besides the clipped ends Known gaps lists: the fourth check found one texel of a
+  `vs_cull` line strip that Direct3D draws and ours leaves as background, away from the clipped
+  ends and from the plane (seed 6202, `vs_cull` LineStrip 12 from 0, indexed, base 0: 1 of 146
+  texels, texel (24, 22), Direct3D [22, 113, 71, 191], ours [32, 64, 127, 255]; its centre is 0.26
+  from the plane, the allowance near it 0.044). Cause: not found; it is not the clip at the plane.
+  Takes: that seed's two pictures and the line's vertices compared at the texel (which segment
+  Direct3D drew it from, and whether ours culled or clipped that segment), then the fix and the
+  seed again. The fifth check (seed 7301, 24 cases, at e337c38a) found the opposite on `vs_cull`
+  lines, away from the clipped ends: ours draws texels Direct3D leaves as background. Seed 7313
+  `vs_cull` LineList 20 from 0: 239 texels drawn by Direct3D, 5 differ, 2 at a clipped end, the
+  others up to 158 (allowed 2), for example (17, 17) and (23, 20), Direct3D background, ours [215,
+  54, 55, 191] and [190, 47, 51, 191]; seed 7313 `vs_cull` LineStrip 9 from 1 x2: 271 drawn, 6
+  differ, 4 at a clipped end, for example (25, 17), ours [199, 70, 55, 191]. G6a run 5 drew
+  the same seeds at its tip and got the same figures (g6a5/gpu.log; in the LineList ours also
+  leaves (13, 21) and (23, 21) blank where Direct3D draws). Cause: not found
+  (not measured whether ours keeps a segment Direct3D culls).
+  Takes: as for seed 6202, which segment each texel lies on and that segment's cull distances
+  at both ends. The same check also failed seeds 7308 `vs_cull` TriangleList and 7319
+  `vs_cull` TriangleStrip indexed (the triangle edge pattern above), and its seed 8801 run 8
+  triangle edge cases. The sixth check (seed 9901, 32 cases, at 211e0656) found the same pattern
+  at about the same rate and nothing new: 9906, 9909 (20 texels differ, largest 75) and 9924
+  (largest 133) `gs_clip` TriangleList, 9906, 9920 and 9931 `vs_cull` triangles, and 9932 `vs_cull`
+  LineStrip indexed (2 of 159, largest 88); the replay on WebGL 2 fails the same five `gs_clip`
+  cases. The G6a fourth check of run 64's tip (seed 31337, 16 cases): 448 comparisons, 3 failed,
+  all this pattern (31344 `vs_cull` TriangleList indexed 3 of 778, largest 132; 31351 `gs_clip`
+  TriangleStrip 8 of 816, largest 81; 31351 `vs_cull` TriangleList 3 of 1,669, largest 68); the
+  replay on WebGL 2 failed 31351 `gs_clip` (352 comparisons).
+  The G6b fourth check (seed 8501, 16 cases, at 3afa2f5a; both routes since G6b): 768 comparisons,
+  8 failed, all this pattern on both routes: 8501 `gs_clip` TriangleStrip 14 from 2 (DXBC and DXIL,
+  10 of 571 texels, largest 120), 8503 `vs_cull` TriangleList 30 from 3 x2 DXBC (3 of 1,646, largest
+  45), 8503 `vs_cull` LineList 20 from 0 DXBC (1 of 220, largest 64), 8505 and 8508 `gs_clip`
+  TriangleList 30 from 3 x2 (both routes); the replay on ANGLE, 608 comparisons, 6 failed, the same
+  `gs_clip` cases.
+- A11. `mutated_bytecode_converts_or_fails_without_ending_the_process` (tests/fuzz.rs, ignored by
+  default as a long run) fails: signed but malformed bytecode can end the process (G6a run 1,
+  fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; the second check, seed 8128,
+  4,000 cases, restarted past each crash: 26 crashes, all DXIL; the third check, seed 5555, 6,000
+  cases: 27, 24 SIGSEGV and 2 `std::terminate` on DXIL and 1 on DXBC; the fifth check, seed
+  24680, 8,000 cases: 31, 26 SIGSEGV and 4 `std::terminate` on DXIL and 1 on DXBC; the fourth
+  check of run 64's tip, seed 86420, 6,000 cases: 27, all DXIL inside dxil-spirv, 20 SIGSEGV and
+  7 `std::terminate`, none on DXBC or in this crate's Rust; Known gaps has
+  the earlier counts). Causes:
+  - DXIL: dxil-spirv's bitcode reader faults or calls `std::terminate` on such input.
+  - DXBC, the third check's case: this crate's own lowering took a resource array's declared count
+    unchecked and asked Rust for gigabytes for its register list. Fixed in G6a run 3: a declared or
+    ranged count past the slots its kind binds is refused (`BindingsBeyondLimit`) and the register
+    end is a checked add (`a_resource_array_longer_than_its_kind_binds_is_refused_by_name`).
+  - DXBC, the fifth check's case (seed 24680, case 1397, `113_cs_1_group_code.dxbc` `word@476`):
+    not ours. The word replaced is the register index of `r1` in that program's `iadd r1.y, r1.y,
+    l(1)` (read from the file in G6a run 5), and dxbc-spirv's `RegisterFile::getOrDeclareTemp`
+    (dxbc/dxbc_registers.cpp) resizes its list of temporaries to that index times four, unchecked
+    against `dcl_temps`; its lists of indexable temporaries, labels, function bodies and
+    tables and `g` registers are sized the same way. Natively with no limit the process grew until the
+    kernel's out-of-memory killer ended it (the check's dmesg); under `ulimit -v` the same case is
+    a rejection (G6a run 5 too), taken to be dxbc-spirv's `bad_alloc` caught at the boundary
+    (cpp/boundary.h; inferred, the message not printed). In WebAssembly,
+    where the C++ has no exceptions, an allocation the module cannot make ends the instance.
+  Only bytecode whose checksum matches reaches the converters, so these need a program that signs
+  malformed bytecode. Waits: nobody. Takes: on DXIL, the reader hardened upstream (not yet
+  reported), or the converters run where a fault cannot end the host; on DXBC, the register
+  indices checked against their declarations in dxbc-spirv (upstream, or a patch carried as naga's
+  are); this crate cannot bound them without reading the bytecode itself.
+- A12. `DEPTH_CLAMP` behind a geometry stage (`depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`)
+  is within four units in the last place of Direct3D 11's depth at the default seeds 1 to 4 (16
+  comparisons), but not at all seeds: G6a's check, seed 5103 `gs_cut` TriangleList, 37 of 470
+  clamped texels differ, largest 33 steps; seed 5104 `gs_cut` TriangleStrip, 173 of 177, largest
+  59 steps (allowed 4); the third check, seed 9014 `gs_cut` TriangleStrip, 24 of 40 differ, 20
+  steps; the fourth check, seed 6212 `gs_cut` TriangleStrip, 173 of 781 differ, 20 steps (largest
+  5.96e-7, allowed 4.77e-7); and seed 4753 `gs_cut` TriangleStrip, 72 of 1,101 differ, 23 steps
+  (in G6a runs 2 and 3's seed 4747 runs and again in run 4); the fifth check and G6a run 5 at its
+  tip, seed 7305 `gs_cut` TriangleList, 26 steps (the only one of 144 past the allowance; the
+  others at 1 to 4 steps), and the check's seed 8801, 18 and 11 steps; the sixth check (seed 9901,
+  at 211e0656), 4 of 192: 9920 (32 steps), 9926 (44) and 9931 twice (20), all `gs_cut`. Cause: not found. Both are `gs_cut`; the pixel program clamps a depth
+  interpolated as a value between stages from the pass-through's unclamped depth, where Direct3D
+  clamps its rasteriser's own depth, so the two interpolations may round apart by more on some
+  triangles (inferred, not measured). Waits: nobody (depths some millionths
+  apart). Takes: the depths compared texel by texel at those seeds to find whether the
+  interpolation or the clamp moves them, then the rewrite changed and every seed compared again.
+- A13. A geometry shader taking patches as its input, drawn without tessellation
+  (`GeometryPatchInput`, src/lower/geometry.rs `input_vertices`): not built, refused by name.
+  Runner (DXBC): `geometry-shader-syntax-6`, `-7`, `-8`, `-10` and `patch-syntax-12` (5 files).
+  Cause: the geometry lowering knows the vertex counts of points, lines and triangles (with
+  adjacency) only; the stage helper's `PatchList` is drawn into a hull stage, not yet into a
+  geometry stage. Waits: the
+  Direct3D 12 front's runner (those files); the Direct3D 11 front for Wine's files if they hold one;
+  no real program seen with it. Takes: the patch's control point count as the input's vertex count,
+  the stage helper's geometry route taking `PatchList`, and a drawn test against Direct3D 11
+  drawing a patch list into a geometry shader.
+- A14. A hull shader that gives the domain shader no control points (output control point count 0,
+  `HullWithoutControlPoints`, src/lower/hull.rs): not built, refused by name. Runner (DXBC):
+  `hull-shader-attributes-10` (1 file). Cause: the hull lowering's compute program and the records
+  it hands the domain stage are built for one output control point or more; a patch with none was
+  not built (`HullPass::entry_point` refuses it before anything else). Since run 66 its DXIL partner
+  is refused too: a domain shader of no input control points (`DomainWithoutControlPoints`, runner
+  `patch-syntax-11-ds.dxil`, which dxil-spirv gives an array of zero). Waits:
+  the Direct3D 12 front's runner (those files); no real program seen with them. Takes: the hull's
+  records written with the patch constants alone and the domain stage reading no control point,
+  and a drawn test against Direct3D 11.
+- A15. Stream output of a stream whose buffers are all unbound (`streams_past_the_first_match_direct3d`,
+  tests/geometry_draw.rs): the primitives made match Direct3D 11, the primitives written do not.
+  On the RTX 3080 real Direct3D 11 counts some of such a stream's primitives as written, ours 0
+  (the fifth check at e337c38a, and G6a run 5 at its tip, seeds 7301 to 7324: 96 comparisons, 24
+  differ, each the case "30 from 0 x1, buffers 1", whose stream 3 has no buffer: Direct3D's
+  written and made [25, 54], ours [0, 54], the other streams and every made count equal). The
+  test compares only the made count of such a stream, so it passes. Cause: no rule found for the
+  GPU's count (25 of 54 there, 0 of 84 in another case); ours writes nothing and counts
+  nothing written, as no buffer takes it. Waits: nobody (no program seen reading the written count
+  of an unbound stream). Takes: the same draws on WARP as a second reference; then either the
+  count matched or the difference recorded as the GPU's own.
+- A16. The cache survives a damaged entry natively, not in WebAssembly, where a panic aborts and
+  ends the instance (pass bar item 6). Each entry's CRC drops a damaged one before decoding, so
+  this needs a record whose checksum matches but whose contents are malformed (a crafted, merged
+  or foreign file). Decoding validates the modules with naga's validator, which indexes such a
+  module unchecked; natively `contained` (catch_unwind) turns the panic into a refusal. Our own
+  `capabilities` read the types unchecked too until G6a run 6 (now `get_handle`). Tests:
+  `damaged_records_decode_to_a_conversion_or_an_error` (no panic reaches the caller; passes
+  natively, ignored on wasm32) and `damaged_records_decode_without_a_panic` (no panic at all,
+  contained or not; ignored as a known failure, failing). Measured on the laptop at G6a run 6's
+  tip (load 4.5 before, the other track's work beside), seeds 4242 and 1 to 5, 1,000 damaged copies of
+  each of 189 records (g6a6/panic-sites.log, the strict test with its assertion removed for the
+  count): 1,049 panics among 1,134,000 decodes, all in naga (analyzer.rs:641, a function argument's
+  index past the arguments, 935; typifier.rs:122 57; compose.rs:22, a composed type's handle, 35;
+  function.rs:617 and :592, an atomic's result type, which naga's handle check skips, 9;
+  analyzer.rs:1116, a called function's information before it is made, 6; expression.rs:1326 3;
+  analyzer.rs:1247 3; constant_evaluator.rs:768 1), none in this crate.
+  Waits: nobody (no host shares a cache file it did not write yet). Takes: either naga's validator
+  checking every index and handle before use (carried patches, then upstream), or a record
+  signed with a key the host holds so a foreign record is never decoded.
+- A17. Aliased lines (`MultisampleEnable` off) into a multisampled target: Direct3D 10 and 11
+  cover every sample of each pixel the diamond-exit rule picks; WebGPU draws lines into a
+  multisampled target by its own rule. The plan lists the rule as a loss (4.12, "Which line
+  rasterisation rule"), so it is not on the pass bar's words, but the Direct3D 11 front waits on it
+  (its known failure `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does`,
+  "Needs an aliased-line route (the shaders track and the interface)"). Cause: not built; the
+  raster state has no word for the rule, and no stage helper route draws lines by it. Takes: the
+  interface's word for it (the interface track's), then a route: the line's vertices captured by
+  the stage helper as for the cull route, each segment drawn as the pixels the diamond-exit rule
+  picks (a quadrilateral per segment, its pixel program discarding the pixels the rule leaves and
+  writing every sample of those it keeps), and a drawn test against Direct3D 11 into 4x targets.
+- A18. `filtering_in_the_program_matches_direct3d`'s comparison against WebGPU's own sampler has
+  no level-of-detail allowance, where the main comparison has one (a texel still apart from both
+  references after the level of detail is moved by 1/256 either way). At the sixth check's seed
+  9911 (10 cases) it failed one case that is not anisotropic: 9913, `Case { linear: [true, true,
+  false], anisotropy: 1, address: [2, 1, 2], bias: 0.0, lod: [0.0, 3.4e38], value: 1.5, scale:
+  [1.0, 0.5] }`, Rgba8Unorm `bias`, both routes: 4 of 4,096 texels past 1/128 from WebGPU's own
+  sampler and from warp. G6a run 6 at its tip, the same seed (gpu.log, FILTER): see the run's
+  section above. The main comparison of the same case finds the same 4 texels ("4 before moving
+  the level of detail") and passes them with the allowance; WebGPU's own sampler equals Direct3D
+  on the GPU there (0 texels apart), so the 4 are texels whose level of detail ours computes on
+  the other side of a level decision from both. Cause: the program's level of detail (from
+  derivatives, as warp computes it) is not bit for bit the GPU's. Waits: nobody (a texel's level
+  of detail at a decision). Takes: either the GPU's level of detail computation matched exactly
+  (not documented for the RTX 3080), or the owner ruling that the main comparison's allowance
+  applies to this comparison too; the test is left as it is meanwhile.
+- A19. Normalised codes with halves toward zero (`variant::texel::encode`, run 65, the Direct3D 11
+  front's ask from its measurement on the RTX 3080: 0.5 into a 16-bit normalised texture held as
+  its integer twin gives 0x7fff there): built, but no drawn test of this crate writes an exact
+  half, so the rule is the front's measurement, not this crate's; the drawn tests that run the
+  encoding (`targets_in_shader`, storage formats, typed buffers) pass with it. Waits: the
+  Direct3D 11 front (its difference list). Takes: an own program writing 0.5 and -0.5 into 8- and
+  16-bit normalised targets, storage textures and typed buffers, compared exactly with real
+  Direct3D 11 (fxc and dxc builds).
+- A20. A geometry shader after a domain stage reading `SV_PrimitiveID`
+  (`GeometryPrimitiveIdAfterDomain`, src/stage/helper.rs `tessellated_with`): refused by name. Own
+  `gs_values_tess` (both builds) and the check's `gs_own_tess` meet it. Cause: the domain stage's
+  records do not hold the patch's number, which Direct3D gives such a geometry shader. Waits:
+  nobody (no corpus or real program seen with it). Takes: the patch's number written into each
+  domain record by the domain program, read by the geometry stage as its primitive, and a drawn
+  test against Direct3D 11 (`gs_values_tess` with `hs_values_*`).
+- A21. Float arithmetic is not bit-exact across compilers: Direct3D and the back ends' compilers
+  may each contract a multiply and an add and divide by a constant's reciprocal, and a program
+  built IEEE-strict (`-Gis`, `precise`) forbids it, which WGSL cannot say. Measured (G6b run 3,
+  draw3.log): dxc's `-Gis` builds of `gs_unplaced` and `gs_cut` on Direct3D 12 against ours, 1 to
+  4 ulp in words of a multiply and an add; the same programs built without `-Gis`, up to 2 ulp on
+  WebGPU and 4 on the replay route (ANGLE) at seeds 1 to 4. The fourth check found 8 ulp on the
+  replay route at its seeds 8501 to 8516 (`gs_cut` strips, 4 of 16 seeds; for example 0.11680809
+  against 0.116808146): `gs_cut`'s lerp from the centre takes a difference of positions near 1, so
+  the result keeps their rounding and its own last place is no measure of it. Since run 68 the
+  allowance on dxc's builds' normal floats is 4 units in the last place of the larger of the two
+  values and 1 (`CONTRACTED_ULPS`, `OPERAND_MAGNITUDE`: the tests' operands are positions in the
+  clip volume, colours and constants of at most about 1), where it was 4 ulp of the value itself.
+  At the check's seeds 8501 to 8516 the stream tests then pass on the replay route (384
+  comparisons, 0 failed) and on WebGPU (448, 0 failed); every DXBC case is exact (g6b4/probe1.log).
+  Waits: nobody (no program seen depending on it). Takes: nothing the converter can do in WGSL; a
+  native back end could keep `NoContraction`.
+- A22. Direct3D 12 on the RTX 3080 writes zeros for the position in the stream output of a
+  geometry shader of several streams, whichever compiler built it and whichever stream holds the
+  position (the fourth check's measurement: Direct3D 12 running fxc's build of `gs_streams` is 80
+  words apart from Direct3D 11 running it, all of them zeros at the position; its own
+  `gs_c4_streams_flat`, the position in stream 1, the same), where ours writes the values and
+  equals Direct3D 11 running fxc's build word for word. Every count and every other word of
+  Direct3D 12's equal ours. So the converter is right and this reference is the odd one. Since run
+  68 the tests of several streams take each such zero from Direct3D 11 running fxc's build of the
+  same program (`reference_of_streams` in tests/geometry_draw.rs: only words Direct3D 12 left zero at
+  the position's places in a buffer, by the declaration and stride) and count the case as known:
+  seeds 1 to 4, 32 comparisons, 0 failed, 16 known (draw1-err.log); the check's seeds 8501 to 8516,
+  128, 0 failed, 64 known (probe1.log). Cause within Direct3D 12 or the driver: not found (WARP's
+  Direct3D 12 not drawn). Waits: nobody (our reference only). Takes: the same draws on WARP; if WARP
+  writes the positions, the difference recorded as the driver's.
+- A23. A DXBC program reading a dynamically indexed range of input registers whose component mask
+  has a gap (own `ds_rows_gap`: `c[1 - k].arr[k + 1].z + c[k].arr[2].x`, fxc declares the range
+  `.xz`) is refused by name (`ComponentPastVector`, src/lower.rs at `COMPOSITE_EXTRACT`); before run
+  68 `convert` returned an invalid module ("Index 2 is out of bounds"), since G6a at least. dxc's
+  build converts. Cause, read in dxbc-spirv's IR (scratch g6b4/probe-ir.txt): the range's load
+  function returns the mask's components packed (`makeVectorType`, two for `.xz`), but
+  `IoMap::computeRegisterAddress` (dxbc/dxbc_io_map.cpp) addresses a component by its distance from
+  the mask's first (`tzcnt`, 2 for `z`), where its own interpolation path counts the mask's bits below
+  it (`popcnt`, 1). Waits: nobody (no corpus or real program seen with it; the fourth check's
+  `ds_c4*`). Takes: that one line in dxbc-spirv (upstream, or a patch carried as naga's are), then
+  the refusal removed and the check's `ds_c4` drawn against Direct3D 11.
+- Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
+  for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
+  holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
+  there since run 55), `InterpolateAt` on the DXIL route,
+  `CalculateLevelOfDetail`, `SampleClamp`, `globallycoherent` views (refused by name on both
+  routes: on DXBC `GloballyCoherent` since G6a run 5, before which the flag was dropped without a
+  word; on DXIL the reader's "unsupported memory operand .. at scope .."; no shader of any corpus
+  declares one), DXIL signed atomic minimum
+  and maximum on unsigned words, on DXBC the same on a typed view (`AtomicSignedness`, runner
+  `uav-atomics-5-cs`: a typed view holds one scalar kind in the common form, and the
+  compare-exchange loop that gives buffers the other signedness is not built over a typed view's
+  texel), early tests on 24-bit depth (not measured), comparison filtering
+  with a border colour (needs the comparison in `SamplerState`); and dxil-spirv's crashes on signed
+  but malformed DXIL (fuzz, Known gaps). The Direct3D 12 front's runner items besides (its status,
+  "Asked of other tracks"): `DepthGatherComponent`, `SparseFeedback`, a clip distance read by a
+  pixel shader, a DXIL pixel shader's layer and viewport index, and values that differ without a
+  refusal (a centroid `SV_Position` per sample, `min16float` constants, subnormals not flushed,
+  DXIL `frexp` of a NaN), and the shader model 4.0 multisampled load in a loop that its front reads at
+swapped coordinates (runner texture-load; this track's run 32 found fxc's build of that shader
+converts right, test `shader_model_4_multisampled_loads_keep_their_coordinates`, so the bytecode
+the runner compiles needs dumping by the front). Its list also names `TypedBufferFormatKind`, gone
+since run 55 (A2), and `SwizzledDepth` (A4). The Direct3D 11 front's atg-simplecomputepc division (just below 4 where
+  Direct3D gives 4; inferred there, its shader not in the games corpus) and Wine's
+  test_atomic_instructions (its refusal of `AtomicExchangeLoop` is the front's to lift).
+
+Every refusal in the nine records (`tests/expected`, at the tip), by name and count, with where it
+is accounted for (counted with `grep` over the records, G6a run 4; the records are unchanged at
+G6a run 5's tip):
+- On the gap list: none left of A6 (`DxilGeometryShader` 26 gone in run 65; `DxilHullShader` 28
+  and `DxilDomainShader` 9 gone in run 66: 36 convert, 1 is `DomainWithoutControlPoints`, next to
+  A14's `HullWithoutControlPoints`);
+  `VertexStorageWrite` 8 (A9); `GeometryPatchInput` 6 (A13; DXBC 5, DXIL 1 since run 65);
+  `HullWithoutControlPoints` 1 and `DomainWithoutControlPoints` 1 (A14); `ComponentPastVector` 1
+  (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
+  `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
+  `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
+  `GeometryPrimitiveIdAfterDomain` (A20, at `Stages::tessellated_with`, not a conversion verdict); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
+  writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) and `CullDistance` 8
+  (geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL)
+  (A7); "convert rejected: Unknown type!" 1 (A1).
+- Absent on both back ends, reported as the guest expects (plan 4.12 and section 9's absent
+  lists): `Float64` 42 and
+  `Int64` 35 (no 64-bit types), `RasterizerOrderedView` 12 (no fragment interlock), `StencilRef` 7,
+  `RenderTargetArrayIndex` 5 and `ViewportArrayIndex` 2 (written by a vertex shader).
+- Converting once the front gives the key its value: `SampleCount` 16 (`samples`),
+  `MultisampledArrayTexture` 5 (`texture_layers`), `UnboundedResourceArray` 4 (`register_ranges`).
+- In "Also open": `DepthGatherComponent` 5; `CalculateLevelOfDetail` 4 (DXBC) and the reader's
+  "unsupported instruction ImageQueryLod" 4 (DXIL); `SparseFeedback` 3 (DXBC) and the reader's
+  "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
+  `SampleClamp` 2 (DXBC) and the reader's "image sample operand 0x80" 2 (DXIL, the same minimum
+  level operand); `AtomicSignedness` 1; `ResourceArray` 1; a clip or cull distance read as an input
+  (`ClipDistance` 4, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`, DXBC and,
+  since run 65, DXIL). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
+  builtin" 4) converts since run 66.
+
+## Next
+
+1. G6b's independent check (the fourth check's findings fixed in run 68).
+2. After it, as the fronts need them: the NIR track's asks under "New for the owner", then A4's
+   `combine` (the Direct3D 11 front), A23's line of dxbc-spirv and A8 (both want a way to carry
+   dxbc-spirv patches), A22 on WARP.
+
+## Asked of other tracks
+
+- Answered for the Direct3D 11 front (its asks of this track, run 65): halves toward zero are
+  built (A19 for the drawn proof); `ClearView` of a storage view's rectangles takes
+  `builtin::storage_clear` with each rectangle's `origin` and `end` (one dispatch a rectangle),
+  which exists since run 56: the rest is the front's.
+
+- The Direct3D 11 track (run 58): stream output from a vertex shader alone on WebGL 2 is
+  `GeometryReplay::streamed(backend, &vertex, &so)` (the vertex shader converted as for a replay,
+  its inputs as drawn); `run` with a `ReplayDraw` whose `geometry_sets` are all `None` writes the
+  stream output and returns the capture as a `FinalDraw`, drawn through `passthrough()` and
+  `vertex_layout()` as after a replayed geometry shader (or not drawn, for
+  `D3D11_SO_NO_RASTERIZED_STREAM`). Drawn equal to Direct3D 11 on ANGLE. Its refusals are
+  `StageError::Unsupported` with the name. Also: the pass-through's clip distances at the linked
+  location behind a geometry stage (your round 2 run 3 ask) were built here in run 38: convert the
+  geometry shader and the pixel shader with `VariantFlags::CLIP_DISTANCE` and `linked`.
+  And (G6a run 6): your status says the converter refuses `DrawBaseSource::Arguments`, so an
+  indirect draw reading `SV_VertexID` or `SV_InstanceID` is read back (`IndirectReadBack`); it is
+  built (`variant::draw_arguments`, both routes; drawn in `variant_draw`, direct and indirect, the
+  `draw_base` case of pass bar item 3).
+
+- The NIR track (G6a run 6): `rewrite` now validates immediates (`capabilities` adds
+  `Capabilities::IMMEDIATES` for an `AddressSpace::Immediate` global), so Godot's 20 programs with
+  arrays of textures and push constants should pass it without your own validation's capability;
+  and after a split it turns WGSL's derivative uniformity check off, as Chrome needs for a sample of
+  an element picked by a non-uniform index. `sampled_pairs` whatever `rewrite` splits is on this
+  track's "Next" (5).
+
+- The Direct3D 12 track (run 56): (1) a pipeline without a pixel shader whose variant needs one
+  (`DEPTH_CLAMP`, `CLIP_DISTANCE` where the back end lacks them) takes
+  `builtin::pixel_program_for_variant(&key)` as its pixel program, keyed as the pixel shader's
+  would be (`linked`, `samples`), with no colour writes, and its helper block from the returned
+  reflection; drawn equal to Direct3D 11 without a pixel shader. (2) A geometry shader converts
+  with `DEPTH_CLAMP` and `linked` (the pass-through clamps), drawn equal to Direct3D 11; the cull,
+  line and tessellation routes take the clamp from the vertex or domain program's key. (3) For
+  texture-load lines 235 to 267: give a texture slot's bound view format in `texel_formats` where
+  its component kind differs from the program's declaration and drop `read_as`; loads read the
+  view's value by its bits (drawn equal to Direct3D 11 on both routes); a sample of such a slot is
+  refused `SampledViewKind`.
+
+- The Direct3D 12 track (run 55): a typed buffer or storage texture bound as a view of another
+  kind than the program declares now converts and reads and writes the view by its bits, as
+  Direct3D does (drawn equal to real Direct3D 11 on both routes); give the bound view's format in
+  `texel_formats`/`storage_formats` as for any view, with no check of its kind, and rerun the
+  runner's srv-buffers, tgsm, uav-rwbuffer and wave-ops-float. Arrays of typed buffers convert on
+  the DXIL route too, those without a length sized by `register_ranges` as on DXBC: rerun
+  unbounded-array-5.1's shader model 6.0 run with the ranges in its key. Arrays of constant or
+  structured buffers stay refused there (`ResourceArray`). Runner `uav-atomics-5-cs.dxbc` now
+  ends at `AtomicSignedness` instead of the kind.
+- Both Direct3D tracks (run 54): `decoded` and normalised targets in `targets_in_shader` are built
+  (see "How the Direct3D fronts call `convert`"), drawn equal to real Direct3D 11 on both back
+  ends. The Direct3D 11 front can hold 16-bit normalised textures as their integer formats where
+  the back end lacks them and un-ignore
+  `typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does` (its
+  storage views of them go through `texels_through_buffer`, built since run 18). The Direct3D 12
+  front's view-typed reads (texture-load lines 235 to 267) still need an interface field.
+- The Direct3D 11 track (run 54): indexed strips run through `GeometryReplay` on WebGL 2 now
+  (drawn equal to Direct3D 11 on ANGLE, stream output after them too); make index buffers with
+  `BufferUsage::COPY_SRC` there, as the route reads an indexed strip's indices back.
+
+- The Direct3D 11 track (run 53): geometry shaders run on WebGL 2 by replay (`GeometryAsReplay`):
+  `stage::GeometryReplay`, called as under "How the Direct3D fronts call `convert`", drawn equal
+  to Direct3D 11 on ANGLE for every own geometry shader. Its refusals (indexed strips, strips with
+  adjacency, indirect draws) are `StageError::Unsupported` with the name; report them through the
+  front's own mechanism. Stream output after it runs too (run 53, as under "How the Direct3D
+  fronts call `convert`"; drawn equal to Direct3D 11 on ANGLE, counts and overflow included), so
+  with the front's own transform feedback for vertex shaders alone, 10_0's geometry stage and
+  stream output are there. Alpha-antialiased lines on WebGL 2 are not built yet (A5).
+- The Direct3D 12 track (run 51), its ask of clip distances through `Stages::culled`'s
+  pass-through on a back end without `CLIP_DISTANCE`: convert the vertex shader with
+  `VariantFlags::CLIP_DISTANCE` and `linked` (and the pixel shader with the same): its clip
+  distances then leave it as linked values, which the cull route's pass-through passes on as
+  locations, and the pixel program discards by them. Expected from the code (run 39), not drawn
+  here on a back end without clip distances; report what fails.
+
+- The Direct3D 11 track (run 50): the stage helper takes indexed strips on every route (geometry
+  shaders, stream output, cull distances, alpha-antialiased lines, primitive numbers), so the
+  front can drop its `NotImplemented("StageIndexedStrip")` and un-ignore
+  `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does`. Pass the draw's index
+  buffer in `StageDraw::index` as for lists; the helper restarts at the format's largest index.
+  Triangle strips with adjacency into a geometry shader run too (no longer
+  `GeometryTriangleStripAdjacency`).
+- The Direct3D 12 track (run 50): its "Next" 5 (a DXBC `Buffer<float4>` vertex shader with
+  `DrawBaseSource::Arguments` failing validation, "Index 3 is out of bounds") was fixed here in
+  run 29; nothing waits on it. Indexed strips through the stage helper work as above (its
+  refusals of indexed strips there, if any, can go).
+- The Direct3D 11 track (run 49), for test_so_statistics_query: geometry shaders writing several
+  streams of points convert and run through `Stages` now. Give the stage helper a filled block of
+  `stage::STREAM_FILLED_WORDS` words (the front's own `FILLED_BYTES = 32` in context/geometry.rs
+  covers one stream only; a shorter block for a shader with more streams is refused as
+  malformed) and read stream `k`'s primitives written and made at words `STREAM_BUFFERS + 2k` and
+  `STREAM_BUFFERS + 2k + 1`; pass `stream_output` with every buffer `None` when a statistics query
+  runs and nothing is bound (Direct3D then counts what was made and writes nothing); draw the
+  rasterised stream 0 as before, nothing for `D3D11_SO_NO_RASTERIZED_STREAM`, and refuse by name
+  a later rasterised stream (its points are vertices `k * count` on, but the pass-through reads
+  stream 0's values; not built or tested here); link the pixel stage with stream 0's reflected outputs
+  (`StageValue::stream`).
+
+- The Direct3D 12 track (run 48): for resource_arrays and the runner's unbounded-array-5.1, give
+  every shader model 5.1 program's key the bound root signature's descriptor ranges as
+  `VariantKey::register_ranges` (kind, space, registers; a range of unbounded length cannot size
+  an array and stays refused), or only after a plain conversion is refused
+  `UnboundedResourceArray`, and bind each element of an array at its reflected (space, register)
+  as any binding. For shader_eval_attribute nothing new: the pixel program's reflection now asks
+  `PerspectiveSample` for such an input, which the front's `output_interpolation` already passes.
+
+- The WebGL 2 track (run 47): keep the public `glsl` module this branch added to
+  `wcontainers-gpu-webgl` (re-exports of `shader::{write, needs, GlslSettings, ShaderText}`; the
+  shaders corpus test writes and checks every converted shader's GLSL through it), or give the
+  same under a name of your choice and say so. And the write error drops naga's reason (it is only
+  printed): carrying it in the error would let callers name it (until then the corpus test records
+  naga's own reason beside it, G6a run 3).
+- The WebGL 2 track (G6a run 3): a public list, in the `glsl` module, of the features `caps` can
+  declare (`DUAL_SOURCE_BLEND`, `POINT_SIZE`, `SAMPLE_SHADING` today, each where its extension is
+  there). The corpus test keeps its own copy (`WEBGL_DECLARABLE` in tests/corpus.rs) to decide
+  that a GLSL write refusal of a shader needing only such features is a failure; with the list
+  public it would read yours and could not go stale when caps.rs declares another (for example
+  `CLIP_DISTANCE`, held back for a Chrome bug).
+- The WebGL 2 track (G6b run 4): GLSL ES 3.00 has no arrays of arrays, and naga's writer refuses
+  them; dxc's build of a geometry shader reading input arrays of rows (own `gs_rows_lines.dxil`
+  with `vs_rows`) has one in its replay form, so the stage helper refuses it by name
+  (`GeometryReplayArrayOfArrays`). If your writer flattened such arrays (an array of arrays as one
+  array, its indices joined), the refusal could go.
+- The WebGL 2 track (G6a run 4): your writer refuses 13 of the games' Godot DXIL pixel shaders with
+  "one expression of a texture is sampled through two samplers (not built)"
+  (`tests/expected/games-dxil.txt`, the records with that text, for example
+  `godot-pixel-3ce334b77ff19481.dxil`). They also need `FRAGMENT_STORAGE_WRITE`, so WebGL 2
+  cannot run them today either way, but the path is yours to build or name; the converted modules
+  are written with `WCONTAINERS_SHADERS_OUT` (How to run) if you want them.
+- The interface track (run 47): no feature names a cube array view; WebGL 2 cannot make one, and
+  the corpus test names it itself (`CUBE_ARRAY_VIEW`, 5 shaders).
+
+## How the Direct3D fronts call `convert`
+
+- Normalised textures and targets the back end lacks (`NormAsInteger`, plan 4.12; since run 54).
+  Hold the texture as the integer format of the same bits: unsigned for UNORM (`R16_UNORM` as
+  `r16uint`, `R10G10B10A2_UNORM` as `rgb10a2uint`), signed for SNORM (`R16G16_SNORM` as `rg16sint`,
+  `R8G8B8A8_SNORM` as `rgba8sint`). A program reading it takes `VariantKey::decoded` with
+  (texture slot, the guest's format): the slot is declared as that integer format, loads are
+  decoded as Direct3D converts, and samples and gathers are filtered in the program from them,
+  exactly as `filter_in_shader` (so the slot's samplers leave `sampled_pairs`, and the helper
+  values are the same: `SamplerState`, `BorderColor`, `TextureComponents`, `LodBias` with
+  `lod_bias`, `TextureLevels` with `TEXTURE_INFO`). A program writing it as a target takes a
+  `TargetInShader` with the guest's normalised format: its float output is encoded into the
+  integers (the reflection's output says `Uint` or `Sint`); draw into the integer target. BGRA,
+  a format with no integer twin, is refused `NormAsInteger` (targets) or `DecodedFormat`
+  (`decoded`); a decoded slot that is not a single-sampled float texture `DecodedTexture`;
+  combining with the old value stays `BlendInShader`.
+- Geometry shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, then the geometry
+  shader with `output_interpolation` from the pixel shader's inputs (as for a vertex shader), and the
+  vertex shader with every input pulled (`pulled`, as for pulled inputs) and `draw_base: Helpers`.
+  `Stages::new(backend, &vertex, &geometry)` once per pair. Per draw, outside the pass:
+  `stages.run(backend, &StageDraw { vertex_sets, geometry_sets, index, topology, range })`, where
+  the vertex sets are its set 0 (pulled streams) and 3 (helper block: `PulledStream`s, `DrawBase`)
+  and the geometry sets its set 0 (its slots) and 3 (its helper block, if any), all with
+  `StageSet::COMPUTE`; an index buffer must have `BufferUsage::STORAGE` and a size that is a multiple
+  of 4. Then, in the pass, draw the returned `FinalDraw`: the program of `stages.passthrough()` and
+  the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
+  `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
+  `tests/geometry_draw.rs` does exactly this.
+- Geometry shaders on a back end without compute (WebGL 2, `Features::TRANSFORM_FEEDBACK`; since
+  run 52): convert the pixel shader first, then the geometry shader as above with
+  `VariantFlags::GEOMETRY_REPLAY`, and the vertex shader with its inputs as drawn (nothing
+  pulled) and `draw_base: Helpers`. `GeometryReplay::new(backend, &vertex, &geometry)` once per
+  pair. Per draw, outside the pass: `replay.run(backend, ReplayDraw { vertex_sets, vertex_layout,
+  vertex_buffers, index, immediates, geometry_sets, topology, range })`: the vertex stage's own
+  layout, streams and indices as for the API draw, its set 3 the helper block (`DrawBase`: the
+  base vertex, or the first vertex when not indexed, then the first instance); the geometry
+  sets its set 0 and 3, with `StageSet::VERTEX`; set 1 is the route's. Then, in the pass, draw the
+  returned `FinalDraw`: the program of `replay.passthrough()` and the pixel shader,
+  `replay.vertex_layout()`, `buffer` as stream 0, no indices, its list topology, `count`
+  vertices, one instance. `None` means nothing to draw. Refused by name: strips with adjacency,
+  indirect draws, records past `capture_components`. Indexed strips (since run 54): the route
+  reads the draw's indices back, so the index buffer needs `BufferUsage::COPY_SRC`; it restarts
+  at the format's largest index, as Direct3D does. Stream output (since run 53):
+  pass the declaration to `new` and `ReplayDraw::stream_output` as on the compute route, but with
+  buffers and the filled block made with `COPY_SRC` and `COPY_DST` (no storage); the route reads
+  the filled block, writes stream 0's whole primitives on the host as Direct3D does (a primitive
+  only while every bound buffer holds it, gaps keeping their bytes) and writes back the filled
+  sizes and stream 0's written and made counts. A shader writing streams past the first with a
+  declaration is refused (`GeometryReplayStreams`).
+  `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` does exactly this.
+- Alpha-antialiased lines (Direct3D 10 and 11's `AntialiasedLineEnable` with `MultisampleEnable`
+  off, on a line list or strip without a geometry or hull stage; WebGPU, `Features::COMPUTE`; since
+  run 45): convert the pixel shader with `VariantFlags::LINE_COVERAGE` and `linked` (its location
+  one past every location either program lists, as for clip distances), and the vertex shader with
+  every input pulled, `draw_base: Helpers` and the same `linked`. `Stages::antialiased_lines(backend,
+  &vertex, &pixel_key)` once per pair; per draw `stages.run_antialiased_lines(backend, &draw,
+  [viewport width, viewport height])`, then draw the `FinalDraw` as after a geometry stage, with
+  culling off (a triangle list, u32 indices). The pixel program multiplies target 0's alpha by the
+  coverage; a target 0 that is not four floats is refused (`LineCoverageTarget`). Refused by name:
+  cull distances on the same vertex shader (`AntialiasedLinesCullDistance`), other topologies
+  (`AntialiasedLinesTopology`). Indexed strips run (since run 50; pass the index buffer in
+  `StageDraw::index`). `tests/stage_draw.rs` does exactly this.
+- A pixel shader reading `SV_PrimitiveID` without a geometry or hull stage where the back end lacks
+  `Features::PRIMITIVE_INDEX` (WebGPU, `Features::COMPUTE`; since run 45): convert the pixel shader
+  with `VariantFlags::PRIMITIVE_ID_FROM_STAGE` and `linked` (as for clip distances), the vertex
+  shader with every input pulled, `draw_base: Helpers` and the same `linked`.
+  `Stages::primitive_numbered(backend, &vertex, &pixel_key)` once per pair; per draw `stages.run`,
+  then draw the `FinalDraw` as after a geometry stage (a list, no indices: `index_offset` is
+  `None`). Each primitive's vertices are copied with its number, so the front's own provoking
+  vertex rule holds. Refused by name: adjacency (`PrimitiveIdAdjacency`), cull distances on the same
+  vertex shader (`PrimitiveIdCullDistance`), the built-in inside a struct of inputs
+  (`PrimitiveIdInStruct`). Indexed strips run (since run 50). `tests/stage_draw.rs` does exactly
+  this. Behind a geometry shader the pixel shader's number is still not passed (next).
+- Cull distances from a vertex shader without a geometry or hull stage (WebGPU, `Features::COMPUTE`,
+  the back end without `Features::CULL_DISTANCE`; since run 39): the vertex shader converted as for
+  a geometry shader (every input pulled, `draw_base: Helpers`, its other flags as for a plain draw,
+  `CLIP_DISTANCE` with `linked` where clip distances are not native), then
+  `Stages::culled(backend, &vertex, stream_output)` once per vertex shader and stream output
+  declaration, and per draw `stages.run` with no geometry sets; draw the returned `FinalDraw` as
+  after a geometry stage (indexed, list topology). `tests/geometry_draw.rs` (`CULLED`) does this.
+- Hull and domain shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, the domain
+  shader with `output_interpolation` from the pixel shader's inputs, the hull shader plain, the
+  vertex shader with every input pulled. `Stages::tessellated(backend, &vertex, &hull, &domain)`
+  once per triple. Per draw, outside the pass: `stages.run` as for geometry, with the hull shader's
+  sets (its slots in set 0, its helper block in set 3, `StageSet::COMPUTE`) as `geometry_sets` and
+  topology `InputTopology::PatchList(n)` (Direct3D's `n_CONTROL_POINT_PATCHLIST`). The returned
+  `FinalDraw` has `tessellated: Some(t)`: in the pass draw the domain program (`domain.modules[0]`)
+  with the pixel shader, a vertex layout with no streams, the domain shader's own sets, and in set
+  3 `t.patches` at `DOMAIN_PATCHES_BINDING` and `t.points` at `DOMAIN_POINTS_BINDING` (read-only
+  storage, `StageSet::VERTEX`, beside the domain shader's helper block if it has one); indices u32
+  from `FinalDraw::buffer` at offset 0, topology `FinalDraw::topology`, range
+  `DrawRange::IndexedIndirect { args: &t.arguments, offset: 0 }` (the arguments start past the
+  index list's header, so bind the buffer at offset 0). `tests/tessellation_draw.rs` (`scene_ours`)
+  does exactly this. Patches may have more control points than the hull shader declares (Direct3D
+  12 draws them; the hull shader reads the first of each patch); fewer is `TopologyMismatch`.
+- A geometry shader or stream output after a domain shader (since run 30): convert the domain
+  shader as above, the geometry shader as for geometry; `Stages::tessellated_with(backend, &vertex,
+  &hull, &domain, geometry, stream_output)`; per draw `stages.run_after_domain(backend, &draw,
+  &DomainSets { domain_sets, geometry_sets })`, where `draw.geometry_sets` are the hull shader's
+  and `domain_sets` the domain shader's own sets (its slots in set 0, its helper block in set 3,
+  `StageSet::COMPUTE`, without the patches and points: the helper binds those). With a geometry
+  shader the returned `FinalDraw` is drawn as after any geometry shader; without one it is the
+  tessellated draw above (drawn only when the stream is rasterized). A geometry shader there reading
+  `SV_PrimitiveID` is refused (`GeometryPrimitiveIdAfterDomain`). `tests/tessellation_draw.rs`
+  (`ours_staged`) does this.
+- A geometry shader writing `SV_RenderTargetArrayIndex` or `SV_ViewportArrayIndex` (since run 30):
+  `stages.selects()` is true. Run the stages once, then draw the `FinalDraw` once per layer of the
+  bound target views and per viewport (`LayerSplit`, `MultiViewportSplit`; count and warn), each
+  run into that layer's views with that viewport alone; the pass-through's helper constants are
+  `stage::PASSTHROUGH_HELPERS` (the run's layer and viewport, u32, a 16-byte uniform block at
+  `helper_binding(Vertex)` in set 3) and the pixel shader's `HelperValue::Layer`/`Viewport` are the
+  run's. Each run draws only the vertices that name it (others are placed outside the clip volume).
+  `tests/geometry_draw.rs` (`layered_geometry_draws_as_direct3d_11_does`) does this.
+  A primitive naming a layer at or past the views' layer count (since run 43): set
+  `VariantFlags::LAYER_FROM_STAGE` and the same `linked` (location one past every location either
+  program lists, as for clip distances) in the geometry shader's key and the pixel shader's. The
+  pass-through then reads `stage::PASSTHROUGH_LAYER_COUNT` (the views' layer count, u32, at byte 8
+  of the same block) beside `PASSTHROUGH_HELPERS`, keeps such primitives in layer 0's run and passes
+  the named layer as a flat u32 at `linked.location` plus the linked values' slots; the pixel
+  shader reads its layer from there and no longer lists `HelperValue::Layer`
+  (`layers_past_the_views_draw_into_the_first_as_direct3d_11_does`; Wine's test_layered_rendering).
+- `Stages::destroy(backend)` releases its programs and buffers.
+- A vertex shader writing no `SV_Position` (feeding stream output, a geometry or a hull shader)
+  converts: its program writes the position (0, 0, 0, -1), outside every clip volume, so drawn it
+  rasterises nothing (not checked against Direct3D drawing such a shader), and its records carry that
+  position. `reflection.outputs` lists no position for it.
+
+```rust
+use wcontainers_shaders::{convert, Source, ConvertError};
+let converted = convert(Source::Dxbc(bytecode), &variant_key, None)?;
+let module: &wcontainers_gpu::ShaderModule = &converted.modules[0];  // hand to Backend::create_shader
+let reflection = &converted.reflection;
+```
+- `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Built:
+  `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`, `pulled`,
+  `constants_as_texture`,
+  `constants_as_storage`, `samples`, `linked`, `mirror_once_in_shader`, and the flags
+  `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`, `VIEWPORT_ADJUST` (vertex programs; ignored on
+  others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`, `DEPTH_BIAS` (pixel programs), `CLIP_DISTANCE`
+  and `DEPTH_CLAMP` (both), `TEXTURE_INFO` and `min_lod_clamped`. Every other field or flag
+  set, and a root signature, is refused by name (the list is under Run 10). Each helper value a variant needs is in `reflection.helpers` at its offset in the
+  stage's block (`helper_size` bytes, bound at `helper_binding(stage)` in set 3), after `DrawBase` when
+  both are asked: the front writes `ViewportAdjust` as (scale x, scale y, offset x, offset y) of clip
+  x and y (offsets times w), `SampleMask` as a u32, `LodBias { sampler }` as an f32,
+  `TextureLevels { texture }` as a u32, `DepthBias` as (constant units, slope scale, clamp, the depth
+  format's step) in f32, `DrawArguments` as (word offset of the draw's arguments, 1 when indexed, draw
+  number) in u32.
+- `min_lod_clamped`: for each pair n of `reflection.sampled_pairs` whose texture is clamped, bind a
+  sampler like the pair's own but with its level range starting at max(its own, the clamp in the
+  view's numbering) at `CLAMPED_SAMPLER_BINDING` + n in set 3; write `MinLod { texture }` as (the
+  clamp's f32 bits, the view's level count). A clamped texture that is compared is refused
+  (`MinLodOnComparison`).
+- Clip distances: a vertex program writing `SV_ClipDistance` converts to a module with
+  `@builtin(clip_distances)`, which needs the back end's `Features::CLIP_DISTANCE` (wgpu's
+  `CLIP_DISTANCES`; WebGL's WEBGL_clip_cull_distance); without it the front asks for the
+  `CLIP_DISTANCE` variant in both programs' keys. `wcontainers_shaders::capabilities(module)` gives
+  what a module needs beyond WebGPU's core.
+- `CLIP_DISTANCE` and `DEPTH_CLAMP` (without `Features::DEPTH_CLAMP`): set the flag in both keys and
+  the same `linked` in both: `location` one past every location of the vertex program's
+  `reflection.outputs` and the pixel program's `reflection.inputs` with no `system` value (convert
+  both plain first, as `linked_location` in `tests/variant_draw.rs` does), `clip_distances` the vertex
+  program's count with `CLIP_DISTANCE` (zero otherwise). The pixel program needs `samples` (1 or 4)
+  with `CLIP_DISTANCE`. With `DEPTH_CLAMP` write `DepthRange` as (near, far) f32 of the API's viewport;
+  the raster block keeps depth clipping on (the program keeps z inside), and those draws lose early
+  depth tests (the program writes depth). Check the vertex program's locations plus the added ones
+  against the back end's inter-stage limit.
+- `CLIP_DISTANCE` behind the stage helper (built since runs 38 and 39; both fronts asked for it
+  in their latest runs, from creation-time conversions): the stage helper's pass-throughs take
+  the key of the conversion they come from, so the key must carry `CLIP_DISTANCE` and the pixel
+  shader's `linked`. Geometry stage: convert the geometry shader per pixel shader with
+  `CLIP_DISTANCE` and `linked` (as the vertex shader is converted); its `modules[1]`, the
+  pass-through `Stages::new` takes, then passes the distances at `linked.location` and writes no
+  `ClipDistances` built-in. Cull route (`Stages::culled`): convert the vertex shader with every
+  input pulled, `draw_base: Helpers`, `CLIP_DISTANCE` and `linked`; `cull_programs` passes its
+  linked values on as any output location. `tests/geometry_draw.rs` draws both (`vs_cull` writes
+  a clip distance beside its cull distances; the `gs_clip` cases) on wgpu's Direct3D 12 path,
+  which has no clip distances, against real Direct3D 11.
+- `mirror_once_in_shader` (without `Features::MIRROR_ONCE`): bind the sampler with each mirror-once
+  axis made `Clamp`, and write `SamplerState { sampler }` (nine words: min, mag, mip filter, the three
+  address modes of the API's sampler as `AddressMode as u32`, anisotropy, then the level range as
+  f32) at its offset; the member is 48 bytes (three four-word vectors).
+- `pulled` (inputs past the back end's vertex buffer or attribute limits, step rates it lacks): list
+  `(location, format)` per pulled input (location = the input's register). Each gets a read-only
+  storage binding in set 0 (`reflection.bindings`, `added: Some(PulledStream(location))`): bind its
+  stream's buffer from the stream's offset rounded down to `min_storage_offset_alignment`, to the
+  buffer's end (a multiple of 4 bytes). Write `PulledStream { input }` as four u32: the offset's
+  remainder plus the attribute's offset, the stride, then per vertex (0, 0), per instance with step
+  rate n (n, (n - 1) * first instance), step rate 0: stride 0, divisor 1, bias 0 and the first
+  instance's element added to the offset. The program reads `instance_index`, which counts from the
+  first instance, so it needs no other base. Each pulled input takes a storage binding of the vertex
+  stage: the front checks the total against the back end's per-stage storage limit (WebGPU's
+  default is 8) and refuses past it.
+- `filter_in_shader` (a texture whose view's format the back end cannot filter, sampled through a
+  sampler with a linear filter: R32_FLOAT and depth read as colour on WebGPU) and
+  `border_in_shader` (a sampler with a border address mode where the back end has no border colour,
+  every sampler on WebGPU): bind the texture as before (it is only loaded now, so WebGPU's layout
+  makes it unfilterable) and the program's real sampler at its slot; write `SamplerState { sampler }`
+  as for mirror-once, `BorderColor { sampler }` (four f32), `TextureComponents { texture }` (a bit
+  per component the view's format has, red first: R32_FLOAT 1, RGBA 15), `LodBias` with `lod_bias`,
+  `MinLod` with `min_lod_clamped`, and with `TEXTURE_INFO` (WebGL 2) `TextureLevels`. The texture's
+  pair leaves `reflection.sampled_pairs`. Comparisons, cubes, depth and integer textures are
+  refused by name (Run 15).
+- `constants_as_texture` (WebGL 2, past its uniform block count or size): the slot's
+  `reflection.bindings` entry becomes kind `Texture` with `added: Some(ConstantsAsTexture(register))`;
+  bind an RGBA32 unsigned 2D texture holding the buffer's bytes, row r at (r % 256, r / 256)
+  (`CONSTANTS_TEXTURE_WIDTH`), copied when the buffer changed.
+- `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
+  without early depth tests for those draws.
+- `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
+  at `DRAW_ARGUMENTS_BINDING` in set 3 for the vertex stage; the helper block holds where the draw's
+  arguments start.
+- `samples` is the targets' sample count where the program reads it (`GetRenderTargetSampleCount`);
+  a program that reads it converts only with it set (`Unsupported("SampleCount")` otherwise).
+- `COUNTING` programs have no side effects left (`extras.side_effects` false); `DUAL_SOURCE` needs
+  WebGPU's dual-source-blending (the module is validated with naga's `DUAL_SOURCE_BLENDING` then) and
+  a program writing targets 0 and 1 (`Unsupported("DualSourceWithoutTwoTargets")` otherwise).
+- `constants_as_storage` moves each named constant buffer to the storage range: its
+  `reflection.bindings` entry becomes kind `Storage`, the first storage binding past the program's
+  own, `added: Some(ConstantsAsStorage(register))`; bind the same buffer as read-only storage.
+- `SAMPLE_MASK` is the plan's `SampleMaskInShader` route, on WebGL 2 too: the program writes
+  `gl_SampleMask`, which the WebGL 2 back end runs where it declares `Features::SAMPLE_SHADING`
+  (OES_sample_variables and OES_shader_multisample_interpolation: Chrome 157 on the RTX 3080 has
+  both, chrome.log of G6a run 1; mozangle, the ANGLE the drawn tests here use, lacks them). The
+  front asks for it there only with `SAMPLE_SHADING`; without it the plan has it report no
+  multisampling. Drawn here on WebGPU only (`variant_draw`); the WebGL track's
+  `programs_run_per_sample_and_write_the_sample_mask` passes in Chrome.
+- Linking a vertex and a pixel shader: convert the pixel shader first, then ask for the vertex
+  shader with `output_interpolation` = every `(location, interpolation)` of the pixel shader's
+  `reflection.inputs` with no `system` value whose interpolation is not `Perspective` (as
+  `tests/draw.rs`'s `ours` does). WebGPU and GLSL ES require the two stages to agree; without it a
+  pixel shader reading `nointerpolation`, `noperspective`, `centroid` or `sample` values fails
+  pipeline creation or program linking.
+- Bindings follow 6.4 for Direct3D 10 and 11: set 0 for vertex and compute shaders' slots, set 1 for
+  pixel shaders' (including their UAVs), binding = `SlotKind::first_binding()` + register. Each is
+  listed in `reflection.bindings` (kind, register, set, binding). Resource arrays and slots beyond a
+  kind's range are refused.
+- Inputs and outputs: every user value lives at location = its register, as a four-component value
+  of its scalar type (so the types of a vertex and a pixel shader converted apart always match,
+  whatever components each uses; their interpolation matches through `output_interpolation`). `reflection.inputs` and `outputs` give semantic, index, register, mask,
+  location and component. Pixel shader output n is `@location(n)`, `SystemValue::Target(n)`.
+- With `draw_base: Helpers`, a vertex shader reading `SV_VertexID` or `SV_InstanceID` reads the
+  draw's bases from its helper block (set 3, `helper_binding(Vertex)`), `HelperValue::DrawBase` at
+  offset 0, 16 bytes (`reflection.helpers`, `helper_size`). Without it, `SV_VertexID` is
+  `vertex_index` and `SV_InstanceID` is `instance_index` as they are (right only when the bases are 0).
+- `reflection.sampled_pairs` lists (texture register, sampler register) pairs in first-use order.
+  `reflection.extras` for pixel shaders: early tests, side effects (UAV writes), discards, per sample.
+- DXIL: `convert(Source::Dxil(bytecode), &variant_key, None)`, same result shape. Bindings are
+  numbered by Direct3D 12's rule (run 22): stage set as for Direct3D 11; within it each kind's
+  slots are the program's own resources of that kind in (space, register) order from the kind's
+  first binding (shader resource views, buffers among them, are `Texture`, unordered access views
+  `Storage`, counters `Counter` at their view's slot). Find each binding's descriptor by its
+  `space` and `register`; per-slot variant fields take `ReflectedBinding::slot()`. `draw_base` `None` (bases read as zero), `Helpers` and
+  `Arguments` are taken as for DXBC. Inputs and outputs are listed as for DXBC
+  (semantic names from the container's signatures, location = register), but unlike DXBC each value
+  keeps its own width and type (`vs_transform.dxil` writes `@location(1) vec2<f32>`), so a
+  Direct3D 12 vertex shader writing a float4 that the pixel shader reads as float2 fails WebGPU's
+  pipeline check: until that is fixed (first under Next), the front must link only stages whose
+  shared locations have the same width and type, comparing `reflection.outputs` with the pixel
+  shader's `reflection.inputs` (mask and type), and answer a mismatch as the API's refusal. A
+  pixel shader's unread `SV_Position` may be listed where the DXBC route leaves it out. Sampled
+  pairs are listed as for DXBC, by register (a pair's register spaces are not in the pair).
+- DXIL-only refusals: `NonFiniteConstant`, `ConstantComponentIndexing`, `FloatToIntWidth`,
+  `PackedStageValues`, `PrimitiveId`, `VertexWithoutPosition`, `Texture1DArray`, and `Reader(..)`.
+- On WebGL 2, the back end's GLSL writing refuses programs using fine derivatives
+  (`MissingFeatures(DERIVATIVE_CONTROL)`), as GLSL ES 3.00 has none; a front on WebGL 2 reports a
+  feature level without them.
+- Constant buffers are declared with the size the bytecode gives them, on both routes (DXIL's
+  dynamically indexed ones since run 6), so binding the program's own buffer (or any range at least
+  that long) satisfies WebGPU.
+- Errors: `Rejected` (the container's checksum does not match, which Direct3D answers with
+  `E_INVALIDARG` too, or dxbc-spirv or dxil-spirv refused the bytecode, with its message, including
+  their failed assertions and exceptions natively), `Unsupported(name)` (a named feature or variant
+  not provided yet, for example `GeometryShader`, `StorageImage`, `TypedBuffer`, `Atomics`,
+  `RegisterSpace`, `PackedStageValues`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL
+  only), `Malformed` and `Invalid` (our lowering's own checks or naga's validation refused the
+  converter's output, a panic in the lowering included; on real bytecode these are our bugs, and
+  the corpus tests fail on any of them). A front answers each with the API's own refusal
+  (`E_INVALIDARG` at shader creation).
+- On WebAssembly a converter failure that is not an error return (dxil-spirv's crashes on signed but
+  malformed DXIL, see Known gaps; a panic in our lowering or in naga's validator, which natively
+  is a `Malformed` error, gap A16) traps the shaders module; the host reports it as a failed
+  conversion.
+
+## Measurements
+
+Run 45, 2026-11-19, counts only (laptop i7-8750H, load 0.3 to 2.7, 4 cargo jobs; desktop shared
+through the queue, load not taken): the stage helper's drawn tests (`stage_draw`, both tests, 4
+seeds) 1.25 s of tests in one GPU job, 8 seeds of the line test 0.8 s; geometry_draw's 4 seeds
+3.8 s (run45/gpu4.log, gpu5.log). Neither route was timed against another: the counts are
+correctness only.
+
+Run 43, 2026-11-19, counts only (laptop i7-8750H, load 0.5 to 5 with another track building, 4
+cargo jobs; desktop shared through the queue, load not taken): the laptop's whole suite with every
+corpus about 6 minutes of tests after the build, the corpus test 268 and 329 s of it; one GPU job of
+compute, contention, geometry and variant draws 13 s of tests; Chrome's compile of the own corpora
+4.4 s in the queue.
+
+Run 40, 2026-11-19, counts only (laptop i7-8750H, load 3 to 14 with another track building, 2 to
+4 cargo jobs; desktop shared through the queue's hazard group, 3 cargo jobs, load not taken), logs in
+scratch `graphics-shaders` (run40-*):
+- Desktop, RTX 3080: `depth_views_with_component_mappings_read_as_mapped` (run40-gpu4.log, seeds 1
+  to 4): 48 comparisons, all 0 texels apart, and the refusal of the mapping moving red checked on
+  both programs and routes; `textures_compared_and_read_plainly_draw_as_direct3d_does` 32
+  comparisons, all pass; `wave_operations_draw_as_direct3d_12_does` (run40-gpu2.log): `ps_wave` 0
+  of 4096 texels apart (2074 drawn), `ps_wave_signed` 0 of 4096 (2591 drawn).
+- Laptop, the whole suite but the fuzz with every corpus and glslang (run40-suite1.log): 20 test
+  binaries pass, the corpus binary fails only on the runner corpus's known `distance-4`.
+- Desktop, at 3f73914a: Windows lint clean, then the whole suite as one GPU job
+  (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  run40-suite-gpu.log): 21 test binaries, all pass.
+- Chrome's compile of every written file (`web/check`, run40-chrome.log, one GPU job): every WGSL
+  file of every corpus compiles (corpus 185, games 519, games-dxil 425, own 118, own-dxil 59, rig
+  79, rig-dxil 55, runner 1432, runner-dxil 1375), the new `ps_shadow_wide`, `ps_wave_signed` and
+  the runner's wave-ops-int among them. WebGL 2 fails 117 GLSL files, each of a kind it lacks
+  (bitfield operations and `findLSB`/`findMSB`, gathers, multisampled samplers, the primitive
+  index) or a cull-distance vertex shader's plain GLSL ("array size mismatch" at the cull
+  distance array; WebGL 2 has no cull route, so nothing runs it).
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB) and
+  the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
+  `run40/out` (47 MB, the written files Chrome compiled).
+Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
+cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
+jobs, load not taken), logs in scratch `graphics-shaders/run39`:
+- Desktop, RTX 3080, `geometry_draw` (geomdraw5.txt, seeds 1 to 4): 84 drawn comparisons and 36
+  stream output comparisons, all pass; the six cull cases 0 to 15 texels apart per case by at most
+  1, two line cases one texel each at a clipped line end.
+- Laptop, every corpus with glslang (corpus2.txt, then suite1.txt and suite2.txt after the record
+  update): all pass but the runner corpus's known `distance-4`.
+- Clean-up at the end: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (5.3 GB) and the desktop's `C:\wc\target\phase-2-graphics-shaders` and
+  `C:\wc\scratch-shaders-out` deleted; no build folder was made on the Mac or in scratch.
+- Desktop, after the sweep step: Windows lint clean (winlint2.txt), then the whole suite as one
+  GPU job (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  suite-gpu.txt): 21 test binaries, all pass.
+- Literal check (check5.txt): passes; changes that could add lines: 16 (the 12 of run 38, and
+  4bcacbf5 the start, 2cc8ad76 the init after the baseline arrived by a merge, bd53fbb4 and
+  949667f2 new rules, for literals already in the tree, all from the merged tracks).
+Run 38, 2026-11-18, counts only (laptop i7-8750H, load 3 to 39 with another track building, 5
+cargo jobs, 2 when the load was 8 or more; desktop shared through the queue, 3 cargo jobs, load
+not taken), logs in scratch `graphics-shaders/run38`:
+- Laptop, the whole suite with every corpus and glslang after this run's changes (suite-2.log):
+  every test passes but the runner corpus's known `distance-4` (a reader rejection, not a named
+  refusal). Records updated in this run: own and own-dxil (the new `gs_clip`, `vs_clip_six`), runner
+  (four geometry shaders now `CullDistance`).
+- Laptop, WebAssembly against native (suite-2.log, `wasm-run10.sh` with 2 jobs after a first try
+  at 5 was killed for memory): rig, rig DXIL, own DXIL and games DXIL 0 files apart; corpus 2,
+  games 3 and own 1, all the known gap (dxbc-spirv's unspecified evaluation order in the
+  division and remainder helper): `116_cs_group_index_code` and `d599fbc7efa911be` as before, and
+  the new `gs_clip`'s line in own's `cache.txt` (its `primitive % 4`; compared natively and under
+  wasmtime: only the helper's operand order differs). The wasm corpus run stops at the runner test,
+  which needs `WCONTAINERS_RUNNER_SHADERS` (the script does not give it), after the others ran.
+- Desktop, RTX 3080, `variant_draw`, `geometry_draw`, `tessellation_draw` (gpu4.log, default
+  seeds and counts): all pass; `gs_clip` 1 to 13 texels apart per case by at most 1 over 4
+  seeds; `vs_clip_six` natively 0 apart, in the program 14 of 4096 by at most 2 (both routes).
+- Desktop, Windows lint (`cargo clippy -p wcontainers-shaders --all-targets -- -D warnings`)
+  clean, then the whole suite as one GPU job after every change of this run (`cargo test -p
+  wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`, 22:57 to 23:07,
+  suite-gpu.log): 20 test binaries, all pass.
+- Literal check on the desktop (check3.txt, check4.txt after the last changes): passes.
+- Chrome's compile of every corpus as one GPU job (chrome.log before the WGSL writer fix,
+  chrome2.log after it and the `VertexStorageWrite` refusal; written files from the laptop's
+  suite run): every converted shader's WGSL compiles in Chrome's WebGPU: corpus 185, games 519,
+  games DXIL 425, own 116, own DXIL 56, rig 79, rig DXIL 55, runner 1429, runner DXIL 1369. GLSL
+  ES files Chrome's WebGL 2 refuses: corpus 15, games 10, games DXIL 1, own 11, own DXIL 4, rig 3,
+  rig DXIL 3, runner 35, runner DXIL 26, every one for what GLSL ES 3.00 lacks (bitfield
+  operations, `findMSB`/`findLSB`, `textureGather`, multisampled samplers, `gl_PrimitiveID`; 6.5
+  gives those to the WebGL 2 back end, or they are absent there), as before.
+- After those: the laptop's corpora once more (suite-4.log, records updated: the runner's
+  `depth-bounds-1-vs` now `VertexStorageWrite`, nine runner shaders now report
+  `RasterizerOrderedView` instead of a view kind) and the desktop's whole suite as one GPU job
+  with Windows lint first (suite-gpu2.log, 00:03 to 00:08): lint clean, every test binary passes.
+- Clean-up at the end: deleted the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (and run 37's), its `outw` and this run's literal-check clone, the desktop's
+  `C:\wc\target\phase-2-graphics-shaders` and `C:\wc\out\phase-2-graphics-shaders\chrome`.
+  Kept in scratch `run38`: logs and the last written files with Chrome's verdicts (`out2`).
+
+Run 37, 2026-11-18, counts only (laptop i7-8750H, load 1.0 to 5.4 with another track building, 5
+cargo jobs, until it went down at about 20:25 and stayed down to the end of the run; desktop shared
+through the queue, 3 cargo jobs), logs in scratch `graphics-shaders/run37`:
+- Laptop, the whole suite with every corpus and glslang, before `ps_two` existed (suite-1.log):
+  every test passes but the own corpus (the new `cs_readonly`, then unrecorded; both builds
+  `ok-wgsl glsl-write`, now recorded) and the runner corpus's known `distance-4`. Every other
+  corpus verdict as recorded, so the narrower DXIL targets changed none (runner rt-format-mismatch
+  1 to 16 stay `ok`).
+- Desktop, RTX 3080: `compute_draw` (run37-compute.log, default seed 1, 4 seeds): 32 comparisons
+  of each test, 0 failed, `cs_readonly` 0 words apart on both routes at the views' start and at
+  seeded first elements. `draw` (draw.log): 7 tests pass; `ps_two` 0 of 4096 texels apart from
+  real Direct3D 12 on WebGPU and WebGL 2 (its two written components). Not checked: that the
+  WebGPU pipeline fails without the change (the runner's line 53 is that evidence).
+- `ps_two`'s records (`ok`, both builds) were taken on the desktop, without glslang (the laptop
+  was down); its GLSL compile by glslang has not run.
+- Desktop, the whole suite as one GPU job after every change of this run (`cargo test -p
+  wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`, default seeds and case
+  counts, 21:00 to 21:05, suite-gpu3.log): 21 test binaries, all pass. Windows lint (`cargo clippy
+  -p wcontainers-shaders --all-targets -- -D warnings`, suite-gpu2.log): clean.
+- Not rerun this run: the corpora on the laptop after `ps_two` and the stage.rs and boundary
+  literal steps (the laptop was down; the desktop has no corpus but own and rig), Chrome's compile
+  and the WebAssembly comparison.
+- Clean-up at the end: deleted the desktop's `C:\wc\target\phase-2-graphics-shaders` and
+  `C:\wc\out\shaders37`. The laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (built in this run) is still there: the laptop was down at the end; the next run deletes it
+  after its own use. No build output was made in scratch.
+
+Run 36, 2026-11-18, counts only (laptop i7-8750H, load 0.2 to 1.8, 5 cargo jobs; desktop shared
+through the queue, whose hazard group held each job for 10 to 30 minutes), logs in scratch
+`graphics-shaders/run36`:
+- Laptop, the whole suite with every corpus and glslang (suite-start.log, suite-2.log,
+  suite-4.log): every test passes but the runner corpus's known `distance-4` (Run 36 above). The
+  runner corpus as run 35 ended it: DXBC 1503 (1430 converting, 73 refused by name), DXIL 1517
+  (1370 converting, 133 refused by name, 13 refused by naga's reader, 1 rejected by dxil-spirv).
+  The games corpus: DXBC 529 as recorded; DXIL 443 (430 as recorded, and the 13 new Godot 3D
+  fragment shaders, which convert and need storage buffers and subgroups GLSL ES lacks:
+  `ok-wgsl glsl-write`). The 191-shader corpus, rig and own: as recorded.
+- Desktop, RTX 3080 (draw1-pueue.log, draw2.log): `draw`, 5 of 6 tests pass (every own, rig,
+  primitive index and wave case 0 texels apart, as before). `native_16_bit_integers_draw_as_direct3d_12_does`
+  (new in run 35, never run before) failed twice the same way: after its real Direct3D 12
+  reference draw, wgpu offered only WARP. The test now makes both back ends before the reference.
+- Desktop, the whole suite as one GPU job (`cargo test -p wcontainers-shaders -- --test-threads 1
+  --skip mutated`, default seeds and case counts, 19:45 to 19:47, suite-gpu2.log): 21 test
+  binaries, all pass, among them `native_16_bit_integers_draw_as_direct3d_12_does`, the own cases
+  with run 35's `ps_narrow` and `ps_component`, and the tessellation tests (a job of run 33 or 34 at
+  11:28 had failed 4 of 66 `stream_output_after_the_domain_stage` comparisons at 2 seeds; at the
+  default seed it passes here, as in run 34; 2 seeds not rerun).
+- Chrome 157.0.8103.78 on the desktop (WebGPU on Direct3D 12, chrome.log): the 13 new Godot
+  shaders' WGSL all compile (`web/check` on a directory of only those 13).
+- Windows lint (`cargo clippy -p wcontainers-shaders --all-targets -- -D warnings`, inside the
+  suite job's build): clean.
+- Not rerun this run: Chrome's compile of the other corpora (unchanged verdicts) and the
+  WebAssembly comparison.
+- Clean-up at the end: deleted the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  and the copied Godot shaders there, the desktop's `C:\wc\target\phase-2-graphics-shaders`,
+  `C:\wc\shaders-dump36` and this branch's `programs` and `chrome` output folders under
+  `C:\wc\out`; no build output was made in scratch (logs, dumps and records kept there).
+- The rig: two jobs of one branch sent at once clobber each other's tree (the second sends its
+  tree, the first then fails with 125, "holds tree ..., not the sent ..."); send them one after the
+  other.
+
+Run 35, 2026-11-18, counts only (desktop shared through the queue, 3 cargo jobs, load not taken;
+the laptop down from 16:52), logs in scratch `graphics-shaders/run35`:
+- The runner corpus (verdict classes; DXBC 1503, DXIL 1517), at the start of the run (laptop, with
+  glslang) and at its end (desktop, glslang absent there, the records keep the laptop's
+  `glsl-compile` verdicts where the desktop says ok): DXBC converting 1429 then 1430, refused by
+  name 61 then 73, other failures 13 then 0. DXIL converting 1346 then 1370, refused by name 35
+  then 133, refused by naga's reader 93 then 13 (wave minimums and maximums of the other
+  signedness 2, a pixel shader's layer and viewport index 2, `CalculateLevelOfDetail` 4,
+  `SampleClamp` 2, sparse feedback 3), other failures 45 then 1 (dxil-spirv's rejection of distance-4).
+- The games corpus (DXBC 529, DXIL 430, desktop): every verdict as recorded; 3 DXIL changed this
+  run (one converts, one now `RenderTargetArrayIndex`, one past `ConstantComponentIndexing` to
+  `TypedBufferFormatKind`, the corpus test's views of mixed kinds); the run 34 record update (2
+  `PackedStageValues` now converting) was found by the laptop's first run.
+- The 191-shader corpus, rig and own: as recorded (laptop at the start; rig and own on the desktop
+  after every change). Not rerun this run: glslang over the new verdicts, Chrome's compile, the
+  WebAssembly comparison (the laptop was down).
+
+Run 33, 2026-11-18, counts only (laptop load 4 to 8, another track building; desktop shared through
+the queue's hazard group), logs in scratch `graphics-shaders/run33`:
+- Desktop, RTX 3080 (draw3.log, then draw4.log after the allowance): `shadow_draw` seeds 1 to 4, 4
+  filter scenes, fxc and dxc builds, 32 comparisons against real Direct3D 11: point plain sampling
+  (with point and with linear comparisons) 0 of 4096 texels apart in all 16; linear plain sampling
+  through `filter_in_shader` 2361 to 2376 of 4096 texels differ in the green channel (two linear
+  samples summed), largest 0.0065, inside twice `FILTER_ALLOWANCE` (1/128 each); every other
+  channel exact. `variant_draw`: the three `targets_in_shader` cases 0 of 4096 texels apart, the
+  other variants as before (4 tests pass). `filter_draw` 2 seeds: 108 comparisons, 0 failed.
+- Laptop (suite1.log, the tree before the last layout and SPIR-V changes; suite2.log after):
+  `cargo test --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated` all pass,
+  the corpus test 9 of 9 (every corpus's verdicts as recorded, so dxbc-spirv's numbers read from
+  its header convert every shader as before), 412 s for the corpus binary. suite3.log, after the
+  helper blocks' sizes and alignments were derived: the same, all pass, clippy with warnings denied
+  clean (corpus binary 509 s, laptop load about 6).
+- Desktop, RTX 3080 (draw5.log, after that change, Windows clippy clean): `variant_draw`,
+  `early_draw` (8 scenes), `pull_draw`, `clear_draw` (64 cases), `geometry_draw` (2 seeds),
+  `compute_draw` (2 seeds) and `shadow_draw` all pass against real Direct3D 11 (every comparison
+  printed 0 failed). draw4.log: `draw` 5 of 5 pass.
+
+Run 32, 2026-11-18, counts only (laptop load 1.8 to 4.1, another track building; desktop shared
+through the queue), logs in scratch `graphics-shaders/run32`:
+- Laptop (suite2.log, then the own corpus test again after recording ps_shadow.dxil): `cargo test
+  --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated` 68 passed, then the one
+  failing own-verdicts test passed with the new records (corpus, rig, rig DXIL, own, own DXIL and
+  games verdicts as recorded; own ps_shadow, ps_msloop, ps_msswap and own DXIL ps_shadow newly
+  recorded); clippy with warnings denied clean. The corpus test binary took 313 s.
+- Desktop, Chrome on the RTX 3080 (chrome.log, one GPU job, 30 s once started): every written WGSL
+  file compiled, 1398 of 1398 (corpus 185, games DXBC 519, games DXIL 409, own 107, own DXIL 45,
+  rig 79, rig DXIL 54), so every converted shader, the newly converting geometry shaders and
+  ps_id/ps_primid included, compiles for WebGPU. GLSL ES 3.00: 1016 compiled, 45 failed, each for
+  what GLSL ES 3.00 lacks (bitfield operations, `textureGather`, multisampled samplers) or for
+  `gl_PrimitiveID` (4: ps_primid and geometry.ps_id, both builds; WebGL 2 has no primitive index),
+  the same classes as glslang's `glsl-compile` verdicts.
+
+Run 31, 2026-11-18, counts only (laptop load 2 to 11, another track building; desktop shared
+through the queue, whose hazard group held each of our jobs for 10 to 40 minutes), logs in
+scratch `graphics-shaders/run31`:
+- Laptop (test1.log, test2.log): `cargo test -p wcontainers-shaders -- --include-ignored --skip
+  mutated` 67 passed, 0 failed (corpus, rig, rig DXIL, own, own DXIL and games verdicts as
+  recorded, after recording rig geometry.ps_id (both builds) as converting and own ps_contend and
+  ps_primid); clippy with warnings denied clean. Rerun after the last changes: geometry, variants
+  and the library's tests pass, own corpus as recorded.
+- Desktop, RTX 3080 (draw1.log): `contended_exchange_loops_match_direct3d`, seeds 1 to 8, fxc and
+  dxc builds: 16 of 16 equal to real Direct3D 11 (every word and texel; 21 to 1412 pixels ran per
+  seed), every loop ended, no display driver reset. `compute_draw` (4 seeds, cs_atomics' exchange
+  loops in compute) and `variant_draw` (typed buffers' narrow stores) pass unchanged.
+- Desktop, RTX 3080 (draw2.log): `primitive_index_draws_as_direct3d_does`: fxc build 0 of 4096
+  texels apart from Direct3D 11, dxc build 0 of 4096 from Direct3D 12, 32 primitives each.
+  `draw`'s other tests, `geometry_draw` (52 and 36 comparisons, 0 failed) and `tessellation_draw`
+  (132 comparisons with 14 known subnormal-factor cases, and 128, 0 failed) pass.
+
+Run 30, 2026-11-18, counts only (laptop load 1 to 10, another track building; desktop shared
+through the queue, whose hazard group held our jobs for up to an hour), logs in scratch
+`graphics-shaders/run30`:
+- Laptop: `cargo test -p wcontainers-shaders` all pass; corpus with `--include-ignored` (corpus,
+  rig, rig DXIL, own, own DXIL, games): every verdict as recorded after recording rig's
+  geometry.gs_layers and raster.gs, own gs_layers and gs_tess_*, and 3 game geometry shaders
+  writing a layer, which now convert (their WGSL validates; not yet compiled in Chrome).
+- Desktop, RTX 3080 (draw1.log, draw3.log): `stream_output_after_the_domain_stage_matches_direct3d`
+  at seeds 1 and 2 (`WCONTAINERS_TESSELLATION_CASES=2`): 66 cases (tri, quad and isoline domains,
+  several partitionings and outputs, each streamed directly and through gs_tess_*, and 3-point
+  patches into a 1-point hull shader), 62 equal to real Direct3D 11 (each patch's primitives and the
+  written and made counts), 4 known (subnormal factors, Known gaps), 0 failed.
+  `layered_geometry_draws_as_direct3d_11_does`: 4 layers, 0 bytes apart. `geometry_draw` (4 seeds)
+  and the other tessellation tests (2 seeds) still pass after the geometry program's new binding
+  and the tessellator's index header.
+
+Run 29, 2026-11-18, counts only (laptop load about 0.2 to 5.6; desktop shared through the queue,
+whose hazard slot other tracks' long runs held for most of the run), logs in scratch
+`graphics-shaders/run29`:
+- Laptop: the full suite of both crates with the corpora (`--include-ignored --skip mutated
+  --no-fail-fast`, suite2.log): everything passes except the own-shader records, which lacked the
+  four new files of each route; the records were copied from `classes.txt` and the corpus test then
+  passed 9 of 9 (corpus3.log). `ps_spaces.dxbc` is now `ok`; no game, rig or Wine corpus verdict
+  changed with shader model 5.1 numbering. Variant tests 25 of 25, the interface's 36 of 36, clippy
+  of both crates clean (suite2.log, variants4.log).
+- Recompiling every own shader on the desktop (`compile.cmd`) gave the committed bytes; new are
+  `vs_texels`, `vs_early`, `ps_early` and `ps_mark` (fxc and dxc).
+- Desktop (one GPU job each, RTX 3080): `early_draw` 32 seeded scenes (early3.log): in 21 Direct3D
+  ran the shader for 44 to 2017 of 4096 pixels, in 11 for none; in every scene the marks and the
+  target's texels of the fxc and the dxc build through WebGPU equal real Direct3D 11's (0 apart).
+  The first 16 scenes of the first version of the test (small triangles, 11 of them empty) were also
+  all equal (gpu3.log). `compute_draw` 5 of 5 (gpu3.log), among them
+  `storage_views_at_any_first_element_match_direct3d` (8 seeds, every view of `cs_atomics`,
+  `cs_shared` and `cs_decrement` at a seeded first element, 0 words apart by both routes).
+- WebAssembly (laptop, wasmtime; wasm1.log): the corpus test passes 9 of 9 under wasmtime, and the
+  written files equal the native ones except the known gap (`116_cs_group_index_code` WGSL,
+  `d599fbc7efa911be` WGSL and GLSL, and the two `cache.txt` holding them).
+- Not rerun this run: Chrome's compile of the written files.
+- At the end of run 29 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (7.3 GB)
+  and the desktop's `C:\wc\target\phase-2-graphics-shaders` were deleted.
+
+Run 28, 2026-11-18, counts only (laptop load about 1 to 5; desktop shared through the queue), logs in
+scratch `graphics-shaders/run28`:
+- Desktop (one GPU job each): `draw` 4 of 4 (gpu6.log): `ps_wave` through WebGPU on wgpu's Vulkan 0 of
+  4096 texels apart from real Direct3D 12 (2074 texels drawn), `ps_gatheroff`'s dxc build 0 of 4096
+  apart from real Direct3D 12 (draw1.log, gpu4.log), the other cases as before; `compute_draw` 4 of 4,
+  24 comparisons 0 failed (gpu4.log); the Windows clippy of the crate clean (gpu4.log, gpu6.log).
+- Laptop: clippy of both crates clean and the full suite of both crates with the corpora
+  (`--include-ignored --skip mutated`; suite7.log): the records of own-dxil and games-dxil were
+  copied from `classes.txt` after the deliberate changes (ps_gatheroff.dxil and ps_wave.dxil
+  convert; Godot: the fragment shader with wave operations and two compute shaders convert, two
+  compute shaders move from the reader to `ResourceArray`).
+- Recompiling every own shader on the desktop (`compile.cmd`) gave the committed bytes; only
+  `ps_wave.dxil` is new.
+- Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+- At the end of run 28 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB)
+  and the desktop's `C:\wc\target\phase-2-graphics-shaders` were deleted.
+
+Run 27, 2026-11-18, counts only (laptop load about 1; desktop shared through the queue), logs in
+scratch `graphics-shaders/run27`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; the full suite of both crates with the corpora (`--include-ignored --skip mutated`): every
+  test passes but the own-shaders record of `ps_gatheroff.dxil`, which the reader change made
+  `spirv-reader unsupported` and which was then recorded (suite3.log; the record copied from
+  `classes.txt`).
+- Desktop (one GPU job each): `tessellation_draw` 3 of 3 on wgpu's Direct3D 12, 512 comparisons
+  (tess1.log); `geometry_draw` 2 of 2, 52 and 36 comparisons (geom1.log); `draw` 3 of 3 with the
+  new cases (draw3.log), and the Windows clippy of the crate clean (draw4.log, which also holds the
+  DXIL gather failure that led to the reader change).
+- Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+- At the end of run 27 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` and the
+  desktop's `C:\wc\target\phase-2-graphics-shaders` and `C:\wc\probe` were deleted.
+
+Run 26, 2026-11-18, counts only (desktop shared through the queue; the laptop unreachable), logs in
+scratch `graphics-shaders/run26`:
+- Desktop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu --no-fail-fast` (every test not
+  ignored, GPU ones included, default seeds) passes (gpu4.log): `compute_draw` 24 comparisons 0
+  failed (`cs_atomics` with its exchange loops, both builds, 0 words apart at seeds 1 to 4),
+  `variant_draw` 48 comparisons 0 failed (`swizzled` both builds and back ends 0 of 4096 texels),
+  the multisampled array 0 texels apart on both builds, filtering 396 comparisons with the 32 known
+  anisotropic failures. `cargo check -p wcontainers-direct3d-11 -p wcontainers-direct3d-12
+  --all-targets` builds (fronts.log). Not rerun: the corpus, games and WebAssembly runs and Chrome's
+  compile (they need the laptop).
+
+Run 25, 2026-11-18, counts only (laptop load 1 to 4; desktop shared through the queue), logs in
+scratch `graphics-shaders/run25`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu -- --include-ignored --skip mutated`
+  with the corpus, the games (Godot's added) and glslang: every test passes (corpus test 9 of 9,
+  208 s; full.log).
+- Desktop: `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean, and `cargo
+  check -p wcontainers-direct3d-11 -p wcontainers-direct3d-12 --all-targets` builds (fronts.log).
+  `compute_draw` 4 of 4, `draw` 3 of 3, `variant_draw` 3 of 3 at seeds 1 to 4 (gpu2.log, after the
+  raw buffer change): every comparison within its allowance, as in run 24; DXIL builds new to the
+  drawn tests: `cs_texels` 0 elements apart in 4 seeds, `ps_table` 0 of 4096 texels on both back ends.
+- Chrome 157.0.8103.78 on the RTX 3080 (chrome.log): every WGSL file compiles (corpus 181, games
+  516, games DXIL 406 with Godot's 58, own 89, own DXIL 33, rig 76, rig DXIL 53); the GLSL ES
+  failures are the known classes only (bitfield operations, `textureGather`, multisampled samplers:
+  corpus 13, games 10, games DXIL 1, own 5, own DXIL 2, rig 2, rig DXIL 2).
+- WebAssembly (laptop, `wasm-run10.sh`, wasm.log): the corpus test under wasmtime 9 of 9 (331 s),
+  every verdict as native; written files equal to the native ones except corpus 2 and games 3, the
+  counts of the known gap of run 24 (files not listed again by name).
+- At the end of run 25 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 7.1 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`, 6.1 GB); `out` and the logs are kept.
+
+Run 24, 2026-11-18, counts only (laptop load 2 to 9; desktop shared through the queue), logs in
+scratch `graphics-shaders/run24`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu -- --include-ignored --skip mutated`
+  with the corpus, the games and glslang: every test passes (corpus test 9 of 9, 232 s; full.log).
+- Desktop: `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean;
+  `compute_draw` 4 of 4 at seeds 1 to 4 (draw3.log): atomics and counters 20 comparisons (fxc and
+  dxc builds of `cs_atomics`, `cs_shared`, `cs_decrement`; `cs_atomics.dxil` the known refusal),
+  0 words apart; storage textures 4 seeds both builds 0 apart; typed buffers 4 seeds 0 elements
+  apart; storage textures through buffers, both builds, 4 seeds, 0 texels apart in every view
+  (R32Uint with atomics, R32Float read and written, the seeded array and volume formats).
+  `variant_draw` 3 of 3 (draw2.log): the layer and viewport test 0 texels apart in all four layers;
+  the run's other variant comparisons 48, 0 failed. `cargo check -p wcontainers-direct3d-11 -p
+  wcontainers-direct3d-12 --all-targets` builds (fronts.log).
+- WebAssembly (laptop, `wasm-run10.sh`, wasm.log): the corpus test under wasmtime 9 of 9 (330 s),
+  every verdict as native; written files equal to the native ones except the known gap's two
+  shaders (Known gaps: `116_cs_group_index_code` WGSL, `d599fbc7efa911be` WGSL and GLSL, and their
+  lines in each `cache.txt`).
+- Chrome 157.0.8103.78 on the RTX 3080 (chrome.log): every WGSL file compiles (corpus 181, games
+  516, games DXIL 348, own 89, own DXIL 30, rig 76, rig DXIL 53); the GLSL ES failures are the known
+  classes only (bitfield operations, `textureGather`, multisampled samplers: corpus 13, games 10,
+  games DXIL 1, own 5, own DXIL 2, rig 2, rig DXIL 2).
+
+Run 23, 2026-11-18, counts only (laptop load 3 to 5; desktop shared through the queue), logs in
+scratch `graphics-shaders/run23`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -- --include-ignored --skip mutated` with the corpus,
+  the games and glslang: every test passes (corpus test 9 of 9, 278 s), verdicts as recorded
+  (test3.log).
+- Desktop: `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean;
+  `tessellation_draw` 3 of 3 (tess6.log; the tessellator at the default 4 seeds, 128
+  comparisons), `geometry_draw` 2 of 2 at 4 seeds (geom2.log); `cargo check -p
+  wcontainers-direct3d-11 -p wcontainers-direct3d-12 --all-targets` builds (fronts.log).
+- Chrome 157 on the RTX 3080 (chrome.log): every WGSL file compiles (corpus 177, games 469, games
+  DXIL 346, own 87, own DXIL 28, rig 75, rig DXIL 52), the 10 newly written programs as GLSL ES
+  too; the GLSL ES failures are the known classes only (bitfield operations, `textureGather`,
+  multisampled samplers: corpus 13, games 10, games DXIL 1, own 5, own DXIL 2, rig 2, rig DXIL 2).
+
+Run 22, 2026-11-18, counts only (laptop load 1 to 3; desktop shared through the queue), logs in
+scratch `graphics-shaders/run22`:
+- Laptop, `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu -- --include-ignored --skip mutated`
+  with every corpus: all pass once the records took the new verdicts (games-dxil: 10 from
+  `unsupported RegisterSpace` to `ok` 9 and `ok-wgsl glsl-write` 1; own-dxil: `ps_spaces.dxil` ok,
+  `ps_twospaces.dxil` ok; own: `ps_twospaces.dxbc` ok).
+- Chrome 157 on the RTX 3080 (`web/check`, one GPU job): WebGPU compiles every written WGSL file
+  (corpus 171, games 469, games-dxil 346, own 86, own-dxil 28, rig 74, rig-dxil 51); WebGL 2
+  fails only on bitfield operations, `textureGather` and multisampled samplers as before (corpus
+  13, games 10, games-dxil 1, own 5, own-dxil 2, rig 2, rig-dxil 2).
+- Desktop, `draw`, `compute_draw` and `variant_draw` (one GPU job, all pass): `ps_twospaces` 0 of
+  4096 texels differ on WebGPU and WebGL 2, DXIL against real Direct3D 12 and DXBC against real
+  Direct3D 11; every earlier case as before.
+
+Run 21, 2026-11-17, counts only (desktop shared with the other tracks through the queue; laptop
+load 1 to 4), logs in scratch `graphics-shaders/run21`:
+- `storage_textures_match_direct3d`, seeds 1 to 4 (draw2.log): fxc's DXBC and dxc's DXIL of
+  `cs_images` through the WebGPU back end, 32 textures, every one equal word for word to real
+  Direct3D 11's on the RTX 3080.
+- `typed_buffers_draw_as_direct3d_does`, seeds 1 to 8 (draw2.log): 48 comparisons (DXBC and DXIL,
+  each through storage on WebGPU and a texture on WebGPU and WebGL 2), all equal texel for texel.
+- Corpora (laptop, corpus3.log, suite1.log): games DXIL 361: 288 ok, 47 ok as WGSL only
+  (compute), 26 named refusals; own DXIL 44, rig DXIL 72 (2 more convert than run 20). The whole
+  suite passed on the laptop (corpus 9 tests, variants 17, cache 6, the rest).
+- Chrome 157 (chrome1.log, one GPU job): every written WGSL compiles (games DXIL 336, own DXIL 26,
+  rig DXIL 51); GLSL ES fails only where it did (multisampled samplers 2, `textureGather` 3).
+
+Run 20, 2026-11-17, counts only (desktop shared with the other tracks; laptop load 2 to 6):
+- `tessellator_matches_direct3d` (`run20/tess5.log` in scratch `graphics-shaders`), seeds 1 to 16,
+  32 topologies each: 512 draws of 8 patches, every patch's primitives equal the RTX 3080's
+  (Vulkan through wgpu for ours), about 12 s of GPU job.
+- The laptop suite (`run20/suite4.log`): 57 tests pass, none fail (the fuzz test skipped as in How
+  to run); the corpora's records changed only for the hull and domain shaders (9 corpus, 9 rig, 35
+  own) and `vs_patch` (`VertexWithoutPosition`).
+- Chrome 157 on the desktop (`run20/chrome2.log`): every new WGSL file compiles with WebGPU: corpus
+  9, own 35, rig 10, and `tessellator.wgsl` and `stream_out.wgsl` as written. A first attempt found
+  no WebGPU adapter in Chrome; the retry a few minutes later did.
+Run 19, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
+- `storage_clears_match_direct3d` (`run19-clear4.log` in scratch `graphics-shaders`), seeds 1 to
+  256: every case passes; all 40 storage formats on both (WebGPU on wgpu's Direct3D 12 has
+  `STORAGE_WRITE` for each, the device a typed storage view of each); 62 float clears of integer
+  formats refused `FloatClearOfInteger`, each left unchanged by Direct3D 11 too; 74 cases where the
+  GPU's Direct3D 11 differs from WARP (integer clears saturated or read as floats, float clears
+  rounded down at half a code), ours equal to WARP's integer clears and to the GPU's float clears.
+  The first runs (`run19-clear1.log` to `-3.log`) found the denormal flush (R32_FLOAT, 1e-40 cleared
+  as 0 by both) and the two references' disagreement.
+- The corpora with view formats (laptop, `run19-corpus1.log`, `-2.log`, records updated): of the
+  shaders refused `StorageFormat` or `TypedBuffer` before, games 51 of 60 now convert (9 refused
+  `StorageFormatKind` 1 and `TypedBufferFormatKind` 8: they declare views of more than one kind,
+  which one format for every slot cannot give; a front gives each slot its view's format), the
+  Wine corpus 19 of 21 (2 refused `StorageImageAtomics`: atomics on a storage texture without
+  `texels_through_buffer`), the rig 1 of 2, own shaders 0 of 4 (all four mix kinds). Compute shaders
+  among them are `ok-wgsl glsl-write` (WebGL 2 has no compute), so their class does not show the
+  views; `verdicts.txt` does.
+- Chrome on the desktop (`run19-chrome.log`, one GPU job, RTX 3080): every written WGSL file
+  compiles with WebGPU: corpus 162, games 469, games DXIL 289, own 50, own DXIL 26, rig 65, rig
+  DXIL 49. WebGL 2 refuses 35 GLSL files (corpus 13, games 10, games DXIL 1, own 5, own DXIL 2,
+  rig 2, rig DXIL 2), each for `bitfieldExtract`/`bitfieldInsert`/`bitfieldReverse`/`findMSB`,
+  `textureGather` or `sampler2DMS`, which GLSL ES 3.00 lacks (6.5 gives the first two to the WebGL
+  2 back end's writing); `web/check` exits 1 on them as before.
+- The whole suite on the laptop before the push (`run19-suite2.log`, then the corpus test again
+  after the records): every test passes, the corpora with glslang included; clippy with warnings
+  denied passes on the laptop and on Windows.
+
+Run 18, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
+- `typed_buffers_match_direct3d`: seeds 1 to 64 (`texels-draw-2.txt`, `-3.txt`, `-4.txt` in scratch
+  `graphics-shaders`), every result word and every written byte equal to real Direct3D 11 on the
+  RTX 3080, every u1 atomic word equal; every loadable format at t0 to t3 and 20 stored formats at
+  u0 drawn (half, 11- and 10-bit float stores exact, NaN and infinities included). Normalised stores:
+  the RTX 3080 gives the code below where ours (the specification's formula) gives the one above, at
+  fractions from 0.514 to 0.548 of a code (6 components in seed 4, 13 in seed 7, 0 to 9 elsewhere);
+  the specification permits 0.6, so the test holds both to it (Departures). The first run found that
+  past the length Direct3D gives the defaults where the format lacks components (fixed).
+- `storage_textures_through_buffers_match_direct3d`: seeds 1 to 16 (`through-2.txt`), every texel
+  of all four views equal (formats drawn: R16, R32, RG16, RG32, RGBA16 and RGBA32 floats; R8, RG8,
+  RGBA8, RG16, RGBA16, R32 and RG32 unsigned).
+- The whole drawn suite after it (`run18-gpu-2.txt`): `compute_draw` 4 tests (4 seeds), `draw` 3,
+  `filter_draw` (2 seeds, 108 comparisons, 0 failed), `geometry_draw` 2 (4 seeds), `pull_draw`,
+  `variant_draw` 2 (8 typed buffer seeds) pass. The laptop suite with every corpus
+  (`run18-tests-2.txt`) passes.
+- `typed_buffers_draw_as_direct3d_does`: seeds 1 to 40 (`texels-pixel-1.txt`, `run18-gpu-1.txt`),
+  120 comparisons (storage on WebGPU, texture on WebGPU and WebGL 2), every texel equal.
+- After the harness change (`run18-gpu-1.txt`): `draw` 3 tests, `compute_draw` 3, `geometry_draw` 2
+  (4 seeds), `variant_draw` 2 pass.
+
+Run 17, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
+- `tests/geometry_draw.rs` (scratch `run17/gd3.log`), seeds 1 to 8: the geometry pictures 104
+  comparisons, 0 texels differ; stream output 64 comparisons, every byte of both buffers and both
+  statistics equal to real Direct3D 11's. Before `mad` became `fma` (`run17/gd2.log`): 8 of 32
+  stream output comparisons had one or two words 1 ulp apart (all `gs_cut`, the lerp).
+- After the `fma` change (`run17/draws1.log`): `draw` 3 tests pass; `variant_draw` passes;
+  `filter_draw` seeds 1 to 8, 396 comparisons, 0 failed, 32 anisotropic known failures as before.
+- Chrome's compile of every written file after run 17's changes (`run17/chrome.log`, one GPU job):
+  every WGSL file compiles (corpus 143, games 418, games DXIL 289, rig 64, rig DXIL 49, own 50, own
+  DXIL 26); WebGL 2 refuses only what GLSL ES 3.00 lacks (bitfield operations, `textureGather`,
+  multisampled samplers): corpus 13, games 10, games DXIL 1, rig 2, rig DXIL 2, own 5, own DXIL 2.
+  Geometry, atomics and counters convert to WGSL only (`ok-wgsl glsl-write`: compute).
+- Corpus records after run 17 (laptop, `run17/linux-all3.log`): 56 storage textures now refused
+  `StorageFormat` (no format under the default key) where they were `StorageImage`; 10 geometry
+  shaders and 13 shaders with atomics or counters now convert; 2 refused `AtomicSignedness`; 3 game
+  geometry shaders now refused `RenderTargetArrayIndex`.
+- WebAssembly against native after run 17 (laptop, `run17/wasm.log`, scratch script
+  `wasm-run10.sh`): the corpus test passes under wasmtime (9 tests); written files equal byte for
+  byte in corpus, rig, rig DXIL, own, own DXIL and games DXIL; in games 3 differ, all from one shader
+  (`d599fbc7efa911be.dxbc`: its WGSL, its GLSL and its line in `cache.txt`, Known gaps).
+- The whole suite before the push (`run17/final-gpu.log`, one GPU job, about 100 s): `draw`,
+  `variant_draw`, `filter_draw` (396 comparisons, 32 anisotropic known failures), `pull_draw`,
+  `geometry_draw` (52 and 32 comparisons) and `compute_draw` (8 and 4 seeds) all pass; on the laptop
+  every test passes with the corpora and glslang (`run17/linux-all3.log`, then the corpus test
+  again after the records).
+- `tests/compute_draw.rs` (`run17/cd2.log`), seeds 1 to 4: atomics and counters 8 comparisons, 0
+  words apart, counters equal (256, 256, 0; 0); storage textures 16 comparisons (4 formats), 0 words
+  apart.
+
+Run 16, 2026-11-17, counts only:
+- `tests/geometry_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2 s,
+  scratch `run16/geometry7.log`): seeds 1 to 4, thirteen cases each, WebGPU (wgpu's Direct3D 12
+  path) against real Direct3D 11: 52 comparisons, 0 of 4096 texels differ in every one (allowance
+  0); Direct3D draws 59 to 1468 texels per picture. Before the test gave the vertex stage the draw's
+  bases (`run16/geometry5.log`), the cases with a first vertex, base vertex or first instance
+  differed, as Direct3D's vertex and instance numbers leave the bases out.
+- Laptop (i7-8750H, load average 0 to 0.6): the suite without the ignored corpora passes after
+  recording the new own and rig verdicts; clippy with warnings denied passes. Windows clippy with
+  warnings denied passes.
+
+Run 15, 2026-11-17, counts only:
+- `tests/filter_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 92 s,
+  scratch `run15/desktop-final.log`), seeds 1 to 8, each by the DXBC and the DXIL route on WebGPU
+  (wgpu's Direct3D 12 path) and WebGL 2 (ANGLE), R32_FLOAT and RGBA8, six sampling modes: 396
+  comparisons, 0 failed, 32 known failures (all of seed 8, the one anisotropic seed: gather and
+  explicit levels pass there). Of the 336 isotropic pictures: no texel equals neither Direct3D; in
+  24 pictures 48 texels equalled neither until the level of detail moved by 1/256; in 8 pictures one
+  texel each (one place, seed 3's gradients) is a third answer where the GPU and WARP differ. The
+  GPU and WARP themselves differ in 68 of the 84 isotropic pictures, by up to 3758 texels (largest
+  0.67). Against WebGPU's own sampler (12 RGBA8 comparisons): 0 texels apart from both it and WARP;
+  the own sampler against the GPU's Direct3D 11: 0 texels apart in all 12 (allowance 1/128 per
+  channel throughout). Seeds 1 to 16 (`run15/filter12.log`): seeds 1 to 13 pass; seed 14
+  (anisotropy 4) lost ANGLE's device (DXGI_ERROR_DEVICE_REMOVED, Known gaps).
+- Before the fixes (scratch `run15/filter3.log` to `filter11.log`): mip-point selection at an exact
+  .5 rounded down (the GPU rounds up); DXIL on WebGL 2 read level count 0 (the helper packing bug);
+  R32_FLOAT borders gave all four border components (Direct3D gives (r, 0, 0, 1)); a quad whose two
+  triangles were not one plane put a seam of differing derivatives across the picture (the test's
+  own geometry, fixed). Rounding the level of detail to 8 bits, or point coordinates to 8 subtexel
+  bits, made more texels differ, so neither is done.
+- `tests/variant_draw.rs` and `tests/draw.rs` on the desktop after the helper packing change: both
+  pass (`run15/desktop-final.log`). Windows clippy with warnings denied passes.
+- Chrome 157 (`web/check`, one GPU job, about 3 s, `run15/chrome.log`): the filter variants of
+  `ps_filter` by both routes (by texture with a bias; by sampler with a resource clamp and
+  `TEXTURE_INFO`) and of the rig's 2D array, 3D and gather shaders, written by a test kept out of
+  the repository: WGSL 7 of 7 compile in Chrome's WebGPU, GLSL ES 2 of 2 in its WebGL 2.
+- Laptop (i7-8750H, load average 0.1 to 0.7): the whole suite with every corpus (`--include-ignored
+  --skip mutated`, the plan's corpus and the real programs' shaders) passes after recording the new
+  own verdicts (`vs_filter` converts; `ps_filter`'s plain GLSL ES has `textureGather`) and four rig
+  shaders that now compile as GLSL ES (the rig track recompiled its shaders at lower shader models,
+  so fxc no longer writes bitfield operations in them); every other verdict and cache record as
+  recorded (corpus test 179 s; `run15/full-suite2.log`). Clippy with warnings denied passes. Not
+  re-run: the WebAssembly comparison (plain conversions did not change).
+
+Run 14, 2026-11-17, counts only:
+- `tests/pull_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.5 s,
+  scratch `run14/pull5.log`): seeds 1 to 50, by the DXBC and the DXIL route on WebGPU (wgpu's
+  Direct3D 12 path): 0 of 4096 texels differ from real Direct3D 11 in all 100 comparisons
+  (allowance 0, the texels are the inputs' bits). Before the exact conversions (seed 1,
+  `run14/pull3.log`): 635 of 4096 differed, normalised values by one step (Direct3D's are correctly
+  rounded) and half-float NaNs (payload lost). Windows clippy with warnings denied passes.
+- Laptop (i7-8750H, load average 0 to 0.4): the suite without the ignored corpora passes after
+  recording the new own verdicts (`vs_pull`, `ps_pull`: convert, by both routes); clippy with warnings
+  denied passes.
+- `tests/variant_draw.rs` on the desktop (one GPU job, about 3.7 s, `run14/draw1.log`): 104
+  comparisons, all within their allowances; new: constants through a texture in both stages
+  (`vs_transform` with `ps_textured`, and with `ps_rows`, whose row is picked by the pixel's column)
+  against the plain programs' uniform blocks, on WebGL 2 and WebGPU, by both routes: 0 of 4096 texels
+  differ in all 8 (allowance 0). Every earlier comparison as in run 13. Windows clippy with warnings
+  denied passes.
+- `tests/draw.rs` on the changed shared harness: all 3 tests pass (`run14/draw-plain.log`).
+- Laptop (i7-8750H, load average 0 to 0.4), end of run: the whole suite with every corpus
+  (`--include-ignored --skip mutated`, the plan's corpus and the real programs' shaders) passes, every
+  verdict and cache record as recorded (corpus test 175 s; `run14/full-suite.log`); clippy with
+  warnings denied passes. Not re-run: Chrome's compile and the WebAssembly comparison (the plain
+  conversions did not change; only the new variants' paths did).
+
+Run 13, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.3 s,
+  scratch `run13/draw8.log`; 96 comparisons, all within their allowances), each by the DXBC and the
+  DXIL route: clip distances in the program (`vs_clip`, `ps_textured`) against real Direct3D 11's
+  native clipping: WebGPU (wgpu's Direct3D 12 path, which has no clip distances) and WebGL 2, 11 of
+  4096 texels differ, by at most 2 (allowance 2 in any number: the same pixels are drawn, an attribute
+  over the unclipped triangle rounds apart; a pixel drawn on one side only would differ by far more);
+  four samples on WebGPU against the native distances on wgpu's Vulkan path, resolved: 12 differ by
+  at most 2. Depth clamping (`vs_deep`, depth range 0.25 to 0.75) against Direct3D 11 with
+  DepthClipEnable false, depth as f32 steps: WebGPU 648 of 4096 within 2 steps, WebGL 2 570 within 2
+  (allowance 2); clipping changes 791 of Direct3D's texels. Mirror-once in u and repeat in v on a
+  4-level texture (`ps_mirror`) against Direct3D 11's MIRROR_ONCE: WebGPU and WebGL 2, 5 of 4096
+  differ by 1 (allowance 1: explicit gradients' level of detail rounds apart); the mode changes 1693
+  of Direct3D's texels against clamping. Every earlier comparison of the file as before.
+- During the run the desktop's shared ANGLE (`C:\wc\tools\angle-mozangle-0.7.1`, rebuilt by another
+  track at 16:30) crashed in libGLESv2.dll at offset 0x1f83f5 on making a context, as did a copy
+  built here from the same recipe (`C:\wc\tools\angle-shaders-track`), the WebGL back end's own
+  suite too, before and after today's merge of that back end. The new comparisons were first drawn
+  on WebGPU alone with the WebGL draws taken out of an uncommitted copy of the test
+  (`run13/draw7.log`, the same numbers as above); after the next rebuild of the shared ANGLE (16:59)
+  the whole test ran and passed as committed (`run13/draw8.log`).
+- Laptop (i7-8750H, load average 0 to 1): the suite without the ignored corpora passes after
+  recording the new own verdicts (`vs_deep`, `ps_mirror`: convert), clippy with warnings denied
+  passes; Windows clippy with warnings denied passes. At the end of the run the whole suite with
+  every corpus (`--include-ignored --skip mutated`, the plan's corpus and the real programs'
+  shaders) passes, every verdict and cache record as recorded (corpus test 179 s;
+  `run13/full-suite.log`). Not re-run: Chrome's compile and the WebAssembly comparison (the
+  plain conversions did not change).
+
+Run 12, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
+  `run12/draw2.log`), each by the DXBC and the DXIL route, against Direct3D 11's resource clamp:
+  `ps_minlod` with clamps 0, 1.5, 3 and 3.5 on WebGPU and WebGL 2, and `ps_mingather` with clamps
+  0.5, 1 and 3.5 on WebGPU: 0 of 4096 texels differ in every case (allowance 1). Each clamp past the
+  first changes Direct3D's picture (1.5: 2162 texels, 3: 2530, 3.5: 2442; gather 1 and 3.5: 2071).
+  Every earlier comparison of the file as in run 11. Windows clippy with warnings denied passes.
+- Clip distances natively (`run12/draw4.log`): `vs_clip` with `ps_textured` on wgpu's Vulkan path,
+  0 of 4096 texels differ from Direct3D 11 by both routes (allowance 0); the planes change 1071 of
+  Direct3D's texels. Every other comparison of the file as before (68 exact comparisons in the log).
+- Chrome 157 (`web/check`, one GPU job, about 3 s, own corpora only, `run12/chrome2.log`): WGSL own
+  33 of 33, own DXIL 20 of 20 (`vs_clip` with `enable clip_distances` included); GLSL ES own 26 of
+  30, own DXIL 17 of 18: `vs_clip` compiles after the naga change (before it, both builds failed on
+  the extension's name), `ps_minlod` compiles, the failures are bitfield operations and
+  `textureGather` (`ps_mingather`). The other corpora were not re-run: their verdicts did not
+  change.
+- Laptop (i7-8750H, load average 0.4 to 3): the suite with every corpus (`--skip mutated`) passes
+  after recording the new own verdicts (`vs_clip` converts; glslang 8.13 knows neither clip
+  distance extension, so its GLSL ES verdict is a glslang failure), every other verdict unchanged,
+  so no corpus or real program shader used clip distances. Earlier in the run, after recording the four
+  new own verdicts (`ps_minlod` converts and compiles as GLSL ES; `ps_mingather`'s GLSL ES has
+  `textureGather`, which ES 3.00 lacks); every other verdict unchanged. Clippy with warnings denied
+  passes.
+
+Run 11, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
+  `run11/draw4.log`), each by the DXBC and the DXIL route: depth bias against Direct3D 11's
+  D24_UNORM_S8_UINT buffer, in 24-bit codes, on WebGPU and WebGL 2: (2000 units, slope 0.25, no
+  clamp) 355 of 4096 texels differ by 1 code, (clamp 0.0002) 471 by 1, (-2000, -0.25, clamp -0.0002)
+  478 by 1, never more than 1 (allowance 1); the clamp changes 1610 of Direct3D's texels. Draw bases
+  against Direct3D 11, 0 of 4096 differ in every case: vertices from 48 and indexed (first index 6,
+  base vertex 48), two instances from 1 or 2, directly on WebGPU and WebGL 2 and indirectly (the
+  arguments 4 words into their buffer) on WebGPU. Every run 10 comparison as in run 10. Windows clippy
+  with warnings denied passes. `tests/draw.rs` on the changed shared harness: all 3 tests pass
+  (`run11/draw-plain.log`).
+- Laptop (i7-8750H, load average 0.5 to 4.2): the whole suite with every corpus passes (`--skip
+  mutated`; corpus test 214 s), every verdict as recorded; own DXBC and DXIL each two more
+  (`vs_ids`, `ps_ids`, converting). Clippy with warnings denied passes.
+- Not re-run this run: Chrome's compile of the written files and the WebAssembly comparison (the
+  default conversions did not change; only the new variants' paths did).
+
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
+  `run10/draw8.log`), each by the DXBC and the DXIL route: equal texel for texel (or, for depth, in
+  f32 steps) to the stated reference: viewport adjustment 0 of 4096 on WebGPU and WebGL 2; clip
+  depth on WebGL 2 with and without EXT_clip_control and WebGPU natively, 0 steps from Direct3D 11's
+  depth buffer; swapped depth range on WebGPU 843 of 4096 within 3 steps of the definition (allowance
+  4); sample mask 0 on WebGPU; constants as storage 0; level-of-detail bias 2.5 on a 4-level texture 0
+  on WebGPU and WebGL 2 against Direct3D 11; counting 1610 of 1610 samples Direct3D 11's query
+  counts, on both back ends; level counts 0 on WebGPU and WebGL 2 (WebGPU's own query 0 against
+  Direct3D 11); sample count (DXBC) 0 on both; dual-source blending 0 on WebGPU against Direct3D 11.
+  `tests/draw.rs` after its move onto the shared harness: all 3 tests pass, every comparison equal as
+  in run 9. Windows clippy with warnings denied passes.
+- Laptop (i7-8750H, load average 0.3 to 4): the whole suite with every corpus passes (`--skip
+  mutated`), clippy with warnings denied passes. Verdicts: corpus 127 of 191 convert (unchanged), rig
+  56 of 79, rig DXIL 49 of 72 (unchanged), own 28 of 30 (`ps_samples` needs `samples`, `ps_spaces`),
+  own DXIL 15 of 20; the real programs' shaders: DXBC 418 of 529 convert (named: render target array
+  index 47, storage images 39, typed buffers 21, geometry shaders 3, multisampled arrays 1), DXIL 289
+  of 361 (reader: storage images without a format 38, typed buffers 19, a load operand 1, viewport
+  index from a vertex stage 1; register spaces 10, packed stage values 2, multisampled arrays 1).
+  Cache records written and read back equal: corpus 254, rig 112, rig DXIL 98, own 56, own DXIL 30,
+  games 836, games DXIL 578.
+- Chrome 157 (`web/check`, one GPU job, about 9 s, `run10/chrome.log`): WGSL compiles for every
+  converted shader: corpus 127, rig 56, rig DXIL 49, own 28, own DXIL 15, games 418, games DXIL 289.
+  GLSL ES: corpus 89 of 102, rig 47 of 53, rig DXIL 46 of 48, own 22 of 25, own DXIL 13 of 13, games
+  406 of 416, games DXIL 288 of 289; every failure a bitfield operation, `textureGather` or
+  `sampler2DMS`.
+- WebAssembly (`wasm-run10.sh`, laptop): `wasm_imports` (release) 5,112,617 bytes; the corpus test
+  under wasmtime passes (all 9), every written file equals the native build's except one real
+  program shader, `d599fbc7efa911be.dxbc`: its udiv helper function computes the quotient and the
+  remainder from the same loads in the other order (the same values; WGSL, GLSL and the cache record
+  differ). Known gaps.
+
+Run 9, 2026-11-17, counts only:
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, `run9/draw4.log`, and
+  again after the last change to the file, `run9/draw5.log`, all 3 tests passing): DXBC route equal
+  to Direct3D 11 texel for texel on WebGPU 22 of 22 and WebGL 2 17 of 17 drawn (`ps_size` included);
+  DXIL route equal to Direct3D 12 drawing the same DXIL on WebGPU 12 of 12 and WebGL 2 11 of 11; the
+  12 Direct3D 12 pictures equal Direct3D 11's of the fxc builds. Not drawn on WebGL 2: bitfield
+  operations 3, `noperspective` 1, fine derivatives 2. Windows clippy with warnings denied passes.
+  The rig's triangle from DXIL and DXBC equal to Direct3D 12's picture on both back ends. (Drawn
+  before the reader's id-order change, which only orders the expression arena.)
+- Laptop (i7-8750H, load average 0.6 to 3.8): the suite with the corpus passes, every verdict as
+  recorded (own DXBC and DXIL each one more: `ps_negate`, converting); `tests/cache.rs` 6 of 6 with
+  the default 10 seeded cuts (seed 1). Records written: own 52, own DXIL 26, rig 112, rig DXIL 98 and
+  the corpus's, each the same bytes after decoding and after a second conversion.
+- WebAssembly (`wasm-run5.sh`): the corpus test under wasmtime passes and every written file,
+  `cache.txt` included, equals the native build's (corpus, rig, rig DXIL, own, own DXIL: 0 differ),
+  after the reader's id-order fix (before it, the DXIL `cache.txt` files differed).
+- Chrome 157 (`web/check`, one GPU job, about 4 s, `run9/chrome.log`): WGSL corpus 127 of 127, rig
+  DXBC 56 of 56, rig DXIL 49 of 49, own 26 of 26, own DXIL 13 of 13; GLSL ES corpus 89 of 102, rig
+  DXBC 47 of 53, rig DXIL 46 of 48, own 21 of 24, own DXIL 12 of 12. Every GLSL ES failure is a
+  bitfield operation, `textureGather` or `sampler2DMS`.
+
+Run 8, 2026-11-17, counts only:
+- Laptop (i7-8750H, load average 0.2 to 4.2), the suite with the corpus: corpus 127 convert and 64
+  named (unchanged), of which 87 compile as GLSL ES in glslang, 15 do not and 25 are not written (one
+  more unwritten: `106_ps_code_ddy_fine`, fine derivatives); rig DXBC 56 of 79 and rig DXIL 49 of 72
+  (unchanged); own DXBC 25 of 26, own DXIL 12 of 16 (`ps_table` `NonFiniteConstant`, `ps_spaces`
+  `RegisterSpace`, `vs_pack`/`ps_pack` `PackedStageValues`).
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job): equal to Direct3D 11
+  texel for texel on WebGPU in 21 of 21 by the DXBC route and 11 of 11 by the DXIL route, on WebGL 2
+  in 15 of 16 drawn by the DXBC route (`ps_size` the known failure, 2591 of 4096 texels, largest 111)
+  and 10 of 10 by the DXIL route; not drawn on WebGL 2: bitfield operations 3, `noperspective` 1,
+  fine derivatives 2 (`ps_deriv`, both builds). New and equal everywhere they are drawn: `vs_carry`
+  (both builds, the check's loop case), `ps_ftoi` (both builds; NaN, both infinities and 2^31 from
+  the constant buffer, finite values past the limits), `ps_table` (fxc's table holding NaN and
+  infinities), `ps_deriv` (WebGPU), `ps_coarse`. The rig's triangle from DXIL and DXBC equal to
+  Direct3D 12's picture on both. Log in scratch `graphics-shaders/run8/draw1.log`.
+- Chrome 157 (`web/check`, one GPU job, about 2 s): WGSL corpus 127 of 127, rig DXBC 56 of 56, rig
+  DXIL 49 of 49, own 25 of 25, own DXIL 12 of 12; GLSL ES corpus 89 of 102, rig DXBC 47 of 53, rig
+  DXIL 46 of 48, own 20 of 23, own DXIL 11 of 11. Every GLSL ES failure is a bitfield operation,
+  `textureGather` or `sampler2DMS`. Verdicts in scratch `graphics-shaders/run8/out`.
+- WebAssembly (`wasm-run5.sh`, laptop): `wasm_imports` (release) 4,959,946 bytes, the same WASI
+  imports; the corpus test under wasmtime 38.0.4 passes, and every written file equals the native
+  build's (corpus, rig, rig DXIL, own, own DXIL: 0 differ), `converter-version.txt` included: both
+  builds give `0.1.0+7e003573...` for the same sources (they differed before by the SDK's path).
+- Clippy with warnings denied passes on the laptop for the crate; the carried naga's changed files
+  give no new clippy warnings with the GLSL, HLSL, WGSL writers and SPIR-V reader built.
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000` under `ulimit -v 4000000` (new own
+  files, so new cases; laptop load below 2): 7 cases ended the process, all DXIL in dxil-spirv (4
+  segmentation faults: 1604, 1843, 2040, 2597; 3 `std::terminate`: 240, 309, 2637); no DXBC case.
+  Our own checks refused 11: `malformed` 5 (`unknown stage` 3, `no instruction 0` 2), `invalid` 6
+  (a constant index past an array's end 3, a compute workgroup size out of range 2, `VertexIndex` in
+  a pixel shader 1). Log `~/wcontainers-graphics/fuzz-run8-seed7.log`, refusals `fuzz-ours-7.txt`.
+  The check of run 7 (seed 4242, 8000 cases) found 39 DXIL cases that ended the process, none DXBC.
+
+Run 7, 2026-11-17, counts only:
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job): WebGPU equal to Direct3D
+  11 texel for texel in 16 of 16 by the DXBC route and 7 of 7 by the DXIL route; WebGL 2 in 11 of 12
+  drawn by the DXBC route (`ps_size` the known failure, 2591 of 4096 texels, largest 111) and 7 of 7
+  by the DXIL route; 4 not drawn on WebGL 2 for the reasons in the cases (bitfield operations,
+  `noperspective`). The rig's triangle from DXIL and DXBC equal to Direct3D 12's picture on both.
+  Logs in scratch `graphics-shaders/run7/draw*.log`.
+- Chrome 157 (`web/check`, one GPU job, about 3 s; the first attempt failed with "no WebGPU
+  adapter", the retry a minute later worked): WGSL corpus 127 of 127, rig DXBC 56 of 56, rig DXIL 49
+  of 49, own 20 of 20, own DXIL 8 of 8; GLSL ES corpus 90 of 103, rig DXBC 47 of 53, rig DXIL 46 of
+  48, own 16 of 19, own DXIL 8 of 8. Every GLSL ES failure is a bitfield operation, `textureGather`
+  or `sampler2DMS`. Verdicts in scratch `graphics-shaders/run7/out`.
+- Laptop (i7-8750H, load average 0.4 to 4.5), the suite with the corpus: corpus, rig DXBC and rig DXIL
+  verdicts unchanged from run 5; own DXBC 20 of 21, own DXIL 8 of 11. Clippy with warnings denied
+  passes on the laptop and on Windows (draw test included).
+- WebAssembly (`wasm-run5.sh`): `wasm_imports` (release) 4,930,913 bytes, the same 10 WASI imports;
+  the corpus test under wasmtime 38.0.4 passes and every written file equals the native build's
+  (corpus, rig, rig DXIL, own, own DXIL: 0 differ).
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000` (new own files, so new cases; laptop
+  load 3 to 4.5): 9 cases ended the process, all DXIL in dxil-spirv (7 segmentation faults: cases
+  517, 553, 1357, 1564, 1705, 2234, 2737; 2 `std::terminate`: 726, 1648); no DXBC case. Our own
+  checks refused 17: `malformed` 10 (`no instruction 0` 5, `unknown stage` 4, `opcode 416 result`
+  1), `invalid` 7 (a constant index past an array's end 6, an image operation on a signed integer
+  texture 1). Log `~/wcontainers-graphics/fuzz-run7-seed7.log`, refusals `fuzz-ours-7.txt`.
+
+Run 6, 2026-11-17, counts only (laptop i7-8750H, load average 1 to 4):
+- The whole suite with the corpus (`--include-ignored --skip mutated`), after the run's fixes and
+  before the new own shaders: every test passes and every verdict equals its record, unchanged from
+  run 5 (corpus 127 convert and 64 named, rig DXBC 56 of 79, rig DXIL 49 of 72; none of the rig's DXIL
+  discards, so the demote fix changes no rig verdict).
+- WebAssembly (`wasm-run5.sh`): `wasm_imports` (release) is 4,930,913 bytes (naga's compaction is
+  linked now), the same 10 WASI imports; the corpus test under wasmtime 38.0.4 passes and every file
+  it writes equals the native build's (corpus, rig, rig DXIL, own, own DXIL: 0 differ).
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000`, the same inputs as run 5 (the new own
+  shaders not yet in): 11 cases ended the process, the 10 DXIL cases of run 5 exactly (8 segmentation
+  faults, 2 `std::terminate`) and DXBC 934 killed for memory; run 5's DXBC memory cases 1539 and
+  2228 ended as `rejected` this time (how much memory the laptop had free differs between runs). Our
+  own checks refused the same 13 cases as in run 5. Log `~/wcontainers-graphics/fuzz-run6-seed7.log`.
+- The check of run 5 (seed 31337, 6000 cases, before run 6): 19 ended the process (9 segmentation
+  faults and 5 `std::terminate`, all DXIL; 5 killed for memory, 4 DXBC and 1 DXIL), 26 refused by our
+  own checks.
+
+Run 5, 2026-11-17, counts only:
+- Laptop (i7-8750H, load average 1 to 5), the whole suite with the corpus (`--include-ignored --skip
+  mutated`): every test passes; every verdict of corpus, rig DXBC and rig DXIL equals its record,
+  unchanged from run 4 (corpus 127 convert and 64 named, rig DXBC 56 of 79, rig DXIL 49 of 72). Own
+  DXBC 18 of 19 (`ps_spaces` `RegisterSpace`; `ps_cases` converts now that loops are left from switch
+  cases), own DXIL 5 of 8 (`ps_spaces` `RegisterSpace`, `vs_pack` and `ps_pack`
+  `PackedStageValues`).
+- Chrome 157 on the RTX 3080 (`web/check`, one GPU job, about 3 s): WGSL corpus 127 of 127, rig DXBC
+  56 of 56, rig DXIL 49 of 49, own 18 of 18, own DXIL 5 of 5; GLSL ES corpus 90 of 103, rig DXBC 47
+  of 53, rig DXIL 46 of 48, own 14 of 17, own DXIL 5 of 5. Every GLSL ES failure is a bitfield
+  operation (`findMSB`, `bitCount` and `findLSB` among them), `textureGather` or `sampler2DMS`.
+  Verdicts in scratch `graphics-shaders/run5/out`.
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings): every own pair equal to Direct3D 11
+  texel for texel by the DXBC route on WebGPU (14 of 14) and WebGL 2 (9 drawn, `ps_depth` the known
+  back-end failure, 2591 of 4096 texels, largest 77, as in run 4), and by the DXIL route
+  (`ps_signed`, `ps_offset`, `ps_special`, `ps_cases`) on WebGPU (4 of 4) and WebGL 2 (3 drawn;
+  `ps_cases` is not drawn there because fxc's build extracts bits). The rig's triangle from DXIL and
+  DXBC equal to Direct3D 12's picture on both. Log in scratch `graphics-shaders/run5-draw.log`.
+- WebAssembly (laptop, `run5/wasm.sh`): `wasm_imports` (release) is 4,853,449 bytes, the same 10 WASI
+  imports. The corpus test under wasmtime 38.0.4 passes, and every file it writes equals the native
+  build's (corpus, rig, rig DXIL, own, own DXIL).
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000` (scratch `fuzz/resume.sh`, laptop load
+  below 5). The inputs now include the 13 new own files, so the cases are not those of run 4. 13
+  cases ended the process: 10 DXIL in dxil-spirv (8 segmentation faults, 2 `std::terminate`: cases
+  434, 743, 1457, 1904, 1938, 1964, 2158, 2600, 2786, 2997) and 3 DXBC killed for memory (934,
+  1539, 2228). 13 cases were refused by our own checks: `malformed` 7 (`no instruction 0` 4, `unknown
+  stage` 3) and `invalid` 6 (4 constant indices past an array's end, 1 duplicate switch case value, 1 `tanh` of a
+  type it does not take;
+  scratch `fuzz/run5-seed7-ours.txt`). The independent check's run with seed 20261117 and 12000
+  cases (before run 5) ended the process in 55 (0.46%) and refused 38 by our own checks.
+
+Run 4, 2026-11-17, on the Linux laptop (i7-8750H, load average 1 to 2), counts only:
+- Corpus test (all verdicts as recorded in `tests/expected`): corpus 127 convert (88 GLSL ES compile
+  in glslang, 15 do not, 24 not written: 3 fewer unwritten than run 3, from the level-zero fold), 64
+  named failures with the same counts by reason as below; rig DXBC 56 of 79 (unchanged); rig DXIL 49
+  of 72 (the rig's DXIL grew from 27; the 23 others: execution models of geometry and tessellation 15,
+  typed buffers 2, a storage image without a format 1, an unsupported built-in 1, the sample mask as
+  an array 1, `PrimitiveId` 1, `VertexWithoutPosition` 1, `Texture1DArray` 1; run 4's record of
+  this line said 17 execution models, which was wrong); own DXBC 12 of 13
+  (`ps_spaces` is `RegisterSpace`), own DXIL `ps_spaces` `RegisterSpace`.
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000`, inputs the rig's, our own and the
+  corpus, every mutation re-signed so it reaches the converters, restarted after each crash
+  (scratch `graphics-shaders/fuzz/resume.sh`): 16 of the 3000 cases ended the process, 15 of them
+  DXIL (10 segmentation faults and 5 `std::terminate` in dxil-spirv: cases 751, 943, 1113, 1632,
+  1651, 1656, 1732, 1846, 1937, 1955, 2443, 2693, 2774, 2775, 2810) and one DXBC case killed for
+  memory (1996, `024_ps_ld_sint8_code_1.dxbc`). No assertion abort, foreign exception or Rust panic
+  ended it (run 3's check found 43 foreign exceptions, 25 assertions and 4 panics in 5,950 DXBC
+  cases, and 292 assertions in 2,000 DXIL cases, all unsigned mutations, which the checksum now
+  refuses). Replay one case: `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_FIRST=751
+  WCONTAINERS_FUZZ_CASES=752`.
+- Chrome 157 on the RTX 3080 (`web/check`, one GPU job, about 3 s), the files of the run above:
+  WGSL corpus 127 of 127, rig DXBC 56 of 56, rig DXIL 49 of 49, own 12 of 12; GLSL ES corpus 90 of
+  103, rig DXBC 47 of 53, rig DXIL 46 of 48, own 9 of 11. Every GLSL ES failure is a bitfield
+  operation, `textureGather` or `sampler2DMS`. Verdicts in scratch `graphics-shaders/run4/out`.
+- `tests/draw.rs` on the desktop (RTX 3080; the desktop is shared, no timings): every own pair equal
+  to Direct3D 11 texel for texel on WebGPU (9 of 9) and on WebGL 2 (6 drawn: `ps_flat`, `ps_local`,
+  `ps_size` among them; `ps_depth` differs in 2591 of 4096 texels, largest 77, the back end's depth,
+  recorded as a known failure of that back end); the rig's triangle from DXIL and DXBC equal to
+  Direct3D 12's picture on both. Real Direct3D 11 (`CreatePixelShader`) and 12
+  (`CreateGraphicsPipelineState`) answer a container with one flipped byte with `E_INVALIDARG`
+  (0x80070057), and `convert` with `Rejected`.
+- WebAssembly: `wasm_imports` (release) is 4,837,106 bytes, the same 10 WASI imports. The corpus test
+  built for `wasm32-wasip1` under wasmtime 38.0.4 passes (all records met) and writes every file equal
+  to the native build's; its verdicts differ only where glslang, which it cannot run, would refuse.
+
+Run 3, 2026-11-17, after all of run 3's changes:
+- Laptop corpus test (i7-8750H, load average below 6): corpus 127 convert (85 GLSL ES compile in
+  glslang, 15 do not, 27 not written), 64 named failures, the same counts by reason as below; rig
+  DXBC 56 of 79 (unchanged); rig DXIL 24 of 27 (the rig now has 27 DXIL shaders; the 3 others are
+  the reader's gaps: typed buffers twice, a storage image without a format).
+- Chrome 157 on the RTX 3080 (one GPU job, about 2 s): WGSL corpus 127 of 127, rig DXBC 56 of 56,
+  rig DXIL 24 of 24, own 6 of 6; GLSL ES corpus 87 of 100, rig DXBC 47 of 53, rig DXIL 23 of 24
+  (`textureGather`), own 4 of 6. Verdicts in scratch `graphics-shaders/run3/out-final/*/chrome.txt`.
+- `tests/draw.rs` on the desktop (RTX 3080, driver 32.0.16.2101; ANGLE from mozangle 0.7.1): every
+  comparison exact, as listed above. The desktop is shared; no timings taken.
+- WebAssembly: `wasm_imports` (release) is 4,853,482 bytes, the same 10 WASI imports.
+
+Chrome, run 2, 2026-11-17: Chrome 157.0.8103.78 (the rig's pinned build), headless, on the desktop
+(RTX 3080, WebGPU on D3D12, WebGL 2 on ANGLE D3D11), every adapter feature requested and every WebGL
+extension enabled. Verdicts per file in `chrome.txt` beside the written files. After run 2's fixes:
+- corpus: WGSL 127 of 127 compile; GLSL ES 87 of 100 (13 fail: bitfield operations 8, gather 4,
+  `sampler2DMS` 1). Before the fixes WGSL was 125 (the NaN constant and the f32::MAX literal) and
+  GLSL 86 (the sample mask).
+- rig DXBC: WGSL 56 of 56; GLSL ES 47 of 53 (bitfield insert 3 and extract 1, gather 1,
+  `sampler2DMS` 1).
+- rig DXIL: WGSL 11 of 11, GLSL ES 11 of 11 (before run 2's DXIL entry point wrapper; run 3's re-run
+  after it gave 24 of 24 and 23 of 24, above). Own: WGSL 5 of 5, GLSL ES 3 of 5 (bitfield operations).
+- Each run of the 196 files' compile took about 2 s of GPU job time.
+
+All on the Linux laptop (i7-8750H, Ubuntu 20.04), load average below 4 during the runs, 2026-11-17.
+Counts only, no timings.
+
+Direct route (this crate) on the plan's 191-shader DXBC corpus (`WCONTAINERS_SHADER_CORPUS`):
+- 127 convert and their WGSL validates (naga, WebGPU core capabilities).
+- Of those, 100 are written as GLSL ES 3.00 by naga and 85 compile in glslangValidator 8.13. The 15
+  that do not: bitfield extract, insert, reverse and find-MSB (8), `textureGather` (4),
+  `gl_SampleID` and `gl_SampleMask` (2, which need OES_sample_variables; run 2 made naga enable it,
+  and Chrome compiles them, above), and one more. The 27
+  naga does not write, by the features it names: texture level queries 14, storage buffers 7, compute
+  3, sample counts 2, cube arrays 1 (all absent on WebGL 2, or back-end fixes of 6.5).
+- 64 fail with a named reason: StorageImage 15, Atomics 9, GeometryShader 7, VertexWithoutPosition 6,
+  TypedBuffer 6, HullShader 5, DomainShader 4, SampleCount 4, StorageCounter 2, DynamicOffset 2,
+  RenderTargetArrayIndex 2, StencilRef 1, ViewportArrayIndex 1.
+- The SPIR-V route at the same dxbc-spirv commit (6.3, measured in G0): naga read 123, wrote 112 as
+  WGSL (111 compiled in Chrome), 95 as GLSL ES (80 compiled in Chrome).
+- Decision: the direct route, as the plan chose. It converts 127 to valid WGSL against 112 written,
+  and 100 to GLSL ES against 95, with every failure named, and none of the reader's gaps (compute
+  shaders, typed buffers' and storage images' formats read wrongly, built-ins WGSL cannot express).
+
+The rig's 79 compiled DXBC shaders (`crates/wcontainers-graphics-test/shaders/dxbc`): 56 convert to
+valid WGSL (45 also compile as GLSL ES in glslang); 23 named: GeometryShader 6, HullShader 6,
+DomainShader 3, StorageCounter 3, StorageImage 2, Atomics 1, PrimitiveId 1, VertexWithoutPosition 1.
+
+WebAssembly: the conversion alone (`examples/wasm_imports.rs`, release, `wasm32-wasip1`, both
+converters linked) was 4,842,413 bytes in run 2 (4,853,482 in run 3) (2,356,683 with dxbc-spirv alone) and imports from `wasi_snapshot_preview1`: environ_get, environ_sizes_get, fd_close,
+fd_fdstat_get, fd_prestat_get, fd_prestat_dir_name, fd_read, fd_seek, fd_write, proc_exit (10;
+the plan expected proc_exit and fd_write only: libc++'s streams, which dxbc-spirv's logger uses, pull
+in wasi-libc's stdio and start-up). The corpus test built for `wasm32-wasip1` and run under wasmtime
+38.0.4 gives the same verdicts and the same written files as the native build, for the corpus and
+the rig's DXBC and DXIL.
+
+## naga as carried
+
+`third_party/naga` is naga 30.0.2 exactly as published on crates.io (commit "carried naga 30.0.2 in
+the tree as published"), plus these changes, each a later commit touching only `third_party/naga`:
+- GLSL writer, `BuiltIn::VertexIndex` without `WriterFlags::DRAW_PARAMETERS` is written
+  `(uint(gl_VertexID) + naga_vs_base_vertex)`, with `uniform uint naga_vs_base_vertex;` declared in
+  vertex shaders that read it (`back::glsl::BASE_VERTEX_BINDING`, feature `VERTEX_INDEX`), as naga
+  already does for `instance_index` with `naga_vs_first_instance`. The back end sets it to each indexed
+  draw's base vertex (0 otherwise); GL leaves an unset uniform 0. With `DRAW_PARAMETERS` nothing
+  changes (desktop GL's `gl_VertexID` already includes the base vertex).
+- GLSL writer, `BuiltIn::SampleIndex` is written `uint(gl_SampleID)` (it is a `u32` in naga and an
+  `int` in GLSL; 6.3's corpus had one shader failing on it).
+- GLSL writer, `BuiltIn::SampleMask`: written `gl_SampleMask[0] = int(...)` and read
+  `uint(gl_SampleMaskIn[0])` (GLSL's are `int` arrays), requesting GL_OES_sample_variables on ES.
+- WGSL writer, a structure's member bindings are written only where the structure is an entry
+  point's argument or result (run 38): Tint checks them wherever written, and DXIL's reader keeps
+  its own output structure (the sample mask as a one-element array) as an inner value after the
+  entry point's result is rebuilt, which Chrome refused (`@builtin(sample_mask)` must be `u32`).
+- WGSL writer, an f32 literal whose shortest digits name a number past f32::MAX (f32::MAX itself) is
+  written with the f64 digits of its exact value, which WGSL compilers accept.
+- HLSL writer (wgpu's Direct3D 12 path), a fragment entry point's position is passed on as
+  `float4(p.xyz, 1.0 / p.w)`: the IR's fragment position has 1/w in w (SPIR-V's and GLSL's rule,
+  which dxbc-spirv inverts back to Direct3D's w), HLSL's `SV_Position` has w.
+- WGSL writer, the module's diagnostic filters are written as `diagnostic(...)` directives
+  (`Severity::to_wgsl_ident` added beside `from_wgsl_ident`).
+- SPIR-V reader (run 5): integer instructions read in the signedness they name, the result given its
+  type's (`convert::op_signedness`, `glsl_signedness`, `Frontend::retype_int`); atomic minimum and
+  maximum of the other signedness refused (`Error::UnsupportedSignedness`), subgroup ones (run 40)
+  read their value in the signedness they name and give the result its type's; texel offsets
+  on `OpImageFetch` added to the coordinate; unknown load operands refused
+  (`Error::UnsupportedImageLoadOperand`) instead of skipped with a log warning.
+- WGSL writer (run 5), `isnan`/`isinf` of f32 scalars and vectors written as bit tests (WGSL has
+  neither).
+- SPIR-V reader (run 6), `OpDemoteToHelperInvocation` read as `Statement::Kill` (WGSL's `discard`
+  demotes too), its extension and capability accepted.
+- GLSL and HLSL writers (run 8), a loop's `continuing` block reads the values its body made in that
+  iteration from variables declared before the loop (`compact::values_for_continuing`), instead of
+  writing their expressions again where the body's variables have changed.
+- MSL writer (run 9), the same `continuing` fix as the GLSL and HLSL writers (run 8).
+- SPIR-V reader (run 9), `OpSNegate` of an unsigned operand negated as signed; global variables'
+  and constants' expressions made in id order (the same module on 32-bit and 64-bit targets).
+- SPIR-V reader (run 10), an `OpUndef` in a function ends the running Emit range before its zero value
+  (a zero value is never emitted); a texel coordinate's vector type of another scalar kind is made
+  where the reader needs it, instead of panicking that it should exist.
+- GLSL writer (run 12), WebGL programs with clip or cull distances enable
+  `GL_ANGLE_clip_cull_distance` (WEBGL_clip_cull_distance's name) instead of
+  `GL_EXT_clip_cull_distance`.
+- GLSL writer (run 8), fine derivatives need `Features::DERIVATIVE_CONTROL` (GLSL 4.50, not ES)
+  instead of being written as the plain functions.
+- SPIR-V reader (run 25), an image taken from an array of images (`Access`/`AccessIndex` on a
+  binding array) has the array's element type. This one is in commit 182398b1 together with the
+  crate's `arrays.rs`, not a commit of its own.
+- SPIR-V reader (run 27), `OpIsHelperInvocationEXT` reads a private bool named
+  `front::spv::HELPER_INVOCATION`, made at its first use; the module's user sets it (this crate's
+  `dxil.rs` from the coverage and at each demotion). Before, the reader refused the instruction.
+- SPIR-V reader (run 27), an image sample operand it does not know is refused
+  (`unsupported image sample operand`) instead of skipped with a warning.
+- SPIR-V reader (run 28), a gather's run-time `Offset` moves the coordinate by the offset in texels of
+  level 0 (low six bits, signed); availability and visibility operands at workgroup scope or less
+  taken on storage and texels (WGSL's memory model gives every access that), wider ones refused
+  (`Error::UnsupportedMemoryScope`); `OpGroupNonUniformBallotBitCount` read as a subgroup add of the
+  ballot's predicate (or the ballot's bits counted, reduce only); `OpGroupNonUniformAllEqual` read as
+  an all of each lane's value equal to the first lane's; ballot find LSB and MSB from the words' trailing and leading zeros.
+- WGSL writer and reader (run 28), `enable subgroups;` written for modules with subgroup operations or
+  built-ins (`Module::uses_subgroups`) and taken by the reader (`ImplementedEnableExtension::Subgroups`).
+Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
+not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
+stands (`git diff d380816 HEAD -- third_party/naga`).
+- SPIR-V reader (run 32), an image both compared against and sampled plainly becomes a depth image
+  as one only compared against does (it was `InconsistentComparisonSampling`); a sampler used both
+  ways is still refused. Its plain reads then give one value where the module expects four, so the
+  caller widens them (`dxil/depth.rs`): not for upstream as it stands.
+
+## How to run
+
+- The literal check on the x86 machine (since run 66, as the desktop's copy must not change while a
+  GPU job waits): send the tip as a bundle (`git bundle create <scratch>/tip.bundle HEAD`), then
+  `x86-run --ssh 'cat > /work/shaders-lit.bundle && cd /work/shaders-lit && git fetch -q
+  /work/shaders-lit.bundle HEAD && git checkout -q FETCH_HEAD && CARGO_TARGET_DIR=/work/target/shaders-lit
+  nix develop /work/src/graphics-shaders -c cargo run -q -j 32 -p wcontainers-literals -- check' <
+  <scratch>/tip.bundle`. A new machine needs the clone first (`git clone /work/shaders-lit.bundle
+  /work/shaders-lit`, then `git submodule update --init` of both converters and
+  `git -C crates/wcontainers-shaders/dxil-spirv submodule update --init third_party/spirv-headers`:
+  the baseline holds their scripts' lines).
+- The Direct3D 12 rig scenes through this branch's Direct3D 12 front: scratch
+  `graphics-shaders/g6b2/scenes.sh <n> [scenes]` (log `scenes<n>.log`); `draw.sh <n>` runs
+  `geometry_draw` and `tessellation_draw` in one GPU job.
+- The literal check on the desktop (before run 66): `tools/graphics-rig/remote "cargo run -q -j 3 -p
+  wcontainers-literals -- check > C:\wc\incoming\shaders-check.txt 2>&1"`, then copy that file
+  back with scp (its output is long). It runs on the desktop because the laptop's git 2.25 lacks an
+  `ls-files` option it uses. Never run `remote` while one of this branch's GPU jobs waits in the
+  queue: it changes the desktop's tree and the waiting job then stops ("holds tree ..., not the
+  sent ..."). Lines it prints with `-` are to be deleted from `literals.baseline`. The desktop's
+  copy `C:\wc\src\phase-2-graphics-shaders` has `core.autocrlf` set to false (run 39): with
+  Windows line ends the check reads multi-line strings differently and fails on other crates'.
+- A GPU job running several test binaries needs `--no-fail-fast`, or the first failing binary
+  ends the job before the others run.
+- The rented x86 machine (the default for work without a GPU since 2026-11-19; run 54): from the
+  checkout, `<orchestrator>/cloud/x86-run . --name graphics-shaders -- '<command>'` copies the
+  working tree (submodules included) and runs the command in the checkout's `nix develop`, cargo
+  building into `/work/target/graphics-shaders`. Clippy and the crate's tests run as on the
+  laptop. The corpora are at `/work/probes/shaders-corpus/{dxbc,games,runner}` (copied from the
+  laptop's `~/wcontainers-graphics/corpus`; copy again without macOS `._` files if the machine is
+  new): `C=/work/probes/shaders-corpus; export WCONTAINERS_SHADER_CORPUS=$C/dxbc
+  WCONTAINERS_GAME_SHADERS=$C/games WCONTAINERS_RUNNER_SHADERS=$C/runner
+  WCONTAINERS_SHADERS_OUT=$PWD/target/shaders-out; cargo test --no-fail-fast -p
+  wcontainers-shaders -- --include-ignored --skip mutated` (about 3 minutes). It has no glslang,
+  so GLSL ES outcomes are not compiled there; the laptop's suite does that. The literal check
+  needs `.git`, which the copy leaves out: run it on the desktop.
+- Linux laptop (no GPU), one command from the Mac: `tools/graphics-rig/linux <command>`. It copies the
+  working tree (submodules included) to `~/wcontainers-graphics/src/<branch>` and builds into
+  `~/wcontainers-graphics/target/<branch>`, with 5 cargo jobs (2 when the laptop's load is 8 or more).
+- Chrome's compile of the written files: copy `~/wcontainers-graphics/out` from the laptop to a
+  directory here (`rsync -a tom@192.168.2.240:wcontainers-graphics/out/ <dir>/`), then
+  `crates/wcontainers-shaders/web/check <dir>`: one GPU job on the desktop, `chrome.txt` comes back
+  into each corpus directory, exit 1 if any file fails.
+- When the desktop refuses new SSH connections (reset after the key exchange; run 6 lost an hour to
+  it, run 7 half an hour, it did so all through run 8, and again in run 9), already open shared connections keep working. Runs 7 and 9 pointed this
+  checkout's rig socket (`~/.ssh/wc-rig-<hash of the git dir>`, see `tools/graphics-rig/common.sh`)
+  at another checkout's live one with a symbolic link, and removed the link afterwards. The rig also
+  notes the desktop's clock once went back 8 hours, so cargo may keep stale objects: run 7's first
+  draw build ran `cargo clean -p wcontainers-shaders -p naga -p wcontainers-gpu
+  -p wcontainers-gpu-webgpu -p wcontainers-gpu-webgl -p wcontainers-graphics-test` first.
+- The laptop's disk (122 GB) filled during run 10 and a build failed with "No space left on device":
+  run 10 deleted this branch's `debug/incremental` and three stale `wcontainers-shaders-*` build
+  directories under `~/wcontainers-graphics/target/phase-2-graphics-shaders` (16 GB free after). The
+  independent checks' directories `~/wcontainers-graphics/check-g6a*` hold about 29 GB and were left
+  alone.
+- Building on the desktop: the rig's `remote` does not fetch submodules, so a build command that
+  needs this crate starts with `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
+  crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule
+  update --init third_party/spirv-headers && cargo build ...` (they stay checked out afterwards).
+- Drawing (Windows, needs the GPU and ANGLE at C:\wc\tools\angle-mozangle-0.7.1, which the WebGL
+  track's `angle\build.cmd` makes; `WCONTAINERS_ANGLE` names another):
+  `S="git submodule update --init -q crates/wcontainers-shaders/dxbc-spirv crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule update --init -q third_party/spirv-headers"; tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test draw -- --nocapture --test-threads 1"`.
+  With `WCONTAINERS_SHADERS_OUT` set in the job the pictures are kept as raw texels under `draw`.
+- Windows lint (the draw test is Windows only): `tools/graphics-rig/remote "$S && cargo clippy -j 3
+  -p wcontainers-shaders --all-targets -- -D warnings"`.
+- The rig's scenes through the direct3d-11 track's library: `tools/graphics-rig/scenes --build "$S &&
+  cargo build -q -j 3 -p wcontainers-directx" --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' --api d3d11`.
+- Unit and corpus tests: `tools/graphics-rig/linux sh -c 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
+  WCONTAINERS_SHADERS_OUT=$HOME/wcontainers-graphics/out GLSLANG=glslangValidator cargo test -p
+  wcontainers-shaders -- --include-ignored --skip mutated'`. Each corpus's verdicts must equal
+  `tests/expected/<corpus>.txt`; the written WGSL and GLSL, glslang's output beside each GLSL file
+  it refuses (`.log`) and `verdicts.txt` (the records' form since run 47, whole verdicts: copy it
+  over the record after a deliberate change) land in `~/wcontainers-graphics/out/<corpus>`.
+  Without glslang a record's compile outcome reads as `written`; a WebAssembly build checks only
+  the part before ` ; glsl ` (it has no WebGL 2 back end to write with). The 191-shader corpus test is ignored without
+  `--include-ignored` and fails without `WCONTAINERS_SHADER_CORPUS`; glslang runs only with both
+  `GLSLANG` and `WCONTAINERS_SHADERS_OUT`.
+- Geometry shaders through the stage helper (Windows, one GPU job, about 2 s for 4 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test geometry_draw --no-run" -- "set WCONTAINERS_GEOMETRY_SEED=1&& set WCONTAINERS_GEOMETRY_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test geometry_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints the texels Direct3D drew and how many differ; with
+  `WCONTAINERS_SHADERS_OUT` the pictures are kept. The same job runs the replay route on ANGLE
+  (`geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`, since run 52).
+- Stream output: the same job runs `stream_output_matches_direct3d` (about 3 s for 8 seeds of both
+  tests together) and, since run 49, `streams_past_the_first_match_direct3d` (four streams, about
+  2 s for 8 seeds; a new Direct3D 11 device per comparison).
+- The laptop's whole suite with every corpus and glslang: scratch `graphics-shaders/run49/suite.sh`
+  copied to `~/wcontainers-graphics/suite-run49.sh`, run as `tools/graphics-rig/linux sh -c 'sh
+  $HOME/wcontainers-graphics/suite-run49.sh'` (about 9 minutes from a clean target).
+- Typed buffers: the `compute_draw` job below runs `typed_buffers_match_direct3d` too (about 1 s for 8
+  seeds); `variant_draw` runs `typed_buffers_draw_as_direct3d_does` (`WCONTAINERS_TEXEL_SEED`,
+  `WCONTAINERS_TEXEL_CASES`, default 8 seeds, about 1.5 s).
+- Atomics, counters and storage textures (Windows, one GPU job, about 2 s for 4 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test compute_draw --no-run" -- "set WCONTAINERS_COMPUTE_SEED=1&& set WCONTAINERS_COMPUTE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test compute_draw -- --nocapture --test-threads 1"`.
+- Compare-exchange loops under contention in a pixel shader (Windows, one GPU job, under 1 s for 8
+  seeds): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test contention_draw --no-run" -- "set WCONTAINERS_CONTENTION_SEED=1&& set WCONTAINERS_CONTENTION_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test contention_draw -- --nocapture --test-threads 1"`.
+- Early tests in the program against real Direct3D 11 (Windows, one GPU job, under 1 s; seeded scenes,
+  default 32): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test early_draw --no-run" -- "set WCONTAINERS_EARLY_SEED=1&& set WCONTAINERS_EARLY_CASES=32&& cargo test -j 3 -p wcontainers-shaders --test early_draw -- --nocapture --test-threads 1"`.
+  Each scene prints how many pixels Direct3D ran the shader for and the marks and texels apart, for
+  the fxc and the dxc build.
+- The built-in clear against WARP and the GPU's Direct3D 11 (Windows, one GPU job, about 3 s for
+  256 cases): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test clear_draw --no-run" -- "set WCONTAINERS_CLEAR_SEED=1&& set WCONTAINERS_CLEAR_CASES=256&& cargo test -j 3 -p wcontainers-shaders --test clear_draw -- --nocapture --test-threads 1"`.
+- The tessellator against the GPU's (Windows, one GPU job, about 12 s for 16 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test tessellation_draw --no-run" -- "set WCONTAINERS_TESSELLATION_SEED=1&& set WCONTAINERS_TESSELLATION_CASES=16&& cargo test -j 3 -p wcontainers-shaders --test tessellation_draw -- --nocapture --test-threads 1"`.
+  The same job runs the tessellated patches and the rig's tessellation scene against real
+  Direct3D 11 (about 1 s; with `WCONTAINERS_SHADERS_OUT` set the pictures are kept as raw RGBA
+  under `draw`, 256 by 128).
+- Compiling own shaders: `tests/own/compile.cmd` on the desktop (through `tools/graphics-rig/remote`);
+  run 17 fetched the new files back as hex (`certutil -encodehex -f <file> <file>.hex 12`, then
+  `type`) and decoded them here.
+- Filtering in the program (Windows, one GPU job, about 90 s for 8 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test filter_draw --no-run" -- "set WCONTAINERS_FILTER_SEED=1&& set WCONTAINERS_FILTER_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test filter_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints texels apart from both references, from each, and before moving the level
+  of detail; with `WCONTAINERS_SHADERS_OUT` the pictures are kept.
+- The stage helper's routes of a vertex shader alone, antialiased lines and primitive numbers
+  (Windows, one GPU job, about 2 s for 4 seeds): `tools/graphics-rig/gpu-job --build "$S && cargo
+  test -j 3 -p wcontainers-shaders --test stage_draw --no-run" -- "set WCONTAINERS_LINE_SEED=1&&
+  set WCONTAINERS_LINE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test stage_draw --
+  --nocapture --test-threads 1"`. `WCONTAINERS_LINE_COVERAGE=1` also prints the alpha the RTX
+  3080, WARP and ours give twelve chosen lines.
+- The laptop takes at most 4 build jobs per track and long jobs under `choom` (owner's rule of
+  2026-11-18): `tools/graphics-rig/linux sh -c 'CARGO_BUILD_JOBS=4 choom -n 600 -- cargo test ...'`.
+- The variant tests (Windows, one GPU job, about 1.5 s):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test variant_draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test variant_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints its counts and allowance. The WebGL 2 back end leaves its GL context current
+  when it is made, so a test makes a second one (without EXT_clip_control) only after the first one's
+  last draw.
+- The real programs' shaders: `tools/graphics-rig/remote "$S && cargo run -q -j 3 -p wcontainers-shaders --example containers -- C:\wc\shaders-games C:\wc\programs"`,
+  then copy C:\wc\shaders-games to scratch `graphics-shaders/games` and the laptop's
+  `~/wcontainers-graphics/corpus/games`; the corpus test reads them with
+  `WCONTAINERS_GAME_SHADERS=$HOME/wcontainers-graphics/corpus/games` (and `--include-ignored`).
+- The cache's seeded cuts: `tools/graphics-rig/linux sh -c 'WCONTAINERS_CACHE_SEED=7
+  WCONTAINERS_CACHE_CUTS=1000 cargo test -p wcontainers-shaders --test cache -- --nocapture'` (each
+  cut is printed with its seed; defaults seed 1, 10 cuts). `WCONTAINERS_CACHE_DAMAGES=n` sets how
+  many damaged copies of each record `damaged_records_decode_to_a_conversion_or_an_error` and
+  `damaged_records_decode_without_a_panic` (gap A16) decode (default 20; they print their counts
+  with `--nocapture`).
+- Fuzz (long, one command; not re-run in run 9): `tools/graphics-rig/linux sh -c 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
+  WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000 cargo test -p wcontainers-shaders --test fuzz
+  -- --ignored --nocapture'`. Each case is printed before it runs; `WCONTAINERS_FUZZ_FIRST=n` starts
+  at case n. It ends at the first case that crashes (Known gaps); scratch
+  `graphics-shaders/fuzz/resume.sh <seed> <cases>`, run on the laptop after one build, restarts past
+  each crash and lists them; the cases our own checks refused go to
+  `~/wcontainers-graphics/fuzz-ours-<seed>.txt`. On the x86 machine (since G6a run 3): scratch
+  `graphics-shaders/g6a3/x86-fuzz.sh`, its `seed=SEED cases=CASES` line set, passed as the command
+  of `x86-run . --name graphics-shaders-fuzz -- "$(cat ...)"`. The fuzz binary refuses any single
+  Rust allocation over 1 GiB, so a size taken unchecked from the bytecode ends it on every machine.
+- WebAssembly in one command: scratch `graphics-shaders/g6a4/wasm.sh` (copied to
+  `~/wcontainers-graphics/wasm-g6a4.sh`; it mounts every corpus, the runner's included), run
+  through `tools/graphics-rig/linux bash -c 'bash $HOME/wcontainers-graphics/wasm-g6a4.sh'` after a
+  native suite run has filled `~/wcontainers-graphics/out`: builds `wasm_imports` and the corpus
+  test, runs the test under wasmtime and lists, per corpus, the written files that differ from the
+  native ones (`converter-version.txt` among them, so a differing converter version shows). The
+  native GLSL files show as "Only in" the native directory: the WebAssembly build has no WebGL 2
+  back end to write them; compare the files both write (about 8 minutes under wasmtime).
+- WebAssembly: add `WASI_SDK_PATH=$HOME/wcontainers-graphics/tools/wasi-sdk` and `--target
+  wasm32-wasip1`; run a test with `~/wcontainers-graphics/tools/wasmtime/wasmtime run --dir $S::$S
+  --dir corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm --include-ignored`,
+  where `$S` is the source copy (`~/wcontainers-graphics/src/phase-2-graphics-shaders`), which the
+  tests read at their build path.
+- After cloning: `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
+  crates/wcontainers-shaders/dxil-spirv` and `git -C crates/wcontainers-shaders/dxil-spirv submodule
+  update --init third_party/spirv-headers`. dxbc-spirv's own SPIRV-Headers and dxil-spirv's other
+  submodules (SPIRV-Tools, SPIRV-Cross, its copy of dxbc-spirv) are not needed. The rig's `remote`
+  sends a git bundle, which carries no submodules: building this crate on the desktop needs the
+  submodules fetched there (not done yet; a matter for the rig's remote script).
+- The corpus is in scratch (`wcontainers-scratch/graphics/corpus/dxbc`, from Wine's tests, LGPL, test
+  data only) and was copied to `~/wcontainers-graphics/corpus/dxbc` on the laptop.
+
+Installed on the laptop (Ubuntu 20.04) for this track: rust target `wasm32-wasip1` for 1.99.0 (rustup),
+`glslang-tools` 8.13 (apt), wasi-sdk 25.0 and wasmtime 38.0.4 (release archives from their GitHub
+releases, under `~/wcontainers-graphics/tools`). rustup, the 1.99.0 toolchain, gcc 9.4 and clang 10
+were already there.
+
+## Dependencies and licences
+
+- G6a run 5: dev-dependency `md-5` 0.11 (MIT OR Apache-2.0, its Cargo.toml; already in the
+  workspace's lock through wcontainers-direct3d-12), whose `block_api::compress` signs the fuzz
+  test's mutated containers.
+- Run 21: `spirv` 0.4.0 (Apache-2.0; SPIR-V's enums, already in the tree under naga), used to read
+  and edit dxil-spirv's SPIR-V before naga reads it.
+- Run 20: `src/stage/tessellator.wgsl` is a port (to WGSL) of Microsoft's reference tessellator,
+  MIT ("Copyright (c) Microsoft Corporation", the licence text at the head of Mesa's
+  src/gallium/auxiliary/tessellator/tessellator.cpp, read 2026-11-17); the program's header names it.
+  No new crate.
+- dxbc-spirv, https://github.com/doitsujin/dxbc-spirv, submodule at 6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd
+  (upstream main's head on 2026-11-17): MIT, "Copyright (c) 2025 Philip Rebohle" (its LICENSE).
+- dxil-spirv, https://github.com/HansKristian-Work/dxil-spirv, submodule at
+  510991e707cda3aa389305448edad7c7dd76e3e7 (upstream master's head on 2026-11-17): MIT (LICENSE.MIT,
+  "Copyright (c) 2019-2022 Hans-Kristian Arntzen for Valve Corporation", SPDX MIT). Of its submodules
+  only third_party/spirv-headers (Khronos, MIT-style) is fetched; its glslang SPIR-V builder and
+  bitcode reader are in its own tree (licences in the plan's section 3).
+- naga 30.0.2 (carried, see above): MIT OR Apache-2.0; its `spv-in` reader is now used.
+- `cc` 1.11 (build dependency, compiles the C++): MIT OR Apache-2.0 (its Cargo.toml); with `jobserver`
+  0.1 (MIT OR Apache-2.0) for its parallel feature.
+- `blake3` 1.8: as in the plan's section 3; also a build dependency now (hashing the C++ sources).
+- Run 15: naga's `wgsl-in` feature (naga as above; already built into every program using this
+  crate through wcontainers-gpu).
+- Run 9, for the cache: `postcard` 1.1 (MIT OR Apache-2.0), `serde` 1.0 with `derive` (MIT OR
+  Apache-2.0, also now a dependency of wcontainers-gpu, with `bitflags`' `serde` feature), `crc32fast`
+  1.5 (MIT OR Apache-2.0), naga's own `serialize`/`deserialize` features; all already in the
+  workspace's lock. Dev-dependency `fastrand` 2.5 (Apache-2.0 OR MIT) for the seeded cuts. Licences
+  read from each crate's Cargo.toml.
+- Dev-dependencies of `tests/draw.rs`, Windows only, already in the workspace's lock: `windows` 0.62
+  (MIT OR Apache-2.0), `wgpu` 30 (MIT OR Apache-2.0), `pollster` 1 (Apache-2.0 OR MIT), and the
+  workspace's own wcontainers-gpu-webgpu, wcontainers-gpu-webgl and wcontainers-graphics-test.
+- Both C++ projects confirmed in run 3: the submodules' URLs are the upstream repositories, the
+  pinned commits are on upstream's main (dxbc-spirv, still its head) and master (dxil-spirv, whose
+  head has since moved to a781dce), and neither checkout has local changes.
+- Test tools only, never shipped: glslang (BSD-3-Clause and others, Khronos), wasi-sdk (Apache-2.0
+  WITH LLVM-exception; its libc++ and wasi-libc are linked into the WebAssembly build: libc++ Apache-2.0
+  WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
+
+## Departures from the plan
+
+- Run 67: dxbc-spirv's `boundCheckShaderIo` is off (cpp/dxbc.cpp). Its check bounded every
+  vertex-indexed input or output load by the input vertex count, so a hull shader's patch
+  constant function read 0 from an output control point past the input count (the third check).
+  Out-of-range indices of a stage's inputs are undefined in Direct3D; ours index arrays of the
+  declared count, which WGSL bounds.
+- Run 67: the own geometry test programs' dxc builds (`vs_geometry`, `ps_geometry`, `vs_cull`,
+  `gs_*`) are made without `-Gis`, as programs are built: Direct3D 12 keeps an IEEE-strict build's
+  multiply and add apart, which the common form cannot ask of a back end (A21). Every other own
+  dxc build keeps `-Gis` for its NaN tests.
+- Run 67: a DXIL hull's `SV_Position` control point data stays the location dxil-spirv gives it
+  (run 66 made it the position built-in, which only a DXBC domain shader reading a DXIL hull's
+  records would need; no front pairs the routes).
+
+- Run 66: dxil-spirv's patch location offset is set to 0 (cpp/dxil.cpp), so a patch constant's
+  location is its own register and the `Patch` decoration, not the location, tells it from control
+  point data; dxil-spirv's default places patch constants past the control points' registers, which
+  would not match a DXBC route's hull or domain shader. Its SPIR-V then has two variables at one
+  location, which only our rewrite (which makes them private) ever reads.
+- Run 66: Direct3D's pow2 partitioning stays integer partitioning on the DXIL route as on the DXBC
+  route (dxil-spirv and dxbc-spirv both write it so; the RTX 3080 draws the own pow2 cases equal).
+
+- DXIL geometry shaders (run 65): G6b's task names the carried naga reader reading the Geometry
+  model with emit and cut. The model is instead made a compute program in the SPIR-V words before
+  the reader (`dxil/geometry.rs`), as this crate already prepares widths, registers and images
+  there: the reader needs no new carried patch, and the stage values' places are read from the
+  decorations directly. Same result (the shared pass builds the forms), one fewer change to carry.
+- The status file's run-by-run record (runs 1 to 58, 2,900 lines, with its superseded "Next"
+  lists) moved to `docs/status-graphics-shaders-history.md` in G6a run 1, so that this file stays
+  short and every statement in it is current; "Run N" references point there.
+- Stream output from a vertex shader alone on WebGL 2 (run 58) is written on the host from a read
+  back of the vertex stage's capture, where the plan's section 7 says native transform feedback,
+  repacked by a second capture where the declaration needs it (`StreamOutRepacked`). Direct3D's
+  overflow (no primitive written unless every buffer holds it), filled sizes and counts need the
+  primitive count before writing, which transform feedback does not give; the host writer the
+  replay route already has is exact for all of it (drawn equal to Direct3D 11). One blocking read
+  a draw, counted as `StreamOutAfterReplay`.
+
+- Indexed strips through the replay route (run 54) are listed on the host from the indices read
+  back (one blocking read a draw on WebGL 2), where the compute route lists them on the GPU: WebGL
+  2 has no compute, and the listed count decides the capture's size. The host listing follows
+  `strips.wgsl`'s order, so both routes give the geometry shader the same primitives.
+
+- Normalised targets held as integers (run 54) are compared with real Direct3D 11 within one code
+  per channel, not exactly: the program rounds the scaled value to nearest, and Direct3D allows
+  its own conversion `D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP` (0.6), which the RTX 3080's render
+  targets use (ties of 16-bit codes go the other way, and some others). The decoded reads are
+  exact (correctly rounded, equal to the GPU's).
+
+- Stream output after a replayed geometry shader on WebGL 2 (run 53) is written on the host from a
+  read back of the replay's capture (`StreamOutAfterReplay`), not by transform feedback as section 7
+  says for WebGL 2's stream output: the replay captures every output slot, cut ones included, and
+  dropping them needs each invocation's count of whole primitives summed over the invocations
+  before it, which neither a vertex program nor transform feedback can make. Exact (drawn equal to
+  Direct3D 11), and slow: two read backs a draw, and one more per buffer written. Stream output from a vertex shader alone
+  stays the front's native transform feedback.
+
+- Indexed strips through the stage helper (run 50) run the vertex stage once per place of the
+  listed indices, not once per index of the strip: a vertex shared by a strip's triangles is shaded
+  up to three times. This keeps one form (an indexed list) for every route after it instead of
+  teaching each route a list of record numbers; the cost is more vertex work on a route that is
+  already a counted slow path (`GeometryAsCompute`, `StreamOutAsCompute`,
+  `CullDistanceAsGeometry`, `AntialiasedLinesAsQuads`, `PrimitiveIdAsGeometry`). A vertex shader
+  with side effects would see the difference, and those (`VertexStorageWrite`) are refused. The
+  restart index is always the format's largest, as Direct3D 11 and WebGPU restart; a Direct3D 12
+  pipeline with restarts off (`D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED`) is the front's to
+  route.
+
+- Run 47 touched the WebGL 2 back end's crate, which another track owns, by six lines: a public
+  module `wcontainers_gpu_webgl::glsl` re-exporting its own `write`, `needs`, `GlslSettings` and
+  `ShaderText` (its own commit, nothing else changed), so the corpus test checks the GLSL that back
+  end writes rather than a copy of its writing (the check of run 46 found the copy hid its fixes).
+  The WebGL 2 track should keep it or give the same through its own path; it is listed for them
+  in "Asked of other tracks".
+- G6's pass bar (run 46): reported complete with a written gap list (top of this file) instead of
+  every item met, as this round's task asks, in the Direct3D 12 track's form; the independent check
+  then runs on the converter as it stands and the gaps are worked after it.
+- The corpus test's GLSL ES (run 46) is written from the key the WebGL 2 front asks
+  (`TEXTURE_INFO`), not the WebGPU key, since plan section 12 asks each back end's compile of what
+  that back end can run.
+
+- Alpha-antialiased lines (run 45): plan 4.12 says the rectangle is widened by "the reference's 3
+  by 3 pixels"; the kernel is the implementation's own (functional specification 3.4.4), so ours
+  is the pixel box filter (the rectangle reaches one pixel past the axis and half a pixel past each
+  end), which the RTX 3080's nearly is; WARP's is wider. The test holds ours to the RTX 3080 with
+  an allowance of 64 of 255 and prints WARP's differences.
+
+- The literal check (run 38): adopted as the brief of 2026-11-18 (late) says, by merging
+  origin/phase-2-graphics-direct3d-11 (which had merged origin/phase-1-literals and adopted it)
+  and then origin/phase-1-literals itself (tip 7668c010), then `init` once in the commit after the
+  merge. The init ran on the desktop's checkout (the laptop's git 2.25 lacks an `ls-files` option
+  the check uses), where only the submodules this crate builds from are checked out: the
+  baseline's lines for scripts inside dxil-spirv's other submodules (SPIRV-Tools, SPIRV-Cross, its
+  copy of dxbc-spirv, dxbc-spirv's SPIRV-Headers) became four `unparsed` lines, as in this branch's
+  "After cloning". A checkout with every submodule checked out would see those scripts as growth;
+  a `skip` policy for third-party submodules is the literals track's to add.
+
+- Storage offsets (run 28; not built yet, see Next): 4.5 said every converted program adds
+  `StorageOffset`; it is a flag (`VariantFlags::STORAGE_OFFSET`) instead, so programs whose views are aligned (most, on Direct3D
+  11) pay no load and add per access, and a front that cannot know ahead (Direct3D 12) sets it on
+  every program, which is the plan's behaviour. The plan's text now says so.
+
+- Run 26: the laptop stopped answering, so the non-GPU tests ran on the desktop (3 cargo jobs,
+  inside the GPU job) instead; the corpus and WebAssembly runs, which need the laptop's corpus and
+  tools, were not rerun.
+
+- Vertex programs without a position (run 23): the plan is silent. They convert with the position
+  (0, 0, 0, -1) added, which every clip test rejects, so a direct draw of one rasterises nothing
+  instead of the conversion being refused; the stage helper's routes (stream output, hull and
+  geometry stages) never rasterise it.
+- Direct3D 12's numbering (run 22) is the program's own, not the root signature's: each kind's
+  slots are the program's resources in (space, register) order, in the stage's set. The plan had
+  sets by visibility and ranges in root signature order with the root signature's hash in the key.
+  The back ends make each pipeline's layout from its modules, so a root-signature numbering would
+  share nothing more, while it would make a program per root signature (more conversions and cache
+  entries) and need the root signature at every conversion; the front already finds descriptors by
+  space and register. The plan's 6.4 text is changed to match (interface commit). `VariantKey::layout`
+  and `convert`'s `root_signature` stay for root constants read as immediates (not built; refused
+  `RootSignatureLayout`).
+
+- Stores of normalised formats through typed buffers are held to Direct3D's permitted tolerance
+  (0.6 of a code from the exact value, functional specification 3.2.3.4 and 3.2.3.6), not to the
+  RTX 3080's codes: the GPU rounds some values 0.51 to 0.55 above a code down, which no exact
+  formula of the specification reproduces. Every other stored and loaded value is compared exactly.
+- The formats of typed buffer views at texture slots are a variant field (`texel_formats`), so a
+  program is made per bound format; decoding by a format code read at run time would cost a branch
+  per load.
+
+- The stage helper (6.4's sketch `Stages::draw(backend, call, outputs)`) is `Stages::run`, which
+  records the compute work outside the pass and returns what the front draws in its own pass: the
+  interface allows dispatches only outside a pass, and the front owns its passes. The helper's own
+  bindings are in set 1 of its compute programs (no compute program of the API uses set 1), so the
+  interface needed no new binding numbers. Adjacency topologies are the helper's own
+  `InputTopology` (they reach only the geometry stage), not the interface's `Topology`.
+
+- Filtering in the program is held to two references, real Direct3D 11 on the RTX 3080 and WARP,
+  texel by texel equal to either (or within 1/256 of a level of detail of either, or a third answer
+  where the two differ), not to one picture: the two differ from each other in most pictures with
+  linear mip filtering (the GPU's trilinear optimisation), which no program reproduces. Anisotropic
+  cases are a known failure (Known gaps).
+- The filter library is WGSL text in the crate, parsed by naga's `wgsl-in` and imported into the
+  converted module, rather than naga IR built by hand: the same input for the same output as a
+  hand-built tree, far shorter, and reusable for the stage helper's programs.
+
+- `VIEWPORT_DEPTH_FLIP`'s reference is computed (1 - z of real Direct3D 11's depth buffer, the
+  swapped range's definition), within 4 f32 steps (3 measured): no API on the desktop draws a swapped
+  range natively (Known gaps). The other variants are held to a native feature or real Direct3D's
+  picture, exactly.
+- The counting test counts into an rgba8unorm target (the grid's triangles do not overlap, so each
+  texel counts at most one), not an r16float one: the WebGL 2 back end reads no float target back.
+- The real programs' shaders stay outside the repository (scratch and the laptop), as the plan's
+  191-shader corpus does, rather than in it beside the rig's.
+
+- wasi-sdk is not in the flake (6.2 says G6 adds it): the only machine that builds for WebAssembly is
+  the laptop, which has no Nix (the Mac must not build). It stays a release archive there (How to
+  run) until a Nix machine builds WebAssembly.
+- DXIL whose checksum is the bypass value dxc writes when it does not sign (sixteen bytes of 1) is
+  taken as signed; real Direct3D 12's answer to it is not measured (every DXIL we have is signed).
+- Malformed bytecode is contained natively by C++ exceptions at the boundary and `catch_unwind`
+  around our lowering; 6.2 builds the C++ with exceptions off everywhere. WebAssembly keeps them off
+  (wasi-sdk 25's libc++ has none), where the module instance is the boundary.
+- naga is carried as a copy in the tree (`third_party/naga`, patched in by the workspace), not as a fork
+  by git revision (6.2): a fork needs a new repository on the owner's account, and this track commits
+  only to its own branch. Moving to a git revision later changes one line of the workspace manifest.
+- `isnan` from DXBC is lowered by `convert` itself (a bit test on the float's bits), not by the WGSL
+  back end (6.5). From DXIL, naga's reader gives the IR's `isnan`/`isinf`, which the carried naga's
+  WGSL writer writes as the same bit tests (f32 only; f16 and f64 stay refused by the writer), and
+  GLSL writes as GLSL's own `isnan`/`isinf`.
+- The content key's converter version (8) is the crate version plus a hash of all the sources that
+  make the module (the C++, our Rust, the carried naga), not the crate version and the C++
+  revisions: a change to the lowering or to naga changes modules without changing either.
+- `[earlydepthstencil]` and conservative depth are not put in the module: WGSL has no form for either
+  and naga's validator refuses them under WebGPU's capabilities. Early tests are reported in
+  `StageExtras::Pixel::early_tests`; conservative depth is only an optimisation hint and is dropped
+  (so GLSL ES loses it too).
+- Every user input and output is a four-component value at location = register (6.4 speaks of packing
+  by component; WGSL has no component qualifier, and fixed four-component values let two stages
+  converted apart always agree).
+- The cache stops reading at the first entry that is cut short or fails its CRC, and drops the rest
+  (the plan says only that a cut-off last entry is ignored): past a damaged length nothing can be
+  trusted, and dropping keeps appends well-formed. The CRC covers the entry's kind, key and length
+  as well as its payload.
+- A converted shader's record keeps the naga module and the reflection, not naga's `ModuleInfo`
+  (naga cannot read it back); `decode` validates the module again.
+- The WebAssembly build imports ten WASI functions, not two (above).
+- The corpus test writes GLSL with the WebGL 2 back end's options copied (its `write_glsl` is private
+  to that crate); if that back end changes them, the test follows by hand.
+- dxil-spirv's converter library is not free of dxbc-spirv as 6.2 says: its bitcode module
+  (`bc/module_dxbc_ir.cpp`) reads dxbc-spirv's IR. It is built against our one copy of dxbc-spirv
+  (newer than the commit dxil-spirv pins; it compiles), and all of dxil-spirv is built as C++17, as
+  its CMake does for that file.
+
+## Known gaps found so far
+
+- naga's GLSL writer (carried here) assigns a vertex program's cull distances as a sized array to
+  `gl_CullDistance`, which it does not redeclare at that size; Chrome refuses it ("cannot convert
+  from 'highp array[3] of float' to 'CullDistance highp array[8] of float'", run 47 chrome.log,
+  `vs_cull` and the runner's clip-cull-distance-1 files). No harm today: the WebGL 2 back end
+  declares `CULL_DISTANCE` absent. To fix before it is declared: redeclare `gl_CullDistance` with
+  the program's size, as the writer does for `gl_ClipDistance`.
+
+- Alpha-antialiased lines (run 45): the coverage is the box filter's, within 52 of the RTX 3080's
+  in the drawn test; the RTX 3080 draws a line's end at about 0.64 where ours gives 0.5 and draws
+  nothing past it where ours fades over half a pixel. Lines are cut at the near plane (clip z = 0)
+  whatever the draw's depth clipping, so with depth clipping off a line crossing that plane loses
+  the part Direct3D would draw clamped. Two triangles of a strip's joints overlap as Direct3D's
+  rectangles do; the blend there follows draw order on both.
+
+- Clip distances applied in the pixel program on lines (run 39): Direct3D clips a line and
+  rasterises the rest by its diamond rule, so a clipped end can light a pixel whose centre the
+  distance rejects; the program keeps exactly the pixels whose centres it accepts. Seen once in each
+  of two seeds of `vs_cull`'s line list (one texel each). Triangles are unaffected beyond rounding.
+  A texel of a line strip away from the clipped ends and the plane is another matter (A10, seed
+  6202).
+- Clip distances in the program (run 38): where a pixel centre lies exactly on a clip plane,
+  Direct3D's clipped edge passes through it and its fill rule decides; the program keeps a
+  distance of exactly zero (and its interpolated value may round either side). Seen only with a
+  plane chosen through pixel centres; such pixels may differ.
+- The stage helper's vertex records carry no clip distances (run 31): a vertex shader's
+  `SV_ClipDistance` feeding a geometry or hull stage is dropped, which is exact since nothing after
+  reads it, but stream output straight from a vertex shader cannot stream it; a front must refuse a
+  stream output declaration naming it (run 31; not rechecked against the cull and replay routes,
+  whose records hold clip distances).
+
+- fxc fails with internal errors on programs with several loops in one switch and on switches
+  whose cases call functions inlined many times (run 27, the tessellator): the built-in programs
+  avoid them; the tessellation test on wgpu's Direct3D 12 is what catches a new one.
+- Tessellator output buffers are sized for every patch reaching factor 64 (about 180 KB a patch),
+  since the counts are known only on the GPU; a draw of thousands of patches needs hundreds of MB.
+  After a domain stage (run 30) the domain records and the geometry output are sized the same way
+  (every point and primitive the patches can make), and the geometry program runs for each.
+- A geometry shader's strip whose vertices name different layers or viewports (run 30): each vertex
+  is drawn in its own run's layer, where Direct3D takes a primitive's layer from its first vertex.
+  Shaders that write one layer per strip (the usual form) are exact.
+- Run 30: a subnormal tessellation factor (1e-40 in the seeded tests) moved through a hull shader
+  keeps its bits on Direct3D and is flushed to zero by the hull program on wgpu's Direct3D 12 path,
+  so the patch is culled where Direct3D draws it. The isolated tessellator test feeds factors
+  directly and does not see it. Confirmed by the drawn test: each such case equals Direct3D
+  drawing the same factors flushed (4 of 66 cases at seeds 1 and 2), and the test counts them as
+  known. Real programs are not expected to write subnormal factors.
+  To size by the counts instead (read back later, grown before the next draw) once draws run.
+- Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
+  starts about two thirds of its triangles at another vertex (winding kept); ours follow the
+  reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
+- Typed buffers: DXIL's atomics are refused by naga's SPIR-V reader; geometry shaders' are refused
+  (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
+  largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the
+  front must report.
+
+- WGSL has only the weak compare-exchange (`atomicCompareExchangeWeak`), which may fail without
+  cause; Direct3D's does not. Where the browser's back end writes it as a strong one (Direct3D 12's
+  `InterlockedCompareExchange`, Vulkan's `OpAtomicCompareExchange`) the result is exact; a spurious
+  failure elsewhere would return the compared value while not exchanging. Not seen; not tested apart.
+
+- The stage helper's refusals are gap A5 (WebGL 2), A6 (DXIL) and A7 (the rest) at the top. Its
+  buffers grow and are never shrunk.
+
+- Anisotropic filtering in the program (`filter_in_shader`, `border_in_shader`) is a known failure
+  of `tests/filter_draw.rs`: the footprint is the implementation's own (the RTX 3080's and WARP's
+  differ from each other, by up to 0.14 in seed 8), and the program's taps along the major axis are
+  a third (up to 0.59 from the GPU with gradients scaled 3 and 0.5). Seed 14 (anisotropy 4) lost
+  ANGLE's device in a WebGL 2 draw (cause not found; first suspect: the program's tap loop as
+  ANGLE's HLSL compiles it).
+- Filtering in the program refuses comparisons, so a shadow map sampled with a border colour on
+  WebGPU (no border colours there) is refused until `SamplerState` carries the comparison (Next).
+
+- The minimum level-of-detail clamp's zero is (0, 0, 0, 0): Direct3D gives the format's default
+  for components the format lacks (alpha 1 for an R8 texture, for example), which the program does
+  not know. Drawn only on RGBA8.
+- `DEPTH_BIAS` leaves a depth the program writes as it is; that Direct3D does not bias a written
+  depth is expected (as Vulkan defines it), not measured.
+- wgpu's Direct3D 12 path has no clip distances (wgpu issue 6236), so natively on Windows the
+  WebGPU back end refuses programs with them unless made on Vulkan; Chrome's WebGPU compiles them.
+- `draw_base: Arguments` serves WebGPU only: WebGL 2 has no storage buffers to read the arguments
+  from (nor indirect draws; its front reads them back and draws directly with `Helpers`).
+
+- Five DXBC shaders (gap A8: Wine's `116_cs_group_index_code`, the games' `d599fbc7efa911be`,
+  `bfa45b98c14fa486` and `f092830b5c83e017`, our own `cs_one_d`) convert to modules whose
+  expression order differs between the native and WebAssembly builds: the two results of an
+  unsigned divide come out in the other order. Same values, but a cache made natively and one
+  made in the browser would disagree on their entries (counted, the first kept). Cause (run 19): C++
+  leaves the order of a call's arguments unspecified, and dxbc-spirv builds some operands inside
+  one call's arguments (Run 19 lists them); gcc and MSVC evaluate them right to left, clang for
+  WebAssembly left to right. Fix upstream; until then the browser's conversion (clang) is the one a
+  shared cache should be made with.
+- The GPU's Direct3D 11 clears integer values into storage views otherwise than WARP and the
+  specification (Run 19); the built-in clear follows the specification, so a program relying on
+  the RTX 3080's saturation would see other texels.
+
+- `SAMPLE_MASK` (the `SampleMaskInShader` route) is drawn against the native mask on WebGPU only:
+  mozangle, the ANGLE the drawn tests use, lacks OES_sample_variables, which Chrome has. On WebGL 2
+  it is checked by Chrome compiling the corpus's shaders that write the mask (G6a run 1) and by the
+  WebGL track's per-sample test in Chrome, not by a drawn test of this crate.
+- Neither real Direct3D 11 nor ANGLE on it draws a depth range with near beyond far as Vulkan and
+  OpenGL define it (both gave the unswapped depths), so `VIEWPORT_DEPTH_FLIP` is checked against the
+  definition applied to Direct3D 11's depth, not against a native swapped range.
+
+- Signed but malformed DXIL can end the process natively: dxil-spirv's bitcode reader faults or calls
+  `std::terminate` (`bc/cast.hpp`) on it (the third check: 26 of 6,000 cases at seed 5555; the
+  second: 26 of 4,000 at seed 8128; 7 of 3000 in run 8, 9 in run 7, 10 in run 5, 15 in run 4,
+  Measurements). dxil-spirv is used unmodified, so that fix belongs upstream (not yet reported).
+  Malformed DXBC ended the process by exhausting memory in 3 of 3000 in run 5 (1 in run 4, none in
+  run 7), in 1 of 6,000 in the third check and in 1 of 8,000 in the fifth. The third check's was
+  this crate's lowering, fixed in G6a run 3; the fifth check's is dxbc-spirv sizing its list of
+  temporaries by a register index from the bytecode (gap A11); runs 4 and 5 named dxbc-spirv's
+  C++ `bad_alloc` (caught at the boundary under `ulimit -v`) without a backtrace, likely the same
+  kind (not shown). Only
+  bytecode whose checksum matches reaches the converters, so this needs a program that signs
+  malformed bytecode. `tests/fuzz.rs` stays failing at the DXIL cases.
+- Mutated but signed bytecode that dxbc-spirv accepts can give IR our lowering refuses (`Malformed`)
+  or a module naga's validation refuses (`Invalid`, for example a constant index past an array's
+  end, which Direct3D would read as zero): refused, not converted (Measurements).
+- GLSL ES 3.00 has no `noperspective` and no derivative control: the WebGL 2 back end writes the
+  first with NV_shader_noperspective_interpolation where the context has it (Chrome on the RTX 3080
+  does) and refuses fine derivatives, which the corpus records name as `FINE_DERIVATIVES`.
+- DXIL constants that are NaN or infinite are refused (`NonFiniteConstant`): naga's IR takes no such
+  literal, and making them at run time needs new expressions ahead of their users. The DXBC route
+  reads them from variables.
+- A DXIL constant buffer component picked at run time (`cb[i]` of a float4's components) is refused
+  (`ConstantComponentIndexing`): dxil-spirv reads it through a second view of the buffer as scalars
+  4 bytes apart, which WebGPU's uniform layout and WGSL's one variable per binding refuse.
+- fxc writes ordinary arithmetic and the common full-screen vertex shader with `bfi`/`ubfe`, which
+  GLSL ES 3.00 lacks; the WebGL 2 back end defines them in the program since its 2080826c.
+- The MSL writer's `continuing` fix (run 9) is checked by reading its output only; no Metal compile.
+- The WebGL 2 back end's fragment depth (z arrived as (z+1)/2) is fixed there: `ps_depth` draws equal
+  through it since run 7.
+- The WebGL 2 back end's `textureSize` from a hidden uniform (its 3ea9af6) left `ps_size` reading 1
+  by 1; fixed by its 4ab7bc84, equal since run 9.
+- Direct3D links stages by register here; programs whose vertex outputs and pixel inputs use different
+  registers for one semantic need remapping by semantic (also a variant to add).
+- Out-of-bounds texture loads give what WebGPU's robustness gives, not Direct3D's zero. So does a
+  dynamically indexed constant read past the size the bytecode declares (WebGPU clamps the index).
+- Found while drawing, for other tracks: the WebGL 2 back end keeps GL's previous viewport when a
+  draw names none (the 1 by 1 pbuffer's at first), where the WebGPU back end uses the whole target;
+  the interface does not say what an empty `viewports` means. And its read back later calls
+  `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
+
+## Interface changes
+
+- Run 58, `SlowPath::StreamOutAfterReplay`'s doc and reason (commit "interface: stream output of a
+  vertex shader alone written on the host counts as the replay route's"; plan text in section 7's
+  WebGL 2 paragraph): the slow path names stream output written on the host on the replay route,
+  after a replayed geometry shader or from a vertex shader alone. Same variant and number.
+
+- Run 56, `VariantKey::texel_formats`'s doc (commit "interface: texel_formats also names the views
+  of textures read in another component kind than declared"; plan text in 6.4's list): the bound
+  view's format at a texture slot, already given for typed buffers, now also for a texture view of
+  another component kind than the program declares, whose loads the program then reads by their
+  bits. Doc only: one field for one fact (the view's format at a texture slot).
+
+- Run 53, `SlowPath::StreamOutAfterReplay` (commit "interface: a slow path for stream output after
+  a replayed geometry shader ..."; plan text in section 7's WebGL 2 paragraph): stream output after
+  `GeometryAsReplay` is written on the host from a read back, a slow path of its own with its
+  reason; appended last, so every other reason keeps its number.
+
+- Run 51, `VariantFlags::GEOMETRY_REPLAY` (commit "interface: a variant flag for a geometry
+  shader's replay form ..."; plan text in 6.4's flag list): plan section 7's `GeometryAsReplay`
+  needs a geometry shader made a vertex program, which the variant key must ask for so that the
+  cache keys the two forms apart; a flag, as the other forms a back end's lack asks for.
+
+- Run 49, `StageValue::stream: u8` (commit "interface: gave a stage value its geometry stream
+  ..."; the plan names the type only): a geometry shader writing several streams declares each
+  stream's outputs at registers of their own, so one semantic can sit at different registers in
+  two streams; stream output names (stream, semantic), which the reflection must tell apart. 0 for
+  every value but a geometry shader's outputs of a later stream.
+
+- Run 48, `VariantKey::register_ranges: Vec<(SlotKind, u32, Range<u32>)>` (commit "interface: gave
+  the variant key the binding layout's register ranges ..."; plan text in 6.4's Direct3D 12 sets):
+  an array declared without a length (Direct3D 12's unbounded descriptor ranges inside a root
+  signature range of finite length) has as many elements as the range has registers past its
+  first, which the program alone does not say; the key carries them so that the conversion stays
+  a function of the source and the key.
+
+- Run 33, `TargetInShader::format`'s doc (commit "interface: a target written in the program takes
+  the output's bits where its format is not normalised"): it said only that the program encodes
+  into the guest's format (`NormAsInteger`); a target of another type than the program's output
+  (Direct3D 12's rt-format-mismatch) needs the field too, and for a format that is not normalised
+  the program writes the output's bits as the format's type. Doc only.
+
+- Run 29, `CompareFn`'s variants numbered 1 to 8 (Direct3D's numbers) as the codes
+  `HelperValue::EarlyTests` holds, zero there a test that is off (its doc said "u32 codes" without
+  naming them), and `EARLY_STENCIL_BINDING`'s doc says a front binds any single-sampled unsigned
+  texture there for a format without stencil (WebGPU wants every declared binding bound; the
+  program reads it only where the stencil test is on). Commit "interface: numbered the compare
+  functions ...", which also gives the shared line's new slot test the `stride` field.
+
+- Run 28, `VariantFlags::STORAGE_OFFSET` and `ReflectedBinding::stride` (commit "interface: ...";
+  plan text in 4.5): `HelperValue::StorageOffset` existed with nothing asking for it; storage views
+  at any first element (Direct3D 12's buffer_srv, the fronts' refused offsets) need the program to add
+  it, and the front needs the program's element size to choose where to bind from.
+
+- Run 26, `VariantKey::texture_layers: Vec<(u32, u32)>` and `AddedBinding::TextureLayer(slot,
+  layer)` (commit "interface: gave the variant key the layer counts of multisampled array
+  textures ..."; plan text in 4.2 and 6.4): plan 4.2 has fronts hold a multisampled array as a
+  texture per layer, which a program can only read through a binding per layer.
+- Run 26, `VariantKey::swizzled: Vec<(u32, [ViewComponent; 4])>`, `ViewComponent` and
+  `SlowPath::SwizzleInShader` (plan text in 6.4): the default for back ends without
+  `VIEW_SWIZZLE` (wgpu 30 has none), as the Direct3D 11 and 12 tracks asked.
+- Run 26, `Reflection::slow_paths: Vec<SlowPath>` (with serde derives on `SlowPath`) and
+  `SlowPath::AtomicExchangeLoop`: slow paths a program takes by itself whatever its variant, so the
+  front can count and warn of them.
+
+- Run 24, `HelperValue::Layer` and `HelperValue::Viewport` (commit "interface: gave fragment
+  programs the layer and viewport of the draw's run as helper values"; plan text in 4.12's layered
+  drawing): a pixel shader reading its layer or viewport index needs the run's, which only the
+  front knows (`LayerSplit`, `MultiViewportSplit`), and zero where no earlier stage writes one;
+  WebGPU has no such fragment input. Both fronts refuse helper values they do not write, so they
+  build unchanged and refuse such shaders by name until they write them.
+
+- Run 22, `ReflectedBinding::slot()` and the per-slot fields of `VariantKey`, the sampled pairs and
+  `AddedBinding::ConstantsAs*` named by slot (commit "interface: named variant slots by a binding's
+  place in its kind's range ..."; plan text in 6.4's Direct3D 12 sets): under Direct3D 12's
+  numbering registers can be any size and repeat across spaces, so a bit per register cannot name
+  them; the slot is the register under Direct3D 11's.
+
+- Run 20, `DOMAIN_PATCHES_BINDING` (13) and `DOMAIN_POINTS_BINDING` (14) in the helper set (commit
+  "interface: named the bindings in the helper set where a domain program reads ..."; plan text in
+  6.4's set 3 list): a domain program, the final draw's vertex program, reads the hull stage's
+  patches and the tessellator's points, which the front binds there for the stage helper.
+- Run 20, `StageExtras::Hull` gained `point_locations` and `constant_locations` (commit "interface:
+  gave a hull shader's reflection the locations it writes per control point and per patch"): the
+  stage helper sizes the patch records from them.
+- Run 18, `HelperValue::TexelLayout { slot }` given the view's width, height and layers or depth
+  (five u32 in two 16-byte rows; commit "interface: gave the texel layout of a storage view read
+  through a buffer the view's size ..."; plan text in 4.12): bounds and size queries need them, and
+  the row pitch is not the width.
+- Run 18, `VariantKey::texel_formats: Vec<(u32, Format)>` and `HelperValue::TexelBufferView { set,
+  binding }` (commit "interface: gave the variant key the formats of typed buffers at texture slots
+  ..."), then `TEXEL_BUFFER_TEXTURE_WIDTH` (2048) and the texture route's documentation (commit
+  "interface: laid out the texture a typed buffer is read through on webgl 2 ..."); plan text in
+  4.5's variant paragraph and 6.4's helper values: a program decoding a typed buffer must know the
+  bound view's format, place and length, which only the front knows.
+
+- Run 15, `HelperValue::TextureComponents { texture }` (commit "interface: gave the helper constants
+  the components of a texture's format ..."; plan text in 6.4's list of helper values): a border
+  colour applied in the program is read as a texel of the view's format, which only the front
+  knows; a per-texture value, since one sampler serves textures of several formats.
+
+- Run 14, `CONSTANTS_TEXTURE_WIDTH` (256) and `AddedBinding::ConstantsAsTexture`'s texture described
+  (commit "interface: laid out the texture a constant buffer is read through ..."; plan text in 4.12):
+  the front's copy and the program's fetch must agree on where each row lies.
+
+- Run 14, `HelperValue::PulledStream { input }` (was `{ stream }`, three u32) as four u32 (offset,
+  stride, divisor, bias), and `AddedBinding::PulledStream(n)` documented as the binding of the input
+  at location n (commit "interface: gave each pulled vertex input its own binding ..."; plan text in
+  4.12): the program then does not depend on how inputs share streams, and a step rate's first
+  instance folds into the bias, so no base is needed.
+
+- Run 13, `VariantKey::linked: LinkedValues { location: u32, clip_distances: u8 }` (commit
+  "interface: gave the variant key where the values clip distances and depth clamping add pass
+  ..."): the two programs are converted apart and must agree where the added values travel; plan
+  text in 4.12. And `HelperValue::SamplerState`'s codes numbered as the variants' order of `Filter`
+  and `AddressMode` (doc only).
+
+- Run 9, two commits touching only `crates/wcontainers-gpu` (and the lock): serde `Serialize` and
+  `Deserialize` derives on the variant key, the reflection and every type they hold (`Format`,
+  `VertexFormat`, `ShaderStage` included), and on the state blocks of `state.rs` and `CompareFn`, as
+  section 8 plans for the cache's postcard records.
+
+- `VariantKey::output_interpolation: Vec<(u32, Interpolation)>` (commit "interface: gave the variant
+  key the interpolation ..."): how the pixel program interpolates each vertex output, by location,
+  where not `Perspective`; the vertex program writes them so. A variant field, as 4.4 has all
+  rewrites that depend on what else is bound; plan text in section 4 says so.
+
+- `VariantFlags::TEXTURE_INFO` (run 42, commit "interface: texture_info also reads sizes as zero
+  ..."): under the flag a size asked at a level at or past `HelperValue::TextureLevels` reads
+  zero, so a front binds it where a slot asked its size is empty (zero levels written there), on
+  any back end; doc of the flag and plan 4.12 only, no new field.
+
+- `VariantFlags::LAYER_FROM_STAGE` and `HelperValue::LayerCount` (run 43, commit "interface: a
+  layer named past the views drawn into the first ..."): the Direct3D 11 track's layered item. A
+  flag in both programs' keys (as `CLIP_DISTANCE`), the named layer a flat u32 after `linked`'s
+  values (doc of `LinkedValues`), and the views' layer count a value of the pass-through's block;
+  plan 4.12's layered drawing says so. Fronts that do not set the flag see no change
+  (`PASSTHROUGH_HELPERS` keeps its two values).
+
+- Where `LINE_COVERAGE` and `PRIMITIVE_ID_FROM_STAGE` read their values (run 45, commits
+  "interface: the line coverage values pass after the linked values" and "interface: the
+  primitive's number passes after the linked values"): documentation of `LinkedValues` and of the
+  two flags only, no new field. The line coverage (four f32 without perspective) and then the
+  primitive's number (a flat u32) follow `linked`'s other values; `stage::line_coverage_location`
+  and `stage::primitive_id_location` compute them from the pixel program's key.

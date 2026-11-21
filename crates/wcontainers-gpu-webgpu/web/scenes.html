@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU back end scenes</title>
+<script type="module">
+// The scenes example built for WebAssembly, as wasm-bindgen writes it into ./pkg.
+import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, srgb_views, float_clears, query_sets, depth_group_copies, pulled_costs, program_features, copy_gaps, adapter } from './pkg/scenes.js';
+const ready = init();
+
+const dataUrl = (png) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(new Blob([png], { type: 'image/png' }));
+});
+
+// The eight-viewport scene, with its viewports at half pixels or moved to whole ones.
+window.drawViewports = async (rounded) => {
+  await ready;
+  return await dataUrl(await draw_viewports(rounded));
+};
+
+// First draws of new programs without and with prepare, one line per half.
+window.prepareTimings = async (programs) => {
+  await ready;
+  return await prepare_timings(programs);
+};
+
+// Timestamps around work and against this page's clock: one line, or an error naming the failed check.
+window.timestamps = async () => {
+  await ready;
+  return await timestamps();
+};
+
+// The formats held converted: one line, or an error naming the failed check.
+window.converted = async (seed, cases) => {
+  await ready;
+  return await converted(BigInt(seed), cases);
+};
+
+// Textures renamed from the pool by discarded writes: one line, or an error.
+window.textureRenames = async () => {
+  await ready;
+  return await texture_renames();
+};
+
+// sRGB views of a texture that also allows storage, read as an sRGB texture is: one line, or an error.
+window.srgbViews = async () => {
+  await ready;
+  return await srgb_views();
+};
+
+// Clears of 32-bit float formats keeping every bit: one line, or an error.
+window.floatClears = async () => {
+  await ready;
+  return await float_clears();
+};
+
+// Query sets past 4096 queries and query results from one ring: one line each, or an error.
+window.querySets = async () => {
+  await ready;
+  return await query_sets();
+};
+
+// Copies between depth16unorm and its group's colour formats: one line, or an error.
+window.depthGroupCopies = async () => {
+  await ready;
+  return await depth_group_copies();
+};
+
+// Texture reads into buffers keeping the bytes between rows: one line, or an error.
+window.copyGaps = async (seed) => {
+  await ready;
+  return await copy_gaps(BigInt(seed));
+};
+
+// Program features (subgroups, the primitive index) against the features the adapter offers:
+// one line each, or an error.
+window.programFeatures = async (offered) => {
+  await ready;
+  return await program_features(offered);
+};
+
+// Instance data fetched in the program against vertex buffers: one line per route, or an error.
+window.pulledCosts = async (frames) => {
+  await ready;
+  return await pulled_costs(frames);
+};
+
+// The vertex formats WebGPU lacks read through shadow streams: one line, or an error.
+window.vertexFormats = async (seed, n) => {
+  await ready;
+  return await vertex_formats(BigInt(seed), n);
+};
+
+// One scene, drawn through the back end on this browser's WebGPU, as a PNG data URL.
+window.drawScene = async (name, twist) => {
+  await ready;
+  return await dataUrl(await draw_scene(name, twist));
+};
+
+// The adapter a high-performance request gets, as the browser and as the back end describe it.
+window.adapterInfo = async () => {
+  await ready;
+  const a = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const i = a.info;
+  return {
+    description: i.description,
+    vendor: i.vendor,
+    backend: i.backend,
+    type: i.type,
+    fallback: i.isFallbackAdapter ?? a.isFallbackAdapter ?? false,
+    features: [...a.features],
+    backEnd: await adapter(),
+  };
+};
+</script>

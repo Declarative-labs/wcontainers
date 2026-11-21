@@ -1,0 +1,21 @@
+[package]
+name = "wcontainers-gpu"
+description = "The interface every wcontainers graphics front (Direct3D, OpenGL, Vulkan) and back end (WebGPU, WebGL 2) meets at."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitflags = { workspace = true, features = ["serde"] }
+blake3 = { version = "1", default-features = false }
+half = { version = "2", default-features = false }
+naga = { workspace = true, features = ["wgsl-in"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
+
+[lints]
+workspace = true

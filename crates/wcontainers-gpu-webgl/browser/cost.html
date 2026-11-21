@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGL 2 and WebGPU per-draw cost</title>
+<script type="importmap">{ "imports": { "wcontainers-device": "./device.js" } }</script>
+<script type="module">
+// Times one scene through the WebGL 2 and the WebGPU back ends (pkg/draw_cost.js): for each back end,
+// each draw count, with or without a binding set per draw, and as strips or indexed lists, `warm`
+// frames untimed, then `frames` frames each timed around its recording and submission, with a 20 ms
+// pause between frames so the GPU keeps up. Sets window.done to { ok, lines }.
+import init, { GlCost, gpu_cost } from './pkg/draw_cost.js';
+const params = new URLSearchParams(location.search);
+const frames = Number(params.get('frames') ?? 30);
+const warm = Number(params.get('warm') ?? 5);
+const counts = (params.get('draws') ?? '1000 10000').split(' ').map(Number);
+const pause = () => new Promise((r) => setTimeout(r, 20));
+const lines = [];
+async function time(name, device) {
+  for (const draws of counts) {
+    for (const [vary, indexed] of [[false, false], [true, false], [false, true], [true, true]]) {
+      const t = [];
+      for (let i = 0; i < warm + frames; i++) {
+        const start = performance.now();
+        device.frame(draws, vary, indexed);
+        const end = performance.now();
+        if (i >= warm) t.push(end - start);
+        await pause();
+      }
+      t.sort((a, b) => a - b);
+      const median = t[t.length >> 1];
+      lines.push(`${name} ${draws} draws, ${vary ? 'a set per draw' : 'one set'}${indexed ? ', indexed' : ''}: median ${median.toFixed(3)} ms a frame (` +
+        `${(median * 1000 / draws).toFixed(3)} us a draw), fastest ${t[0].toFixed(3)} ms, slowest ${t[t.length - 1].toFixed(3)} ms, ${frames} frames`);
+    }
+  }
+  lines.push(`${name}: ${device.report()}`);
+}
+try {
+  await init();
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false });
+  await time('webgl2', new GlCost(gl));
+  // The adapter the WebGPU side asks for, which must be a GPU (Chrome names its type with
+  // --enable-webgpu-developer-features, which chrome.mjs gives).
+  const info = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })).info;
+  lines.push(`webgpu adapter: ${info.description} (${info.type}, ${info.backend})`);
+  if (!['discrete GPU', 'integrated GPU'].includes(info.type)) throw new Error(`WebGPU's adapter is of type ${info.type}, not a GPU`);
+  await time('webgpu', await gpu_cost());
+  window.done = { ok: true, lines };
+} catch (e) {
+  window.done = { ok: false, lines: [...lines, String(e)] };
+}
+</script>

@@ -1,0 +1,52 @@
+[package]
+name = "wcontainers-shaders"
+description = "Turns Direct3D shader bytecode (DXBC, DXIL) into the common form of wcontainers-gpu, with its reflection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-gpu = { path = "../wcontainers-gpu" }
+naga = { workspace = true, features = ["spv-in", "wgsl-in", "serialize", "deserialize"] }
+blake3 = { version = "1", default-features = false }
+crc32fast = { version = "1", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+spirv = "0.4"
+
+[build-dependencies]
+blake3 = "1"
+cc = { version = "1", features = ["parallel"] }
+
+[dev-dependencies]
+fastrand = "2"
+md-5 = { version = "0.11", default-features = false }
+serde = { version = "1", features = ["derive"] }
+naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "msl-out", "wgsl-out"] }
+
+# tests/corpus.rs: GLSL ES as the WebGL 2 back end writes it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wcontainers-gpu-webgl = { path = "../wcontainers-gpu-webgl" }
+
+# tests/draw.rs: real Direct3D 11 beside the WebGPU and WebGL 2 back ends.
+[target.'cfg(windows)'.dev-dependencies]
+pollster = "1.0.1"
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
+wgpu = "30.0.2"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "wasm_imports"
+crate-type = ["cdylib"]

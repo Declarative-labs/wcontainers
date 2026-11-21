@@ -224,11 +224,11 @@ const XSAVE_BYTES: u32 = AVX_STATE_OFFSET + AVX_STATE_BYTES;
 
 /// Packs bytes into registers, four to each, little-endian, zero past the end.
 const fn packed<const N: usize>(bytes: &[u8]) -> [u32; N] {
-    const WORD: usize = size_of::<u32>();
+    const REGISTER_BYTES: usize = size_of::<u32>();
     let mut out = [0; N];
     let mut i = 0;
-    while i < bytes.len() && i < N * WORD {
-        out[i / WORD] |= (bytes[i] as u32) << (u8::BITS as usize * (i % WORD));
+    while i < bytes.len() && i < N * REGISTER_BYTES {
+        out[i / REGISTER_BYTES] |= (bytes[i] as u32) << (u8::BITS as usize * (i % REGISTER_BYTES));
         i += 1;
     }
     out

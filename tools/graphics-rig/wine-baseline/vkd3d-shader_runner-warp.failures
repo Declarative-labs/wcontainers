@@ -1,0 +1,15 @@
+hlsl+cast-to-half.shader_test shader_runner.c:2032 7-8
+hlsl+float-comparison.shader_test shader_runner.c:2032 6
+hlsl+gather-cmp.shader_test shader_runner.c:2032 5-9,12-16
+hlsl+half.shader_test shader_runner.c:2032 32
+hlsl+object-references.shader_test shader_runner.c:2032 24
+hlsl+pointer-cast.shader_test shader_runner.c:2032 1-2
+hlsl+register-reservations-resources.shader_test shader_runner.c:2032 23
+hlsl+sm6-uav-rwtexture.shader_test shader_runner.c:2032 5-6
+hlsl+switch.shader_test shader_runner_d3d12.c:1200 163
+hlsl+tgsm.shader_test shader_runner.c:2052 198-199,202-203,221,223
+hlsl+uav-rwbuffer.shader_test shader_runner.c:2704 36-37,39,42,44,47
+hlsl+uav-rwstructuredbuffer.shader_test shader_runner.c:2003 1-2
+hlsl+uav-rwstructuredbuffer.shader_test shader_runner.c:2052 32-33
+hlsl+uav-rwtexture.shader_test shader_runner.c:2704 53-62
+hlsl+wave-ops-uint.shader_test shader_runner_d3d12.c:984 25

@@ -1,0 +1,1503 @@
+d3dbc+bump-1-vs.dxbc	ok ; glsl compiles
+d3dbc+bump-3-vs.dxbc	ok ; glsl compiles
+d3dbc+loop-1-vs.dxbc	ok ; glsl compiles
+d3dbc+lrp-1-vs.dxbc	ok ; glsl compiles
+d3dbc+mnxn-1-ps.dxbc	ok ; glsl compiles
+d3dbc+pow-1-vs.dxbc	ok ; glsl compiles
+d3dbc+texdepth-1-vs.dxbc	ok ; glsl compiles
+hlsl+abs-1-ps.dxbc	ok ; glsl compiles
+hlsl+abs-2-ps.dxbc	ok ; glsl compiles
+hlsl+abs-3-ps.dxbc	ok ; glsl compiles
+hlsl+all-1-ps.dxbc	ok ; glsl compiles
+hlsl+all-2-ps.dxbc	ok ; glsl compiles
+hlsl+all-3-ps.dxbc	ok ; glsl compiles
+hlsl+alpha-test-1-vs.dxbc	ok ; glsl compiles
+hlsl+alpha-test-2-ps.dxbc	ok ; glsl compiles
+hlsl+angle-unit-1-ps.dxbc	ok ; glsl compiles
+hlsl+angle-unit-2-ps.dxbc	ok ; glsl compiles
+hlsl+any-1-ps.dxbc	ok ; glsl compiles
+hlsl+any-2-ps.dxbc	ok ; glsl compiles
+hlsl+any-3-ps.dxbc	ok ; glsl compiles
+hlsl+any-4-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-1-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-2-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-3-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-4-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-5-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-6-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-1-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-10-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-11-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-13-ps.dxbc	unsupported Float64
+hlsl+arithmetic-float-uniform-14-ps.dxbc	unsupported Float64
+hlsl+arithmetic-float-uniform-15-ps.dxbc	unsupported Float64
+hlsl+arithmetic-float-uniform-16-ps.dxbc	unsupported Float64
+hlsl+arithmetic-float-uniform-17-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-18-ps.dxbc	unsupported Float64
+hlsl+arithmetic-float-uniform-19-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-2-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-20-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-21-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-22-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-26-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-27-ps.dxbc	unsupported Float64
+hlsl+arithmetic-float-uniform-5-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-6-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-7-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-8-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-float-uniform-9-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-1-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-10-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-11-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-12-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-13-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-14-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-15-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-2-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-3-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-4-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-5-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-6-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-9-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-1-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-10-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-11-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-2-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-20-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-21-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-22-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-3-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-4-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-5-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-6-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-7-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-8-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-int-uniform-9-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-1-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-10-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-11-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-12-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-13-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-2-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-5-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-6-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-7-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-8-ps.dxbc	ok ; glsl compiles
+hlsl+arithmetic-uint-9-ps.dxbc	ok ; glsl compiles
+hlsl+array-dimension-1-ps.dxbc	ok ; glsl compiles
+hlsl+array-dimension-2-ps.dxbc	ok ; glsl compiles
+hlsl+array-dimension-3-ps.dxbc	ok ; glsl compiles
+hlsl+array-dimension-4-ps.dxbc	ok ; glsl compiles
+hlsl+array-dimension-5-ps.dxbc	ok ; glsl compiles
+hlsl+array-parameters-1-ps.dxbc	ok ; glsl compiles
+hlsl+array-parameters-2-ps.dxbc	ok ; glsl compiles
+hlsl+array-parameters-4-ps.dxbc	ok ; glsl compiles
+hlsl+array-parameters-5-ps.dxbc	ok ; glsl compiles
+hlsl+array-size-expr-1-ps.dxbc	ok ; glsl compiles
+hlsl+array-size-expr-2-ps.dxbc	ok ; glsl compiles
+hlsl+array-size-expr-3-ps.dxbc	ok ; glsl compiles
+hlsl+array-size-expr-4-ps.dxbc	ok ; glsl compiles
+hlsl+array-size-expr-5-ps.dxbc	ok ; glsl compiles
+hlsl+asfloat-1-ps.dxbc	ok ; glsl compiles
+hlsl+asfloat-2-ps.dxbc	ok ; glsl compiles
+hlsl+asint-1-ps.dxbc	ok ; glsl compiles
+hlsl+asint-2-ps.dxbc	ok ; glsl compiles
+hlsl+asuint-1-ps.dxbc	ok ; glsl compiles
+hlsl+asuint-2-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-1-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-12-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-13-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-14-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-2-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-3-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-4-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-5-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-6-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-7-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-8-ps.dxbc	ok ; glsl compiles
+hlsl+attributes-9-ps.dxbc	ok ; glsl compiles
+hlsl+attrout-semantics-1-ps.dxbc	ok ; glsl compiles
+hlsl+attrout-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+attrout-semantics-3-vs.dxbc	ok ; glsl compiles
+hlsl+attrout-semantics-4-ps.dxbc	ok ; glsl compiles
+hlsl+attrout-semantics-5-vs.dxbc	ok ; glsl compiles
+hlsl+attrout-semantics-6-ps.dxbc	ok ; glsl compiles
+hlsl+barriers-1-cs.dxbc	ok ; glsl absent compute
+hlsl+barriers-2-ps.dxbc	ok ; glsl compiles
+hlsl+barriers-3-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+barriers-4-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+bitwise-1-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-10-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-11-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-12-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-13-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-14-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-15-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-16-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-2-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-3-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-4-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-5-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-6-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-7-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-8-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-9-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-assignment-1-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-assignment-2-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-assignment-3-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-assignment-4-ps.dxbc	ok ; glsl compiles
+hlsl+bitwise-assignment-5-ps.dxbc	ok ; glsl compiles
+hlsl+bool-cast-1-ps.dxbc	ok ; glsl compiles
+hlsl+bool-cast-2-ps.dxbc	ok ; glsl compiles
+hlsl+bool-cast-3-ps.dxbc	ok ; glsl compiles
+hlsl+bool-cast-4-ps.dxbc	ok ; glsl compiles
+hlsl+bool-semantics-1-vs.dxbc	ok ; glsl compiles
+hlsl+bool-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+calculate-lod-1-ps.dxbc	unsupported CalculateLevelOfDetail
+hlsl+calculate-lod-2-ps.dxbc	unsupported CalculateLevelOfDetail
+hlsl+calculate-lod-3-ps.dxbc	unsupported CalculateLevelOfDetail
+hlsl+calculate-lod-4-ps.dxbc	unsupported CalculateLevelOfDetail
+hlsl+cast-64-bit-1-ps.dxbc	unsupported Float64
+hlsl+cast-64-bit-10-ps.dxbc	unsupported Float64
+hlsl+cast-64-bit-2-ps.dxbc	ok ; glsl compiles
+hlsl+cast-64-bit-3-ps.dxbc	unsupported Float64
+hlsl+cast-64-bit-4-ps.dxbc	unsupported Float64
+hlsl+cast-64-bit-7-ps.dxbc	unsupported Float64
+hlsl+cast-64-bit-8-ps.dxbc	unsupported Float64
+hlsl+cast-64-bit-9-ps.dxbc	unsupported Float64
+hlsl+cast-broadcast-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-broadcast-2-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-10-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-11-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-13-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-15-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-17-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-2-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-20-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-21-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-22-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-24-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-25-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-26-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-27-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-29-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-3-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-30-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-4-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-5-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-6-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-7-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-8-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-compatible-9-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-equal-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-equal-2-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-equal-3-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-equal-4-ps.dxbc	ok ; glsl compiles
+hlsl+cast-componentwise-equal-5-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-float-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-float-2-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-half-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-half-2-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-int-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-int-2-vs.dxbc	ok ; glsl compiles
+hlsl+cast-to-int-3-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-int-4-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-int-5-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-uint-1-ps.dxbc	ok ; glsl compiles
+hlsl+cast-to-uint-2-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-1-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-10-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-11-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-12-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-13-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-14-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-16-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-17-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-18-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-2-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-20-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-21-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-22-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-25-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-26-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-29-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-3-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-31-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-32-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-33-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-34-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-35-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-36-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-37-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-4-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-5-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-6-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-7-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-8-ps.dxbc	ok ; glsl compiles
+hlsl+cbuffer-9-ps.dxbc	ok ; glsl compiles
+hlsl+ceil-1-ps.dxbc	ok ; glsl compiles
+hlsl+ceil-2-ps.dxbc	ok ; glsl compiles
+hlsl+ceil-3-ps.dxbc	ok ; glsl compiles
+hlsl+ceil-4-ps.dxbc	ok ; glsl compiles
+hlsl+cf-cond-types-1-ps.dxbc	ok ; glsl compiles
+hlsl+cf-cond-types-2-ps.dxbc	ok ; glsl compiles
+hlsl+clamp-1-ps.dxbc	ok ; glsl compiles
+hlsl+clamp-2-ps.dxbc	ok ; glsl compiles
+hlsl+clip-1-ps.dxbc	ok ; glsl compiles
+hlsl+clip-2-ps.dxbc	ok ; glsl compiles
+hlsl+clip-cull-distance-1-1-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-10-ps.dxbc	ok ; glsl compiles
+hlsl+clip-cull-distance-1-11-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-12-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-13-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-14-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-15-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-16-gs.dxbc	unsupported ClipDistance
+hlsl+clip-cull-distance-1-17-vs.dxbc	ok ; glsl compiles
+hlsl+clip-cull-distance-1-18-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-19-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-2-ps.dxbc	ok ; glsl compiles
+hlsl+clip-cull-distance-1-20-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-21-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-4-ps.dxbc	ok ; glsl compiles
+hlsl+clip-cull-distance-1-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-6-ps.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-9-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-2-1-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-2-2-ps.dxbc	unsupported ClipDistance
+hlsl+clip-cull-distance-2-3-ps.dxbc	ok ; glsl compiles
+hlsl+clip-cull-distance-2-4-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-2-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-planes-1-ps.dxbc	ok ; glsl compiles
+hlsl+color-clamping-1-vs.dxbc	ok ; glsl compiles
+hlsl+color-clamping-2-ps.dxbc	ok ; glsl compiles
+hlsl+color-clamping-3-vs.dxbc	ok ; glsl compiles
+hlsl+color-clamping-4-ps.dxbc	ok ; glsl compiles
+hlsl+color-clamping-5-vs.dxbc	ok ; glsl compiles
+hlsl+color-clamping-6-ps.dxbc	ok ; glsl compiles
+hlsl+color-clamping-7-vs.dxbc	ok ; glsl compiles
+hlsl+combined-samplers-12-ps.dxbc	ok ; glsl compiles
+hlsl+comma-1-ps.dxbc	ok ; glsl compiles
+hlsl+compute-1-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-2-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-3-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-4-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-5-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+conditional-1-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-10-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-11-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-12-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-13-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-14-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-15-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-16-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-17-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-18-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-19-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-2-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-3-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-5-vs.dxbc	ok ; glsl compiles
+hlsl+conditional-6-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-7-vs.dxbc	ok ; glsl compiles
+hlsl+conditional-8-ps.dxbc	ok ; glsl compiles
+hlsl+conditional-9-ps.dxbc	ok ; glsl compiles
+hlsl+const-1-ps.dxbc	ok ; glsl compiles
+hlsl+const-3-ps.dxbc	ok ; glsl compiles
+hlsl+constructgswithso-1-ps.dxbc	ok ; glsl compiles
+hlsl+constructgswithso-3-ps.dxbc	ok ; glsl compiles
+hlsl+constructgswithso-5-ps.dxbc	ok ; glsl compiles
+hlsl+coverage-1-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
+hlsl+coverage-2-ps.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+cross-1-ps.dxbc	ok ; glsl compiles
+hlsl+cross-2-ps.dxbc	ok ; glsl compiles
+hlsl+d3dcolor-to-ubyte4-1-ps.dxbc	ok ; glsl compiles
+hlsl+d3dcolor-to-ubyte4-2-ps.dxbc	ok ; glsl compiles
+hlsl+ddxddy-1-ps.dxbc	ok ; glsl compiles
+hlsl+ddxddy-2-ps.dxbc	ok ; glsl compiles
+hlsl+ddxddy-3-ps.dxbc	ok ; glsl compiles
+hlsl+ddxddy-4-ps.dxbc	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
+hlsl+default-values-1-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-11-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-12-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-13-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-14-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-15-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-16-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-17-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-18-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-19-ps.dxbc	unsupported Float64
+hlsl+default-values-20-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-4-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-5-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-6-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-7-ps.dxbc	ok ; glsl compiles
+hlsl+default-values-8-ps.dxbc	ok ; glsl compiles
+hlsl+depth-bounds-1-vs.dxbc	unsupported VertexStorageWrite (with views)
+hlsl+depth-bounds-2-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+depth-out-1-ps.dxbc	ok ; glsl compiles
+hlsl+depth-out-2-vs.dxbc	ok ; glsl compiles
+hlsl+depth-out-3-ps.dxbc	ok ; glsl compiles
+hlsl+depth-out-4-ps.dxbc	ok ; glsl compiles
+hlsl+descriptors-1-ps.dxbc	ok ; glsl compiles
+hlsl+descriptors-2-ps.dxbc	ok ; glsl compiles
+hlsl+descriptors-3-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+determinant-1-ps.dxbc	ok ; glsl compiles
+hlsl+determinant-2-ps.dxbc	ok ; glsl compiles
+hlsl+determinant-3-ps.dxbc	ok ; glsl compiles
+hlsl+determinant-4-ps.dxbc	ok ; glsl compiles
+hlsl+determinant-5-ps.dxbc	ok ; glsl compiles
+hlsl+determinant-6-ps.dxbc	ok ; glsl compiles
+hlsl+determinant-7-ps.dxbc	ok ; glsl compiles
+hlsl+discard-1-ps.dxbc	ok ; glsl compiles
+hlsl+discard-2-ps.dxbc	ok ; glsl compiles
+hlsl+discard-3-ps.dxbc	ok ; glsl compiles
+hlsl+discard-4-ps.dxbc	ok ; glsl compiles
+hlsl+discard-5-ps.dxbc	ok ; glsl compiles
+hlsl+discard-6-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+distance-1-ps.dxbc	ok ; glsl compiles
+hlsl+distance-2-ps.dxbc	ok ; glsl compiles
+hlsl+distance-3-ps.dxbc	ok ; glsl compiles
+hlsl+distance-4-ps.dxbc	ok ; glsl compiles
+hlsl+distance-5-ps.dxbc	ok ; glsl compiles
+hlsl+dot-1-ps.dxbc	ok ; glsl compiles
+hlsl+dot-2-ps.dxbc	ok ; glsl compiles
+hlsl+dot-3-ps.dxbc	ok ; glsl compiles
+hlsl+dot-4-ps.dxbc	ok ; glsl compiles
+hlsl+dot-5-ps.dxbc	ok ; glsl compiles
+hlsl+dot-6-ps.dxbc	ok ; glsl compiles
+hlsl+duplicate-modifiers-1-ps.dxbc	ok ; glsl compiles
+hlsl+early-depth-stencil-1-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+effect-assignments-fx_5-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-12-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-13-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-14-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-16-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-17-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-18-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-2-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-3-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-6-ps.dxbc	ok ; glsl compiles
+hlsl+effect-compile-7-ps.dxbc	ok ; glsl compiles
+hlsl+effect-shader-objects-fx_2-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-shader-objects-fx_5-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_2-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_2-2-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_2-3-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_2-4-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_2-5-vs.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_2-6-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_4-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_4-2-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_4-3-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_4-4-vs.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_4-5-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_5-1-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_5-2-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_5-3-ps.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_5-4-vs.dxbc	ok ; glsl compiles
+hlsl+effect-technique-fx_5-5-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-1-vs.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-10-vs.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-11-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-12-vs.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-13-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-14-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-15-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-16-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-3-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-4-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-5-vs.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-6-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-7-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-8-ps.dxbc	ok ; glsl compiles
+hlsl+entry-point-semantics-9-ps.dxbc	ok ; glsl compiles
+hlsl+eval-attrib-1-vs.dxbc	ok ; glsl compiles
+hlsl+eval-attrib-10-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-11-ps.dxbc	ok ; glsl compiles
+hlsl+eval-attrib-12-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-13-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-14-ps.dxbc	unsupported SampleCount
+hlsl+eval-attrib-2-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-3-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-4-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-5-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-6-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-7-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-8-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-9-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+exp-1-ps.dxbc	ok ; glsl compiles
+hlsl+exp-2-ps.dxbc	ok ; glsl compiles
+hlsl+expr-indexing-1-ps.dxbc	ok ; glsl compiles
+hlsl+expr-indexing-2-ps.dxbc	ok ; glsl compiles
+hlsl+expr-indexing-3-ps.dxbc	ok ; glsl compiles
+hlsl+expr-indexing-4-ps.dxbc	ok ; glsl compiles
+hlsl+expr-indexing-5-ps.dxbc	ok ; glsl compiles
+hlsl+expr-indexing-6-ps.dxbc	ok ; glsl compiles
+hlsl+f16tof32-1-ps.dxbc	ok ; glsl compiles
+hlsl+f32tof16-1-ps.dxbc	ok ; glsl compiles
+hlsl+faceforward-1-ps.dxbc	ok ; glsl compiles
+hlsl+ffp-point-size-1-vs.dxbc	ok ; glsl compiles
+hlsl+ffp-point-size-2-ps.dxbc	ok ; glsl compiles
+hlsl+float-comparison-1-ps.dxbc	ok ; glsl compiles
+hlsl+float-comparison-2-ps.dxbc	ok ; glsl compiles
+hlsl+float-comparison-3-ps.dxbc	ok ; glsl compiles
+hlsl+float-comparison-4-ps.dxbc	ok ; glsl compiles
+hlsl+floor-1-ps.dxbc	ok ; glsl compiles
+hlsl+floor-2-ps.dxbc	ok ; glsl compiles
+hlsl+floor-3-ps.dxbc	ok ; glsl compiles
+hlsl+floor-4-ps.dxbc	ok ; glsl compiles
+hlsl+fmod-1-ps.dxbc	ok ; glsl compiles
+hlsl+fmod-2-ps.dxbc	ok ; glsl compiles
+hlsl+fog-1-vs.dxbc	ok ; glsl compiles
+hlsl+fog-2-ps.dxbc	ok ; glsl compiles
+hlsl+fog-3-vs.dxbc	ok ; glsl compiles
+hlsl+fog-4-ps.dxbc	ok ; glsl compiles
+hlsl+fog-5-vs.dxbc	ok ; glsl compiles
+hlsl+for-1-vs.dxbc	ok ; glsl compiles
+hlsl+for-2-ps.dxbc	ok ; glsl compiles
+hlsl+for-3-ps.dxbc	ok ; glsl compiles
+hlsl+for-4-ps.dxbc	ok ; glsl compiles
+hlsl+frac-1-ps.dxbc	ok ; glsl compiles
+hlsl+frexp-1-ps.dxbc	ok ; glsl compiles
+hlsl+frexp-2-ps.dxbc	ok ; glsl compiles
+hlsl+frexp-3-ps.dxbc	ok ; glsl compiles
+hlsl+frexp-4-ps.dxbc	ok ; glsl compiles
+hlsl+frexp-5-ps.dxbc	ok ; glsl compiles
+hlsl+function-1-ps.dxbc	ok ; glsl compiles
+hlsl+function-10-ps.dxbc	ok ; glsl compiles
+hlsl+function-11-ps.dxbc	ok ; glsl compiles
+hlsl+function-12-ps.dxbc	ok ; glsl compiles
+hlsl+function-13-ps.dxbc	ok ; glsl compiles
+hlsl+function-14-ps.dxbc	ok ; glsl compiles
+hlsl+function-15-ps.dxbc	ok ; glsl compiles
+hlsl+function-16-ps.dxbc	ok ; glsl compiles
+hlsl+function-3-ps.dxbc	ok ; glsl compiles
+hlsl+function-4-ps.dxbc	ok ; glsl compiles
+hlsl+function-5-ps.dxbc	ok ; glsl compiles
+hlsl+function-6-ps.dxbc	ok ; glsl compiles
+hlsl+function-9-ps.dxbc	ok ; glsl compiles
+hlsl+function-cast-1-ps.dxbc	ok ; glsl compiles
+hlsl+function-cast-2-ps.dxbc	ok ; glsl compiles
+hlsl+function-cast-3-ps.dxbc	ok ; glsl compiles
+hlsl+function-cast-4-ps.dxbc	ok ; glsl compiles
+hlsl+function-cast-5-ps.dxbc	ok ; glsl compiles
+hlsl+function-cast-6-ps.dxbc	ok ; glsl compiles
+hlsl+function-modifiers-1-ps.dxbc	ok ; glsl compiles
+hlsl+function-modifiers-2-ps.dxbc	ok ; glsl compiles
+hlsl+function-modifiers-3-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-1-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-10-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-11-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-12-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-13-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-14-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-15-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-16-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-17-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-18-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-19-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-2-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-20-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-21-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-22-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-3-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-4-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-5-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-6-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-7-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-8-ps.dxbc	ok ; glsl compiles
+hlsl+function-overload-9-ps.dxbc	ok ; glsl compiles
+hlsl+function-return-1-ps.dxbc	ok ; glsl compiles
+hlsl+function-return-2-ps.dxbc	ok ; glsl compiles
+hlsl+function-return-3-ps.dxbc	ok ; glsl compiles
+hlsl+function-return-4-ps.dxbc	ok ; glsl compiles
+hlsl+function-return-5-ps.dxbc	ok ; glsl compiles
+hlsl+function-return-6-ps.dxbc	ok ; glsl compiles
+hlsl+fwidth-1-ps.dxbc	ok ; glsl compiles
+hlsl+fxgroup-syntax-1-ps.dxbc	ok ; glsl compiles
+hlsl+gather-1-ps.dxbc	ok ; glsl compiles
+hlsl+gather-2-ps.dxbc	ok ; glsl compiles
+hlsl+gather-3-ps.dxbc	ok ; glsl compiles
+hlsl+gather-4-ps.dxbc	ok ; glsl compiles
+hlsl+gather-5-ps.dxbc	ok ; glsl compiles
+hlsl+gather-6-ps.dxbc	ok ; glsl compiles
+hlsl+gather-7-ps.dxbc	ok ; glsl compiles
+hlsl+gather-cmp-1-ps.dxbc	ok ; glsl compiles
+hlsl+gather-cmp-2-ps.dxbc	ok ; glsl compiles
+hlsl+gather-cmp-3-ps.dxbc	unsupported DepthGatherComponent
+hlsl+gather-cmp-4-ps.dxbc	unsupported DepthGatherComponent
+hlsl+gather-cmp-5-ps.dxbc	unsupported DepthGatherComponent
+hlsl+gather-cmp-6-ps.dxbc	unsupported DepthGatherComponent
+hlsl+gather-cmp-7-ps.dxbc	unsupported DepthGatherComponent
+hlsl+gather-offset-1-ps.dxbc	ok ; glsl compiles
+hlsl+gather-offset-2-ps.dxbc	ok ; glsl compiles
+hlsl+gather-offset-3-ps.dxbc	ok ; glsl compiles
+hlsl+gather-offset-4-ps.dxbc	ok ; glsl compiles
+hlsl+gather-offset-5-ps.dxbc	ok ; glsl compiles
+hlsl+gather-offset-6-ps.dxbc	ok ; glsl compiles
+hlsl+gather-offset-7-ps.dxbc	ok ; glsl compiles
+hlsl+geometry-1-vs.dxbc	ok ; glsl compiles
+hlsl+geometry-2-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-3-ps.dxbc	ok ; glsl compiles
+hlsl+geometry-4-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-1-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-10-gs.dxbc	unsupported GeometryPatchInput
+hlsl+geometry-shader-syntax-11-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-12-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-13-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-14-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-15-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-16-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-17-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-18-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-19-gs.dxbc	unsupported GeometryStreams
+hlsl+geometry-shader-syntax-2-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-20-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-21-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-22-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-23-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-3-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-4-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-5-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-6-gs.dxbc	unsupported GeometryPatchInput
+hlsl+geometry-shader-syntax-7-gs.dxbc	unsupported GeometryPatchInput
+hlsl+geometry-shader-syntax-8-gs.dxbc	unsupported GeometryPatchInput
+hlsl+geometry-shader-syntax-9-gs.dxbc	ok ; glsl absent compute
+hlsl+get-sample-pos-1-ps.dxbc	ok ; glsl compiles
+hlsl+getdimensions-1-ps.dxbc	ok ; glsl compiles
+hlsl+getdimensions-2-ps.dxbc	ok ; glsl compiles
+hlsl+getdimensions-3-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+getdimensions-4-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+half-1-ps.dxbc	ok ; glsl compiles
+hlsl+half-4-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-1-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-2-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-3-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-4-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-5-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-6-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-7-ps.dxbc	ok ; glsl compiles
+hlsl+hard-copy-prop-8-ps.dxbc	ok ; glsl compiles
+hlsl+hull-shader-attributes-1-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-10-hs.dxbc	unsupported HullWithoutControlPoints
+hlsl+hull-shader-attributes-11-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-2-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-3-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-4-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-5-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-6-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-7-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-8-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-attributes-9-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-syntax-1-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-syntax-2-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-syntax-3-hs.dxbc	ok ; glsl absent compute
+hlsl+hull-shader-syntax-4-hs.dxbc	ok ; glsl absent compute
+hlsl+initializer-flatten-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-flatten-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-flatten-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-flatten-4-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-flatten-5-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-implicit-array-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-implicit-array-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-implicit-array-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-implicit-array-4-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-invalid-arg-count-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-invalid-arg-count-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-local-array-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-local-array-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-matrix-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-matrix-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-matrix-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-matrix-4-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-matrix-5-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-matrix-6-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-multi-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-multi-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-multi-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-nested-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-nested-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-nested-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-numeric-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-numeric-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-numeric-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-numeric-4-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-numeric-5-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-numeric-6-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-objects-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-objects-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-objects-3-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-static-array-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-static-array-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-struct-1-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-struct-2-ps.dxbc	ok ; glsl compiles
+hlsl+initializer-struct-3-ps.dxbc	ok ; glsl compiles
+hlsl+instance-id-1-vs.dxbc	ok ; glsl compiles
+hlsl+instance-id-2-ps.dxbc	ok ; glsl compiles
+hlsl+instance-id-3-vs.dxbc	ok ; glsl compiles
+hlsl+instance-id-4-ps.dxbc	ok ; glsl compiles
+hlsl+interface-packing-1-vs.dxbc	ok ; glsl compiles
+hlsl+interface-packing-2-ps.dxbc	ok ; glsl compiles
+hlsl+interface-packing-3-vs.dxbc	ok ; glsl compiles
+hlsl+interface-packing-4-ps.dxbc	ok ; glsl compiles
+hlsl+interface-packing-5-vs.dxbc	ok ; glsl compiles
+hlsl+interface-packing-6-ps.dxbc	ok ; glsl compiles
+hlsl+interface-packing-8-vs.dxbc	ok ; glsl compiles
+hlsl+interface-packing-9-ps.dxbc	ok ; glsl compiles
+hlsl+intrinsic-override-1-ps.dxbc	ok ; glsl compiles
+hlsl+intrinsic-override-2-ps.dxbc	ok ; glsl compiles
+hlsl+invalid-6-ps.dxbc	ok ; glsl compiles
+hlsl+inverse-trig-1-ps.dxbc	ok ; glsl compiles
+hlsl+inverse-trig-2-ps.dxbc	ok ; glsl compiles
+hlsl+inverse-trig-4-ps.dxbc	ok ; glsl compiles
+hlsl+inverse-trig-5-ps.dxbc	ok ; glsl compiles
+hlsl+is-front-face-1-vs.dxbc	ok ; glsl compiles
+hlsl+is-front-face-3-ps.dxbc	ok ; glsl compiles
+hlsl+is-front-face-4-ps.dxbc	ok ; glsl compiles
+hlsl+is-front-face-6-ps.dxbc	ok ; glsl compiles
+hlsl+isinf-1-ps.dxbc	ok ; glsl compiles
+hlsl+isinf-2-ps.dxbc	ok ; glsl compiles
+hlsl+ldexp-1-ps.dxbc	ok ; glsl compiles
+hlsl+ldexp-2-ps.dxbc	ok ; glsl compiles
+hlsl+ldexp-3-ps.dxbc	ok ; glsl compiles
+hlsl+length-1-ps.dxbc	ok ; glsl compiles
+hlsl+length-2-ps.dxbc	ok ; glsl compiles
+hlsl+length-3-ps.dxbc	ok ; glsl compiles
+hlsl+length-4-ps.dxbc	ok ; glsl compiles
+hlsl+length-5-ps.dxbc	ok ; glsl compiles
+hlsl+length-property-1-ps.dxbc	unsupported MultisampledArrayTexture
+hlsl+length-property-2-ps.dxbc	ok ; glsl compiles
+hlsl+length-property-3-ps.dxbc	ok ; glsl compiles
+hlsl+length-property-4-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
+hlsl+length-property-5-ps.dxbc	ok views:R32Float ; glsl compiles
+hlsl+length-property-6-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
+hlsl+length-property-7-ps.dxbc	ok views:R32Float ; glsl compiles
+hlsl+length-property-8-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+lerp-1-ps.dxbc	ok ; glsl compiles
+hlsl+lerp-2-ps.dxbc	ok ; glsl compiles
+hlsl+lerp-3-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-cast-1-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-cast-5-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-1-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-10-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-2-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-3-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-4-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-6-ps.dxbc	ok ; glsl compiles
+hlsl+lhs-partial-assignment-7-ps.dxbc	ok ; glsl compiles
+hlsl+lit-1-ps.dxbc	ok ; glsl compiles
+hlsl+lit-2-ps.dxbc	ok ; glsl compiles
+hlsl+load-level-1-ps.dxbc	ok ; glsl compiles
+hlsl+load-level-2-ps.dxbc	ok ; glsl compiles
+hlsl+log-1-ps.dxbc	ok ; glsl compiles
+hlsl+log-2-ps.dxbc	ok ; glsl compiles
+hlsl+log-3-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-1-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-10-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-11-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-12-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-13-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-14-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-2-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-3-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-4-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-5-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-6-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-7-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-8-ps.dxbc	ok ; glsl compiles
+hlsl+logic-operations-9-ps.dxbc	ok ; glsl compiles
+hlsl+loop-1-ps.dxbc	ok ; glsl compiles
+hlsl+loop-2-ps.dxbc	ok ; glsl compiles
+hlsl+loop-3-ps.dxbc	ok ; glsl compiles
+hlsl+loop-4-ps.dxbc	ok ; glsl compiles
+hlsl+loop-5-ps.dxbc	ok ; glsl compiles
+hlsl+loop-6-ps.dxbc	ok ; glsl compiles
+hlsl+loop-7-ps.dxbc	ok ; glsl compiles
+hlsl+loop-8-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-1-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-10-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-11-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-12-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-13-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-14-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-15-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-16-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-2-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-22-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-23-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-24-vs.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-25-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-26-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-27-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-28-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-29-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-3-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-30-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-31-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-32-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-33-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-34-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-4-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-5-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-6-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-7-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-8-ps.dxbc	ok ; glsl compiles
+hlsl+loop-sm3-9-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-1-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-10-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-11-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-12-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-13-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-14-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-15-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-2-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-3-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-4-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-5-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-6-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-7-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-8-ps.dxbc	ok ; glsl compiles
+hlsl+majority-pragma-9-ps.dxbc	ok ; glsl compiles
+hlsl+majority-syntax-1-ps.dxbc	ok ; glsl compiles
+hlsl+majority-typedef-1-ps.dxbc	ok ; glsl compiles
+hlsl+many-semantics-1-vs.dxbc	ok ; glsl compiles
+hlsl+many-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+math-1-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-1-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-2-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-3-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-4-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-5-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-6-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-7-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-8-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-indexing-9-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-semantics-1-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-semantics-3-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-semantics-4-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-semantics-5-ps.dxbc	ok ; glsl compiles
+hlsl+matrix-semantics-6-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-1-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-2-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-3-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-4-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-5-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-6-ps.dxbc	ok ; glsl compiles
+hlsl+max-min-7-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-1-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-10-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-2-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-4-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-6-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-8-ps.dxbc	ok ; glsl compiles
+hlsl+minimum-precision-9-ps.dxbc	ok ; glsl compiles
+hlsl+modf-1-ps.dxbc	ok ; glsl compiles
+hlsl+modf-2-ps.dxbc	ok ; glsl compiles
+hlsl+mul-1-ps.dxbc	ok ; glsl compiles
+hlsl+mul-10-ps.dxbc	ok ; glsl compiles
+hlsl+mul-11-ps.dxbc	ok ; glsl compiles
+hlsl+mul-12-ps.dxbc	ok ; glsl compiles
+hlsl+mul-13-ps.dxbc	ok ; glsl compiles
+hlsl+mul-14-ps.dxbc	ok ; glsl compiles
+hlsl+mul-15-ps.dxbc	ok ; glsl compiles
+hlsl+mul-16-ps.dxbc	ok ; glsl compiles
+hlsl+mul-17-ps.dxbc	ok ; glsl compiles
+hlsl+mul-18-ps.dxbc	ok ; glsl compiles
+hlsl+mul-19-ps.dxbc	ok ; glsl compiles
+hlsl+mul-2-ps.dxbc	ok ; glsl compiles
+hlsl+mul-20-ps.dxbc	ok ; glsl compiles
+hlsl+mul-3-ps.dxbc	ok ; glsl compiles
+hlsl+mul-4-ps.dxbc	ok ; glsl compiles
+hlsl+mul-5-ps.dxbc	ok ; glsl compiles
+hlsl+mul-6-ps.dxbc	ok ; glsl compiles
+hlsl+mul-7-ps.dxbc	ok ; glsl compiles
+hlsl+mul-8-ps.dxbc	ok ; glsl compiles
+hlsl+mul-9-ps.dxbc	ok ; glsl compiles
+hlsl+multiple-rt-1-ps.dxbc	ok ; glsl compiles
+hlsl+nested-arrays-2-ps.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-1-vs.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-10-ps.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-11-vs.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-2-ps.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-3-vs.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-4-ps.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-5-vs.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-6-ps.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-7-vs.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-8-ps.dxbc	ok ; glsl compiles
+hlsl+nointerpolation-9-vs.dxbc	ok ; glsl compiles
+hlsl+noise-1-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-1-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-10-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-11-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-12-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-13-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-14-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-15-vs.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-16-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-17-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-2-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-3-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-4-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-5-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-6-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-7-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-8-ps.dxbc	ok ; glsl compiles
+hlsl+non-const-indexing-9-ps.dxbc	ok ; glsl compiles
+hlsl+normalize-1-ps.dxbc	ok ; glsl compiles
+hlsl+normalize-2-ps.dxbc	ok ; glsl compiles
+hlsl+normalize-3-ps.dxbc	ok ; glsl compiles
+hlsl+normalize-4-ps.dxbc	ok ; glsl compiles
+hlsl+normalize-5-ps.dxbc	ok ; glsl compiles
+hlsl+null-2-ps.dxbc	ok ; glsl compiles
+hlsl+null-3-ps.dxbc	ok ; glsl compiles
+hlsl+null-4-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-constructor-truncation-1-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-constructor-truncation-2-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-types-1-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-types-2-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-types-3-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-types-5-ps.dxbc	ok ; glsl compiles
+hlsl+numeric-types-6-ps.dxbc	ok ; glsl compiles
+hlsl+numthreads-1-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-10-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-11-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-12-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-13-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-14-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+numthreads-2-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-3-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-4-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-5-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-6-cs.dxbc	ok ; glsl absent compute
+hlsl+numthreads-8-cs.dxbc	ok ; glsl absent compute
+hlsl+object-field-offsets-1-ps.dxbc	ok ; glsl compiles
+hlsl+object-field-offsets-2-ps.dxbc	ok ; glsl compiles
+hlsl+object-field-offsets-3-ps.dxbc	ok ; glsl compiles
+hlsl+object-parameters-1-ps.dxbc	ok ; glsl compiles
+hlsl+object-parameters-2-ps.dxbc	ok ; glsl compiles
+hlsl+object-parameters-3-ps.dxbc	ok ; glsl compiles
+hlsl+object-parameters-4-ps.dxbc	ok ; glsl compiles
+hlsl+object-references-1-ps.dxbc	ok ; glsl compiles
+hlsl+object-references-2-ps.dxbc	ok ; glsl compiles
+hlsl+object-references-3-ps.dxbc	ok ; glsl compiles
+hlsl+object-references-4-ps.dxbc	ok ; glsl compiles
+hlsl+object-references-8-ps.dxbc	ok ; glsl compiles
+hlsl+object-references-9-ps.dxbc	ok ; glsl compiles
+hlsl+patch-syntax-1-ps.dxbc	ok ; glsl compiles
+hlsl+patch-syntax-10-hs.dxbc	ok ; glsl absent compute
+hlsl+patch-syntax-12-gs.dxbc	unsupported GeometryPatchInput
+hlsl+patch-syntax-13-hs.dxbc	ok ; glsl absent compute
+hlsl+patch-syntax-14-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+patch-syntax-15-hs.dxbc	ok ; glsl absent compute
+hlsl+patch-syntax-16-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+patch-syntax-17-ps.dxbc	ok ; glsl compiles
+hlsl+patch-syntax-2-ps.dxbc	ok ; glsl compiles
+hlsl+patch-syntax-3-ps.dxbc	ok ; glsl compiles
+hlsl+patch-syntax-6-ps.dxbc	ok ; glsl compiles
+hlsl+patch-syntax-9-hs.dxbc	ok ; glsl absent compute
+hlsl+pixel-position-1-vs.dxbc	ok ; glsl compiles
+hlsl+pixel-position-2-ps.dxbc	ok ; glsl compiles
+hlsl+point-sprite-1-vs.dxbc	ok ; glsl compiles
+hlsl+pow-1-ps.dxbc	ok ; glsl compiles
+hlsl+pow-2-ps.dxbc	ok ; glsl compiles
+hlsl+precise-modifier-1-ps.dxbc	ok ; glsl compiles
+hlsl+precise-modifier-2-ps.dxbc	ok ; glsl compiles
+hlsl+precise-modifier-3-ps.dxbc	ok ; glsl compiles
+hlsl+primitive-id-1-vs.dxbc	ok ; glsl compiles
+hlsl+primitive-id-2-gs.dxbc	unsupported PrimitiveId
+hlsl+primitive-id-3-ps.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
+hlsl+ps1-projection-1-vs.dxbc	ok ; glsl compiles
+hlsl+ps1-sampler-1-vs.dxbc	ok ; glsl compiles
+hlsl+ps1-sampler-4-vs.dxbc	ok ; glsl compiles
+hlsl+ps1-sampler-5-vs.dxbc	ok ; glsl compiles
+hlsl+rasteriser-ordered-views-1-vs.dxbc	ok ; glsl compiles
+hlsl+rasteriser-ordered-views-2-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)
+hlsl+rasteriser-ordered-views-3-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+rasteriser-ordered-views-4-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+rasteriser-ordered-views-5-ps.dxbc	unsupported RasterizerOrderedView
+hlsl+rcp-1-ps.dxbc	ok ; glsl compiles
+hlsl+rcp-2-ps.dxbc	ok ; glsl compiles
+hlsl+rcp-3-ps.dxbc	ok ; glsl compiles
+hlsl+reflect-1-ps.dxbc	ok ; glsl compiles
+hlsl+reflect-2-ps.dxbc	ok ; glsl compiles
+hlsl+reflect-3-ps.dxbc	ok ; glsl compiles
+hlsl+reflect-4-ps.dxbc	ok ; glsl compiles
+hlsl+reflect-5-ps.dxbc	ok ; glsl compiles
+hlsl+reflect-6-ps.dxbc	ok ; glsl compiles
+hlsl+refract-1-ps.dxbc	ok ; glsl compiles
+hlsl+refract-2-ps.dxbc	ok ; glsl compiles
+hlsl+refract-3-ps.dxbc	ok ; glsl compiles
+hlsl+refract-4-ps.dxbc	ok ; glsl compiles
+hlsl+refract-5-ps.dxbc	ok ; glsl compiles
+hlsl+refract-6-ps.dxbc	ok ; glsl compiles
+hlsl+refract-7-ps.dxbc	ok ; glsl compiles
+hlsl+refract-8-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-10-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-11-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-12-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-13-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-14-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-15-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-16-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-17-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-18-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-19-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-2-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-20-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-21-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-22-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-23-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-24-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-25-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-26-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-27-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-28-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-29-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-30-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-31-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-32-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-33-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-34-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-5-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-6-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-7-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-numeric-8-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-1-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-10-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-12-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-13-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-14-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-15-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-2-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-3-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-5-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-6-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-7-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-profile-9-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-1-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-11-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-12-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-2-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-3-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-4-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-5-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-6-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-7-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-8-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-resources-9-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-1-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-2-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-3-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-6-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-7-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-8-ps.dxbc	ok ; glsl compiles
+hlsl+register-reservations-space-9-ps.dxbc	ok ; glsl compiles
+hlsl+return-1-ps.dxbc	ok ; glsl compiles
+hlsl+return-10-ps.dxbc	ok ; glsl compiles
+hlsl+return-2-ps.dxbc	ok ; glsl compiles
+hlsl+return-3-ps.dxbc	ok ; glsl compiles
+hlsl+return-4-ps.dxbc	ok ; glsl compiles
+hlsl+return-5-ps.dxbc	ok ; glsl compiles
+hlsl+return-6-ps.dxbc	ok ; glsl compiles
+hlsl+return-7-ps.dxbc	ok ; glsl compiles
+hlsl+return-8-ps.dxbc	ok ; glsl compiles
+hlsl+return-9-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-1-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-10-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-11-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-13-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-14-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-15-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-2-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-3-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-4-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-5-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-6-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-7-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-8-ps.dxbc	ok ; glsl compiles
+hlsl+return-implicit-conversion-9-ps.dxbc	ok ; glsl compiles
+hlsl+return-semantics-1-vs.dxbc	ok ; glsl compiles
+hlsl+return-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+round-1-ps.dxbc	ok ; glsl compiles
+hlsl+round-2-ps.dxbc	ok ; glsl compiles
+hlsl+round-3-ps.dxbc	ok ; glsl compiles
+hlsl+round-4-ps.dxbc	ok ; glsl compiles
+hlsl+rt-array-index-1-vs.dxbc	unsupported RenderTargetArrayIndex
+hlsl+rt-array-index-2-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-1-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-10-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-11-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-12-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-13-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-14-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-15-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-16-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-2-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-3-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-4-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-5-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-6-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-7-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-8-ps.dxbc	ok ; glsl compiles
+hlsl+rt-format-mismatch-9-ps.dxbc	ok ; glsl compiles
+hlsl+rt-get-sample-info-1-ps.dxbc	unsupported SampleCount
+hlsl+rt-get-sample-info-2-ps.dxbc	unsupported SampleCount
+hlsl+rt-get-sample-info-3-ps.dxbc	unsupported SampleCount
+hlsl+rt-get-sample-info-5-ps.dxbc	unsupported SampleCount
+hlsl+sample-bias-1-vs.dxbc	ok ; glsl compiles
+hlsl+sample-bias-2-ps.dxbc	ok ; glsl compiles
+hlsl+sample-bias-4-ps.dxbc	ok ; glsl compiles
+hlsl+sample-bias-6-ps.dxbc	ok ; glsl compiles
+hlsl+sample-cmp-1-ps.dxbc	ok ; glsl compiles
+hlsl+sample-cmp-2-ps.dxbc	ok ; glsl compiles
+hlsl+sample-cmp-3-ps.dxbc	ok ; glsl compiles
+hlsl+sample-grad-3-ps.dxbc	ok ; glsl compiles
+hlsl+sample-level-1-ps.dxbc	ok ; glsl compiles
+hlsl+sample-level-3-ps.dxbc	ok ; glsl compiles
+hlsl+sample-level-5-ps.dxbc	ok ; glsl compiles
+hlsl+sample-minmax-1-vs.dxbc	ok ; glsl compiles
+hlsl+sample-minmax-2-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-1-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-11-vs.dxbc	ok ; glsl compiles
+hlsl+sampler-12-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-13-ps.dxbc	unsupported SampleClamp
+hlsl+sampler-14-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-15-ps.dxbc	unsupported SampleClamp
+hlsl+sampler-16-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-2-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-3-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-4-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-5-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-offset-1-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-offset-2-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-offset-3-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-state-4-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-state-7-ps.dxbc	ok ; glsl compiles
+hlsl+sampler-state-8-ps.dxbc	ok ; glsl compiles
+hlsl+saturate-1-ps.dxbc	ok ; glsl compiles
+hlsl+saturate-2-ps.dxbc	ok ; glsl compiles
+hlsl+saturate-3-ps.dxbc	ok ; glsl compiles
+hlsl+scope-1-ps.dxbc	ok ; glsl compiles
+hlsl+scope-10-ps.dxbc	ok ; glsl compiles
+hlsl+scope-12-ps.dxbc	ok ; glsl compiles
+hlsl+scope-2-ps.dxbc	ok ; glsl compiles
+hlsl+scope-3-ps.dxbc	ok ; glsl compiles
+hlsl+scope-4-ps.dxbc	ok ; glsl compiles
+hlsl+scope-5-ps.dxbc	ok ; glsl compiles
+hlsl+scope-6-ps.dxbc	ok ; glsl compiles
+hlsl+scope-7-ps.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-1-ps.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-10-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-11-ps.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-12-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-13-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-2-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-3-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-4-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-5-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-6-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-7-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-8-vs.dxbc	ok ; glsl compiles
+hlsl+semantic-cascading-9-vs.dxbc	ok ; glsl compiles
+hlsl+shade-mode-1-vs.dxbc	ok ; glsl compiles
+hlsl+shade-mode-2-ps.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-1-vs.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-10-ps.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-2-ps.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-3-vs.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-4-ps.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-6-vs.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-7-ps.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-8-vs.dxbc	ok ; glsl compiles
+hlsl+shader-interstage-interface-9-ps.dxbc	ok ; glsl compiles
+hlsl+shader-point-size-1-vs.dxbc	ok ; glsl compiles
+hlsl+shape-1-ps.dxbc	ok ; glsl compiles
+hlsl+shape-10-ps.dxbc	ok ; glsl compiles
+hlsl+shape-11-ps.dxbc	ok ; glsl compiles
+hlsl+shape-12-ps.dxbc	ok ; glsl compiles
+hlsl+shape-13-ps.dxbc	ok ; glsl compiles
+hlsl+shape-14-ps.dxbc	ok ; glsl compiles
+hlsl+shape-15-ps.dxbc	ok ; glsl compiles
+hlsl+shape-16-ps.dxbc	ok ; glsl compiles
+hlsl+shape-17-ps.dxbc	ok ; glsl compiles
+hlsl+shape-18-ps.dxbc	ok ; glsl compiles
+hlsl+shape-19-ps.dxbc	ok ; glsl compiles
+hlsl+shape-2-ps.dxbc	ok ; glsl compiles
+hlsl+shape-20-ps.dxbc	ok ; glsl compiles
+hlsl+shape-21-ps.dxbc	ok ; glsl compiles
+hlsl+shape-22-ps.dxbc	ok ; glsl compiles
+hlsl+shape-23-ps.dxbc	ok ; glsl compiles
+hlsl+shape-24-ps.dxbc	ok ; glsl compiles
+hlsl+shape-25-ps.dxbc	ok ; glsl compiles
+hlsl+shape-26-ps.dxbc	ok ; glsl compiles
+hlsl+shape-27-ps.dxbc	ok ; glsl compiles
+hlsl+shape-3-ps.dxbc	ok ; glsl compiles
+hlsl+shape-4-ps.dxbc	ok ; glsl compiles
+hlsl+shape-5-ps.dxbc	ok ; glsl compiles
+hlsl+shape-6-ps.dxbc	ok ; glsl compiles
+hlsl+shape-7-ps.dxbc	ok ; glsl compiles
+hlsl+shape-8-ps.dxbc	ok ; glsl compiles
+hlsl+shape-9-ps.dxbc	ok ; glsl compiles
+hlsl+side-effects-1-ps.dxbc	ok ; glsl compiles
+hlsl+side-effects-2-ps.dxbc	ok ; glsl compiles
+hlsl+side-effects-3-ps.dxbc	ok ; glsl compiles
+hlsl+sign-1-ps.dxbc	ok ; glsl compiles
+hlsl+sign-2-ps.dxbc	ok ; glsl compiles
+hlsl+sign-3-ps.dxbc	ok ; glsl compiles
+hlsl+sign-4-ps.dxbc	ok ; glsl compiles
+hlsl+sign-5-ps.dxbc	ok ; glsl compiles
+hlsl+sign-6-ps.dxbc	ok ; glsl compiles
+hlsl+single-numeric-initializer-1-ps.dxbc	ok ; glsl compiles
+hlsl+single-numeric-initializer-2-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-1-vs.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-2-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-3-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-4-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-5-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-6-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-centroid-7-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-1-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-10-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-11-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-12-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-13-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-14-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-15-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-16-vs.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-17-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-2-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-3-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-4-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-5-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-6-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-7-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-allocation-8-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-1-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-10-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-11-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-12-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-2-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-3-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-4-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-5-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-6-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-7-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-8-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-const-folding-9-ps.dxbc	ok ; glsl compiles
+hlsl+sm1-interstage-interface-1-vs.dxbc	ok ; glsl compiles
+hlsl+sm1-interstage-interface-2-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-1-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-10-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-2-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-3-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-4-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-5-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-6-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-7-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-8-ps.dxbc	ok ; glsl compiles
+hlsl+smoothstep-9-ps.dxbc	ok ; glsl compiles
+hlsl+sqrt-1-ps.dxbc	ok ; glsl compiles
+hlsl+sqrt-2-ps.dxbc	ok ; glsl compiles
+hlsl+srv-buffers-1-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-10-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-11-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-12-ps.dxbc	ok views:R32Float ; glsl compiles
+hlsl+srv-buffers-2-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-3-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-4-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-5-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-6-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-7-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-8-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-buffers-9-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-byteaddressbuffer-1-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-byteaddressbuffer-2-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-1-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-2-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-3-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-4-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-5-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-6-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-7-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+srv-structuredbuffer-8-ps.dxbc	ok ; glsl compiles
+hlsl+srv-structuredbuffer-9-gs.dxbc	ok ; glsl absent compute
+hlsl+state-block-function-syntax-1-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-function-syntax-2-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-function-syntax-5-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-function-syntax-6-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-function-syntax-7-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-11-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-12-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-13-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-14-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-15-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-16-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-20-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-22-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-24-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-25-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-26-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-27-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-31-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-35-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-36-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-37-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-38-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-41-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-42-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-43-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-44-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-45-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-47-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-49-ps.dxbc	ok ; glsl compiles
+hlsl+state-block-syntax-51-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-1-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-10-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-11-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-3-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-4-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-5-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-6-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-7-ps.dxbc	ok ; glsl compiles
+hlsl+static-initializer-9-ps.dxbc	ok ; glsl compiles
+hlsl+stencil-1-ps.dxbc	ok ; glsl compiles
+hlsl+stencil-2-ps.dxbc	unsupported StencilRef
+hlsl+stencil-3-ps.dxbc	unsupported StencilRef
+hlsl+stencil-4-ps.dxbc	unsupported StencilRef
+hlsl+stencil-5-ps.dxbc	ok ; glsl compiles
+hlsl+step-1-ps.dxbc	ok ; glsl compiles
+hlsl+step-2-ps.dxbc	ok ; glsl compiles
+hlsl+step-3-ps.dxbc	ok ; glsl compiles
+hlsl+storage-qualifiers-1-ps.dxbc	ok ; glsl compiles
+hlsl+storage-qualifiers-2-ps.dxbc	ok ; glsl compiles
+hlsl+strings-1-ps.dxbc	ok ; glsl compiles
+hlsl+strings-2-ps.dxbc	ok ; glsl compiles
+hlsl+strings-3-ps.dxbc	ok ; glsl compiles
+hlsl+strings-6-ps.dxbc	ok ; glsl compiles
+hlsl+strings-7-ps.dxbc	ok ; glsl compiles
+hlsl+strings-8-ps.dxbc	ok ; glsl compiles
+hlsl+struct-array-1-ps.dxbc	ok ; glsl compiles
+hlsl+struct-assignment-1-ps.dxbc	ok ; glsl compiles
+hlsl+struct-inheritance-1-ps.dxbc	ok ; glsl compiles
+hlsl+struct-inheritance-2-ps.dxbc	ok ; glsl compiles
+hlsl+struct-semantics-1-vs.dxbc	ok ; glsl compiles
+hlsl+struct-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+struct-syntax-1-ps.dxbc	ok ; glsl compiles
+hlsl+switch-1-ps.dxbc	ok ; glsl compiles
+hlsl+switch-11-ps.dxbc	ok ; glsl compiles
+hlsl+switch-12-ps.dxbc	ok ; glsl compiles
+hlsl+switch-13-ps.dxbc	ok ; glsl compiles
+hlsl+switch-14-ps.dxbc	ok ; glsl compiles
+hlsl+switch-16-ps.dxbc	ok ; glsl compiles
+hlsl+switch-17-ps.dxbc	ok ; glsl compiles
+hlsl+switch-2-ps.dxbc	ok ; glsl compiles
+hlsl+switch-3-ps.dxbc	ok ; glsl compiles
+hlsl+switch-4-ps.dxbc	ok ; glsl compiles
+hlsl+switch-5-ps.dxbc	ok ; glsl compiles
+hlsl+switch-6-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-constant-prop-1-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-constant-prop-2-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-constant-prop-3-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-1-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-2-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-3-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-4-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-5-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-6-ps.dxbc	ok ; glsl compiles
+hlsl+swizzle-matrix-7-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-1-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-10-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-11-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-12-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-2-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-3-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-4-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-5-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-6-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-7-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-8-ps.dxbc	ok ; glsl compiles
+hlsl+swizzles-9-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-1-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-10-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-11-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-12-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-13-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-14-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-15-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-16-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-17-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-18-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-19-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-2-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-20-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-21-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-22-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-23-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-24-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-25-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-3-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-4-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-5-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-6-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-7-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-8-ps.dxbc	ok ; glsl compiles
+hlsl+ternary-9-ps.dxbc	ok ; glsl compiles
+hlsl+tessellation-1-vs.dxbc	ok ; glsl compiles
+hlsl+tessellation-10-hs.dxbc	ok ; glsl absent compute
+hlsl+tessellation-2-hs.dxbc	ok ; glsl absent compute
+hlsl+tessellation-3-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+tessellation-4-ps.dxbc	ok ; glsl compiles
+hlsl+tessellation-5-hs.dxbc	ok ; glsl absent compute
+hlsl+tessellation-7-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+tessellation-8-hs.dxbc	ok ; glsl absent compute
+hlsl+tessellation-9-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+tessellation-patch-vars-1-vs.dxbc	ok ; glsl compiles
+hlsl+tessellation-patch-vars-2-hs.dxbc	ok ; glsl absent compute
+hlsl+tessellation-patch-vars-3-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+tessellation-patch-vars-4-ps.dxbc	ok ; glsl compiles
+hlsl+texture-load-1-ps.dxbc	ok ; glsl compiles
+hlsl+texture-load-2-ps.dxbc	ok ; glsl compiles
+hlsl+texture-load-3-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-4-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-5-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-6-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-7-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+texture-load-8-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-offset-1-ps.dxbc	ok ; glsl compiles
+hlsl+texture-load-offset-2-ps.dxbc	ok ; glsl compiles
+hlsl+texture-load-typed-1-ps.dxbc	ok ; glsl compiles
+hlsl+texture-load-typed-2-ps.dxbc	ok ; glsl compiles
+hlsl+tgsm-10-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-11-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-12-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+tgsm-13-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+tgsm-14-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-15-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-16-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-17-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-4-ps.dxbc	ok ; glsl compiles
+hlsl+tgsm-6-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-7-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-8-cs.dxbc	ok ; glsl absent compute
+hlsl+tgsm-9-cs.dxbc	ok ; glsl absent compute
+hlsl+tiled-status-1-ps.dxbc	unsupported SparseFeedback
+hlsl+tiled-status-2-ps.dxbc	unsupported SparseFeedback
+hlsl+tiled-status-3-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+tiled-status-4-ps.dxbc	unsupported SparseFeedback
+hlsl+transpose-1-ps.dxbc	ok ; glsl compiles
+hlsl+transpose-2-ps.dxbc	ok ; glsl compiles
+hlsl+transpose-3-ps.dxbc	ok ; glsl compiles
+hlsl+transpose-4-ps.dxbc	ok ; glsl compiles
+hlsl+transpose-5-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-1-vs.dxbc	ok ; glsl compiles
+hlsl+trigonometry-10-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-2-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-3-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-4-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-5-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-6-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-7-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-8-ps.dxbc	ok ; glsl compiles
+hlsl+trigonometry-9-ps.dxbc	ok ; glsl compiles
+hlsl+trunc-1-ps.dxbc	ok ; glsl compiles
+hlsl+trunc-2-ps.dxbc	ok ; glsl compiles
+hlsl+trunc-3-ps.dxbc	ok ; glsl compiles
+hlsl+type-names-1-ps.dxbc	ok ; glsl compiles
+hlsl+type-names-4-ps.dxbc	ok ; glsl compiles
+hlsl+type-names-5-ps.dxbc	ok ; glsl compiles
+hlsl+type-names-6-ps.dxbc	ok ; glsl compiles
+hlsl+type-names-7-ps.dxbc	ok ; glsl compiles
+hlsl+uav-atomics-1-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-2-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-3-cs.dxbc	ok views:R32Float through ; glsl absent compute
+hlsl+uav-atomics-4-cs.dxbc	ok views:R32Float through ; glsl absent compute
+hlsl+uav-atomics-5-cs.dxbc	unsupported AtomicSignedness (with views)
+hlsl+uav-atomics-6-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-7-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-counter-1-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-counter-2-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-counter-3-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-counter-4-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-load-1-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-out-param-1-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-out-param-2-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-rwbuffer-1-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwbuffer-11-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwbuffer-12-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwbuffer-2-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+uav-rwbuffer-4-ps.dxbc	ok ; glsl compiles
+hlsl+uav-rwbuffer-6-ps.dxbc	ok ; glsl compiles
+hlsl+uav-rwbyteaddressbuffer-1-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwbyteaddressbuffer-2-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwbyteaddressbuffer-3-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwbyteaddressbuffer-4-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwstructuredbuffer-1-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwstructuredbuffer-14-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-15-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-16-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-17-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-18-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-19-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-2-ps.dxbc	ok ; glsl compiles
+hlsl+uav-rwstructuredbuffer-20-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-21-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-22-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-23-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-24-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-25-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-26-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-27-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-28-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-29-cs.dxbc	ok ; glsl absent compute
+hlsl+uav-rwstructuredbuffer-3-ps.dxbc	ok ; glsl compiles
+hlsl+uav-rwstructuredbuffer-6-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwstructuredbuffer-7-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwstructuredbuffer-8-ps.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+hlsl+uav-rwtexture-1-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-10-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-11-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+uav-rwtexture-12-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-13-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+uav-rwtexture-14-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-15-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+uav-rwtexture-2-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-3-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-4-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-5-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-6-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-7-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+uav-rwtexture-8-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+uav-rwtexture-9-ps.dxbc	unsupported RasterizerOrderedView (with views)
+hlsl+uniform-parameters-1-ps.dxbc	ok ; glsl compiles
+hlsl+uniform-parameters-2-ps.dxbc	ok ; glsl compiles
+hlsl+uniform-semantics-1-ps.dxbc	ok ; glsl compiles
+hlsl+uniform-semantics-2-ps.dxbc	ok ; glsl compiles
+hlsl+uniform-semantics-3-ps.dxbc	ok ; glsl compiles
+hlsl+uninitialized-varyings-1-ps.dxbc	ok ; glsl compiles
+hlsl+uninitialized-varyings-2-ps.dxbc	ok ; glsl compiles
+hlsl+uninitialized-varyings-3-ps.dxbc	ok ; glsl compiles
+hlsl+unorm-snorm-1-ps.dxbc	ok ; glsl compiles
+hlsl+unorm-snorm-2-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+hlsl+unroll-1-ps.dxbc	ok ; glsl compiles
+hlsl+unroll-2-ps.dxbc	ok ; glsl compiles
+hlsl+unroll-4-ps.dxbc	ok ; glsl compiles
+hlsl+unroll-5-ps.dxbc	ok ; glsl compiles
+hlsl+unroll-6-ps.dxbc	ok ; glsl compiles
+hlsl+unsigned-1-ps.dxbc	ok ; glsl compiles
+hlsl+unsigned-5-ps.dxbc	ok ; glsl compiles
+hlsl+vector-indexing-1-ps.dxbc	ok ; glsl compiles
+hlsl+vector-indexing-2-ps.dxbc	ok ; glsl compiles
+hlsl+vector-indexing-4-ps.dxbc	ok ; glsl compiles
+hlsl+vector-indexing-uniform-1-ps.dxbc	ok ; glsl compiles
+hlsl+vertex-shader-ops-1-ps.dxbc	ok ; glsl compiles
+hlsl+vertex-shader-ops-2-vs.dxbc	ok ; glsl compiles
+hlsl+vertex-shader-ops-3-vs.dxbc	ok ; glsl compiles
+hlsl+vertex-shader-ops-4-vs.dxbc	ok ; glsl compiles
+hlsl+vertex-shader-ops-5-vs.dxbc	ok ; glsl compiles
+hlsl+vp-array-index-1-vs.dxbc	unsupported ViewportArrayIndex
+hlsl+vp-array-index-2-ps.dxbc	ok ; glsl compiles

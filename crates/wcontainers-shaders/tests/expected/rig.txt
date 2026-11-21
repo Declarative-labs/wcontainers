@@ -1,0 +1,79 @@
+blend.ps_dest.dxbc	ok ; glsl compiles
+blend.ps_dual.dxbc	ok ; glsl compiles
+blend.vs.dxbc	ok ; glsl compiles
+common.ps_color.dxbc	ok ; glsl compiles
+common.ps_color_9_1.dxbc	ok ; glsl compiles
+common.vs_color.dxbc	ok ; glsl compiles
+common.vs_color_9_1.dxbc	ok ; glsl compiles
+common.vs_full.dxbc	ok ; glsl compiles
+compute.cs_append.dxbc	ok ; glsl absent compute
+compute.cs_atomic.dxbc	ok ; glsl absent compute
+compute.cs_consume.dxbc	ok ; glsl absent compute
+compute.cs_counter.dxbc	ok ; glsl absent compute
+compute.cs_shared.dxbc	ok ; glsl absent compute
+compute.cs_structured.dxbc	ok ; glsl absent compute
+compute.cs_texture.dxbc	ok views:R32Float ; glsl absent compute
+compute.ps_overlap.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+constants.ps_slots.dxbc	ok ; glsl compiles
+constants.ps_window.dxbc	ok ; glsl compiles
+depth.ps_depth.dxbc	ok ; glsl compiles
+depth.ps_greater.dxbc	ok ; glsl compiles
+depth.ps_less.dxbc	ok ; glsl compiles
+draws.ps.dxbc	ok ; glsl compiles
+draws.vs.dxbc	ok ; glsl compiles
+dynamic.ps_tint.dxbc	ok ; glsl compiles
+formats.ps_float.dxbc	ok ; glsl compiles
+formats.ps_sint.dxbc	ok ; glsl compiles
+formats.ps_uint.dxbc	ok ; glsl compiles
+geometry.gs_adjacency.dxbc	ok ; glsl absent compute
+geometry.gs_layers.dxbc	ok ; glsl absent compute
+geometry.gs_points.dxbc	ok ; glsl absent compute
+geometry.gs_strips.dxbc	ok ; glsl absent compute
+geometry.ps.dxbc	ok ; glsl compiles
+geometry.ps_id.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
+geometry.ps_primitive.dxbc	ok ; glsl compiles
+geometry.vs.dxbc	ok ; glsl compiles
+instanced.ps.dxbc	ok ; glsl compiles
+instanced.vs.dxbc	ok ; glsl compiles
+msaa.ps_coverage.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
+msaa.ps_load.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+msaa.ps_sample.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+msaa.vs_full.dxbc	ok ; glsl compiles
+quads.ps.dxbc	ok ; glsl compiles
+quads.vs.dxbc	ok ; glsl compiles
+raster.gs.dxbc	ok ; glsl absent compute
+raster.ps.dxbc	ok ; glsl compiles
+raster.vs.dxbc	ok ; glsl compiles
+samplers.ps_compare.dxbc	ok ; glsl compiles
+samplers.ps_compare_zero.dxbc	ok ; glsl compiles
+samplers.ps_gather.dxbc	ok ; glsl compiles
+samplers.ps_sample.dxbc	ok ; glsl compiles
+streamout.gs.dxbc	ok ; glsl absent compute
+streamout.vs_back.dxbc	ok ; glsl compiles
+targets.ps.dxbc	ok ; glsl compiles
+tessellation.ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.hs_line.dxbc	ok ; glsl absent compute
+tessellation.hs_quad_even.dxbc	ok ; glsl absent compute
+tessellation.hs_quad_integer.dxbc	ok ; glsl absent compute
+tessellation.hs_quad_odd.dxbc	ok ; glsl absent compute
+tessellation.hs_quad_pow2.dxbc	ok ; glsl absent compute
+tessellation.hs_tri.dxbc	ok ; glsl absent compute
+tessellation.ps.dxbc	ok ; glsl compiles
+tessellation.vs.dxbc	ok ; glsl compiles
+textures.ps_1d.dxbc	ok ; glsl compiles
+textures.ps_1d_array.dxbc	ok ; glsl compiles
+textures.ps_2d_array.dxbc	ok ; glsl compiles
+textures.ps_3d.dxbc	ok ; glsl compiles
+textures.ps_cube.dxbc	ok ; glsl compiles
+textures.ps_cube_array.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(CUBE_TEXTURES_ARRAY)
+textures.ps_load.dxbc	ok ; glsl compiles
+textures.ps_mips.dxbc	ok ; glsl compiles
+triangle.ps.dxbc	ok ; glsl compiles
+triangle.vs.dxbc	ok ; glsl compiles
+views.ps_array.dxbc	ok ; glsl compiles
+views.ps_depth.dxbc	ok ; glsl compiles
+views.ps_level0.dxbc	ok ; glsl compiles
+views.ps_stencil.dxbc	ok ; glsl compiles
+views.ps_uint.dxbc	ok ; glsl compiles

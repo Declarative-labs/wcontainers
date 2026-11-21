@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +14,13 @@ repository = "https://github.com/stack1ng/wcontainers"
 wcontainers-abi = { path = "crates/wcontainers-abi" }
 bitflags = { version = "2", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
+naga = { version = "30.0.2", default-features = false }
+
+# naga 30.0.2 as published, plus our changes (listed in docs/status-graphics-shaders.md), until upstream has them.
+[patch.crates-io]
+naga = { path = "third_party/naga" }
+# wgpu 30.0.2 with its browser back end passing a render pass's occlusion query set to WebGPU.
+wgpu = { path = "third_party/wgpu" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

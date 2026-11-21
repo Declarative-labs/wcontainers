@@ -1,0 +1,102 @@
+# program example-38-bloomRelease.exe
+# frames 120
+# counted factory as IDXGIFactory7
+# counted command-list as ID3D12GraphicsCommandList6
+# counted command-list as ID3D12GraphicsCommandList6
+# counted command-list as ID3D12GraphicsCommandList6
+# counted command-list as ID3D12GraphicsCommandList6
+# counted d3d12-device as ID3D12Device8
+# counted command-queue as ID3D12CommandQueue
+# counted swap-chain as IDXGISwapChain4
+# counted immediate-context and deferred-context through 0 wrapped contexts
+# of the counts below, made by the graphics libraries, not the program: command-list Close 119, command-list Reset 119, command-queue ExecuteCommandLists 119
+# not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
+d3d12-device GetDescriptorHandleIncrementSize 3390
+d3d12-device QueryInterface 3305
+d3d12-device CheckFeatureSupport 2484
+d3d12-device AddRef 1831
+d3d12-device Release 1248
+d3d12-device CopyDescriptorsSimple 1045
+d3d12-device GetPrivateData 819
+d3d12-device CreateFence 692
+d3d12-device CreateCommandAllocator 259
+d3d12-device CreateCommandList 257
+d3d12-device Evict 119
+d3d12-device CreateShaderResourceView 72
+d3d12-device CreateSampler 49
+d3d12-device GetCustomHeapProperties 25
+d3d12-device CreateGraphicsPipelineState 12
+d3d12-device GetResourceAllocationInfo 12
+d3d12-device CreateRenderTargetView 9
+d3d12-device CreateDescriptorHeap 8
+d3d12-device CreateCommittedResource 7
+d3d12-device CreateCommandSignature 6
+d3d12-device CreateQueryHeap 5
+d3d12-device CreatePlacedResource 3
+d3d12-device GetDeviceRemovedReason 3
+d3d12-device MakeResident 3
+d3d12-device CreateDepthStencilView 2
+d3d12-device CreateHeap 2
+d3d12-device CreateRootSignature 2
+d3d12-device SetPrivateDataInterface 2
+d3d12-device CheckDriverMatchingIdentifier 1
+d3d12-device CreateCommandQueue 1
+d3d12-device CreateHeap1 1
+d3d12-device GetNodeCount 1
+command-queue QueryInterface 957
+command-queue AddRef 956
+command-queue Release 949
+command-queue Wait 590
+command-queue ExecuteCommandLists 476
+command-queue Signal 476
+command-queue GetDesc 2
+command-queue GetDevice 1
+command-queue GetTimestampFrequency 1
+command-list ResourceBarrier 5463
+command-list SetGraphicsRootConstantBufferView 5334
+command-list SetGraphicsRootDescriptorTable 3714
+command-list RSSetScissorRects 1855
+command-list OMSetRenderTargets 1633
+command-list IASetVertexBuffers 1508
+command-list DrawIndexedInstanced 1506
+command-list IASetPrimitiveTopology 1393
+command-list RSSetViewports 1393
+command-list SetDescriptorHeaps 1393
+command-list SetGraphicsRootSignature 1393
+command-list SetPipelineState 1393
+command-list OMSetStencilRef 1276
+command-list RSSetShadingRate 1276
+command-list DrawInstanced 1044
+command-list Close 732
+command-list ClearRenderTargetView 696
+command-list CopyTextureRegion 691
+command-list EndQuery 597
+command-list AddRef 514
+command-list Reset 477
+command-list ResolveQueryData 477
+command-list BeginQuery 358
+command-list IASetIndexBuffer 349
+command-list Release 257
+command-list CopyBufferRegion 234
+command-list QueryInterface 119
+command-list ClearDepthStencilView 117
+command-list SetName 1
+command-list SetPrivateData 1
+swap-chain GetCurrentBackBufferIndex 358
+swap-chain Present 120
+swap-chain AddRef 4
+swap-chain Release 4
+swap-chain CheckColorSpaceSupport 3
+swap-chain QueryInterface 3
+swap-chain GetBuffer 2
+swap-chain SetColorSpace1 1
+swap-chain SetHDRMetaData 1
+factory AddRef 13
+factory Release 9
+factory QueryInterface 2
+factory CheckFeatureSupport 1
+factory CreateSwapChainForHwnd 1
+factory EnumAdapters 1
+factory MakeWindowAssociation 1
+d3d12.dll D3D12CreateDevice 2
+d3d12.dll D3D12SerializeRootSignature 2
