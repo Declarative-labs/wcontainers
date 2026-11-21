@@ -1,17 +1,21 @@
 # Plan: the host implementation of crates/tcp-sockets
 
 ## What it is
-- Crate `crates/tcp-sockets/implementation/linux-host`, package `wcontainers-tcp-sockets-linux-host`, type
-  `LinuxHostTcpSockets`. It implements `TcpSockets` (and so `TcpConnections`, `TcpListeners`,
+- Crate `crates/tcp-sockets/implementation/host`, package `wcontainers-tcp-sockets-host`, type
+  `HostTcpSockets`. It implements `TcpSockets` (and so `TcpConnections`, `TcpListeners`,
   `Configurable` for both setting types and `NegativeRouteAdvice`) with real Linux TCP and MPTCP sockets of the
   machine it runs on, the exit node. Its whole body is `cfg(target_os = "linux")`, so the workspace still builds
   on the Mac.
-- A connection and a listener are its own types holding the socket's `OwnedFd` and its family, ordered by
-  descriptor. Every socket is non-blocking: the contract waits for nothing, so an operation that would wait
-  answers `HostError::WouldBlock`, as the abi's host interface does.
-- Built on rustix (socket calls and the socket options it has), linux-raw-sys (the constants and structures of
-  the Linux uapi headers that rustix does not wrap) and libc's `setsockopt`/`getsockopt` as the last resort for
-  options that rustix does not wrap. All three are MIT or Apache-2.0.
+- A connection and a listener are its own types holding the socket as the shared crate's `readiness::Watched` (the
+  descriptor and its registration with the host's readiness) and its family, ordered by descriptor. Every socket is
+  non-blocking: every call but the two waits answers at once, `HostError::WouldBlock` when it would wait.
+- The waits, `wait_for_events` and `wait_for_listener_events`, are the shared crate's `Watched::wait_for_events`:
+  one host thread per `HostTcpSockets` waits on an epoll set through `polling` and wakes the waiting calls; a wait
+  first asks `poll` with no timeout, so one that need not wait finishes at its first poll; nothing is allocated per
+  wait once a socket's waiter list has grown; dropping a wait withdraws it.
+- Built on socket2 (`SockRef` on the socket's descriptor) for the basic calls and the settings it covers, as the
+  owner ruled; the rest through rustix, linux-raw-sys (the uapi constants and structures rustix does not wrap) and
+  libc's `setsockopt`/`getsockopt` as the last resort, on the same descriptor. All are MIT or Apache-2.0.
 - Errors: the host's errno is the Linux errno, kept as `HostError::Errno`; `EAGAIN` becomes `WouldBlock`.
 - The shared work for `crates/internet-protocol` types (its socket, port and packet settings onto socket
   options, the errno mapping, the raw option call) lives in the one implementation-side crate
@@ -44,6 +48,7 @@
   an ICMP error written whole from its IP header by the shared crate's `write_icmp_error`; a report's packet
   with `OPT_TSONLY` off, its statistics from `OPT_STATS`, wireless status from `SO_WIFI_STATUS`.
 - discard_error_queue_entries: `recvmsg(MSG_ERRQUEUE)` until `EAGAIN`.
+- wait_for_events, wait_for_listener_events: `poll` with no timeout, then the shared readiness (epoll).
 - shut_down: `shutdown`. close: `SO_LINGER` of zero for an abort, then the descriptor closes. stop_listening:
   the descriptor closes.
 - push_queued_data: `TCP_NODELAY` set to its current value (`CorkAndNagle`) or `TCP_CORK` set to its current

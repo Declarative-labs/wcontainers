@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::c_int;
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -13,7 +13,9 @@ use std::time::Duration;
 use etherparse::IpNumber;
 use linux_raw_sys::net as uapi;
 use netlink_packet_core::{NlasIterator, parse_u8, parse_u16, parse_u32, parse_u64};
-use rustix::net::{RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, ipproto, sockopt};
+use rustix::io::Errno;
+use rustix::net::{RecvFlags, SocketFlags, SocketType, ipproto};
+use socket2::{SockAddr, SockRef};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
@@ -27,7 +29,7 @@ use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_e
 use wcontainers_internet_protocol_linux_socket_options::readiness::{Readiness, Watched};
 use wcontainers_internet_protocol_linux_socket_options::{
     self as options, ControlBuffer, Shortfalls, bind, family_of, get_int, host_error, open_socket,
-    peer_for, set_flag, set_int, set_option, socket_address,
+    peer_for, set_flag, set_int, set_option,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal_information::PollEvents;
@@ -334,6 +336,25 @@ const PACKET_OPTIONS_ROOM: usize =
 #[repr(C, align(8))]
 struct PacketOptions([u8; PACKET_OPTIONS_ROOM]);
 
+/// The host error of a failed socket2 call.
+fn io_host_error(error: std::io::Error) -> HostError {
+    host_error(Errno::from_io_error(&error).unwrap_or(Errno::IO))
+}
+
+/// The socket's address as socket2 gives it, which is always an internet one for these sockets.
+fn internet_address(address: std::io::Result<SockAddr>) -> Result<SocketAddr, HostError> {
+    address
+        .map_err(io_host_error)?
+        .as_socket()
+        .ok_or(HostError::Errno(libc::EAFNOSUPPORT))
+}
+
+/// A receive buffer as socket2 takes it.
+fn uninitialised(bytes: &mut [u8]) -> &mut [MaybeUninit<u8>] {
+    // SAFETY: MaybeUninit<u8> has u8's layout, and socket2 writes only initialised bytes into it.
+    unsafe { &mut *(std::ptr::from_mut(bytes) as *mut [MaybeUninit<u8>]) }
+}
+
 fn invalid() -> HostError {
     HostError::Errno(libc::EINVAL)
 }
@@ -585,26 +606,29 @@ impl HostTcpSockets {
                     IpVersion::V6 => set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVERR, on),
                 }
             }
-            TcpSetting::KeepAlive(on) => {
-                sockopt::set_socket_keepalive(socket, on).map_err(host_error)
-            }
+            TcpSetting::KeepAlive(on) => SockRef::from(&socket)
+                .set_keepalive(on)
+                .map_err(io_host_error),
             TcpSetting::KeepAliveIdle(idle) => tcp(uapi::TCP_KEEPIDLE, whole(idle, SECOND)?),
             TcpSetting::KeepAliveInterval(interval) => {
                 tcp(uapi::TCP_KEEPINTVL, whole(interval, SECOND)?)
             }
             TcpSetting::KeepAliveProbes(probes) => tcp(uapi::TCP_KEEPCNT, c_int::from(probes.0)),
-            TcpSetting::NoDelay(on) => sockopt::set_tcp_nodelay(socket, on).map_err(host_error),
-            TcpSetting::Cork(on) => sockopt::set_tcp_cork(socket, on).map_err(host_error),
-            TcpSetting::UrgentInline(on) => {
-                sockopt::set_socket_oobinline(socket, on).map_err(host_error)
-            }
-            TcpSetting::QuickAcknowledgement(mode) => {
-                sockopt::set_tcp_quickack(socket, mode == TcpQuickAcknowledgement::On)
-                    .map_err(host_error)
-            }
-            TcpSetting::MaximumSegmentSize(size) => {
-                tcp(uapi::TCP_MAXSEG, size.map_or(0, |size| c_int::from(size.0)))
-            }
+            TcpSetting::NoDelay(on) => SockRef::from(&socket)
+                .set_tcp_nodelay(on)
+                .map_err(io_host_error),
+            TcpSetting::Cork(on) => SockRef::from(&socket)
+                .set_tcp_cork(on)
+                .map_err(io_host_error),
+            TcpSetting::UrgentInline(on) => SockRef::from(&socket)
+                .set_out_of_band_inline(on)
+                .map_err(io_host_error),
+            TcpSetting::QuickAcknowledgement(mode) => SockRef::from(&socket)
+                .set_tcp_quickack(mode == TcpQuickAcknowledgement::On)
+                .map_err(io_host_error),
+            TcpSetting::MaximumSegmentSize(size) => SockRef::from(&socket)
+                .set_tcp_mss(size.map_or(0, |size| u32::from(size.0)))
+                .map_err(io_host_error),
             TcpSetting::WindowClamp(clamp) => tcp(
                 uapi::TCP_WINDOW_CLAMP,
                 match clamp {
@@ -647,21 +671,18 @@ impl HostTcpSockets {
                 tcp(uapi::TCP_DELACK_MAX_US, whole(time, MICROSECOND)?)
             }
             TcpSetting::TransmitDelay(time) => tcp(uapi::TCP_TX_DELAY, whole(time, MICROSECOND)?),
-            TcpSetting::ThinLinearTimeouts(on) => {
-                sockopt::set_tcp_thin_linear_timeouts(socket, on).map_err(host_error)
-            }
-            TcpSetting::CongestionControl(name) => {
-                sockopt::set_tcp_congestion(socket, name).map_err(host_error)
-            }
-            TcpSetting::NotSentLowWater(low_water) => set_option(
-                socket,
-                uapi::SOL_TCP,
-                uapi::TCP_NOTSENT_LOWAT,
-                &match low_water {
+            TcpSetting::ThinLinearTimeouts(on) => SockRef::from(&socket)
+                .set_tcp_thin_linear_timeouts(on)
+                .map_err(io_host_error),
+            TcpSetting::CongestionControl(name) => SockRef::from(&socket)
+                .set_tcp_congestion(name.as_bytes())
+                .map_err(io_host_error),
+            TcpSetting::NotSentLowWater(low_water) => SockRef::from(&socket)
+                .set_tcp_notsent_lowat(match low_water {
                     Some(bytes) => u32::try_from(bytes.0).map_err(|_| invalid())?,
                     None => u32::MAX,
-                },
-            ),
+                })
+                .map_err(io_host_error),
             TcpSetting::FastOpenWithoutCookie(on) => {
                 set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_NO_COOKIE, on)
             }
@@ -884,10 +905,9 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
             TcpListenerSetting::Socket(setting) => {
                 self.configure_socket(socket, listener.family, &setting, 0)
             }
-            TcpListenerSetting::Backlog(backlog) => {
-                rustix::net::listen(socket, i32::try_from(backlog.0).unwrap_or(i32::MAX))
-                    .map_err(host_error)
-            }
+            TcpListenerSetting::Backlog(backlog) => SockRef::from(&socket)
+                .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
+                .map_err(io_host_error),
             TcpListenerSetting::FastOpenQueue(queue) => set_option(
                 socket,
                 uapi::SOL_TCP,
@@ -999,9 +1019,10 @@ impl TcpConnections for HostTcpSockets {
                     set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)?;
                 }
                 let outcome = in_progress(
-                    rustix::net::connect(socket, &peer)
+                    SockRef::from(&socket)
+                        .connect(&SockAddr::from(peer))
                         .map(|()| 0)
-                        .map_err(host_error),
+                        .map_err(io_host_error),
                 )?;
                 match outcome {
                     None => TcpConnectStart::SynchronizeSent {
@@ -1014,18 +1035,18 @@ impl TcpConnections for HostTcpSockets {
                 }
             }
             TcpFastOpen::WithData(data) => {
-                let flags = SendFlags::from_bits_retain(libc::MSG_FASTOPEN as u32)
-                    | SendFlags::NOSIGNAL
-                    | SendFlags::DONTWAIT;
+                let flags = libc::MSG_FASTOPEN | libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT;
                 let taken = in_progress(
-                    rustix::net::sendto(socket, data, flags, &peer).map_err(host_error),
+                    SockRef::from(&socket)
+                        .send_to_with_flags(data, &SockAddr::from(peer), flags)
+                        .map_err(io_host_error),
                 )?;
                 TcpConnectStart::SynchronizeSent {
                     fast_open_data_taken: ByteCount(taken.unwrap_or(0)),
                 }
             }
         };
-        let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
+        let local = internet_address(SockRef::from(&socket).local_addr())?;
         let _ = connection.addresses.set((local, peer));
         Ok(TcpConnected {
             connection,
@@ -1059,9 +1080,10 @@ impl TcpConnections for HostTcpSockets {
             && asked.wireless_status == Report::NotRequested
             && !connection.reports_armed.load(Ordering::Relaxed)
         {
-            return rustix::net::send(socket, bytes, SendFlags::from_bits_retain(flags as u32))
+            return SockRef::from(&socket)
+                .send_with_flags(bytes, flags)
                 .map(ByteCount)
-                .map_err(host_error);
+                .map_err(io_host_error);
         }
         let mut reports = connection.reports();
         if asked.wireless_status == Report::Requested && !reports.wireless_status {
@@ -1069,8 +1091,9 @@ impl TcpConnections for HostTcpSockets {
             reports.wireless_status = true;
         }
         let taken = if record == 0 {
-            rustix::net::send(socket, bytes, SendFlags::from_bits_retain(flags as u32))
-                .map_err(host_error)?
+            SockRef::from(&socket)
+                .send_with_flags(bytes, flags)
+                .map_err(io_host_error)?
         } else {
             self.arm_reports(connection, &mut reports, packet, statistics)?;
             let taken = send_with_record_flags(socket, bytes, flags, record)?;
@@ -1118,20 +1141,17 @@ impl TcpConnections for HostTcpSockets {
         let timestamping = connection.receive_timestamping.load(Ordering::Relaxed);
         let unread_reports = connection.unread_reports.load(Ordering::Relaxed);
         let outcome = if timestamping == 0 && !unread_reports {
-            rustix::net::recv(
-                socket,
-                &mut *into,
-                RecvFlags::from_bits_retain(flags as u32),
-            )
-            .map(|(length, _)| TcpReceived {
-                length: ByteCount(length),
-                timestamps: ReceiveTimestamps {
-                    software: None,
-                    hardware: None,
-                },
-                unread_after: None,
-            })
-            .map_err(host_error)
+            SockRef::from(&socket)
+                .recv_with_flags(uninitialised(into), flags)
+                .map(|length| TcpReceived {
+                    length: ByteCount(length),
+                    timestamps: ReceiveTimestamps {
+                        software: None,
+                        hardware: None,
+                    },
+                    unread_after: None,
+                })
+                .map_err(io_host_error)
         } else {
             let mut control = ControlBuffer::default();
             options::receive_message(socket, into, flags, &mut control).map(|message| {
@@ -1323,11 +1343,13 @@ impl TcpConnections for HostTcpSockets {
         directions: TcpShutdown,
     ) -> Result<(), HostError> {
         let how = match directions {
-            TcpShutdown::Read => Shutdown::Read,
-            TcpShutdown::Write => Shutdown::Write,
-            TcpShutdown::ReadAndWrite => Shutdown::Both,
+            TcpShutdown::Read => std::net::Shutdown::Read,
+            TcpShutdown::Write => std::net::Shutdown::Write,
+            TcpShutdown::ReadAndWrite => std::net::Shutdown::Both,
         };
-        rustix::net::shutdown(connection.socket.fd(), how).map_err(host_error)
+        SockRef::from(&connection.socket.fd())
+            .shutdown(how)
+            .map_err(io_host_error)
     }
 
     async fn wait_for_events(
@@ -1341,7 +1363,10 @@ impl TcpConnections for HostTcpSockets {
     fn close(&self, connection: Self::Connection, manner: TcpClose) {
         if manner == TcpClose::Abort {
             // A linger of zero makes the close send a reset; a failure leaves the orderly close.
-            if sockopt::set_socket_linger(connection.socket.fd(), Some(Duration::ZERO)).is_err() {
+            if SockRef::from(&connection.socket.fd())
+                .set_linger(Some(Duration::ZERO))
+                .is_err()
+            {
                 self.shortfalls.count(ABORT_CLOSED_IN_ORDER);
             }
         }
@@ -1357,17 +1382,19 @@ impl TcpConnections for HostTcpSockets {
         match ignoring {
             // Turning no-delay on pushes past the cork and Nagle's algorithm; it is then put back.
             TcpPushOverride::CorkAndNagle => {
-                let no_delay = sockopt::tcp_nodelay(socket).map_err(host_error)?;
-                sockopt::set_tcp_nodelay(socket, true).map_err(host_error)?;
+                let socket = SockRef::from(&socket);
+                let no_delay = socket.tcp_nodelay().map_err(io_host_error)?;
+                socket.set_tcp_nodelay(true).map_err(io_host_error)?;
                 if !no_delay {
-                    sockopt::set_tcp_nodelay(socket, false).map_err(host_error)?;
+                    socket.set_tcp_nodelay(false).map_err(io_host_error)?;
                 }
                 Ok(())
             }
             // Writing the cork as it is pushes when uncorked; under a cork everything a push may send is sent already.
             TcpPushOverride::Neither => {
-                let corked = sockopt::tcp_cork(socket).map_err(host_error)?;
-                sockopt::set_tcp_cork(socket, corked).map_err(host_error)
+                let socket = SockRef::from(&socket);
+                let corked = socket.tcp_cork().map_err(io_host_error)?;
+                socket.set_tcp_cork(corked).map_err(io_host_error)
             }
         }
     }
@@ -1378,7 +1405,8 @@ impl TcpConnections for HostTcpSockets {
         afterwards: TcpQuickAcknowledgement,
     ) -> Result<(), HostError> {
         let socket = connection.socket.fd();
-        let before = sockopt::tcp_quickack(socket).map_err(host_error)?;
+        let quick = SockRef::from(&socket);
+        let before = quick.tcp_quickack().map_err(io_host_error)?;
         // Quick mode off afterwards is the sign that one was scheduled.
         set_int(
             socket,
@@ -1386,7 +1414,7 @@ impl TcpConnections for HostTcpSockets {
             uapi::TCP_QUICKACK,
             QUICK_ACKNOWLEDGEMENT_THEN_DELAYING,
         )?;
-        let after = sockopt::tcp_quickack(socket).map_err(host_error)?;
+        let after = quick.tcp_quickack().map_err(io_host_error)?;
         let scheduled = !after;
         let wanted = if scheduled {
             afterwards == TcpQuickAcknowledgement::On
@@ -1394,7 +1422,7 @@ impl TcpConnections for HostTcpSockets {
             before
         };
         if wanted != after {
-            sockopt::set_tcp_quickack(socket, wanted).map_err(host_error)?;
+            quick.set_tcp_quickack(wanted).map_err(io_host_error)?;
         }
         Ok(())
     }
@@ -1421,7 +1449,9 @@ impl TcpConnections for HostTcpSockets {
         // Leaving repair mode with TCP_REPAIR_OFF sends a window probe; it also clears address sharing and the
         // repair mode itself, which are put back as they were.
         let socket = connection.socket.fd();
-        let sharing = sockopt::socket_reuseaddr(socket).map_err(host_error)?;
+        let sharing = SockRef::from(&socket)
+            .reuse_address()
+            .map_err(io_host_error)?;
         let repair = |value: u32| set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR, value as c_int);
         let repairing = get_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR)? != 0;
         let queue = if repairing {
@@ -1435,7 +1465,9 @@ impl TcpConnections for HostTcpSockets {
             repair(uapi::TCP_REPAIR_ON)?;
             set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, queue)?;
         } else if sharing {
-            sockopt::set_socket_reuseaddr(socket, true).map_err(host_error)?;
+            SockRef::from(&socket)
+                .set_reuse_address(true)
+                .map_err(io_host_error)?;
         }
         Ok(())
     }
@@ -1507,13 +1539,14 @@ impl TcpListeners for HostTcpSockets {
             self.configure(&listener, setting.clone())?;
         }
         self.bind(socket, &local)?;
-        rustix::net::listen(socket, i32::try_from(backlog.0).unwrap_or(i32::MAX))
-            .map_err(host_error)?;
+        SockRef::from(&socket)
+            .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
+            .map_err(io_host_error)?;
         // A backlog among the settings is listening again with it.
         for setting in backlogs {
             self.configure(&listener, setting.clone())?;
         }
-        let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
+        let local = internet_address(SockRef::from(&socket).local_addr())?;
         Ok(TcpListening { listener, local })
     }
 
@@ -1522,13 +1555,12 @@ impl TcpListeners for HostTcpSockets {
         listener: &Self::Listener,
         synchronize_header: &'a mut [u8],
     ) -> Result<TcpAccepted<'a, Self::Connection>, HostError> {
-        let socket = rustix::net::accept_with(
-            listener.socket.fd(),
-            SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
-        )
-        .map_err(host_error)?;
+        let (socket, peer) = SockRef::from(&listener.socket.fd())
+            .accept4(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
+            .map_err(io_host_error)?;
+        let peer = internet_address(Ok(peer))?;
         let connection = HostTcpConnection::new(
-            self.readiness.watch(socket)?,
+            self.readiness.watch(OwnedFd::from(socket))?,
             listener.family,
             listener.receive_timestamping.load(Ordering::Relaxed),
         );
@@ -1537,12 +1569,7 @@ impl TcpListeners for HostTcpSockets {
             connection.reports().bound_clock = bound_clock;
         }
         let socket = connection.socket.fd();
-        let peer = socket_address(
-            rustix::net::getpeername(socket)
-                .map_err(host_error)?
-                .ok_or(HostError::Errno(libc::ENOTCONN))?,
-        )?;
-        let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
+        let local = internet_address(SockRef::from(&socket).local_addr())?;
         let _ = connection.addresses.set((local, peer));
         let mut room = [0; SAVED_SYNCHRONIZE_ROOM];
         let mut large = Vec::new();
