@@ -93,10 +93,7 @@ pub const SOURCE_PORT_NOT_THE_SOCKETS: &str =
     "a datagram's source port is not the port its socket is bound to";
 pub const SOURCE_NOT_THE_BOUND_ADDRESS: &str =
     "a connect's source is not the address its socket is bound to";
-pub const TRANSMIT_TIME_REJECTION_WITHOUT_KEY: &str =
-    "linux reports a rejected transmit time with the time, not the key of its send";
-pub const ERROR_OF_NO_REPORT: &str =
-    "an error queue entry of an origin the contract has no report for";
+pub use shared::datagram::exchange::{ERROR_OF_NO_REPORT, TRANSMIT_TIME_REJECTION_WITHOUT_KEY};
 pub const SEND_BUFFER_CUT_BY_THE_HOST: &str =
     "a send buffer size above the host's net.core.wmem_max, which the host cuts to it";
 pub const RECEIVE_BUFFER_CUT_BY_THE_HOST: &str =
