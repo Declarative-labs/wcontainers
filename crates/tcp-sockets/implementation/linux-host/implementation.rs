@@ -7,7 +7,7 @@ use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use etherparse::IpNumber;
@@ -40,7 +40,7 @@ use wcontainers_tcp_sockets::settings::{
 };
 use wcontainers_tcp_sockets::state::{
     ByteTotal, DeliveryRateLimit, EventCount, TcpCongestionAvoidanceState, TcpErrorQueueEntry,
-    TcpListenerQuery, TcpQuery, TcpReading, TcpTransmitStatistics,
+    TcpListenerQuery, TcpQuery, TcpReading, TcpSavedSynchronizeHeader, TcpTransmitStatistics,
 };
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpAccepted, TcpClose, TcpConnectStart, TcpConnected, TcpConnections,
@@ -75,8 +75,8 @@ const NO_LAST_RECEIVED_HEADER: &str =
 const NO_AUTHENTICATION: &str = "TCP authentication is not mapped to the host yet";
 const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
-const ARRIVAL_INTERFACE_BY_ADDRESS: &str =
-    "the SYN's arrival interface is taken as the host interface holding the local address";
+const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
+const SYNCHRONIZE_FIELDS_OF_THE_SOCKET: &str = "Linux reports no priority, timestamps or drops for a SYN, and its mark only as the accepted socket's: the accepted socket's mark and priority are given, with no timestamps or drops";
 const NO_LINK_HEADERS: &str = "saving the link headers of SYNs is not mapped to the host yet";
 const PACKET_OR_STATISTICS: &str =
     "Linux gives a TCP socket's transmit reports either the packet or statistics, never both";
@@ -95,6 +95,7 @@ const NO_LISTENER_STATE: &str = "reading a TCP listener's state is not mapped to
 #[derive(Debug, Default)]
 pub struct LinuxHostTcpSockets {
     shortfalls: Shortfalls,
+    interfaces: InterfaceAddresses,
 }
 
 impl LinuxHostTcpSockets {
@@ -137,7 +138,11 @@ pub struct LinuxHostTcpConnection {
     addresses: OnceLock<(SocketAddr, SocketAddr)>,
     receive_timestamping: AtomicU32,
     unread_reports: AtomicBool,
+    /// Whether the reports hold report flags, so that every send's bytes are counted.
+    reports_armed: AtomicBool,
     reports: Mutex<TransmitReports>,
+    /// The SYN's headers, kept when the listener was asked to save them, until they are taken.
+    saved_synchronize: Mutex<Option<Vec<u8>>>,
 }
 
 #[derive(Debug)]
@@ -147,6 +152,8 @@ pub struct LinuxHostTcpListener {
     protocol: TcpProtocol,
     receive_timestamping: AtomicU32,
     bound_clock: Mutex<Option<PtpHardwareClockIndex>>,
+    /// The guest's `TCP_SAVE_SYN`: whether accepted connections keep their SYN's headers to be taken.
+    saves_synchronize: AtomicBool,
 }
 
 macro_rules! ordered_by_descriptor {
@@ -180,16 +187,145 @@ impl LinuxHostTcpConnection {
             addresses: OnceLock::new(),
             receive_timestamping: AtomicU32::new(receive_timestamping),
             unread_reports: AtomicBool::new(false),
+            reports_armed: AtomicBool::new(false),
             reports: Mutex::default(),
+            saved_synchronize: Mutex::default(),
         }
     }
 
-    fn reports(&self) -> std::sync::MutexGuard<'_, TransmitReports> {
-        self.reports
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn reports(&self) -> MutexGuard<'_, TransmitReports> {
+        locked(&self.reports)
     }
 }
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// An interface address of the host and its prefix.
+#[derive(Debug, Clone, Copy)]
+struct HeldAddress {
+    address: IpAddr,
+    netmask: Option<IpAddr>,
+    interface: InterfaceIndex,
+}
+
+impl HeldAddress {
+    fn holds(&self, address: IpAddr) -> bool {
+        match (self.address, self.netmask, address) {
+            (IpAddr::V4(held), Some(IpAddr::V4(mask)), IpAddr::V4(address)) => {
+                (u32::from(held) ^ u32::from(address)) & u32::from(mask) == 0
+            }
+            (IpAddr::V6(held), Some(IpAddr::V6(mask)), IpAddr::V6(address)) => {
+                (u128::from(held) ^ u128::from(address)) & u128::from(mask) == 0
+            }
+            _ => self.address == address,
+        }
+    }
+}
+
+/// The host's interface addresses, read again only after the kernel announced a change of them.
+#[derive(Debug, Default)]
+struct InterfaceAddresses {
+    /// A routing netlink socket that hears of every address change, none when the host refused one.
+    changes: OnceLock<Option<OwnedFd>>,
+    table: Mutex<Option<Vec<HeldAddress>>>,
+}
+
+impl InterfaceAddresses {
+    /// The interface that holds the address, or failing that the first whose prefix holds it.
+    fn holding(&self, address: IpAddr) -> Option<InterfaceIndex> {
+        // Subscribed before the first read, so that no change goes unheard.
+        let changes = self.changes.get_or_init(address_changes);
+        let mut table = locked(&self.table);
+        if changes
+            .as_ref()
+            .is_none_or(|changes| changed(changes.as_fd()))
+            || table.is_none()
+        {
+            *table = Some(interface_addresses());
+        }
+        let table = table.as_deref()?;
+        table
+            .iter()
+            .find(|held| held.address == address)
+            .or_else(|| table.iter().find(|held| held.holds(address)))
+            .map(|held| held.interface)
+    }
+}
+
+fn address_changes() -> Option<OwnedFd> {
+    let socket = rustix::net::socket_with(
+        rustix::net::AddressFamily::NETLINK,
+        SocketType::RAW,
+        SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+        // No protocol is NETLINK_ROUTE, which rustix cannot name: it is zero.
+        None,
+    )
+    .ok()?;
+    let groups =
+        linux_raw_sys::netlink::RTMGRP_IPV4_IFADDR | linux_raw_sys::netlink::RTMGRP_IPV6_IFADDR;
+    rustix::net::bind(
+        &socket,
+        &rustix::net::netlink::SocketAddrNetlink::new(0, groups),
+    )
+    .ok()?;
+    Some(socket)
+}
+
+/// Whether the subscription heard of a change since it was last read, reading all it holds.
+fn changed(changes: BorrowedFd<'_>) -> bool {
+    let mut message = [0; NETLINK_MESSAGE_ROOM];
+    let mut heard = false;
+    loop {
+        match rustix::net::recv(changes, &mut message, RecvFlags::DONTWAIT) {
+            Ok(_) => heard = true,
+            Err(rustix::io::Errno::AGAIN) => return heard,
+            // An overrun loses changes: the table is read again.
+            Err(_) => return true,
+        }
+    }
+}
+
+/// The room a change is read into; a longer one is cut, which loses nothing needed.
+const NETLINK_MESSAGE_ROOM: usize = 1 << 12;
+
+fn interface_addresses() -> Vec<HeldAddress> {
+    let ip = |address: &nix::sys::socket::SockaddrStorage| {
+        address
+            .as_sockaddr_in()
+            .map(|address| IpAddr::V4(address.ip()))
+            .or_else(|| {
+                address
+                    .as_sockaddr_in6()
+                    .map(|address| IpAddr::V6(address.ip()))
+            })
+    };
+    let Ok(entries) = nix::ifaddrs::getifaddrs() else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| {
+            Some(HeldAddress {
+                address: ip(entry.address.as_ref()?)?,
+                netmask: entry.netmask.as_ref().and_then(ip),
+                interface: InterfaceIndex(
+                    nix::net::if_::if_nametoindex(entry.interface_name.as_str()).ok()?,
+                ),
+            })
+        })
+        .collect()
+}
+
+/// The room `IPV6_2292PKTOPTIONS` gives the SYN's packet information in: one control message, padded.
+const PACKET_OPTIONS_ROOM: usize =
+    size_of::<libc::cmsghdr>() + size_of::<uapi::in6_pktinfo>() + size_of::<usize>();
+
+/// Control message room aligned as the messages' headers are.
+#[repr(C, align(8))]
+struct PacketOptions([u8; PACKET_OPTIONS_ROOM]);
 
 fn invalid() -> HostError {
     HostError::Errno(libc::EINVAL)
@@ -219,22 +355,6 @@ fn protocol_of(protocol: TcpProtocol) -> rustix::net::Protocol {
         TcpProtocol::Tcp => ipproto::TCP,
         TcpProtocol::Multipath => ipproto::MPTCP,
     }
-}
-
-/// The index of the host's interface that holds the address.
-fn interface_holding(address: IpAddr) -> Option<InterfaceIndex> {
-    let address = address.to_canonical();
-    let held = nix::ifaddrs::getifaddrs().ok()?.find(|entry| {
-        entry.address.is_some_and(|held| {
-            held.as_sockaddr_in()
-                .map(|held| IpAddr::V4(held.ip()))
-                .or_else(|| held.as_sockaddr_in6().map(|held| IpAddr::V6(held.ip())))
-                == Some(address)
-        })
-    })?;
-    nix::net::if_::if_nametoindex(held.interface_name.as_str())
-        .ok()
-        .map(InterfaceIndex)
 }
 
 /// The `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
@@ -572,19 +692,40 @@ impl LinuxHostTcpSockets {
         }
     }
 
-    fn take_saved_synchronize(&self, socket: BorrowedFd<'_>) -> Result<Vec<u8>, HostError> {
-        let mut saved = vec![0; SAVED_SYNCHRONIZE_ROOM];
-        let length =
-            match options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, &mut saved) {
-                // Too small a buffer: the headers stay saved and can be read with room for any.
-                Err(HostError::Errno(libc::EINVAL)) => {
-                    saved = vec![0; usize::from(u16::MAX)];
-                    options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, &mut saved)?
-                }
-                other => other?,
-            };
-        saved.truncate(length);
-        Ok(saved)
+    /// The SYN's headers that `TCP_SAVED_SYN` holds, read into the room given or, when longer, into `large`.
+    fn take_saved_synchronize<'b>(
+        &self,
+        socket: BorrowedFd<'_>,
+        room: &'b mut [u8],
+        large: &'b mut Vec<u8>,
+    ) -> Result<&'b [u8], HostError> {
+        match options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, room) {
+            Ok(length) => Ok(&room[..length]),
+            // Too small a buffer: the headers stay saved and can be read with room for any.
+            Err(HostError::Errno(libc::EINVAL)) => {
+                *large = vec![0; usize::from(u16::MAX)];
+                let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, large)?;
+                Ok(&large[..length])
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The interface an IPv6 SYN came in on, from the packet information the listener's `IPV6_RECVPKTINFO` kept.
+    fn ipv6_arrival_interface(&self, socket: BorrowedFd<'_>) -> Option<InterfaceIndex> {
+        let mut control = PacketOptions([0; PACKET_OPTIONS_ROOM]);
+        let length = options::get_bytes(
+            socket,
+            uapi::SOL_IPV6,
+            uapi::IPV6_2292PKTOPTIONS,
+            &mut control.0,
+        )
+        .ok()?;
+        // The accepted connection keeps no packet information for what arrives later.
+        set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
+        Ancillary::parse(&control.0[..length])
+            .interface
+            .map(InterfaceIndex)
     }
 
     fn synchronize_fields(
@@ -601,12 +742,21 @@ impl LinuxHostTcpSockets {
             self.shortfalls.count(NO_SAVED_SYNCHRONIZE);
             0
         };
-        self.shortfalls.count(ARRIVAL_INTERFACE_BY_ADDRESS);
-        let interface = interface_holding(local.ip()).unwrap_or(NO_INTERFACE);
-        let specific_destination = match local.ip().to_canonical() {
+        let local = local.ip().to_canonical();
+        let specific_destination = match local {
             IpAddr::V4(address) => Some(address),
             IpAddr::V6(_) => None,
         };
+        let interface = match local {
+            IpAddr::V6(_) => self.ipv6_arrival_interface(socket),
+            IpAddr::V4(_) => None,
+        }
+        .or_else(|| {
+            self.shortfalls.count(ARRIVAL_INTERFACE_BY_ADDRESS);
+            self.interfaces.holding(local)
+        })
+        .unwrap_or(NO_INTERFACE);
+        self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET);
         Ok(ReceivedPacketFields {
             length,
             interface,
@@ -662,6 +812,7 @@ impl LinuxHostTcpSockets {
                 reports.sent = 0;
             }
             reports.flags = flags;
+            connection.reports_armed.store(true, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -743,10 +894,18 @@ impl<'a> Configurable<LinuxHostTcpListener, TcpListenerSetting<'a>> for LinuxHos
                 }
                 options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, &bytes)
             }
-            // Every listener saves the network headers of its SYNs, which accept gives.
+            // Every TCP listener saves its SYNs' network headers, which accept gives; the setting decides whether
+            // the accepted connections keep them to be taken.
             TcpListenerSetting::SaveSynchronize(
-                TcpSavedSynchronize::Off | TcpSavedSynchronize::FromNetworkHeader,
-            ) => Ok(()),
+                save @ (TcpSavedSynchronize::Off | TcpSavedSynchronize::FromNetworkHeader),
+            ) => {
+                let on = save == TcpSavedSynchronize::FromNetworkHeader;
+                if listener.protocol == TcpProtocol::Multipath {
+                    set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, on)?;
+                }
+                listener.saves_synchronize.store(on, Ordering::Relaxed);
+                Ok(())
+            }
             TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromLinkHeader) => {
                 Err(self.shortfalls.refuse(NO_LINK_HEADERS))
             }
@@ -887,6 +1046,14 @@ impl TcpConnections for LinuxHostTcpSockets {
         let packet = asked.packet == Report::Requested;
         let statistics = request.transmit_statistics == Report::Requested;
         let (record, expected) = record_flags(&asked);
+        if record == 0
+            && asked.wireless_status == Report::NotRequested
+            && !connection.reports_armed.load(Ordering::Relaxed)
+        {
+            return rustix::net::send(socket, bytes, SendFlags::from_bits_retain(flags as u32))
+                .map(ByteCount)
+                .map_err(host_error);
+        }
         let mut reports = connection.reports();
         if asked.wireless_status == Report::Requested && !reports.wireless_status {
             set_flag(socket, uapi::SOL_SOCKET, uapi::SO_WIFI_STATUS, true)?;
@@ -1116,10 +1283,29 @@ impl TcpConnections for LinuxHostTcpSockets {
 
     fn read_state<'a>(
         &self,
-        _connection: &Self::Connection,
-        _query: TcpQuery<'a>,
+        connection: &Self::Connection,
+        query: TcpQuery<'a>,
     ) -> Result<TcpReading<'a>, HostError> {
-        Err(self.shortfalls.refuse(NO_CONNECTION_STATE))
+        match query {
+            // As `TCP_SAVED_SYN` does: too small a buffer keeps the headers and tells their length.
+            TcpQuery::TakeSavedSynchronize(into) => {
+                let mut saved = locked(&connection.saved_synchronize);
+                let header = match saved.as_deref() {
+                    None => TcpSavedSynchronizeHeader::Absent,
+                    Some(header) if header.len() > into.len() => TcpSavedSynchronizeHeader::Kept {
+                        length: ByteCount(header.len()),
+                    },
+                    Some(header) => {
+                        let length = header.len();
+                        into[..length].copy_from_slice(header);
+                        *saved = None;
+                        TcpSavedSynchronizeHeader::Taken(&into[..length])
+                    }
+                };
+                Ok(TcpReading::SavedSynchronize(header))
+            }
+            _ => Err(self.shortfalls.refuse(NO_CONNECTION_STATE)),
+        }
     }
 
     fn shut_down(
@@ -1282,11 +1468,16 @@ impl TcpListeners for LinuxHostTcpSockets {
             protocol,
             receive_timestamping: AtomicU32::new(0),
             bound_clock: Mutex::new(None),
+            saves_synchronize: AtomicBool::new(false),
         };
         let socket = listener.socket.as_fd();
         // Multipath sockets have no TCP_SAVE_SYN.
         if protocol == TcpProtocol::Tcp {
             set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, true)?;
+            // An IPv6 SYN's packet information, with its arrival interface, then comes with each accepted connection.
+            if family == IpVersion::V6 {
+                set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, true)?;
+            }
         }
         let (backlogs, others): (Vec<_>, Vec<_>) = settings
             .iter()
@@ -1320,10 +1511,10 @@ impl TcpListeners for LinuxHostTcpSockets {
             listener.family,
             listener.receive_timestamping.load(Ordering::Relaxed),
         );
-        connection.reports().bound_clock = *listener
-            .bound_clock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let bound_clock = *locked(&listener.bound_clock);
+        if bound_clock.is_some() {
+            connection.reports().bound_clock = bound_clock;
+        }
         let socket = connection.socket.as_fd();
         let peer = socket_address(
             rustix::net::getpeername(socket)
@@ -1332,11 +1523,16 @@ impl TcpListeners for LinuxHostTcpSockets {
         )?;
         let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
         let _ = connection.addresses.set((local, peer));
+        let mut room = [0; SAVED_SYNCHRONIZE_ROOM];
+        let mut large = Vec::new();
         let saved = match listener.protocol {
-            TcpProtocol::Tcp => self.take_saved_synchronize(socket)?,
-            TcpProtocol::Multipath => Vec::new(),
+            TcpProtocol::Tcp => self.take_saved_synchronize(socket, &mut room, &mut large)?,
+            TcpProtocol::Multipath => &[],
         };
-        let synchronize = self.synchronize_fields(socket, &saved, local)?;
+        if listener.saves_synchronize.load(Ordering::Relaxed) && !saved.is_empty() {
+            *locked(&connection.saved_synchronize) = Some(saved.to_vec());
+        }
+        let synchronize = self.synchronize_fields(socket, saved, local)?;
         let length = saved.len().min(synchronize_header.len());
         synchronize_header[..length].copy_from_slice(&saved[..length]);
         Ok(TcpAccepted {

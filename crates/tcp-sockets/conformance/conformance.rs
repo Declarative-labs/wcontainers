@@ -6,7 +6,8 @@
 //! The checks watch the wire through the host's packet and raw sockets, so they run as root on a Linux host, in a
 //! network namespace of their own whose loopback is up with the `fq` queueing discipline (which honours a transmit
 //! delay), with `net.ipv4.tcp_fastopen` at 3 (fast open for clients and listeners), `net.ipv6.flowlabel_consistency`
-//! at 0 (which flow label reflection needs) and the `dctcp` congestion control available.
+//! at 0 (which flow label reflection needs), `net.ipv4.tcp_fwmark_accept` at 1 (an accepted socket takes its SYN's
+//! mark) and the `dctcp` congestion control available.
 #![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -20,18 +21,20 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use etherparse::{
     Icmpv4Header, Icmpv4Slice, Icmpv4Type, Icmpv6Header, Icmpv6Slice, Icmpv6Type, IpDscp, IpEcn,
-    IpNumber, Ipv4HeaderSlice, Ipv6FlowLabel, Ipv6Header, Ipv6HeaderSlice, TcpHeaderSlice,
-    TcpOptionElement, icmpv4, icmpv6,
+    IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6Header, Ipv6HeaderSlice,
+    Ipv6RawExtHeader, Ipv6RawExtHeaderSlice, TcpHeaderSlice, TcpOptionElement, icmpv4, icmpv6,
 };
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, BindAddress, ByteCount, BytesPerSecond, FilterInstruction, FilterJump,
-    FilterOperand, FilterOperation, FlowLabelChoice, HopLimit, IpPacketSetting, IpSocketSetting,
-    IpVersion, Ipv6Families, LocalBinding, LocalPort, NonlocalAddresses, PacketPriority,
-    PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing, ReceivedPacketFields,
-    Report, RouteScope, SocketFilter, TimestampSource, Timestamping, TransmitEvent,
-    TransmitReportKey, TransmitReportRequest, TransmitStage,
+    AddressSharing, AnycastAddress, BindAddress, ByteCount, BytesPerSecond, FilterInstruction,
+    FilterJump, FilterOperand, FilterOperation, FlowLabelChoice, HopLimit, InterfaceIndex,
+    IpPacketSetting, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort, Membership,
+    MobileAddressPreference, MulticastGroup, MulticastMembership, NonlocalAddresses, PacketMark,
+    PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing,
+    ReceivedPacketFields, Report, RouteScope, SocketFilter, SourceFilter, SourcePreferences,
+    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent, TransmitReportKey,
+    TransmitReportRequest, TransmitStage,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
@@ -43,7 +46,10 @@ use wcontainers_tcp_sockets::settings::{
     ProbeCount, RetryCount, TcpFinWait2, TcpListenerSetting, TcpQuickAcknowledgement,
     TcpSavedSynchronize, TcpSetting, TransmitRehash, WindowSize,
 };
-use wcontainers_tcp_sockets::state::TcpErrorQueueEntry;
+use wcontainers_tcp_sockets::state::{
+    DeliveryRateLimit, TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpQuery, TcpReading,
+    TcpSavedSynchronizeHeader,
+};
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpClose, TcpConnectStart, TcpContinuation, TcpFastOpen, TcpListening,
     TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpRecordBoundary,
@@ -355,12 +361,21 @@ fn pair_with<S: TcpSockets>(
     client_settings: &[TcpSetting<'_>],
     listener_settings: &[TcpListenerSetting<'_>],
 ) -> Pair<S> {
-    let (listener, local) = listen(sockets, ipv4_loopback(), listener_settings);
+    pair_at(sockets, ipv4_loopback(), client_settings, listener_settings)
+}
+
+fn pair_at<S: TcpSockets>(
+    sockets: &S,
+    address: BindAddress,
+    client_settings: &[TcpSetting<'_>],
+    listener_settings: &[TcpListenerSetting<'_>],
+) -> Pair<S> {
+    let (listener, local) = listen(sockets, address, listener_settings);
     let client = sockets
         .connect(
             TcpProtocol::Tcp,
             OWNER,
-            bind_any_port(ipv4_any()),
+            bind_any_port(any_of(address)),
             local,
             client_settings,
             TcpFastOpen::Off,
@@ -3069,8 +3084,342 @@ pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets
     close(&sockets, pair);
 }
 
-/// The settings of a connection checked for being set idempotently, each taking no privilege.
-fn connection_settings() -> Vec<TcpSetting<'static>> {
+/// Rounds of one segment each that the statistics check sends.
+const STATISTICS_ROUNDS: usize = 10;
+
+/// The hop limit of the peer's acknowledgements in the statistics check.
+const STATISTICS_HOP_LIMIT: HopLimit = HopLimit(33);
+
+/// The statistics of each round's acknowledgement report agree with what the connection did: rounds of one small
+/// segment, acknowledged late by a peer with a transmit delay and a hop limit of its own.
+pub fn transmit_statistics_describe_the_connection<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    for setting in [
+        TcpSetting::TransmitDelay(TRANSMIT_DELAY),
+        TcpSetting::Packet(IpPacketSetting::HopLimit {
+            version: IpVersion::V4,
+            limit: Some(STATISTICS_HOP_LIMIT),
+        }),
+    ] {
+        sockets
+            .configure(&pair.server, setting)
+            .expect("a setting of the peer");
+    }
+    let reported = TcpSendRequest {
+        transmit_reports: TransmitReportRequest {
+            key: KEY,
+            acknowledgement: Report::Requested,
+            ..no_reports()
+        },
+        transmit_statistics: Report::Requested,
+        ..plain()
+    };
+    let mut last = None;
+    for _ in 0..STATISTICS_ROUNDS {
+        send_all(&sockets, &pair.client, reported, MESSAGE);
+        assert_eq!(
+            receive_up_to(&sockets, &pair.server, MESSAGE.len()),
+            MESSAGE
+        );
+        let TcpErrorQueueEntry::TransmitReport { report, statistics } =
+            take_entry(&sockets, &pair.client)
+        else {
+            panic!("not a transmit report");
+        };
+        assert_eq!(report.key, KEY);
+        last = statistics;
+    }
+    let statistics = last.expect("the statistics asked for");
+    let rounds = STATISTICS_ROUNDS as u64;
+    assert!(
+        statistics.bytes_sent.0 >= rounds * MESSAGE.len() as u64,
+        "{statistics:?}"
+    );
+    assert!(statistics.data_segments_out.0 >= rounds, "{statistics:?}");
+    assert!(statistics.delivered.0 >= rounds, "{statistics:?}");
+    assert_eq!(statistics.delivered_congestion_experienced.0, 0);
+    assert_eq!(
+        statistics.total_retransmissions.0 == 0,
+        statistics.bytes_retransmitted.0 == 0,
+        "{statistics:?}"
+    );
+    assert!(
+        statistics.minimum_round_trip_time < TRANSMIT_DELAY,
+        "the handshake's: {statistics:?}"
+    );
+    assert!(
+        statistics.smoothed_round_trip_time > TRANSMIT_DELAY / 2
+            && statistics.smoothed_round_trip_time > statistics.minimum_round_trip_time,
+        "{statistics:?}"
+    );
+    assert!(statistics.busy >= TRANSMIT_DELAY, "{statistics:?}");
+    assert!(
+        statistics.receive_window_limited < TRANSMIT_DELAY
+            && statistics.send_buffer_limited < TRANSMIT_DELAY,
+        "{statistics:?}"
+    );
+    assert!(
+        statistics.pacing_rate.0 > 0 && statistics.delivery_rate.0 > 0,
+        "{statistics:?}"
+    );
+    assert_eq!(
+        statistics.delivery_rate_limit,
+        DeliveryRateLimit::Application
+    );
+    assert!(
+        statistics.send_slow_start_threshold.0 > statistics.send_congestion_window.0
+            && statistics.send_congestion_window.0 >= 1,
+        "still in slow start: {statistics:?}"
+    );
+    assert_eq!(
+        statistics.congestion_avoidance_state,
+        TcpCongestionAvoidanceState::Open
+    );
+    assert_eq!(statistics.received_hop_limit, STATISTICS_HOP_LIMIT);
+    assert_eq!(statistics.not_sent, ByteCount(0));
+    assert!(
+        statistics.earliest_departure > Duration::ZERO,
+        "{statistics:?}"
+    );
+    assert_eq!(statistics.recurring_retransmissions, RetryCount(0));
+    assert_eq!(statistics.duplicate_selective_acknowledgements.0, 0);
+    assert_eq!(statistics.reordering_seen.0, 0);
+    assert_eq!(statistics.timeout_rehashes.0, 0);
+    assert_eq!(statistics.rehashes.0, 0);
+    close(&sockets, pair);
+}
+
+/// Asked for with none scheduled, the delayed acknowledgement leaves the mode as it was.
+pub fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled<S: TcpSockets>(sockets: S) {
+    let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &[], &[]);
+    sockets
+        .configure(
+            &pair.server,
+            TcpSetting::QuickAcknowledgement(TcpQuickAcknowledgement::Off),
+        )
+        .expect("delay acknowledgements");
+    sockets
+        .send_delayed_acknowledgement(&pair.server, TcpQuickAcknowledgement::On)
+        .expect("nothing to send");
+    let delay = acknowledgement_delay(&sockets, &pair, &capture);
+    assert!(delay > QUICK_WITHIN, "{delay:?}");
+    close(&sockets, pair);
+}
+
+/// Accept names the loopback interface a SYN came in on, the address it was sent to as the one to reply from (IPv4
+/// only), and the mark its sender gave it.
+pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
+    let interface = loopback_interface();
+    for (address, specific_destination) in [
+        (BindAddress::V4(OTHER_LOOPBACK), Some(OTHER_LOOPBACK)),
+        (ipv6_loopback(), None),
+    ] {
+        let (listener, local) = listen(&sockets, address, &[]);
+        let connected = sockets
+            .connect(
+                TcpProtocol::Tcp,
+                OWNER,
+                bind_any_port(any_of(address)),
+                local,
+                &[TcpSetting::Packet(IpPacketSetting::Mark(MARK))],
+                TcpFastOpen::Off,
+            )
+            .expect("connect");
+        let accepted = accept_with_header(&sockets, &listener, 0);
+        let fields = accepted.synchronize;
+        assert_eq!(fields.interface, interface, "{address:?}: {fields:?}");
+        assert_eq!(
+            fields.specific_destination, specific_destination,
+            "{address:?}: {fields:?}"
+        );
+        assert_eq!(fields.mark, MARK, "{address:?}: {fields:?}");
+        sockets.close(accepted.connection, TcpClose::Orderly);
+        sockets.close(connected.connection, TcpClose::Orderly);
+        sockets.stop_listening(listener);
+    }
+}
+
+/// A connect in repair mode is established at once and sends nothing.
+pub fn connect_in_repair_mode_is_established_at_once<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let connected = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(ipv4_any()),
+            local,
+            &[TcpSetting::Repair(TcpRepair::On)],
+            TcpFastOpen::Off,
+        )
+        .expect("connect in repair mode");
+    assert_eq!(connected.start, TcpConnectStart::EstablishedForRepair);
+    std::thread::sleep(SETTLE);
+    let mut header = [0; 0];
+    assert_eq!(
+        sockets.accept(&listener, &mut header).map(drop),
+        Err(HostError::WouldBlock)
+    );
+    sockets.close(connected.connection, TcpClose::Orderly);
+    sockets.stop_listening(listener);
+}
+
+/// A listener's receive timestamping holds for the connections it accepts.
+pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(sockets: S) {
+    let timestamping = Timestamping {
+        receive_software: Report::Requested,
+        receive_hardware: Report::NotRequested,
+        bound_clock: None,
+    };
+    let pair = pair_with(
+        &sockets,
+        &[],
+        &[TcpListenerSetting::Socket(TcpSetting::Ip(
+            IpSocketSetting::Timestamping(timestamping),
+        ))],
+    );
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    let mut buffer = [0; 1];
+    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer))
+        .expect("receive");
+    assert!(got.timestamps.software.is_some(), "{got:?}");
+    close(&sockets, pair);
+}
+
+/// A listener asked to save SYNs leaves each accepted connection its SYN's headers, kept while the buffer is too small
+/// for them and then taken once; a listener not asked, or asked to stop, leaves none.
+pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
+    let save = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromNetworkHeader);
+    let stop = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::Off);
+    for (settings, saved) in [
+        (vec![], false),
+        (vec![save.clone()], true),
+        (vec![save.clone(), stop.clone()], false),
+    ] {
+        let (listener, local) = listen(&sockets, ipv4_loopback(), &settings);
+        let connected = sockets
+            .connect(
+                TcpProtocol::Tcp,
+                OWNER,
+                bind_any_port(ipv4_any()),
+                local,
+                &[],
+                TcpFastOpen::Off,
+            )
+            .expect("connect");
+        let accepted = accept_with_header(&sockets, &listener, HEADER_ROOM);
+        let header = &accepted.synchronize_header;
+        let mut small = [0; CUT_HEADER];
+        let mut room = [0; HEADER_ROOM];
+        if saved {
+            assert_eq!(
+                sockets.read_state(
+                    &accepted.connection,
+                    TcpQuery::TakeSavedSynchronize(&mut small)
+                ),
+                Ok(TcpReading::SavedSynchronize(
+                    TcpSavedSynchronizeHeader::Kept {
+                        length: ByteCount(header.len())
+                    }
+                ))
+            );
+            assert_eq!(
+                sockets.read_state(
+                    &accepted.connection,
+                    TcpQuery::TakeSavedSynchronize(&mut room)
+                ),
+                Ok(TcpReading::SavedSynchronize(
+                    TcpSavedSynchronizeHeader::Taken(header)
+                ))
+            );
+        }
+        assert_eq!(
+            sockets.read_state(
+                &accepted.connection,
+                TcpQuery::TakeSavedSynchronize(&mut room)
+            ),
+            Ok(TcpReading::SavedSynchronize(
+                TcpSavedSynchronizeHeader::Absent
+            )),
+            "{settings:?}"
+        );
+        sockets.close(accepted.connection, TcpClose::Orderly);
+        sockets.close(connected.connection, TcpClose::Orderly);
+        sockets.stop_listening(listener);
+    }
+}
+
+/// IPv4 options and IPv6 extension headers set before connect go out in the SYN, as its saved headers show.
+pub fn header_options_go_out_in_the_synchronize<S: TcpSockets>(sockets: S) {
+    let options = Ipv4Options::try_from(&IPV4_OPTIONS[..]).expect("IPv4 options");
+    let synchronize_header = |address: BindAddress, setting: IpPacketSetting<'_>| {
+        let (listener, local) = listen(&sockets, address, &[]);
+        let connected = sockets
+            .connect(
+                TcpProtocol::Tcp,
+                OWNER,
+                bind_any_port(any_of(address)),
+                local,
+                &[TcpSetting::Packet(setting)],
+                TcpFastOpen::Off,
+            )
+            .expect("connect");
+        let accepted = accept_with_header(&sockets, &listener, HEADER_ROOM);
+        sockets.close(accepted.connection, TcpClose::Orderly);
+        sockets.close(connected.connection, TcpClose::Orderly);
+        sockets.stop_listening(listener);
+        accepted.synchronize_header
+    };
+    let header = synchronize_header(ipv4_loopback(), IpPacketSetting::Ipv4Options(&options));
+    let ipv4 = Ipv4HeaderSlice::from_slice(&header).expect("the SYN's IPv4 header");
+    assert_eq!(ipv4.options(), IPV4_OPTIONS);
+    for (setting, number) in [
+        (
+            IpPacketSetting::HopByHopOptions(padding_header()),
+            IpNumber::IPV6_HEADER_HOP_BY_HOP,
+        ),
+        (
+            IpPacketSetting::DestinationOptions(padding_header()),
+            IpNumber::IPV6_DESTINATION_OPTIONS,
+        ),
+    ] {
+        let header = synchronize_header(ipv6_loopback(), setting);
+        let ipv6 = Ipv6HeaderSlice::from_slice(&header).expect("the SYN's IPv6 header");
+        assert_eq!(ipv6.next_header(), number);
+        let extension = Ipv6RawExtHeaderSlice::from_slice(&header[Ipv6Header::LEN..])
+            .expect("the extension header");
+        assert_eq!(extension.next_header(), IpNumber::TCP);
+        assert_eq!(extension.slice().len(), PADDING_HEADER.len());
+        assert!(extension.payload().iter().all(|&byte| byte == 0));
+    }
+}
+
+/// A header word of IPv4 options that do nothing.
+const IPV4_OPTIONS: [u8; size_of::<u32>()] = [libc::IPOPT_NOP; size_of::<u32>()];
+
+/// The smallest IPv6 extension header, its options all one-byte padding (Pad1 is option type 0).
+const PADDING_HEADER: [u8; Ipv6RawExtHeader::MIN_LEN] = [0; Ipv6RawExtHeader::MIN_LEN];
+
+const MULTICAST_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+const MULTICAST_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
+const ANYCAST_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
+const FLOW_LABEL: u32 = 0x12345;
+const MARK: PacketMark = PacketMark(7);
+
+/// The index of the loopback interface.
+fn loopback_interface() -> InterfaceIndex {
+    let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
+        .expect("a socket to name interfaces with");
+    InterfaceIndex(
+        rustix::net::netdevice::name_to_index(&socket, "lo").expect("the loopback interface"),
+    )
+}
+
+fn padding_header() -> Option<Ipv6RawExtHeaderSlice<'static>> {
+    Some(Ipv6RawExtHeaderSlice::from_slice(&PADDING_HEADER).expect("an extension header"))
+}
+
+/// The settings of an IPv4 connection checked for being set idempotently, each taking no privilege.
+fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<TcpSetting<'_>> {
     vec![
         TcpSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(SETTING_BYTES))),
         TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(SETTING_BYTES))),
@@ -3096,18 +3445,27 @@ fn connection_settings() -> Vec<TcpSetting<'static>> {
             version: IpVersion::V4,
             limit: None,
         }),
+        TcpSetting::Packet(IpPacketSetting::TrafficClass {
+            version: IpVersion::V4,
+            dscp: IpDscp::AF41,
+            ecn: IpEcn::ZERO,
+        }),
         TcpSetting::Packet(IpPacketSetting::PathMtuDiscovery {
             version: IpVersion::V4,
             mode: PathMtuDiscovery::Do,
         }),
+        TcpSetting::Packet(IpPacketSetting::Ipv4Options(options)),
         TcpSetting::Packet(IpPacketSetting::Priority(PacketPriority(u32::from(
             SETTING_COUNT,
         )))),
+        TcpSetting::Packet(IpPacketSetting::UnicastInterface(Some(interface))),
+        TcpSetting::Packet(IpPacketSetting::UnicastInterface(None)),
         TcpSetting::Packet(IpPacketSetting::RouteScope(RouteScope::Universe)),
         TcpSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
         TcpSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
         TcpSetting::Port(PortSetting::NonlocalAddresses(NonlocalAddresses::Bindable)),
         TcpSetting::Port(PortSetting::NonlocalAddresses(NonlocalAddresses::Refused)),
+        TcpSetting::Port(PortSetting::BoundInterface(Some(interface))),
         TcpSetting::Port(PortSetting::BoundInterface(None)),
         TcpSetting::Port(PortSetting::IncomingProcessor(None)),
         TcpSetting::BufferLocks(BufferLocks {
@@ -3144,6 +3502,7 @@ fn connection_settings() -> Vec<TcpSetting<'static>> {
         TcpSetting::SynchronizeRetries(RetryCount(SETTING_COUNT)),
         TcpSetting::UserTimeout(Some(SETTING_TIME)),
         TcpSetting::UserTimeout(None),
+        TcpSetting::DeferAccept(None),
         TcpSetting::FinWait2(TcpFinWait2::Lasts(SETTING_TIME)),
         TcpSetting::FinWait2(TcpFinWait2::Reset),
         TcpSetting::FinWait2(TcpFinWait2::SystemDefault),
@@ -3160,14 +3519,72 @@ fn connection_settings() -> Vec<TcpSetting<'static>> {
     ]
 }
 
-/// Each setting given to connect once and twice, then set once and twice on the established connections: the outcomes
-/// agree and the connections carry bytes.
-pub fn connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
-    for setting in connection_settings() {
-        let once = pair_with(&sockets, std::slice::from_ref(&setting), &[]);
-        let twice = pair_with(&sockets, &[setting.clone(), setting.clone()], &[]);
-        assert_carries_bytes(&sockets, &once);
-        assert_carries_bytes(&sockets, &twice);
+/// The settings of an IPv6 connection checked for being set idempotently: those only IPv6 has, and the IPv6
+/// variants of those both versions have.
+fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static>> {
+    vec![
+        TcpSetting::Ip(IpSocketSetting::MulticastAllGroups {
+            version: IpVersion::V6,
+            enabled: false,
+        }),
+        TcpSetting::Packet(IpPacketSetting::HopLimit {
+            version: IpVersion::V6,
+            limit: Some(HopLimit(SETTING_COUNT)),
+        }),
+        TcpSetting::Packet(IpPacketSetting::HopLimit {
+            version: IpVersion::V6,
+            limit: None,
+        }),
+        TcpSetting::Packet(IpPacketSetting::TrafficClass {
+            version: IpVersion::V6,
+            dscp: IpDscp::AF41,
+            ecn: IpEcn::ZERO,
+        }),
+        TcpSetting::Packet(IpPacketSetting::PathMtuDiscovery {
+            version: IpVersion::V6,
+            mode: PathMtuDiscovery::Do,
+        }),
+        TcpSetting::Packet(IpPacketSetting::HopByHopOptions(padding_header())),
+        TcpSetting::Packet(IpPacketSetting::HopByHopOptions(None)),
+        TcpSetting::Packet(IpPacketSetting::RoutingDestinationOptions(None)),
+        TcpSetting::Packet(IpPacketSetting::RoutingHeader(None)),
+        TcpSetting::Packet(IpPacketSetting::DestinationOptions(padding_header())),
+        TcpSetting::Packet(IpPacketSetting::DestinationOptions(None)),
+        TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Unlabelled)),
+        TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Automatic)),
+        TcpSetting::Packet(IpPacketSetting::UnicastInterface(Some(interface))),
+        TcpSetting::Packet(IpPacketSetting::UnicastInterface(None)),
+        TcpSetting::Packet(IpPacketSetting::SourcePreferences(SourcePreferences {
+            temporary: TemporaryAddressPreference::Public,
+            mobile: MobileAddressPreference::Home,
+        })),
+        TcpSetting::MinimumHopLimit {
+            version: IpVersion::V6,
+            minimum: Some(HopLimit(1)),
+        },
+        TcpSetting::MinimumHopLimit {
+            version: IpVersion::V6,
+            minimum: None,
+        },
+        TcpSetting::IcmpErrorReports {
+            version: IpVersion::V6,
+            reports: Report::Requested,
+        },
+    ]
+}
+
+/// Each setting given to connect once and twice, then set once and twice on the established connections: the
+/// outcomes agree and the connections carry bytes.
+fn settings_set_twice_equal_set_once<S: TcpSockets>(
+    sockets: &S,
+    address: BindAddress,
+    settings: &[TcpSetting<'_>],
+) {
+    for setting in settings {
+        let once = pair_at(sockets, address, std::slice::from_ref(setting), &[]);
+        let twice = pair_at(sockets, address, &[setting.clone(), setting.clone()], &[]);
+        assert_carries_bytes(sockets, &once);
+        assert_carries_bytes(sockets, &twice);
         let first = sockets.configure(&once.client, setting.clone());
         let outcomes = [
             first,
@@ -3178,11 +3595,22 @@ pub fn connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
             outcomes.iter().all(|outcome| *outcome == first),
             "{setting:?}: {outcomes:?}"
         );
-        assert_carries_bytes(&sockets, &once);
-        assert_carries_bytes(&sockets, &twice);
-        close(&sockets, once);
-        close(&sockets, twice);
+        assert_carries_bytes(sockets, &once);
+        assert_carries_bytes(sockets, &twice);
+        close(sockets, once);
+        close(sockets, twice);
     }
+}
+
+pub fn connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
+    let options = Ipv4Options::try_from(&IPV4_OPTIONS[..]).expect("IPv4 options");
+    let settings = connection_settings(&options, loopback_interface());
+    settings_set_twice_equal_set_once(&sockets, ipv4_loopback(), &settings);
+}
+
+pub fn ipv6_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
+    let settings = ipv6_connection_settings(loopback_interface());
+    settings_set_twice_equal_set_once(&sockets, ipv6_loopback(), &settings);
 }
 
 /// Each listener setting set once and twice on fresh listeners: the outcomes agree, every setting an implementation
@@ -3193,38 +3621,77 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
         (
             TcpListenerSetting::Backlog(ListenBacklog(u32::from(SETTING_COUNT))),
             true,
+            ipv4_loopback(),
         ),
-        (TcpListenerSetting::FastOpenQueue(FAST_OPEN_QUEUE), true),
-        (TcpListenerSetting::FastOpenQueue(None), true),
+        (
+            TcpListenerSetting::FastOpenQueue(FAST_OPEN_QUEUE),
+            true,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::FastOpenQueue(None),
+            true,
+            ipv4_loopback(),
+        ),
         (
             TcpListenerSetting::FastOpenKeys(FastOpenKeys {
                 primary: key,
                 backup: Some(key),
             }),
             true,
+            ipv4_loopback(),
         ),
         (
             TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromNetworkHeader),
             true,
+            ipv4_loopback(),
         ),
         (
             TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::Off),
             true,
+            ipv4_loopback(),
         ),
         (
             TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromLinkHeader),
             false,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::FlowLabelReflection(true),
+            true,
+            ipv6_loopback(),
+        ),
+        (
+            TcpListenerSetting::FlowLabelReflection(false),
+            true,
+            ipv6_loopback(),
         ),
         (
             TcpListenerSetting::Socket(TcpSetting::DeferAccept(None)),
             true,
+            ipv4_loopback(),
         ),
-        (TcpListenerSetting::Socket(TcpSetting::NoDelay(true)), true),
+        (
+            TcpListenerSetting::Socket(TcpSetting::NoDelay(true)),
+            true,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::Ip(IpSocketSetting::Timestamping(
+                Timestamping {
+                    receive_software: Report::Requested,
+                    receive_hardware: Report::NotRequested,
+                    bound_clock: None,
+                },
+            ))),
+            true,
+            ipv4_loopback(),
+        ),
     ];
-    for (setting, required) in settings {
-        let once = pair(&sockets);
+    for (setting, required, address) in settings {
+        let once = pair_at(&sockets, address, &[], &[]);
         let first = sockets.configure(&once.listener, setting.clone());
-        let twice = pair(&sockets);
+        let twice = pair_at(&sockets, address, &[], &[]);
         let outcomes = [
             first,
             sockets.configure(&twice.listener, setting.clone()),
@@ -3242,7 +3709,7 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
                 .connect(
                     TcpProtocol::Tcp,
                     OWNER,
-                    bind_any_port(ipv4_any()),
+                    bind_any_port(any_of(address)),
                     pair.local,
                     &[],
                     TcpFastOpen::Off,
@@ -3259,26 +3726,75 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// Connection settings an implementation may refuse, set once and twice on established connections: the outcomes agree.
+/// Connection settings an implementation may refuse (or the host may lack the privilege for), each set once and
+/// twice on established connections: the outcomes agree and the connections still carry bytes, but for routing
+/// destination options without a routing header, which Linux counts in each packet's length and never sends.
 pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
-    {
-        let setting = TcpSetting::RecordsLastReceivedHeader(Report::Requested);
-        let once = pair(&sockets);
-        let twice = pair(&sockets);
-        let first = sockets.configure(&once.client, setting.clone());
-        let outcomes = [
-            first,
-            sockets.configure(&twice.client, setting.clone()),
-            sockets.configure(&twice.client, setting.clone()),
-        ];
-        assert!(
-            outcomes.iter().all(|outcome| *outcome == first),
-            "{setting:?}: {outcomes:?}"
-        );
-        assert_carries_bytes(&sockets, &once);
-        assert_carries_bytes(&sockets, &twice);
-        close(&sockets, once);
-        close(&sockets, twice);
+    let interface = loopback_interface();
+    let ipv4 = [
+        TcpSetting::RecordsLastReceivedHeader(Report::Requested),
+        TcpSetting::Packet(IpPacketSetting::Mark(MARK)),
+        TcpSetting::Port(PortSetting::GroupFilter(Some(SocketFilter(&ACCEPT_ALL)))),
+        TcpSetting::Port(PortSetting::GroupFilter(None)),
+        TcpSetting::Ip(IpSocketSetting::MulticastV4(MulticastGroup {
+            group: MULTICAST_V4,
+            interface: Some(interface),
+            membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
+        })),
+        TcpSetting::Ip(IpSocketSetting::MulticastV4(MulticastGroup {
+            group: MULTICAST_V4,
+            interface: Some(interface),
+            membership: MulticastMembership::Left,
+        })),
+    ];
+    let ipv6 = [
+        TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Label(
+            Ipv6FlowLabel::try_new(FLOW_LABEL).expect("a flow label"),
+        ))),
+        TcpSetting::Ip(IpSocketSetting::MulticastV6(MulticastGroup {
+            group: MULTICAST_V6,
+            interface: Some(interface),
+            membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
+        })),
+        TcpSetting::Ip(IpSocketSetting::Anycast(AnycastAddress {
+            address: ANYCAST_V6,
+            interface: Some(interface),
+            membership: Membership::Joined,
+        })),
+        TcpSetting::Ip(IpSocketSetting::Anycast(AnycastAddress {
+            address: ANYCAST_V6,
+            interface: Some(interface),
+            membership: Membership::Left,
+        })),
+    ];
+    let unsendable = [TcpSetting::Packet(
+        IpPacketSetting::RoutingDestinationOptions(padding_header()),
+    )];
+    for (address, settings, carries) in [
+        (ipv4_loopback(), &ipv4[..], true),
+        (ipv6_loopback(), &ipv6[..], true),
+        (ipv6_loopback(), &unsendable[..], false),
+    ] {
+        for setting in settings {
+            let once = pair_at(&sockets, address, &[], &[]);
+            let twice = pair_at(&sockets, address, &[], &[]);
+            let first = sockets.configure(&once.client, setting.clone());
+            let outcomes = [
+                first,
+                sockets.configure(&twice.client, setting.clone()),
+                sockets.configure(&twice.client, setting.clone()),
+            ];
+            assert!(
+                outcomes.iter().all(|outcome| *outcome == first),
+                "{setting:?}: {outcomes:?}"
+            );
+            if carries {
+                assert_carries_bytes(&sockets, &once);
+                assert_carries_bytes(&sockets, &twice);
+            }
+            close(&sockets, once);
+            close(&sockets, twice);
+        }
     }
 }
 
@@ -3379,7 +3895,15 @@ macro_rules! tests {
             flow_label_reflection_answers_with_the_peers_label,
             window_probe_is_answered_and_changes_no_setting,
             timestamp_clock_set_in_repair_mode_stamps_segments,
+            transmit_statistics_describe_the_connection,
+            delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled,
+            accept_names_where_the_synchronize_arrived,
+            connect_in_repair_mode_is_established_at_once,
+            listener_timestamping_reaches_the_connections_it_accepts,
+            saved_synchronize_is_taken_once,
+            header_options_go_out_in_the_synchronize,
             connection_settings_set_twice_equal_set_once,
+            ipv6_connection_settings_set_twice_equal_set_once,
             refusable_connection_settings_set_twice_equal_set_once,
             listener_settings_set_twice_equal_set_once,
             connection_configurable_contract_holds,

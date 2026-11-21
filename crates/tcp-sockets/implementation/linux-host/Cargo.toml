@@ -23,7 +23,7 @@ etherparse.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 rustix = { version = "1.1.6", features = ["net"] }
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "netlink", "no_std"] }
 libc = "0.2.191"
 # The attributes of a transmit report's statistics.
 netlink-packet-core = "0.9.0"
