@@ -2986,7 +2986,7 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
     }
     let anisotropic = d.filter & filter_bits::ANISOTROPIC != 0;
     // Direct3D takes 0 as 1.
-    if anisotropic && d.max_anisotropy > crate::desc::MAX_ANISOTROPY {
+    if anisotropic && d.max_anisotropy > crate::desc::REQ_MAXANISOTROPY {
         return Err(Error::InvalidArg("anisotropy above 16"));
     }
     let mut address = [AddressMode::Repeat; 3];

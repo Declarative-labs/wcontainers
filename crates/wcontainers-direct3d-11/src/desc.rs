@@ -200,7 +200,7 @@ pub mod address {
 }
 
 /// `D3D11_REQ_MAXANISOTROPY`.
-pub const MAX_ANISOTROPY: u32 = 16;
+pub const REQ_MAXANISOTROPY: u32 = 16;
 
 /// `D3D11_SAMPLER_DESC`.
 #[derive(Clone, Copy, Debug, PartialEq)]
