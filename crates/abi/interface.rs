@@ -25,7 +25,7 @@ mod registers;
 pub use cpu::{Cpu, CpuError, MemoryId, PerThreadWatch, SharedId, ThreadId};
 pub use exit::{
     Access, Exit, Next, Resume, SIGNALLED_EXIT_BASE, SYSTEM_CALL_ARGUMENT_COUNT,
-    SYSTEM_CALL_NUMBER_REGISTER, SystemCallRequest,
+    SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber, SystemCallRequest,
 };
 pub use host::{
     BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError,

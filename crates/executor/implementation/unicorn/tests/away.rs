@@ -214,7 +214,7 @@ impl Hooks for Script {
             .iter()
             .position(|known| *known == process.id())
             .unwrap_or(usize::MAX);
-        self.asked.push((at, thread, request.number));
+        self.asked.push((at, thread, request.number.0));
         ControlFlow::Continue(request)
     }
 

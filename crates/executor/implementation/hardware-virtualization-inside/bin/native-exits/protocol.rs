@@ -4,7 +4,7 @@
 // Each side uses its own half.
 #![allow(dead_code)]
 
-use wcontainers_abi::{Access, Exit, Resume, SystemCallRequest};
+use wcontainers_abi::{Access, Exit, Resume, SystemCallNumber, SystemCallRequest};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 wcontainers_executor_hardware_virtualization_inside::requests! {
@@ -129,7 +129,7 @@ impl ExitWords {
         };
         match exit {
             Exit::Syscall(call) => ExitWords {
-                detail: call.number,
+                detail: call.number.0,
                 arguments: call.arguments,
                 ..words(ExitKind::Syscall)
             },
@@ -158,7 +158,7 @@ impl ExitWords {
     pub fn exit(&self) -> Exit {
         match self.kind {
             k if k == ExitKind::Syscall as u64 => Exit::Syscall(SystemCallRequest {
-                number: self.detail,
+                number: SystemCallNumber(self.detail),
                 arguments: self.arguments,
             }),
             k if k == ExitKind::Stop as u64 => Exit::Stop,

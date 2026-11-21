@@ -1832,7 +1832,7 @@ impl Hooks for Proxy {
         _: TaskId,
         mut request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        match u32::try_from(request.number) {
+        match u32::try_from(request.number.0) {
             Ok(general::__NR_getpid) => return ControlFlow::Break(Ok(PROXY_PID)),
             Ok(general::__NR_write)
                 if request.arguments[0] == u64::from(general::STDOUT_FILENO) =>
@@ -1851,7 +1851,7 @@ impl Hooks for Proxy {
         request: &SystemCallRequest,
         response: SystemCallResponse,
     ) -> SystemCallResponse {
-        if request.number == u64::from(general::__NR_getuid) {
+        if request.number.0 == u64::from(general::__NR_getuid) {
             assert_eq!(response, Ok(0));
             return Ok(PROXY_UID);
         }
@@ -1888,7 +1888,7 @@ impl Hooks for CallLog {
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        let entry = (process.id().0, thread.0, request.number, None);
+        let entry = (process.id().0, thread.0, request.number.0, None);
         self.0.lock().unwrap().push(entry);
         ControlFlow::Continue(request)
     }
@@ -1900,7 +1900,7 @@ impl Hooks for CallLog {
         request: &SystemCallRequest,
         response: SystemCallResponse,
     ) -> SystemCallResponse {
-        let entry = (process.id().0, thread.0, request.number, Some(response));
+        let entry = (process.id().0, thread.0, request.number.0, Some(response));
         self.0.lock().unwrap().push(entry);
         response
     }
@@ -2089,7 +2089,7 @@ impl Hooks for SignalSender {
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
         let read =
-            request.number == u64::from(general::__NR_read) && request.arguments[1] == BUFFER;
+            request.number.0 == u64::from(general::__NR_read) && request.arguments[1] == BUFFER;
         if read && self.reader.is_none() {
             self.reader = Some((process.id(), thread));
             match self.sending {
@@ -2214,7 +2214,7 @@ impl Hooks for SharingRecorder {
         _: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        if request.number == u64::from(general::__NR_sched_yield) {
+        if request.number.0 == u64::from(general::__NR_sched_yield) {
             let pages = self.pages.lock().unwrap().clone();
             self.steps.lock().unwrap().push((process.id(), pages));
         }
@@ -2697,7 +2697,7 @@ impl Hooks for Suspender {
         if Some(thread) != self.process {
             return ControlFlow::Continue(request);
         }
-        let number = request.number;
+        let number = request.number.0;
         let sleep = number == u64::from(general::__NR_nanosleep);
         match (self.plan, self.stage) {
             (SuspendPlan::Hooks, SuspendStage::Start) if sleep => {
@@ -2736,7 +2736,7 @@ impl Hooks for Suspender {
         request: &SystemCallRequest,
         response: SystemCallResponse,
     ) -> SystemCallResponse {
-        let write = request.number == u64::from(general::__NR_write);
+        let write = request.number.0 == u64::from(general::__NR_write);
         if write && self.stage == SuspendStage::MainBack && Some(thread) == self.process {
             let mut refused = self.refused_in_step.lock().unwrap();
             if refused.is_none() {
@@ -2890,7 +2890,7 @@ impl Hooks for Stopper {
             return ControlFlow::Continue(request);
         }
         let [first, second, third, ..] = request.arguments;
-        let number = request.number;
+        let number = request.number.0;
         let kill = number == u64::from(general::__NR_kill);
         let wait =
             number == u64::from(general::__NR_wait4) && third & u64::from(general::WUNTRACED) != 0;

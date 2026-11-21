@@ -7,7 +7,7 @@
 
 use wcontainers_abi::{
     Next, RegisterBlock, Resume, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER,
-    SystemCallRequest,
+    SystemCallNumber, SystemCallRequest,
 };
 
 use crate::counters::reason;
@@ -214,7 +214,7 @@ impl Kernel {
                     if request != call {
                         let mut registers = RegisterBlock::ZERO;
                         cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
-                        registers.x[SYSTEM_CALL_NUMBER_REGISTER] = request.number;
+                        registers.x[SYSTEM_CALL_NUMBER_REGISTER] = request.number.0;
                         registers.x[..request.arguments.len()].copy_from_slice(&request.arguments);
                         cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
                         call = request;
@@ -267,7 +267,7 @@ impl Kernel {
                 syscall::Outcome::Return(value) if !crate::errno::Errno::is_error_return(value) => {
                     client.stop_waiting_for_pages(tid);
                     self.counters
-                        .count(cx.host, reason::COPY_SHORT_OF_PAGES, call.number);
+                        .count(cx.host, reason::COPY_SHORT_OF_PAGES, call.number.0);
                 }
                 syscall::Outcome::Return(_) | syscall::Outcome::Restart => {
                     outcome = syscall::Outcome::Parked;
@@ -295,19 +295,22 @@ impl Kernel {
         }
         if undescribed {
             self.counters
-                .count(cx.host, reason::COPY_UNDESCRIBED, call.number);
+                .count(cx.host, reason::COPY_UNDESCRIBED, call.number.0);
         }
         let mut runs_again = false;
         if let Some((pid, memory, address, access)) = touched {
             let met = self.watch_touched(cx, tid, pid, address, access);
             match outcome {
                 syscall::Outcome::Return(value) if !crate::errno::Errno::is_error_return(value) => {
-                    self.counters
-                        .count(cx.host, reason::CALL_SHORT_OF_WATCHED_MEMORY, call.number);
+                    self.counters.count(
+                        cx.host,
+                        reason::CALL_SHORT_OF_WATCHED_MEMORY,
+                        call.number.0,
+                    );
                 }
                 syscall::Outcome::Return(_) | syscall::Outcome::Restart => {
                     self.counters
-                        .count(cx.host, reason::WATCH_MET_AT_A_COPY, call.number);
+                        .count(cx.host, reason::WATCH_MET_AT_A_COPY, call.number.0);
                     if met {
                         // The thread runs its system call instruction again.
                         let mut registers = RegisterBlock::ZERO;
@@ -331,7 +334,7 @@ impl Kernel {
         {
             let pid = thread.process;
             self.counters
-                .count(cx.host, reason::PROCESS_OUTGROWN, call.number);
+                .count(cx.host, reason::PROCESS_OUTGROWN, call.number.0);
             self.announce(cx, pid, |system, process| {
                 system.on_process_outgrown(process, bytes)
             });
@@ -582,7 +585,7 @@ impl Kernel {
                 let mut arguments = [0; SYSTEM_CALL_ARGUMENT_COUNT];
                 arguments.copy_from_slice(&x[..SYSTEM_CALL_ARGUMENT_COUNT]);
                 let call = SystemCallRequest {
-                    number: x[SYSTEM_CALL_NUMBER_REGISTER],
+                    number: SystemCallNumber(x[SYSTEM_CALL_NUMBER_REGISTER]),
                     arguments,
                 };
                 self.stepping = Some(tid);

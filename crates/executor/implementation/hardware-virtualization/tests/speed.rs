@@ -1006,7 +1006,7 @@ mod macos {
             "{ANSWERED} runs: {next:?}"
         );
         let call = Exit::Syscall(SystemCallRequest {
-            number: __NR_getppid.into(),
+            number: wcontainers_abi::SystemCallNumber(__NR_getppid.into()),
             arguments: Default::default(),
         });
         let started = Instant::now();

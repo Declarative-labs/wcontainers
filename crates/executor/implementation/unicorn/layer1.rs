@@ -12,7 +12,7 @@ use linux_raw_sys::general as linux;
 use linux_raw_sys::ioctl;
 use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
-use wcontainers_abi::{Event, Exit, Next, PAGE_SIZE, SystemCallRequest};
+use wcontainers_abi::{Event, Exit, Next, PAGE_SIZE, SystemCallNumber, SystemCallRequest};
 use wcontainers_kernel_linux::{Kernel, Start};
 
 /// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
@@ -4676,7 +4676,7 @@ fn run_ours_on(
             cpu,
             host,
             Exit::Syscall(SystemCallRequest {
-                number: call.number.into(),
+                number: SystemCallNumber(call.number.into()),
                 arguments: call.arguments,
             }),
         );
@@ -4693,7 +4693,7 @@ fn run_ours_on(
                         cpu,
                         host,
                         Exit::Syscall(SystemCallRequest {
-                            number: linux::__NR_exit_group.into(),
+                            number: SystemCallNumber(linux::__NR_exit_group.into()),
                             arguments: [CHILD_STATUS, 0, 0, 0, 0, 0],
                         }),
                     );

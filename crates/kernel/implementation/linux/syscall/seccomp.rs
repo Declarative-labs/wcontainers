@@ -199,7 +199,7 @@ pub(super) fn filter_call(
 ) -> Option<Outcome> {
     let thread = &kernel.threads[&tid];
     let mut data: Data = [0; 16];
-    data[0] = call.number as u32;
+    data[0] = call.number.0 as u32;
     data[1] = AUDIT_ARCH_AARCH64;
     if thread.filters.iter().any(|filter| filter.reads_pointer) {
         let mut registers = RegisterBlock::new_zeroed();
@@ -232,7 +232,7 @@ pub(super) fn filter_call(
         // SIGSYS with the call, its address and the filter's data, the call not made and its
         // registers left as they were (`seccomp_send_sigsys`, `syscall_rollback`).
         SECCOMP_RET_TRAP => {
-            let info = sigsys_info(kernel, cx, tid, call.number, value);
+            let info = sigsys_info(kernel, cx, tid, call.number.0, value);
             kernel.force_signal(tid, info, (0, 0));
             Some(Outcome::Restart)
         }
@@ -246,7 +246,7 @@ pub(super) fn filter_call(
                 kernel.end_thread(cx, tid);
             } else {
                 // The core shows the call as made (`force_sig_seccomp` dumps core).
-                let info = sigsys_info(kernel, cx, tid, call.number, value);
+                let info = sigsys_info(kernel, cx, tid, call.number.0, value);
                 kernel.die_with(cx, tid, SIGSYS, info);
             }
             Some(Outcome::Gone)

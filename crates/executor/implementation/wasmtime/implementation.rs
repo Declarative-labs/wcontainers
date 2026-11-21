@@ -24,7 +24,7 @@ use wasmtime::{
 };
 use wcontainers_abi::{
     Access, AddressSpace, CounterReading, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
-    RegisterBlock, Resume, SharedId, SystemCallRequest, ThreadId, Warning,
+    RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_runtime_single_kernel::{
@@ -1801,7 +1801,7 @@ where
         }
         Carry::On { resume, .. } => panic!("{resume:?} after a system call"),
         Carry::Leave(why) => {
-            leave_for(caller, why, call.number);
+            leave_for(caller, why, call.number.0);
             // x0 stays as it was at the call, as it is for a thread that leaves.
             call.arguments[0] as i64
         }
@@ -2111,7 +2111,7 @@ where
                  a5: i64|
                  -> i64 {
                     let call = SystemCallRequest {
-                        number: number as u64,
+                        number: SystemCallNumber(number as u64),
                         arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
                     };
                     syscall(&mut caller, call)

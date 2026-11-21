@@ -73,7 +73,7 @@ pub(crate) trait Memory {
 /// The descriptor whose file a call reads, which may copy a process's memory.
 pub(crate) fn read_descriptor(call: SystemCallRequest) -> Option<u64> {
     let [a0, a1, ..] = call.arguments;
-    match u32::try_from(call.number).ok()? {
+    match u32::try_from(call.number.0).ok()? {
         __NR_read | __NR_pread64 | __NR_readv | __NR_preadv | __NR_preadv2 | __NR_splice => {
             Some(a0)
         }
@@ -558,7 +558,7 @@ fn robust_list(memory: &mut dyn Memory, tid: i32, head: u64) -> bool {
 pub(crate) fn touch(memory: &mut dyn Memory, call: SystemCallRequest) -> bool {
     let arguments = call.arguments;
     let [a0, a1, a2, a3, a4, a5] = arguments;
-    let Ok(number) = u32::try_from(call.number) else {
+    let Ok(number) = u32::try_from(call.number.0) else {
         return true;
     };
     let (read, write) = (AccessKind::Read, AccessKind::Write);

@@ -1,7 +1,8 @@
 //! The stand-in CPU comes back for each reason the abi names, with exact registers.
 
 use wcontainers_abi::{
-    Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, Resume, SystemCallRequest,
+    Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, Resume, SystemCallNumber,
+    SystemCallRequest,
 };
 use wcontainers_executor_unicorn::standin::{StandIn, Unsupported};
 
@@ -52,7 +53,7 @@ fn exits_are_exact() {
     assert_eq!(
         exit,
         Exit::Syscall(SystemCallRequest {
-            number: 64,
+            number: SystemCallNumber(64),
             arguments: [1, 0x10, 0, 0, 0, 6]
         })
     );

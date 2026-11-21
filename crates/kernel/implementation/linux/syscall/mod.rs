@@ -416,7 +416,7 @@ pub(crate) fn dispatch(
     again: bool,
 ) -> Outcome {
     // ARM64 Linux takes the call number from the low 32 bits of x8 only.
-    let number = call.number as u32;
+    let number = call.number.0 as u32;
     let handler = TABLE
         .get(number as usize)
         .map_or(Handler::Unknown, |entry| entry.handler);

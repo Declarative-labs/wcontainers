@@ -96,8 +96,8 @@ impl Hooks for Alone {
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
         let mut log = self.log.lock().unwrap();
         if Some(thread) == self.worker {
-            log.push(format!("worker call {}", request.number));
-        } else if request.number == u64::from(general::__NR_getppid) {
+            log.push(format!("worker call {}", request.number.0));
+        } else if request.number.0 == u64::from(general::__NR_getppid) {
             let page = BASE..BASE + PAGE_SIZE;
             match self.marks {
                 0 => {
@@ -204,14 +204,14 @@ impl Hooks for TakenWhileWaiting {
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        if request.number == u64::from(general::__NR_getppid) {
+        if request.number.0 == u64::from(general::__NR_getppid) {
             let [start, size, ..] = request.arguments;
             self.region = start..start + size;
             process.watch_memory(self.region.clone(), WatchesFor::Writes);
             self.log.lock().unwrap().push("watched".to_owned());
         } else if Some(thread) == self.worker {
             let mut log = self.log.lock().unwrap();
-            log.push(format!("worker call {}", request.number));
+            log.push(format!("worker call {}", request.number.0));
         }
         ControlFlow::Continue(request)
     }
@@ -440,10 +440,10 @@ impl Hooks for SharingRecorder {
         _: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        if request.number == u64::from(general::__NR_sched_yield) {
+        if request.number.0 == u64::from(general::__NR_sched_yield) {
             self.seen.lock().unwrap().step(process.id());
         }
-        if request.number == u64::from(general::__NR_nanosleep)
+        if request.number.0 == u64::from(general::__NR_nanosleep)
             && self.processes.get(1) == Some(&process.id())
         {
             self.child_sleeping = true;

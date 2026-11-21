@@ -139,7 +139,7 @@ fn started(
         return Outcome::Restart;
     }
     let call = wcontainers_abi::SystemCallRequest {
-        number: number.into(),
+        number: wcontainers_abi::SystemCallNumber(number.into()),
         arguments,
     };
     kernel.answer_in_registers(cx, now, &call);

@@ -13,7 +13,8 @@ use wasmtime::{
     SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{
-    Access, CounterReading, Exit, PAGE_SIZE, Permissions, SystemCallRequest, Warning,
+    Access, CounterReading, Exit, PAGE_SIZE, Permissions, SystemCallNumber, SystemCallRequest,
+    Warning,
 };
 use wcontainers_guest_cpu::{CodeChanges, HookBody, HookType, MemoryFault, Step, StepAt};
 pub use wcontainers_translator::contract::thread_state_size;
@@ -1244,7 +1245,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
              -> i64 {
                 caller.data_mut().exact_mark = None;
                 let call = SystemCallRequest {
-                    number: number as u64,
+                    number: SystemCallNumber(number as u64),
                     arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
                 };
                 if caller.data().syscalls == Syscalls::Stop {
@@ -1886,7 +1887,7 @@ fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequ
         Some(bytes)
     };
     let numbers = G::STAND_IN;
-    match call.number {
+    match call.number.0 {
         n if n == numbers.write => {
             if file(caller.data_mut(), a0).is_none() {
                 return error(EBADF);

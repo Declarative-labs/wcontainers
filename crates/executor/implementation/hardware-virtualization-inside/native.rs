@@ -18,7 +18,7 @@ use rangemap::RangeMap;
 use rustc_hash::FxHasher;
 use wcontainers_abi::{
     Access, AddressSpace as Addresses, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
-    RegisterBlock, Resume, SharedId, SystemCallRequest, ThreadId, Warning,
+    RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_arm64::CACHE_TYPE;
 use wcontainers_arm64::mirror::{
@@ -1462,7 +1462,7 @@ impl NativeCpu {
                 Stop::Landed(_) => {}
                 Stop::Syscall => {
                     let mut call = SystemCallRequest {
-                        number: t.state.x[SYSCALL_NUMBER],
+                        number: SystemCallNumber(t.state.x[SYSCALL_NUMBER]),
                         arguments: Default::default(),
                     };
                     let arguments = call.arguments.len();

@@ -122,7 +122,7 @@ impl Hooks for Script {
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        if request.number != u64::from(general::__NR_getppid) || self.marked {
+        if request.number.0 != u64::from(general::__NR_getppid) || self.marked {
             return ControlFlow::Continue(request);
         }
         self.marked = true;
@@ -243,7 +243,7 @@ impl Hooks for CopyEnds {
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        if request.number != u64::from(general::__NR_getppid) || self.caller.is_some() {
+        if request.number.0 != u64::from(general::__NR_getppid) || self.caller.is_some() {
             return ControlFlow::Continue(request);
         }
         self.caller = Some(thread);

@@ -15,7 +15,7 @@ use unicorn_engine::{
 };
 use wcontainers_abi::{
     Access, AddressSpace, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
-    Resume, SharedId, SystemCallRequest, ThreadId,
+    Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId,
 };
 
 use crate::replay::{DigestMemories, MemoryDigests, digest_pages};
@@ -601,7 +601,7 @@ impl StandIn {
             (_, Some(EXCEPTION_SYSCALL)) => {
                 let x = &state.registers.x;
                 Exit::Syscall(SystemCallRequest {
-                    number: x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER],
+                    number: SystemCallNumber(x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER]),
                     arguments: [x[0], x[1], x[2], x[3], x[4], x[5]],
                 })
             }

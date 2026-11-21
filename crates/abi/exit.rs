@@ -14,10 +14,14 @@ pub const SYSTEM_CALL_NUMBER_REGISTER: usize = 8;
 /// signal ended (POSIX XCU 2.8.2).
 pub const SIGNALLED_EXIT_BASE: i32 = 128;
 
+/// A system call's number as the guest's number register holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SystemCallNumber(pub u64);
+
 /// One system call as the guest made it: the number from x8 and the raw values from x0 to x5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SystemCallRequest {
-    pub number: u64,
+    pub number: SystemCallNumber,
     pub arguments: [u64; SYSTEM_CALL_ARGUMENT_COUNT],
 }
 

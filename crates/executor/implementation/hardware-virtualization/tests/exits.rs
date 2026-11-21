@@ -503,7 +503,7 @@ mod macos {
                 return Ok(format!("ended by {got:?} after {exits} exits"));
             };
             let [first, second, third, ..] = call.arguments;
-            let value = match call.number {
+            let value = match call.number.0 {
                 n if n == u64::from(__NR_write) => {
                     let written = native.read(second, third);
                     if written != wasm.read(second, third) {
