@@ -803,9 +803,13 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         let format = pipe_format::from(element.src_format);
         component_bytes.push((location as u32, resource::component_bytes(format)));
         let stream = element.vertex_buffer_index();
-        let Some(format) = crate::format::vertex_format(pipe_format::from(element.src_format))
-        else {
-            refuse(format_args!("a vertex format the screen does not report"));
+        let Some(format) = crate::format::vertex_format(format) else {
+            // SAFETY: Mesa describes every format it names.
+            let name = unsafe { std::ffi::CStr::from_ptr((*util_format_description(format)).name) };
+            refuse(format_args!(
+                "a vertex format the screen does not report, {}",
+                name.to_string_lossy()
+            ));
         };
         desc.streams[usize::from(stream)] = Some(VertexStream {
             stride: element.src_stride,
