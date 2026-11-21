@@ -97,6 +97,16 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KF, second run: origin/phase-1 (the streams track's S3: tasks taken off the kernel, embedder
+signals, sharing notes) is merged, its tests pass here. Built: the record and replay test (the
+test host keeps everything it gives the kernel, a fresh kernel and CPU side run from that record
+alone with another seed and no backend, and every guest memory is compared as each is dropped and
+at the end), for the shell and busybox tests and layer 1's sequences; and the first batch of the
+runtime's start values (`StartOptions`: user and group, umask, limits, no_new_privs,
+`oom_score_adj`, the domain name), with reference tests. The literal baseline is 8309 lines (8324
+before). Not done: the other start values, the literal fix list from its step 2, and the lowest
+tier under the WebAssembly ceiling (a ruling). KF is not complete. See "KF, second run".
+
 KF (what other tracks ask of the kernel), first run: the K6c check's four findings are answered
 (a fatal signal now ends its target when the target next runs; uevent02 is counted apart with
 its cause; the ttylock race is measured on ARM64 Linux on one CPU; the ARM64 machine's two other
@@ -263,6 +273,77 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KF, second run
+
+Merged origin/phase-1 at 379cf3bc (46 commits of the streams track's S3). Conflicts settled in
+task.rs (its sharing and embedder-signal steps of `settle` come before the deferred fatal
+signal's), signal.rs (`complete` takes the context again, for its SIGKILL to a process whose tasks
+are all taken off the kernel, which ends it at once as a stopped one; every other fatal signal
+still waits for a thread's turn), memory.rs and loader.rs (the map's `MapNotes` with the tiered
+placement), lib.rs and fs/proc.rs (both sides' exports). The merged tests gave the root image
+field; two guest modes were renamed ("stop" to "stopping" in away.c, "memory" to "memory-id" in
+edges.c) because the literal check took them for the translator's `HOOK_STOP` and `MEMORY`, which
+this crate reaches through the runtime feature. away, edges, taskend, embedder, processes and
+procsignals passed on the ARM64 machine (02:10 UTC on the 21st, load 1; kf2/merged-tests.log):
+73 passed, 1 ignored.
+
+Heavy runs on the ARM64 machine (load 0 to 3 on 96 cores) and lint on the x86 machine; the
+literal check and the Mac's part on the Mac (load 10 to 23). Scratch folder kernel/kf2.
+
+The record and replay test (154f6f0f, test crate replay.rs, driver.rs):
+- The test host's tape keeps, in order, every answer the kernel takes (clocks, random bytes,
+  backend send results, connect, send, receive with its bytes, lookups, listens, accepts), every
+  event and signal the outside hands it, where each turn on the CPU side ends, and the ends of
+  what the outside did at each point of the driver loop (started, arrived with its answer, idle,
+  a backend delivery, the streams' finish). The driver's own work between those points is not
+  kept (its clock reads are not the kernel's).
+- A replay is a fresh kernel and a fresh stand-in (or layer 1's buffer CPU) with a host made from
+  another seed that answers only from the tape: no backend server, no network, no streams client.
+  An answer of another kind than the one due, an event the driver hands that the tape does not
+  hold, or a tape not used up fails the test.
+- The stand-in and the buffer CPU keep a digest of each memory's non-zero pages (shared pages
+  included) as it is dropped, and of each one left at the end; the replay's must be the same, as
+  must the outcome (and the files, with the root in memory).
+- Where it runs: every busybox and shell comparison (`busybox::compare` records and replays both
+  its runs, root in memory and on the backend), and layer 1's new
+  `sequences_replay_from_their_record` (`LAYER1_REPLAY_CASES`, default 64 for each of in memory,
+  backend, cached backend; `LAYER1_SEED`). It needs no reference.
+- Measured on the ARM64 machine (02:27 UTC, load 0.1 to 2.6; kf2/replay3.log): layer 1 replayed
+  64 + 64 + 64 sequences of seed 0, with 7247, 10820 and 10820 entries in their records, all the
+  same values and memories; shell's 3 tests and busybox's text, files and one_cpu passed with the
+  replay. busybox system failed there only on its two reference differences of the ARM list
+  (/proc/config.gz, /proc/sys values of that machine's kernel); it runs on the Mac.
+- It has teeth: with a replay that flips one random byte the kernel is given, layer 1's replay
+  failed on "the replay's guest memories" (ARM64 machine, 02:18 UTC; not committed).
+- Not under the runtime feature (the WebAssembly back end does not show the test its pages):
+  there the comparisons run without the replay (Departures).
+
+The start values, first batch (ca14ebd2): `Start::options`, a `StartOptions` (name for the owner
+to choose) whose default is a default Docker container's: `user` and `group` (every id of the
+first process), `umask`, `limits` (resource, soft, hard; default `DOCKER_LIMITS`),
+`no_new_privileges`, `oom_score_adj` (also the least the process may set without
+CAP_SYS_RESOURCE, as runc's write as root leaves it) and `domain_name` (default
+`DOCKER_DOMAIN_NAME`, "(none)"). `ROOT_UID` and `ROOT_GID` are exported. The runtime crate's start
+gives the default (a one-line edit to a crate this track does not own). The test driver takes
+them through `Prepared::options`, and `busybox::run_ours_with` gives the supplementary groups
+Docker gives that user (`image::user_groups`, from the image's passwd and group files). Test file
+startoptions.rs against `docker run` with `--user`, `--ulimit nofile`, `--security-opt
+no-new-privileges`, `--domainname` and `--oom-score-adj`: `defaults_match_reference`,
+`a_user_with_limits_without_new_privileges_matches_reference` (user 1234:1235, nofile 100:200,
+oom 321, mask 027: ids, groups, mask, limits, capability sets, NoNewPrivs, domain name,
+oom_score_adj, a new file's mode and owner, a refused lowering of the score) and
+`root_with_a_mask_and_a_limit_matches_reference`; all three passed on the ARM64 machine (02:30
+UTC, load 1). Docker has no umask option, so the reference's shell sets the mask first
+(Departures).
+
+The literal baseline: 8324 to 8309 lines (kf2/lit3.txt); the check passes. Fixed on the way:
+layer 1's shrink time is derived from a Duration, the image's user and group files' layout is
+named once, the domain name "(none)" is named once.
+
+Verdicts changed on purpose in this run: none of the old tests; new tests are startoptions' three
+and layer1 `sequences_replay_from_their_record`, and every busybox and shell comparison now also
+replays.
 
 ## KF, first run
 
@@ -4385,6 +4466,15 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- KF, second run: the record and replay test records at the test host (what the host gives the
+  kernel, the events handed in and where turns end), as the brief's item asks, not per process at
+  its system calls as the owner's ruling of 2026-11-19 places replay; that ruling's two kernel
+  primitives are not designed yet, and this test is what shows that nothing the kernel does
+  depends on anything else. It runs on the stand-in and the buffer CPU only: the WebAssembly back
+  end (runtime feature) does not show its memories' pages, so there the comparisons run as before.
+- KF, second run: Docker has no option for the first process's umask, so startoptions' reference
+  runs `umask` in its shell before the same commands; ours starts with the mask.
+
 - KF: the lowest placement tier is capped by the executor's ceiling (For the orchestrator), so
   placement depends on the ceiling below 4 GiB. The brief's ceiling "fails as out of memory,
   counted and warned" is the streams track's `PROCESS_OUTGROWN` counter and hook, kept as built.
@@ -5163,8 +5253,19 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-KF, after its first run (the bar: each item's tests, the whole suite unchanged but where an item
-changes it, the literal check with a smaller baseline):
+KF, after its second run (the bar as below):
+1. The rest of the runtime's start values, each with a reference test in startoptions.rs: the
+   capability sets (`--cap-add`, `--cap-drop`), a seccomp filter (`--security-opt seccomp=`), the
+   sysctls (`--sysctl`), the mount list (to leave a default mount out) with the mounts and their
+   options and the read-only paths as public constants (container.rs's default mounts), and the
+   per-process values (`ioPriority`, `scheduler`, `execCPUAffinity`, `personality`,
+   `timeOffsets`). Add each as a field of `StartOptions` with Docker's default.
+2. The literal fix list from step 2 (time units), in the audit's order.
+3. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
+4. Then the whole suite on the ARM64 machine and the Mac's part (scratch kf2/mac.sh with fresh
+   layer 1 seeds from 9191132).
+
+KF, after its first run (items 1 and part of 2 done in the second run):
 1. The record and replay test: the driver keeps every result the System and the Cpu gave the
    kernel in a run (clock, randomness, backend answers, stream events, the CPU side's exits and
    reads), a second kernel runs from that record alone, and every process's memory is compared
