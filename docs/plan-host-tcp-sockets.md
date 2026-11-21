@@ -32,6 +32,9 @@
   `IPV6_V6ONLY` from the bind address; `bind` for a requested or kernel-chosen port, `IP_BIND_ADDRESS_NO_PORT`
   and `IP_LOCAL_PORT_RANGE` (once per range between reserved ports) when the exit node chooses; then `connect`,
   `sendto(MSG_FASTOPEN)` for fast open with data, or `TCP_FASTOPEN_CONNECT` and `connect` for until-first-send.
+  A fixed IPv6 flow label among the settings is taken from the flow label manager (`IPV6_FLOWLABEL_MGR`, shared
+  with the process), with `IPV6_FLOWINFO_SEND` on, and carried in the connect address's `sin6_flowinfo`; Linux keeps
+  it for good, so a later different label is refused with a counted reason.
   `EINPROGRESS` is `SynchronizeSent`, an immediate success under `TCP_REPAIR` is `EstablishedForRepair`, an
   immediate success under `TCP_FASTOPEN_CONNECT` is `DeferredUntilFirstSend`.
 - listen: the same socket and bind, `TCP_SAVE_SYN` always (accept owes the SYN's IP header), the settings,
@@ -78,13 +81,16 @@
 - Settings: each `TcpSetting` and `TcpListenerSetting` variant is the one socket option its doc names
   (`SO_BUF_LOCK`, `SO_RCVLOWAT`, `SO_ATTACH_FILTER`/`SO_DETACH_FILTER`, `SO_TXREHASH`, `IP_MINTTL`/
   `IPV6_MINHOPCOUNT`, `IP_PKTINFO`-family records, `IP_RECVERR`/`IPV6_RECVERR`, the `TCP_*` options of tcp(7),
-  `TCP_MD5SIG_EXT`, `TCP_AO_*`, `TCP_REPAIR*`, `TCP_FASTOPEN`, `TCP_FASTOPEN_KEY`, `TCP_SAVE_SYN`, the flow label
-  manager's reflection), and an internet-protocol setting goes through the shared crate.
+  `TCP_MD5SIG_EXT` (an IPv4 prefix of an IPv6 socket mapped), `TCP_AO_*`, `TCP_REPAIR*`, `TCP_FASTOPEN`, `TCP_FASTOPEN_KEY`, `TCP_SAVE_SYN`, the flow label
+  manager's reflection), and an internet-protocol setting goes through the shared crate, multicast groups through
+  its `set_multicast_group` (`MCAST_JOIN_GROUP`, which Linux takes on TCP sockets) and anycast through its
+  `AnycastMemberships`.
 
 ## What cannot be honoured (expected; each is confirmed on the machine before it is recorded)
 - An owner other than the host's user without CAP_SETUID: EPERM.
 - Settings that need CAP_NET_ADMIN or CAP_NET_RAW (mark, repair, transparent addresses, priorities above six)
   answer Linux's own EPERM when the host lacks it.
+- A fixed IPv6 flow label on a listener, an accepted connection or after connect (Linux fixes it only at connect).
 - Fields of `ReceivedPacketFields` that Linux never reports for a SYN (its IPv4 arrival interface, its
   timestamps, and everything of a multipath SYN): taken from what the accepted socket reports, each counted under
   a named reason.
@@ -92,9 +98,10 @@
 ## Milestones
 - T1: connect (settings, fast open), listen, accept, send, receive with their requests, shut_down, close,
   stop_listening, the error queue, the settings that need no privilege (among them `RecordsLastReceivedHeader`, the
-  `IP_PKTINFO`-family and `IPV6_RECV*` records, and `SaveSynchronize` from the link header), the action methods;
+  `IP_PKTINFO`-family and `IPV6_RECV*` records, `SaveSynchronize` from the link header, MD5 keys, memberships and
+  a fixed flow label at connect), the action methods;
   the suite for them, passing on the Linux machine over loopback.
-- T2: read_state and read_listener_state with every query; repair, timestamps, authentication (MD5 and AO),
+- T2: read_state and read_listener_state with every query; repair, timestamps, the TCP Authentication Option,
   multipath; the privileged settings, run as root in a network namespace.
 
 ## The suite (crates/tcp-sockets/conformance/conformance.rs)

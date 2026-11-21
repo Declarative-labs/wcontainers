@@ -36,8 +36,46 @@ readings, repair, authentication, multipath state, the privileged settings).
   import it (the literal check reports both as a redefinition until one goes). Your `pub mod datagram;` line in
   `implementation.rs` was left out of this track's commits, since its files were not committed yet: commit it
   with them.
-- Still refused there with a counted reason: multicast and anycast memberships, a fixed IPv6 flow label. The
-  UDP track needs them more: add them there.
+- New, run 8: `Shortfalls` counts without a lock (a fixed array of 64 slots, each a reason taken once and an atomic
+  count; reasons past 64 are counted under one named overflow reason); `readings()` is still sorted by reason.
+  TCP now takes multicast groups through `datagram::memberships::set_multicast_group` and anycast through
+  `AnycastMemberships` (Linux takes `MCAST_JOIN_GROUP` and `MCAST_MSFILTER` on a TCP socket, measured; only the
+  old `IP_ADD_MEMBERSHIP` is EPROTO there). `set_ip_socket_setting` and `set_packet_setting` still refuse
+  memberships and a fixed flow label for whoever calls them without handling those first.
+
+## Done in run 8 (2026-11-21): the independent check of run 7 answered
+- The two flaky checks. listener_backlog_bounds_the_accept_queue: two of 60 full runs still failed after a first
+  change (accepting at once), both with two connections accepted: a SYN that came while the queue was momentarily
+  empty, or two handshakes finishing side by side, got in. The check now connects one client, waits (through the
+  listener's wait) until it is queued, then connects the others (a full queue drops their SYNs), settles, accepts
+  one, and watches for 30 ms with a last try after the period however late the thread ran.
+  pacing_rate_spreads_what_is_sent: 1 MiB at 1 MiB/s with a bar of 400 ms (measured, ARM machine, load 2: paced
+  704 ms, lifted 0.65 ms; the old 512 KiB took 0.2 s against a bar of 100 ms).
+- A fixed IPv6 flow label is honoured at connect: the socket takes the label from the flow label manager
+  (`IPV6_FLOWLABEL_MGR`, shared with this process's sockets), `IPV6_FLOWINFO_SEND` on, and connects to an address
+  whose `sin6_flowinfo` carries it (std keeps that field as given, so it is put in network order). Measured on the
+  ARM machine: the manager needs CAP_NET_ADMIN (uid 1000 in a root network namespace: EPERM; root: taken), so
+  Linux's EPERM is what an unprivileged host answers. Linux keeps a connection's label for good, so the same label
+  again is a success and another, or automatic or none after it, or any fixed label on a listener or accepted
+  connection, is the counted refusal `FLOW_LABEL_FIXED_AT_CONNECT`. Checked by fixed_flow_label_marks_every_segment
+  (every segment the client sends, the SYN first, carries it; the same label again changes nothing; another is
+  refused with the label kept, or carried).
+- Multicast and anycast memberships go to Linux (see above); multicast_groups_are_joined_and_left joins and leaves
+  an IPv4 and an IPv6 group on the loopback interface twice each, all taken, and the connection still carries bytes.
+- MD5 signature keys (`Md5Key`) are honoured through `TCP_MD5SIG_EXT` (prefix and interface; an IPv4 prefix of an
+  IPv6 socket mapped; removing an absent key is a success, Linux's ENOENT otherwise). Checked by
+  md5_keys_admit_only_connections_signed_with_them (a keyed listener takes clients signed with its key, a key set
+  again replacing the last, and every segment both ways carries kind 19; it answers no SYN with another key, no key,
+  or a key removed; removed twice, the listener takes plain clients). The TCP Authentication Option stays in T2:
+  see Departures.
+- The window probe's check now chooses the receive repair queue first and, after the probe, sends (which in repair
+  mode fills the queue chosen) and peeks the bytes back: refused if the queue was lost.
+- no_delay_sends_small_segments_while_others_are_unacknowledged has a fourth case: a push past cork and Nagle first,
+  then Nagle must still hold the second small segment.
+- `Shortfalls` counts without a lock (see above), so accepts on many threads no longer meet at one mutex.
+- `NotSentLowWater(None)` is written as `u32::MAX` (no bar); 0 would mean the host's sysctl, which is `u32::MAX` in
+  the suite's namespace too, so no check tells them apart: under For the owner.
+- `RecordsLastReceivedHeader` kept by accepted connections stays unobservable before T2's read_state.
 
 ## Done in run 7 (2026-11-21): the independent check of run 6 answered
 - `RecordsLastReceivedHeader` is honoured: Requested turns on `IP_PKTINFO`, `IP_RECVTTL`, `IP_RECVTOS` (whose records
@@ -149,8 +187,9 @@ readings, repair, authentication, multipath state, the privileged settings).
   queue (transmit reports with packet, statistics or wireless status; ICMP errors written whole), every plain
   setting of settings.rs, and the action methods. read_state, read_listener_state, authentication and the repair
   queues are T2 (counted refusals now).
-- Suite `crates/tcp-sockets/conformance`: 92 checks against the traits alone (and three of the implementation's
-  own: the wait and receive allocation checks and discarding_cuts_no_packet, 95 tests in one binary), each on a value made anew. The body
+- Suite `crates/tcp-sockets/conformance`: 97 checks against the traits alone (and four of the implementation's
+  own: the wait and receive allocation checks, discarding_cuts_no_packet and the two-thread peeks; 101 tests in one
+  binary), each on a value made anew. The body
   is `cfg(target_os = "linux")`: the checks watch the wire. A capture thread reads the host's packet socket
   (`AF_PACKET`, every loopback packet seen twice, counted once) filtered to one listener's port, and the checks
   read headers, sequence numbers, windows, TCP timestamps and times from it. Timer checks make the peer drop
@@ -211,12 +250,37 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Settings still checked only for being set twice the same, since loopback or the traits cannot show them yet:
   multicast loopback and all-groups (no effect on TCP traffic), packet priority and mark (not on the wire),
   unicast interface, route scope, source preferences, bound interface, incoming processor (one interface, no
-  read-back before T2), IPv4 options and IPv6 extension headers, a fixed flow label, the IPv6 variants of traffic
+  read-back before T2), IPv4 options and IPv6 extension headers, anycast (no address it may join on loopback), the
+  IPv6 variants of traffic
   class and path MTU discovery, `RecordsLastReceivedHeader` (shows only in `TcpQuery::LastReceivedHeader`, T2).
   `SaveSynchronize` with all three values is checked through `TakeSavedSynchronize` (saved_synchronize_is_taken_once).
-  T2 settings (authentication, repair queues, options and windows) are not in T1.
+  T2 settings (the TCP Authentication Option, repair options and windows) are not in T1.
 
 ## Measurements
+- Run 8, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 23:17 to 23:21, load 2.8 to 5.3: clippy with
+  warnings denied clean (tcp host, suite, shared crate); 60 full runs in a row at `RUST_TEST_THREADS=12`, each 101
+  passed, 0 failed, 3.44 to 3.51 s (log repeat-run8b.log in scratch). Before the backlog check's second change, 60
+  runs (23:13 to 23:17, load 1.6 to 3.7) failed 2 times, both in it with two connections accepted (repeat-run8.log).
+  After the literal fix (23:24, load 1.8): three runs, each 101 passed; the literal check finds nothing in this
+  track's files (it found `PrefixLength(32)` and a flow label equal to the route-resolver suite's `LABEL`, both
+  changed).
+- Run 8 broken copies (mutants.sh, 23:21 to 23:22, load 4 to 5), each failed in the check named:
+  window-probe-repair-queue-lost (window_probe_is_answered_and_changes_no_setting), push-leaves-no-delay-on
+  (no_delay_sends_small_segments_while_others_are_unacknowledged), md5-key-ignored and md5-absent-removal-refused
+  (md5_keys_admit_only_connections_signed_with_them), fixed-flow-label-not-held and fixed-flow-label-forgotten
+  (fixed_flow_label_marks_every_segment), multicast-refused (multicast_groups_are_joined_and_left). 113 copies now.
+- Run 8 independent check from a clean clone of main at 18d3ef97 (job host-tcp-sockets-clean, 23:22 to 23:23, load
+  2.6 to 4.7; log clean-check-run8.log in scratch): build folder emptied, clippy with warnings denied clean (10 s),
+  101 passed in 3.47 s; `cargo tree` of tcp-sockets, internet-protocol, configurable, negative-route-advice, kernel,
+  abi and the suite names only interface and conformance crates (abi, configurable, executor, internet-protocol,
+  kernel, negative-route-advice, tcp-sockets and the two conformance crates); `git diff ae9c53ca HEAD` of the .rs
+  files beside the tcp-sockets, internet-protocol, kernel, configurable and negative-route-advice interfaces is
+  empty (abi's and system's changed only in other tracks' commits 564626c0, fd65d351, 4ee5def7).
+- Probe of Linux's answers on a TCP socket (scratch tools/probe_memberships.py, ARM machine 23:05, load 2): as root
+  and as uid 1000, `MCAST_JOIN_GROUP` and `MCAST_LEAVE_GROUP` on the loopback interface taken for IPv4 and IPv6, on
+  no interface ENODEV; anycast join EADDRNOTAVAIL as root, EPERM as uid 1000; the flow label manager taken as root
+  (an exclusive label a second time EPERM, a process-shared one taken again), EPERM as uid 1000; on an IPv4 socket
+  ENOPROTOOPT.
 - Run 7, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 22:33, load 1.9 to 2.7: clippy with warnings
   denied clean (tcp host, suite); 98 passed, 0 failed, three runs, each 3.4 s (94 suite checks and four of the
   implementation's own).
@@ -327,8 +391,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   implementation.rs staged as linux.rs): if this crate stops building on it, wait and try again.
 
 ## Next (T2)
-- read_state and read_listener_state (every query), authentication (MD5, AO, counters), repair options, queues
-  and windows: counted refusals now.
+- read_state and read_listener_state (every query), the TCP Authentication Option (keys, options, initial counters,
+  repair, set_authentication_counters), repair options and windows: counted refusals now.
 - With read_state, give the settings listed above as unobservable a check of their effect, first
   `RecordsLastReceivedHeader` through `TcpQuery::LastReceivedHeader`.
 - authentication_counters_are_set_only_where_authentication_is and listener_state_reads_a_listener still pass on
@@ -356,6 +420,11 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Run 3: the suite's body is Linux only (it was empty of Linux-only calls before): the wire checks need the host's
   packet socket.
 
+- Run 8: the plan put all authentication in T2, while the milestone asks for every setting of settings.rs that needs
+  no privilege. MD5 keys are one plain socket option and moved to T1. The TCP Authentication Option's settings stay
+  in T2 with its counters and status (`set_authentication_counters` and the AO readings of read_state are T2
+  methods): its keys, options and counters are one `TCP_AO_*` state whose effect the suite can only show with them.
+
 ## Dependencies added
 - Run 5: nix 0.31.4 in the suite too (Linux only, `net` feature: the loopback interface by its flag): MIT.
 - Run 4: socket2 0.6.5 with feature `all` (the basic calls): MIT OR Apache-2.0. polling 3.11.0 comes through the
@@ -367,6 +436,12 @@ readings, repair, authentication, multipath state, the privileged settings).
   0.9.1: MIT.
 
 ## For the owner
+- `TcpSetting::NotSentLowWater(None)` does not say whether None is no bar or the host's default: Linux reads 0 as
+  its sysctl `net.ipv4.tcp_notsent_lowat` and `u32::MAX` as no bar. Example: with the sysctl at 16384, None as 0
+  bars a connection at 16 KiB unsent, as `u32::MAX` not at all. The implementation writes `u32::MAX`.
+- A fixed IPv6 flow label (`FlowLabelChoice::Label`) can be asked of a listener or an established connection, but
+  Linux fixes a TCP socket's label only as it connects (`np->flow_label` from the connect address). Example: a
+  connection made without a label and then given a fixed label is answered NotSupported.
 - `set_timestamp_clock` asks for a unit, but Linux fixes a connection's clock unit from its route (the
   `tcp_usec_ts` route feature) and `TCP_TIMESTAMP` only sets the value. Example: Microseconds on a connection over
   127.0.0.1 is answered NotSupported. And "its low bit given as the unit" is not what Linux 7.0 reports: on a

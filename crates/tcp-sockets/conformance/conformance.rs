@@ -2833,8 +2833,8 @@ pub fn header_settings_mark_each_segment<S: TcpSockets>(sockets: S) {
 }
 
 /// Flow labels a connection may carry for good: below 0x80000, which Linux keeps for the labels it makes itself.
-const FIXED_FLOW_LABEL: u32 = 0x12345;
-const OTHER_FIXED_FLOW_LABEL: u32 = 0x23456;
+const FIXED_FLOW_LABEL: u32 = 0x2468A;
+const OTHER_FIXED_FLOW_LABEL: u32 = 0x13579;
 
 fn fixed_flow_label(label: u32) -> TcpSetting<'static> {
     TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Label(
@@ -2948,7 +2948,7 @@ fn md5_key(key: Option<&'static [u8]>) -> TcpSetting<'static> {
     let peer = TcpMd5Peer {
         prefix: IpPrefix {
             address: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            length: PrefixLength(32),
+            length: PrefixLength(Ipv4Addr::BITS as u8),
         },
         interface: None,
     };
