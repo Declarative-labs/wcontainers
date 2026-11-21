@@ -285,7 +285,7 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 10) are told in this file's history:
 ## Measurements
 
 - G9 run 11, the whole lists on our driver (desktop, RTX 3080, one GPU job, 8 glcts at once,
-  other tracks' jobs queued beside): run A 18:55:50 to 19:24:49 (29 minutes for 112,807 cases
+  other tracks' jobs queued beside): run A 18:55:50 to 19:24:49 (29 minutes for the 110,807 cases of the six lists that start
   with the incremental build; dEQP-GLES31 about 16 of them), run B of the two ES 3.1 lists
   19:30:59 to 19:43:42. A 10% sample of dEQP-GLES3, -GLES31 and KHR-GLES31 (8,669 cases):
   18:38:58 to 18:44:54. The shadow group alone (432 cases): about a minute.
