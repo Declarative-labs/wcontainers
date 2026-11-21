@@ -13,7 +13,8 @@ for the datagram sockets of the IPv6 source check, the neighbour confirmation an
 shared crate `crates/internet-protocol/implementation/linux-socket-options` for
 `Shortfalls` (a counter per refusal reason and a warning on stderr at its first count), `host_error` and the
 option calls. Each lookup is one route request and one
-link request on a netlink socket the value holds, so a value answers for the network namespace it was made in.
+link request on a netlink socket the value holds, so a value answers for the network namespace it was made in;
+the request and reply buffers are kept in the value, so a lookup allocates no buffer once they have grown.
 
 Chosen over connect-and-read (connect a UDP socket, then getsockname and `IP_MTU`) because connect-and-read
 cannot tell the outgoing interface or the route kind, cannot take another user than the caller (`RTA_UID`),
@@ -28,7 +29,9 @@ What each selector maps to:
   `RTA_OIF`, mark `RTA_MARK`, owner `RTA_UID`, DSCP and ECN the header's `rtm_tos` (the kernel ignores ECN),
   flow label `RTA_FLOWLABEL`, upper-layer protocol `RTA_IP_PROTO` (always given: the kernel takes UDP
   when it is absent), ports `RTA_SPORT`/`RTA_DPORT`, an ICMP type and code `RTA_DPORT` in the bytes the
-  kernel's flow keeps them in (the flow's ICMP fields share the destination port's place).
+  kernel's flow keeps them in (the flow's ICMP fields share the destination port's place). A link-local
+  destination with no interface is looked up as any other, as Linux's UDP and raw sends take it (only a
+  connect, and a ping socket's send, need the interface: measured, EINVAL).
 - source check: IPv4's is the kernel's own (`ENETUNREACH` for an address the host lacks); IPv6's lookup has
   none, so a required check binds a UDP socket to the address first (`EADDRNOTAVAIL`). A waived IPv4 check
   with an address that the host's own lookup of it does not find local is refused (below), whatever
@@ -52,8 +55,10 @@ Refused with `HostError::NotSupported`, a counter and a warning, each with a nam
   kernel on `RTM_GETROUTE` (Universe, Link and Host give the same route through a gateway).
 - IPv4 waived source check with an address the host lacks: the routing socket always checks.
 - IPv6 source preferences other than the system's default, with no source given.
-- An upper-layer protocol the routing socket refuses (it takes TCP, UDP, and ICMP or ICMPv6).
-- A route kind the contract has no name for (for example IPv6 anycast).
+- An upper-layer protocol the routing socket refuses (it takes TCP, UDP, and ICMP or ICMPv6), and so a
+  mobility header selector, refused before asking.
+- A route kind the contract has no name for (for example the subnet-router anycast address of a link that
+  forwards).
 - A route with a lightweight-tunnel encapsulation: the kernel takes the encapsulation's headroom off the path
   MTU, and the routing socket does not give it.
 
@@ -84,7 +89,17 @@ Both are built on the shared crate's datagram half (`SendState` for header and s
 `Headers` for what arrives, memberships), plus `datagram::exchange` (one `sendmsg`, the error queue read as
 packets and reports), which this milestone adds there for all three datagram tracks.
 
-`crates/icmp-sockets/implementation/linux-ping`, package `wcontainers-icmp-sockets-linux-ping`: Linux ping
+Both wait on the shared crate's `readiness` (polling 3.11.0 over epoll, which the UDP track added: one epoll
+set and one thread per value, a socket registered edge-triggered as long as it lives and deleted before its
+descriptor closes, a waiting call that allocates nothing once its socket's waiter list has grown and withdraws
+itself when dropped). Error queue entries a send reads off the host while it looks for its own are held as an
+error condition in that readiness until a receive takes them. The basic calls and the options socket2 covers
+(socket, bind, `SO_REUSEADDR`, `IP_RECVTOS`, `IPV6_RECVTCLASS`, `IPV6_RECVHOPLIMIT`, `IP_HDRINCL`,
+`IPV6_HDRINCL`) go through socket2 on the socket's descriptor; the rest through the shared crate's option calls.
+A send that asks for transmit time errors is noted in the shared `ErrorQueue`, so that a rejection comes with its
+send's key.
+
+`crates/icmp-sockets/implementation/host`, package `wcontainers-icmp-sockets-host`: Linux ping
 sockets (`SOCK_DGRAM` with `IPPROTO_ICMP` or `IPPROTO_ICMPV6`), which need the caller's group inside
 `net.ipv4.ping_group_range`. open is the socket, owned by the given user (filesystem user while it is made);
 bind_identifier is `SO_REUSEADDR` as asked and a bind to the identifier as port; send_to writes the header and
@@ -100,7 +115,7 @@ address (the socket's bound one is used), extension headers and a routing header
 confirmation (the flags are not passed on). For both, an upper-layer selector other than the type and code
 of the message, which Linux routes by.
 
-`crates/raw-sockets/implementation/linux-host`, package `wcontainers-raw-sockets-linux-host`: `SOCK_RAW`
+`crates/raw-sockets/implementation/host`, package `wcontainers-raw-sockets-host`: `SOCK_RAW`
 sockets of the given protocol (root or `CAP_NET_RAW`). A payload is sent with `IP_HDRINCL`/`IPV6_HDRINCL` off
 and the header fields as for ICMP; a packet with its own header with it on, its route selectors as options
 and `IP_PKTINFO`, the flow's protocol as `IP_PROTOCOL` (IPv4) or the address's port (IPv6), and reassembly as
@@ -122,5 +137,10 @@ what leaves a dummy link on a packet socket of the namespace, and its statistics
 headers, path MTU modes, local fragmentation and fragment MTU, source, interface, mark, scope, broadcast) are
 checked by what arrives; send fields by what arrives (priority), the neighbour entry (confirmation), a qdisc
 that holds the packet (transmit time) and the error queue (transmit reports with their key, with and without
-the packet). ICMP errors come from a route that is unreachable or an MTU smaller than the packet. Settings by
-their effect; Configurable's own suite runs on a setting of each socket kind.
+the packet), and an etf schedule that misses every time (rejected transmit times with their keys). ICMP errors
+come from a raw ICMP socket of the namespace, quoting what left the dummy link. Settings by their effect;
+Configurable's own suite runs on a setting of each socket kind. Waits are polled by hand with a waker that
+counts its wakes: a wait for data is pending until the reply or packet arrives and is then woken once; a wait for
+writing finishes at its first poll; a dropped wait gives up its waker and is not woken; 35 waits on 32 sockets
+each wake once; an ICMP error ends a wait for data with the error condition, also when a too long send took it
+off the host first.
