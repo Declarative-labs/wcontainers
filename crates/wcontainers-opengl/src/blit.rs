@@ -1,11 +1,13 @@
 //! Blits: Gallium's blitter, drawing through the driver's own draws with the state it saves and
 //! puts back.
 
-use wcontainers_gpu::Backend;
+use std::ffi::c_uint;
+
+use wcontainers_gpu::{Backend, Origin, TextureRegion};
 
 use crate::context::Context;
 use crate::gallium::*;
-use crate::resource;
+use crate::resource::{self, Resource};
 use crate::state::{Stage, refuse};
 
 /// The fragment stage's uniform buffer the blitter uses (`cb_slot`), saved with its bytes.
@@ -81,6 +83,68 @@ fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
     save_constants(context, blitter);
 }
 
+/// Resolves a whole multisampled level's layer into a single-sampled one of its size and format
+/// by the back end's own resolve, where the blit is that and nothing more; false for any other.
+fn whole_resolve<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) -> bool {
+    let (src, dst) = (&info.src, &info.dst);
+    // SAFETY: Mesa's blit names two resources of this driver.
+    let (from, to) = unsafe {
+        (
+            Resource::<B>::of(src.resource),
+            Resource::<B>::of(dst.resource),
+        )
+    };
+    let (Some((from_texture, _)), Some((to_texture, _)), Some(format)) = (
+        from.texture(),
+        to.texture(),
+        crate::format::format(src.format),
+    ) else {
+        return false;
+    };
+    let whole = |area: &pipe_box, resource: &Resource<B>, level: c_uint| {
+        let side = |size: u32| (size >> level).max(1);
+        area.x == 0
+            && area.y == 0
+            && area.depth == 1
+            && area.width as u32 == side(resource.base.width0)
+            && area.height as u32 == side(resource.base.height0)
+    };
+    let plain = from.base.nr_samples > 1
+        && to.base.nr_samples <= 1
+        && src.format == dst.format
+        && src.format == from.base.format()
+        && dst.format == to.base.format()
+        && info.mask == PIPE_MASK_RGBA
+        && !info.scissor_enable
+        && !info.swizzle_enable
+        && !info.alpha_blend
+        && info.num_window_rectangles == 0
+        && (src.box_.width, src.box_.height) == (dst.box_.width, dst.box_.height)
+        && whole(&src.box_, from, src.level)
+        && whole(&dst.box_, to, dst.level);
+    if !plain {
+        return false;
+    }
+    let region = |texture, level, layer| TextureRegion {
+        texture,
+        mip: level,
+        layer,
+        origin: Origin::default(),
+        stencil: false,
+    };
+    let mut backend = context.screen().backend();
+    if let Err(error) = context.tracker.close(&mut backend) {
+        refuse(format!("closing a pass: {error:?}"));
+    }
+    let layer = src.box_.z as u32;
+    backend.resolve(
+        &region(from_texture, src.level, layer),
+        &region(to_texture, dst.level, dst.box_.z as u32),
+        format,
+    );
+    true
+}
+
 /// `pipe_context::blit`.
 pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const pipe_blit_info) {
     // SAFETY: Mesa passes this driver's context and a blit.
@@ -88,6 +152,10 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
     if context.blitter.is_null() {
         // SAFETY: the context is complete; the blitter keeps a pointer to it.
         context.blitter = unsafe { util_blitter_create(pipe) };
+    }
+    // SAFETY: as above.
+    if whole_resolve(context, unsafe { &*info }) {
+        return;
     }
     let blitter = context.blitter;
     // SAFETY: the blitter was made on this context.
