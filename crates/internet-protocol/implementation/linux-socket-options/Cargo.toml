@@ -20,6 +20,8 @@ etherparse.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # Socket calls, the socket options it wraps, and poll.
 rustix = { version = "1.1.6", features = ["event", "net"] }
+# Creating, binding and connecting sockets, sendmsg, and the socket options it covers.
+socket2 = { version = "0.6.5", features = ["all"] }
 # The host's readiness of sockets (epoll on Linux), which registers a socket of any kind on every system.
 polling = "3.11.0"
 # The Linux uapi constants and structures that rustix does not wrap.

@@ -7,7 +7,7 @@ use linux_raw_sys::net as uapi;
 use wcontainers_abi::HostError;
 
 use crate::datagram::addresses::as_bytes;
-use crate::set_bytes;
+use crate::{io_host_error, set_bytes, sock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
@@ -116,7 +116,18 @@ impl Sticky {
         slot: Slot,
         wanted: &[u8],
     ) -> Result<(), HostError> {
-        let (level, name, start) = slot.option();
+        let (level, name, _) = slot.option();
+        self.ensure_with(slot, wanted, || set_bytes(fd, level, name, wanted))
+    }
+
+    /// Writes a slot's option with `write` unless the slot already holds `wanted`.
+    fn ensure_with(
+        &mut self,
+        slot: Slot,
+        wanted: &[u8],
+        write: impl FnOnce() -> Result<(), HostError>,
+    ) -> Result<(), HostError> {
+        let (_, _, start) = slot.option();
         let unchanged = match &self.values[slot as usize] {
             Value::Written(current) => current.as_slice() == wanted,
             Value::Unknown => false,
@@ -129,7 +140,7 @@ impl Sticky {
         if unchanged {
             return Ok(());
         }
-        set_bytes(fd, level, name, wanted)?;
+        write()?;
         self.values[slot as usize] = Value::Written(wanted.to_vec());
         Ok(())
     }
@@ -149,7 +160,7 @@ impl Sticky {
         slot: Slot,
         wanted: c_int,
     ) -> Result<(), HostError> {
-        self.ensure(fd, slot, &wanted)
+        self.ensure_with(slot, as_bytes(&wanted), || write_int(fd, slot, wanted))
     }
 
     pub fn ensure_flag(
@@ -165,6 +176,29 @@ impl Sticky {
     pub fn forget(&mut self, slot: Slot) {
         self.values[slot as usize] = Value::Unknown;
     }
+}
+
+/// Writes an integer option through socket2 where it has a setter for it, else as the option's bytes.
+fn write_int(fd: BorrowedFd<'_>, slot: Slot, value: c_int) -> Result<(), HostError> {
+    let socket = sock(&fd);
+    let on = value != c_int::default();
+    let bits = value.cast_unsigned();
+    match slot {
+        Slot::TypeOfService => socket.set_tos_v4(bits),
+        Slot::TrafficClass => socket.set_tclass_v6(bits),
+        Slot::Mark => socket.set_mark(bits),
+        Slot::Priority => socket.set_priority(bits),
+        Slot::Broadcast => socket.set_broadcast(on),
+        Slot::Ipv4Freebind => socket.set_freebind_v4(on),
+        Slot::Ipv6Freebind => socket.set_freebind_v6(on),
+        Slot::Ipv4Transparent => socket.set_ip_transparent_v4(on),
+        Slot::Ipv6Transparent => socket.set_ip_transparent_v6(on),
+        _ => {
+            let (level, name, _) = slot.option();
+            return set_bytes(fd, level, name, as_bytes(&value));
+        }
+    }
+    .map_err(|error| io_host_error(&error))
 }
 
 impl Default for Sticky {

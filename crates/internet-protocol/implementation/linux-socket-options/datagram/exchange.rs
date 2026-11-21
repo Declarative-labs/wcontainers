@@ -1,19 +1,21 @@
 //! One `sendmsg`, and a socket's error queue read as the contract's received packets and transmit reports.
 
 use std::collections::VecDeque;
+use std::io::IoSlice;
 use std::net::SocketAddr;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 
 use libc::c_int;
 use linux_raw_sys::net as uapi;
+use socket2::{MsgHdr, SockAddr};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     ByteCount, InterfaceIndex, MaximumTransmissionUnit, Received, SendError, TransmitEvent,
     TransmitReport, TransmitReportKey, TransmitTimeError,
 };
 
-use crate::Shortfalls;
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
+use crate::{Shortfalls, io_host_error, sock};
 
 pub const TRANSMIT_TIME_REJECTION_WITHOUT_KEY: &str =
     "linux reports a rejected transmit time with the time, not the key of its send";
@@ -28,37 +30,17 @@ pub fn send_message(
     control: &[u8],
     flags: c_int,
 ) -> Result<(), HostError> {
-    let send = |name: *const libc::c_void, length: libc::socklen_t| {
-        let mut vector = libc::iovec {
-            iov_base: payload.as_ptr() as *mut _,
-            iov_len: payload.len(),
-        };
-        let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
-        header.msg_name = name as *mut _;
-        header.msg_namelen = length;
-        header.msg_iov = &mut vector;
-        header.msg_iovlen = 1;
-        if !control.is_empty() {
-            header.msg_control = control.as_ptr() as *mut _;
-            header.msg_controllen = control.len() as _;
-        }
-        // SAFETY: every pointer in the header describes a buffer that outlives the call.
-        unsafe { libc::sendmsg(fd.as_raw_fd(), &header, flags) }
+    let payload = [IoSlice::new(payload)];
+    let message = MsgHdr::new().with_buffers(&payload).with_control(control);
+    let name = name.map(SockAddr::from);
+    let message = match &name {
+        Some(name) => message.with_addr(name),
+        None => message,
     };
-    let sent = match name {
-        // SAFETY: rustix gives a pointer to `length` bytes of the socket address for the duration of the call.
-        Some(name) => unsafe {
-            rustix::net::addr::SocketAddrArg::with_sockaddr(&name, |pointer, length| {
-                send(pointer.cast(), length)
-            })
-        },
-        None => send(core::ptr::null(), libc::socklen_t::MIN),
-    };
-    if sent < 0 {
-        Err(crate::last_host_error())
-    } else {
-        Ok(())
-    }
+    sock(&fd)
+        .sendmsg(&message, flags)
+        .map(|_| ())
+        .map_err(|error| io_host_error(&error))
 }
 
 /// One entry of the error queue: the bytes it holds, the address it names and its control messages.

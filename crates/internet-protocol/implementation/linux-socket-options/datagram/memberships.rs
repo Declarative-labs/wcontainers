@@ -6,13 +6,14 @@ use std::os::fd::{AsFd, BorrowedFd};
 
 use libc::c_int;
 use linux_raw_sys::net as uapi;
+use socket2::{Domain, Socket, Type};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AnycastAddress, Membership, MulticastGroup, MulticastMembership, SourceFilter,
 };
 
 use crate::datagram::addresses::{in6_addr, storage, zeroed};
-use crate::{host_error, last_host_error, set_bytes, set_option};
+use crate::{io_host_error, last_host_error, set_bytes, set_option};
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
 #[derive(Default)]
@@ -45,17 +46,11 @@ impl AnycastMemberships {
 /// The interface Linux joins a group on when none is given, found by joining it on a socket of its own and
 /// leaving it on each interface until one holds it.
 fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
-    let family = match group {
-        IpAddr::V4(_) => rustix::net::AddressFamily::INET,
-        IpAddr::V6(_) => rustix::net::AddressFamily::INET6,
+    let domain = match group {
+        IpAddr::V4(_) => Domain::IPV4,
+        IpAddr::V6(_) => Domain::IPV6,
     };
-    let probe = rustix::net::socket_with(
-        family,
-        rustix::net::SocketType::DGRAM,
-        rustix::net::SocketFlags::CLOEXEC,
-        None,
-    )
-    .map_err(host_error)?;
+    let probe = Socket::new(domain, Type::DGRAM, None).map_err(|error| io_host_error(&error))?;
     let mut request = zeroed::<uapi::group_req>();
     request.gr_group = storage(group);
     set_option(probe.as_fd(), level, uapi::MCAST_JOIN_GROUP, &request)?;

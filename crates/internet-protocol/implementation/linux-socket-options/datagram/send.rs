@@ -226,10 +226,11 @@ impl SendState {
                     lease_flow_label(fd, route.destination, label)?;
                     self.flow_labels.push(label);
                 }
+                // The standard library and socket2 keep the flow information as the socket address holds it.
                 Ok(SocketAddr::V6(SocketAddrV6::new(
                     route.destination,
                     port,
-                    label,
+                    label.to_be(),
                     interface,
                 )))
             }

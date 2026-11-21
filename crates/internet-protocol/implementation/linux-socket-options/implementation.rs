@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
 use rustix::io::Errno;
-use rustix::net::{AddressFamily, Protocol, SocketFlags, SocketType, sockopt};
+use rustix::net::{Protocol, SocketType};
+use socket2::{Domain, SockAddr, SockRef, Socket};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_internet_protocol::{
     AddressSharing, BindAddress, FilterInstruction, FlowLabelChoice, IpPacketSetting,
@@ -31,6 +32,23 @@ const NO_FIXED_FLOW_LABEL: &str = "a fixed IPv6 flow label is not mapped to the 
 
 /// The width of the ECN field at the bottom of the traffic class octet, [RFC 3168](https://www.rfc-editor.org/rfc/rfc3168#section-5).
 const ECN_FIELD_BITS: u32 = 2;
+
+/// A socket2 handle on a borrowed descriptor, through which the calls socket2 covers are made.
+pub fn sock<'a>(socket: &'a BorrowedFd<'_>) -> SockRef<'a> {
+    SockRef::from(socket)
+}
+
+/// The error of a call socket2 or the standard library made.
+pub fn io_host_error(error: &std::io::Error) -> HostError {
+    host_error(Errno::from_io_error(error).unwrap_or(Errno::IO))
+}
+
+/// Binds a socket to an address, answering Linux's errno.
+pub fn bind_to(socket: BorrowedFd<'_>, address: SocketAddr) -> Result<(), Errno> {
+    sock(&socket)
+        .bind(&SockAddr::from(address))
+        .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::IO))
+}
 
 pub fn host_error(errno: Errno) -> HostError {
     if errno == Errno::AGAIN {
@@ -282,25 +300,27 @@ pub fn set_ip_socket_setting(
             uapi::SO_MAX_PACING_RATE,
             &rate.map_or(u64::MAX, |rate| rate.0),
         ),
-        IpSocketSetting::SendBuffer(bytes) => {
-            sockopt::set_socket_send_buffer_size(socket, bytes.0).map_err(host_error)
-        }
-        IpSocketSetting::ReceiveBuffer(bytes) => {
-            sockopt::set_socket_recv_buffer_size(socket, bytes.0).map_err(host_error)
-        }
+        IpSocketSetting::SendBuffer(bytes) => sock(&socket)
+            .set_send_buffer_size(bytes.0)
+            .map_err(|error| io_host_error(&error)),
+        IpSocketSetting::ReceiveBuffer(bytes) => sock(&socket)
+            .set_recv_buffer_size(bytes.0)
+            .map_err(|error| io_host_error(&error)),
         IpSocketSetting::Timestamping(timestamping) => set_timestamping(
             socket,
             receive_timestamping_flags(&timestamping) | report_flags,
             timestamping.bound_clock,
         ),
         IpSocketSetting::MulticastLoopback(on) => match family {
-            IpVersion::V4 => set_flag(socket, uapi::SOL_IP, uapi::IP_MULTICAST_LOOP, on),
-            IpVersion::V6 => set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_MULTICAST_LOOP, on),
-        },
+            IpVersion::V4 => sock(&socket).set_multicast_loop_v4(on),
+            IpVersion::V6 => sock(&socket).set_multicast_loop_v6(on),
+        }
+        .map_err(|error| io_host_error(&error)),
         IpSocketSetting::MulticastAllGroups { version, enabled } => match version {
-            IpVersion::V4 => set_flag(socket, uapi::SOL_IP, uapi::IP_MULTICAST_ALL, enabled),
-            IpVersion::V6 => set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_MULTICAST_ALL, enabled),
-        },
+            IpVersion::V4 => sock(&socket).set_multicast_all_v4(enabled),
+            IpVersion::V6 => sock(&socket).set_multicast_all_v6(enabled),
+        }
+        .map_err(|error| io_host_error(&error)),
     }
 }
 
@@ -311,14 +331,12 @@ pub fn set_port_setting(
     setting: &PortSetting<'_>,
 ) -> Result<(), HostError> {
     match *setting {
-        PortSetting::AddressSharing(sharing) => {
-            sockopt::set_socket_reuseaddr(socket, sharing == AddressSharing::Shared)
-                .map_err(host_error)
-        }
-        PortSetting::PortSharing(sharing) => {
-            sockopt::set_socket_reuseport(socket, sharing == PortSharing::Shared)
-                .map_err(host_error)
-        }
+        PortSetting::AddressSharing(sharing) => sock(&socket)
+            .set_reuse_address(sharing == AddressSharing::Shared)
+            .map_err(|error| io_host_error(&error)),
+        PortSetting::PortSharing(sharing) => sock(&socket)
+            .set_reuse_port(sharing == PortSharing::Shared)
+            .map_err(|error| io_host_error(&error)),
         PortSetting::NonlocalAddresses(permission) => {
             let (level, free_bind, transparent) = match family {
                 IpVersion::V4 => (uapi::SOL_IP, uapi::IP_FREEBIND, uapi::IP_TRANSPARENT),
@@ -634,17 +652,16 @@ pub fn open_socket(
     owner: UserId,
 ) -> Result<OwnedFd, HostError> {
     let domain = match family {
-        IpVersion::V4 => AddressFamily::INET,
-        IpVersion::V6 => AddressFamily::INET6,
+        IpVersion::V4 => Domain::IPV4,
+        IpVersion::V6 => Domain::IPV6,
     };
+    let kind = socket2::Type::from(kind.as_raw().cast_signed()).nonblocking();
+    let protocol = socket2::Protocol::from(protocol.as_raw().get().cast_signed());
+    // socket2 makes every socket close on exec.
     let open = || {
-        rustix::net::socket_with(
-            domain,
-            kind,
-            SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
-            Some(protocol),
-        )
-        .map_err(host_error)
+        Socket::new(domain, kind, Some(protocol))
+            .map(OwnedFd::from)
+            .map_err(|error| io_host_error(&error))
     };
     // An invalid id changes nothing and answers the thread's filesystem user.
     // SAFETY: setfsuid only changes this thread's filesystem user, which is restored before returning.
@@ -729,18 +746,18 @@ pub fn bind<'a>(
     let address = bind_address(socket, &local.address)?;
     match local.port {
         LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => {
-            rustix::net::bind(socket, &SocketAddr::new(address, port.0)).map_err(host_error)?;
+            bind_to(socket, SocketAddr::new(address, port.0)).map_err(host_error)?;
             Ok(None)
         }
         LocalPort::ChosenByExitNode(choice) => {
             let any = SocketAddr::new(address, 0);
             if choose_now {
                 in_port_ranges(socket, Some(&choice), || {
-                    rustix::net::bind(socket, &any).map_err(host_error)
+                    bind_to(socket, any).map_err(host_error)
                 })?;
             } else if !address.is_unspecified() {
                 set_flag(socket, uapi::SOL_IP, uapi::IP_BIND_ADDRESS_NO_PORT, true)?;
-                rustix::net::bind(socket, &any).map_err(host_error)?;
+                bind_to(socket, any).map_err(host_error)?;
             }
             Ok(Some(choice))
         }
@@ -752,8 +769,9 @@ pub fn bind_address(socket: BorrowedFd<'_>, address: &BindAddress) -> Result<IpA
     match *address {
         BindAddress::V4(address) => Ok(IpAddr::V4(address)),
         BindAddress::V6 { address, families } => {
-            sockopt::set_ipv6_v6only(socket, families == Ipv6Families::V6Only)
-                .map_err(host_error)?;
+            sock(&socket)
+                .set_only_v6(families == Ipv6Families::V6Only)
+                .map_err(|error| io_host_error(&error))?;
             Ok(IpAddr::V6(address))
         }
     }
@@ -803,7 +821,7 @@ pub fn bind_chosen_by_exit_node(
                     last: Port(last),
                 },
             )?;
-            match rustix::net::bind(socket, &SocketAddr::new(address, u16::MIN)) {
+            match bind_to(socket, SocketAddr::new(address, u16::MIN)) {
                 Err(Errno::ADDRINUSE) => {}
                 other => return other.map_err(host_error),
             }
@@ -812,7 +830,7 @@ pub fn bind_chosen_by_exit_node(
         if let Some(port) = outside.next() {
             shortfalls.count(PORTS_OUTSIDE_THE_HOSTS_RANGE);
             for port in core::iter::once(port).chain(outside) {
-                match rustix::net::bind(socket, &SocketAddr::new(address, port)) {
+                match bind_to(socket, SocketAddr::new(address, port)) {
                     Err(Errno::ADDRINUSE) => {}
                     other => return other.map_err(host_error),
                 }

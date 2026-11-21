@@ -9,11 +9,14 @@ use rustix::net::SocketAddrAny;
 use rustix::net::addr::SocketAddrStorage;
 use wcontainers_abi::HostError;
 
-use crate::host_error;
+use crate::{io_host_error, sock};
 
 pub fn local_address(socket: BorrowedFd<'_>) -> Result<SocketAddr, HostError> {
-    let address = rustix::net::getsockname(socket).map_err(host_error)?;
-    SocketAddr::try_from(address).map_err(|error| HostError::Errno(error.raw_os_error()))
+    sock(&socket)
+        .local_addr()
+        .map_err(|error| io_host_error(&error))?
+        .as_socket()
+        .ok_or(HostError::Errno(libc::EAFNOSUPPORT))
 }
 
 pub fn as_bytes<T: Copy>(value: &T) -> &[u8] {

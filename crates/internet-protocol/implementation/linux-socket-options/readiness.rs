@@ -14,7 +14,7 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use wcontainers_abi::HostError;
 use wcontainers_kernel::signal_information::PollEvents;
 
-use crate::host_error;
+use crate::{host_error, io_host_error};
 
 /// The host's readiness of the sockets it watches, with the thread that waits on it and wakes their waiting calls.
 pub struct Readiness {
@@ -148,7 +148,7 @@ fn events_now(fd: BorrowedFd<'_>, interest: PollFlags) -> Result<PollFlags, Host
 impl Readiness {
     pub fn new() -> Result<Self, HostError> {
         let shared = Arc::new(Shared {
-            poller: Poller::new().map_err(|error| io_error(&error))?,
+            poller: Poller::new().map_err(|error| io_host_error(&error))?,
             watches: Mutex::new(BTreeMap::new()),
             stopping: AtomicBool::new(false),
         });
@@ -157,7 +157,7 @@ impl Readiness {
             std::thread::Builder::new()
                 .name("host socket readiness".into())
                 .spawn(move || shared.watch_events())
-                .map_err(|error| io_error(&error))?
+                .map_err(|error| io_host_error(&error))?
         };
         Ok(Self {
             shared,
@@ -187,7 +187,7 @@ impl Readiness {
         };
         if let Err(error) = added {
             locked(&self.shared.watches).remove(&raw);
-            return Err(io_error(&error));
+            return Err(io_host_error(&error));
         }
         Ok(Watched {
             watch,
@@ -207,10 +207,6 @@ impl Drop for Readiness {
             let _ = watcher.join();
         }
     }
-}
-
-fn io_error(error: &std::io::Error) -> HostError {
-    HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO))
 }
 
 impl Shared {
