@@ -459,7 +459,7 @@ fn main() -> windows::core::Result<()> {
         "norm_targets" => {
             let full = vs(FULL);
             let shade = ps("float4 main(float4 p : SV_Position) : SV_Target {
-                    return float4(0.2 * (p.x + 0.5), 0.2 * (p.y + 0.5), -0.6, 1.0);
+                    return float4(0.2 * p.xy + 0.15, -0.6, 1.0);
                 }");
             for (name, format, texel) in [
                 ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM, 4),
