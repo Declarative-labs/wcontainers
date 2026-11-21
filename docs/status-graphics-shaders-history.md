@@ -1,4 +1,4 @@
-# Shaders track (G6): the record of runs 1 to 63
+# Shaders track (G6): the record of runs 1 to 69
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
@@ -3803,3 +3803,70 @@ Runs at the tip:
   the laptop (~/wcontainers-graphics/target/phase-2-graphics-shaders) and the x86 machine
   (/work/target/graphics-shaders, the literal clone and its build folder) deleted; the probes'
   sources and logs kept in scratch g6b4; no build in the Mac checkout or scratch.
+
+## G6b run 5 (run 69): the fifth check's findings
+
+Merged origin/phase-2-graphics-direct3d-11 (its round 4 run 5; nothing of this crate). Run 68's
+section is in the history file. Logs in scratch `graphics-shaders/g6b5`; GPU figures from the RTX
+3080 through the queue (other tracks' jobs before and after, one at a time in the hazard group).
+
+The check's findings, each:
+- Stream output after a domain stage failing late in long runs (blocking): found and fixed. The
+  stage helper wrote the draw's values and the values of the stages after the domain stage into
+  the data ring once, at the start of a draw, and made the domain and geometry stages' sets after
+  the tessellator's own write into that ring. The interface gives a ring range only until the
+  ring's next write (`Backend::write_buffer_ring`); when that write wrapped the ring, WebGPU's
+  `Discard` gave the ring fresh storage, so those sets bound values that were never written: the
+  geometry stage read zero primitives and wrote nothing, and stream output read its never-written
+  index slots (all 0) as vertex 0, filling the buffer with patch 0 (the check's counts: every slot
+  of every bound invocation). Whether the ring wrapped there depended on everything written
+  before, hence a different late case each run. Now each stage's values are written just before
+  its set is made (`ring_values`, `values_entry` in src/stage/helper.rs).
+  New test `stage_values_hold_wherever_the_data_ring_wraps` (tests/tessellation_draw.rs): the
+  data ring is placed to wrap at each of the next 0 to 12 parts in turn (`place_data_ring`), for a
+  draw streamed after the domain stage with and without `gs_tess_tri`, both builds, against real
+  Direct3D 11. Mutated copy (the old helper; mutant.log): 52 comparisons, 6 failed, the wrap after
+  2, 3 and 4 parts, with and without the geometry shader, fxc's build only (why dxc's build passed
+  every place in the mutated copy was not found). With the fix (gpu1-err.log): 52 comparisons, 0
+  failed at seed 1 and at seed 4401; `stream_output_after_the_domain_stage_matches_direct3d` at
+  the check's seeds 4401 to 4424 (1,824 comparisons, 0 failed, 107 known subnormal) and 9100 to
+  9123 (1,824, 0 failed, 116 known).
+- A6's text (blocking): rewritten. It said this crate's own comparison draws the scenes' line
+  cells equal on wgpu's Direct3D 12 path; no run shows that (that test asks only that no texel
+  Direct3D drew is missed and that the solid cell is equal, and its line cells differ in 191
+  texels). A6 now says what is shown and what is not, and the milestone's scene part as not met.
+- The scenes' claim (minor): the top of this file says the scene part is not met as written.
+  Scenes not rerun (no change can move them).
+- The converter version differing between checkouts (minor, before G6b): build.rs hashed the
+  `.git` link at dxil-spirv's top. A directory listed without its subdirectories now gives only its
+  files with an extension (its sources all have one; git's files there have none). On the x86
+  machine (x86-version2.log): the same version with and without that link; with the old listing
+  (mutated copy, x86-version-mutant2.log) the two differ. Converter versions change once.
+- A10 and A12 at the check's seeds (minor): its figures are added under A10 and A12.
+- No DXIL geometry shader of arrays of rows replayed in a test (minor): own `gs_rows_out`
+  (geometry_rows.hlsl, the check's `gs_chk_out`: flat inputs, `float3 c[3]` and `int2 n[2]` out),
+  two cases in `geometry_shaders_with_rows_stream_as_direct3d_does` (a list, an indexed strip),
+  in the non-GPU geometry lists and in the own records (`ok ; glsl absent compute`, both builds).
+  Seeds 1 to 4: 64 comparisons, 0 failed, 4 known (A22); the check's seeds 4401 to 4420: 320, 0
+  failed, 20 known. dxc's build replays word for word on ANGLE as fxc's does.
+- An unchecked stream number in the DXIL geometry pass (minor): a stream at or past
+  `stage::STREAMS`, emitted into or declared, is now refused by name (`a geometry stream past
+  Direct3D's`) before the mask is made (src/dxil/geometry.rs). Test
+  `a_stream_past_direct3d_is_refused_by_name` (dxc's `gs_rows_streams` with its emitted stream's
+  constant, then its stream decorations, set to 64); each check removed fails it with "attempt to
+  shift left with overflow" (x86-stream-mutant.log).
+
+Runs at the tip:
+- x86 machine (96 processors, load 2 to 43 with others' jobs, -j 64): clippy with warnings denied
+  clean; the whole suite with every corpus: every binary passes but gap A16's known failure
+  (x86-suite2.log).
+- Desktop (RTX 3080, through the queue, at 00b5428f's tree): Windows clippy with warnings denied
+  clean; `geometry_draw` 9 passed, `stage_draw` 2 and `tessellation_draw` 5 at their default seeds,
+  and the check's seeds above (gpu1.log, gpu1-err.log).
+- Literal check (x86 machine, a clone of 11062376): passes; this crate's lines in the baseline
+  unchanged (4,826 naming its paths, 395 under src).
+- Not run this run: the laptop's glslang suite (the new records read `absent compute`, which
+  glslang does not compile), WebAssembly, Chrome, the Direct3D 12 scenes.
+- Clean-up: this branch's build folders on the desktop (C:\wc\target\phase-2-graphics-shaders)
+  and the x86 machine (/work/target/graphics-shaders, the literal clone and its build folder)
+  deleted; the laptop was not used; logs and probe scripts kept in scratch g6b5.
