@@ -192,6 +192,12 @@ readings, repair, authentication, multipath state, the privileged settings).
   suite may not import (an interface crate must not lean on an implementation); removing it needs the name in a
   crate both can use, or the suite finding loopback by its `IFF_LOOPBACK` flag (next run).
 
+## Next (finishing T1 after run 4)
+- Socket creation on socket2: move the shared `open_socket` (rustix `socket_with` inside the owner switch) to
+  `socket2::Socket::new` with `Type::STREAM.nonblocking().cloexec()`, agreed with the UDP track, who is moving the
+  shared crate to socket2.
+- The one literal finding left (`"lo"` in the suite, see How to run).
+
 ## Next (T2)
 - read_state and read_listener_state (every query), authentication (MD5, AO, counters), repair options, queues
   and windows, `RecordsLastReceivedHeader`, `SaveSynchronize(FromLinkHeader)` and what a guest's own saving
