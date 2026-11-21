@@ -85,7 +85,8 @@ of I2 before the async ruling; to redo for it, see "Next").
   other tracks' entries. Build the wanted file (HEAD's plus this track's hunks, `lock-hunks.py` in scratch), then
   `git update-index --cacheinfo 100644,$(git hash-object -w <file>),Cargo.lock` and commit the index. Other
   tracks stage renames in the shared index, so commit from a private one: `GIT_INDEX_FILE=<scratch>/idx git
-  read-tree HEAD`, add this track's paths and the lock there, then `git commit` with the same variable.
+  read-tree HEAD`, add this track's paths and the lock there, then `git commit` with the same variable;
+  afterwards `git reset -q -- <those paths>` in the shared index, which otherwise still holds their old versions.
 
 ## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores)
 - 20:01 UTC, load 8.4 to 17 (final code): three rounds, each ICMP 37 of 37 (0.61 s), raw 28 of 28 (0.62 s),
