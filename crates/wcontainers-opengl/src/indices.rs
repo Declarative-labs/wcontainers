@@ -59,7 +59,7 @@ fn convention(provoking: ProvokingVertex) -> c_uint {
 }
 
 /// `count` less the vertices of an unfinished last primitive, or zero where not one is whole.
-fn trimmed(mode: mesa_prim, count: u32) -> u32 {
+pub fn trimmed(mode: mesa_prim, count: u32) -> u32 {
     let line = 2;
     match mode {
         MESA_PRIM_LINES => count - count % line,

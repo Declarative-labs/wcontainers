@@ -675,7 +675,9 @@ fn binding_sets<B: Backend>(
             if u64::from(slot.offset) + size > u64::from(resource.base.width0) {
                 backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
                 return refused(format_args!(
-                    "a uniform block bound smaller than the program declares"
+                    "a uniform block bound smaller than the program declares: binding {}, \
+                     {declared} bytes declared, {} bound at {} of a buffer of {}",
+                    b.binding, slot.size, slot.offset, resource.base.width0
                 ));
             }
             uniforms.push((
@@ -1204,6 +1206,11 @@ fn stream_out<B: Backend>(
             .collect(),
         interpolation: Vec::new(),
         streamed: true,
+        // The program's own position is streamed, before the host's depth range and flips.
+        transform: PositionTransform {
+            fixed_point_size: vertex.transform.fixed_point_size,
+            ..PositionTransform::default()
+        },
         ..vertex.clone()
     };
     let programs = &mut context.programs;
@@ -1235,7 +1242,10 @@ fn stream_out<B: Backend>(
         .map_err(|e| format!("{e:?}"))?;
     let fragment_set = wcontainers_nir::bind::stage_set(ShaderStage::Fragment) as usize;
     let vertex_sets = std::array::from_fn(|set| sets[set].as_ref().filter(|_| set != fragment_set));
-    for d in draws.iter().filter(|d| d.count > 0) {
+    // A draw of no whole primitive records nothing, its statistics included.
+    let whole =
+        |d: &&pipe_draw_start_count_bias| indices::trimmed(info.mode as mesa_prim, d.count) > 0;
+    for d in draws.iter().filter(whole) {
         let draw = StageDraw {
             vertex_sets,
             geometry_sets: [None; MAX_BINDING_SETS],
