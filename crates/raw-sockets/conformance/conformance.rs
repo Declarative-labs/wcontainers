@@ -1876,13 +1876,14 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
 pub fn multicast_source_filters_choose_the_senders<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 6);
+    const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x126);
     for (group, sources) in [
         (
             IpAddr::V4(GROUP),
             [IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)],
         ),
         (
-            IpAddr::V6(Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x126)),
+            IpAddr::V6(GROUP_V6),
             [IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)],
         ),
     ] {

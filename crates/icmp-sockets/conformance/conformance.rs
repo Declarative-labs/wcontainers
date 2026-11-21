@@ -2020,13 +2020,15 @@ pub fn source_filters_are_written(
 /// A group's source filter, of either kind and any sources, is the host's as written.
 pub fn multicast_source_filters_are_written<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
+    const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 5);
+    const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x124);
     for (group, sources) in [
         (
-            IpAddr::V4(Ipv4Addr::new(239, 1, 2, 5)),
+            IpAddr::V4(GROUP),
             [IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)],
         ),
         (
-            IpAddr::V6(Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x124)),
+            IpAddr::V6(GROUP_V6),
             [IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)],
         ),
     ] {
