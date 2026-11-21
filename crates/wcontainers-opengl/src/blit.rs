@@ -3,7 +3,7 @@
 
 use std::ffi::c_uint;
 
-use wcontainers_gpu::{Backend, Origin, TextureRegion};
+use wcontainers_gpu::{Backend, FormatUse, Origin, TextureRegion};
 
 use crate::context::Context;
 use crate::gallium::*;
@@ -109,7 +109,16 @@ fn whole_resolve<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) ->
             && area.width as u32 == side(resource.base.width0)
             && area.height as u32 == side(resource.base.height0)
     };
-    let plain = from.base.nr_samples > 1
+    // The host resolves only formats it averages; Gallium's blitter takes the rest (integers, one
+    // sample of each pixel, as OpenGL resolves them).
+    let resolves = context
+        .screen()
+        .caps()
+        .formats
+        .get(format)
+        .contains(FormatUse::RESOLVE);
+    let plain = resolves
+        && from.base.nr_samples > 1
         && to.base.nr_samples <= 1
         && src.format == dst.format
         && src.format == from.base.format()
