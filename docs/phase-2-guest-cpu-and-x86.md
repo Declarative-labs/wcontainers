@@ -1356,9 +1356,9 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
 - ALIGN 1, MAX_LENGTH 15; `decode` is `iced_x86::Decoder` in 64-bit mode over the bytes up to the end of the
   code range (an instruction that would run past it is `None`); trap detail the first 8 bytes.
 - Bits: rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8 to r15 at 0 to 15 (hardware order); CF PF AF ZF SF OF
-  at 16 to 21; FS base 22, GS base 23 (class Segment); mm0 to mm7 at 32 to 39 (i64, the mantissas of x87
-  registers R0 to R7; their sign and exponent fields stay in the block's x87 area, section 5.8); xmm0
-  to xmm15 at 64 to 79 (v128); the upper halves of ymm0 to ymm15 at 80 to 95 (v128). There is no zero
+  at 18 to 23; FS base 16, GS base 17 (class Segment); xmm0 to xmm15 at 32 to 47 (v128); mm0 to mm7 at 48
+  to 55 (i64, class Vector, the mantissas of x87 registers R0 to R7; their sign and exponent fields stay in
+  the block's x87 area, section 5.8); the upper halves of ymm0 to ymm15 after them (v128). There is no zero
   register. SP_BIT 4.
 - Flags: the six arithmetic flags at their rflags positions (CF 0, PF 2, AF 4, ZF 6, SF 7, OF 11); shapes
   in section 5.1. FLAGS_WANTED 1 << 62.
@@ -2218,15 +2218,36 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   (precision 66 and 24, exponent range 16383 to -16382), 1 + 2^-30 + 2^-60 at 24 bits gives 1 + 2^-23 rounding
   up and 1 to nearest, and 2^-16000 stays non-zero at 24 bits. Layer 1 checks it against the reference with
   the precision control field random.
+- **How the x87 hook is built (X7).** `crate::x87` is the unit over the block's FXSAVE area; `crate::fpu` the
+  meanings. One hook, `(code, a, b, data address) -> (low, high)`: the code packs the operation, ST(i), the
+  memory format and the instruction's FOP. A waiting instruction (and every MMX one) first checks inline for a
+  pending exception (a flag raised and unmasked in FSW and FCW) and stops with `FloatException` there, before
+  any access. Memory read by an instruction is read before the hook; a store's value comes back from the hook
+  with the status and tag words it leaves, and the meaning checks and writes memory, then those words, so a
+  fault leaves the unit as it was; an unmasked invalid operation, overflow or underflow keeps a store from
+  memory, which is then not looked at. An 80-bit store writes its first eight bytes before the last two are
+  checked. FIP is the address of the last non-control instruction; FDP and FOP change only with an unmasked
+  exception; the selectors are zero (the reference deprecates FCS and FDS). iced reads `wait` and the x87
+  instruction after it as one; the decoder splits them, as the CPU runs two. The rules the reference showed
+  (each now in the unit, with its reason in a comment): an unmasked invalid operation, denormal operand or
+  division by zero keeps the destination and the stack and clears C1; a compare always sets its condition
+  codes (unordered after an invalid operation) and does not pop after an unmasked exception, and `fcomi` keeps
+  C1; a stack overflow is met before anything about a load's operand; a denormal single or double is loaded
+  even when the denormal exception is unmasked; a store raises no denormal exception; `fprem` normalises both
+  operands and takes 32 plus the exponents' difference modulo 32 bits of quotient past 64; `fscale` keeps a
+  signed zero or infinity where even the adjusted result leaves the range; the state instructions check their
+  first word (none for `fxsave`), then their last byte, then all, a fault naming that byte, and `fxsave`
+  checks canonical, then alignment, then the pages.
 - **The square root** (`fsqrt`, at precision 24, 53 or 64 and in every rounding mode): rustc_apfloat 0.2.3
   has no square root (its src/lib.rs lists `sqrt` under future work), and `ieee-apsqrt` 0.1.1, which the
   ARM64 crate uses, works only on IEEE bit patterns of 32, 64 and 128 bits (its `IeeeBits` is implemented
   for u32, u64 and u128, and only the first two for its exact `sqrt_accurate`), not on 80-bit values or
   x87's reduced precisions. Decision: the root of a finite positive operand
-  is worked out with astro-float's `sqrt` (documented as correctly rounded) at 128 bits rounded toward
-  zero; it is exact when its square, by astro-float's `mul` at 256 bits (exact for two 128-bit
-  mantissas), equals the operand. Its top 66 bits, with the lowest set when any lower bit is set or the
-  root is inexact, are the round-to-odd value in the wide semantics above, which is then rounded once to
+  is worked out with astro-float's `sqrt` (documented as correctly rounded) at 128 bits, to the nearest (its
+  rounding modes are all to the nearest); its top 66 bits are a guess within one unit of the truncated root,
+  which the exact square of the guess and of the next, by astro-float's `mul` at 256 bits, settles, and which
+  is inexact unless its square equals the operand. Those 66 bits, the lowest set when inexact, are the
+  round-to-odd value in the wide semantics above, which is then rounded once to
   the precision control's 24, 53 or 64 bits in the program's rounding mode, as for the other operations
   (the same Boldo and Melquiond result, 66 being at least 64 + 2). The status (precision exception, C1
   for rounded up) comes from the two steps. The root of an 80-bit value is never outside the normal
@@ -2265,6 +2286,12 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   (`pyro-parked/wcontainers-scratch/x86/x87-crate`, opt-level s, LTO, stripped) using sin, atan, log2,
   exp and add at 128 bits, against the same cdylib without it: 142,688 bytes raw, 40,947 brotli -q 11 more.
   Only the x86 browser build carries it.
+- **MMX at X7.** An MMX instruction is its SSE form's meaning on the low halves of vectors: each operand in
+  the low half, or, where the SSE form's lanes cross, both operands in each vector (`pack`, `phadd`, `phsub`),
+  each in both halves (`pshufb`), or each moved right 32 bits as the low-half form (`punpckh`); `palignr` and
+  `pshufw` have their own. It checks for a pending x87 exception first and makes its change to the x87 side
+  after the memory it reads; one that writes memory sets TOP before the write may fault and the tags after it
+  (seen on the reference). MMX's conversions from memory make no change and check for no pending exception.
 - **MMX** (baseline in every x86-64 CPU, so offered): mm0 to mm7 are register bits of type i64, whose
   block slots are the mantissas of R0 to R7. An MMX instruction also sets TOP to 0 and marks every x87
   register valid; `emms` marks them empty. An MMX instruction that writes mmN also sets the sign and

@@ -1196,6 +1196,7 @@ fn string(
         Maskmovdqu_rDI_xmm_xmm => {
             Instruction::with_maskmovdqu(address_size, xmm[0], xmm[1], segment)
         }
+        Maskmovq_rDI_mm_mm => Instruction::with_maskmovq(address_size, xmm[0], xmm[1], segment),
         Movsb_m8_m8 => Instruction::with_movsb(address_size, segment, n),
         Movsw_m16_m16 => Instruction::with_movsw(address_size, segment, n),
         Movsd_m32_m32 => Instruction::with_movsd(address_size, segment, n),
@@ -1469,10 +1470,12 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             RepPrefixKind::Repne,
         ];
         let rep = reps[draw.below(reps.len() as u64) as usize];
-        let pair = if code == Code::Maskmovdqu_rDI_xmm_xmm {
-            [xmm(&mut draw), xmm(&mut draw)]
-        } else {
-            [Register::None; 2]
+        let mm =
+            |draw: &mut Draw| register(Register::MM0 as u32 + draw.below(MMX_REGISTERS) as u32);
+        let pair = match code {
+            Code::Maskmovdqu_rDI_xmm_xmm => [xmm(&mut draw), xmm(&mut draw)],
+            Code::Maskmovq_rDI_mm_mm => [mm(&mut draw), mm(&mut draw)],
+            _ => [Register::None; 2],
         };
         string(code, if address32 { 32 } else { 64 }, segment, rep, pair)
     } {

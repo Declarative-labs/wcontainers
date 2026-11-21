@@ -354,7 +354,7 @@ where
 
 /// The result an unmasked overflow or underflow keeps in a register, its exponent adjusted (`moved`), inexact
 /// when the rounding was. Where even that leaves the format's range (`fscale` can), the reference keeps a
-/// signed zero or infinity, inexact.
+/// signed zero or infinity, inexact (the infinity rounded up).
 fn adjusted<B: Semantics, U: Semantics>(
     moved: IeeeFloat<U>,
     flag: u16,
@@ -375,7 +375,7 @@ where
         return Rounded {
             value: Some(if moved.is_negative() { -none } else { none }),
             exceptions: flag | PRECISION,
-            up: false,
+            up: flag == OVERFLOW,
         };
     }
     let back = if flag == OVERFLOW {

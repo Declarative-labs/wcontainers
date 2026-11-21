@@ -509,9 +509,10 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     let ins = &i.iced;
     let mmx_form = is_mmx(i);
     // An MMX instruction makes its change to the x87 side after the memory it reads; one that writes
-    // memory sets TOP before the write may fault, the tags after it (seen on the reference).
+    // memory sets TOP before the write may fault, the tags after it, but `maskmovq` makes all of it first
+    // (seen on the reference).
     let reads_memory = memory_use(i) == Some(AccessKind::Read);
-    let writes_memory = m == Maskmovq || memory_use(i).is_some() && !reads_memory;
+    let writes_memory = memory_use(i).is_some() && !reads_memory;
     if mmx_form {
         crate::fpu::pending(e);
         if writes_memory {
@@ -521,7 +522,6 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
         if m == Maskmovq {
             masked_store_mmx(e, i);
-            mmx_transition(e, false);
             return;
         }
     }
@@ -1253,7 +1253,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     }
 }
 
-/// `maskmovq`: the bytes of the first MMX register whose byte in the second has its top bit set, to the eight
+/// `maskmovq`: the bytes of its first MMX register whose byte in the second has its top bit set, to the eight
 /// bytes at rdi (checked whole first, as `maskmovdqu`'s halves are).
 fn masked_store_mmx<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let ins = &i.iced;
@@ -1267,7 +1267,7 @@ fn masked_store_mmx<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     e.check(at, bytes, wcontainers_guest_cpu::Access::Write, 0);
     let mask = e.local(ValType::I64);
     e.get(mmx_register(
-        mmx(ins.op_register(1)).expect("an MMX register"),
+        mmx(ins.op_register(2)).expect("an MMX register"),
     ));
     // Each byte's top bit spread over the byte.
     e.sink()
@@ -1281,7 +1281,7 @@ fn masked_store_mmx<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
         .local_set(mask);
     let value = e.local(ValType::I64);
     e.get(mmx_register(
-        mmx(ins.op_register(0)).expect("an MMX register"),
+        mmx(ins.op_register(1)).expect("an MMX register"),
     ));
     e.sink().local_get(mask).i64_and();
     load(e, at, bytes);

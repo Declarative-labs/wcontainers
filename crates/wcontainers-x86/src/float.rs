@@ -511,11 +511,6 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         mxcsr(e, m, mem.expect("a memory operand"));
         return;
     }
-    // A conversion naming an MMX register makes the change to the x87 side (one from memory does not), after
-    // what it reads.
-    if crate::simd::is_mmx(i) {
-        crate::simd::mmx_transition(e, false);
-    }
     let value = |e: &mut E, n: u32| -> u32 {
         let v = e.local(ValType::V128);
         match ins.op_kind(n) {
@@ -612,8 +607,17 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     } else {
         0
     };
+    // A conversion naming an MMX register makes the change to the x87 side (one from memory does not)
+    // before its own exceptions, after the slow path's test, which comes before anything is written.
+    let mmx_form = crate::simd::is_mmx(i);
+    let transition = |e: &mut E| {
+        if mmx_form {
+            crate::simd::mmx_transition(e, false);
+        }
+    };
     if e.float_mode() {
         e.sink().if_(BlockType::Empty);
+        transition(e);
         exact(
             e,
             encode(op, double, scalar, immediate, destination.unwrap_or(0)),
@@ -621,9 +625,11 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             r,
         );
         e.sink().else_();
+        transition(e);
         fast(e, op, double, scalar, immediate, a, b, r);
         e.sink().end();
     } else {
+        transition(e);
         fast(e, op, double, scalar, immediate, a, b, r);
     }
     match op {
