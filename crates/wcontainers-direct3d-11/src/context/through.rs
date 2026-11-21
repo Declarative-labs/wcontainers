@@ -108,7 +108,7 @@ impl<B: Backend> Device<B> {
             buffer: Kept::new(buffer, id, Object::Buffer, &self.graveyard),
             row_pitch,
             layout: [row_pitch / bytes, height, width, height, layers],
-            why: if self.stored_through(v.format) || self.held_as_integer(v.format).is_some() {
+            why: if self.stored_through(v.format) || v.decoded.is_some() {
                 SlowPath::StorageFormatThroughBuffer
             } else {
                 SlowPath::AtomicsThroughBuffer
