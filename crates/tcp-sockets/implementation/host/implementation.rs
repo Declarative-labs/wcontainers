@@ -1687,6 +1687,9 @@ mod tests {
 
     const WAITS: usize = 100;
 
+    /// How long a wait may take to be woken once its data is sent.
+    const DEADLINE: Duration = Duration::from_secs(10);
+
     /// Once a connection has waited, its waits that have to wait allocate nothing on the waiting thread.
     #[test]
     fn a_wait_allocates_nothing_once_warm() {
@@ -1754,8 +1757,10 @@ mod tests {
             let mut context = Context::from_waker(&waker);
             assert!(wait.as_mut().poll(&mut context).is_pending());
             sockets.send(&client, plain, &byte).expect("send");
+            let start = std::time::Instant::now();
             while wait.as_mut().poll(&mut context).is_pending() {
-                std::thread::park();
+                assert!(start.elapsed() < DEADLINE, "the wait was not woken");
+                std::thread::park_timeout(DEADLINE);
             }
             sockets
                 .receive(&server, TcpReceiveRequest::Read, &mut byte)

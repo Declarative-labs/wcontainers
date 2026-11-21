@@ -4,6 +4,14 @@ Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and liste
 readings, repair, authentication, multipath state, the privileged settings).
 
 ## For the UDP, ICMP and raw tracks
+- Run 4 (2026-11-21, after the async ruling): TCP uses the UDP track's shared `readiness` for both waits. Two
+  notes on it, for its owner: (1) every socket is registered edge-triggered for every event from the moment it
+  is watched, so the watcher thread wakes, looks the socket up and takes its lock on every edge of every socket,
+  even with nothing waiting (each segment a busy connection receives); arming a oneshot registration with the
+  waiters' interest at a wait that has to wait would cost nothing on sockets nobody waits on. (2) TCP's sockets
+  are still made by the shared `open_socket` on rustix: making it socket2's `Socket::new` belongs in the shared
+  crate (its owner switch around `socket` is shared), so this track leaves it to whoever moves the shared crate to
+  socket2 (a `sock` helper was being added there during run 4).
 - The shared crate is `crates/internet-protocol/implementation/linux-socket-options` (package
   `wcontainers-internet-protocol-linux-socket-options`), made by this track. Its body is
   `cfg(target_os = "linux")`. It holds: `host_error`, `last_host_error`; the raw option calls `set_option`,
@@ -21,7 +29,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   from its IP header, generalised from the UDP track's private `icmp_error`: it takes `quoted`, the part of the
   quoted transport header Linux took off (the 8-byte UDP header for UDP, nothing for TCP, whose payload starts
   at the TCP header), and builds the ICMP header and checksum with etherparse. UDP track: please switch to it
-  and drop your copy (`icmp_error` and `rest_of_header` in crates/udp-sockets/implementation/linux-host).
+  and drop your copy (`icmp_error` and `rest_of_header` in crates/udp-sockets/implementation/host).
 - UDP track: `datagram/receive.rs` does not build for `aarch64-unknown-linux-musl` (the Mac's Linux lint
   target): `msg_controllen` and `cmsg_len` are `u32` there, `usize` on gnu. This track now lints on the ARM
   machine (gnu).
@@ -32,9 +40,36 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Still refused there with a counted reason: multicast and anycast memberships, a fixed IPv6 flow label. The
   UDP track needs them more: add them there.
 
+## Done in run 4 (2026-11-21, after the async ruling and the reorganization)
+- Renamed to `host`: folder `crates/tcp-sockets/implementation/host`, package `wcontainers-tcp-sockets-host`, types
+  `HostTcpSockets`, `HostTcpConnection`, `HostTcpListener` (the UDP track's lock commit f0463350 took the staged
+  folder rename; the contents moved in 4f2a4794).
+- `wait_for_events` and `wait_for_listener_events` on the shared `readiness` (polling 3.11.0 over epoll; polling
+  rather than mio because it registers a socket of any kind on every system, raw ones on Windows included, which
+  the raw and ICMP tracks need too). A connection or listener holds its socket as a `Watched`, whose drop
+  deletes the registration before the descriptor closes. `HostTcpSockets::new()` now answers a `Result`: it
+  starts the readiness thread.
+- Suite: eight wait checks (finishes when data arrives and not before; answers at once when ready; dropping a wait
+  cancels it; 16 connections with two waits each, half fed, each fed wait woken exactly once and the others
+  never; room to send comes back when the peer reads; a reset ends a wait for an event that never comes, with
+  the always-reported error or hang-up; a listener's wait finishes when a connection comes; dropping a listener's
+  wait cancels it). Plus, in the implementation's own tests, a counting allocator: 100 waits that each have to
+  wait allocate nothing on the waiting thread once the connection has waited once
+  (a_wait_allocates_nothing_once_warm). And the stopped agent's check reports_name_their_sends_among_plain_ones.
+- socket2 0.6.5 (`SockRef` on the socket's descriptor) for connect, fast-open `sendto`, listen, accept
+  (`accept4`, which also gives the peer), plain send and receive, shutdown, the abort's linger, the local address,
+  and the settings it covers whole: keep-alive on or off, no-delay, cork, urgent inline, quick acknowledgement,
+  segment size, thin linear timeouts, congestion control, not-sent low water; and the reads and writes of
+  no-delay, cork, quick acknowledgement and address sharing inside the action methods. Kept on rustix and libc,
+  because socket2 lacks them or does not compose: the keep-alive idle, interval and probes (socket2's
+  `set_tcp_keepalive` also turns keep-alive on, so setting the idle time alone would change another setting), the
+  user timeout (socket2 cuts a time that is not whole milliseconds where the contract's answer is EINVAL), sends
+  and receives with control messages (socket2 passes raw control bytes only; the shared crate parses them), and
+  every Linux-only option. Creating the socket stays in the shared `open_socket` (see above).
+
 ## Done (T1, 2026-11-21)
-- `crates/tcp-sockets/implementation/linux-host` (package `wcontainers-tcp-sockets-linux-host`, type
-  `LinuxHostTcpSockets`, connection `LinuxHostTcpConnection`, listener `LinuxHostTcpListener`, all fields
+- `crates/tcp-sockets/implementation/host` (package `wcontainers-tcp-sockets-host`, type
+  `HostTcpSockets`, connection `HostTcpConnection`, listener `HostTcpListener`, all fields
   private; public beyond the traits: `new()` and `counters()`). Real non-blocking Linux TCP and MPTCP
   sockets: connect (settings, bindings, exit-node port choice, fast open with data by `MSG_FASTOPEN`, until first
   send by `TCP_FASTOPEN_CONNECT`), listen (backlogs among its settings applied after `listen`), accept (SYN
@@ -71,6 +106,10 @@ readings, repair, authentication, multipath state, the privileged settings).
     now also takes a range of 61000 to 61020.
   - The host's interface addresses are read with nix's `getifaddrs` instead of unsafe libc. It still runs once per
     IPv4 accept (counted, warned): Linux gives no arrival interface for a TCP SYN.
+- wait_for_events: wait_for_events_finishes_when_data_arrives, wait_for_events_answers_at_once_when_ready,
+  dropping_a_wait_cancels_it, many_waits_each_wake_once, wait_for_room_finishes_when_the_peer_reads,
+  wait_ends_with_the_errors_always_reported. wait_for_listener_events: listener_wait_finishes_when_a_connection_comes,
+  dropping_a_listener_wait_cancels_it.
 - Which check fails when a method or setting breaks, each one run as a broken copy by mutants.sh (results under
   Measurements): connect, listen, accept: every check. send and receive: bytes_arrive_in_order_both_ways and the
   request checks (urgent_*, peek_*, more_to_come_*, record_end_starts_a_new_segment, unread_byte_reports_*,
@@ -100,6 +139,16 @@ readings, repair, authentication, multipath state, the privileged settings).
   T1.
 
 ## Measurements
+- Run 4, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 21:20, load 1.7 to 3.2: clippy with warnings
+  denied clean; 90 passed, 0 failed, three runs in a row, each 3.4 s (89 suite checks and the allocation check).
+- Run 4 broken copies (mutants.sh, now 90 copies), same machine, 20:49 to 21:19, load 2 to 21: every copy failed the
+  suite (logs mutants-run-5.log and mutants-run-5b.log in scratch). New copies and what fails: the connection's
+  wait finishing at once (six wait checks and the allocation check), never finishing (seven), the listener's
+  wait finishing at once (both listener wait checks), never finishing (listener_wait_finishes_when_a_connection_comes),
+  the shared readiness never withdrawing a dropped wait (both dropping checks and the allocation check), the
+  readiness firing no wake (four, after the data and listener checks were made to demand a wake: they had passed
+  on a poll alone), and the stopped agent's check of plain sends between reported ones. The first run stalled on
+  never-finishing because the allocation check parked without a deadline; it now has one.
 - ARM machine (Graviton4, 96 cores, Linux 7.0.0-1018-aws), 2026-11-21 19:34, load 3.4 to 5.8: 72 passed, 0
   failed, five runs in a row, each 3.3 s (the keep-alive, SYN retry and retransmission checks wait about 3 s).
 - Broken copies (mutants.sh), same machine: 63 copies, 2026-11-21 19:50 to 19:57 (load 4 to 9.5, 6 min 53 s),
@@ -123,13 +172,15 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Earlier runs: 43 and then 48 checks passed on the same machine (2026-11-21 18:27 and 18:50).
 
 ## How to run
+- Every build and test runs on the ARM machine; the Mac only edits, formats (`nix develop -c rustfmt --edition
+  2024 <file>`) and commits.
 - Suite on the ARM machine (needs sudo; makes its own network namespace):
-  `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/linux-host/run-conformance.sh`
+  `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
-- Broken copies: the same with `crates/tcp-sockets/implementation/linux-host/mutants.sh [names]` (about 20 s a
-  copy, 63 copies; names pick some).
+- Broken copies: the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
+  copy, 90 copies; names pick some).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
-  $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-linux-host -p wcontainers-tcp-sockets-conformance --
+  $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance --
   -D warnings'`, and the same on the Mac without arm-run (with `CARGO_TARGET_DIR=$PWD/target/host-tcp-sockets
   nix develop -c`; there both crates build empty).
 - Files copied from the Mac can carry times older than the ARM machine's last build, so cargo there may skip
@@ -143,6 +194,8 @@ readings, repair, authentication, multipath state, the privileged settings).
 - With read_state, give the settings listed above as unobservable a check of their effect.
 
 ## Departures from the plan
+- Run 4: the plan's "the contract waits for nothing" is gone with the async ruling: the two waits are the shared
+  readiness's (plan corrected), and the basic calls moved to socket2 (plan corrected).
 - The plan said `SO_KEEPALIVE` rearms the keep-alive timer; Linux re-times it only on `TCP_KEEPIDLE` (and on
   keep-alive turned on from off), so the idle time is written again. Plan corrected.
 - The binding and socket opening helpers moved into the shared crate for the UDP track.
@@ -162,6 +215,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   packet socket.
 
 ## Dependencies added
+- Run 4: socket2 0.6.5 with feature `all` (the basic calls): MIT OR Apache-2.0. polling 3.11.0 comes through the
+  shared crate (the UDP track added it): Apache-2.0 OR MIT.
 - rustix 1.1.6 (also in the suite, for its raw and packet sockets): Apache-2.0 WITH LLVM-exception OR Apache-2.0
   OR MIT. netlink-packet-core 0.9.0 (the statistics' attributes): MIT. linux-raw-sys 0.12.1: the same. libc
   0.2.191 (also in the suite since run 3, for BPF codes): MIT OR Apache-2.0. etherparse 0.21.0: MIT OR
@@ -169,7 +224,13 @@ readings, repair, authentication, multipath state, the privileged settings).
   0.9.1: MIT.
 
 ## For the owner
-- No way to build one: the crate has `LinuxHostTcpSockets::new()`. Suggested trait beside `TcpSockets`:
+- Building one now starts a host thread and an epoll set, so it can fail: the suggested trait is
+  `pub trait StandaloneTcpSockets: TcpSockets + Sized { fn new() -> Result<Self, HostError>; }` (the crate has
+  `HostTcpSockets::new() -> Result<Self, HostError>`).
+- `PollEvents` has `message_available` (`POLLMSG`), which Linux never reports for a socket: a wait asking only
+  for it finishes only on an error, hang-up or closed descriptor, as `poll` does on Linux. Not a fault, but the
+  contract does not say it.
+- No way to build one: the crate has `HostTcpSockets::new()`. Suggested trait beside `TcpSockets`:
   `pub trait StandaloneTcpSockets: TcpSockets { fn new() -> Self; }`.
 - `owner: UserId` is undefined when the exit node runs as one user: a guest's root (`UserId(0)`) connecting
   through a host process running as uid 1000 can only be answered EPERM (the host cannot make a socket owned

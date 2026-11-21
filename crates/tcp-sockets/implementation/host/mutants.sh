@@ -7,6 +7,7 @@ set -uo pipefail
 checkout=$(cd "$(dirname "$0")/../../../.." && pwd)
 implementation=crates/tcp-sockets/implementation/host/implementation.rs
 icmp_error=crates/internet-protocol/implementation/linux-socket-options/icmp_error.rs
+readiness=crates/internet-protocol/implementation/linux-socket-options/readiness.rs
 mutants=${CARGO_TARGET_DIR:-$checkout/target}/mutants
 names=() files=() from=() to=()
 # A mutant: its name, the file it breaks, the text it replaces (once, exactly) and what it puts there.
@@ -14,8 +15,8 @@ mutant() { names+=("$1"); files+=("$2"); from+=("$3"); to+=("$4"); }
 mutant more-to-come-ignored "$implementation" 'flags |= libc::MSG_MORE;' ';'
 mutant abort-closes-in-order "$implementation" 'if manner == TcpClose::Abort {' 'if manner == TcpClose::Abort && false {'
 mutant peek-offset-ignored "$implementation" 'offset = count(from.0)?;' 'offset = 0; let _ = from;'
-mutant push-does-nothing "$implementation" 'let no_delay = sockopt::tcp_nodelay(socket).map_err(host_error)?;' \
-    'return Ok(()); #[allow(unreachable_code)] let no_delay = sockopt::tcp_nodelay(socket).map_err(host_error)?;'
+mutant push-does-nothing "$implementation" 'let no_delay = socket.tcp_nodelay().map_err(io_host_error)?;' \
+    'return Ok(()); #[allow(unreachable_code)] let no_delay = socket.tcp_nodelay().map_err(io_host_error)?;'
 mutant icmp-errors-refused "$implementation" 'libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 => {' \
     'libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 if false => {'
 mutant quoted-addresses-swapped "$icmp_error" 'let inner = ipv4_header(us, destination,' 'let inner = ipv4_header(destination, us,'
@@ -23,21 +24,21 @@ mutant report-packet-dropped "$implementation" 'report.packet_length = Some(Byte
 mutant statistics-dropped "$implementation" '.then(|| transmit_statistics(data))' \
     '.then(|| { let _ = data; None::<TcpTransmitStatistics> })'
 mutant advice-noop "$implementation" $'uapi::SO_CNX_ADVICE,\n            true,' $'uapi::SO_CNX_ADVICE,\n            false,'
-mutant delayed-acknowledgement-noop "$implementation" 'let before = sockopt::tcp_quickack(socket).map_err(host_error)?;' \
-    'let _ = afterwards; return Ok(()); #[allow(unreachable_code)] let before = sockopt::tcp_quickack(socket).map_err(host_error)?;'
+mutant delayed-acknowledgement-noop "$implementation" 'let before = quick.tcp_quickack().map_err(io_host_error)?;' \
+    'let _ = afterwards; return Ok(()); #[allow(unreachable_code)] let before = quick.tcp_quickack().map_err(io_host_error)?;'
 mutant rearm-noop "$implementation" 'let idle = get_int(socket, uapi::SOL_TCP, uapi::TCP_KEEPIDLE)?;' \
     'return Ok(()); #[allow(unreachable_code)] let idle = get_int(socket, uapi::SOL_TCP, uapi::TCP_KEEPIDLE)?;'
-mutant window-probe-noop "$implementation" 'let sharing = sockopt::socket_reuseaddr(socket).map_err(host_error)?;' \
-    'return Ok(()); #[allow(unreachable_code)] let sharing = sockopt::socket_reuseaddr(socket).map_err(host_error)?;'
+mutant window-probe-noop "$implementation" 'let sharing = SockRef::from(&socket)' \
+    'return Ok(()); #[allow(unreachable_code)] let sharing = SockRef::from(&socket)'
 mutant window-probe-clears-sharing "$implementation" '} else if sharing {' '} else if sharing && false {'
 mutant clock-always-refused "$implementation" 'let unit = u32::from(reading.unit == TcpTimestampUnit::Microseconds);' \
     'let _ = (socket, reading); return Err(HostError::Errno(libc::EPERM)); #[allow(unreachable_code)] let unit = u32::from(reading.unit == TcpTimestampUnit::Microseconds);'
-mutant push-neither-noop "$implementation" 'let corked = sockopt::tcp_cork(socket).map_err(host_error)?;' \
-    'return Ok(()); #[allow(unreachable_code)] let corked = sockopt::tcp_cork(socket).map_err(host_error)?;'
+mutant push-neither-noop "$implementation" 'let corked = socket.tcp_cork().map_err(io_host_error)?;' \
+    'return Ok(()); #[allow(unreachable_code)] let corked = socket.tcp_cork().map_err(io_host_error)?;'
 mutant record-end-ignored "$implementation" 'flags |= libc::MSG_EOR;' ';'
 mutant fast-open-connect-ignored "$implementation" 'set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)?;' ';'
-mutant fast-open-data-ignored "$implementation" 'let flags = SendFlags::from_bits_retain(libc::MSG_FASTOPEN as u32)' \
-    'let flags = SendFlags::from_bits_retain(0)'
+mutant fast-open-data-ignored "$implementation" 'let flags = libc::MSG_FASTOPEN | libc::MSG_NOSIGNAL' \
+    'let flags = libc::MSG_NOSIGNAL'
 mutant setting-Timestamping-noop "$implementation" '            TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {' \
     'TcpSetting::Ip(IpSocketSetting::Timestamping(_)) => Ok(()), TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {'
 mutant exit-node-port-by-kernel-only "$implementation" 'options::bind_chosen_by_exit_node(socket, address, &choice, &self.shortfalls)' \
@@ -63,6 +64,13 @@ mutant saved-synchronize-not-kept "$implementation" \
 mutant saved-synchronize-off-ignored "$implementation" 'listener.saves_synchronize.store(on, Ordering::Relaxed);' \
     'listener.saves_synchronize.store(on || listener.saves_synchronize.load(Ordering::Relaxed), Ordering::Relaxed);'
 mutant saved-synchronize-taken-twice "$implementation" '*saved = None;' ';'
+mutant wait-finishes-at-once "$implementation" 'connection.socket.wait_for_events(interest).await' 'Ok(interest)'
+mutant wait-never-finishes "$implementation" 'connection.socket.wait_for_events(interest).await' 'std::future::pending().await'
+mutant listener-wait-finishes-at-once "$implementation" 'listener.socket.wait_for_events(interest).await' 'Ok(interest)'
+mutant listener-wait-never-finishes "$implementation" 'listener.socket.wait_for_events(interest).await' \
+    'std::future::pending().await'
+mutant readiness-withdraw-noop "$readiness" '    fn withdraw(&mut self) {' '    fn withdraw(&mut self) { if self.id.is_some() { return; }'
+mutant readiness-wakes-nothing "$readiness" '        waker.wake();' '        drop(waker);'
 mutant plain-sends-uncounted-once-armed "$implementation" '&& !connection.reports_armed.load(Ordering::Relaxed)' ''
 # Each setting doing nothing, one at a time.
 for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::ReceiveBuffer(..))' \
@@ -101,7 +109,7 @@ for index in "${!names[@]}"; do
     rm -rf "$copy" && mkdir -p "$copy"
     rsync -a --exclude /target --exclude /.git "$checkout/" "$copy/"
     # The copies share a build folder, so every file any copy breaks is rebuilt in each.
-    touch "$copy/$implementation" "$copy/$icmp_error"
+    touch "$copy/$implementation" "$copy/$icmp_error" "$copy/$readiness"
     if ! python3 -c 'import sys
 path, old, new = sys.argv[1:]
 text = open(path).read()

@@ -3958,6 +3958,10 @@ pub fn wait_for_events_finishes_when_data_arrives<S: TcpSockets>(sockets: S) {
         );
         assert!(poll_once(wait.as_mut(), &waker).is_pending());
         send_all(&sockets, &pair.client, plain(), MESSAGE);
+        assert!(
+            woken_within(&counter, 1, DEADLINE),
+            "not woken when data arrived"
+        );
         let events = finish(wait, &counter, &waker).expect("wait for data");
         assert!(events.data_to_read);
         assert!(!events.writing_possible, "an event not asked for was given");
@@ -4133,6 +4137,10 @@ pub fn listener_wait_finishes_when_a_connection_comes<S: TcpSockets>(sockets: S)
         )
         .expect("connect")
         .connection;
+    assert!(
+        woken_within(&counter, 1, DEADLINE),
+        "not woken when a connection came"
+    );
     let events = finish(wait.as_mut(), &counter, &waker).expect("wait for a connection");
     drop(wait);
     assert!(events.data_to_read);
