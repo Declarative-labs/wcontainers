@@ -1,117 +1,165 @@
 # Status: host internet sockets
 
-Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done,
-reworked in run 2 after the independent check), I2 ICMP sockets, I3 raw sockets.
+Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done, three
+runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
 
-## Done (I1, 2026-11-21)
-- `crates/route-resolver/implementation/linux-netlink` (package `wcontainers-route-resolver-linux-netlink`,
-  type `LinuxNetlinkRouteResolver`): `RTM_GETROUTE` and `RTM_GETLINK` on a netlink socket of the namespace
-  the value is opened in. Linux only (`#![cfg(target_os = "linux")]`, so it builds empty on the Mac).
-  Public beyond the trait: `open()` and `counters()` (one `CounterReading` per reason that refused).
-  Refusals go through the shared crate's `Shortfalls` (counter per reason, warning on stderr at the first).
-- Run 2 added: IPv6 routing headers (type 2 to its address, type 4 to its segment at segments left, the
-  header first checked by the host's own `IPV6_RTHDR`, so type 0 is `EINVAL`); neighbour confirmation (a
-  `MSG_CONFIRM | MSG_PROBE` probe of no bytes to the next hop on the route's interface); the locked IPv4
-  MTU with no value through a gateway (576); refusal of encapsulating routes; a waived IPv4 source check
-  decided by the host's lookup of the source (local or not), so `ip_nonlocal_bind` no longer changes it.
-- Suite `crates/route-resolver/conformance`: 26 checks, each in a new network namespace made on the test's
-  thread before the value is made (root needed), with links, routes, rules and neighbours built by `ip`.
-  Run 2 added source_port_selects_the_route, locked_mtu_without_value_uses_the_device_mtu,
-  encapsulating_route_leaves_room_for_its_headers (path MTU must equal a connected socket's `IPV6_MTU`
-  unless refused); icmp_type_and_code now matches the code (rule dport 2051 = type 8 code 3, with code 0
-  and swapped bytes going elsewhere); routing_header_goes_to_its_first_hop (types 2 and 4, type 0 `EINVAL`,
-  no refusal accepted); confirmed_neighbour_is_confirmed (the gateway's entry `confirmed` 0 seconds ago
-  after a confirmed lookup, not after an unconfirmed one, IPv4 and IPv6); the waived check runs with
-  `ip_nonlocal_bind` 0 and 1.
-- Suites `crates/configurable/conformance` (setting twice answers as once) and
-  `crates/negative-route-advice/conformance` (advice taken, and taken again), taking `(implementor, handle,
-  setting)` and `(implementor, handle)`. Each has a `tests!` macro and private self-tests in `#[cfg(test)]`
-  with a correct and a broken implementor (the broken one must make the check panic). Unchanged in run 2.
+## I2: done (2026-11-21)
+- `crates/icmp-sockets/implementation/linux-ping` (package `wcontainers-icmp-sockets-linux-ping`, type
+  `LinuxPingSockets`, socket `LinuxPingSocket`): Linux ping sockets. Needs the caller's group inside
+  `net.ipv4.ping_group_range` (the suite's namespace sets it to every group; the crate's own test checks that an
+  empty range gives `EACCES`). Public beyond the traits: `new()`, `counters()` and the refusal reasons.
+- `crates/raw-sockets/implementation/linux-host` (package `wcontainers-raw-sockets-linux-host`, type
+  `LinuxHostRawSockets`, socket `LinuxHostRawSocket`): `SOCK_RAW` sockets (root or `CAP_NET_RAW`), every
+  method, both packet kinds, every setting. Public beyond the traits: `new()`, `counters()`, the reasons.
+- Shared crate `crates/internet-protocol/implementation/linux-socket-options`, added by this track:
+  `datagram::exchange` (`send_message`, `ErrorEntry`, `ErrorQueue` with `message_too_long`, `error_entry` that
+  turns an error queue entry into `Received`, `unsent_bytes` and `dropped_packets` from `SO_MEMINFO`, and the
+  reasons `ERROR_OF_NO_REPORT`, `TRANSMIT_TIME_REJECTION_WITHOUT_KEY`), and
+  `icmp_error::write_icmp_error_quoting_header` (an ICMP error whose quoted packet Linux gave from its IP header
+  on, as it does to a raw socket that writes its headers). `set_packet_setting` now gives `IPV6_UNICAST_IF` in
+  network byte order, and the route resolver calls it instead of its own copy.
+- Suites: `crates/icmp-sockets/conformance` (31 checks plus Configurable's suite on 4 settings; with the crate's own 2 tests, 37) and
+  `crates/raw-sockets/conformance` (24 checks plus Configurable's suite on 4 settings, 28). Each check runs as root in
+  a new network namespace entered by the `tests!` macro. The route resolver suite now exports its namespace tools
+  (`IP`, `BATCH`, `IPV6`, `PACKETS`, `number_after`, `packets_sent`, `seconds_since_confirmed`), the ICMP suite
+  its packet tools (`Capture`, a packet socket that sees what leaves a link; `seen`; the network and addresses),
+  and the raw suite uses both: one definition of each fact, as the literal check asks.
+- The I1 findings of the last independent check are fixed: the resolver suite checks that a lookup sends
+  nothing (da's transmit counter, multicast off on da), strict source routes (refused or link-scope only) and a
+  mobility header selector; the plan's two wording points are corrected; the shared unicast interface helper is
+  fixed and used. Three broken copies, each caught: probe flag dropped (confirmed_neighbour_is_confirmed),
+  strict as loose (strict_source_route_takes_only_a_first_hop_on_the_link), IPv6 unicast interface in host order
+  (confirmed_neighbour_is_confirmed). Resolver suite: 28 checks.
 
 ## How to run
-- On the ARM machine (needs root and iproute2 7.x for the dscp and flowlabel rules; Ubuntu's 6.1 lacks
-  them), from the orchestrator's cloud folder, with the script in this track's scratch folder:
-  `./arm-run <checkout> --name host-internet-sockets -- "$(cat <scratch>/suite.sh)"` (clippy with warnings
-  denied, then the four packages' tests at 12 threads).
-- The independent check (clean build in a fresh target folder, then twelve broken copies of the
-  implementation built under target/mutant): `<scratch>/independent-check.sh`, passed the same way.
-  `<scratch>` is pyro-parked/wcontainers-scratch/host-internet-sockets.
-- On the Mac the two generic suites run as they are; the route resolver crates build empty. The shared
-  socket options crate does not build for aarch64-unknown-linux-musl (cmsg types), so Linux lint and
-  tests run on the ARM machine.
+- Scripts in pyro-parked/wcontainers-scratch/host-internet-sockets, passed to arm-run from the orchestrator's
+  cloud folder: `./arm-run <checkout> --name host-internet-sockets -- "$(cat <scratch>/rounds.sh)"` (raw, ICMP and
+  resolver suites three times), `independent-check-i2.sh` (clean build with clippy, the nine packages' tests,
+  twelve broken copies, cargo tree). Test tools put on the path there: iproute2 7.x and nftables from nixpkgs.
+- On the Mac: `CARGO_TARGET_DIR=target/host-internet-sockets cargo clippy --target aarch64-unknown-linux-gnu
+  --no-deps --all-targets -p <package> -- -D warnings` checks and lints the Linux code without the ARM machine
+  (the gnu target's standard library was added with rustup; musl does not build the shared crate).
+- Literal check: `cargo run -q -p wcontainers-literals -- check`; no finding in this track's files.
+- Committing Cargo.lock in the shared checkout: `git commit -- Cargo.lock` takes the whole working file with
+  other tracks' entries. Build the wanted file (HEAD's plus this track's hunks, `lock-hunks.py` in scratch), then
+  `git update-index --cacheinfo 100644,$(git hash-object -w <file>),Cargo.lock` and commit the index.
 
-## Results (ARM64 machine, Linux 7.0.0, load 1.2 to 2.6 of 96 cores, 2026-11-21 18:47 to 18:50 UTC)
-- 26 of 26 route resolver checks pass, 2 + 3 generic self-tests pass; clippy with warnings denied clean
-  on Linux (ARM machine) and on the Mac; the literal check has no finding in my files.
-- Clean build (fresh target folder): all pass. Twelve broken copies, each failing exactly one check:
-  mark not sent (mark_selects_the_route); ICMP bytes swapped and ICMP code dropped
-  (icmp_type_and_code_select_the_route); route MTU ignored (route_metrics_give_path_mtu_and_hop_limit);
-  owner not sent (owner_selects_the_route); broadcast unchecked (broadcast_needs_permission); source port
-  dropped (source_port_selects_the_route); segments left ignored and routing header ignored
-  (routing_header_goes_to_its_first_hop); confirmation skipped (confirmed_neighbour_is_confirmed); locked
-  cap ignored (locked_mtu_without_value_uses_the_device_mtu); waived check skipped
-  (waived_source_check_takes_a_foreign_address).
-- Which check fails if another part breaks: destination and source address (every check; source:
-  source_selects_the_route), interface (interface_selects_the_route), DSCP (dscp_selects_the_route), flow
-  label (flow_label_selects_the_route), protocol and destination port (protocol_and_ports_select_the_route),
-  kind (loopback, broadcast, multicast checks), device MTU and hop limit (the two route_gives checks),
-  kernel errors (failing_routes_give_their_errors), required source check
-  (required_source_check_refuses_a_foreign_address), IPv4 options (loose_source_route_goes_to_its_first_hop).
-- cargo tree: no interface or conformance crate depends on an implementation. No reviewed file changed.
+## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores)
+- 19:55 UTC, load 5.7 to 9.7: three rounds, each ICMP 37 of 37 (0.61 s), raw 27 of 27 (0.62 s; 28 of 28 with the close check added after), resolver 28 of
+  28 (0.02 s), at 12 test threads. Generic suites 2 + 3 self-tests pass.
+- Clippy with warnings denied clean for all nine packages (Mac, gnu target, and ARM machine).
 
-## Refused by the implementation (NotSupported, counter, warning)
-IPv4 link scope and strict source routes; IPv4 waived source check with an address the host lacks; IPv6
-source preferences other than the default with no source; protocols the routing socket refuses (it takes
-TCP, UDP, ICMP for IPv4, ICMPv6 for IPv6; so GRE, the mobility header and the rest); route kinds other than
-unicast, local, broadcast and multicast; routes with a lightweight-tunnel encapsulation (path MTU less a
-headroom the routing socket does not give: measured, a seg6 encap route on a 1400 link gives `IPV6_MTU`
-1336). Why they stay: the routing socket has no field for them (it carries `rtm_scope` but ignores it on a lookup), and connect-and-read, which could take
-link scope, `IP_TRANSPARENT`, `IPV6_ADDR_PREFERENCES` or any protocol (raw socket), cannot tell the
-interface a route must give. Their checks accept NotSupported or the right answer, never a wrong one.
+## Which check fails when a method breaks
+- IcmpSockets::open: every check (owner: owner_selects_the_route). bind_identifier:
+  identifiers_are_shared_only_when_both_ask, the_request_carries_the_bound_identifier, echo replies (identifier).
+  send_to: every check that sends; each header field and send field has its own (below). receive:
+  echo_reply_arrives_whole_over_ipv4/ipv6, a_short_buffer_keeps_the_whole_length,
+  receive_with_nothing_queued_would_block, an_icmp_error_arrives_whole_over_ipv4/ipv6,
+  transmit_reports_carry_the_key_of_their_send, a_small_receive_buffer_counts_its_drops. count_unsent_bytes:
+  pacing_holds_messages_in_the_send_buffer. close: close_frees_the_identifier. configure: each setting's check
+  and Configurable's suite.
+- RawSockets::open: every check, open_takes_each_version_and_protocol. send_to: payload checks (IPv4, IPv6,
+  IPPROTO_RAW IPv6), header_included_packets_go_out_as_written, header_included_packets_take_their_route,
+  withdrawn_reassembly_lets_a_fragment_leave, payload_routes_take_their_selectors, path_mtu_modes_and_too_long_
+  payloads, send_fields_are_taken. receive: ipv4_packets_arrive_whole, ipv6_packets_arrive_with_their_headers,
+  a_short_buffer_keeps_the_whole_length, receive_with_nothing_queued_would_block, icmp_errors_arrive_whole,
+  the router alert checks. count_unsent_bytes: ip_settings_are_taken. close:
+  close_gives_up_the_sockets_holdings (the multicast routing role is free again). configure:
+  a_checksum_offset_is_written, the two router alert checks, multicast_routing_takes_the_namespace_role,
+  ip_settings_are_taken, multicast_settings_are_taken, Configurable's suite.
+- Broken copies tried: see the independent check below.
 
-## Findings of the independent check, and what was done
-- Routing headers refused; the check used type 0: fixed (above).
-- No source port check; the ICMP check did not test the code: fixed (above).
-- Waived IPv4 source with `ip_nonlocal_bind=1` gave `ENETUNREACH`: fixed, refused either way now.
-- IPv6 anycast refused: kept (RouteKind has no Anycast); recorded for the owner below.
-- Link-local destination without an interface resolves while `connect` gives `EINVAL`: kept. Measured on
-  the ARM machine: a UDP `sendto` to fe80::5 with no scope succeeds and `ip -6 route get fe80::5` gives a
-  route, so the lookup does have an answer; `EINVAL` is connect's and bind's rule that a link-local peer
-  needs a scope, which the socket implementations apply, not the route lookup.
-- The locked MTU note: corrected and modelled (measured: `mtu lock 0` via a gateway gives `IP_MTU` 576, on
-  the link 1400).
-- `log::warn!` with no logger, private copies of `Shortfalls` and `host_error`: now the shared crate's.
-- Confirmed neighbour refused but undetectable: now honoured and checked.
+## Honoured, and how each is checked
+- Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,
+  source, waived source check (sends from an absent address), interface (chooses between two routes), link
+  scope, broadcast permission, mark and owner (rules that prohibit), ICMP type and code (a rule on them), path
+  MTU modes (don't-fragment bit per mode), too long (`MessageTooLong` with the link MTU). IPv6 hop limit, DSCP,
+  ECN, flow label, source preferences, local fragmentation and fragment MTU (`MessageTooLong` with either), and
+  for raw sockets source, hop-by-hop, routing destination and destination options and a segment routing header.
+- Send fields: neighbour confirmation (the gateway's entry confirmed 0 s ago), priority (the third band of a prio
+  queue), transmit time (fq holds the packet 300 ms), transmit reports scheduled and software with key, with and
+  without the packet.
+- Received fields: interface, software timestamps (none unless set; no hardware one on loopback), drops since
+  previous (received plus dropped equals sent), whole IPv4 and IPv6 headers with extension headers; ICMP errors
+  whole (outer header, ICMP header and checksum, quoted header and identifier or payload).
+- Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol
+  (`IP_PROTOCOL`; IPv6 through the address's port) and mark; withdrawn reassembly lets a fragment leave where
+  nftables tracks connections, which otherwise holds it; checksum offset (written, and left alone with none;
+  refused on IPv4); IPv4 router alert (a forwarded packet over a veth pair goes to the socket, not after Off);
+  IPv6 router alert by value and isolation (a socket in another namespace takes it only when not isolated);
+  multicast routing (one socket per namespace, `mc_forwarding` on while held, both versions).
+- Settings: multicast membership (in `ip maddr` while joined; for ICMP also a looped multicast echo is answered
+  only with multicast loopback on, for raw the socket gets its own multicast send only then), anycast (in
+  `/proc/thread-self/net/anycast6`), pacing rate, send buffer (a paced socket fills it), receive buffer (drops),
+  timestamping (a bound clock loopback lacks is refused). Every setting kind also passes Configurable's suite.
 
-## Next
-- I2: ICMP sockets. Use the shared `crates/internet-protocol/implementation/linux-socket-options` crate
-  (read docs/status-host-tcp-sockets.md and docs/status-host-udp-sockets.md first).
+## Not honoured, with the Linux reason
+- ICMP over IPv6 (net/ipv6/ping.c), refused with NotSupported, counted and warned: a source address (Linux sends
+  from the bound one), extension headers and routing header (Linux drops them), neighbour confirmation (Linux
+  does not pass the flags on). The suite accepts the refusal or the right effect.
+- Both kinds: an upper-layer selector other than what Linux routes the send by (the message's ICMP type and code,
+  the mobility header type for IPv6 raw, none for other protocols or a packet with its own header), and a raw
+  payload under another protocol than the socket's (IPv4; IPv6 unless the socket's is `IPPROTO_RAW`).
+- Ping sockets give no `SO_RXQ_OVFL`, `SO_RCVMARK` or `SO_RCVPRIORITY` (only timestamps): received mark and
+  priority are written as 0, and drops are read from `SO_MEMINFO` at each receive, so drops after a packet was
+  queued are told with it rather than with the next packet. The totals are exact (checked).
+- Multicast all-groups on a ping socket is taken but has no effect to see: a ping socket takes only echo replies.
+- Wireless status reports: refused as in the UDP track (no key). Acknowledgement reports are TCP's only;
+  hardware and completion reports need a device with a hardware clock, which the namespace has not.
+- Linux behaviour the suites follow, measured: a raw send into a full send buffer answers `ENOBUFS`, not
+  would-block; `IPV6_DONTFRAG` holds for a raw IPv6 payload of another protocol than UDP or ICMPv6 only in mode
+  `Do`; `IPV6_MTU` (fragment MTU) fragments nothing smaller than the path MTU (a 1448-byte packet left whole with
+  it at 1300); IPv6 router alerts reach only `IPPROTO_RAW` sockets (`ENOPROTOOPT` otherwise) and come from the
+  packet's IPv6 header on, which the implementation recognises by the header's source and length and does not
+  write again.
+- Error queue entries of a raw socket that switched between payloads and packets with their own headers while
+  errors were in flight are read by the socket's current mode (Linux decides it when the error arrives).
+
+## Independent check of I2 (run here, ARM64 machine, 19:57 to 19:59 UTC, load 4.5 to 7.6)
+- Clean build in a fresh target folder (`independent-check-i2.sh`): clippy with warnings denied clean on the nine
+  packages; ICMP 37 of 37, raw 27 of 27, resolver 28 of 28, generic self-tests 2 + 3; 24 s in all. The raw
+  close check was added after it and ran three times (28 of 28 each).
+- Thirteen broken copies, each caught: ICMP identifier never shared (identifiers_are_shared_only_when_both_ask),
+  unsent count always zero (pacing_holds_messages_in_the_send_buffer), reply without its header (both echo
+  reply checks and a_short_buffer_keeps_the_whole_length), close leaking the descriptor
+  (close_frees_the_identifier), drops not counted (a_small_receive_buffer_counts_its_drops); raw header never
+  included (five checks), isolation ignored (an_ipv6_router_alert_takes_forwarded_packets), reassembly ignored
+  (withdrawn_reassembly_lets_a_fragment_leave), no checksum left on (a_checksum_offset_is_written), multicast
+  routing never given up (multicast_routing_takes_the_namespace_role), IPv6 header not written
+  (ipv6_packets_arrive_with_their_headers), route protocol not sent (header_included_packets_take_their_route),
+  close leaking the descriptor (close_gives_up_the_sockets_holdings).
+- cargo tree (normal, build and dev edges) of the six interface crates and five conformance crates: no
+  implementation crate (control: the raw implementation's tree does name the shared crate).
+- Reviewed files: this run's commits touch no interface.rs and no data file beside one; the working tree has no
+  change to them.
 
 ## For the other socket tracks (shared crate)
-- `set_packet_setting` with `UnicastInterface` for IPv6 passes the index in host byte order, but the kernel's
-  `IPV6_UNICAST_IF` takes it in network byte order as IPv4's does (`ntohl` in do_ipv6_setsockopt): measured,
-  index 2 in host order gives `EADDRNOTAVAIL`. The resolver sets the option itself with `to_be()` for both
-  until the shared crate is fixed; then it should call the shared helper.
+- New: `datagram::exchange` (above). The UDP crate now re-exports the two reasons from it (02e1d659, two lines in
+  its implementation.rs, done here because the literal check counted the copy). UDP and TCP could also use
+  `send_message`, `ErrorQueue` and `error_entry` in place of their own.
+- `set_packet_setting` gives `IPV6_UNICAST_IF` in network byte order (1991e134).
 
 ## Departures from the plan
-- The generic suites test themselves with private implementors under `#[cfg(test)]` in the conformance
-  crate: no implementation of Configurable or NegativeRouteAdvice exists yet, and their implementation
-  folders are not this track's.
+- The plan named I2 ICMP and I3 raw; the task made both one milestone, done together.
+- The suites share test tools across suite crates (the raw suite depends on the ICMP and route resolver suites,
+  the ICMP suite on the resolver suite) so that each fact has one definition.
+- The generic suites still test themselves with private implementors under `#[cfg(test)]`.
 
 ## For the owner
-- RouteResolver has no way to build one. Proposed: `pub trait StandaloneRouteResolver: RouteResolver + Sized
-  { fn open() -> Result<Self, HostError>; }` (a resolver answers for the network it is opened in). Meanwhile
-  `LinuxNetlinkRouteResolver::open()`.
-- RouteKind has no anycast: a lookup to fd01:: (the subnet-router anycast address of fd01::/64, with
-  forwarding on) is `anycast fd01:: dev lo table local` on Linux and delivered locally, and the resolver can
-  only refuse it.
-- The contract does not say which error a failed source check gives: Linux's IPv4 lookup gives `ENETUNREACH`
-  (for example source 10.1.0.99 that no link has), bind gives `EADDRNOTAVAIL`, and send with `IP_PKTINFO`
-  gives `EINVAL`. The implementation passes on the host's answer (IPv4 `ENETUNREACH`, IPv6 `EADDRNOTAVAIL`).
-- There is no way through the interfaces to read the counters of refusals; `counters()` is inherent.
+- No interface can build its implementation. Proposed, as `StandaloneRuntime` does:
+  `pub trait StandaloneIcmpSockets: IcmpSockets + Sized { fn open_host() -> Result<Self, HostError>; }`, the same
+  for `RawSockets` and `RouteResolver` (`fn open() -> Result<Self, HostError>`). Meanwhile `new()`/`open()`.
+- `ReceivedPacketFields.mark` and `.priority` are plain values, but Linux gives a ping socket neither: an
+  `Option` would say so; this implementation writes 0. Example: a reply that arrived with mark 7 reads mark 0.
+- `MRT_INIT`/`MRT_DONE` (200, 201, linux/mroute.h and mroute6.h) are in no established crate (libc and
+  linux-raw-sys lack them); the raw implementation names them once.
+- RouteKind has no anycast (I1): fd01:: is `anycast` on Linux and can only be refused.
+- The contract does not say which error a failed source check gives (I1): Linux's IPv4 lookup gives
+  `ENETUNREACH`, bind `EADDRNOTAVAIL`, a send with `IP_PKTINFO` `EINVAL`.
+- No way through the interfaces to read the refusal counters; `counters()` is inherent.
 
 ## Dependencies (licences checked)
-netlink-packet-core 0.9.0, netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT; their bytes, bitflags,
-zerocopy, log, libc are MIT or Apache-2.0 or BSD-2); rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR
-Apache-2.0 OR MIT), linux-raw-sys 0.12.1 (same), libc 0.2.191 (MIT OR Apache-2.0). Run 2 dropped socket2
-and log from the resolver. iproute2 (GPL) is a test tool run by the suite, never a dependency.
+- netlink-packet-core 0.9.0, netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT); rustix 1.1.6 (Apache-2.0 WITH
+  LLVM-exception OR Apache-2.0 OR MIT), linux-raw-sys 0.12.1 (same), libc 0.2.191 (MIT OR Apache-2.0), etherparse
+  0.21.0 (MIT OR Apache-2.0). No new crate in I2. iproute2 and nftables (GPL) are test tools the suites run,
+  never dependencies.

@@ -963,6 +963,25 @@ pub fn multicast_routing_takes_the_namespace_role<S: RawSockets>(sockets: S) {
     }
 }
 
+/// Closing a socket gives up what it held: the namespace's multicast routing role, at once or once no child forked
+/// meanwhile holds its descriptor.
+pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
+    let routing = RawSocketSetting::MulticastRouting(MulticastRouting::Enabled);
+    let first = opened(&sockets, IpVersion::V4, IpNumber::IGMP);
+    set(&sockets, &first, routing);
+    let second = opened(&sockets, IpVersion::V4, IpNumber::IGMP);
+    assert!(sockets.configure(&second, routing).is_err());
+    sockets.close(first);
+    let start = Instant::now();
+    let taken = loop {
+        match sockets.configure(&second, routing) {
+            Err(_) if start.elapsed() < PATIENCE => std::thread::sleep(Duration::from_millis(1)),
+            other => break other,
+        }
+    };
+    assert_eq!(taken, Ok(()));
+}
+
 /// The IP header fields that choose a payload's route are taken: interface, link scope, broadcast, a waived source, source preferences, owner and mark.
 pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
     ip(NETWORK);
@@ -1496,6 +1515,7 @@ macro_rules! tests {
             an_ipv4_router_alert_takes_forwarded_packets,
             an_ipv6_router_alert_takes_forwarded_packets,
             multicast_routing_takes_the_namespace_role,
+            close_gives_up_the_sockets_holdings,
             payload_routes_take_their_selectors,
             path_mtu_modes_and_too_long_payloads,
             icmp_errors_arrive_whole,
