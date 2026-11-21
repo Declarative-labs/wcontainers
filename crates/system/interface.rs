@@ -3,7 +3,7 @@
 
 use core::ops::{ControlFlow, Range};
 
-use domain::base::Name;
+use domain::base::{Name, Question};
 use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
@@ -188,6 +188,6 @@ pub trait DomainNameResolver {
     fn resolve_domain(
         &self,
         resolution: DomainResolutionId,
-        domain: &Name<[u8]>,
+        question: Question<&Name<[u8]>>,
     ) -> Result<(), HostError>;
 }
