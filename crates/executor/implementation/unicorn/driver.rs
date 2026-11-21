@@ -1866,7 +1866,9 @@ fn deliver_live<H: Send>(
     match message {
         // The call waiting for it takes it when the kernel next settles, as at once.
         crate::backend::Message::Answer(unique, reply) => {
-            host.kept_in_step(Entry::BackendAnswered(unique, reply.clone()));
+            if host.taped_run() {
+                host.kept_in_step(Entry::BackendAnswered(unique, reply.clone()));
+            }
             host.reply_arrived(unique, reply);
             host.hand(kernel, cpu, Event::Timer);
         }

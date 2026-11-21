@@ -26,11 +26,20 @@ side of each is worked around without changing the interface.
   that implements them must own its executor and its system, and how a driver then runs threads
   on that executor is undefined. Example: `ProcessController::suspend_tasks(&mut self, tasks)`
   must read each task's registers from the executor, which it is not given.
-- `System` has no way for answers to come back into the kernel, apart from `FuseClient`: TCP and
-  UDP readiness, a finished connect, a name lookup's result (`DomainNameResolver::resolve_domain`
-  returns only whether it started), bytes and credit arriving on a `StreamTransport` endpoint, a
-  terminal's new size. Example: a guest's `read` on standard input parks; nothing in the
-  interface tells the kernel that the embedder now has bytes for it (today `Event::StreamData`).
+- With the async ruling, answers come back as the results of the system's `async` calls, but three
+  things a system tells the kernel unasked still have no call: a FUSE notice (Linux's
+  `fuse_notify`, such as INVAL_INODE when a file changed on the backend), a terminal's new size,
+  and a new connection waiting on a listener that is not being waited on. Example: the test
+  backend's INVAL_INODE notice still reaches the kernel as the abi's `Event::BackendNotice`.
+- `FuseServer` has only `send_request`, which returns a reply, but FUSE has messages with no
+  reply (FORGET, BATCH_FORGET, NOTIFY_REPLY). The kernel keeps such a message's call until the
+  system finishes it, so a system must finish it once sent (the test host does, with an empty
+  reply); one that waits for a reply that never comes keeps it for ever. Example: every RELEASE
+  of a looked-up file ends with a FORGET.
+- A stored waiting call must own a handle to the system, since the kernel keeps it across its
+  entries: the kernel's entry points take `&Arc<S>`, and an embedder can no longer hand the
+  kernel a view of itself made for one call (the runtime's `Held`, the test host behind its
+  lock). Example: the runtime now hands its events with its state let go of (KA, second run).
 - `FallbackObserver::on_fallback_used` takes `&Self::Fallback`, a type only the embedder knows,
   so the kernel cannot name any of its slow paths through it. Example: the kernel's counter
   "system call not implemented" (today `Host::warn` with the reason and a count) has no value of
@@ -168,6 +177,14 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, second run: the kernel takes its system as a type parameter everywhere (no `&dyn` left), and
+the file backend is the first thing it waits on as the system's `async` call: each request is the
+system's `FuseServer::send_request` future, kept in a reusable cell, polled by the kernel's
+scheduler when its waker fires; the backend reply event, the request ids and the table of sent
+requests are gone from the abi and the kernel. Every embedder builds with the smallest change (KA,
+second run, lists them). Not done: names, streams and sockets on their async calls, the interface
+traits, the conformance suite. KA is not complete. See "KA, second run".
 
 KA (the kernel implements the reviewed interface), first run: part 1 (the copies) is done, and
 part 2 and part 3 are not started (see "KA, first run"). The kernel's boundary now uses the interface's `TaskId`, `Errno`, `Signal`,
@@ -373,6 +390,104 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, second run
+
+Started 20:30 UTC on 2026-11-21 at f6b24e8a. Builds and lints on the x86 machine, suites and the
+measurements on the ARM64 machine, as scratch kernel/ka2's scripts run them (suite.sh,
+waitcost.sh, check.sh).
+
+The independent check's findings handed to this run (the K6c thirteenth run's check) were
+answered in the K6c fourteenth run (its section has each: ioctls on local sockets and with bad
+pointers, truncate breaking leases, aio on an eventfd, leases on /proc, the clock wording, the
+reference's timer failures, LTP_TIMEOUT_MUL, timers on the Mac, shmget05), and ADSP038 is under
+"Waiting for the owner" by the orchestrator's ruling of 2026-11-20. Nothing more was done for them.
+
+Done:
+- The kernel holds its system by a type parameter: every function that took the call context
+  (`Context<'_, S>`) is generic over `S: System`; the dispatch table is one list made into a
+  static table of names and a generic table of handlers (`built_calls!`); `Counters` take any
+  `Host`. No `&dyn System` or `&dyn Host` is left in the kernel (2a46a555).
+- The waiting calls (waiting.rs, the one place that makes and fires a waker): each call is the
+  system's future, type-erased in a `smallbox::SmallBox<dyn Future>` with 32 words of room, kept
+  in a cell (a pinned box and its waker, made once and used again), so a call that waits
+  allocates nothing; a larger one is kept on the heap, counted "waiting call on the heap". A
+  waker marks its cell and a note that some cell is marked; `next` asks to be called back at once
+  while the note is set, and `settle` takes the answers of marked calls first. A kernel with no
+  waiting call checks only that its list is empty: pipes, futexes and signals pay nothing.
+- The file backend on `FuseServer::send_request`: every request the client makes is started as a
+  waiting call carrying its own record (number, waiting thread, opcode, node, time sent), its
+  answer at once if the system has it, else when woken; the record goes to the client with the
+  reply. `BackendRequestId`, `Event::BackendReply`, `Host::backend_send` and the client's table
+  of sent requests are gone. What a call waits for is still matched by its request number in the
+  client, since a call that was interrupted and asks again must not take an older answer. A
+  message FUSE gives no reply is a waiting call too (For the owner).
+- The kernel's `System` requires `wcontainers_system::FuseServer`, `'static`, and its entry
+  points (`start`, `exit`, `event`, `kill`, `restore`) take `&Arc<S>`.
+- Tests: waiting.rs's own (an answer at once keeps nothing; a woken call is answered and its cell
+  used again; 99 waits after the first allocate nothing, counted by a counting allocator).
+
+Changed outside this track's crates, the smallest change that keeps them building and passing:
+- crates/runtime/implementation/single-kernel: `drive`, `Stepper::step` and the loop's answer take
+  the system as `&Arc<S>`, and the `System` methods that hand the kernel something (`started`,
+  `arrived`, `stopped`, `idle`) take `self: &Arc<Self>`; `Container` holds `Arc<S>` and
+  `system_mut` is gone (nothing used it); `LocalSystem` hands its events with its state let go of
+  (the `Held` view is gone), serves the backend as a `FuseServer` that answers at once (the
+  queue of replies is gone), and depends on wcontainers-system.
+- crates/system/implementation/seeded-test-policy: a `FuseServer` that refuses as before (its
+  warning's detail is now the request's length, not its number), the same `self: &Arc<Self>`
+  methods, `H: 'static`, and wcontainers-system.
+- crates/executor/implementation/hardware-virtualization-inside: the link's BackendSend request
+  goes with the abi call it carried (and the two test lines that sent one); `container::start`
+  takes `&Arc<S>`; native-kernel's main holds the policy in an `Arc`.
+- crates/executor/implementation/hardware-virtualization: tests/container/mod.rs holds the policy
+  in an `Arc` and takes it back after the run.
+- Cargo.lock: smallbox and the new wcontainers-system edges only.
+- In the unicorn crate (this track's): the test host is the kernel's system itself, in an `Arc`,
+  with its driving state behind its own locks (the `TestSystem` wrapper is gone); it serves the
+  backend as a `FuseServer` whose replies wake the waiting call (the driver then hands a timer
+  event, so the kernel takes it at once as before); the record keeps each reply
+  (`Entry::BackendAnswered`), which a replay gives the waiting call; the stream script holds the
+  streams only while it uses them; layer 1 shares its host. The embedder test's count for a
+  signal 0, left uncommitted by the first run with part 1's change, is committed with it.
+
+New dependency (shipped): smallbox 0.8.9, MIT, no dependencies of its own.
+
+Measurements (ARM64 machine, release build of tests/waitcost.rs: guest/waitcost.c repeats one
+kind of wait 500 and 1000 times, the difference over 500 is one repetition; median of 9; the
+allocations are the whole test process's per repetition, kernel and test host together):
+- Before (e5d693d2, the clone in scratch ka2/before-tree) and after (4ee5def7 and on), run
+  alternately three times each, 21:36 to 21:40 UTC, load 11 to 21 on 96 cores (scratch
+  ka2/ab.log): pipe ping-pong 11744, 11698, 11948 ns before and 12503, 12481, 12295 after; outside
+  socket read (a byte to an echoing server and back) 15893, 14469, 14481 and 17131, 14332, 14317;
+  backend open and read 525633, 499828, 498221 and 510025, 474570, 545128; name lookup 136814,
+  136585, 136744 and 138640, 138455, 138125. Allocations per repetition: pipe 142.00 both, socket
+  78.96 to 79.05 both, backend 347.99 before and 352.99 after, name 711.00 both.
+- The pipe ping-pong is 3 to 6 percent slower by the clock, which the owner's condition does not
+  allow, and is not settled. What was measured of it (scratch ka2/perfstat.sh, perf stat of the
+  pipe kind alone, 2000 and 4000 round trips, twice each): user instructions are the same
+  (1.2788 and 1.2774 G before, 1.2783 and 1.2807 G after), user cycles 3 percent more (393 to 395
+  M before, 404 to 407 M after), system cycles 5 percent more (199 to 208 M, 213 to 219 M). A
+  sampled profile of the whole measurement (instructions, ka2/perf-before and perf-after)
+  gives the kernel's functions 0.269 G instructions before and 0.295 G after, the difference in
+  calls generic code now makes across crates into helpers it no longer inlines (`Waiting::woken`,
+  `thread_mut`, `next_to_run`); marking four of them inline changed nothing measurable (ka2/ab2.log),
+  so it was not kept. Expected, not measured: the test host's own new locks (its driving state
+  is behind locks now that the kernel shares it) cost cycles without instructions.
+- The backend's 5 more allocations per open and read were the test host's copy of each reply
+  for its record, made also when it kept none. It now copies only for a record: then 340.99
+  allocations per open and read (530135 ns; 21:58 UTC, load 9 to 11), 7 fewer than before the
+  milestone. The kernel's waiting calls allocate nothing once their cell exists (waiting.rs's
+  test counts it: 99 waits, no allocation).
+
+Departures:
+- A restore keeps the backend's waiting calls instead of dropping them and asking again: the
+  backend goes on across a restore (the test host's backend and its owed answers survive a save,
+  as before), and asking again would send a request twice to a backend that already has it (a
+  CREATE with O_EXCL would then fail). A kernel saved by copying (the only save today) keeps them
+  valid; a save that serializes the kernel would have to drop them first.
+- `Event::Timer` follows each backend reply in the test host, where the reply event was handed
+  before; the kernel's timer work (due timers, due wakes) runs then too.
 
 ## KA, first run
 
@@ -5541,6 +5656,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KA, after its second run, in steps that each keep the suite as it is:
+1. Names on `DomainNameResolver::resolve_domain`: the guest's question (syscall/socket/outside.rs
+   reads it with simple-dns) asked as a waiting call owned by the lookup's socket, its answer the
+   domain crate's message; `Host::look_up` and `Event::LookedUp` go, in the test host
+   (network.rs), the runtime (net.rs), the policy and the link alike.
+2. The standard streams on `StreamTransport` (`send_stream`/`receive_stream` at once,
+   `wait_for_stream_events` as a waiting call per end): ends.rs, and the stream ends of the test
+   host, the runtime and the policy.
+3. Outside sockets on the four socket interfaces with `wait_for_events` per watched socket, which
+   replaces `Host::connect` to `accept` and the readiness events (the largest step: outside.rs and
+   inet.rs, and every embedder's network).
+4. The interface traits (`ProcessController`, `Process`, `ProcessInfo`) on a wrapper that owns
+   the kernel, its system and its executor (For the owner, first run), then part 3's checks.
+5. The measurements after each step (scratch ka2/waitcost.sh), against the before run below.
 
 KA, after its first run:
 1. Part 2, in steps that each keep the suite as it is: the kernel generic over `S: System` (the
