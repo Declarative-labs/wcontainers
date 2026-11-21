@@ -4626,9 +4626,32 @@ name = "wcontainers-raw-sockets-conformance"
 version = "0.1.0"
 dependencies = [
  "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable-conformance",
+ "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
+ "wcontainers-raw-sockets",
+ "wcontainers-route-resolver-conformance",
+]
+
+[[package]]
+name = "wcontainers-raw-sockets-linux-host"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
  "wcontainers-raw-sockets",
+ "wcontainers-raw-sockets-conformance",
 ]
 
 [[package]]

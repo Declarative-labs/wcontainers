@@ -8,7 +8,19 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
-wcontainers-raw-sockets = { path = ".." }
+wcontainers-abi.workspace = true
+wcontainers-configurable-conformance = { path = "../../configurable/conformance" }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
-wcontainers-kernel = { path = "../../kernel" }
+wcontainers-raw-sockets = { path = ".." }
 etherparse.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The packet capture, address and network tools of the ICMP and route resolver suites.
+wcontainers-icmp-sockets-conformance = { path = "../../icmp-sockets/conformance" }
+wcontainers-route-resolver-conformance = { path = "../../route-resolver/conformance" }
+# The errno values of Linux.
+libc = "0.2.191"
+# The routing header type of Linux.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+# The network namespaces of a check, raw ICMP sockets and the monotonic clock.
+rustix = { version = "1.1.6", features = ["fs", "net", "thread", "time"] }

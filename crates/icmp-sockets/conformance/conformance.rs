@@ -52,33 +52,39 @@ pub fn enter_network_namespace() {
 
 const LOOPBACK_UP: &str = "link set lo up";
 pub const PING_GROUP_RANGE: &str = "/proc/sys/net/ipv4/ping_group_range";
-const ECHO_IGNORE_BROADCASTS: &str = "/proc/sys/net/ipv4/icmp_echo_ignore_broadcasts";
+pub const ECHO_IGNORE_BROADCASTS: &str = "/proc/sys/net/ipv4/icmp_echo_ignore_broadcasts";
 /// The anycast addresses of this thread's network namespace.
-const ANYCAST_LIST: &str = "/proc/thread-self/net/anycast6";
-const TRAFFIC_CONTROL: &str = "tc";
+pub const ANYCAST_LIST: &str = "/proc/thread-self/net/anycast6";
+pub const TRAFFIC_CONTROL: &str = "tc";
 const STATISTICS: &str = "-s";
 const JSON: &str = "-j";
-const SHOW_CLASSES: [&str; 5] = [STATISTICS, JSON, "class", "show", "dev"];
-const SHOW_GROUPS: [&str; 3] = ["maddr", "show", "dev"];
+pub const SHOW_CLASSES: [&str; 5] = [STATISTICS, JSON, "class", "show", "dev"];
+pub const SHOW_GROUPS: [&str; 3] = ["maddr", "show", "dev"];
 /// The third band of a prio queue, which its default map gives `TC_PRIO_FILLER` alone.
-const THIRD_BAND: &str = "\"handle\":\"1:3\"";
-const PRIO_QUEUE: &str = "qdisc add dev ia root handle 1: prio";
+pub const THIRD_BAND: &str = "\"handle\":\"1:3\"";
+/// The gateways of the dummy link, as neighbours last confirmed long ago; the link resolves neighbours so that IPv6 confirms them.
+pub const STALE_GATEWAYS: &str = "link set ia arp on
+neigh add 10.3.0.2 lladdr 02:00:00:00:00:02 dev ia nud stale
+neigh add fd03::2 lladdr 02:00:00:00:00:02 dev ia nud stale";
+/// `TC_PRIO_FILLER`, which the prio queue's default map puts in its third band, 1:3, where nothing else goes.
+pub const FILLER: u32 = 1;
+pub const PRIO_QUEUE: &str = "qdisc add dev ia root handle 1: prio";
 /// A queue that paces each flow and keeps departure times.
-const FAIR_QUEUE: &str = "qdisc add dev lo root fq";
-const SELF_LINK: &str = "lo";
-const MARK: PacketMark = PacketMark(7);
-const MARK_PROHIBITED: &str = "rule add fwmark 7 prohibit";
-const OWNER_PROHIBITED: &str = "rule add uidrange 1000-1000 prohibit";
+pub const FAIR_QUEUE: &str = "qdisc add dev lo root fq";
+pub const SELF_LINK: &str = "lo";
+pub const MARK: PacketMark = PacketMark(7);
+pub const MARK_PROHIBITED: &str = "rule add fwmark 7 prohibit";
+pub const OWNER_PROHIBITED: &str = "rule add uidrange 1000-1000 prohibit";
 /// Type 8 code 0, where the flow keeps a destination port.
 const ECHO_PROHIBITED: &str = "rule add ipproto icmp dport 2048 prohibit";
 /// Type 128 code 0, where the flow keeps a destination port.
 const ECHO_PROHIBITED_V6: &str = "rule add ipproto ipv6-icmp dport 32768 prohibit";
 /// A code an echo request does not carry.
 const OTHER_CODE: IcmpCode = IcmpCode(1);
-const TIME_TO_LIVE: HopLimit = HopLimit(7);
-const HOP_LIMIT: HopLimit = HopLimit(9);
-const FLOW_LABEL: u32 = 0x5a5a5;
-const REPORT_KEY: TransmitReportKey = TransmitReportKey(0x5eed);
+pub const TIME_TO_LIVE: HopLimit = HopLimit(7);
+pub const HOP_LIMIT: HopLimit = HopLimit(9);
+pub const FLOW_LABEL: u32 = 0x5a5a5;
+pub const REPORT_KEY: TransmitReportKey = TransmitReportKey(0x5eed);
 /// An echo message longer than the links of the checks that fragment.
 const LONG_MESSAGE: usize = 1400;
 /// The length of each paced message, and the rate a send buffer fills at.
@@ -89,30 +95,30 @@ const ATTEMPTS: usize = 64;
 /// Where an echo message keeps its identifier, after its type, code and checksum.
 const IDENTIFIER_BYTES: core::ops::Range<usize> = 4..6;
 /// Where an ICMP message keeps its checksum.
-const CHECKSUM_BYTES: core::ops::Range<usize> = 2..4;
-const ROOT: UserId = UserId(0);
-const OTHER_USER: UserId = UserId(1000);
-const DUMMY: &str = "ia";
+pub const CHECKSUM_BYTES: core::ops::Range<usize> = 2..4;
+pub const ROOT: UserId = UserId(0);
+pub const OTHER_USER: UserId = UserId(1000);
+pub const DUMMY: &str = "ia";
 /// A dummy link with an IPv4 and an IPv6 prefix, a gateway on each and routes through it to far networks.
-const NETWORK: &str = "link add ia type dummy
+pub const NETWORK: &str = "link add ia type dummy
 link set ia multicast on
 link set ia up
 address add 10.3.0.1/24 broadcast 10.3.0.255 dev ia
 address add fd03::1/64 dev ia nodad
 route add 10.9.0.0/16 via 10.3.0.2
 route add fd09::/64 via fd03::2";
-const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 7);
-const ON_LINK_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 7);
-const LOCAL: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 1);
-const LOCAL_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 1);
-const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 2);
-const GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 2);
-const BROADCAST: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 255);
-const FAR: Ipv4Addr = Ipv4Addr::new(10, 9, 1, 1);
-const FAR_V6: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1);
-const NOWHERE: Ipv4Addr = Ipv4Addr::new(10, 8, 0, 1);
-const NOWHERE_V6: Ipv6Addr = Ipv6Addr::new(0xfd08, 0, 0, 0, 0, 0, 0, 1);
-const PAYLOAD: &[u8] = b"wcontainers echo";
+pub const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 7);
+pub const ON_LINK_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 7);
+pub const LOCAL: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 1);
+pub const LOCAL_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 1);
+pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 2);
+pub const GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 2);
+pub const BROADCAST: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 255);
+pub const FAR: Ipv4Addr = Ipv4Addr::new(10, 9, 1, 1);
+pub const FAR_V6: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1);
+pub const NOWHERE: Ipv4Addr = Ipv4Addr::new(10, 8, 0, 1);
+pub const NOWHERE_V6: Ipv6Addr = Ipv6Addr::new(0xfd08, 0, 0, 0, 0, 0, 0, 1);
+pub const PAYLOAD: &[u8] = b"wcontainers echo";
 const IDENTIFIER: EchoIdentifier = EchoIdentifier(NonZeroU16::new(0x4a21).unwrap());
 /// Another identifier, for a socket of the other version: Linux keeps one table of identifiers for both, and a
 /// closed socket's identifier stays taken while a child that another test thread forks still holds its descriptor.
@@ -126,22 +132,22 @@ fn identifier(version: IpVersion) -> EchoIdentifier {
 }
 const SEQUENCE: u16 = 0x0102;
 /// How long a check waits for a packet that should come.
-const PATIENCE: Duration = Duration::from_secs(2);
+pub const PATIENCE: Duration = Duration::from_secs(2);
 /// How long a check waits to be sure that a packet does not come.
-const QUIET: Duration = Duration::from_millis(200);
+pub const QUIET: Duration = Duration::from_millis(200);
 /// The bytes of an ICMP header, as Linux reads one from an echo socket's message.
 const ICMP_HEADER: usize = 8;
 static NO_OPTIONS: std::sync::LazyLock<Ipv4Options> = std::sync::LazyLock::new(Ipv4Options::new);
 
-fn ip(commands: &str) {
+pub fn ip(commands: &str) {
     batch(IP, &[], commands);
 }
 
-fn ip6(commands: &str) {
+pub fn ip6(commands: &str) {
     batch(IP, IPV6, commands);
 }
 
-fn tc(commands: &str) {
+pub fn tc(commands: &str) {
     batch(TRAFFIC_CONTROL, &[], commands);
 }
 
@@ -165,7 +171,7 @@ fn batch(tool: &str, options: &[&str], commands: &str) {
     );
 }
 
-fn output(tool: &str, arguments: &[&str]) -> String {
+pub fn output(tool: &str, arguments: &[&str]) -> String {
     let output = Command::new(tool)
         .args(arguments)
         .output()
@@ -173,11 +179,11 @@ fn output(tool: &str, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("the tool writes text")
 }
 
-fn write_setting(path: &str, value: &str) {
+pub fn write_setting(path: &str, value: &str) {
     std::fs::write(path, value).unwrap_or_else(|error| panic!("{path}: {error}"));
 }
 
-fn index(name: &str) -> InterfaceIndex {
+pub fn index(name: &str) -> InterfaceIndex {
     let socket = rustix::net::socket(
         rustix::net::AddressFamily::INET,
         rustix::net::SocketType::DGRAM,
@@ -281,7 +287,7 @@ fn header_to(destination: IpAddr, message: &[u8]) -> IpHeaderFields<'static> {
     }
 }
 
-fn no_reports() -> TransmitReportRequest {
+pub fn no_reports() -> TransmitReportRequest {
     TransmitReportRequest {
         key: TransmitReportKey(u32::MIN),
         scheduled: Report::NotRequested,
@@ -294,7 +300,7 @@ fn no_reports() -> TransmitReportRequest {
     }
 }
 
-fn plain_fields() -> IpSendFields {
+pub fn plain_fields() -> IpSendFields {
     IpSendFields {
         neighbour: NeighbourConfirmation::Unconfirmed,
         priority: PacketPriority(u32::MIN),
@@ -303,7 +309,7 @@ fn plain_fields() -> IpSendFields {
     }
 }
 
-fn version_of(address: IpAddr) -> IpVersion {
+pub fn version_of(address: IpAddr) -> IpVersion {
     match address {
         IpAddr::V4(_) => IpVersion::V4,
         IpAddr::V6(_) => IpVersion::V6,
@@ -331,7 +337,7 @@ fn ping<S: IcmpSockets>(
     sockets.send_to(socket, header_to(to, &message), plain_fields(), &message)
 }
 
-fn buffer() -> Vec<u8> {
+pub fn buffer() -> Vec<u8> {
     vec![u8::MIN; usize::from(u16::MAX)]
 }
 
@@ -366,15 +372,15 @@ fn nothing_arrives<S: IcmpSockets>(sockets: &S, socket: &S::Socket) -> bool {
 }
 
 /// An IP packet's version, source, destination, upper-layer protocol and the bytes after its headers.
-struct Seen<'a> {
-    source: IpAddr,
-    destination: IpAddr,
-    protocol: IpNumber,
-    payload: &'a [u8],
-    extensions: Vec<(IpNumber, &'a [u8])>,
+pub struct Seen<'a> {
+    pub source: IpAddr,
+    pub destination: IpAddr,
+    pub protocol: IpNumber,
+    pub payload: &'a [u8],
+    pub extensions: Vec<(IpNumber, &'a [u8])>,
 }
 
-fn seen(packet: &[u8]) -> Seen<'_> {
+pub fn seen(packet: &[u8]) -> Seen<'_> {
     if let Ok(header) = Ipv4HeaderSlice::from_slice(packet) {
         return Seen {
             source: IpAddr::V4(header.source_addr()),
@@ -417,10 +423,10 @@ fn seen(packet: &[u8]) -> Seen<'_> {
 }
 
 /// A packet socket that sees every packet leaving one link of the namespace, from the moment it is made.
-struct Capture(OwnedFd);
+pub struct Capture(OwnedFd);
 
 impl Capture {
-    fn on(link: &str) -> Self {
+    pub fn on(link: &str) -> Self {
         let all = (libc::ETH_P_ALL as u16).to_be();
         // SAFETY: socket makes a new descriptor, owned below.
         let fd = unsafe {
@@ -451,7 +457,7 @@ impl Capture {
     }
 
     /// The next packet leaving the link that `wanted` takes, if one leaves within the time given.
-    fn within(&self, time: Duration, wanted: impl Fn(&[u8]) -> bool) -> Option<Vec<u8>> {
+    pub fn within(&self, time: Duration, wanted: impl Fn(&[u8]) -> bool) -> Option<Vec<u8>> {
         let start = Instant::now();
         let mut packet = buffer();
         while start.elapsed() < time {
@@ -481,12 +487,12 @@ impl Capture {
         None
     }
 
-    fn next(&self, wanted: impl Fn(&[u8]) -> bool) -> Vec<u8> {
+    pub fn next(&self, wanted: impl Fn(&[u8]) -> bool) -> Vec<u8> {
         self.within(PATIENCE, wanted)
             .expect("the packet leaves the link")
     }
 
-    fn echo_request(&self) -> Vec<u8> {
+    pub fn echo_request(&self) -> Vec<u8> {
         self.next(is_echo_request)
     }
 }
@@ -500,11 +506,11 @@ fn is_echo_request(packet: &[u8]) -> bool {
     )
 }
 
-fn ipv4(packet: &[u8]) -> Ipv4HeaderSlice<'_> {
+pub fn ipv4(packet: &[u8]) -> Ipv4HeaderSlice<'_> {
     Ipv4HeaderSlice::from_slice(packet).expect("an IPv4 packet")
 }
 
-fn ipv6(packet: &[u8]) -> Ipv6HeaderSlice<'_> {
+pub fn ipv6(packet: &[u8]) -> Ipv6HeaderSlice<'_> {
     Ipv6HeaderSlice::from_slice(packet).expect("an IPv6 packet")
 }
 
@@ -524,7 +530,7 @@ fn unless_refused<T>(result: Result<T, SendError>, check: impl FnOnce(Result<T, 
     }
 }
 
-fn checks_out(message: &[u8], seen: &Seen<'_>) -> bool {
+pub fn checks_out(message: &[u8], seen: &Seen<'_>) -> bool {
     match (seen.source, seen.destination) {
         (IpAddr::V6(source), IpAddr::V6(destination)) => {
             etherparse::checksum::Sum16BitWords::new()
@@ -1183,9 +1189,6 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
 /// A confirmed send confirms its next hop's neighbour entry, or is refused.
 pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
-    const STALE_GATEWAYS: &str = "link set ia arp on
-neigh add 10.3.0.2 lladdr 02:00:00:00:00:02 dev ia nud stale
-neigh add fd03::2 lladdr 02:00:00:00:00:02 dev ia nud stale";
     ip(STALE_GATEWAYS);
     for (to, gateway) in [
         (IpAddr::V4(FAR), IpAddr::V4(GATEWAY)),
@@ -1212,8 +1215,6 @@ neigh add fd03::2 lladdr 02:00:00:00:00:02 dev ia nud stale";
 pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
     tc(PRIO_QUEUE);
-    /// `TC_PRIO_FILLER`, which the prio queue's default map puts in its third band, 1:3, where nothing else goes.
-    const FILLER: u32 = 1;
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let socket = opened(&sockets, version_of(to));
         let message = echo(version_of(to), PAYLOAD);
