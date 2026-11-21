@@ -10,6 +10,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
+use linux_raw_sys::net::{IPV6_SRCRT_TYPE_0, IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, Ipv4RouteSelectors,
@@ -271,6 +272,55 @@ route add fd08::/64 via fd01::2 mtu 1290 hoplimit 10";
     assert_eq!(route.default_hop_limit, ROUTE_HOP_LIMIT_V6);
 }
 
+/// A route whose MTU is locked with no value takes the device's MTU, capped through a gateway at the size every IPv4 host reassembles.
+pub fn locked_mtu_without_value_uses_the_device_mtu<R: RouteResolver>(resolver: R) {
+    /// [RFC 791, section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1).
+    const MINIMUM_REASSEMBLY: MaximumTransmissionUnit = MaximumTransmissionUnit(576);
+    const THROUGH_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 7, 0, 1);
+    const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 6, 0, 1);
+    network();
+    const ROUTES: &str = "route add 10.7.0.0/16 via 10.1.0.2 mtu lock 0
+route add 10.6.0.0/16 dev da mtu lock 0";
+    ip(IPV4, ROUTES);
+    let options = Ipv4Options::new();
+    for (destination, path_mtu) in [
+        (THROUGH_GATEWAY, MINIMUM_REASSEMBLY),
+        (ON_LINK, MaximumTransmissionUnit(A_MTU)),
+    ] {
+        let route = resolve4(&resolver, v4(&options, destination)).expect("resolves");
+        assert_eq!(route.path_mtu, path_mtu, "{destination}");
+        assert_eq!(route.device_mtu, MaximumTransmissionUnit(A_MTU));
+    }
+}
+
+/// An encapsulating route's path MTU is what a socket connected through it is told, if the resolver answers.
+pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolver: R) {
+    const DESTINATION: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 1);
+    /// The discard port ([RFC 863](https://www.rfc-editor.org/rfc/rfc863)); connecting sends nothing.
+    const DISCARD: u16 = 9;
+    network();
+    const ROUTE: &str = "route add fd05::/64 encap seg6 mode encap segs fd01::7 dev da";
+    ip(IPV6, ROUTE);
+    let socket = rustix::net::socket(
+        rustix::net::AddressFamily::INET6,
+        rustix::net::SocketType::DGRAM,
+        None,
+    )
+    .expect("a socket opens");
+    rustix::net::connect(
+        &socket,
+        &core::net::SocketAddrV6::new(DESTINATION, DISCARD, 0, 0),
+    )
+    .expect("connects");
+    let told = rustix::net::sockopt::ipv6_mtu(&socket).expect("a connected socket's path MTU");
+    unless_refused(resolve6(&resolver, v6(DESTINATION)), |route| {
+        assert_eq!(
+            route.expect("resolves").path_mtu,
+            MaximumTransmissionUnit(told)
+        );
+    });
+}
+
 /// No route, a prohibited, a blackholed and an unreachable one fail with the kernel's errors.
 pub fn failing_routes_give_their_errors<R: RouteResolver>(resolver: R) {
     const UNROUTED: Ipv4Addr = Ipv4Addr::new(10, 200, 0, 1);
@@ -472,46 +522,87 @@ pub fn protocol_and_ports_select_the_route<R: RouteResolver>(resolver: R) {
     }
 }
 
+/// A rule on the source port sends only lookups from that port to the other table.
+pub fn source_port_selects_the_route<R: RouteResolver>(resolver: R) {
+    const SOURCE_PORT: u16 = 40000;
+    const OTHER: u16 = 40001;
+    const DESTINATION_PORT: Port = Port(53);
+    let network = network();
+    const RULE: &str = "rule add ipproto udp sport 40000 lookup 100";
+    ip(IPV4, RULE);
+    ip(IPV6, RULE);
+    let options = Ipv4Options::new();
+    for (port, expected) in [(SOURCE_PORT, network.b), (OTHER, network.a)] {
+        let upper_layer = UpperLayer {
+            protocol: IpNumber::UDP,
+            selector: Some(UpperLayerSelector::Ports(TransportPorts {
+                source: Port(port),
+                destination: DESTINATION_PORT,
+            })),
+        };
+        let route = Ipv4RouteSelectors {
+            upper_layer,
+            ..v4(&options, FAR)
+        };
+        assert_eq!(interface(resolve4(&resolver, route)), expected, "{port}");
+        let route = Ipv6RouteSelectors {
+            upper_layer,
+            ..v6(FAR_V6)
+        };
+        assert_eq!(interface(resolve6(&resolver, route)), expected, "{port}");
+    }
+}
+
 /// The kernel's flow keeps an ICMP type and code where a destination port is, so a port rule selects on them.
 pub fn icmp_type_and_code_select_the_route<R: RouteResolver>(resolver: R) {
     const ECHO_REQUEST: u8 = 8;
-    const ECHO_REPLY: u8 = 0;
     const ECHO_REQUEST_V6: u8 = 128;
-    const ECHO_REPLY_V6: u8 = 129;
-    const CODE: IcmpCode = IcmpCode(0);
+    /// A code an echo request does not carry, so that the rule matches the code too.
+    const CODE: u8 = 3;
     let network = network();
-    const RULE: &str = "rule add ipproto icmp dport 2048 lookup 100";
-    const RULE_V6: &str = "rule add ipproto ipv6-icmp dport 32768 lookup 100";
+    /// Type 8 and code 3, and type 128 and code 3, as the port the flow keeps them in.
+    const RULE: &str = "rule add ipproto icmp dport 2051 lookup 100";
+    const RULE_V6: &str = "rule add ipproto ipv6-icmp dport 32771 lookup 100";
     ip(IPV4, RULE);
     ip(IPV6, RULE_V6);
     let options = Ipv4Options::new();
-    let icmp = |protocol, message_type| UpperLayer {
+    let icmp = |protocol, message_type, code| UpperLayer {
         protocol,
         selector: Some(UpperLayerSelector::Icmp {
             message_type: IcmpType(message_type),
-            code: CODE,
+            code: IcmpCode(code),
         }),
     };
-    let route = Ipv4RouteSelectors {
-        upper_layer: icmp(IpNumber::ICMP, ECHO_REQUEST),
-        ..v4(&options, FAR)
-    };
-    assert_eq!(interface(resolve4(&resolver, route)), network.b);
-    let route = Ipv4RouteSelectors {
-        upper_layer: icmp(IpNumber::ICMP, ECHO_REPLY),
-        ..v4(&options, FAR)
-    };
-    assert_eq!(interface(resolve4(&resolver, route)), network.a);
-    let route = Ipv6RouteSelectors {
-        upper_layer: icmp(IpNumber::IPV6_ICMP, ECHO_REQUEST_V6),
-        ..v6(FAR_V6)
-    };
-    assert_eq!(interface(resolve6(&resolver, route)), network.b);
-    let route = Ipv6RouteSelectors {
-        upper_layer: icmp(IpNumber::IPV6_ICMP, ECHO_REPLY_V6),
-        ..v6(FAR_V6)
-    };
-    assert_eq!(interface(resolve6(&resolver, route)), network.a);
+    for (message_type, code, expected) in [
+        (ECHO_REQUEST, CODE, network.b),
+        (ECHO_REQUEST, u8::MIN, network.a),
+        (CODE, ECHO_REQUEST, network.a),
+    ] {
+        let route = Ipv4RouteSelectors {
+            upper_layer: icmp(IpNumber::ICMP, message_type, code),
+            ..v4(&options, FAR)
+        };
+        assert_eq!(
+            interface(resolve4(&resolver, route)),
+            expected,
+            "{message_type} {code}"
+        );
+    }
+    for (message_type, code, expected) in [
+        (ECHO_REQUEST_V6, CODE, network.b),
+        (ECHO_REQUEST_V6, u8::MIN, network.a),
+        (CODE, ECHO_REQUEST_V6, network.a),
+    ] {
+        let route = Ipv6RouteSelectors {
+            upper_layer: icmp(IpNumber::IPV6_ICMP, message_type, code),
+            ..v6(FAR_V6)
+        };
+        assert_eq!(
+            interface(resolve6(&resolver, route)),
+            expected,
+            "{message_type} {code}"
+        );
+    }
 }
 
 /// A rule on the flow label sends only lookups with that label to the other table.
@@ -600,6 +691,16 @@ pub fn required_source_check_refuses_a_foreign_address<R: RouteResolver>(resolve
 /// A waived source check routes from a source the namespace does not have, keeping it as the source.
 pub fn waived_source_check_takes_a_foreign_address<R: RouteResolver>(resolver: R) {
     let network = network();
+    for nonlocal_bind in [false, true] {
+        write_setting(NONLOCAL_BIND, u8::from(nonlocal_bind));
+        waived_source_check(&resolver, &network);
+    }
+}
+
+/// Lets `bind` take an address the namespace lacks, which waives no route lookup's source check.
+const NONLOCAL_BIND: &str = "/proc/sys/net/ipv4/ip_nonlocal_bind";
+
+fn waived_source_check<R: RouteResolver>(resolver: &R, network: &Network) {
     let options = Ipv4Options::new();
     let source = A_FOREIGN;
     let foreign = Ipv4RouteSelectors {
@@ -607,7 +708,7 @@ pub fn waived_source_check_takes_a_foreign_address<R: RouteResolver>(resolver: R
         source_address_check: SourceAddressCheck::Waived,
         ..v4(&options, FAR)
     };
-    unless_refused(resolve4(&resolver, foreign), |route| {
+    unless_refused(resolve4(resolver, foreign), |route| {
         let route = route.expect("resolves");
         assert_eq!(
             (route.interface, route.source),
@@ -620,7 +721,7 @@ pub fn waived_source_check_takes_a_foreign_address<R: RouteResolver>(resolver: R
         source_address_check: SourceAddressCheck::Waived,
         ..v6(FAR_V6)
     };
-    unless_refused(resolve6(&resolver, foreign), |route| {
+    unless_refused(resolve6(resolver, foreign), |route| {
         let route = route.expect("resolves");
         assert_eq!(
             (route.interface, route.source),
@@ -652,21 +753,54 @@ pub fn loose_source_route_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// An IPv6 routing header is looked up to its first segment.
-pub fn routing_header_goes_to_its_first_segment<R: RouteResolver>(resolver: R) {
+/// A type 2 header is looked up to its address and a type 4 one to its next segment; a type 0 one is refused as `IPV6_RTHDR` refuses it.
+pub fn routing_header_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     let network = network();
-    /// A type 0 routing header's start: no next header, a length of two eights after the first, one segment left, and reserved bytes.
-    const START: [u8; 8] = [IpNumber::IPV6_NO_NEXT_HEADER.0, 2, 0, 1, 0, 0, 0, 0];
-    let mut header = START.to_vec();
-    header.extend_from_slice(&B_GATEWAY_V6.octets());
-    let routing_header = Ipv6RawExtHeaderSlice::from_slice(&header).expect("a routing header");
+    let header =
+        |kind: u32, length: u8, segments_left: u8, last_entry: u8, addresses: &[Ipv6Addr]| {
+            let kind = u8::try_from(kind).expect("a routing type");
+            let mut header = vec![
+                IpNumber::IPV6_NO_NEXT_HEADER.0,
+                length,
+                kind,
+                segments_left,
+                last_entry,
+                0,
+                0,
+                0,
+            ];
+            for address in addresses {
+                header.extend_from_slice(&address.octets());
+            }
+            header
+        };
+    // The header's length in eight-byte units after the first eight, for this many addresses.
+    let length = |addresses: u8| addresses * 2;
+    let home = header(IPV6_SRCRT_TYPE_2, length(1), 1, 0, &[B_GATEWAY_V6]);
+    let segments = header(IPV6_SRCRT_TYPE_4, length(2), 1, 1, &[FAR_V6, B_GATEWAY_V6]);
+    for header in [home, segments] {
+        let routing_header = Ipv6RawExtHeaderSlice::from_slice(&header).expect("a routing header");
+        let route = Ipv6RouteSelectors {
+            routing_header: Some(routing_header),
+            ..v6(FAR_V6)
+        };
+        let route = resolve6(&resolver, route).expect("resolves");
+        assert_eq!(
+            (route.interface, route.source),
+            (network.b, IpAddr::V6(B_ADDRESS_V6)),
+            "{header:?}"
+        );
+    }
+    let deprecated = header(IPV6_SRCRT_TYPE_0, length(1), 1, 0, &[B_GATEWAY_V6]);
+    let routing_header = Ipv6RawExtHeaderSlice::from_slice(&deprecated).expect("a routing header");
     let route = Ipv6RouteSelectors {
         routing_header: Some(routing_header),
         ..v6(FAR_V6)
     };
-    unless_refused(resolve6(&resolver, route), |route| {
-        assert_eq!(interface(route), network.b);
-    });
+    assert_eq!(
+        resolve6(&resolver, route),
+        Err(HostError::Errno(libc::EINVAL))
+    );
 }
 
 /// A link-scope lookup takes a route on the link and refuses one through a gateway.
@@ -689,17 +823,54 @@ pub fn link_scope_takes_only_routes_on_the_link<R: RouteResolver>(resolver: R) {
     });
 }
 
-/// A confirmed neighbour changes nothing about the route.
-pub fn confirmed_neighbour_keeps_the_route<R: RouteResolver>(resolver: R) {
+/// A confirmed lookup confirms the next hop's neighbour entry and an unconfirmed one does not, the route the same either way.
+pub fn confirmed_neighbour_is_confirmed<R: RouteResolver>(resolver: R) {
+    /// The gateways of `FAR` on da, as neighbours last confirmed long ago; da resolves neighbours so that IPv6 confirms them.
+    const NEIGHBOURS: &str = "link set da arp on
+neigh add 10.1.0.2 lladdr 02:00:00:00:00:02 dev da nud stale
+neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
+    const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 2);
+    const GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 2);
     network();
+    ip(IPV4, NEIGHBOURS);
     let options = Ipv4Options::new();
-    let unconfirmed = resolve4(&resolver, v4(&options, FAR));
-    let confirmed = resolver.resolve_route(
-        RouteSelectors::V4(v4(&options, FAR)),
-        ROOT,
-        NeighbourConfirmation::Confirmed,
-    );
-    unless_refused(confirmed, |confirmed| assert_eq!(confirmed, unconfirmed));
+    let lookups = [
+        (RouteSelectors::V4(v4(&options, FAR)), IpAddr::V4(GATEWAY)),
+        (RouteSelectors::V6(v6(FAR_V6)), IpAddr::V6(GATEWAY_V6)),
+    ];
+    for (route, gateway) in lookups {
+        let unconfirmed =
+            resolver.resolve_route(route.clone(), ROOT, NeighbourConfirmation::Unconfirmed);
+        let age = seconds_since_confirmed(gateway);
+        assert!(age > 0, "{gateway} was confirmed {age} seconds ago");
+        let confirmed = resolver.resolve_route(route, ROOT, NeighbourConfirmation::Confirmed);
+        assert_eq!(confirmed, unconfirmed);
+        assert_eq!(seconds_since_confirmed(gateway), 0, "{gateway}");
+    }
+}
+
+/// How long ago the neighbour entry of da for the address was confirmed, in whole seconds.
+fn seconds_since_confirmed(address: IpAddr) -> u64 {
+    const FIELD: &str = "\"confirmed\":";
+    /// Shows the neighbour entries with their times, as JSON.
+    const SHOW: [&str; 4] = ["-s", "-j", "neigh", "show"];
+    const DEVICE: [&str; 2] = ["dev", A];
+    let output = Command::new(IP)
+        .args(SHOW)
+        .arg(address.to_string())
+        .args(DEVICE)
+        .output()
+        .expect("ip runs");
+    let text = String::from_utf8(output.stdout).expect("ip writes text");
+    let start = text
+        .find(FIELD)
+        .unwrap_or_else(|| panic!("no neighbour entry: {text}"))
+        + FIELD.len();
+    let digits: String = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().unwrap_or_else(|_| panic!("{text}"))
 }
 
 /// Source preferences choose among the link's addresses, here only one.
@@ -753,6 +924,8 @@ macro_rules! tests {
             ipv4_route_gives_link_source_and_sizes,
             ipv6_route_gives_link_source_and_sizes,
             route_metrics_give_path_mtu_and_hop_limit,
+            locked_mtu_without_value_uses_the_device_mtu,
+            encapsulating_route_leaves_room_for_its_headers,
             failing_routes_give_their_errors,
             mark_selects_the_route,
             owner_selects_the_route,
@@ -760,6 +933,7 @@ macro_rules! tests {
             source_selects_the_route,
             interface_selects_the_route,
             protocol_and_ports_select_the_route,
+            source_port_selects_the_route,
             icmp_type_and_code_select_the_route,
             flow_label_selects_the_route,
             broadcast_needs_permission,
@@ -767,9 +941,9 @@ macro_rules! tests {
             required_source_check_refuses_a_foreign_address,
             waived_source_check_takes_a_foreign_address,
             loose_source_route_goes_to_its_first_hop,
-            routing_header_goes_to_its_first_segment,
+            routing_header_goes_to_its_first_hop,
             link_scope_takes_only_routes_on_the_link,
-            confirmed_neighbour_keeps_the_route,
+            confirmed_neighbour_is_confirmed,
             source_preferences_choose_among_the_link_addresses,
             other_protocols_route,
         );

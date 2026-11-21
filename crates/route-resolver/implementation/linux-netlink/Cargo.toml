@@ -18,10 +18,11 @@ wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-route-resolver = { path = "../.." }
 etherparse.workspace = true
 libc = "0.2.191"
-log = "0.4.35"
-socket2 = "0.6.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "netlink", "no_std"] }
+rustix = { version = "1.1.6", features = ["net"] }
 netlink-packet-core = "0.9.0"
 netlink-packet-route = "0.34.0"
 netlink-sys = { version = "0.9.0", default-features = false }

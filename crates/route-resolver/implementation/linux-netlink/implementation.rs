@@ -1,26 +1,36 @@
 #![cfg(target_os = "linux")]
 
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use core::mem::offset_of;
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::io;
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use etherparse::{IpDscp, IpEcn, Ipv4Options};
+use etherparse::{IpDscp, IpEcn, Ipv4Options, Ipv6RawExtHeaderSlice};
+use linux_raw_sys::net as uapi;
+use linux_raw_sys::net::{
+    IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
+};
+use linux_raw_sys::netlink::RTAX_MTU;
 use netlink_packet_core::{NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload};
 use netlink_packet_route::link::{AfSpecInet6, AfSpecUnspec, LinkAttribute, LinkMessage};
 use netlink_packet_route::route::{
-    RouteAddress, RouteAttribute, RouteMessage, RouteMetric, RouteType,
+    RouteAddress, RouteAttribute, RouteMessage, RouteMetric, RouteType, RouteVia,
 };
 use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
 use netlink_sys::protocols::NETLINK_ROUTE;
-use netlink_sys::{Socket, SocketAddr};
-use socket2::{Domain, SockAddr, Type};
+use netlink_sys::{Socket, SocketAddr as NetlinkAddress};
+use rustix::io::Errno;
+use rustix::net::{SendFlags, SocketType};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_internet_protocol::{
-    BroadcastPermission, HopLimit, InterfaceIndex, Ipv4RouteSelectors, Ipv6RouteSelectors,
-    MaximumTransmissionUnit, MobileAddressPreference, NeighbourConfirmation, Route, RouteKind,
-    RouteScope, RouteSelectors, SourceAddressCheck, SourcePreferences, TemporaryAddressPreference,
-    UpperLayer, UpperLayerSelector,
+    BroadcastPermission, HopLimit, InterfaceIndex, IpPacketSetting, IpVersion, Ipv4RouteSelectors,
+    Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, NeighbourConfirmation,
+    Route, RouteKind, RouteScope, RouteSelectors, SourceAddressCheck, SourcePreferences,
+    TemporaryAddressPreference, UpperLayer, UpperLayerSelector,
+};
+use wcontainers_internet_protocol_linux_socket_options::{
+    Shortfalls, host_error, set_option, set_packet_setting,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
@@ -29,8 +39,8 @@ use wcontainers_route_resolver::RouteResolver;
 pub struct LinuxNetlinkRouteResolver {
     routing: Mutex<RoutingSocket>,
     /// A socket whose `IP_TTL` was never set, so that reading it gives the namespace's default.
-    unset_hop_limit: socket2::Socket,
-    refusals: [AtomicU64; REFUSALS.len()],
+    unset_hop_limit: OwnedFd,
+    shortfalls: Shortfalls,
 }
 
 struct RoutingSocket {
@@ -38,43 +48,12 @@ struct RoutingSocket {
     sequence: u32,
 }
 
-#[derive(Clone, Copy)]
-enum Refusal {
-    LinkScope,
-    WaivedSourceCheck,
-    SourcePreferences,
-    RoutingHeader,
-    NeighbourConfirmation,
-    UpperLayerProtocol,
-    RouteKind,
-}
-
-const REFUSALS: [Refusal; 7] = [
-    Refusal::LinkScope,
-    Refusal::WaivedSourceCheck,
-    Refusal::SourcePreferences,
-    Refusal::RoutingHeader,
-    Refusal::NeighbourConfirmation,
-    Refusal::UpperLayerProtocol,
-    Refusal::RouteKind,
-];
-
-/// The reason of each refusal, in the order of `REFUSALS`.
-const REASONS: [&str; REFUSALS.len()] = [
-    "link-scope route lookup the routing socket cannot ask for",
-    "waived source check for an IPv4 address the host lacks",
-    "IPv6 source preferences other than the system's default",
-    "IPv6 routing header",
-    "neighbour confirmation in a lookup that sends nothing",
-    "upper-layer protocol the routing socket does not take",
-    "route kind the contract has no name for",
-];
-
-impl Refusal {
-    fn reason(self) -> &'static str {
-        REASONS[self as usize]
-    }
-}
+const LINK_SCOPE: &str = "route lookup: a link-scope IPv4 lookup the routing socket cannot ask for";
+const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IPv4 address the host lacks, which the routing socket always checks";
+const SOURCE_PREFERENCES: &str = "route lookup: IPv6 source preferences other than the default, which the routing socket cannot take";
+const UPPER_LAYER_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take (it takes TCP, UDP, ICMP and ICMPv6)";
+const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
+const ENCAPSULATION: &str = "route lookup: the path MTU of an encapsulating route, less a headroom the routing socket does not give";
 
 const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
     temporary: TemporaryAddressPreference::SystemDefault,
@@ -84,61 +63,62 @@ const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
 /// The port number that asks `bind` for any port.
 const ANY_PORT: u16 = 0;
 
+/// The destination port of a neighbour confirmation, which sends nothing but needs a port.
+const CONFIRMATION_PORT: u16 = u16::MAX;
+
 /// The netlink port number and multicast groups of the kernel.
 const KERNEL: (u32, u32) = (0, 0);
+
+/// The size every IPv4 host must reassemble ([RFC 791](https://www.rfc-editor.org/rfc/rfc791#section-3.1)),
+/// which the kernel takes as the path MTU of a gateway route whose MTU is locked with no value.
+const MINIMUM_REASSEMBLY: u32 = 576;
+
+/// Where a type 2 routing header's address and a type 4 one's segments start, after the same eight bytes
+/// ([RFC 6275](https://www.rfc-editor.org/rfc/rfc6275#section-6.4), [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754#section-2)).
+const ROUTING_ADDRESSES: usize = offset_of!(rt0_hdr, addr);
 
 impl LinuxNetlinkRouteResolver {
     /// Opens a resolver for the calling thread's network namespace.
     pub fn open() -> Result<Self, HostError> {
-        let mut socket = Socket::new(NETLINK_ROUTE).map_err(host_error)?;
-        socket.bind_auto().map_err(host_error)?;
+        let mut socket = Socket::new(NETLINK_ROUTE).map_err(io_error)?;
+        socket.bind_auto().map_err(io_error)?;
         socket
-            .connect(&SocketAddr::new(KERNEL.0, KERNEL.1))
-            .map_err(host_error)?;
-        let unset_hop_limit =
-            socket2::Socket::new(Domain::IPV4, Type::DGRAM, None).map_err(host_error)?;
+            .connect(&NetlinkAddress::new(KERNEL.0, KERNEL.1))
+            .map_err(io_error)?;
         Ok(Self {
             routing: Mutex::new(RoutingSocket {
                 socket,
                 sequence: u32::MIN,
             }),
-            unset_hop_limit,
-            refusals: [const { AtomicU64::new(0) }; REFUSALS.len()],
+            unset_hop_limit: datagram_socket(IpVersion::V4)?,
+            shortfalls: Shortfalls::default(),
         })
     }
 
-    /// Returns how many lookups were refused for each reason.
-    pub fn counters(&self) -> impl Iterator<Item = CounterReading> + '_ {
-        REFUSALS.iter().map(|&refusal| CounterReading {
-            reason: refusal.reason(),
-            detail: 0,
-            count: self.refusals[refusal as usize].load(Ordering::Relaxed),
-            nanoseconds: 0,
-        })
-    }
-
-    fn refuse(&self, refusal: Refusal) -> HostError {
-        let count = self.refusals[refusal as usize].fetch_add(1, Ordering::Relaxed) + 1;
-        log::warn!(
-            "route lookup refused: {} ({count} so far)",
-            refusal.reason()
-        );
-        HostError::NotSupported
+    /// Returns how many lookups were refused, for each reason that refused one.
+    pub fn counters(&self) -> Vec<CounterReading> {
+        self.shortfalls.readings()
     }
 
     fn resolve_v4(
         &self,
         route: &Ipv4RouteSelectors<'_>,
         owner: UserId,
-    ) -> Result<Route, HostError> {
+    ) -> Result<(FoundRoute, Route), HostError> {
         if route.scope == RouteScope::Link {
-            return Err(self.refuse(Refusal::LinkScope));
+            return Err(self.shortfalls.refuse(LINK_SCOPE));
         }
         let destination = match source_route_first_hop(route.options)? {
             None => route.destination,
             Some(SourceRoute::Loose(first_hop)) => first_hop,
-            Some(SourceRoute::Strict) => return Err(self.refuse(Refusal::LinkScope)),
+            Some(SourceRoute::Strict) => return Err(self.shortfalls.refuse(LINK_SCOPE)),
         };
+        if let Some(source) = route.source
+            && route.source_address_check == SourceAddressCheck::Waived
+            && !self.is_local_v4(source)?
+        {
+            return Err(self.shortfalls.refuse(WAIVED_SOURCE_CHECK));
+        }
         let mut request = RouteMessage::default();
         request.header.address_family = AddressFamily::Inet;
         request.header.destination_prefix_length = full_prefix(Ipv4Addr::BITS);
@@ -159,53 +139,46 @@ impl LinuxNetlinkRouteResolver {
             owner,
             route.upper_layer,
         );
-        let reply = match self.exchange_route(request) {
-            Ok(reply) => reply,
-            Err(error) => {
-                return Err(match route.source {
-                    Some(source)
-                        if route.source_address_check == SourceAddressCheck::Waived
-                            && has_address(IpAddr::V4(source), route.interface).is_err() =>
-                    {
-                        self.refuse(Refusal::WaivedSourceCheck)
-                    }
-                    _ => error,
-                });
-            }
-        };
-        let found = self.found(&reply)?;
+        let found = self.found(&self.exchange_route(request)?, IpAddr::V4(destination))?;
         if found.kind == RouteKind::Broadcast && route.broadcast == BroadcastPermission::Refused {
             return Err(HostError::Errno(libc::EACCES));
         }
         let link = self.link(found.interface)?;
         let default_hop_limit = match found.hop_limit {
             Some(limit) => limit,
-            None => self.unset_hop_limit.ttl_v4().map_err(host_error)?,
+            None => rustix::net::sockopt::ip_ttl(&self.unset_hop_limit).map_err(host_error)?,
         };
-        Ok(Route {
+        let path_mtu = match found.mtu {
+            Some(mtu) => mtu,
+            None if found.mtu_locked && found.through_gateway => link.mtu.min(MINIMUM_REASSEMBLY),
+            None => link.mtu,
+        };
+        let resolved = Route {
             kind: found.kind,
             source: match route.source {
                 Some(source) => IpAddr::V4(source),
                 None => found.source.ok_or(HostError::Errno(libc::EPROTO))?,
             },
             interface: found.interface,
-            path_mtu: MaximumTransmissionUnit(found.mtu.unwrap_or(link.mtu)),
+            path_mtu: MaximumTransmissionUnit(path_mtu),
             device_mtu: MaximumTransmissionUnit(link.mtu),
             default_hop_limit: hop_limit(default_hop_limit)?,
-        })
+        };
+        Ok((found, resolved))
     }
 
     fn resolve_v6(
         &self,
         route: &Ipv6RouteSelectors<'_>,
         owner: UserId,
-    ) -> Result<Route, HostError> {
-        if route.routing_header.is_some() {
-            return Err(self.refuse(Refusal::RoutingHeader));
-        }
+    ) -> Result<(FoundRoute, Route), HostError> {
         if route.source.is_none() && route.source_preferences != DEFAULT_SOURCE_PREFERENCES {
-            return Err(self.refuse(Refusal::SourcePreferences));
+            return Err(self.shortfalls.refuse(SOURCE_PREFERENCES));
         }
+        let destination = match &route.routing_header {
+            None => route.destination,
+            Some(header) => self.routing_header_first_hop(header, route.destination)?,
+        };
         let mut request = RouteMessage::default();
         request.header.address_family = AddressFamily::Inet6;
         request.header.destination_prefix_length = full_prefix(Ipv6Addr::BITS);
@@ -213,11 +186,11 @@ impl LinuxNetlinkRouteResolver {
         request
             .attributes
             .push(RouteAttribute::Destination(RouteAddress::Inet6(
-                route.destination,
+                destination,
             )));
         if let Some(source) = route.source {
             if route.source_address_check == SourceAddressCheck::Required {
-                has_address(IpAddr::V6(source), route.interface)?;
+                has_address_v6(source, route.interface)?;
             }
             request.header.source_prefix_length = full_prefix(Ipv6Addr::BITS);
             request
@@ -234,15 +207,14 @@ impl LinuxNetlinkRouteResolver {
             owner,
             route.upper_layer,
         );
-        let reply = self.exchange_route(request)?;
-        let found = self.found(&reply)?;
+        let found = self.found(&self.exchange_route(request)?, IpAddr::V6(destination))?;
         let link = self.link(found.interface)?;
         let source = match route.source {
             Some(source) => IpAddr::V6(source),
             None => found.source.ok_or(HostError::Errno(libc::EPROTO))?,
         };
         let conf = link.ipv6.ok_or(HostError::Errno(libc::EPROTO))?;
-        Ok(Route {
+        let resolved = Route {
             kind: found.kind,
             source,
             interface: found.interface,
@@ -257,7 +229,90 @@ impl LinuxNetlinkRouteResolver {
                     u32::try_from(conf.hop_limit).map_err(|_| HostError::Errno(libc::EPROTO))?
                 }
             })?,
-        })
+        };
+        Ok((found, resolved))
+    }
+
+    /// The address a routing header sends the packet to first, once the host has accepted the header as `IPV6_RTHDR`.
+    fn routing_header_first_hop(
+        &self,
+        header: &Ipv6RawExtHeaderSlice<'_>,
+        destination: Ipv6Addr,
+    ) -> Result<Ipv6Addr, HostError> {
+        let check = datagram_socket(IpVersion::V6)?;
+        set_packet_setting(
+            check.as_fd(),
+            IpVersion::V6,
+            &IpPacketSetting::RoutingHeader(Some(header.clone())),
+            &self.shortfalls,
+        )?;
+        let bytes = header.slice();
+        let byte = |offset| {
+            bytes
+                .get(offset)
+                .copied()
+                .ok_or(HostError::Errno(libc::EINVAL))
+        };
+        let index = match u32::from(byte(offset_of!(ipv6_rt_hdr, type_))?) {
+            IPV6_SRCRT_TYPE_2 => 0,
+            IPV6_SRCRT_TYPE_4 => usize::from(byte(offset_of!(ipv6_rt_hdr, segments_left))?),
+            _ => return Ok(destination),
+        };
+        let start = ROUTING_ADDRESSES + index * size_of::<in6_addr>();
+        bytes
+            .get(start..)
+            .and_then(|addresses| addresses.first_chunk::<{ size_of::<in6_addr>() }>())
+            .map(|&octets| Ipv6Addr::from(octets))
+            .ok_or(HostError::Errno(libc::EINVAL))
+    }
+
+    /// Whether the host has the address, as the kernel's IPv4 source check asks: its own lookup of it is local.
+    fn is_local_v4(&self, address: Ipv4Addr) -> Result<bool, HostError> {
+        let mut request = RouteMessage::default();
+        request.header.address_family = AddressFamily::Inet;
+        request.header.destination_prefix_length = full_prefix(Ipv4Addr::BITS);
+        request
+            .attributes
+            .push(RouteAttribute::Destination(RouteAddress::Inet(address)));
+        match self.exchange(RouteNetlinkMessage::GetRoute(request)) {
+            Ok(RouteNetlinkMessage::NewRoute(reply)) => Ok(reply.header.kind == RouteType::Local),
+            Ok(_) => Err(HostError::Errno(libc::EPROTO)),
+            Err(HostError::Errno(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Confirms the neighbour as a send with `MSG_CONFIRM` does, by a probe on the route's interface that sends nothing.
+    fn confirm_neighbour(
+        &self,
+        next_hop: IpAddr,
+        interface: InterfaceIndex,
+    ) -> Result<(), HostError> {
+        let (version, peer) = match next_hop {
+            IpAddr::V4(address) => (
+                IpVersion::V4,
+                SocketAddr::V4(SocketAddrV4::new(address, CONFIRMATION_PORT)),
+            ),
+            IpAddr::V6(address) => (
+                IpVersion::V6,
+                SocketAddr::V6(SocketAddrV6::new(
+                    address,
+                    CONFIRMATION_PORT,
+                    u32::MIN,
+                    scope_of(address, Some(interface)),
+                )),
+            ),
+        };
+        let socket = datagram_socket(version)?;
+        // Both versions take the index in network byte order.
+        let (level, name) = match version {
+            IpVersion::V4 => (uapi::SOL_IP, uapi::IP_UNICAST_IF),
+            IpVersion::V6 => (uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF),
+        };
+        set_option(socket.as_fd(), level, name, &interface.0.to_be())?;
+        let probe = SendFlags::CONFIRM | SendFlags::from_bits_retain(MSG_PROBE);
+        rustix::net::sendto(&socket, &[], probe, &peer).map_err(host_error)?;
+        Ok(())
     }
 
     fn exchange_route(&self, request: RouteMessage) -> Result<RouteMessage, HostError> {
@@ -265,38 +320,58 @@ impl LinuxNetlinkRouteResolver {
             Ok(RouteNetlinkMessage::NewRoute(reply)) => Ok(reply),
             Ok(_) => Err(HostError::Errno(libc::EPROTO)),
             Err(HostError::Errno(libc::EOPNOTSUPP)) => {
-                Err(self.refuse(Refusal::UpperLayerProtocol))
+                Err(self.shortfalls.refuse(UPPER_LAYER_PROTOCOL))
             }
             Err(error) => Err(error),
         }
     }
 
-    fn found(&self, reply: &RouteMessage) -> Result<FoundRoute, HostError> {
+    fn found(&self, reply: &RouteMessage, destination: IpAddr) -> Result<FoundRoute, HostError> {
         let kind = match reply.header.kind {
             RouteType::Unicast => RouteKind::Unicast,
             RouteType::Local => RouteKind::Local,
             RouteType::Broadcast => RouteKind::Broadcast,
             RouteType::Multicast => RouteKind::Multicast,
-            _ => return Err(self.refuse(Refusal::RouteKind)),
+            _ => return Err(self.shortfalls.refuse(ROUTE_KIND)),
         };
-        let mut source = None;
+        let mut found = FoundRoute {
+            kind,
+            source: None,
+            interface: InterfaceIndex(0),
+            next_hop: destination,
+            through_gateway: false,
+            mtu: None,
+            mtu_locked: false,
+            hop_limit: None,
+        };
         let mut interface = None;
-        let mut mtu = None;
-        let mut hop_limit = None;
         for attribute in &reply.attributes {
             match attribute {
-                RouteAttribute::PrefSource(RouteAddress::Inet(address)) => {
-                    source = Some(IpAddr::V4(*address));
-                }
-                RouteAttribute::PrefSource(RouteAddress::Inet6(address)) => {
-                    source = Some(IpAddr::V6(*address));
-                }
+                RouteAttribute::PrefSource(address) => found.source = address_of(address),
                 RouteAttribute::Oif(index) => interface = Some(InterfaceIndex(*index)),
+                RouteAttribute::Gateway(address) => {
+                    found.next_hop = address_of(address).ok_or(HostError::Errno(libc::EPROTO))?;
+                    found.through_gateway = true;
+                }
+                RouteAttribute::Via(RouteVia::Inet(address)) => {
+                    found.next_hop = IpAddr::V4(*address);
+                    found.through_gateway = true;
+                }
+                RouteAttribute::Via(RouteVia::Inet6(address)) => {
+                    found.next_hop = IpAddr::V6(*address);
+                    found.through_gateway = true;
+                }
+                RouteAttribute::Encap(_) | RouteAttribute::EncapType(_) => {
+                    return Err(self.shortfalls.refuse(ENCAPSULATION));
+                }
                 RouteAttribute::Metrics(metrics) => {
                     for metric in metrics {
                         match metric {
-                            RouteMetric::Mtu(value) => mtu = Some(*value),
-                            RouteMetric::Hoplimit(value) => hop_limit = Some(*value),
+                            RouteMetric::Mtu(value) => found.mtu = Some(*value),
+                            RouteMetric::Hoplimit(value) => found.hop_limit = Some(*value),
+                            RouteMetric::Lock(locked) => {
+                                found.mtu_locked = locked & (1 << RTAX_MTU as u32) != 0;
+                            }
                             _ => {}
                         }
                     }
@@ -304,13 +379,8 @@ impl LinuxNetlinkRouteResolver {
                 _ => {}
             }
         }
-        Ok(FoundRoute {
-            kind,
-            source,
-            interface: interface.ok_or(HostError::Errno(libc::EPROTO))?,
-            mtu,
-            hop_limit,
-        })
+        found.interface = interface.ok_or(HostError::Errno(libc::EPROTO))?;
+        Ok(found)
     }
 
     fn link(&self, interface: InterfaceIndex) -> Result<Link, HostError> {
@@ -363,9 +433,9 @@ impl LinuxNetlinkRouteResolver {
         packet.finalize();
         let mut bytes = vec![0; packet.buffer_len()];
         packet.serialize(&mut bytes);
-        routing.socket.send(&bytes, 0).map_err(host_error)?;
+        routing.socket.send(&bytes, 0).map_err(io_error)?;
         loop {
-            let (bytes, _) = routing.socket.recv_from_full().map_err(host_error)?;
+            let (bytes, _) = routing.socket.recv_from_full().map_err(io_error)?;
             let reply = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&bytes)
                 .map_err(|_| HostError::Errno(libc::EPROTO))?;
             if reply.header.sequence_number != sequence {
@@ -391,13 +461,14 @@ impl RouteResolver for LinuxNetlinkRouteResolver {
         owner: UserId,
         neighbour: NeighbourConfirmation,
     ) -> Result<Route, HostError> {
-        if neighbour == NeighbourConfirmation::Confirmed {
-            return Err(self.refuse(Refusal::NeighbourConfirmation));
+        let (found, resolved) = match &route {
+            RouteSelectors::V4(route) => self.resolve_v4(route, owner)?,
+            RouteSelectors::V6(route) => self.resolve_v6(route, owner)?,
+        };
+        if neighbour == NeighbourConfirmation::Confirmed && found.kind == RouteKind::Unicast {
+            self.confirm_neighbour(found.next_hop, found.interface)?;
         }
-        match &route {
-            RouteSelectors::V4(route) => self.resolve_v4(route, owner),
-            RouteSelectors::V6(route) => self.resolve_v6(route, owner),
-        }
+        Ok(resolved)
     }
 }
 
@@ -405,7 +476,11 @@ struct FoundRoute {
     kind: RouteKind,
     source: Option<IpAddr>,
     interface: InterfaceIndex,
+    /// The gateway, or the destination of a route on the link.
+    next_hop: IpAddr,
+    through_gateway: bool,
     mtu: Option<u32>,
+    mtu_locked: bool,
     hop_limit: Option<u32>,
 }
 
@@ -493,19 +568,34 @@ fn source_route_first_hop(options: &Ipv4Options) -> Result<Option<SourceRoute>, 
 }
 
 /// Fails as `bind` does when the host has no such address, the check the IPv6 routing socket leaves out.
-fn has_address(address: IpAddr, interface: Option<InterfaceIndex>) -> Result<(), HostError> {
-    let address = match address {
-        IpAddr::V4(address) => SockAddr::from(SocketAddrV4::new(address, ANY_PORT)),
-        IpAddr::V6(address) => {
-            let scope = match interface {
-                Some(interface) if address.is_unicast_link_local() => interface.0,
-                _ => u32::MIN,
-            };
-            SockAddr::from(SocketAddrV6::new(address, ANY_PORT, u32::MIN, scope))
-        }
+fn has_address_v6(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> Result<(), HostError> {
+    let socket = datagram_socket(IpVersion::V6)?;
+    let address = SocketAddrV6::new(address, ANY_PORT, u32::MIN, scope_of(address, interface));
+    rustix::net::bind(&socket, &address).map_err(host_error)
+}
+
+/// The scope a link-local address needs, the interface's; none for any other.
+fn scope_of(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> u32 {
+    match interface {
+        Some(interface) if address.is_unicast_link_local() => interface.0,
+        _ => u32::MIN,
+    }
+}
+
+fn datagram_socket(version: IpVersion) -> Result<OwnedFd, HostError> {
+    let family = match version {
+        IpVersion::V4 => rustix::net::AddressFamily::INET,
+        IpVersion::V6 => rustix::net::AddressFamily::INET6,
     };
-    let socket = socket2::Socket::new(address.domain(), Type::DGRAM, None).map_err(host_error)?;
-    socket.bind(&address).map_err(host_error)
+    rustix::net::socket(family, SocketType::DGRAM, None).map_err(host_error)
+}
+
+fn address_of(address: &RouteAddress) -> Option<IpAddr> {
+    match address {
+        RouteAddress::Inet(address) => Some(IpAddr::V4(*address)),
+        RouteAddress::Inet6(address) => Some(IpAddr::V6(*address)),
+        _ => None,
+    }
 }
 
 fn traffic_class(dscp: IpDscp, ecn: IpEcn) -> u8 {
@@ -522,6 +612,6 @@ fn hop_limit(limit: u32) -> Result<HopLimit, HostError> {
         .map_err(|_| HostError::Errno(libc::EPROTO))
 }
 
-fn host_error(error: io::Error) -> HostError {
-    HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO))
+fn io_error(error: io::Error) -> HostError {
+    host_error(Errno::from_io_error(&error).unwrap_or(Errno::IO))
 }
