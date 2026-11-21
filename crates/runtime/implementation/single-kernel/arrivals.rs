@@ -16,7 +16,8 @@ pub(crate) enum Arrival {
         writable: bool,
     },
     Connected(u32, i32),
-    LookedUp(u64, Vec<u8>, i32),
+    /// A name lookup has its answer.
+    Answered,
     /// Bytes read from the standard input, within the credit the kernel gave.
     Input(Vec<u8>),
     /// The standard input ended, or failed with this error.

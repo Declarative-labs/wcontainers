@@ -20,7 +20,6 @@ pub enum Entry {
     Connected(Result<(), HostError>),
     Sent(Result<usize, HostError>),
     Received(Result<usize, HostError>, Vec<u8>),
-    LookedUp(Result<(), HostError>),
     Listened(Result<(), HostError>),
     Accepted(Result<(), HostError>),
     /// Whether the backend owed an answer, where the driver asked.
@@ -30,6 +29,7 @@ pub enum Entry {
     Event(OwnedEvent),
     /// The backend's reply to a request a call of the kernel's waits on, by its number.
     BackendAnswered(u64, Vec<u8>),
+    NameAnswered(u64, Vec<u8>),
     /// A signal the outside sent to the first process.
     Kill(wcontainers_kernel::signal::Signal),
     /// The ends of what the outside did at a point of the driver loop, with what it answered.
@@ -50,11 +50,6 @@ pub enum OwnedEvent {
         error: i32,
     },
     ConnectionReady(ConnectionId),
-    LookedUp {
-        request: u64,
-        addresses: Vec<u8>,
-        error: i32,
-    },
     StreamData {
         end: End,
         bytes: Vec<u8>,
@@ -78,15 +73,6 @@ impl OwnedEvent {
             Event::BackendNotice { notice } => Self::BackendNotice(notice.to_vec()),
             Event::Connected { connection, error } => Self::Connected { connection, error },
             Event::ConnectionReady { connection } => Self::ConnectionReady(connection),
-            Event::LookedUp {
-                request,
-                addresses,
-                error,
-            } => Self::LookedUp {
-                request,
-                addresses: addresses.to_vec(),
-                error,
-            },
             Event::StreamData { end, bytes } => Self::StreamData {
                 end,
                 bytes: bytes.to_vec(),
@@ -109,15 +95,6 @@ impl OwnedEvent {
             },
             Self::ConnectionReady(connection) => Event::ConnectionReady {
                 connection: *connection,
-            },
-            Self::LookedUp {
-                request,
-                addresses,
-                error,
-            } => Event::LookedUp {
-                request: *request,
-                addresses,
-                error: *error,
             },
             Self::StreamData { end, bytes } => Event::StreamData { end: *end, bytes },
             Self::StreamCredit { end, bytes } => Event::StreamCredit {

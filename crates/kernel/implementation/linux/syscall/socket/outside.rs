@@ -2,11 +2,10 @@
 //! (plan section 9): a TCP connection is one host connection, a UDP socket has one host
 //! connection for each outside destination it sends to. Bytes that arrive are pulled into the
 //! socket's queue when the host says they are there, so readiness is the kernel's to give. Name
-//! queries sent to the container's name server are answered here through the host's lookup.
+//! queries sent to the container's name server are answered here through the system's resolver.
 
 use alloc::collections::BTreeMap;
 use alloc::rc::{Rc, Weak};
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
@@ -35,13 +34,12 @@ pub(crate) struct Outside {
     closing: Vec<u32>,
 }
 
-/// A name query waiting for the host's lookup.
+/// A name query waiting for the system's resolver, which is asked as a waiting call of its number.
 struct Lookup {
     socket: Weak<RefCell<Socket>>,
     /// The server's address it asked at.
     server: Endpoint,
     query: Vec<u8>,
-    name: String,
 }
 
 /// The address bytes the host is given: 4 for IPv4, else 16.
@@ -582,20 +580,6 @@ pub(crate) fn event<S: crate::System>(
             super::write_space(kernel, cx, &socket);
             true
         }
-        Event::LookedUp {
-            request,
-            addresses,
-            error,
-        } => {
-            let Some(lookup) = kernel.sockets.inet.outside.lookups.remove(&request) else {
-                return false;
-            };
-            if let Some(socket) = lookup.socket.upgrade() {
-                let answer = super::resolver::answer(&lookup.query, addresses, error);
-                deliver(kernel, cx, &socket, lookup.server, answer);
-            }
-            true
-        }
         _ => false,
     }
 }
@@ -675,25 +659,19 @@ pub(super) fn query<S: crate::System>(
             );
             deliver(kernel, cx, socket, server, answer);
         }
-        super::resolver::Question::LookUp(name) => {
+        super::resolver::Question::Ask(asked) => {
             let outside = &mut kernel.sockets.inet.outside;
             outside.last_lookup += 1;
-            let request = outside.last_lookup;
+            let number = outside.last_lookup;
             outside.lookups.insert(
-                request,
+                number,
                 Lookup {
                     socket: Rc::downgrade(socket),
                     server,
                     query: data.to_vec(),
-                    name: name.clone(),
                 },
             );
-            if let Err(error) = cx.host.look_up(request, &name) {
-                kernel.sockets.inet.outside.lookups.remove(&request);
-                let errno = refusal(kernel, cx, error);
-                let answer = super::resolver::answer(data, &[], errno.0 as i32);
-                deliver(kernel, cx, socket, server, answer);
-            }
+            ask(kernel, cx, number, asked);
         }
         super::resolver::Question::Dropped => {}
     }
@@ -738,21 +716,76 @@ pub(crate) fn restored<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'
             reset(kernel, cx, &socket, Errno::ECONNRESET);
         }
     }
-    let requests: Vec<(u64, String)> = kernel
+    kernel
+        .waiting
+        .drop_where(|about| matches!(about, crate::waiting::WaitFor::Name(_)));
+    let asked: Vec<(u64, super::resolver::Question)> = kernel
         .sockets
         .inet
         .outside
         .lookups
         .iter()
-        .map(|(&request, lookup)| (request, lookup.name.clone()))
+        .map(|(&number, lookup)| (number, super::resolver::question(&lookup.query)))
         .collect();
-    for (request, name) in requests {
-        if cx.host.look_up(request, &name).is_err()
-            && let Some(lookup) = kernel.sockets.inet.outside.lookups.remove(&request)
-            && let Some(socket) = lookup.socket.upgrade()
-        {
-            let answer = super::resolver::answer(&lookup.query, &[], Errno::EAGAIN.0 as i32);
-            deliver(kernel, cx, &socket, lookup.server, answer);
+    for (number, question) in asked {
+        if let super::resolver::Question::Ask(asked) = question {
+            ask(kernel, cx, number, asked);
         }
+    }
+}
+
+/// Asks the system's resolver the question of lookup `number`, as a waiting call.
+fn ask<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    number: u64,
+    asked: super::resolver::Asked,
+) {
+    let call: crate::waiting::Call =
+        crate::waiting::waiting_call!(resolve(cx.system.clone(), asked));
+    if crate::waiting::Waiting::on_heap(&call) {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::WAITING_CALL_ON_HEAP, number);
+    }
+    let about = crate::waiting::WaitFor::Name(number);
+    if let Some(crate::waiting::Answer::Name(answer)) = kernel.waiting.start(about, call) {
+        answered(kernel, cx, number, answer);
+    }
+}
+
+/// The system's answer to one question, owning what the question borrows.
+async fn resolve<S: crate::System>(
+    system: alloc::sync::Arc<S>,
+    asked: super::resolver::Asked,
+) -> crate::waiting::Answer {
+    let question =
+        domain::base::Question::new(asked.qname().for_slice(), asked.qtype(), asked.qclass());
+    let answer = system.resolve_domain(question).await;
+    crate::waiting::Answer::Name(answer.map(|message| message.as_slice().to_vec()))
+}
+
+/// The resolver answered lookup `number`: its reply goes to the socket that asked, if still open.
+pub(super) fn answered<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    number: u64,
+    answer: Result<Vec<u8>, HostError>,
+) {
+    let Some(lookup) = kernel.sockets.inet.outside.lookups.remove(&number) else {
+        return;
+    };
+    let Some(socket) = lookup.socket.upgrade() else {
+        return;
+    };
+    if let Err(error) = answer {
+        refusal(kernel, cx, error);
+    }
+    let message = answer
+        .as_deref()
+        .ok()
+        .and_then(|bytes| domain::base::Message::from_slice(bytes).ok());
+    if let Some(reply) = super::resolver::answer(&lookup.query, message) {
+        deliver(kernel, cx, &socket, lookup.server, reply);
     }
 }

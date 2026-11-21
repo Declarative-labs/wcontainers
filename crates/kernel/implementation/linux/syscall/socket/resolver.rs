@@ -1,16 +1,16 @@
-//! The container's name server: name queries sent to [`crate::network::NAME_SERVER`] are read and
-//! answered with `simple-dns`, from the host's lookup hook. It answers addresses (A and AAAA) of
-//! the Internet class; other questions get "not implemented".
+//! The container's name server: name queries sent to [`crate::network::NAME_SERVER`] are read,
+//! asked of the system's resolver, and answered with its answer. It asks for addresses (A and
+//! AAAA) of the Internet class; other questions get "not implemented".
 
-use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use simple_dns::rdata::{A, AAAA, RData};
-use simple_dns::{
-    CLASS, Name, OPCODE, Packet, PacketFlag, QCLASS, QTYPE, RCODE, ResourceRecord, TYPE,
-};
+use domain::base::iana::{Class, Opcode, Rcode, Rtype};
+use domain::base::name::ToName;
+use domain::base::{Header, Message, MessageBuilder, Name, ParsedName, StaticCompressor};
+use domain::rdata::AllRecordData;
 
-use crate::Errno;
+/// A question the guest asked, owning its name.
+pub(crate) type Asked = domain::base::Question<Name<Vec<u8>>>;
 
 /// What a query needs.
 pub(super) enum Question {
@@ -18,85 +18,91 @@ pub(super) enum Question {
     Answer(Vec<u8>),
     /// "Not implemented", for a question of this type.
     Unanswerable(Vec<u8>, u16),
-    /// The host's lookup of this name.
-    LookUp(String),
+    /// The system's answer to this question.
+    Ask(Asked),
     /// Nothing: not a query at all.
     Dropped,
 }
 
-/// The size of a message's header.
-const HEADER: usize = 12;
-
 /// A reply carrying only a header with a response code, for a message that could not be read.
-fn header_only(query: &[u8], code: u8) -> Vec<u8> {
-    let mut reply = query[..HEADER].to_vec();
-    // Response, with the query's opcode and recursion wish, recursion available.
-    reply[2] = 0x80 | (query[2] & 0x79);
-    reply[3] = 0x80 | code;
-    reply[4..HEADER].fill(0);
-    reply
+fn header_only(query: Header, code: Rcode) -> Vec<u8> {
+    let mut reply = MessageBuilder::new_vec();
+    let header = reply.header_mut();
+    header.set_id(query.id());
+    header.set_qr(true);
+    header.set_opcode(query.opcode());
+    header.set_rd(query.rd());
+    header.set_ra(true);
+    header.set_rcode(code);
+    reply.finish()
+}
+
+/// Whether every record of every section after the question can be read.
+fn records_read(message: &Message<[u8]>) -> bool {
+    let Ok(mut section) = message.answer() else {
+        return false;
+    };
+    loop {
+        if section.by_ref().any(|record| record.is_err()) {
+            return false;
+        }
+        match section.next_section() {
+            Ok(Some(next)) => section = next,
+            Ok(None) => return true,
+            Err(_) => return false,
+        }
+    }
 }
 
 pub(super) fn question(data: &[u8]) -> Question {
-    if data.len() < HEADER || data[2] & 0x80 != 0 {
+    let Ok(message) = Message::from_slice(data) else {
+        return Question::Dropped;
+    };
+    let header = message.header();
+    if header.qr() {
         return Question::Dropped;
     }
-    let Ok(packet) = Packet::parse(data) else {
-        return Question::Answer(header_only(data, RCODE::FormatError as u8));
-    };
+    let format_error = || Question::Answer(header_only(header, Rcode::FORMERR));
     let not_implemented =
-        |kind: u16| Question::Unanswerable(header_only(data, RCODE::NotImplemented as u8), kind);
-    if packet.opcode() != OPCODE::StandardQuery || packet.questions.len() != 1 {
+        |kind: u16| Question::Unanswerable(header_only(header, Rcode::NOTIMP), kind);
+    let Ok(questions) = message.question().collect::<Result<Vec<_>, _>>() else {
+        return format_error();
+    };
+    if !records_read(message) {
+        return format_error();
+    }
+    if header.opcode() != Opcode::QUERY || questions.len() != 1 {
         return not_implemented(0);
     }
-    let asked = &packet.questions[0];
-    let address = matches!(asked.qtype, QTYPE::TYPE(TYPE::A) | QTYPE::TYPE(TYPE::AAAA));
-    if !address || asked.qclass != QCLASS::CLASS(CLASS::IN) {
-        return not_implemented(u16::from(asked.qtype));
+    let asked = &questions[0];
+    let address = matches!(asked.qtype(), Rtype::A | Rtype::AAAA);
+    if !address || asked.qclass() != Class::IN {
+        return not_implemented(asked.qtype().to_int());
     }
-    Question::LookUp(asked.qname.to_string())
+    let name: Name<Vec<u8>> = asked.qname().to_name();
+    Question::Ask(Asked::new(name, asked.qtype(), asked.qclass()))
 }
 
-/// The answer to an address query from the host's lookup: the addresses of the kind asked for
-/// (each 16 bytes, IPv4 ones mapped), "no such name" for ENOENT, or a server failure.
-pub(super) fn answer(query: &[u8], addresses: &[u8], error: i32) -> Vec<u8> {
-    let Ok(packet) = Packet::parse(query) else {
-        return header_only(query, RCODE::ServerFailure as u8);
+/// The guest's reply to a query [`question`] asked about: the system's answer with the query's id
+/// and flags, or a server failure when the system gave none.
+pub(super) fn answer(query: &[u8], answer: Option<&Message<[u8]>>) -> Option<Vec<u8>> {
+    let asked = Message::from_slice(query).ok()?;
+    let failure = || header_only(asked.header(), Rcode::SERVFAIL);
+    let Some(answer) = answer else {
+        return Some(failure());
     };
-    let mut reply = Packet::new_reply(packet.id());
-    let mut flags = PacketFlag::RECURSION_AVAILABLE;
-    if packet.has_flags(PacketFlag::RECURSION_DESIRED) {
-        flags |= PacketFlag::RECURSION_DESIRED;
-    }
-    reply.set_flags(flags);
-    let asked = packet.questions[0].clone();
-    let name: Name<'_> = asked.qname.clone();
-    let wants_v4 = asked.qtype == QTYPE::TYPE(TYPE::A);
-    *reply.rcode_mut() = match error {
-        0 => RCODE::NoError,
-        _ if error as u32 == Errno::ENOENT.0 => RCODE::NameError,
-        _ => RCODE::ServerFailure,
-    };
-    reply.questions.push(asked);
-    if error == 0 {
-        for chunk in addresses.as_chunks::<16>().0 {
-            let v4 = chunk[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
-            let data = match (wants_v4, v4) {
-                (true, true) => RData::A(A {
-                    address: u32::from_be_bytes(chunk[12..].try_into().expect("4 bytes")),
-                }),
-                (false, false) => RData::AAAA(AAAA {
-                    address: u128::from_be_bytes(*chunk),
-                }),
-                _ => continue,
-            };
-            // How long the host's answer holds is not known, so it is not to be kept.
-            reply
-                .answers
-                .push(ResourceRecord::new(name.clone(), CLASS::IN, 0, data));
+    let built = (|| {
+        let builder = MessageBuilder::from_target(StaticCompressor::new(Vec::new())).ok()?;
+        let mut reply = builder.start_answer(asked, answer.header().rcode()).ok()?;
+        reply.header_mut().set_ra(true);
+        let records = answer
+            .answer()
+            .ok()?
+            .limit_to::<AllRecordData<_, ParsedName<_>>>();
+        for record in records {
+            reply.push(record.ok()?).ok()?;
         }
-    }
-    reply
-        .build_bytes_vec_compressed()
-        .unwrap_or_else(|_| header_only(query, RCODE::ServerFailure as u8))
+        Some(reply.finish().into_target())
+    })();
+    Some(built.unwrap_or_else(failure))
 }

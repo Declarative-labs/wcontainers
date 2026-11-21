@@ -5,9 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{
-    IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
-};
+use std::net::{IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +21,6 @@ use crate::errno;
 
 /// The names of the network's threads.
 const NETWORK_THREAD: &str = "wcontainers network";
-const LOOKUP_THREAD: &str = "wcontainers lookup";
 
 enum Socket {
     Stream(TcpStream),
@@ -313,34 +310,6 @@ impl Network {
         }
     }
 
-    pub(crate) fn look_up(&mut self, request: u64, name: &str) {
-        let arrivals = self.arrivals.clone();
-        let name = name.to_string();
-        let started = std::thread::Builder::new()
-            .name(LOOKUP_THREAD.to_string())
-            .spawn(move || {
-                let arrival = match (name.as_str(), 0).to_socket_addrs() {
-                    Ok(found) => {
-                        let mut bytes = Vec::new();
-                        for address in found {
-                            let mapped = match address.ip() {
-                                IpAddr::V4(v4) => v4.to_ipv6_mapped(),
-                                IpAddr::V6(v6) => v6,
-                            };
-                            bytes.extend_from_slice(&mapped.octets());
-                        }
-                        Arrival::LookedUp(request, bytes, 0)
-                    }
-                    Err(_) => Arrival::LookedUp(request, Vec::new(), Errno::ENOENT as i32),
-                };
-                arrivals.push(arrival);
-            });
-        if started.is_err() {
-            self.arrivals
-                .push(Arrival::LookedUp(request, Vec::new(), Errno::EAGAIN as i32));
-        }
-    }
-
     /// The event the kernel is told for one arrival; none when it tells nothing new.
     pub(crate) fn event<'a>(&mut self, arrival: &'a Arrival) -> Option<Event<'a>> {
         match *arrival {
@@ -350,11 +319,8 @@ impl Network {
                 connection: ConnectionId(id),
                 error,
             }),
-            Arrival::LookedUp(request, ref addresses, error) => Some(Event::LookedUp {
-                request,
-                addresses,
-                error,
-            }),
+            // A name's answer is its waiting call's, which the kernel takes when it next settles.
+            Arrival::Answered => None,
             Arrival::Ready {
                 id,
                 readable,

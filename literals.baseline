@@ -4137,18 +4137,6 @@ code	crates/kernel/implementation/linux/syscall/socket/procnet.rs	str	udp	"   sl
 code	crates/kernel/implementation/linux/syscall/socket/procnet.rs	str	udp	"  sl  local_address                         remote_address                        \\n             st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inod… #39fc885f710ac05b
 code	crates/kernel/implementation/linux/syscall/socket/procnet.rs	str	udp	" {state:02X} {:08X}:{:08X} 00:00000000 00000000 {:5} {:8} {} 2 {:016x} {}"
 code	crates/kernel/implementation/linux/syscall/socket/procnet.rs	str	udp	"{:5}: "
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	answer	0xff
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	answer	0xff
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	answer	12
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	answer	12
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	answer	16
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	header_only	0x79
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	header_only	0x80
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	header_only	0x80
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	header_only	3
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	header_only	4
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	int	question	0x80
-code	crates/kernel/implementation/linux/syscall/socket/resolver.rs	str	answer	"4 bytes"
 code	crates/kernel/implementation/linux/syscall/splice.rs	int	vmsplice_to_pipe	16
 code	crates/kernel/implementation/linux/syscall/system.rs	bytestr	uname	b"Linux"
 code	crates/kernel/implementation/linux/syscall/system.rs	bytestr	uname	b"aarch64"

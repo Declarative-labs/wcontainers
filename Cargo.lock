@@ -1075,8 +1075,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b68712c02bff2348323c1441ab2e8528e32af4f8f9edf29356356290328c8e6"
 dependencies = [
  "domain-macros",
+ "hashbrown 0.17.1",
  "jiff",
  "octseq",
+ "serde",
 ]
 
 [[package]]
@@ -1740,6 +1742,7 @@ dependencies = [
  "jiff-static",
  "portable-atomic",
  "portable-atomic-util",
+ "serde_core",
 ]
 
 [[package]]
@@ -2512,6 +2515,9 @@ name = "octseq"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "182eab3e1cd9cdc0ecf1ce3342d9844f3dc7d098f0694569bfdf327b612d69fd"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "once_cell"
@@ -3300,15 +3306,6 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
-
-[[package]]
-name = "simple-dns"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8aea2b78df6bbe38fb98d2c8140ada65fb63a314246a0c38626140dd21c69ff7"
-dependencies = [
- "bitflags 2.13.2",
-]
 
 [[package]]
 name = "siphasher"
@@ -4285,6 +4282,7 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata",
  "coarsetime",
+ "domain",
  "fuse-abi",
  "libc",
  "linux-raw-sys",
@@ -4554,11 +4552,11 @@ dependencies = [
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
+ "domain",
  "flate2",
  "fuse-abi",
  "object 0.41.0",
  "rangemap",
- "simple-dns",
  "siphasher",
  "smallbox",
  "smallvec",
@@ -4783,6 +4781,7 @@ dependencies = [
 name = "wcontainers-runtime-single-kernel"
 version = "0.1.0"
 dependencies = [
+ "domain",
  "flate2",
  "fuse-abi",
  "getrandom 0.3.4",
@@ -4856,6 +4855,7 @@ dependencies = [
 name = "wcontainers-system-seeded-test-policy"
 version = "0.1.0"
 dependencies = [
+ "domain",
  "rand 0.9.5",
  "spin 0.10.1",
  "wcontainers-abi",

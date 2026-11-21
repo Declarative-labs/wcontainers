@@ -20,12 +20,16 @@ pub(crate) use smallbox::smallbox as waiting_call;
 pub(crate) enum WaitFor {
     /// A file backend request.
     Backend(crate::fs::backend::Sent),
+    /// A name query of the container's name server, by its number.
+    Name(u64),
 }
 
 /// What a finished waiting call gives the kernel.
 pub(crate) enum Answer {
     /// The backend's reply, as its error number (zero for none) and its body.
     Backend(Result<(i32, alloc::rc::Rc<[u8]>), wcontainers_abi::HostError>),
+    /// The resolver's answer, as the message's bytes.
+    Name(Result<Vec<u8>, wcontainers_abi::HostError>),
 }
 
 /// The room a waiting call has in its cell; a larger one is kept on the heap (counted).
@@ -78,6 +82,12 @@ impl crate::Kernel {
         match (about, answer) {
             (WaitFor::Backend(sent), Answer::Backend(answer)) => {
                 self.backend_answered(cx, sent, answer);
+            }
+            (WaitFor::Name(number), Answer::Name(answer)) => {
+                crate::syscall::socket::name_answered(self, cx, number, answer);
+            }
+            (about, _) => {
+                debug_assert!(false, "{about:?} answered as another call");
             }
         }
     }
@@ -158,6 +168,19 @@ impl Waiting {
             index += 1;
         }
         None
+    }
+
+    /// Drops the calls `which` names, unanswered: each is cancelled as its system's future says.
+    pub fn drop_where(&mut self, which: impl Fn(&WaitFor) -> bool) {
+        let mut index = 0;
+        while index < self.live.len() {
+            if which(&self.live[index].0) {
+                let (_, cell) = self.live.swap_remove(index);
+                self.recycle(cell);
+            } else {
+                index += 1;
+            }
+        }
     }
 
     /// Whether a call kept here waits for its answer on the heap, too large for its cell's room.

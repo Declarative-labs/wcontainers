@@ -259,6 +259,10 @@ pub struct TestHost<H = NoHooks> {
     pub(crate) backend: Mutex<Option<crate::backend::Backend>>,
     /// The backend's replies the kernel's calls wait for.
     replies: Mutex<Replies>,
+    /// The resolver's answers the kernel's calls wait for, by the number of each question.
+    names: Mutex<Replies>,
+    /// The number of the last name question.
+    last_name: AtomicU64,
     /// Connections to the outside and lookups.
     network: Mutex<crate::network::Network>,
     /// The CPU side's own slow paths.
@@ -331,6 +335,8 @@ impl TestHost {
             kernel_work: AtomicU64::default(),
             backend: Mutex::default(),
             replies: Mutex::default(),
+            names: Mutex::default(),
+            last_name: AtomicU64::default(),
             network: Default::default(),
             cpu_warnings: Mutex::default(),
             injecting: Mutex::default(),
@@ -367,6 +373,8 @@ impl TestHost {
             kernel_work: self.kernel_work,
             backend: self.backend,
             replies: self.replies,
+            names: self.names,
+            last_name: self.last_name,
             network: self.network,
             cpu_warnings: self.cpu_warnings,
             injecting: self.injecting,
@@ -638,6 +646,7 @@ where
                     Entry::Event(event) => kernel.event(cpu, self, event.event()),
                     Entry::Kill(signal) => kernel.kill(cpu, self, signal),
                     Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
+                    Entry::NameAnswered(number, answer) => self.name_arrived(number, answer),
                     other => match ended(&other) {
                         Some(value) => return value,
                         None if other == Entry::Delivered => {}
@@ -841,20 +850,6 @@ impl<H: Send> Host for TestHost<H> {
         }
     }
 
-    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-        self.answer(
-            Entry::LookedUp,
-            |entry| match entry {
-                Entry::LookedUp(result) => Ok(result),
-                other => Err(other),
-            },
-            || {
-                lock(&self.network).look_up(request, name);
-                Ok(())
-            },
-        )
-    }
-
     fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
         self.answer(
             Entry::Listened,
@@ -916,31 +911,77 @@ impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
         if retrieved || unanswered {
             return Ok(Vec::new());
         }
+        Ok(Replies::wait(&self.replies, unique).await)
+    }
+}
+
+/// Each name question is looked up by this machine's resolver (kept in the record) and waited on
+/// until its answer arrives, as the network's answers do.
+impl<H: Send> wcontainers_system::DomainNameResolver for TestHost<H> {
+    type Answer = wcontainers_runtime_single_kernel::names::NameAnswer;
+
+    async fn resolve_domain(
+        &self,
+        question: domain::base::Question<&domain::base::Name<[u8]>>,
+    ) -> Result<wcontainers_runtime_single_kernel::names::NameAnswer, HostError> {
+        let number = self.last_name.fetch_add(1, Ordering::Relaxed) + 1;
+        if !self.replaying() {
+            lock(&self.network).resolve(number, question);
+        }
+        wcontainers_runtime_single_kernel::names::NameAnswer::new(
+            Replies::wait(&self.names, number).await,
+        )
+    }
+}
+
+impl Replies {
+    /// The reply to `key` once it has arrived; one let go before is forgotten.
+    async fn wait(replies: &Mutex<Replies>, key: u64) -> Vec<u8> {
+        /// Forgets a reply waited for, when the wait is let go.
+        struct Forget<'a>(&'a Mutex<Replies>, u64);
+        impl Drop for Forget<'_> {
+            fn drop(&mut self) {
+                let mut replies = lock(self.0);
+                replies.arrived.remove(&self.1);
+                replies.waiting.remove(&self.1);
+            }
+        }
+        let _forget = Forget(replies, key);
         std::future::poll_fn(|context| {
-            let mut replies = lock(&self.replies);
-            match replies.arrived.remove(&unique) {
-                Some(reply) => Poll::Ready(Ok(reply)),
+            let mut replies = lock(replies);
+            match replies.arrived.remove(&key) {
+                Some(reply) => Poll::Ready(reply),
                 None => {
-                    replies.waiting.insert(unique, context.waker().clone());
+                    replies.waiting.insert(key, context.waker().clone());
                     Poll::Pending
                 }
             }
         })
         .await
     }
+
+    /// The reply to `key` arrived: the call waiting for it is woken.
+    fn arrived(replies: &Mutex<Replies>, key: u64, reply: Vec<u8>) {
+        let waiting = {
+            let mut replies = lock(replies);
+            replies.arrived.insert(key, reply);
+            replies.waiting.remove(&key)
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
+    }
 }
 
 impl<H> TestHost<H> {
     /// The backend's reply to request `unique` arrived: the call waiting for it is woken.
     fn reply_arrived(&self, unique: u64, reply: Vec<u8>) {
-        let waiting = {
-            let mut replies = lock(&self.replies);
-            replies.arrived.insert(unique, reply);
-            replies.waiting.remove(&unique)
-        };
-        if let Some(waker) = waiting {
-            waker.wake();
-        }
+        Replies::arrived(&self.replies, unique, reply);
+    }
+
+    /// The resolver's answer to question `number` arrived: the call waiting for it is woken.
+    fn name_arrived(&self, number: u64, answer: Vec<u8>) {
+        Replies::arrived(&self.names, number, answer);
     }
 }
 
@@ -1713,8 +1754,18 @@ where
         return false;
     }
     let owed = lock(&host.network).take(wait);
-    for event in &owed {
-        event.with(|event| host.hand(kernel, cpu, event));
+    for owed in owed.iter() {
+        match owed {
+            // The call waiting for it takes it when the kernel next settles, as at once.
+            crate::network::Owed::Answered(number, answer) => {
+                if host.taped_run() {
+                    host.kept_in_step(Entry::NameAnswered(*number, answer.clone()));
+                }
+                host.name_arrived(*number, answer.clone());
+                host.hand(kernel, cpu, Event::Timer);
+            }
+            event => event.with(|event| host.hand(kernel, cpu, event)),
+        }
     }
     !owed.is_empty()
 }

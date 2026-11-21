@@ -546,11 +546,6 @@ impl LocalState {
         self.network().close(connection.0);
     }
 
-    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
-        self.network().look_up(request, name);
-        Ok(())
-    }
-
     fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
         self.network().listen(listener.0, port)
     }
@@ -638,11 +633,6 @@ macro_rules! host_on_state {
                 $state.close(connection);
             }
 
-            fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-                let $this = self;
-                $state.look_up(request, name)
-            }
-
             fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
                 let $this = self;
                 $state.listen(listener, port)
@@ -672,6 +662,18 @@ impl wcontainers_system::FuseServer for LocalSystem {
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
         self.state().serve(request)
+    }
+}
+
+impl wcontainers_system::DomainNameResolver for LocalSystem {
+    type Answer = crate::names::NameAnswer;
+
+    async fn resolve_domain(
+        &self,
+        question: domain::base::Question<&domain::base::Name<[u8]>>,
+    ) -> Result<crate::names::NameAnswer, HostError> {
+        let arrivals = self.state().arrivals.clone();
+        crate::names::resolve(arrivals, question).await
     }
 }
 

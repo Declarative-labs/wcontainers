@@ -26,8 +26,6 @@ crate::requests! {
     Receive { connection, length } -> Outcome;
     Finish { connection } -> ();
     Close { connection } -> ();
-    /// The name in the bytes.
-    LookUp { request } -> Outcome;
     Listen { listener, port } -> Outcome;
     Accept { listener, connection } -> Outcome;
     /// The kernel may take `bytes` more on the end numbered `stream`.
@@ -215,13 +213,6 @@ impl<R: Ring + Send> Host for LinkHost<R> {
         );
     }
 
-    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-        self.ring
-            .lock()
-            .ask(&LookUp { request }, name.as_bytes())
-            .unit()
-    }
-
     fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
         let message = Listen {
             listener: listener.0.into(),
@@ -325,11 +316,6 @@ pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) 
             host.close(connection(id));
             None
         }
-        Request::LookUp => {
-            let LookUp { request } = link.get();
-            let name = core::str::from_utf8(bytes).expect("a name to look up is text");
-            Some(host.look_up(request, name).map(|()| 0))
-        }
         Request::Listen => {
             let Listen { listener, port } = link.get();
             Some(host.listen(connection(listener), port as u16).map(|()| 0))
@@ -403,7 +389,6 @@ mod tests {
     const RECEIVE: &str = "receive";
     const FINISH: &str = "finish";
     const CLOSE: &str = "close";
-    const LOOK_UP: &str = "look up";
     const LISTEN: &str = "listen";
     const ACCEPT: &str = "accept";
 
@@ -474,12 +459,6 @@ mod tests {
         }
         fn close(&self, connection: ConnectionId) {
             self.record(CLOSE, &connection.0.to_le_bytes());
-        }
-        fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-            let mut bytes = request.to_le_bytes().to_vec();
-            bytes.extend_from_slice(name.as_bytes());
-            self.record(LOOK_UP, &bytes);
-            self.outcome(0).map(drop)
         }
         fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
             let mut bytes = listener.0.to_le_bytes().to_vec();
@@ -607,10 +586,6 @@ mod tests {
         expected.push(1);
         expected.extend_from_slice(&address);
         assert_eq!(last(&host), (CONNECT.into(), expected));
-        assert_eq!(host.look_up(9, "example.org"), Ok(()));
-        let mut expected = 9u64.to_le_bytes().to_vec();
-        expected.extend_from_slice(b"example.org");
-        assert_eq!(last(&host), (LOOK_UP.into(), expected));
         assert_eq!(host.listen(ConnectionId(4), 80), Ok(()));
         assert_eq!(host.accept(ConnectionId(4), ConnectionId(5)), Ok(()));
         let mut expected = 4u32.to_le_bytes().to_vec();
@@ -647,7 +622,6 @@ mod tests {
             assert_eq!(host.send(id, b"x"), Err(error));
             assert_eq!(host.receive(id, &mut [0; 4]), Err(error));
             assert_eq!(host.connect(id, &[0; 16], 1, false), Err(error));
-            assert_eq!(host.look_up(1, "x"), Err(error));
             assert_eq!(host.listen(id, 1), Err(error));
             assert_eq!(host.accept(id, id), Err(error));
         }

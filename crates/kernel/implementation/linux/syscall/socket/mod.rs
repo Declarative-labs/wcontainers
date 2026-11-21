@@ -381,6 +381,16 @@ pub(crate) fn outside_event<S: crate::System>(
     outside::event(kernel, cx, event)
 }
 
+/// The system's resolver answered the container's name server's lookup `number`.
+pub(crate) fn name_answered<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    number: u64,
+    answer: Result<Vec<u8>, wcontainers_abi::HostError>,
+) {
+    outside::answered(kernel, cx, number, answer);
+}
+
 /// The bytes of a file of `/proc/net`.
 pub(crate) fn proc_net<S: crate::System>(
     kernel: &mut Kernel,

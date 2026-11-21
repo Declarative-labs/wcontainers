@@ -560,14 +560,6 @@ impl Kernel {
                 }
                 u64::from(connection.0)
             }
-            Event::LookedUp { request, .. } => {
-                self.entry_now = cx.monotonic();
-                if syscall::socket::outside_event(self, &mut cx, &event) {
-                    self.settle(&mut cx);
-                    return;
-                }
-                request
-            }
             Event::StreamData { end, bytes } => {
                 self.entry_now = cx.monotonic();
                 self.stream_data(&mut cx, end, bytes);

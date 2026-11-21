@@ -12,6 +12,7 @@ use std::net::{
 use std::os::fd::AsRawFd;
 use std::time::Duration;
 
+use domain::base::{Name, Question};
 use wcontainers_abi::{ConnectionId, Event, HostError};
 use wcontainers_kernel::errno::Errno;
 
@@ -40,15 +41,15 @@ struct Connection {
     write_armed: bool,
 }
 
-/// An event owed to the kernel.
+/// An event owed to the kernel, or the answer to the name question of a number.
 pub enum Owed {
     Connected(u32, i32),
     Ready(u32),
-    LookedUp(u64, Vec<u8>, i32),
+    Answered(u64, Vec<u8>),
 }
 
 impl Owed {
-    /// Hands the event to `deliver` in the boundary's form.
+    /// Hands the event to `deliver` in the boundary's form; none for an answer.
     pub fn with(&self, deliver: impl FnOnce(Event<'_>)) {
         match self {
             Owed::Connected(id, error) => deliver(Event::Connected {
@@ -58,11 +59,7 @@ impl Owed {
             Owed::Ready(id) => deliver(Event::ConnectionReady {
                 connection: ConnectionId(*id),
             }),
-            Owed::LookedUp(request, addresses, error) => deliver(Event::LookedUp {
-                request: *request,
-                addresses,
-                error: *error,
-            }),
+            Owed::Answered(..) => {}
         }
     }
 }
@@ -262,30 +259,20 @@ impl Network {
         self.listeners.remove(&id);
     }
 
-    pub fn look_up(&mut self, request: u64, name: &str) {
-        let found: Result<Vec<IpAddr>, ()> = if name == DOCKER_HOST_NAME {
-            Ok(vec![IpAddr::V4(DOCKER_HOST)])
+    /// Looks up the name of question `number` with this machine's resolver; its answer is owed.
+    pub fn resolve(&mut self, number: u64, question: Question<&Name<[u8]>>) {
+        let name = question.qname().to_string();
+        let found: Option<Vec<IpAddr>> = if name == DOCKER_HOST_NAME {
+            Some(vec![IpAddr::V4(DOCKER_HOST)])
         } else {
-            (name, 0)
+            (name.as_str(), 0)
                 .to_socket_addrs()
+                .ok()
                 .map(|addresses| addresses.map(|address| address.ip()).collect())
-                .map_err(|_| ())
         };
-        let owed = match found {
-            Ok(addresses) => {
-                let mut bytes = Vec::new();
-                for address in addresses {
-                    let mapped = match address {
-                        IpAddr::V4(v4) => v4.to_ipv6_mapped(),
-                        IpAddr::V6(v6) => v6,
-                    };
-                    bytes.extend_from_slice(&mapped.octets());
-                }
-                Owed::LookedUp(request, bytes, 0)
-            }
-            Err(()) => Owed::LookedUp(request, Vec::new(), Errno::ENOENT as i32),
-        };
-        self.owed.push_back(owed);
+        let answer =
+            wcontainers_runtime_single_kernel::names::address_answer(question, found.as_deref());
+        self.owed.push_back(Owed::Answered(number, answer));
     }
 
     /// Whether anything may still come: an event owed, or a connection or listener waiting for a

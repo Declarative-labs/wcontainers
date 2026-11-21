@@ -30,6 +30,8 @@ pub mod files;
 #[cfg(feature = "std")]
 pub mod image;
 #[cfg(feature = "std")]
+pub mod names;
+#[cfg(feature = "std")]
 mod net;
 #[cfg(feature = "std")]
 mod spec;

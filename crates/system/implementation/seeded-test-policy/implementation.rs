@@ -254,10 +254,6 @@ impl<H: Host> Host for TestPolicy<H> {
         self.services.close(connection);
     }
 
-    fn look_up(&self, request: u64, _name: &str) -> Result<(), HostError> {
-        self.refuse(request)
-    }
-
     fn listen(&self, listener: ConnectionId, _port: u16) -> Result<(), HostError> {
         self.refuse(listener.0.into())
     }
@@ -273,6 +269,20 @@ impl<H: Host> wcontainers_system::FuseServer for TestPolicy<H> {
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
         self.refuse(request.len() as u64).map(|()| Vec::new())
+    }
+}
+
+/// Names are refused, as every other request to the outside.
+impl<H: Host> wcontainers_system::DomainNameResolver for TestPolicy<H> {
+    type Answer = &'static domain::base::Message<[u8]>;
+
+    async fn resolve_domain(
+        &self,
+        question: domain::base::Question<&domain::base::Name<[u8]>>,
+    ) -> Result<Self::Answer, HostError> {
+        let kind = u64::from(question.qtype().to_int());
+        self.refuse(kind)?;
+        Err(HostError::NotSupported)
     }
 }
 

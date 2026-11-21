@@ -162,9 +162,6 @@ impl Host for Recording {
     fn close(&self, connection: ConnectionId) {
         self.call(format!("close {connection:?}"));
     }
-    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-        self.absent(format!("look up {request} {name}"))
-    }
     fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
         self.absent(format!("listen {listener:?} {port}"))
     }

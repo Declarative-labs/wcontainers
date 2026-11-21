@@ -66,14 +66,6 @@ pub enum Event<'a> {
     /// a [`Host::receive`] or [`Host::send`] answered [`HostError::WouldBlock`], or after
     /// connecting, when that changes.
     ConnectionReady { connection: ConnectionId },
-    /// A name lookup finished. `addresses` holds 16 byte addresses one after another, IPv4 ones
-    /// as IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`). `error` is 0 when the name was found (with any addresses, perhaps none), ENOENT when no
-    /// such name exists, and another Linux error number when the lookup failed.
-    LookedUp {
-        request: u64,
-        addresses: &'a [u8],
-        error: i32,
-    },
     /// Bytes for an end, never more than the credit the kernel gave on it.
     StreamData { end: End, bytes: &'a [u8] },
     /// The kernel may send this many more bytes on an end.
@@ -123,8 +115,6 @@ pub trait Host: Sync {
     /// goes on.
     fn finish(&self, connection: ConnectionId);
     fn close(&self, connection: ConnectionId);
-    /// Start looking up a name. The result arrives as [`Event::LookedUp`] with the same request number.
-    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError>;
     /// Start accepting TCP connections from outside to the container's port `port`. While some
     /// wait, [`Event::ConnectionReady`] comes on `listener` (once after this call, and again after
     /// [`Host::accept`] answered [`HostError::WouldBlock`]); each is taken with [`Host::accept`].

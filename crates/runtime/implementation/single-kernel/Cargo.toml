@@ -33,6 +33,8 @@ fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "
 zerocopy = { workspace = true, optional = true }
 rustix = { version = "1.1.6", features = ["fs"], optional = true }
 libc = { version = "0.2.191", optional = true }
+# The local system's resolver's answers as DNS messages.
+domain = { version = "0.12.3", default-features = false, features = ["alloc"], optional = true }
 # The local system's network: sockets connected without waiting, and the host's readiness of them.
 socket2 = { version = "0.6.5", optional = true }
 polling = { version = "3.11.0", optional = true }
@@ -56,6 +58,7 @@ std = [
     "dep:libc",
     "dep:socket2",
     "dep:polling",
+    "dep:domain",
 ]
 
 [dev-dependencies]
