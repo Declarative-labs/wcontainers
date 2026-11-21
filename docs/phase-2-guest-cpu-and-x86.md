@@ -2064,7 +2064,7 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   - Writes the kernel makes into guest memory: the copy-out of `read`, `recv`, `pread`,
     `process_vm_writev` and every other call, and the kernel's zeroing. All of them reach memory through
     the CPU side's `Cpu::write`, `zero` or `shared_write`, which by the abi's contract ignore page
-    permissions (the kernel checks its own map, crates/wcontainers-kernel/src/user.rs). Those three
+    permissions (the kernel checks its own map, crates/kernel/implementation/linux/user.rs). Those three
     methods look up each page of the range in the marks first (one lookup per page written, against the
     cost of the copy itself; measured at X10) and take the step for a marked page before they write. A
     thread whose own pieces were dropped by its system call carries on from the bottom loop when the call

@@ -1,7 +1,13 @@
 # x86 track status
 
-Plan: docs/phase-2-guest-cpu-and-x86.md. Branch: phase-2-x86. Brief:
-pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
+Plan: docs/phase-2-guest-cpu-and-x86.md. Branch: main, in the one shared checkout (since 2026-11-21; it was
+phase-2-x86). Brief: pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
+
+Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime` is now
+`wcontainers-executor-wasmtime` (crates/executor/implementation/wasmtime), `wcontainers-runtime` is
+`wcontainers-runtime-single-kernel` (crates/runtime/implementation/single-kernel), `wcontainers-kernel` is
+`wcontainers-kernel-linux` (crates/kernel/implementation/linux), `wcontainers-kernel-test` is
+`wcontainers-executor-unicorn`, and `wcontainers-abi` lives in crates/abi. This track's four crates did not move.
 
 ## Where things stand
 
