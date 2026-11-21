@@ -3,6 +3,8 @@
 //! address places (docs/native.md section 3.2), and the words the inside fills to link pieces.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -31,9 +33,8 @@ pub mod reason {
 /// The first bytes of a kept translation's file.
 const FILE_MAGIC: &[u8; 8] = b"wcnative";
 
-/// What a file being written has after its name, then the writing process's number, until it is renamed whole
-/// into place.
-const PARTIAL: &str = ".partial-";
+/// The mode a kept translation's file is made with before the umask, the one `std::fs::write` gives.
+const FILE_MODE: u32 = 0o666;
 
 /// What a translation is kept under: the guest code it is made from, where in its page that starts, whether the
 /// count is written, and the page itself where the code's shape depends on its address.
@@ -158,15 +159,17 @@ impl Translator {
     fn store(&mut self, file: &Path, kept: &Kept) {
         let mut bytes = FILE_MAGIC.to_vec();
         bytes.extend(postcard::to_allocvec(kept).expect("a translation serialises"));
-        let mut partial = file.as_os_str().to_owned();
-        partial.push(PARTIAL);
-        partial.push(std::process::id().to_string());
-        let partial = PathBuf::from(partial);
-        let written = std::fs::create_dir_all(file.parent().expect("a directory"))
-            .and_then(|()| std::fs::write(&partial, &bytes))
-            .and_then(|()| std::fs::rename(&partial, file));
+        let directory = file.parent().expect("a directory");
+        // A file that is not put in place is removed when it is dropped.
+        let written = std::fs::create_dir_all(directory).and_then(|()| {
+            let mut partial = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(FILE_MODE))
+                .tempfile_in(directory)?;
+            partial.write_all(&bytes)?;
+            partial.persist(file)?;
+            Ok(())
+        });
         if written.is_err() {
-            let _ = std::fs::remove_file(&partial);
             self.slow(reason::FILE_NOT_KEPT, file.display());
         }
     }
@@ -257,7 +260,7 @@ mod tests {
     use wcontainers_guest_cpu::{Guest, Native};
     use wcontainers_translator::{LookAhead, translate_native};
 
-    use super::{Translator, piece};
+    use super::{Kept, Translator, piece, reason};
 
     /// The knobs of the moving test: how many cases, and the seed.
     const MOVED_CASES: &str = "WCONTAINERS_MOVED_CASES";
@@ -543,5 +546,54 @@ mod tests {
         let code = usize::try_from(answer.code).expect("fits");
         link.bytes[code..].fill(u8::MAX);
         translation::piece(&link);
+    }
+
+    /// A translation that cannot be put in place (here a directory holds its name) is counted and warned, and
+    /// leaves nothing behind in the directory.
+    #[test]
+    fn a_store_that_fails_leaves_no_file() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let file = directory.path().join("taken");
+        std::fs::create_dir_all(file.join("inside")).expect("the directory is made");
+        let kept = Some(directory.path().to_owned());
+        let mut translator = Translator::new(LookAhead::Bounded(u32::MAX), kept);
+        translator.store(
+            &file,
+            &Kept {
+                translation: None,
+                page: 0,
+            },
+        );
+        assert_eq!(translator.slow.get(reason::FILE_NOT_KEPT), Some(&1));
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .expect("the directory is there")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(names, ["taken"]);
+    }
+
+    /// A kept translation's file holds what `load` reads back, with the mode `std::fs::write` gives a file.
+    #[test]
+    fn a_stored_file_is_read_back_with_the_usual_mode() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let (file, written) = (
+            directory.path().join("stored"),
+            directory.path().join("written"),
+        );
+        let mut translator = Translator::new(LookAhead::Bounded(u32::MAX), None);
+        let page = PAGE_SIZE;
+        translator.store(
+            &file,
+            &Kept {
+                translation: None,
+                page,
+            },
+        );
+        assert!(translator.slow.is_empty());
+        let kept = translator.load(&file).expect("the file reads back");
+        assert_eq!((kept.translation, kept.page), (None, page));
+        std::fs::write(&written, b"").expect("a file is written");
+        let mode = |path: &std::path::Path| std::fs::metadata(path).expect("a file").permissions();
+        assert_eq!(mode(&file), mode(&written));
     }
 }
