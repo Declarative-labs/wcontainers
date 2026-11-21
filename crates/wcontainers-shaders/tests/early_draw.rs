@@ -3,7 +3,7 @@
 //! first draw writes depth and stencil over part of the target, a second, whose pixel shader marks
 //! each pixel it runs for in a storage buffer, is tested against them. The marks and the colours must
 //! be equal. Seeded: `WCONTAINERS_EARLY_SEED` (default 1) and `WCONTAINERS_EARLY_CASES` seeds from it
-//! (default 32).
+//! (default 32), each a case in which Direct3D runs pixels.
 
 #![cfg(windows)]
 
@@ -561,27 +561,45 @@ fn early_tests_in_the_program_match_direct3d() {
         .map(|s| s.parse().unwrap())
         .unwrap_or(32);
     let mut failures = Vec::new();
+    let mut empty = 0;
     for seed in seed..seed + seeds {
-        let case = case(seed);
-        let (marks, texels) = direct3d(&gpu, &case);
-        let ran = marks.chunks(4).filter(|m| m != &[0; 4]).count();
-        for dxil in [false, true] {
-            let (our_marks, our_texels) = ours(&mut backend, &case, dxil);
-            let apart = marks
-                .chunks(4)
-                .zip(our_marks.chunks(4))
-                .filter(|(a, b)| a != b)
-                .count();
-            let (texels_apart, largest) = differ(&texels, &our_texels, Format::Rgba8Unorm);
-            println!(
-                "seed {seed} {}: Direct3D ran {ran} pixels; marks apart {apart}, texels apart \
-                 {texels_apart} (largest {largest})",
-                if dxil { "dxil" } else { "dxbc" },
-            );
-            if apart != 0 || texels_apart != 0 {
-                failures.push(format!("seed {seed} dxil {dxil}: {case:?}"));
+        // A case in which Direct3D runs no pixel is compared too, but it does not count: the next
+        // attempt of the seed is drawn until one runs pixels, and a seed with none is a failure.
+        let drawn = (0..ATTEMPTS).any(|attempt| {
+            let case = case(seed ^ (attempt << u32::BITS));
+            let (marks, texels) = direct3d(&gpu, &case);
+            let ran = marks.chunks(4).filter(|m| m != &[0; 4]).count();
+            for dxil in [false, true] {
+                let (our_marks, our_texels) = ours(&mut backend, &case, dxil);
+                let apart = marks
+                    .chunks(4)
+                    .zip(our_marks.chunks(4))
+                    .filter(|(a, b)| a != b)
+                    .count();
+                let (texels_apart, largest) = differ(&texels, &our_texels, Format::Rgba8Unorm);
+                println!(
+                    "seed {seed} attempt {attempt} {}: Direct3D ran {ran} pixels; marks apart \
+                     {apart}, texels apart {texels_apart} (largest {largest})",
+                    if dxil { "dxil" } else { "dxbc" },
+                );
+                if apart != 0 || texels_apart != 0 {
+                    failures.push(format!(
+                        "seed {seed} attempt {attempt} dxil {dxil}: {case:?}"
+                    ));
+                }
             }
+            empty += usize::from(ran == 0);
+            ran != 0
+        });
+        if !drawn {
+            failures.push(format!(
+                "seed {seed}: Direct3D ran no pixel in {ATTEMPTS} attempts"
+            ));
         }
     }
+    println!("{seeds} cases drawn, {empty} empty attempts compared besides");
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// Attempts of a seed before it counts as drawing nothing.
+const ATTEMPTS: u64 = 16;
