@@ -69,16 +69,22 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   know (the WebAssembly ceiling is the wasmtime crate's, from the translator's contract). A ruling
   or a shared constant in wcontainers-abi for that tier would settle it (Departures).
 
-- KF, third run: three of the runtime's start values are not built, each for a reason that
-  needs a decision or more than a start value (Departures): `timeOffsets` needs time namespaces
-  (every monotonic and boot time clock read, absolute timer, `/proc/uptime` and the vDSO's data
-  shifted per namespace); `sysctls` needs each namespaced sysctl Docker allows to become kernel
-  state the kernel honours (they are constants today, and `/proc/sys` is read-only); leaving a
-  default mount out needs the mounts that depend on it (`/dev/null` for the masks and the first
-  process's input, `/dev/pts` in `/dev`) settled. `execCPUAffinity` needs no start value: the
-  guest has one CPU, so a set holding CPU 0 changes nothing and one without it fails as runc's
-  `sched_setaffinity` would (EINVAL); the runtime can decide that alone.
-
+- KF, fourth run: every start value the runtime asked for is now built, with these limits,
+  each refused at start (counted, the start fails) where it is not built, so nothing pretends:
+  - sysctls: the IPC namespace's (`kernel.msg*`, `kernel.sem`, `kernel.shm{max,all,mni}`,
+    `fs.mqueue.*`) are state the IPC calls honour. Others fail the start, counted "sysctl not
+    built": EROFS where `/proc/sys` holds a fixed value (`net.core.somaxconn`), ENOENT where it
+    has no such file (all of `net.ipv4.*`, `kernel.shm_rmid_forced`). Docker's own defaults
+    include `net.ipv4.ip_unprivileged_port_start=0` and `net.ipv4.ping_group_range=0 2147483647`:
+    a runtime that passes Docker's defaults as given would fail the start, so it should leave
+    those two out until the network sysctls are built (ping sockets are not built; how the
+    kernel treats a non-root bind below port 1024 was not checked in this run).
+  - mounts: any of Docker's default mounts may be left out but `/dev` (runc would then make
+    the devices in the root file system) and one whose point lies in a mount left out (runc
+    would make the point there); a mount that is not one of Docker's (another `/dev/shm` size)
+    also fails the start, counted "mount not built". `--shm-size` therefore needs more work.
+  - timeOffsets: a time namespace of the container's own; its number on nsfs is made up (the
+    next after the container's others), as the others' are.
 - KF, second run: the literal fix list's step 2 wants `NANOSECONDS_PER_MICROSECOND` in the abi;
   named, the literal check finds wcontainers-arm64's test literal `1000` (tests/exact.rs:95,
   `square_roots_round_as_asked`, a square root, not a time) restating it, in a crate this track
@@ -111,6 +117,12 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, fourth run: origin/phase-1 and origin/phase-1-literals had nothing new. Built: the last
+three of the runtime's start values (the IPC namespace's sysctls as limits the calls honour;
+Docker's default mounts left out; a time namespace with offsets), each with tests against the
+reference where Docker can give it, and the literal fix list's clock tick. The baseline is 8159
+lines (8205 before). See "KF, fourth run".
 
 KF, third run: origin/phase-1 and origin/phase-1-literals had nothing new. Built: the second
 batch of the runtime's start values (capability sets, seccomp as Docker's profile, none or a
@@ -301,6 +313,49 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KF, fourth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new (04:45 UTC on the 21st). Heavy runs
+on the ARM64 machine (load 0 to 7 on 96 cores); the literal check and the Mac's part on the Mac
+(load 7 to 38, -j 4). Scratch folder kernel/kf4.
+
+The last three start values:
+- Sysctls (26a4a8d9): `StartOptions::sysctls`, (key, value) pairs written as runc writes
+  `/proc/sys/<key with dots as slashes>`. New module sysctl.rs: `IpcLimits`, the IPC namespace's
+  limits kept as state (`Ipc::limits`), parsed as Linux's handlers parse a write
+  (`proc_dointvec_minmax`'s integers with their ranges, `proc_doulongvec_minmax` for shmmax and
+  shmall, `proc_ipc_sem_dointvec`'s SEMMNI put back with ERANGE), and honoured by shmget,
+  msgget, msgsnd, msgrcv's copy, msgctl's IPC_SET and IPC_INFO, semget, semop, semctl's
+  IPC_INFO, mq_open (the defaults at most the most, `mqueue_get_inode`, found by the reference
+  test) and `/proc/sys`. Tests: sysctl.rs's unit tests; startoptions
+  `ipc_sysctls_match_reference` (guest sysctlipc.c: every limit shown and met, against `docker run
+  --sysctl` of all twelve), `a_sysctl_out_of_range_fails_the_start_as_on_linux` (Docker says
+  "invalid argument" for kernel.msgmni=40000, ours fails with EINVAL),
+  `a_sysctl_not_built_fails_the_start`.
+- Mounts (189604a5): `StartOptions::mounts`, which of `DOCKER_MOUNTS` the container has (default
+  all); `make_mounts` makes only those, with their points in `/dev`, their lines in the mount
+  table and Docker's masked and read-only paths only in mounted file systems; the namespace's
+  mqueue file system is kept for mq_open with `/dev/mqueue` left out, and sysfs's
+  `/sys/fs/cgroup` stays a directory with the cgroup mount left out. Tests:
+  `default_mounts_left_out_are_not_made`, `proc_and_sys_left_out_leave_their_directories_empty`,
+  `mounts_this_kernel_cannot_leave_out_fail_the_start`.
+- Time offsets (3685b5c1): `StartOptions::time_offsets`, an `Option<TimeOffsets>` (monotonic and
+  boot time as `__kernel_timespec`), checked as `proc_timens_set_offset` checks them. Built:
+  clock_gettime of the monotonic and boot time clocks, absolute clock_nanosleep, timer_settime,
+  timerfd_settime and futex waits (`timens_ktime_to_host`), `/proc/uptime` and sysinfo's uptime,
+  `/proc/<pid>/timens_offsets` (process directories only, as `tgid_base_stuff`), and the
+  container's own time namespace in `/proc/<pid>/ns`. Tests: `time_offsets_match_reference`
+  (guest timens.c), `time_offsets_out_of_range_fail_the_start`.
+- All 14 tests of startoptions.rs passed on the ARM64 machine (05:20 UTC, load 1; kf4/timens1.log).
+
+The literal fix list: step 2's tick (1c406638): `USER_HZ` moved from loader.rs to linux_extra.rs
+with `NANOSECONDS_PER_TICK` beside it, used for every `10_000_000` of the kernel. Microseconds
+still wait for the translator track's test (For the orchestrator). The literal baseline went from
+8205 to 8179 (sysctls), 8166 (mounts) and 8159 lines; the check passes (kf4/lit11.txt).
+
+Verdicts changed on purpose in this run: none of the old tests; new are startoptions' eight
+(three sysctl, three mount, two time offset tests) and sysctl.rs's two unit tests.
 
 ## KF, third run
 
@@ -5361,7 +5416,14 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-KF, after its third run (the bar as below):
+KF, after its fourth run:
+1. The literal fix list: step 2's milliseconds and microseconds (once the arm64 test's `1000` is
+   settled), then step 3 on, in the audit's order.
+2. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
+3. Network sysctls and other `/dev/shm` sizes (`--shm-size`), if the owner wants them (For the
+   orchestrator, fourth run).
+
+KF, after its third run (items 1 and part of 2 done in the fourth run):
 1. The start values not built (For the orchestrator, third run): sysctls, timeOffsets, leaving a
    default mount out. Each needs the orchestrator's or owner's word on its scope first.
 2. The literal fix list: step 2's other units (microseconds, once the arm64 test's `1000` is
