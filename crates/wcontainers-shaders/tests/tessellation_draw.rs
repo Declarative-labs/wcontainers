@@ -460,7 +460,9 @@ fn sets<B: Backend>(
 
 /// The scene drawn through the stage helper: the vertex and hull stages as compute, the tessellator,
 /// then the domain program's indexed indirect draw of its points.
-fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route) -> Vec<u8> {
+/// With `max`, each texel keeps the largest value drawn there in each channel, so the picture does not
+/// depend on the order its triangles are drawn in.
+fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -> Vec<u8> {
     use wcontainers_gpu::*;
     use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
@@ -504,7 +506,7 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route) -> Vec<u8> {
     let blend = b
         .create_blend(&BlendDesc {
             targets: [RenderTargetBlend {
-                blend: None,
+                blend: max.then_some((MAX_BLEND, MAX_BLEND)),
                 writes: ColorWrites::all(),
             }; 8],
             same_for_all: true,
@@ -793,8 +795,16 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route) -> Vec<u8> {
     out
 }
 
-/// The rig's tessellation scene with every patch drawn solid, by real Direct3D 11.
-fn direct3d_solid_scene(gpu: &Gpu) -> Vec<u8> {
+/// A channel's largest value: the fragment's or the target's.
+const MAX_BLEND: wcontainers_gpu::BlendComponent = wcontainers_gpu::BlendComponent {
+    src: wcontainers_gpu::BlendFactor::One,
+    dst: wcontainers_gpu::BlendFactor::One,
+    op: wcontainers_gpu::BlendOp::Max,
+};
+
+/// The rig's tessellation scene by real Direct3D 11, every patch drawn solid or, as the scene draws
+/// it, all but the last as lines; with `max`, blended as [`scene_ours`] blends.
+fn direct3d_scene(gpu: &Gpu, all_solid: bool, max: bool) -> Vec<u8> {
     let rig = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../wcontainers-graphics-test/shaders/dxbc");
     let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.dxbc"))).unwrap();
@@ -811,12 +821,30 @@ fn direct3d_solid_scene(gpu: &Gpu) -> Vec<u8> {
     let factors: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
     let constants = gpu.immutable(&factors, D3D11_BIND_CONSTANT_BUFFER).unwrap();
     let solid = gpu.rasterizer(&d3d11::solid()).unwrap();
+    let lines = gpu
+        .rasterizer(&D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_WIREFRAME,
+            ..d3d11::solid()
+        })
+        .unwrap();
+    let mut blend = D3D11_BLEND_DESC::default();
+    blend.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: max.into(),
+        SrcBlend: D3D11_BLEND_ONE,
+        DestBlend: D3D11_BLEND_ONE,
+        BlendOp: D3D11_BLEND_OP_MAX,
+        SrcBlendAlpha: D3D11_BLEND_ONE,
+        DestBlendAlpha: D3D11_BLEND_ONE,
+        BlendOpAlpha: D3D11_BLEND_OP_MAX,
+        RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    };
+    let blend = gpu.blend(&blend).unwrap();
     let c = &gpu.context;
     unsafe {
         c.HSSetConstantBuffers(0, Some(&[Some(constants)]));
-        c.RSSetState(&solid);
+        c.OMSetBlendState(&blend, None, u32::MAX);
     }
-    for (i, (hs, ds, points, _)) in scene_patches().into_iter().enumerate() {
+    for (i, (hs, ds, points, solid_fill)) in scene_patches().into_iter().enumerate() {
         let flat: Vec<f32> = points.iter().flatten().copied().collect();
         let _vertices = gpu.vertices(0, bytes_of(&flat), 28).unwrap();
         let topology = match points.len() {
@@ -825,6 +853,11 @@ fn direct3d_solid_scene(gpu: &Gpu) -> Vec<u8> {
             _ => D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST,
         };
         unsafe {
+            c.RSSetState(if solid_fill || all_solid {
+                &solid
+            } else {
+                &lines
+            });
             c.RSSetViewports(Some(&[d3d11::cell(i as u32, 4, 64.0)]));
             c.HSSetShader(&gpu.hs(&read(hs)).unwrap(), None);
             c.DSSetShader(&gpu.ds(&read(ds)).unwrap(), None);
@@ -835,6 +868,7 @@ fn direct3d_solid_scene(gpu: &Gpu) -> Vec<u8> {
     unsafe {
         c.HSSetShader(None, None);
         c.DSSetShader(None, None);
+        c.OMSetBlendState(None, None, u32::MAX);
     }
     gpu.read(&target, 0, 0).unwrap().to_rgba8().into_raw()
 }
@@ -873,7 +907,7 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
         &[D3D_FEATURE_LEVEL_11_0],
     )
     .unwrap();
-    let reference = direct3d_solid_scene(&gpu);
+    let reference = direct3d_scene(&gpu, true, false);
     keep(
         "tessellation-solid-direct3d",
         &reference,
@@ -881,7 +915,7 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
     );
     let mut backend = webgpu();
     for route in Route::BOTH {
-        let ours = scene_ours(&mut backend, true, route);
+        let ours = scene_ours(&mut backend, true, route, false);
         keep(
             &format!("tessellation-solid-ours-{}", route.extension()),
             &ours,
@@ -926,7 +960,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
     );
     let mut backend = webgpu();
     for route in Route::BOTH {
-        let ours = scene_ours(&mut backend, false, route);
+        let ours = scene_ours(&mut backend, false, route, false);
         keep(
             &format!("tessellation-scene-ours-{}", route.extension()),
             &ours,
@@ -941,6 +975,42 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
         }
         // The last patch is drawn solid.
         assert_eq!(cells[6][0], 0, "{route:?}");
+    }
+}
+
+/// The rig's tessellation scene, its patches drawn as lines but the last, blended to each channel's
+/// largest value so that the order of the triangles drawn does not count, against real Direct3D 11
+/// drawing the same: every texel equal. Lines are drawn by the back end's rule, which on wgpu's
+/// Direct3D 12 path is Direct3D's own.
+#[test]
+fn rig_tessellation_scene_draws_as_direct3d_11_does_in_any_order() {
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let reference = direct3d_scene(&gpu, false, true);
+    keep(
+        "tessellation-max-direct3d",
+        &reference,
+        wcontainers_gpu::Format::Rgba8Unorm,
+    );
+    let mut backend = webgpu();
+    for route in Route::BOTH {
+        let ours = scene_ours(&mut backend, false, route, true);
+        keep(
+            &format!("tessellation-max-ours-{}", route.extension()),
+            &ours,
+            wcontainers_gpu::Format::Rgba8Unorm,
+        );
+        let cells = by_cell(&reference, &ours);
+        eprintln!(
+            "tessellation scene, largest values, {route:?}, per cell (differ, missed, only ours, apart): {cells:?}"
+        );
+        for (i, c) in cells.iter().enumerate() {
+            assert_eq!(c[0], 0, "{route:?} cell {i}");
+        }
     }
 }
 
