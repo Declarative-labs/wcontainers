@@ -281,6 +281,17 @@ fn write<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, bytes: u32, low: u32, 
     e.sink().end();
 }
 
+/// For the instructions that save and load the unit's state, the first bytes `check_ends` checks alone (none
+/// for `fxsave` and `fxrstor`); none for any other.
+pub(crate) fn state_probe(i: &Instruction) -> Option<Option<u32>> {
+    use Mnemonic::*;
+    match i.iced.mnemonic() {
+        Fnstenv | Fnsave | Fldenv | Frstor => Some(Some(Layout::of(i).word)),
+        Fxsave | Fxsave64 | Fxrstor | Fxrstor64 => Some(None),
+        _ => None,
+    }
+}
+
 /// Check the `bytes` at `at` (at most two pages) for the access as the instructions that save and load the
 /// unit's state do on the reference (scratch `x7/probes/faults.c`): the first `first` bytes when given, then
 /// the last byte, then all, so that a fault names the byte where that one met it.

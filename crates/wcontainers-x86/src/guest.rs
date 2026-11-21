@@ -699,7 +699,28 @@ impl Guest for X86_64 {
                     }
                 }
             }
-            let last = start.wrapping_add(bytes - 1);
+            let mut last = start.wrapping_add(bytes - 1);
+            // The x87 state instructions' accesses fault by the piece that met the fault (`fpu::check_ends`):
+            // the first bytes, the last byte, or the whole.
+            if let Some(first) = crate::fpu::state_probe(&i) {
+                let base = access.segment.map_or(0, value);
+                let end = start.wrapping_sub(base).wrapping_add(bytes - 1);
+                let end = if access.address_bits == W32 {
+                    end & u64::from(u32::MAX)
+                } else {
+                    end
+                };
+                let end = end.wrapping_add(base);
+                match first {
+                    Some(first) if address.wrapping_sub(start) < first.into() => {
+                        last = start.wrapping_add(u64::from(first) - 1);
+                    }
+                    _ if address == end => {
+                        (start, last) = (end, end);
+                    }
+                    _ => {}
+                }
+            }
             // An access that wraps past the top of the address space is canonical at both ends.
             let canonical = crate::is_canonical(start) && crate::is_canonical(last);
             return if canonical {
