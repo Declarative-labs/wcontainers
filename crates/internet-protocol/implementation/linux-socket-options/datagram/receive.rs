@@ -89,7 +89,7 @@ pub fn receive<'a>(
     header.msg_iov = &mut vector;
     header.msg_iovlen = 1;
     header.msg_control = control.0.as_mut_ptr().cast();
-    header.msg_controllen = RECEIVE_CONTROL;
+    header.msg_controllen = RECEIVE_CONTROL as _;
     let flags = libc::MSG_DONTWAIT
         | if error_queue {
             libc::MSG_ERRQUEUE
@@ -101,10 +101,12 @@ pub fn receive<'a>(
     if length < 0 {
         return Err(last_host_error());
     }
+    // A u32 on musl, a usize on glibc.
+    let control_length: usize = header.msg_controllen as _;
     Ok(Message {
         length: length as usize,
         source: read_address(&name, header.msg_namelen),
-        control: &control.bytes()[..header.msg_controllen],
+        control: &control.bytes()[..control_length],
         control_truncated: header.msg_flags & libc::MSG_CTRUNC != 0,
     })
 }
@@ -145,7 +147,7 @@ impl<'a> Ancillary<'a> {
         let mut found = Self::default();
         let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
         header.msg_control = control.as_ptr() as *mut _;
-        header.msg_controllen = control.len();
+        header.msg_controllen = control.len() as _;
         let mut headers = usize::MIN;
         // SAFETY: the walk stays within `control`, whose messages the kernel wrote.
         let mut message = unsafe { libc::CMSG_FIRSTHDR(&header) };
@@ -153,7 +155,7 @@ impl<'a> Ancillary<'a> {
             // SAFETY: `message` points at a complete control message header inside `control`.
             let (level, kind, data) = unsafe {
                 let start = libc::CMSG_DATA(message);
-                let length = (*message).cmsg_len - (start as usize - message as usize);
+                let length = (*message).cmsg_len as usize - (start as usize - message as usize);
                 (
                     (*message).cmsg_level as u32,
                     (*message).cmsg_type as u32,

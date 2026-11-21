@@ -77,7 +77,7 @@ impl Control {
                 .cast::<u8>()
                 .add(self.length)
                 .cast::<libc::cmsghdr>();
-            (*header).cmsg_len = libc::CMSG_LEN(size as u32) as usize;
+            (*header).cmsg_len = libc::CMSG_LEN(size as u32) as _;
             (*header).cmsg_level = level as c_int;
             (*header).cmsg_type = kind as c_int;
             core::ptr::copy_nonoverlapping(

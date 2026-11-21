@@ -752,7 +752,7 @@ fn send_message(
         header.msg_iovlen = 1;
         if !control.is_empty() {
             header.msg_control = control.as_ptr() as *mut _;
-            header.msg_controllen = control.len();
+            header.msg_controllen = control.len() as _;
         }
         // SAFETY: every pointer in the header describes a buffer that outlives the call.
         unsafe { libc::sendmsg(fd.as_raw_fd(), &header, flags) }
