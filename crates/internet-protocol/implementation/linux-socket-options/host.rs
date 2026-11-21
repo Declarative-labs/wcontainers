@@ -1,8 +1,8 @@
 //! What every host build shares: socket2 handles, the host's errors as Linux's, and the counted refusals.
 
-use std::collections::BTreeMap;
 use std::os::fd::BorrowedFd;
-use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::io::Errno;
 use socket2::SockRef;
@@ -89,21 +89,54 @@ fn linux_number(errno: Errno) -> i32 {
     i32::from(linux as u16)
 }
 
-/// The requests a host implementation could not honour, counted by reason, each reason warned of at its first count.
-#[derive(Debug, Default)]
+/// How many different reasons one value counts apart, more than any host implementation names.
+const REASON_SLOTS: usize = 64;
+
+/// Where the reasons past [`REASON_SLOTS`] are counted, in the last slot.
+const MORE_REASONS: &str =
+    "more reasons were counted than a host implementation's counters hold apart";
+
+#[derive(Debug)]
+struct Slot {
+    reason: OnceLock<&'static str>,
+    count: AtomicU64,
+}
+
+/// The requests a host implementation could not honour, counted by reason without a lock, each reason warned of at
+/// its first count.
+#[derive(Debug)]
 pub struct Shortfalls {
-    counts: Mutex<BTreeMap<&'static str, u64>>,
+    slots: [Slot; REASON_SLOTS],
+}
+
+impl Default for Shortfalls {
+    fn default() -> Self {
+        Self {
+            slots: [const {
+                Slot {
+                    reason: OnceLock::new(),
+                    count: AtomicU64::new(0),
+                }
+            }; REASON_SLOTS],
+        }
+    }
 }
 
 impl Shortfalls {
     pub fn count(&self, reason: &'static str) {
-        let mut counts = self
-            .counts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let count = counts.entry(reason).or_default();
-        *count += 1;
-        if *count == 1 {
+        let (last, named) = self.slots.split_last().expect("reason slots");
+        let slot = named
+            .iter()
+            .find(|slot| {
+                // A free slot is taken for the reason; one another thread took for it at once is the same.
+                let held = *slot.reason.get_or_init(|| reason);
+                core::ptr::eq(held, reason) || held == reason
+            })
+            .unwrap_or_else(|| {
+                let _ = last.reason.set(MORE_REASONS);
+                last
+            });
+        if slot.count.fetch_add(1, Ordering::Relaxed) == 0 {
             eprintln!("warning: {reason}");
         }
     }
@@ -115,18 +148,20 @@ impl Shortfalls {
     }
 
     pub fn readings(&self) -> Vec<CounterReading> {
-        let counts = self
-            .counts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        counts
+        let mut readings: Vec<CounterReading> = self
+            .slots
             .iter()
-            .map(|(&reason, &count)| CounterReading {
-                reason,
-                detail: 0,
-                count,
-                nanoseconds: 0,
+            .filter_map(|slot| {
+                Some(CounterReading {
+                    reason: slot.reason.get()?,
+                    detail: 0,
+                    count: slot.count.load(Ordering::Relaxed),
+                    nanoseconds: 0,
+                })
             })
-            .collect()
+            .filter(|reading| reading.count > 0)
+            .collect();
+        readings.sort_by_key(|reading| reading.reason);
+        readings
     }
 }
