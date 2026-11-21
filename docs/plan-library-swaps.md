@@ -37,12 +37,14 @@ of why, and our code stays. Each new dependency's licence goes in the status fil
 
 ## L4. ARM64 encoder field placement (wcontainers-arm64 encode.rs)
 
-- `word()`, `field_of()` and `width()` (a HashMap and a string search over Arm's forms table)
-  become typed calls into aarchmrs-instructions (BSD-3-Clause, generated from the same Arm
-  release), each wrapped in our `DoesNotFit` check, which the library does not do.
+- `word()`, `field_of()` and `width()` (a HashMap and a string search over Arm's forms table for every
+  field of every word) go. The milestone compares aarchmrs-instructions (BSD-3-Clause, generated from the
+  same Arm release, no fit checks) on three forms with a table of our own made from the forms data we
+  already ship, and takes one; either way our `DoesNotFit` check wraps every field.
 - What stays ours: forms.rs and a64-forms.txt, logical immediates, move sequences, branch scaling,
   the lookup from a word to its form, replace, retarget and moves_of_x0.
-- Proven by the encoder's existing tests and the translator's tests that use it.
+- Proven by the encoder's existing tests and the translator's tests that use it, and a new seeded test
+  that holds every builder to the old by-name placement over values that fit and that do not.
 
 ## Order
 
