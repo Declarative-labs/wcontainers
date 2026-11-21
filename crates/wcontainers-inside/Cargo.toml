@@ -1,0 +1,61 @@
+[package]
+name = "wcontainers-inside"
+description = "The program the wcontainers native back end runs in a virtual machine's privileged level: its floor (entry, page tables, interrupts, the link to the host)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+# Where the translated code finds the entry mirror.
+wcontainers-arm64 = { path = "../wcontainers-arm64", default-features = false }
+# The position map, which stops are resolved with.
+wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = false }
+# The kernel, which runs inside.
+wcontainers-kernel = { path = "../wcontainers-kernel" }
+# The loop, which runs inside beside the kernel.
+wcontainers-runtime = { path = "../wcontainers-runtime", default-features = false }
+# The kernel test crate's policy, for the test program `native-kernel` only.
+wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy", optional = true }
+# The container's files and start as the link carries them.
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
+# The position map, the container's files and its start as the link carries them.
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+# The link's messages as words.
+zerocopy.workspace = true
+# Page table entry bits.
+aarch64-paging = { version = "0.12.3", default-features = false }
+# System register fields.
+aarch64-cpu = "12.0.0"
+arm-sysregs = { version = "0.5.2", features = ["el1"] }
+# The interrupt controller.
+arm-gic = "0.11.0"
+safe-mmio = "0.4.0"
+# Locks shared by the virtual CPUs.
+spin = { version = "0.10.0", default-features = false, features = ["spin_mutex", "lock_api"] }
+# What each range of a process allows, and which ranges show a shared block.
+rangemap = { version = "1.8.0", default-features = false }
+# The hash of the positions of a CPU side's stops.
+rustc-hash = { version = "2.1.3", default-features = false }
+# The heap.
+talc = { version = "5.1.1", default-features = false }
+
+[features]
+# The test program `native-kernel`, which runs the kernel test crate's policy.
+kernel-test = ["dep:wcontainers-kernel-test-policy"]
+
+[[bin]]
+name = "native-kernel"
+required-features = ["kernel-test"]
+
+[build-dependencies]
+wcontainers-abi.workspace = true
+# The layout, which the build script reads too.
+wcontainers-arm64 = { path = "../wcontainers-arm64", default-features = false }
+# Assembles Arm's memcpy.
+cc = "1.11.2"
+
+[lints]
+workspace = true

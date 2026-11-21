@@ -950,7 +950,7 @@ const MASK_REGISTERS: u64 = 8;
 const OP_MASKS: u64 = MASK_REGISTERS - 1;
 /// Vector registers EVEX can name, and the others.
 const EVEX_VECTORS: u64 = 32;
-const VECTORS: u64 = 16;
+const VECTORS: u64 = wcontainers_x86::Fxsave::ZERO.xmm.len() as u64;
 const MMX_REGISTERS: u64 = 8;
 const X87_REGISTERS: u64 = wcontainers_x86::x87::REGISTERS as u64;
 const TILES: u64 = 8;
@@ -2596,7 +2596,7 @@ fn store_string_cases() -> Vec<Designed> {
     use wcontainers_x86::{RAX, RCX, RDI};
     const VALUE: u64 = 0xfedc_ba98_7654_3210;
     // Past the vectors, a tail of one element.
-    const ELEMENTS_BYTES: u64 = 2000;
+    const ELEMENTS_BYTES: u64 = 2 * wcontainers_abi::KIB;
     const NAMES: [&str; 3] = [
         "rep stosw of a word not one byte repeated",
         "rep stosd of a doubleword not one byte repeated",

@@ -1146,17 +1146,40 @@ code	crates/wcontainers-guest-cpu/src/translate.rs	int	SyscallRegisters	6
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"address above the host's cap"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"continued after stack loss"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"engine stack nearly full"
-code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"exact floating point requested"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"fault without exact registers"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"jump through a register not recognised"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"left to an address"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"loop not proven"
-code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"memory fault"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"software fused multiply-add"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"stopped by the flag"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"system call not implemented"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"translated at run time"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"unsupported instruction reached"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"0: add x{counter}, x{counter}, #1\n b 0b"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"adr x1, .\n ldr x0, [x1]\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"br x1"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"ldr x0, [x1]\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"movz x0, #{mark_a}\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"movz x0, #{mark_b}\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"mrs x0, tpidrro_el0\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"msr tpidrro_el0, x1\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"str x2, [x1]\n svc #0"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".balign {instruction}"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".global snippet_"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".global snippet_"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".section .rodata.snippets, \"a\""
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	":"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"C"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"C"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"_end"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"_end:"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
+code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
+code	crates/wcontainers-inside/src/floor/entry.rs	str	(file)	r#"\n.section .text.entry, "ax"\n.global _start\n_start:\n    bl floor_main\n0:  b 0b\n\n.section .text.vectors, "ax"\n.balign {vectors_bytes}\n.global floor_ve… #d67f09bc5e7a1c6f
+code	crates/wcontainers-inside/src/floor/mod.rs	str	doorbell	"hvc #0"
+code	crates/wcontainers-inside/src/floor/mod.rs	str	make_code_visible	"dc cvau, {0}"
+code	crates/wcontainers-inside/src/floor/mod.rs	str	make_code_visible	"ic ivau, {0}"
 code	crates/wcontainers-kernel-test/backend/src/main.rs	int	listen	4
 code	crates/wcontainers-kernel-test/backend/src/main.rs	int	listen	4
 code	crates/wcontainers-kernel-test/backend/src/main.rs	int	listen	4
@@ -1305,7 +1328,6 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	int	type_bits	0o060000
 code	crates/wcontainers-kernel-test/src/busybox.rs	int	type_bits	0o100000
 code	crates/wcontainers-kernel-test/src/busybox.rs	int	type_bits	0o120000
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"/"
-code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"\n"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"root in memory"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"root on the backend"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compared	"/dev"
@@ -7467,7 +7489,6 @@ policy	generated	crates/wcontainers-kernel/src/linux/ptrace.rs
 policy	generated	crates/wcontainers-kernel/src/linux/system.rs
 policy	generated	crates/wcontainers-kernel/src/syscall/list.rs
 redefinition	crates/wcontainers-kernel-test/backend/src/main.rs	int	PORT	PORT = 9000
-redefinition	crates/wcontainers-kernel-test/src/backend.rs	int	PORT	PORT = 9000
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	MAX_RW_COUNT	MAX_RW_COUNT = 2147479552
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	linux_extra_ipc::IPC_NOWAIT	IPC_NOWAIT = 2048
 redefinition	crates/wcontainers-kernel-test/src/network.rs	int	EADDRINUSE	EADDRINUSE = 98
@@ -7497,7 +7518,6 @@ redefinition	crates/wcontainers-kernel/src/linux_extra.rs	int	SIGNALS	SIGNALS = 
 redefinition	crates/wcontainers-kernel/src/process.rs	int	SIGNALS	SIGNALS = 64
 redefinition	crates/wcontainers-kernel/src/syscall/futex.rs	int	ROBUST_LIST_LIMIT	ROBUST_LIST_LIMIT = 2048
 redefinition	crates/wcontainers-kernel/src/syscall/signals.rs	int	SIGNALS	SIGNALS = 64
-redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	ALIGN	ALIGN = 4
 redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	MAX_LINKS	MAX_LINKS = 32
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTED	SS_CONNECTED = 3
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTING	SS_CONNECTING = 2
@@ -7531,21 +7551,9 @@ redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	<Arm64 as
 redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	<Arm64 as GuestTest>::reference_stop::SIGSEGV	SIGSEGV = 11
 redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	<Arm64 as GuestTest>::reference_stop::SIGSYS	SIGSYS = 31
 redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	<Arm64 as GuestTest>::reference_stop::SIGTRAP	SIGTRAP = 5
-redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	FPSR	FPSR = 67
-redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	PC	PC = 32
-redefinition	crates/wcontainers-translator-test/src/guest/arm64.rs	int	SP	SP = 31
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	<X86_64 as GuestTest>::reconcile::R11	R11 = 11
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	BUS_ADRALN	BUS_ADRALN = 1
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	FCW	FCW = 21
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	FPE_INTDIV	FPE_INTDIV = 1
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	FS	FS = 18
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	FSW	FSW = 22
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	FTW	FTW = 23
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	GS	GS = 19
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	MXCSR	MXCSR = 20
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	R0	R0 = 24
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	RFLAGS	RFLAGS = 17
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	RIP	RIP = 16
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	RSP	RSP = 4
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	SIGBUS	SIGBUS = 7
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	SIGFPE	SIGFPE = 8
@@ -7556,8 +7564,6 @@ redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	SIGTRAP	
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	SI_KERNEL	SI_KERNEL = 128
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	TRAP_BRKPT	TRAP_BRKPT = 1
 redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	TRAP_TRACE	TRAP_TRACE = 2
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	XMM	XMM = 32
-redefinition	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	YMMH	YMMH = 48
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	AT_HWCAP	AT_HWCAP = 16
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	AT_HWCAP2	AT_HWCAP2 = 26
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_EXECFN	AT_EXECFN = 31
@@ -7612,8 +7618,6 @@ restated	crates/wcontainers-kernel-test/tests/backend.rs	int	backend_notices_are
 restated	crates/wcontainers-kernel-test/tests/backend.rs	str	messages_per_call	"none"
 restated	crates/wcontainers-kernel-test/tests/boundary.rs	str	generated_files_are_current	"{} is out of date; run `cargo run -p wcontainers-kernel-test --bin generate-linux`"
 restated	crates/wcontainers-kernel-test/tests/boundary.rs	str	tree	"none"
-restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	files	"10000"
-restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	files	"8192"
 restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	system	"env"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	int	numbers_above_linux_calls_match_reference	1000
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_above_linux_calls_match_reference	"1000"
@@ -7651,6 +7655,7 @@ restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	384
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	387
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	400
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	432
+restated	crates/wcontainers-literals/src/scan.rs	str	CARGO_OUT_DIR	"OUT_DIR"
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576
@@ -7784,6 +7789,7 @@ restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_guest_sees_the_hon
 restated	crates/wcontainers-wasmtime/tests/turns.rs	int	LIMIT	1000
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	VIEWS	0x40_0000
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	read_through_the_other	0x10_0000
+role	crates/wcontainers-hypervisor/src/hvf.rs	int	code	0
 role	crates/wcontainers-kernel-test/backend/src/main.rs	int	mount	1
 role	crates/wcontainers-kernel-test/src/bin/ltp.rs	int	main	2
 role	crates/wcontainers-kernel-test/src/bin/ltp.rs	int	usage	2

@@ -1,27 +1,47 @@
 //! The runtime: one loop that drives the kernel, an executor that runs the guest's instructions
 //! ([`Execution`]) and what surrounds them ([`System`]). Both are type parameters, resolved at compile
 //! time; the loop knows no executor and no host.
+//!
+//! Without the `std` feature only the loop is built, for an executor whose loop runs where there is no
+//! standard library.
+
+#![cfg_attr(not(feature = "std"), no_std)]
 
 use core::ops::ControlFlow;
+#[cfg(feature = "std")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Cpu, Exit, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::{Kernel, Standard};
 
+#[cfg(feature = "std")]
 mod arrivals;
+#[cfg(feature = "std")]
 mod container;
+#[cfg(feature = "std")]
 mod errno;
+#[cfg(feature = "std")]
 pub mod files;
+#[cfg(feature = "std")]
 pub mod image;
+#[cfg(feature = "std")]
 mod net;
+#[cfg(feature = "std")]
 mod spec;
+#[cfg(feature = "std")]
 mod system;
 
+#[cfg(feature = "std")]
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeConfig};
+#[cfg(feature = "std")]
 pub use image::Image;
+#[cfg(feature = "std")]
 pub use oci_spec;
+#[cfg(feature = "std")]
 pub use spec::{MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, base_spec, bind_mount, spec_from_json};
+#[cfg(feature = "std")]
 pub use system::{LocalSystem, Warned};
 
 /// A terminal's size in characters.
@@ -43,9 +63,11 @@ pub enum Turn {
 
 /// Ends a free turn from any host thread: raises the stop flag of the thread running, or of the next
 /// one to run when none runs.
+#[cfg(feature = "std")]
 #[derive(Clone, Default)]
 pub struct StopFlag(Arc<Raising>);
 
+#[cfg(feature = "std")]
 #[derive(Default)]
 struct Raising {
     raised: AtomicBool,
@@ -53,6 +75,7 @@ struct Raising {
     running: Mutex<usize>,
 }
 
+#[cfg(feature = "std")]
 impl StopFlag {
     pub fn raise(&self) {
         self.0.raised.store(true, Ordering::SeqCst);
@@ -181,9 +204,11 @@ pub trait System: wcontainers_kernel::System {
     fn standard(&self, terminal: Option<TerminalSize>) -> Standard;
     /// The executor's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
+    #[cfg(feature = "std")]
     fn stop_flag(&self, _flag: StopFlag) {}
     /// Serves a directory of the host as the kernel's file backend, for a bind mount of the
     /// configuration, before the first turn. A system that cannot answers `Unsupported`.
+    #[cfg(feature = "std")]
     fn serve_directory(&self, _source: &std::path::Path) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
     }

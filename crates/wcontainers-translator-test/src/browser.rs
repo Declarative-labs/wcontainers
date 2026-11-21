@@ -4,7 +4,7 @@
 use crate::guest::GuestTest;
 use crate::layout::SIGNALLED;
 use crate::programs::{Blob, Ran, placement};
-use crate::reference::{release_build_with, target_folder};
+use crate::reference::{FEATURES_FLAG, release_build_with, target_folder};
 use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,8 +23,6 @@ const PACKAGE: &str = "browser";
 /// Rust's name for the target the browser translator is built for, and the module that build makes.
 const MODULE_TRIPLE: &str = "wasm32-unknown-unknown";
 const MODULE: &str = "wcontainers_browser.wasm";
-/// Cargo's flag that turns on a package's features; the browser translator's name its guest.
-const FEATURES_FLAG: &str = "--features";
 /// Where the page's runs keep their files, a folder for each, under the browser build.
 const CASES: &str = "cases";
 /// The files of a case's folder the runner loads: the translator module, the blob and its stack.
@@ -35,7 +33,7 @@ const STACK_FILE: &str = "stack.bin";
 const SETUP_FILE: &str = "case.json";
 const CASES_FILE: &str = "cases.bin";
 /// The folder of instruction cases under [`CASES`].
-const INSTRUCTION_CASES: &str = "instructions";
+const INSTRUCTION_CASES: &str = "instruction-cases";
 /// The program that runs the browser runner's script, and that script beside this crate's manifest.
 const NODE: &str = "node";
 const RUNNER_SCRIPT: &str = "run.mjs";
@@ -55,7 +53,7 @@ fn target() -> PathBuf {
 pub const FINISHED: &str = "finished";
 pub const SYSCALL: &str = "system call";
 pub const SINGLE_STEP: &str = "single step";
-pub const MEMORY_FAULT: &str = "memory fault";
+pub use wcontainers_guest_cpu::reason::MEMORY_FAULT;
 pub const STACK_FAULT: &str = "stack fault";
 pub const NO_CODE: &str = "no code";
 const NO_EXACT_REGISTERS: &str = "fault without exact registers";

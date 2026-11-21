@@ -22,6 +22,8 @@ rustc-hash = "2.1.3"
 # Makes `Omit` and `translate_omitting` public: output without some checks, only for measuring what each
 # check costs. That output is not correct, so nothing but measuring tools turns this on.
 measure = []
+# The native output: host code of the guest's own architecture (docs/native.md section 3).
+native = []
 
 [lints]
 workspace = true

@@ -65,7 +65,9 @@ const CARGO_PROGRAM: &str = "cargo";
 const QUIET_RELEASE_COMMAND: [&str; 3] = ["build", "--release", "--quiet"];
 pub const TARGET_FLAG: &str = "--target";
 pub const TARGET_FOLDER_FLAG: &str = "--target-dir";
-const RELEASE: &str = "release";
+pub const RELEASE: &str = "release";
+/// Cargo's flag that turns on a package's features.
+pub const FEATURES_FLAG: &str = "--features";
 
 /// Mount the host folder `host` read only at `inside` in a container.
 pub fn mount(command: &mut Command, host: &Path, inside: &str) {

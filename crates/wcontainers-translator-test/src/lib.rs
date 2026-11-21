@@ -17,3 +17,7 @@ pub mod progress;
 pub mod reference;
 pub mod runner;
 pub mod seeded;
+
+/// What a run on the guest's CPU itself, not through a translation, is called in the tools' commands and
+/// reports.
+pub const NATIVE: &str = "native";

@@ -24,7 +24,7 @@ use wcontainers_x86::X86_64;
 const HEADER_WORD: usize = size_of::<u64>();
 /// The commands.
 const DUMP: &str = "dump";
-const NATIVE: &str = "native";
+use wcontainers_translator_test::NATIVE;
 const WASMTIME: &str = "wasmtime";
 const CHROME: &str = "chrome";
 const ROUNDS: &str = "rounds";

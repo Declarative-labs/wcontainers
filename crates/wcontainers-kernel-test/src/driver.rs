@@ -15,6 +15,9 @@ use wcontainers_kernel::{
     AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
     SignalInformation, Standard, Start, System, SystemCallResponse, TaskId,
 };
+use wcontainers_kernel_test_policy::{
+    PROGRESS_PICOSECONDS, REPEATABLE_START_NANOSECONDS, Schedule, TURN_NANOSECONDS,
+};
 use wcontainers_runtime::{Ending, Execution, TerminalSize, Turn};
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
@@ -230,7 +233,7 @@ pub struct Run {
 /// `NoHooks` the kernel's own provided defaults answer every hook and task id call.
 pub struct TestHost<H = NoHooks> {
     started: Instant,
-    /// How far the clocks have jumped ahead.
+    /// How far the wall clock has jumped ahead.
     skipped: u64,
     random: Mutex<StdRng>,
     /// The other sides of the container's ends.
@@ -244,7 +247,7 @@ pub struct TestHost<H = NoHooks> {
     wall_base: u64,
     /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
     /// backend's answers arrive.
-    schedule: StdRng,
+    schedule: Schedule,
     /// With a repeatable clock, the time the kernel's work on a turn's end takes, passed at the
     /// next reading of the clock.
     kernel_work: AtomicU64,
@@ -310,7 +313,7 @@ impl TestHost {
             warnings: Mutex::default(),
             virtual_now: None,
             wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
+            schedule: Schedule::new(seed),
             kernel_work: AtomicU64::default(),
             backend: Mutex::default(),
             network: Default::default(),
@@ -326,7 +329,7 @@ impl TestHost {
     /// so the kernel's choices repeat exactly for a seed, with the wall clock reading `wall_start`
     /// (the machine's clock when none) at the start.
     pub fn repeatable(seed: u64, wall_start: Option<u64>) -> Self {
-        let start = Duration::from_secs(1).as_nanos() as u64;
+        let start = REPEATABLE_START_NANOSECONDS;
         let mut host = Self {
             virtual_now: Some(AtomicU64::new(start)),
             ..Self::new(seed)
@@ -380,7 +383,7 @@ impl<H: Send> TestHost<H> {
         if let Some(now) = &mut self.virtual_now {
             *now.get_mut() = 0;
         }
-        self.schedule = StdRng::seed_from_u64(seed ^ SCHEDULE_SALT);
+        self.schedule = Schedule::new(seed);
         *self.kernel_work.get_mut() = 0;
         // A new host has none of the old one's connections; its published ports go on.
         let network = held(&mut self.network).moved();
@@ -879,7 +882,7 @@ where
     }
 
     fn choices(&mut self) -> &mut StdRng {
-        &mut self.schedule
+        self.schedule.draws()
     }
 
     fn change_served(&mut self, path: &str, bytes: &[u8]) {
@@ -1291,7 +1294,7 @@ where
     fn turn_live(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
         // The seed chooses where in its slice each turn ends, so a run repeats for a seed and
         // threads interleave differently under different seeds.
-        let mut limit = slice_nanoseconds.map(|slice| self.schedule.random_range(1..=slice.max(1)));
+        let mut limit = self.schedule.turn_limit(slice_nanoseconds);
         // An answer owed arrives during the turn, at a moment drawn from the seed: the host raises
         // the running thread's stop flag then, as the boundary says.
         if self
@@ -1299,7 +1302,10 @@ where
             .as_ref()
             .is_some_and(|backend| backend.waiting())
         {
-            let arrival = self.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
+            let arrival = self
+                .schedule
+                .draws()
+                .random_range(1..=ANSWER_ARRIVES_WITHIN);
             limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
         }
         Turn::Counted { limit }
@@ -1319,7 +1325,7 @@ where
             .backend()
             .as_ref()
             .is_some_and(|backend| backend.waiting())
-            && self.schedule.random_bool(ANSWER_NOW_CHANCE)
+            && self.schedule.draws().random_bool(ANSWER_NOW_CHANCE)
         {
             deliver(kernel, cpu, self);
         }
@@ -1441,7 +1447,8 @@ impl<H: BetweenSteps + Send> TestHost<H>
 where
     Self: System,
 {
-    fn standard(&self) -> Standard {
+    /// What descriptors 0 to 2 of the first process are: the ends this host holds the other sides of.
+    pub fn standard(&self) -> Standard {
         lock(&self.streams).client.standard()
     }
 
@@ -1477,8 +1484,8 @@ where
         if self.replaying() {
             return;
         }
-        let picoseconds = self.schedule.random_range(INSTRUCTION_PICOSECONDS);
-        let kernel = self.schedule.random_range(TURN_NANOSECONDS);
+        let picoseconds = self.schedule.draws().random_range(PROGRESS_PICOSECONDS);
+        let kernel = self.schedule.draws().random_range(TURN_NANOSECONDS);
         if let Some(now) = &mut self.virtual_now {
             *now.get_mut() += progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND;
             *self.kernel_work.get_mut() = kernel;
@@ -1752,9 +1759,8 @@ where
     }
 }
 
-/// Mixed into a run's seed for the schedule's choices and the moments of saves and signals, so
-/// that each draws apart from the host's own randomness.
-const SCHEDULE_SALT: u64 = 0x5eed;
+/// Mixed into a run's seed for the moments of saves and signals, so that each draws apart from the
+/// host's own randomness (the schedule's choices are the policy's, `SCHEDULE_STREAM`).
 const SAVES_SALT: u64 = 0x5a7e;
 const SIGNALS_SALT: u64 = 0x5197;
 const NOTICES_SALT: u64 = 0x6e07;
@@ -1767,11 +1773,9 @@ const NOTICES_APART: u64 = 10;
 /// The chance that one more owed answer arrives in the same turn.
 const ANSWER_NOW_CHANCE: f64 = 0.5;
 
-/// What one instruction on the CPU side takes, in picoseconds, and what the kernel's work on a
-/// turn's end takes, in nanoseconds.
-const INSTRUCTION_PICOSECONDS: Range<u64> = 500..1500;
+/// Picoseconds in a nanosecond, for one instruction's time on the CPU side (the policy's
+/// `PROGRESS_PICOSECONDS`); the kernel's work on a turn's end takes the policy's `TURN_NANOSECONDS`.
 const PICOSECONDS_PER_NANOSECOND: u64 = 1000;
-const TURN_NANOSECONDS: Range<u64> = 500..1500;
 
 /// How much of a waiting host's wait for a deadline passes between its marks of progress.
 const WAIT_STEP: Duration = Duration::from_secs(1);
@@ -1935,7 +1939,7 @@ fn deliver_live<H: Send>(
 {
     let Some(message) = held(&mut host.backend)
         .as_mut()
-        .and_then(|backend| backend.next(&mut host.schedule))
+        .and_then(|backend| backend.next(host.schedule.draws()))
     else {
         return;
     };

@@ -242,9 +242,9 @@ pub enum Library {
 pub(crate) const LINK_ONLY_WHAT_IS_REACHED: &str = "-Wl,--gc-sections";
 
 /// zig's flag that names the target to build C for, which `GuestTest::C_TARGET` follows.
-pub(crate) const ZIG_TARGET_FLAG: &str = "-target";
+pub const ZIG_TARGET_FLAG: &str = "-target";
 /// zig's commands for C and for C++.
-pub(crate) const C_DRIVER: &str = "cc";
+pub const C_DRIVER: &str = "cc";
 const CPP_DRIVER: &str = "c++";
 /// The compiler's flag that leaves out every sanitizer (zig turns some on by default).
 pub(crate) const NO_SANITIZERS: &str = "-fno-sanitize=all";
@@ -253,7 +253,7 @@ pub(crate) const NO_BUILD_ID: &str = "-Wl,--build-id=none";
 /// The linker option, given through the compiler, that names the link script, joined to its path.
 pub(crate) const LINK_SCRIPT: &str = "-Wl,-T,";
 /// The compiler's flag that names the file it writes.
-pub(crate) const OUTPUT_FLAG: &str = "-o";
+pub const OUTPUT_FLAG: &str = "-o";
 /// The extension of a linked program.
 pub(crate) const ELF_EXTENSION: &str = "elf";
 

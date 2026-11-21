@@ -10,11 +10,15 @@ use wcontainers_abi::{RegisterBlock, THREAD_BLOCK_SIZE};
 use wcontainers_guest_cpu::Personality;
 
 #[cfg(feature = "translate")]
+pub mod carry;
+#[cfg(feature = "translate")]
 mod decode;
 #[cfg(feature = "translate")]
 mod decode_forms;
 #[cfg(feature = "translate")]
 mod decode_simd;
+#[cfg(feature = "translate")]
+pub mod encode;
 #[cfg(feature = "translate")]
 pub mod exact;
 #[cfg(feature = "translate")]
@@ -35,15 +39,20 @@ mod instruction;
 mod meaning;
 #[cfg(feature = "translate")]
 mod memory;
+pub mod mirror;
+#[cfg(feature = "translate")]
+mod native;
 #[cfg(feature = "translate")]
 mod simd;
+pub mod thread_state;
+pub use thread_state::{FPCR_BITS, FPSR_BITS};
 #[cfg(feature = "translate")]
 mod vector;
 
 #[cfg(feature = "translate")]
 pub use decode::decode;
 #[cfg(feature = "translate")]
-pub use decode_forms::{CACHE_TYPE, MAIN_ID, ZERO_BLOCK_ID};
+pub use decode_forms::{MAIN_ID, ZERO_BLOCK_ID};
 #[cfg(feature = "translate")]
 pub use guest::Shape;
 #[cfg(feature = "translate")]
@@ -73,6 +82,11 @@ pub fn reads_float_status(code: &[u8]) -> bool {
         )
     })
 }
+
+/// The value of `CTR_EL0` we present: 64 byte cache lines, a physically indexed instruction cache, and both
+/// the clean to the point of unification (IDC clear) and the instruction cache invalidation (DIC clear)
+/// required, so programs that write code tell us with `ic ivau`.
+pub const CACHE_TYPE: u64 = 0x8444_c004;
 
 /// The ARM64 guest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

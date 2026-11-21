@@ -143,7 +143,7 @@ pub const DOCKER_FILES: &[&str] = &["etc/hostname", "etc/hosts", "etc/resolv.con
 
 /// An image's files as a container starts with them: the files Docker mounts over the image's
 /// placeholders have the mode of the host's files, and `/etc/hostname` the container's name.
-fn as_started(files: &[File]) -> impl Iterator<Item = File> + '_ {
+pub fn as_started(files: &[File]) -> impl Iterator<Item = File> + '_ {
     files.iter().map(|file| {
         let mut file = file.clone();
         if DOCKER_FILES[..3].contains(&file.path.as_str()) {

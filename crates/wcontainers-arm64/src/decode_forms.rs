@@ -2,6 +2,7 @@
 //! operands. Used for every family `yaxpeax-arm` leaves out or gets wrong; the rest goes through
 //! [`crate::decode`]'s first path.
 
+use crate::CACHE_TYPE;
 use crate::forms::Form;
 use crate::instruction::*;
 
@@ -197,10 +198,6 @@ fn system_instruction(f: &Fields) -> Instruction {
     }
 }
 
-/// The value of `CTR_EL0` we present: 64 byte cache lines, a physically indexed instruction cache, and both
-/// the clean to the point of unification (IDC clear) and the instruction cache invalidation (DIC clear)
-/// required, so programs that write code tell us with `ic ivau`.
-pub const CACHE_TYPE: u64 = 0x8444_c004;
 /// The value of `DCZID_EL0`: `dc zva` zeroes 64 bytes.
 pub const ZERO_BLOCK_ID: u64 = 4;
 /// `MIDR_EL1` as we present it: implementer 0x41 (Arm), architecture 0xf, part 0xd08, a generic ARMv8 core.

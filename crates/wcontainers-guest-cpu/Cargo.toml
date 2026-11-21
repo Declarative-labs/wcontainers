@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 zerocopy.workspace = true
+# The position map carried from the translator to the inside.
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
 wasm-encoder = { version = "0.263.0", optional = true }
 
 [features]

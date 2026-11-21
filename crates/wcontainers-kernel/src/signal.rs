@@ -1727,7 +1727,7 @@ fn frame_bounds(alternate_stack: (u64, u64, i32), flags: u64, sp: u64) -> (u64, 
 }
 
 /// What ARM64 keeps its stack pointer a multiple of (`sp_el0` alignment checking).
-pub(crate) const STACK_ALIGNMENT: u64 = 2 * size_of::<u64>() as u64;
+pub(crate) use wcontainers_abi::STACK_ALIGNMENT;
 
 /// The most bytes one ARM64 instruction accesses: four vector registers (`st4`, `ld4`).
 const LARGEST_ACCESS: u64 = 4 * size_of::<u128>() as u64;

@@ -28,7 +28,6 @@ const INCLUDE_FLAG: &str = "-I";
 const NO_WARNINGS: &str = "-w";
 /// gcc's command, in its image.
 const GCC: &str = "gcc";
-const LINK_SCRIPT_FLAG: &str = "-T";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compiler {
@@ -227,7 +226,7 @@ fn compile<G: GuestTest>(
                 .args(code)
                 .arg([INCLUDE_FLAG, INCLUDE_MOUNT].concat());
             if flat {
-                command.arg([LINK_SCRIPT_FLAG, &inside(SCRIPT_MOUNT, &script)].concat());
+                command.arg([LINK_SCRIPT, &inside(SCRIPT_MOUNT, &script)].concat());
             }
             let status = command
                 .args([NO_BUILD_ID, OUTPUT_FLAG])

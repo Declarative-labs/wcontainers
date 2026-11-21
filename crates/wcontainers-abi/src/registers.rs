@@ -56,6 +56,9 @@ pub mod pstate {
 /// only part of the block that another host thread writes while the guest thread runs.
 pub const STOP_FLAG_OFFSET: usize = size_of::<RegisterBlock>();
 
+/// What ARM64 keeps its stack pointer a multiple of when it is a base (SA0 alignment checking): a quadword.
+pub const STACK_ALIGNMENT: u64 = size_of::<u128>() as u64;
+
 /// Size of a thread's block in memory: the registers, the stop flag, and padding to a multiple of 16.
 pub const THREAD_BLOCK_SIZE: usize = 816;
 

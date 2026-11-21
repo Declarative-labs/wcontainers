@@ -3,6 +3,7 @@
 
 mod assemble;
 mod corpora;
+pub mod words;
 
 use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
