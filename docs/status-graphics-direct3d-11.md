@@ -276,10 +276,21 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
   remove the device. No valid call reaches them (`D3D11_OPTIONS2.MapOnDefaultTextures` FALSE).
 - A swap chain on another process's window is refused with `DXGI_ERROR_INVALID_CALL` (Departures).
 - Drawing a geometry stream past 0 is refused by name (`GEOMETRY_STREAM_DRAWN_PAST_ZERO`).
-- Building ahead at a shader's arrival (plan 4.4) has never been hit: 122 of Godot 3D's 124 pairs
-  built ahead are pairs it never draws (a new shader is paired with the latest shader of the other
-  stage), and its 2 drawn pairs draw with other state than the single most drawn tuple. The cost is
-  about 110 to 124 background pipeline builds per Godot 3D run that are never used.
+- Building ahead at a shader's arrival (plan 4.4) has never been hit. Traced in Godot 3D on main
+  (a build with a print per shader made, pair tried and combination first drawn, not committed;
+  scratch programs/m1dbg, main/ahead-analyse.py): it makes 98 vertex and 99 pixel shaders, mostly
+  a pixel shader then its vertex shader, and draws 36 programs in 62 first-drawn combinations. The
+  pairing finds 34 of the 36 drawn programs; the misses are the tuples. Of the 32 drawn pairs that
+  were prepared, every one was drawn with another input layout and other strides, targets or
+  binding layouts than the tuple picked, and 28 also with other blend, depth or raster objects: the
+  layout Godot (through ANGLE) makes for a program is made at or after its first draw, and its
+  draws do not use the most drawn tuple. Pairing each new shader with the newest unpaired one of
+  the other stage would halve the pairs tried (98 for 186) with the same 34 drawn, but it never
+  prepares a second pixel shader for a vertex shader already paired (front test
+  `a_new_pair_is_built_ahead_with_the_states_its_vertex_shader_was_drawn_with`), so it was not
+  made. The cost is about 110 to 124 background pipeline builds per Godot 3D run that are never
+  used; the recorded combinations built at the next start are what serves these programs (all 61
+  of Godot 3D's drawn, Measurements).
 
 ## Format support against the RTX 3080
 
@@ -331,9 +342,10 @@ In order:
    parts (Asked); then remove each from `support_differences` and un-ignore their tests.
 2. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
    with other usages (Asked), un-ignore the counters test and run it.
-3. Building ahead at a shader's arrival: pair shaders by what programs draw together rather than
-   by creation order (for example only from the vertex shader's arrival, or from pairs recorded in
-   the cache), and pick tuples by the pixel shader's targets; measure again.
+3. Building ahead at a shader's arrival: the measured miss is the tuple (Differences from the RTX
+   3080). What could hit: build again when an input layout arrives (it names its vertex shader's
+   signature), and pick tuples by the targets and binding layouts last drawn rather than the most
+   drawn tuple; measure with the same trace.
 4. A back buffer kept by the program past its swap chain's release: keep the chain's textures
    alive while a buffer is held.
 5. Blending into integer twins (`BlendInShader`) once the shaders crate builds `combine`.
@@ -577,6 +589,10 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Interface changes
 
+- 2f3b3263 "interface: named the faces of a cube once as CUBE_FACES": `wcontainers_gpu::CUBE_FACES`,
+  which this front and the NIR track's crate had each defined (the literal check's redefinition
+  once both branches were on main); the front now imports it.
+
 - 978d1661 "interface: named the slow path of a resource shared between devices copied through the
   host": `SlowPath::SharedThroughHost`, and one sentence in plan section 9.
 - 8b556a05 "interface: named each normalised format's integer twin as Format::integer_twin and read
@@ -651,11 +667,20 @@ Earlier runs' measurements are in this file's git history.
 - Shaders track: a storage form of `A8Unorm`; blending into integer twins
   (`TargetInShader::combine`); atg-simplecomputepc's division; the geometry replay's streams past
   the first; an aliased-line route for multisampled targets (with the interface track).
+- NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/wcontainers-nir/src/lib.rs in place of
+  its own copy; until then the literal check reports that copy as a redefinition (its one finding
+  outside the shaders and OpenGL crates' new code that touches this track).
+- Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now
+  (this track runs its scratch copy, How to run).
 - Rig track: a way to run Wine's dxgi file with its Direct3D 12 tests kept off the GPU; the scene
   programs reporting every `--dll` library they loaded.
 
 ## Literals
 
+- Main run 1 (2026-11-21): the check at main 10d3fd72 exits 1 with 50 lines to act on, none this
+  track's but the cube faces' redefinition, which came from two branches meeting on main: the
+  front now imports `wcontainers_gpu::CUBE_FACES` (Interface changes); the NIR crate's copy is
+  that track's (Asked). The rest are new code of the shaders, OpenGL and interface crates.
 - Round 4 run 6: the new refusals' messages are named once (`COMPARED_FORMAT_UNCLAIMED`,
   `COMPARED_VIEW_INVALID`, `LEVEL9_BUFFER_VIEWED`, `LEVEL9_USE_ABSENT`); new code adds no line and
   makes no mark. wcontainers-direct3d-11 499 lines, wcontainers-directx 229 (728), as at round 4
