@@ -129,10 +129,10 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
   - Ran on the Mac (load 3 to 8.5) on commit 12a0a0ef's code: wcontainers-arm64's whole suite (unit 2,
     encode 2, exact 4, native_routes 1), all passing; the native executor's unit tests (12), kept (1),
     carry, native, exits (4 programs, 0 failed, both modes), floor (21 cases, 0 failed), interrupts
-    (0 failed) and probe (0 forms of 16 bytes or fewer differ, as before), all exit 0. registers and
-    host_branches did not build at the time: wcontainers-x86, another track's, was half edited (an
-    earlier try failed on the kernel's resolver.rs the same way). The literal check finds nothing in
-    this track's lines. Clippy with warnings denied is clean for wcontainers-arm64.
+    (0 failed), probe (0 forms of 16 bytes or fewer differ, as before), registers and host_branches
+    (0 differing guest paths), all exit 0. (The last two first failed to build while wcontainers-x86,
+    another track's, was half edited, and passed a few minutes later.) The literal check finds
+    nothing in this track's lines. Clippy with warnings denied is clean for wcontainers-arm64.
   - New test in encode.rs, `every_builder_places_its_fields_as_the_table_read_by_name_does`: every
     builder (and the system register write, `retarget`, the reaches and the float status moves)
     against the old placement by name over `forms::all()`, on drawn values that fit and that do not
