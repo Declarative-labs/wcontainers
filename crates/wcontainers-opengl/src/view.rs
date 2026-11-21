@@ -16,6 +16,7 @@ use crate::context::Context;
 use crate::gallium::*;
 use crate::resource::{self, Resource};
 use crate::screen::DRIVER_NAME;
+use crate::state::refused;
 
 /// One sampler view: Gallium's struct first, then the interface's view, or why there is none.
 #[repr(C)]
@@ -217,7 +218,9 @@ pub fn image_view<B: Backend>(
     let size = |n: u32| (n >> mip).max(1);
     let (dimension, base_layer, layer_count) = if range.single_layer_view {
         if three_d {
-            return crate::state::refused(format_args!("one slice of a 3D texture as a 2D image"));
+            return refused(format_args!(
+                "one slice of a volume texture as a flat image"
+            ));
         }
         (ViewDimension::D2, range.first_layer(), 1)
     } else if three_d {
