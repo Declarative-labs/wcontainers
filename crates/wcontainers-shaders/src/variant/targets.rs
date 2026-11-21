@@ -235,61 +235,93 @@ fn encoded(
     push(f, body, Expression::Compose { ty, components })
 }
 
+/// The name of the copy of a target the program reads its old value from, before its number.
+const TARGET_COPY: &str = "target_copy_";
+
 const LIBRARY: &str = include_str!("combine.wgsl");
 const LIBRARY_FUNCTIONS: [&str; 3] = ["blended", "logic_operation", "write_masked"];
+
+/// The prefixes `combine.wgsl` gives the codes of blend factors, blend operations and logic
+/// operations, each followed by the interface's name for the code in upper snake case.
+const FACTOR_PREFIX: &str = "FACTOR_";
+const OPERATION_PREFIX: &str = "OP_";
+const LOGIC_PREFIX: &str = "LOGIC_";
 
 /// `combine.wgsl` with the codes it names declared ahead of it, as the interface numbers them.
 fn library_source() -> String {
     use wcontainers_gpu::{BlendFactor as F, BlendOp as O, LogicOp as L};
-    let codes = [
-        ("FACTOR_ZERO", F::Zero as u32),
-        ("FACTOR_ONE", F::One as u32),
-        ("FACTOR_SRC", F::Src as u32),
-        ("FACTOR_ONE_MINUS_SRC", F::OneMinusSrc as u32),
-        ("FACTOR_SRC_ALPHA", F::SrcAlpha as u32),
-        ("FACTOR_ONE_MINUS_SRC_ALPHA", F::OneMinusSrcAlpha as u32),
-        ("FACTOR_DST", F::Dst as u32),
-        ("FACTOR_ONE_MINUS_DST", F::OneMinusDst as u32),
-        ("FACTOR_DST_ALPHA", F::DstAlpha as u32),
-        ("FACTOR_ONE_MINUS_DST_ALPHA", F::OneMinusDstAlpha as u32),
-        ("FACTOR_SRC_ALPHA_SATURATED", F::SrcAlphaSaturated as u32),
-        ("FACTOR_CONSTANT", F::Constant as u32),
-        ("FACTOR_ONE_MINUS_CONSTANT", F::OneMinusConstant as u32),
-        ("FACTOR_CONSTANT_ALPHA", F::ConstantAlpha as u32),
-        (
-            "FACTOR_ONE_MINUS_CONSTANT_ALPHA",
-            F::OneMinusConstantAlpha as u32,
-        ),
-        ("FACTOR_SRC1", F::Src1 as u32),
-        ("FACTOR_ONE_MINUS_SRC1", F::OneMinusSrc1 as u32),
-        ("FACTOR_SRC1_ALPHA", F::Src1Alpha as u32),
-        ("FACTOR_ONE_MINUS_SRC1_ALPHA", F::OneMinusSrc1Alpha as u32),
-        ("OP_SUBTRACT", O::Subtract as u32),
-        ("OP_REVERSE_SUBTRACT", O::ReverseSubtract as u32),
-        ("OP_MIN", O::Min as u32),
-        ("OP_MAX", O::Max as u32),
-        ("LOGIC_CLEAR", L::Clear as u32),
-        ("LOGIC_AND", L::And as u32),
-        ("LOGIC_AND_REVERSE", L::AndReverse as u32),
-        ("LOGIC_AND_INVERTED", L::AndInverted as u32),
-        ("LOGIC_NOOP", L::Noop as u32),
-        ("LOGIC_XOR", L::Xor as u32),
-        ("LOGIC_OR", L::Or as u32),
-        ("LOGIC_NOR", L::Nor as u32),
-        ("LOGIC_EQUIVALENT", L::Equivalent as u32),
-        ("LOGIC_INVERT", L::Invert as u32),
-        ("LOGIC_OR_REVERSE", L::OrReverse as u32),
-        ("LOGIC_COPY_INVERTED", L::CopyInverted as u32),
-        ("LOGIC_OR_INVERTED", L::OrInverted as u32),
-        ("LOGIC_NAND", L::Nand as u32),
-        ("LOGIC_SET", L::Set as u32),
+    let factors = [
+        F::Zero,
+        F::One,
+        F::Src,
+        F::OneMinusSrc,
+        F::SrcAlpha,
+        F::OneMinusSrcAlpha,
+        F::Dst,
+        F::OneMinusDst,
+        F::DstAlpha,
+        F::OneMinusDstAlpha,
+        F::SrcAlphaSaturated,
+        F::Constant,
+        F::OneMinusConstant,
+        F::ConstantAlpha,
+        F::OneMinusConstantAlpha,
+        F::Src1,
+        F::OneMinusSrc1,
+        F::Src1Alpha,
+        F::OneMinusSrc1Alpha,
     ];
-    let mut text: String = codes
+    let operations = [O::Subtract, O::ReverseSubtract, O::Min, O::Max];
+    let logic = [
+        L::Clear,
+        L::And,
+        L::AndReverse,
+        L::AndInverted,
+        L::Noop,
+        L::Xor,
+        L::Or,
+        L::Nor,
+        L::Equivalent,
+        L::Invert,
+        L::OrReverse,
+        L::CopyInverted,
+        L::OrInverted,
+        L::Nand,
+        L::Set,
+    ];
+    let codes = (factors
         .iter()
-        .map(|(name, code)| format!("const {name}: u32 = {code}u;\n"))
+        .map(|f| (FACTOR_PREFIX, format!("{f:?}"), *f as u32)))
+    .chain(
+        operations
+            .iter()
+            .map(|o| (OPERATION_PREFIX, format!("{o:?}"), *o as u32)),
+    )
+    .chain(
+        logic
+            .iter()
+            .map(|l| (LOGIC_PREFIX, format!("{l:?}"), *l as u32)),
+    );
+    let mut text: String = codes
+        .map(|(prefix, name, code)| {
+            format!("const {prefix}{}: u32 = {code}u;\n", upper_snake(&name))
+        })
         .collect();
     text.push_str(LIBRARY);
     text
+}
+
+/// A name in upper camel case (`OneMinusSrc1Alpha`) in upper snake case (`ONE_MINUS_SRC1_ALPHA`).
+fn upper_snake(name: &str) -> String {
+    const SEPARATOR: char = '_';
+    let mut out = String::new();
+    for (i, c) in name.char_indices() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push(SEPARATOR);
+        }
+        out.push(c.to_ascii_uppercase());
+    }
+    out
 }
 
 /// The library's [`LIBRARY_FUNCTIONS`] imported into `module` after its own functions, with the
@@ -399,7 +431,7 @@ fn u32_vector(
     module: &mut Module,
     f: &mut Function,
     body: &mut Block,
-    words: [u32; 4],
+    words: [u32; VEC4 as usize],
 ) -> Handle<Expression> {
     let ty = vector(module, VEC4 as u8, Scalar::U32);
     let components = words
@@ -463,7 +495,7 @@ fn combine(
     );
     let copy = module.global_variables.append(
         naga::GlobalVariable {
-            name: Some(format!("target_copy_{}", t.target)),
+            name: Some(format!("{TARGET_COPY}{}", t.target)),
             space: naga::AddressSpace::Handle,
             binding: Some(naga::ResourceBinding {
                 group: HELPER_SET,
@@ -654,7 +686,7 @@ fn combine(
         bitcast(f, body, v, to, ScalarKind::Uint)
     };
     if logic {
-        let past: [u32; 4] =
+        let past: [u32; VEC4 as usize] =
             core::array::from_fn(|i| u32::BITS - bits.get(i).copied().unwrap_or(u32::BITS));
         let past = u32_vector(module, f, body, past);
         let signed = f.expressions.append(
