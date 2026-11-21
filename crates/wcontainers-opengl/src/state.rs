@@ -667,6 +667,9 @@ fn address(wrap: pipe_tex_wrap) -> AddressMode {
     }
 }
 
+/// The largest level of detail nearest mipmap selection still rounds to the base level.
+const BASE_LEVEL_ONLY_MAX_LOD: f32 = 0.25;
+
 fn nearest_wrap(wrap: pipe_tex_wrap) -> Option<Wrap> {
     Some(match wrap {
         PIPE_TEX_WRAP_REPEAT => Wrap::Repeat,
@@ -704,7 +707,9 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
     }
     let mip = state.min_mip_filter();
     let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE as c_uint {
-        [0, 0]
+        // The base level alone, with the level of detail free to pass zero so that the host
+        // still tells minifying from magnifying, as OpenGL does without mipmaps.
+        [0, BASE_LEVEL_ONLY_MAX_LOD.to_bits()]
     } else {
         // The host's levels of detail start at zero, where its magnifying filter takes over, as
         // OpenGL's does at and below zero: a negative bound reads as zero, alike.
