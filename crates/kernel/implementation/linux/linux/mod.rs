@@ -1,5 +1,5 @@
 //! Linux's ARM64 constants and structure layouts, copied from linux-raw-sys by `generate-linux` in
-//! wcontainers-kernel-test so that they hold on every target the kernel is built for.
+//! wcontainers-executor-unicorn so that they hold on every target the kernel is built for.
 
 #![allow(
     non_camel_case_types,

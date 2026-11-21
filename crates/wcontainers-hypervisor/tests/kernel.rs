@@ -42,12 +42,12 @@ mod macos {
     use std::time::Instant;
 
     use linux_raw_sys::general::SIGSEGV;
+    use wcontainers_executor_unicorn::driver::exit_code;
+    use wcontainers_executor_unicorn::reference;
     use wcontainers_guest_cpu::reason::{CODE_CHANGED_AFTER_IT_RAN, MEMORY_FAULT};
     use wcontainers_inside::reason::{
         GUEST_PHYSICAL_SPACE_FULL, LARGE_ENTRY_SPLIT, RESERVATION_BROKEN,
     };
-    use wcontainers_kernel_test::driver::exit_code;
-    use wcontainers_kernel_test::reference;
 
     use crate::common::{
         BENCH, CALLS, CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, PROGRAMS_DIRECTORY,

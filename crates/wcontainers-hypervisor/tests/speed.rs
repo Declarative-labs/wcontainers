@@ -61,16 +61,16 @@ mod macos {
     use wcontainers_abi::{Exit, Next, Resume, SystemCallRequest};
     use wcontainers_arm64::encode::{self, form};
     use wcontainers_arm64::{Instruction, decode};
+    use wcontainers_executor_unicorn::buffer::BufferCpu;
+    use wcontainers_executor_unicorn::driver::TestHost;
+    use wcontainers_executor_unicorn::driver::exit_code;
+    use wcontainers_executor_unicorn::image::{File, Kind, add_files};
     use wcontainers_hypervisor::{
         Exit as VcpuExit, Register, VirtualCpu, VirtualMachine, boot, link as link_page,
     };
     use wcontainers_inside::link::{self, Fatal, Parts};
     use wcontainers_inside::stop::SYSCALL_NUMBER;
     use wcontainers_kernel_linux::{Kernel, Start};
-    use wcontainers_kernel_test::buffer::BufferCpu;
-    use wcontainers_kernel_test::driver::TestHost;
-    use wcontainers_kernel_test::driver::exit_code;
-    use wcontainers_kernel_test::image::{File, Kind, add_files};
 
     use crate::common::{
         BENCH, CALLS, IMAGE_BASE, MEMORY, ONE_CPU, OWN_GUEST, PROGRAMS_DIRECTORY, be_signed, build,

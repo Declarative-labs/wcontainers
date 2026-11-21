@@ -4044,6 +4044,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-unicorn"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "coarsetime",
+ "fuse-abi",
+ "libc",
+ "linux-raw-sys",
+ "memmap2",
+ "proptest",
+ "rand 0.9.5",
+ "regex",
+ "tar",
+ "unicorn-engine",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-docker",
+ "wcontainers-executor-wasmtime",
+ "wcontainers-kernel-linux",
+ "wcontainers-runtime-single-kernel",
+ "wcontainers-system-seeded-test-policy",
+ "zerocopy",
+]
+
+[[package]]
 name = "wcontainers-executor-wasmtime"
 version = "0.1.0"
 dependencies = [
@@ -4217,11 +4242,11 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
  "wcontainers-kernel-linux",
- "wcontainers-kernel-test",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
@@ -4310,31 +4335,6 @@ dependencies = [
  "siphasher",
  "smallvec",
  "wcontainers-abi",
- "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-kernel-test"
-version = "0.1.0"
-dependencies = [
- "cargo_metadata",
- "coarsetime",
- "fuse-abi",
- "libc",
- "linux-raw-sys",
- "memmap2",
- "proptest",
- "rand 0.9.5",
- "regex",
- "tar",
- "unicorn-engine",
- "wcontainers-abi",
- "wcontainers-arm64",
- "wcontainers-docker",
- "wcontainers-executor-wasmtime",
- "wcontainers-kernel-linux",
- "wcontainers-runtime-single-kernel",
- "wcontainers-system-seeded-test-policy",
  "zerocopy",
 ]
 

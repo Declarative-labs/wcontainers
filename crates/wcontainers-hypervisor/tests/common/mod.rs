@@ -180,7 +180,7 @@ pub fn load_average() -> String {
 }
 
 /// The kernel test crate's programs, of which `hello` is the bar's.
-pub const KERNEL_TEST_GUEST: &str = "../wcontainers-kernel-test/guest";
+pub const KERNEL_TEST_GUEST: &str = "../executor/implementation/unicorn/guest";
 
 /// This track's own test programs.
 pub const OWN_GUEST: &str = "tests/guest";

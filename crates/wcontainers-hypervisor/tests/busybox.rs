@@ -32,11 +32,11 @@ mod macos {
     use std::path::MAIN_SEPARATOR_STR;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+    use wcontainers_executor_unicorn::busybox::{FILES, Reference, TEXT, each, on_path};
+    use wcontainers_executor_unicorn::driver::{Outcome, exit_code};
+    use wcontainers_executor_unicorn::image::{self, Kind};
+    use wcontainers_executor_unicorn::reference;
     use wcontainers_inside::container::{File, FileKind, Starting};
-    use wcontainers_kernel_test::busybox::{FILES, Reference, TEXT, each, on_path};
-    use wcontainers_kernel_test::driver::{Outcome, exit_code};
-    use wcontainers_kernel_test::image::{self, Kind};
-    use wcontainers_kernel_test::reference;
 
     use crate::common::{be_signed, load_average};
     use crate::container::{native, seeds, summary};
