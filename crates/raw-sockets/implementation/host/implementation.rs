@@ -4,7 +4,7 @@ use core::cell::RefCell;
 use core::cmp::Ordering;
 use core::num::NonZeroU32;
 use std::net::{IpAddr, SocketAddr};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
 use etherparse::IpNumber;
 use libc::c_int;
@@ -19,6 +19,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_raw_sockets::{
     HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket, RawSocketSetting,
     RawSockets, RouterAlert, RouterAlertIsolation,
@@ -29,15 +30,17 @@ use shared::datagram::exchange::{ErrorQueue, error_entry, send_message, unsent_b
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
-use shared::{Shortfalls, set_bytes, set_flag, set_int};
+use shared::readiness::{NO_EVENTS, Readiness, Watched};
+use shared::{Shortfalls, io_host_error, set_bytes, set_flag, set_int, sock};
 
 /// Raw IP sockets of the Linux machine this runs on, with a count of each refusal by its reason.
-pub struct LinuxHostRawSockets {
+pub struct HostRawSockets {
     shortfalls: Shortfalls,
+    readiness: Readiness,
 }
 
-pub struct LinuxHostRawSocket {
-    fd: OwnedFd,
+pub struct HostRawSocket {
+    watched: Watched,
     ipv6: bool,
     protocol: IpNumber,
     state: RefCell<SocketState>,
@@ -47,6 +50,8 @@ struct SocketState {
     send: SendState,
     anycast: AnycastMemberships,
     errors: ErrorQueue,
+    /// Whether the socket's readiness holds an error for the entries kept off the host's error queue.
+    held_errors: bool,
     drops: u32,
     /// Whether `IP_HDRINCL` or `IPV6_HDRINCL` is on.
     header_included: bool,
@@ -58,25 +63,24 @@ struct SocketState {
 pub const UPPER_LAYER: &str = "an upper layer other than the one linux routes a raw send by: the message's ICMP type and code or mobility header type, else none";
 pub const OTHER_PROTOCOL: &str =
     "a payload under another protocol than its raw socket's, which linux sends under the socket's";
+pub const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a raw socket an icmp error without the identification and \
+     fragment flags of an ipv4 one, nor under a payload the quoted header's fields but its addresses: written as zero";
 
 /// `MRT_INIT` of linux/mroute.h, and `MRT6_INIT` of linux/mroute6.h, which neither libc nor linux-raw-sys carries.
 const MULTICAST_ROUTING_INIT: u32 = 200;
 /// `MRT_DONE` and `MRT6_DONE`, the next request after the first.
 const MULTICAST_ROUTING_DONE: u32 = MULTICAST_ROUTING_INIT + 1;
 
-/// The receive control messages every socket turns on, by level.
-const IPV4_RECEIVE_OPTIONS: [u32; 6] = [
+/// The receive control messages every socket turns on beside the ones socket2 sets, by level.
+const IPV4_RECEIVE_OPTIONS: [u32; 5] = [
     uapi::IP_PKTINFO,
     uapi::IP_RECVTTL,
-    uapi::IP_RECVTOS,
     uapi::IP_RECVOPTS,
     uapi::IP_RECVFRAGSIZE,
     uapi::IP_RECVERR,
 ];
-const IPV6_RECEIVE_OPTIONS: [u32; 9] = [
+const IPV6_RECEIVE_OPTIONS: [u32; 7] = [
     uapi::IPV6_RECVPKTINFO,
-    uapi::IPV6_RECVHOPLIMIT,
-    uapi::IPV6_RECVTCLASS,
     uapi::IPV6_RECVHOPOPTS,
     uapi::IPV6_RECVDSTOPTS,
     uapi::IPV6_RECVRTHDR,
@@ -87,11 +91,12 @@ const IPV6_RECEIVE_OPTIONS: [u32; 9] = [
 const SOCKET_RECEIVE_OPTIONS: [u32; 3] =
     [uapi::SO_RXQ_OVFL, uapi::SO_RCVMARK, uapi::SO_RCVPRIORITY];
 
-impl LinuxHostRawSockets {
-    pub fn new() -> Self {
-        Self {
+impl HostRawSockets {
+    pub fn new() -> Result<Self, HostError> {
+        Ok(Self {
             shortfalls: Shortfalls::default(),
-        }
+            readiness: Readiness::new()?,
+        })
     }
 
     /// How many times each named reason has made this value refuse or drop something.
@@ -104,29 +109,23 @@ impl LinuxHostRawSockets {
     }
 }
 
-impl Default for LinuxHostRawSockets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PartialEq for LinuxHostRawSocket {
+impl PartialEq for HostRawSocket {
     fn eq(&self, other: &Self) -> bool {
-        self.fd.as_raw_fd() == other.fd.as_raw_fd()
+        self.fd().as_raw_fd() == other.fd().as_raw_fd()
     }
 }
 
-impl Eq for LinuxHostRawSocket {}
+impl Eq for HostRawSocket {}
 
-impl PartialOrd for LinuxHostRawSocket {
+impl PartialOrd for HostRawSocket {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for LinuxHostRawSocket {
+impl Ord for HostRawSocket {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.fd.as_raw_fd().cmp(&other.fd.as_raw_fd())
+        self.fd().as_raw_fd().cmp(&other.fd().as_raw_fd())
     }
 }
 
@@ -134,9 +133,21 @@ fn raw_protocol() -> IpNumber {
     IpNumber(uapi::IPPROTO_RAW as u8)
 }
 
-impl LinuxHostRawSocket {
+impl HostRawSocket {
     fn fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.watched.fd()
+    }
+
+    /// Holds an error in the socket's readiness while entries taken off the host's error queue wait for receives.
+    fn note_kept_entries(&self, state: &mut SocketState) {
+        let holds = state.errors.holds_entries();
+        if holds != state.held_errors {
+            state.held_errors = holds;
+            self.watched.hold(PollEvents {
+                error_condition: holds,
+                ..NO_EVENTS
+            });
+        }
     }
 
     fn version(&self) -> IpVersion {
@@ -147,18 +158,16 @@ impl LinuxHostRawSocket {
         }
     }
 
-    fn levels(&self) -> (u32, u32) {
-        if self.ipv6 {
-            (uapi::SOL_IPV6, uapi::IPV6_HDRINCL)
-        } else {
-            (uapi::SOL_IP, uapi::IP_HDRINCL)
-        }
-    }
-
     fn include_header(&self, state: &mut SocketState, on: bool) -> Result<(), HostError> {
         if state.header_included != on {
-            let (level, name) = self.levels();
-            set_flag(self.fd(), level, name, on)?;
+            let fd = self.fd();
+            let socket2 = sock(&fd);
+            if self.ipv6 {
+                socket2.set_header_included_v6(on)
+            } else {
+                socket2.set_header_included_v4(on)
+            }
+            .map_err(|error| io_host_error(&error))?;
             state.header_included = on;
         }
         Ok(())
@@ -234,8 +243,8 @@ fn payload_selector(protocol: IpNumber, ipv6: bool, payload: &[u8]) -> Option<Up
     }
 }
 
-impl RawSockets for LinuxHostRawSockets {
-    type Socket = LinuxHostRawSocket;
+impl RawSockets for HostRawSockets {
+    type Socket = HostRawSocket;
 
     fn open(
         &self,
@@ -249,11 +258,19 @@ impl RawSockets for LinuxHostRawSockets {
             .ok_or(HostError::Errno(libc::EPROTONOSUPPORT))?;
         let fd = shared::open_socket(version, SocketType::RAW, Protocol::from_raw(number), owner)?;
         let borrowed = fd.as_fd();
+        let socket2 = sock(&borrowed);
         if ipv6 {
+            socket2
+                .set_recv_hoplimit_v6(true)
+                .and_then(|()| socket2.set_recv_tclass_v6(true))
+                .map_err(|error| io_host_error(&error))?;
             for option in IPV6_RECEIVE_OPTIONS {
                 set_flag(borrowed, uapi::SOL_IPV6, option, true)?;
             }
         } else {
+            socket2
+                .set_recv_tos_v4(true)
+                .map_err(|error| io_host_error(&error))?;
             for option in IPV4_RECEIVE_OPTIONS {
                 set_flag(borrowed, uapi::SOL_IP, option, true)?;
             }
@@ -262,14 +279,15 @@ impl RawSockets for LinuxHostRawSockets {
             set_flag(borrowed, uapi::SOL_SOCKET, option, true)?;
         }
         let send = SendState::open(borrowed, ipv6)?;
-        Ok(LinuxHostRawSocket {
-            fd,
+        Ok(HostRawSocket {
+            watched: self.readiness.watch(fd)?,
             ipv6,
             protocol,
             state: RefCell::new(SocketState {
                 send,
                 anycast: AnycastMemberships::default(),
                 errors: ErrorQueue::default(),
+                held_errors: false,
                 drops: u32::MIN,
                 // Linux writes no header for a socket of IPPROTO_RAW until told otherwise.
                 header_included: protocol == raw_protocol(),
@@ -396,7 +414,9 @@ impl RawSockets for LinuxHostRawSockets {
         match send_message(fd, Some(destination), bytes, control.bytes(), flags) {
             Ok(()) => Ok(()),
             Err(HostError::Errno(libc::EMSGSIZE)) => {
-                Err(state.errors.message_too_long(fd, &self.shortfalls))
+                let error = state.errors.message_too_long(fd, &self.shortfalls);
+                socket.note_kept_entries(state);
+                Err(error)
             }
             Err(error) => Err(SendError::Host(error)),
         }
@@ -408,7 +428,9 @@ impl RawSockets for LinuxHostRawSockets {
         let state = &mut *state;
         let header_included = state.header_included;
         loop {
-            let entry = match state.errors.next(fd, &self.shortfalls) {
+            let next = state.errors.next(fd, &self.shortfalls);
+            socket.note_kept_entries(state);
+            let entry = match next {
                 Ok(entry) => entry,
                 Err(HostError::WouldBlock) => break,
                 Err(error) => return Err(error),
@@ -418,7 +440,7 @@ impl RawSockets for LinuxHostRawSockets {
                 &entry,
                 into,
                 |into, copied, ancillary, error, offender| {
-                    socket.icmp_error(
+                    let written = socket.icmp_error(
                         header_included,
                         into,
                         copied,
@@ -426,7 +448,14 @@ impl RawSockets for LinuxHostRawSockets {
                         error,
                         offender,
                         entry.source,
-                    )
+                    );
+                    // Only an IPv6 error quoting a packet with its own header is given whole.
+                    if written.is_some()
+                        && (!header_included || error.ee_origin == libc::SO_EE_ORIGIN_ICMP)
+                    {
+                        self.shortfalls.count(ICMP_ERROR_FIELDS_NOT_GIVEN);
+                    }
+                    written
                 },
             );
             if let Some(received) = received {
@@ -439,8 +468,9 @@ impl RawSockets for LinuxHostRawSockets {
             self.shortfalls.count(receive::CONTROL_TRUNCATED);
         }
         let ancillary = Ancillary::parse(message.control);
+        let given = &into[..message.length.min(into.len())];
         let length = if socket.ipv6
-            && !socket.is_forwarded_whole(&into[..message.length.min(into.len())], &message)
+            && !socket.is_forwarded_whole(state.router_alert, given, &message, &ancillary)
         {
             // Linux gives an IPv6 raw socket the packet after its headers, which are written here in front.
             let invalid = HostError::Errno(libc::EINVAL);
@@ -480,21 +510,46 @@ impl RawSockets for LinuxHostRawSockets {
         unsent_bytes(socket.fd())
     }
 
+    async fn wait_for_events(
+        &self,
+        socket: &Self::Socket,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError> {
+        socket.watched.wait_for_events(interest).await
+    }
+
     fn close(&self, socket: Self::Socket) {
         drop(socket);
     }
 }
 
-impl LinuxHostRawSocket {
-    /// Answers whether Linux gave this packet from its IPv6 header on, as it gives a router alert socket of
-    /// `IPPROTO_RAW` (the only kind it gives them) a packet it was forwarding: the bytes are an IPv6 header from
-    /// the sender, as long as the packet.
-    fn is_forwarded_whole(&self, bytes: &[u8], message: &receive::Message<'_>) -> bool {
-        self.protocol == raw_protocol()
-            && etherparse::Ipv6HeaderSlice::from_slice(bytes).is_ok_and(|header| {
-                Some(IpAddr::V6(header.source_addr())) == message.source.map(|source| source.ip())
-                    && usize::from(header.payload_length()) + etherparse::Ipv6Header::LEN
-                        == message.length
+impl HostRawSocket {
+    /// Answers whether Linux gave this packet from its IPv6 header on, as it gives a packet it was forwarding to a
+    /// router alert socket of `IPPROTO_RAW`: the socket takes IPv6 router alerts, and the bytes are an IPv6 header
+    /// from the sender, as long as the packet, then the hop-by-hop header Linux reports beside them.
+    fn is_forwarded_whole(
+        &self,
+        router_alert: RouterAlert,
+        bytes: &[u8],
+        message: &receive::Message<'_>,
+        ancillary: &Ancillary<'_>,
+    ) -> bool {
+        if self.protocol != raw_protocol() || !matches!(router_alert, RouterAlert::Ipv6 { .. }) {
+            return false;
+        }
+        let Ok(header) = etherparse::Ipv6HeaderSlice::from_slice(bytes) else {
+            return false;
+        };
+        let reported = ancillary
+            .extension_headers
+            .iter()
+            .flatten()
+            .find(|(kind, _)| *kind == IpNumber::IPV6_HEADER_HOP_BY_HOP);
+        Some(IpAddr::V6(header.source_addr())) == message.source.map(|source| source.ip())
+            && usize::from(header.payload_length()) + etherparse::Ipv6Header::LEN == message.length
+            && header.next_header() == IpNumber::IPV6_HEADER_HOP_BY_HOP
+            && reported.is_some_and(|(_, options)| {
+                bytes[etherparse::Ipv6Header::LEN..].starts_with(options)
             })
     }
 
@@ -562,10 +617,10 @@ impl LinuxHostRawSocket {
     }
 }
 
-impl<'a> Configurable<LinuxHostRawSocket, RawSocketSetting<'a>> for LinuxHostRawSockets {
+impl<'a> Configurable<HostRawSocket, RawSocketSetting<'a>> for HostRawSockets {
     fn configure(
         &self,
-        socket: &LinuxHostRawSocket,
+        socket: &HostRawSocket,
         setting: RawSocketSetting<'a>,
     ) -> Result<(), HostError> {
         let fd = socket.fd();

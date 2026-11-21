@@ -4499,13 +4499,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-icmp-sockets-linux-ping"
+name = "wcontainers-icmp-sockets-host"
 version = "0.1.0"
 dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
  "rustix",
+ "socket2",
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-icmp-sockets",
@@ -4701,13 +4702,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-raw-sockets-linux-host"
+name = "wcontainers-raw-sockets-host"
 version = "0.1.0"
 dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
  "rustix",
+ "socket2",
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",

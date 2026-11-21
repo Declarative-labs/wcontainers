@@ -21,5 +21,7 @@ etherparse.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # The packet socket that sees what leaves a link, and the errno values of Linux.
 libc = "0.2.191"
+# The type number of a segment routing header.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # The network namespace of each check.
 rustix = { version = "1.1.6", features = ["net", "thread", "time"] }

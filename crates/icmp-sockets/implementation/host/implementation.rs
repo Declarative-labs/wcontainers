@@ -3,11 +3,11 @@
 use core::cell::RefCell;
 use core::cmp::Ordering;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
 use etherparse::IpNumber;
 use linux_raw_sys::net as uapi;
-use rustix::net::{SocketType, ipproto, sockopt};
+use rustix::net::{SocketType, ipproto};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_icmp_sockets::{EchoIdentifier, IcmpSockets, IdentifierSharing};
@@ -17,6 +17,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
@@ -25,15 +26,17 @@ use shared::datagram::exchange::{
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
-use shared::{Shortfalls, host_error, set_flag};
+use shared::readiness::{NO_EVENTS, Readiness, Watched};
+use shared::{Shortfalls, host_error, io_host_error, set_flag, sock};
 
 /// ICMP echo sockets of the Linux machine this runs on, its ping sockets, with a count of each refusal by its reason.
-pub struct LinuxPingSockets {
+pub struct HostIcmpSockets {
     shortfalls: Shortfalls,
+    readiness: Readiness,
 }
 
-pub struct LinuxPingSocket {
-    fd: OwnedFd,
+pub struct HostIcmpSocket {
+    watched: Watched,
     ipv6: bool,
     state: RefCell<SocketState>,
 }
@@ -42,6 +45,8 @@ struct SocketState {
     send: SendState,
     anycast: AnycastMemberships,
     errors: ErrorQueue,
+    /// Whether the socket's readiness holds an error for the entries kept off the host's error queue.
+    held_errors: bool,
     drops: u32,
 }
 
@@ -53,20 +58,21 @@ pub const IPV6_NEIGHBOUR_CONFIRMATION: &str =
     "linux's ipv6 ping sockets do not pass on a send's neighbour confirmation";
 pub const UPPER_LAYER: &str =
     "an upper layer other than the type and code of the message, which linux routes a ping by";
+pub const RECEIVED_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket a packet without its mark, priority or preferred \
+     source, and an ipv4 one without its identification and fragment flags: each is written as zero or none";
+pub const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket an icmp error without the identification and \
+     fragment flags of an ipv4 one or the quoted header's fields but its addresses: each is written as zero";
 
-/// The receive control messages every socket turns on, by level.
-const IPV4_RECEIVE_OPTIONS: [u32; 6] = [
+/// The receive control messages every socket turns on beside the ones socket2 sets, by level.
+const IPV4_RECEIVE_OPTIONS: [u32; 5] = [
     uapi::IP_PKTINFO,
     uapi::IP_RECVTTL,
-    uapi::IP_RECVTOS,
     uapi::IP_RECVOPTS,
     uapi::IP_RECVFRAGSIZE,
     uapi::IP_RECVERR,
 ];
-const IPV6_RECEIVE_OPTIONS: [u32; 9] = [
+const IPV6_RECEIVE_OPTIONS: [u32; 7] = [
     uapi::IPV6_RECVPKTINFO,
-    uapi::IPV6_RECVHOPLIMIT,
-    uapi::IPV6_RECVTCLASS,
     uapi::IPV6_RECVHOPOPTS,
     uapi::IPV6_RECVDSTOPTS,
     uapi::IPV6_RECVRTHDR,
@@ -75,11 +81,12 @@ const IPV6_RECEIVE_OPTIONS: [u32; 9] = [
     uapi::IPV6_RECVERR,
 ];
 
-impl LinuxPingSockets {
-    pub fn new() -> Self {
-        Self {
+impl HostIcmpSockets {
+    pub fn new() -> Result<Self, HostError> {
+        Ok(Self {
             shortfalls: Shortfalls::default(),
-        }
+            readiness: Readiness::new()?,
+        })
     }
 
     /// How many times each named reason has made this value refuse or drop something.
@@ -92,35 +99,41 @@ impl LinuxPingSockets {
     }
 }
 
-impl Default for LinuxPingSockets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PartialEq for LinuxPingSocket {
+impl PartialEq for HostIcmpSocket {
     fn eq(&self, other: &Self) -> bool {
-        self.fd.as_raw_fd() == other.fd.as_raw_fd()
+        self.fd().as_raw_fd() == other.fd().as_raw_fd()
     }
 }
 
-impl Eq for LinuxPingSocket {}
+impl Eq for HostIcmpSocket {}
 
-impl PartialOrd for LinuxPingSocket {
+impl PartialOrd for HostIcmpSocket {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for LinuxPingSocket {
+impl Ord for HostIcmpSocket {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.fd.as_raw_fd().cmp(&other.fd.as_raw_fd())
+        self.fd().as_raw_fd().cmp(&other.fd().as_raw_fd())
     }
 }
 
-impl LinuxPingSocket {
+impl HostIcmpSocket {
     fn fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.watched.fd()
+    }
+
+    /// Holds an error in the socket's readiness while entries taken off the host's error queue wait for receives.
+    fn note_kept_entries(&self, state: &mut SocketState) {
+        let holds = state.errors.holds_entries();
+        if holds != state.held_errors {
+            state.held_errors = holds;
+            self.watched.hold(PollEvents {
+                error_condition: holds,
+                ..NO_EVENTS
+            });
+        }
     }
 
     fn version(&self) -> IpVersion {
@@ -178,31 +191,40 @@ fn routes_by_the_message(upper_layer: &UpperLayer, protocol: IpNumber, message: 
     upper_layer.protocol == protocol && upper_layer.selector == selector
 }
 
-impl IcmpSockets for LinuxPingSockets {
-    type Socket = LinuxPingSocket;
+impl IcmpSockets for HostIcmpSockets {
+    type Socket = HostIcmpSocket;
 
     fn open(&self, version: IpVersion, owner: UserId) -> Result<Self::Socket, HostError> {
         let ipv6 = version == IpVersion::V6;
         let protocol = if ipv6 { ipproto::ICMPV6 } else { ipproto::ICMP };
         let fd = shared::open_socket(version, SocketType::DGRAM, protocol, owner)?;
         let borrowed = fd.as_fd();
+        let socket2 = sock(&borrowed);
         if ipv6 {
+            socket2
+                .set_recv_hoplimit_v6(true)
+                .and_then(|()| socket2.set_recv_tclass_v6(true))
+                .map_err(|error| io_host_error(&error))?;
             for option in IPV6_RECEIVE_OPTIONS {
                 set_flag(borrowed, uapi::SOL_IPV6, option, true)?;
             }
         } else {
+            socket2
+                .set_recv_tos_v4(true)
+                .map_err(|error| io_host_error(&error))?;
             for option in IPV4_RECEIVE_OPTIONS {
                 set_flag(borrowed, uapi::SOL_IP, option, true)?;
             }
         }
         let send = SendState::open(borrowed, ipv6)?;
-        Ok(LinuxPingSocket {
-            fd,
+        Ok(HostIcmpSocket {
+            watched: self.readiness.watch(fd)?,
             ipv6,
             state: RefCell::new(SocketState {
                 send,
                 anycast: AnycastMemberships::default(),
                 errors: ErrorQueue::default(),
+                held_errors: false,
                 drops: u32::MIN,
             }),
         })
@@ -215,14 +237,15 @@ impl IcmpSockets for LinuxPingSockets {
         sharing: IdentifierSharing,
     ) -> Result<(), HostError> {
         let fd = socket.fd();
-        sockopt::set_socket_reuseaddr(fd, sharing == IdentifierSharing::Shared)
-            .map_err(host_error)?;
+        sock(&fd)
+            .set_reuse_address(sharing == IdentifierSharing::Shared)
+            .map_err(|error| io_host_error(&error))?;
         let any = if socket.ipv6 {
             IpAddr::V6(Ipv6Addr::UNSPECIFIED)
         } else {
             IpAddr::V4(Ipv4Addr::UNSPECIFIED)
         };
-        rustix::net::bind(fd, &SocketAddr::new(any, identifier.0.get())).map_err(host_error)
+        shared::bind_to(fd, SocketAddr::new(any, identifier.0.get())).map_err(host_error)
     }
 
     fn send_to(
@@ -271,7 +294,9 @@ impl IcmpSockets for LinuxPingSockets {
         match send_message(fd, Some(destination), message, control.bytes(), flags) {
             Ok(()) => Ok(()),
             Err(HostError::Errno(libc::EMSGSIZE)) => {
-                Err(state.errors.message_too_long(fd, &self.shortfalls))
+                let error = state.errors.message_too_long(fd, &self.shortfalls);
+                socket.note_kept_entries(state);
+                Err(error)
             }
             Err(error) => Err(SendError::Host(error)),
         }
@@ -282,7 +307,9 @@ impl IcmpSockets for LinuxPingSockets {
         let mut state = socket.state.borrow_mut();
         let state = &mut *state;
         loop {
-            let entry = match state.errors.next(fd, &self.shortfalls) {
+            let next = state.errors.next(fd, &self.shortfalls);
+            socket.note_kept_entries(state);
+            let entry = match next {
                 Ok(entry) => entry,
                 Err(HostError::WouldBlock) => break,
                 Err(error) => return Err(error),
@@ -292,7 +319,12 @@ impl IcmpSockets for LinuxPingSockets {
                 &entry,
                 into,
                 |into, copied, ancillary, error, offender| {
-                    socket.icmp_error(into, copied, ancillary, error, offender, entry.source)
+                    let written =
+                        socket.icmp_error(into, copied, ancillary, error, offender, entry.source);
+                    if written.is_some() {
+                        self.shortfalls.count(ICMP_ERROR_FIELDS_NOT_GIVEN);
+                    }
+                    written
                 },
             );
             if let Some(received) = received {
@@ -339,6 +371,7 @@ impl IcmpSockets for LinuxPingSockets {
         if fields.specific_destination == Some(Ipv4Addr::UNSPECIFIED) {
             fields.specific_destination = None;
         }
+        self.shortfalls.count(RECEIVED_FIELDS_NOT_GIVEN);
         Ok(Received::Packet(fields))
     }
 
@@ -346,15 +379,23 @@ impl IcmpSockets for LinuxPingSockets {
         unsent_bytes(socket.fd())
     }
 
+    async fn wait_for_events(
+        &self,
+        socket: &Self::Socket,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError> {
+        socket.watched.wait_for_events(interest).await
+    }
+
     fn close(&self, socket: Self::Socket) {
         drop(socket);
     }
 }
 
-impl<'a> Configurable<LinuxPingSocket, IpSocketSetting<'a>> for LinuxPingSockets {
+impl<'a> Configurable<HostIcmpSocket, IpSocketSetting<'a>> for HostIcmpSockets {
     fn configure(
         &self,
-        socket: &LinuxPingSocket,
+        socket: &HostIcmpSocket,
         setting: IpSocketSetting<'a>,
     ) -> Result<(), HostError> {
         let fd = socket.fd();

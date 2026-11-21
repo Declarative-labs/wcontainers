@@ -7,10 +7,14 @@
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::NonZeroU16;
+use std::future::Future;
 use std::io::Write;
 use std::mem::{size_of, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::pin::{Pin, pin};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use etherparse::{
@@ -31,6 +35,7 @@ use wcontainers_internet_protocol::{
     TransmitTime, TransmitTimeMode, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_route_resolver_conformance::{
     BATCH, IP, IPV6, PACKETS, number_after, seconds_since_confirmed,
 };
@@ -80,7 +85,7 @@ const ECHO_PROHIBITED: &str = "rule add ipproto icmp dport 2048 prohibit";
 /// Type 128 code 0, where the flow keeps a destination port.
 const ECHO_PROHIBITED_V6: &str = "rule add ipproto ipv6-icmp dport 32768 prohibit";
 /// A code an echo request does not carry.
-const OTHER_CODE: IcmpCode = IcmpCode(1);
+pub const OTHER_CODE: IcmpCode = IcmpCode(1);
 pub const TIME_TO_LIVE: HopLimit = HopLimit(7);
 pub const HOP_LIMIT: HopLimit = HopLimit(9);
 pub const FLOW_LABEL: u32 = 0x5a5a5;
@@ -107,6 +112,14 @@ address add 10.3.0.1/24 broadcast 10.3.0.255 dev ia
 address add fd03::1/64 dev ia nodad
 route add 10.9.0.0/16 via 10.3.0.2
 route add fd09::/64 via fd03::2";
+/// A second dummy link and routes to [`NOWHERE`] and [`NOWHERE_V6`] on both links, the first preferred.
+pub const TWO_ROUTES: &str = "link add ib type dummy
+link set ib up
+route add 10.8.0.0/16 dev ia metric 1
+route add 10.8.0.0/16 dev ib metric 2
+route add fd08::/64 dev ia metric 1
+route add fd08::/64 dev ib metric 2";
+pub const SECOND: &str = "ib";
 pub const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 7);
 pub const ON_LINK_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 7);
 pub const LOCAL: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 1);
@@ -551,13 +564,14 @@ pub fn checks_out(message: &[u8], seen: &Seen<'_>) -> bool {
     }
 }
 
-/// An echo request to a local address gets its reply, written whole from its IP header with the identifier bound.
+/// An echo request to a local address gets its reply, written whole from its IP header as it was on the wire, with the identifier bound.
 fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     let version = version_of(to);
     let socket = opened(&sockets, version);
     sockets
         .bind_identifier(&socket, IDENTIFIER, IdentifierSharing::Exclusive)
         .expect("the identifier binds");
+    let wire = Capture::on(SELF_LINK);
     ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
@@ -571,6 +585,32 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
         IpVersion::V4 => icmpv4::TYPE_ECHO_REPLY,
         IpVersion::V6 => icmpv6::TYPE_ECHO_REPLY,
     };
+    let on_the_wire = wire.next(|packet| {
+        let seen = crate::seen(packet);
+        seen.protocol == protocol(version) && seen.payload.first() == Some(&reply)
+    });
+    assert_eq!(packet.len(), on_the_wire.len());
+    let headers = packet.len() - seen.payload.len();
+    match version {
+        IpVersion::V4 => {
+            // Every field but the identification, the fragment flags and offset, and the checksum over them.
+            const NOT_COMPARED: [core::ops::Range<usize>; 2] = [4..8, 10..12];
+            let compared = |header: &[u8]| {
+                let mut header = header[..headers].to_vec();
+                for range in NOT_COMPARED {
+                    header[range].fill(u8::MIN);
+                }
+                header
+            };
+            assert_eq!(compared(packet), compared(&on_the_wire));
+            let given = ipv4(packet);
+            assert_eq!(
+                given.header_checksum(),
+                given.to_header().calc_header_checksum()
+            );
+        }
+        IpVersion::V6 => assert_eq!(&packet[..headers], &on_the_wire[..headers]),
+    }
     let message = seen.payload;
     assert_eq!((message[0], message[1]), (reply, u8::MIN));
     assert_eq!(identifier_of(message), IDENTIFIER.0.get());
@@ -784,22 +824,56 @@ pub fn ipv6_header_fields_go_out<S: IcmpSockets>(sockets: S) {
     assert_eq!(header.flow_label(), route.flow_label);
 }
 
-/// IPv6 extension headers and a source address go out with the request, or are refused.
-pub fn ipv6_extension_headers_and_source_go_out<S: IcmpSockets>(sockets: S) {
+/// The last segment of a segment routing header the checks send, beyond the link.
+pub const FAR_V6_SEGMENT: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 9);
+/// An IPv6 extension header of eight bytes: next header, length, then padding (PadN of four).
+pub const PADDING_HEADER: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
+
+/// A segment routing header of two segments, [`FAR_V6_SEGMENT`] last and [`ON_LINK_V6`] next.
+pub fn segment_routing_header() -> Vec<u8> {
+    /// The header's length in eight-byte units after its first eight, for two segments.
+    const TWO_SEGMENTS: u8 = 4;
+    let mut routing = vec![
+        u8::MIN,
+        TWO_SEGMENTS,
+        linux_raw_sys::net::IPV6_SRCRT_TYPE_4 as u8,
+        1,
+        1,
+        u8::MIN,
+        u8::MIN,
+        u8::MIN,
+    ];
+    routing.extend_from_slice(&FAR_V6_SEGMENT.octets());
+    routing.extend_from_slice(&ON_LINK_V6.octets());
+    routing
+}
+
+/// The kinds of the extension headers a packet carries, in order.
+pub fn extension_kinds(packet: &[u8]) -> Vec<IpNumber> {
+    seen(packet)
+        .extensions
+        .iter()
+        .map(|(kind, _)| *kind)
+        .collect()
+}
+
+/// IPv6 extension headers and a routing header go out with the request, or are refused.
+pub fn ipv6_extension_headers_go_out<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
-    const SECOND_ADDRESS: &str = "address add fd03::5/64 dev ia nodad";
-    ip(SECOND_ADDRESS);
-    const SOURCE: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 5);
-    /// A hop-by-hop header of eight bytes: next header, length, then padding (PadN of four).
-    const OPTIONS: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
-    let options = Ipv6RawExtHeaderSlice::from_slice(&OPTIONS).unwrap();
+    let padding = Ipv6RawExtHeaderSlice::from_slice(&PADDING_HEADER).unwrap();
+    let routing = segment_routing_header();
+    let routing = Ipv6RawExtHeaderSlice::from_slice(&routing).unwrap();
     let message = echo(IpVersion::V6, PAYLOAD);
     let socket = opened(&sockets, IpVersion::V6);
     let capture = Capture::on(DUMMY);
     let header = Ipv6HeaderFields {
-        hop_by_hop_options: Some(options.clone()),
-        destination_options: Some(options),
-        ..v6_header(v6_route(ON_LINK_V6, &message))
+        hop_by_hop_options: Some(padding.clone()),
+        routing_destination_options: Some(padding.clone()),
+        destination_options: Some(padding),
+        ..v6_header(Ipv6RouteSelectors {
+            routing_header: Some(routing),
+            ..v6_route(FAR_V6_SEGMENT, &message)
+        })
     };
     let sent = sockets.send_to(
         &socket,
@@ -810,33 +884,48 @@ pub fn ipv6_extension_headers_and_source_go_out<S: IcmpSockets>(sockets: S) {
     unless_refused(sent, |sent| {
         sent.expect("the request is sent");
         let request = capture.echo_request();
-        let kinds: Vec<IpNumber> = seen(&request)
-            .extensions
-            .iter()
-            .map(|(kind, _)| *kind)
-            .collect();
+        assert_eq!(ipv6(&request).destination_addr(), ON_LINK_V6);
         assert_eq!(
-            kinds,
+            extension_kinds(&request),
             [
                 IpNumber::IPV6_HEADER_HOP_BY_HOP,
+                IpNumber::IPV6_DESTINATION_OPTIONS,
+                IpNumber::IPV6_ROUTE_HEADER,
                 IpNumber::IPV6_DESTINATION_OPTIONS
             ]
         );
     });
-    let route = Ipv6RouteSelectors {
-        source: Some(SOURCE),
-        ..v6_route(ON_LINK_V6, &message)
-    };
-    let sent = sockets.send_to(
-        &socket,
-        IpHeaderFields::V6(v6_header(route)),
-        plain_fields(),
-        &message,
-    );
-    unless_refused(sent, |sent| {
-        sent.expect("the request is sent");
-        assert_eq!(seen(&capture.echo_request()).source, IpAddr::V6(SOURCE));
-    });
+    let socket = opened(&sockets, IpVersion::V6);
+    ping(&sockets, &socket, IpAddr::V6(ON_LINK_V6), PAYLOAD).unwrap();
+    assert!(extension_kinds(&capture.echo_request()).is_empty());
+}
+
+/// An IPv6 request leaves from the local source address its send gives, or the source is refused; of two
+/// addresses on the link, either is taken when asked for, whichever the host would choose by itself.
+pub fn an_ipv6_source_goes_out<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    const SECOND_ADDRESS: &str = "address add fd03::5/64 dev ia nodad";
+    ip(SECOND_ADDRESS);
+    const SOURCE: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 5);
+    let message = echo(IpVersion::V6, PAYLOAD);
+    let socket = opened(&sockets, IpVersion::V6);
+    let capture = Capture::on(DUMMY);
+    for source in [SOURCE, LOCAL_V6] {
+        let route = Ipv6RouteSelectors {
+            source: Some(source),
+            ..v6_route(ON_LINK_V6, &message)
+        };
+        let sent = sockets.send_to(
+            &socket,
+            IpHeaderFields::V6(v6_header(route)),
+            plain_fields(),
+            &message,
+        );
+        unless_refused(sent, |sent| {
+            sent.expect("the request is sent");
+            assert_eq!(seen(&capture.echo_request()).source, IpAddr::V6(source));
+        });
+    }
 }
 
 /// Each path MTU discovery mode sends, with the don't-fragment bit on IPv4 only for the modes that set it.
@@ -1054,14 +1143,7 @@ pub fn icmp_type_and_code_select_the_route<S: IcmpSockets>(sockets: S) {
 /// An interface chooses among routes to a destination the one out of that link.
 pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
-    const TWO_ROUTES: &str = "link add ib type dummy
-link set ib up
-route add 10.8.0.0/16 dev ia metric 1
-route add 10.8.0.0/16 dev ib metric 2
-route add fd08::/64 dev ia metric 1
-route add fd08::/64 dev ib metric 2";
     ip(TWO_ROUTES);
-    const SECOND: &str = "ib";
     let second = index(SECOND);
     let first_capture = Capture::on(DUMMY);
     let second_capture = Capture::on(SECOND);
@@ -1363,7 +1445,7 @@ pub fn receive_timestamps_come_only_when_set<S: IcmpSockets>(sockets: S) {
 }
 
 /// An ICMP error about a request arrives on its socket, written whole from its IP header and quoting the request.
-fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, error: [u8; 2]) {
+fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     ip(NETWORK);
     {
         let version = version_of(to);
@@ -1371,24 +1453,14 @@ fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, error: [u8; 
         sockets
             .bind_identifier(&socket, identifier(version), IdentifierSharing::Exclusive)
             .unwrap();
-        let capture = Capture::on(DUMMY);
-        ping(&sockets, &socket, to, PAYLOAD).unwrap();
-        let request = capture.echo_request();
+        let request = provoke_icmp_error(&sockets, &socket, to);
         let source = seen(&request).source;
-        let quoted_length = match version {
-            IpVersion::V4 => ipv4(&request).slice().len() + ICMP_HEADER,
-            IpVersion::V6 => request.len(),
-        };
-        let mut message = error.to_vec();
-        message.resize(ICMP_HEADER, u8::MIN);
-        message.extend_from_slice(&request[..quoted_length]);
-        send_raw_icmp(version, source, &mut message);
         let mut into = buffer();
         let fields = receive_packet(&sockets, &socket, &mut into);
         let packet = seen(&into[..fields.length]);
         assert_eq!(packet.protocol, protocol(version));
         assert_eq!(packet.destination, source);
-        assert_eq!(&packet.payload[..2], error);
+        assert_eq!(&packet.payload[..2], unreachable(version));
         assert!(checks_out(packet.payload, &packet));
         let quoted = seen(&packet.payload[ICMP_HEADER..]);
         assert_eq!((quoted.source, quoted.destination), (source, to));
@@ -1397,23 +1469,15 @@ fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, error: [u8; 
 }
 
 pub fn an_icmp_error_arrives_whole_over_ipv4<S: IcmpSockets>(sockets: S) {
-    icmp_error_arrives_whole(
-        sockets,
-        IpAddr::V4(ON_LINK),
-        [icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST],
-    );
+    icmp_error_arrives_whole(sockets, IpAddr::V4(ON_LINK));
 }
 
 pub fn an_icmp_error_arrives_whole_over_ipv6<S: IcmpSockets>(sockets: S) {
-    icmp_error_arrives_whole(
-        sockets,
-        IpAddr::V6(ON_LINK_V6),
-        [icmpv6::TYPE_DST_UNREACH, icmpv6::CODE_DST_UNREACH_ADDR],
-    );
+    icmp_error_arrives_whole(sockets, IpAddr::V6(ON_LINK_V6));
 }
 
 /// Sends an ICMP message from a raw socket of the namespace to a local address; the checksum is written here for IPv4.
-fn send_raw_icmp(version: IpVersion, to: IpAddr, message: &mut [u8]) {
+pub fn send_raw_icmp(version: IpVersion, to: IpAddr, message: &mut [u8]) {
     let (family, protocol) = match version {
         IpVersion::V4 => (rustix::net::AddressFamily::INET, rustix::net::ipproto::ICMP),
         IpVersion::V6 => (
@@ -1642,6 +1706,304 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
     assert!(!listed());
 }
 
+/// No poll event at all, from which a check asks for the ones it waits for.
+pub const NO_EVENTS: PollEvents = PollEvents {
+    data_to_read: false,
+    exceptional_condition: false,
+    writing_possible: false,
+    error_condition: false,
+    hang_up: false,
+    descriptor_not_open: false,
+    normal_data_to_read: false,
+    priority_band_data_to_read: false,
+    normal_data_writable: false,
+    priority_data_writable: false,
+    message_available: false,
+    peer_shut_down_writing: false,
+};
+
+pub const READABLE: PollEvents = PollEvents {
+    data_to_read: true,
+    ..NO_EVENTS
+};
+
+pub const WRITABLE: PollEvents = PollEvents {
+    writing_possible: true,
+    ..NO_EVENTS
+};
+
+/// How many sockets a check waits on at once, and how many more waits it makes on the first of them.
+pub const WAITED_SOCKETS: usize = 32;
+pub const WAITS_ON_ONE: usize = 3;
+
+/// The wakes a waiting call has given, counted, for a check that polls the call by hand.
+#[derive(Default)]
+pub struct Wakes {
+    count: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        *self.count.lock().expect("the wakes") += 1;
+        self.changed.notify_all();
+    }
+}
+
+impl Wakes {
+    pub fn count(&self) -> usize {
+        *self.count.lock().expect("the wakes")
+    }
+
+    /// Whether the call has been woken `count` times before the patience of a check ends.
+    pub fn reach(&self, count: usize) -> bool {
+        let wakes = self.count.lock().expect("the wakes");
+        let (wakes, _) = self
+            .changed
+            .wait_timeout_while(wakes, PATIENCE, |wakes| *wakes < count)
+            .expect("the wakes");
+        *wakes >= count
+    }
+}
+
+/// Polls a waiting call once with a waker that counts into `wakes`.
+pub fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output> {
+    let waker = Waker::from(Arc::clone(wakes));
+    call.poll(&mut Context::from_waker(&waker))
+}
+
+/// The events a finished wait gave.
+pub fn finished(poll: Poll<Result<PollEvents, HostError>>) -> PollEvents {
+    match poll {
+        Poll::Ready(events) => events.expect("wait for events"),
+        Poll::Pending => panic!("the wait did not finish"),
+    }
+}
+
+/// The events a wait gives at once or when it is next woken.
+pub fn finished_soon<F: Future<Output = Result<PollEvents, HostError>>>(
+    mut call: Pin<&mut F>,
+    wakes: &Arc<Wakes>,
+) -> PollEvents {
+    match poll_with(call.as_mut(), wakes) {
+        Poll::Pending => {
+            assert!(wakes.reach(1), "the wait is woken");
+            finished(poll_with(call, wakes))
+        }
+        ready => finished(ready),
+    }
+}
+
+/// Whether events hold none that was not asked for, but for those poll always reports.
+pub fn only_asked_for(events: PollEvents, interest: PollEvents) -> bool {
+    let asked = |got: bool, wanted: bool| !got || wanted;
+    asked(events.data_to_read, interest.data_to_read)
+        && asked(events.exceptional_condition, interest.exceptional_condition)
+        && asked(events.writing_possible, interest.writing_possible)
+        && asked(events.normal_data_to_read, interest.normal_data_to_read)
+        && asked(
+            events.priority_band_data_to_read,
+            interest.priority_band_data_to_read,
+        )
+        && asked(events.normal_data_writable, interest.normal_data_writable)
+        && asked(
+            events.priority_data_writable,
+            interest.priority_data_writable,
+        )
+        && asked(events.message_available, interest.message_available)
+        && asked(
+            events.peer_shut_down_writing,
+            interest.peer_shut_down_writing,
+        )
+}
+
+/// A wait for data does not finish before the echo reply arrives, and finishes, woken once, when it does.
+pub fn a_wait_for_data_finishes_when_the_reply_arrives<S: IcmpSockets>(sockets: S) {
+    for to in [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ] {
+        let socket = opened(&sockets, version_of(to));
+        let wakes = Arc::new(Wakes::default());
+        let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        std::thread::sleep(QUIET);
+        assert_eq!(wakes.count(), 0, "woken with nothing to read");
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+        assert!(wakes.reach(1), "woken when the reply arrives");
+        let events = finished(poll_with(wait.as_mut(), &wakes));
+        assert!(events.data_to_read, "{events:?}");
+        assert!(only_asked_for(events, READABLE), "{events:?}");
+        assert_eq!(wakes.count(), 1);
+        assert!(matches!(
+            sockets.receive(&socket, &mut buffer()),
+            Ok(Received::Packet(_))
+        ));
+    }
+}
+
+/// A wait for what the socket already has finishes at its first poll, with only the events asked for.
+pub fn a_wait_for_writing_finishes_at_once<S: IcmpSockets>(sockets: S) {
+    let socket = opened(&sockets, IpVersion::V4);
+    let wakes = Arc::new(Wakes::default());
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&socket, WRITABLE)),
+        &wakes,
+    ));
+    assert!(events.writing_possible, "{events:?}");
+    assert!(only_asked_for(events, WRITABLE), "{events:?}");
+    assert_eq!(wakes.count(), 0);
+}
+
+/// A dropped wait gives up its waker and is not woken by the event it waited for; a new wait then sees it.
+pub fn a_dropped_wait_is_withdrawn<S: IcmpSockets>(sockets: S) {
+    let to = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    let socket = opened(&sockets, IpVersion::V6);
+    let wakes = Arc::new(Wakes::default());
+    {
+        let wait = pin!(sockets.wait_for_events(&socket, READABLE));
+        assert!(poll_with(wait, &wakes).is_pending());
+    }
+    assert_eq!(
+        Arc::strong_count(&wakes),
+        1,
+        "the dropped wait kept its waker"
+    );
+    ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+    std::thread::sleep(QUIET);
+    assert_eq!(wakes.count(), 0, "a dropped wait was woken");
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&socket, READABLE)),
+        &wakes,
+    ));
+    assert!(events.data_to_read, "{events:?}");
+}
+
+/// Many waits at once, on many sockets and several on one, each finish woken once when their reply arrives.
+pub fn many_waits_each_wake_once<S: IcmpSockets>(sockets: S) {
+    let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let watched: Vec<_> = (0..WAITED_SOCKETS)
+        .map(|_| opened(&sockets, IpVersion::V4))
+        .collect();
+    let mut waits: Vec<_> = watched
+        .iter()
+        .chain(core::iter::repeat_n(&watched[0], WAITS_ON_ONE))
+        .map(|socket| {
+            (
+                Box::pin(sockets.wait_for_events(socket, READABLE)),
+                Arc::new(Wakes::default()),
+            )
+        })
+        .collect();
+    for (wait, wakes) in &mut waits {
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    for socket in &watched {
+        ping(&sockets, socket, to, PAYLOAD).expect("the request is sent");
+    }
+    for (wait, wakes) in &mut waits {
+        assert!(wakes.reach(1), "a wait woken when its reply arrives");
+        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
+    }
+    std::thread::sleep(QUIET);
+    for (_, wakes) in &waits {
+        assert_eq!(wakes.count(), 1, "a wait woken more than once");
+    }
+}
+
+/// The type and code of the ICMP error the checks send: the destination host is unreachable.
+fn unreachable(version: IpVersion) -> [u8; 2] {
+    match version {
+        IpVersion::V4 => [icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST],
+        IpVersion::V6 => [icmpv6::TYPE_DST_UNREACH, icmpv6::CODE_DST_UNREACH_ADDR],
+    }
+}
+
+/// Sends an echo request to an address on the dummy link and an ICMP error about it to its source, giving the request.
+fn provoke_icmp_error<S: IcmpSockets>(sockets: &S, socket: &S::Socket, to: IpAddr) -> Vec<u8> {
+    let capture = Capture::on(DUMMY);
+    ping(sockets, socket, to, PAYLOAD).expect("the request is sent");
+    let request = capture.echo_request();
+    let version = version_of(to);
+    let quoted_length = match version {
+        IpVersion::V4 => ipv4(&request).slice().len() + ICMP_HEADER,
+        IpVersion::V6 => request.len(),
+    };
+    let mut message = unreachable(version).to_vec();
+    message.resize(ICMP_HEADER, u8::MIN);
+    message.extend_from_slice(&request[..quoted_length]);
+    send_raw_icmp(version, seen(&request).source, &mut message);
+    request
+}
+
+/// An ICMP error about a request ends a wait for data with the error condition, which poll always reports.
+pub fn an_icmp_error_ends_a_wait_for_data<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
+        let socket = opened(&sockets, version_of(to));
+        let wakes = Arc::new(Wakes::default());
+        let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        provoke_icmp_error(&sockets, &socket, to);
+        assert!(wakes.reach(1), "woken by the ICMP error");
+        let events = finished(poll_with(wait.as_mut(), &wakes));
+        assert!(events.error_condition, "{events:?}");
+        assert!(matches!(
+            sockets.receive(&socket, &mut buffer()),
+            Ok(Received::Packet(_))
+        ));
+    }
+}
+
+/// An ICMP error that a too long send read off the host while looking for its own error still ends a wait at once.
+pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    let to = IpAddr::V6(ON_LINK_V6);
+    let socket = opened(&sockets, IpVersion::V6);
+    let wakes = Arc::new(Wakes::default());
+    provoke_icmp_error(&sockets, &socket, to);
+    let events = finished_soon(pin!(sockets.wait_for_events(&socket, READABLE)), &wakes);
+    assert!(events.error_condition, "{events:?}");
+    /// A fragment MTU the long message does not fit.
+    const FRAGMENT_MTU: u32 = 1320;
+    let message = echo(IpVersion::V6, &vec![u8::MAX; LONG_MESSAGE]);
+    let forbidden = Ipv6HeaderFields {
+        local_fragmentation: LocalFragmentation::Forbidden,
+        fragment_mtu: Some(MaximumTransmissionUnit(FRAGMENT_MTU)),
+        ..v6_header(v6_route(ON_LINK_V6, &message))
+    };
+    assert_eq!(
+        sockets.send_to(
+            &socket,
+            IpHeaderFields::V6(forbidden),
+            plain_fields(),
+            &message
+        ),
+        Err(SendError::MessageTooLong {
+            maximum_transmission_unit: MaximumTransmissionUnit(FRAGMENT_MTU)
+        })
+    );
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&socket, READABLE)),
+        &wakes,
+    ));
+    assert!(events.error_condition, "{events:?}");
+    let mut into = buffer();
+    let fields = receive_packet(&sockets, &socket, &mut into);
+    assert_eq!(seen(&into[..fields.length]).protocol, IpNumber::IPV6_ICMP);
+    assert!(nothing_arrives(&sockets, &socket));
+    let wait = pin!(sockets.wait_for_events(&socket, READABLE));
+    assert!(
+        poll_with(wait, &wakes).is_pending(),
+        "an error held after its entry was received"
+    );
+}
+
 /// Each setting set twice answers as it did once, by Configurable's own suite.
 pub fn configurable_value<S: IcmpSockets>(
     sockets: S,
@@ -1699,7 +2061,8 @@ macro_rules! tests {
             a_short_buffer_keeps_the_whole_length,
             ipv4_header_fields_go_out,
             ipv6_header_fields_go_out,
-            ipv6_extension_headers_and_source_go_out,
+            ipv6_extension_headers_go_out,
+            an_ipv6_source_goes_out,
             every_path_mtu_discovery_mode_sends,
             a_message_over_the_mtu_is_too_long_or_fragmented,
             mark_selects_the_route,
@@ -1721,6 +2084,12 @@ macro_rules! tests {
             a_full_send_buffer_would_block,
             a_small_receive_buffer_counts_its_drops,
             memberships_are_taken,
+            a_wait_for_data_finishes_when_the_reply_arrives,
+            a_wait_for_writing_finishes_at_once,
+            a_dropped_wait_is_withdrawn,
+            many_waits_each_wake_once,
+            an_icmp_error_ends_a_wait_for_data,
+            a_wait_sees_an_error_a_send_read_first,
         );
         mod configurable_multicast {
             $crate::configurable_suite::tests!({

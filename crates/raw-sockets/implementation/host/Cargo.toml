@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-raw-sockets-linux-host"
+name = "wcontainers-raw-sockets-host"
 description = "RawSockets on the raw IP sockets of the Linux machine it runs on."
 version.workspace = true
 edition.workspace = true
@@ -23,6 +23,8 @@ etherparse.workspace = true
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 # Socket calls and socket addresses.
 rustix = { version = "1.1.6", features = ["net"] }
+# The socket options socket2 covers, on the socket's descriptor.
+socket2 = { version = "0.6.5", features = ["all"] }
 # The Linux uapi constants and structures of sockets.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # getsockopt for SO_MEMINFO and the errno values.

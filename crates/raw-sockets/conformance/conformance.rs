@@ -8,7 +8,9 @@
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::io::Write;
 use std::os::fd::AsFd;
+use std::pin::pin;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use etherparse::{
@@ -18,19 +20,21 @@ use etherparse::{
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, HOP_LIMIT, LOCAL, LOCAL_V6, MARK,
-    MARK_PROHIBITED, NETWORK, ON_LINK, ON_LINK_V6, OTHER_USER, OWNER_PROHIBITED, PATIENCE, PAYLOAD,
-    QUIET, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, buffer, index, ip, ip6, ipv4,
-    ipv6, no_reports, output, plain_fields, seen, tc, version_of, write_setting,
+    MARK_PROHIBITED, NETWORK, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED,
+    PATIENCE, PAYLOAD, QUIET, READABLE, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE,
+    WAITED_SOCKETS, WAITS_ON_ONE, WRITABLE, Wakes, buffer, finished, finished_soon, index, ip, ip6,
+    ipv4, ipv6, no_reports, only_asked_for, output, plain_fields, poll_with, seen, tc, version_of,
+    write_setting,
 };
 use wcontainers_internet_protocol::{
-    BroadcastPermission, ByteCount, BytesPerSecond, IpHeaderFields, IpSendFields, IpSocketSetting,
-    IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6HeaderFields, Ipv6RouteSelectors,
-    LocalFragmentation, MaximumTransmissionUnit, MobileAddressPreference, MulticastGroup,
-    MulticastMembership, NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery,
-    Received, ReceivedPacketFields, Report, RouteScope, RouterAlertValue, SendError,
-    SourceAddressCheck, SourceFilter, SourcePreferences, TemporaryAddressPreference,
-    TimestampSource, Timestamping, TransmitEvent, TransmitReportRequest, TransmitStage, UpperLayer,
-    UpperLayerSelector,
+    AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, IcmpType, IpHeaderFields,
+    IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
+    Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation, MaximumTransmissionUnit, Membership,
+    MobileAddressPreference, MulticastGroup, MulticastMembership, NeighbourConfirmation,
+    PacketMark, PacketPriority, PathMtuDiscovery, Port, Received, ReceivedPacketFields, Report,
+    RouteScope, RouterAlertValue, SendError, SourceAddressCheck, SourceFilter, SourcePreferences,
+    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent,
+    TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_raw_sockets::{
     ChecksumOffset, HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket,
@@ -498,19 +502,42 @@ pub fn a_payload_under_another_upper_layer_is_not_sent_as_asked<S: RawSockets>(s
             assert_eq!(seen(&packet).protocol, OTHER_EXPERIMENT);
         },
     );
+    /// The port the second rule below prohibits.
+    const PROHIBITED_PORT: Port = Port(9);
+    // Rules prohibit the selectors asked for below, which the payloads themselves do not carry.
+    const OTHER_CODE_PROHIBITED: &str = "rule add ipproto icmp dport 2049 prohibit
+rule add ipproto 253 dport 9 prohibit";
+    ip(OTHER_CODE_PROHIBITED);
+    let prohibited = Err(SendError::Host(HostError::Errno(libc::EACCES)));
+    let routed_as_asked =
+        |sent: Result<(), SendError>| assert_eq!(sent, prohibited, "routed by its own fields");
     let socket = opened(&sockets, IpVersion::V4, IpNumber::ICMP);
     let message = echo_request(PAYLOAD);
     let mut route = v4_route(ON_LINK, under(IpNumber::ICMP));
+    route.upper_layer.selector = Some(UpperLayerSelector::Icmp {
+        message_type: IcmpType(icmpv4::TYPE_ECHO_REQUEST),
+        code: OTHER_CODE,
+    });
+    let routed = |route: Ipv4RouteSelectors<'_>, socket: &S::Socket, payload: &[u8]| {
+        send(
+            &sockets,
+            socket,
+            RawPacket::Payload {
+                header: IpHeaderFields::V4(v4_header(route)),
+                payload,
+            },
+        )
+    };
+    unless_refused(routed(route, &socket, &message), routed_as_asked);
     route.upper_layer.selector = icmp_selector(&message);
-    send(
-        &sockets,
-        &socket,
-        RawPacket::Payload {
-            header: IpHeaderFields::V4(v4_header(route)),
-            payload: &message,
-        },
-    )
-    .expect("an echo request routed by its own type is sent");
+    routed(route, &socket, &message).expect("an echo request routed by its own type is sent");
+    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let mut route = v4_route(ON_LINK, under(EXPERIMENT));
+    route.upper_layer.selector = Some(UpperLayerSelector::Ports(TransportPorts {
+        source: PROHIBITED_PORT,
+        destination: PROHIBITED_PORT,
+    }));
+    unless_refused(routed(route, &socket, PAYLOAD), routed_as_asked);
 }
 
 /// A packet with its own header leaves as it was written.
@@ -983,7 +1010,7 @@ pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
     assert_eq!(taken, Ok(()));
 }
 
-/// The IP header fields that choose a payload's route are taken: interface, link scope, broadcast, a waived source, source preferences, owner and mark.
+/// The IP header fields that choose a payload's route are taken: interface, link scope, broadcast, a waived source, source preferences, owner, mark.
 pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     ip(OWNER_PROHIBITED);
@@ -1080,6 +1107,74 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         seen(packet).protocol == EXPERIMENT && seen(packet).destination == IpAddr::V6(ON_LINK_V6)
     });
     assert_eq!(seen(&packet).source, IpAddr::V6(LOCAL_V6));
+    ip6(OWNER_PROHIBITED);
+    ip6(MARK_PROHIBITED);
+    ip(wcontainers_icmp_sockets_conformance::TWO_ROUTES);
+    let second_capture = Capture::on(wcontainers_icmp_sockets_conformance::SECOND);
+    let sent = |route: Ipv6RouteSelectors<'_>| {
+        send(
+            &sockets,
+            &socket,
+            RawPacket::Payload {
+                header: IpHeaderFields::V6(v6_header(route)),
+                payload: PAYLOAD,
+            },
+        )
+    };
+    let route = v6_route(ON_LINK_V6, under(EXPERIMENT));
+    assert_eq!(
+        sent(Ipv6RouteSelectors {
+            mark: MARK,
+            ..route.clone()
+        }),
+        prohibited
+    );
+    let nowhere = v6_route(
+        wcontainers_icmp_sockets_conformance::NOWHERE_V6,
+        under(EXPERIMENT),
+    );
+    for (interface, capture) in [
+        (None, &capture),
+        (
+            Some(wcontainers_icmp_sockets_conformance::SECOND),
+            &second_capture,
+        ),
+    ] {
+        sent(Ipv6RouteSelectors {
+            interface: interface.map(index),
+            ..nowhere.clone()
+        })
+        .expect("the payload is sent");
+        capture.next(|packet| seen(packet).destination == IpAddr::V6(nowhere.destination));
+    }
+    const ABSENT_V6: Ipv6Addr = Ipv6Addr::new(0xfd99, 0, 0, 0, 0, 0, 0, 1);
+    assert!(
+        sent(Ipv6RouteSelectors {
+            source: Some(ABSENT_V6),
+            ..route.clone()
+        })
+        .is_err()
+    );
+    sent(Ipv6RouteSelectors {
+        source: Some(ABSENT_V6),
+        source_address_check: SourceAddressCheck::Waived,
+        ..route
+    })
+    .expect("the payload is sent from the absent address");
+    capture.next(|packet| {
+        seen(packet).protocol == EXPERIMENT && seen(packet).source == IpAddr::V6(ABSENT_V6)
+    });
+    let other = sockets
+        .open(IpVersion::V6, EXPERIMENT, OTHER_USER)
+        .expect("a raw socket of another user opens");
+    assert_eq!(
+        sockets.send_to(
+            &other,
+            payload_to(IpAddr::V6(ON_LINK_V6), EXPERIMENT, PAYLOAD),
+            plain_fields()
+        ),
+        prohibited
+    );
 }
 
 /// Path MTU modes set the don't-fragment bit as Linux does; a payload over the MTU is too long where it may not be fragmented.
@@ -1178,30 +1273,7 @@ pub fn icmp_errors_arrive_whole<S: RawSockets>(sockets: S) {
     for packet in sends {
         send(&sockets, &socket, packet).unwrap();
         let sent = capture.next(|packet| seen(packet).protocol == EXPERIMENT);
-        /// The quoted header and the first eight bytes after it.
-        const QUOTED_PAYLOAD: usize = 8;
-        let quoted = &sent[..ipv4(&sent).slice().len() + QUOTED_PAYLOAD];
-        let mut error = vec![icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST];
-        error.resize(etherparse::Icmpv4Header::MIN_LEN, u8::MIN);
-        error.extend_from_slice(quoted);
-        let checksum = etherparse::checksum::Sum16BitWords::new()
-            .add_slice(&error)
-            .ones_complement()
-            .to_ne_bytes();
-        error[wcontainers_icmp_sockets_conformance::CHECKSUM_BYTES].copy_from_slice(&checksum);
-        let raw = rustix::net::socket(
-            rustix::net::AddressFamily::INET,
-            rustix::net::SocketType::RAW,
-            Some(rustix::net::ipproto::ICMP),
-        )
-        .unwrap();
-        rustix::net::sendto(
-            &raw,
-            &error,
-            rustix::net::SendFlags::empty(),
-            &std::net::SocketAddr::new(IpAddr::V4(LOCAL), u16::MIN),
-        )
-        .unwrap();
+        let error = send_icmp_error_about(&sent);
         let mut into = buffer();
         let fields = loop {
             let fields = receive_packet(&sockets, &socket, &mut into);
@@ -1225,25 +1297,55 @@ pub fn icmp_errors_arrive_whole<S: RawSockets>(sockets: S) {
     }
 }
 
+/// The quoted header and the first eight bytes after it, which an IPv4 ICMP error quotes.
+const QUOTED_PAYLOAD: usize = 8;
+
+/// Sends the ICMP error that a host is unreachable about a packet that left, to its source, giving the error.
+fn send_icmp_error_about(sent: &[u8]) -> Vec<u8> {
+    let packet = seen(sent);
+    let version = version_of(packet.source);
+    let (mut error, quoted) = match version {
+        IpVersion::V4 => (
+            vec![icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST],
+            &sent[..ipv4(sent).slice().len() + QUOTED_PAYLOAD],
+        ),
+        IpVersion::V6 => (
+            vec![icmpv6::TYPE_DST_UNREACH, icmpv6::CODE_DST_UNREACH_ADDR],
+            sent,
+        ),
+    };
+    error.resize(etherparse::Icmpv4Header::MIN_LEN, u8::MIN);
+    error.extend_from_slice(quoted);
+    wcontainers_icmp_sockets_conformance::send_raw_icmp(version, packet.source, &mut error);
+    error
+}
+
 /// A send's priority, transmit time and neighbour confirmation are taken, and its transmit reports carry its key.
 pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     ip(wcontainers_icmp_sockets_conformance::STALE_GATEWAYS);
-    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
-    let gateway = IpAddr::V4(wcontainers_icmp_sockets_conformance::GATEWAY);
-    assert!(seconds_since_confirmed(gateway, DUMMY) > 0);
-    let confirmed = IpSendFields {
-        neighbour: NeighbourConfirmation::Confirmed,
-        ..plain_fields()
-    };
-    sockets
-        .send_to(
-            &socket,
-            payload_to(IpAddr::V4(FAR), EXPERIMENT, PAYLOAD),
-            confirmed,
-        )
-        .unwrap();
-    assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0);
+    let far = [
+        (
+            IpAddr::V4(FAR),
+            IpAddr::V4(wcontainers_icmp_sockets_conformance::GATEWAY),
+        ),
+        (
+            IpAddr::V6(wcontainers_icmp_sockets_conformance::FAR_V6),
+            IpAddr::V6(wcontainers_icmp_sockets_conformance::GATEWAY_V6),
+        ),
+    ];
+    for (to, gateway) in far {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        assert!(seconds_since_confirmed(gateway, DUMMY) > 0);
+        let confirmed = IpSendFields {
+            neighbour: NeighbourConfirmation::Confirmed,
+            ..plain_fields()
+        };
+        sockets
+            .send_to(&socket, payload_to(to, EXPERIMENT, PAYLOAD), confirmed)
+            .unwrap();
+        assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0, "{gateway}");
+    }
     tc(wcontainers_icmp_sockets_conformance::PRIO_QUEUE);
     let third_band = || {
         wcontainers_route_resolver_conformance::number_after(
@@ -1259,20 +1361,19 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
             wcontainers_route_resolver_conformance::PACKETS,
         )
     };
-    let before = third_band();
     let filler = IpSendFields {
         priority: PacketPriority(wcontainers_icmp_sockets_conformance::FILLER),
         ..plain_fields()
     };
-    // Through the gateway, whose neighbour entry lets the packet leave at once.
-    sockets
-        .send_to(
-            &socket,
-            payload_to(IpAddr::V4(FAR), EXPERIMENT, PAYLOAD),
-            filler,
-        )
-        .unwrap();
-    assert_eq!(third_band(), before + 1);
+    for (to, _) in far {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        let before = third_band();
+        // Through the gateway, whose neighbour entry lets the packet leave at once.
+        sockets
+            .send_to(&socket, payload_to(to, EXPERIMENT, PAYLOAD), filler)
+            .unwrap();
+        assert_eq!(third_band(), before + 1, "{to}");
+    }
     for to in [
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -1319,28 +1420,29 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
 pub fn a_transmit_time_holds_the_send<S: RawSockets>(sockets: S) {
     tc(FAIR_QUEUE);
     const HELD: Duration = Duration::from_millis(300);
-    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
-    let now = Duration::new(now.tv_sec as u64, now.tv_nsec as u32);
-    let fields = IpSendFields {
-        transmit_time: Some(wcontainers_internet_protocol::TransmitTime {
-            clock: wcontainers_internet_protocol::TransmitClock::Monotonic,
-            at: now + HELD,
-            mode: wcontainers_internet_protocol::TransmitTimeMode::Strict,
-            errors: Report::NotRequested,
-        }),
-        ..plain_fields()
-    };
-    let start = Instant::now();
-    sockets
-        .send_to(
-            &socket,
-            payload_to(IpAddr::V4(Ipv4Addr::LOCALHOST), EXPERIMENT, PAYLOAD),
-            fields,
-        )
-        .unwrap();
-    receive_packet(&sockets, &socket, &mut buffer());
-    assert!(start.elapsed() >= HELD, "{:?}", start.elapsed());
+    for to in [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ] {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+        let now = Duration::new(now.tv_sec as u64, now.tv_nsec as u32);
+        let fields = IpSendFields {
+            transmit_time: Some(wcontainers_internet_protocol::TransmitTime {
+                clock: wcontainers_internet_protocol::TransmitClock::Monotonic,
+                at: now + HELD,
+                mode: wcontainers_internet_protocol::TransmitTimeMode::Strict,
+                errors: Report::NotRequested,
+            }),
+            ..plain_fields()
+        };
+        let start = Instant::now();
+        sockets
+            .send_to(&socket, payload_to(to, EXPERIMENT, PAYLOAD), fields)
+            .unwrap();
+        receive_packet(&sockets, &socket, &mut buffer());
+        assert!(start.elapsed() >= HELD, "{to}: {:?}", start.elapsed());
+    }
 }
 
 /// The socket settings of the IP layer are taken: pacing and the unsent count, the send and receive buffers, receive
@@ -1428,59 +1530,303 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
     assert_eq!(received + dropped, requests);
 }
 
-/// A joined group is the host's while joined, and multicast loopback brings the socket its own multicast send.
+/// Joining a group, or leaving it, on the dummy link.
+fn membership(group: IpAddr, joined: bool) -> RawSocketSetting<'static> {
+    let interface = Some(index(DUMMY));
+    RawSocketSetting::Ip(match group {
+        IpAddr::V4(group) => IpSocketSetting::MulticastV4(MulticastGroup {
+            group,
+            interface,
+            membership: if joined {
+                MulticastMembership::Joined(SourceFilter::Exclude(&[]))
+            } else {
+                MulticastMembership::Left
+            },
+        }),
+        IpAddr::V6(group) => IpSocketSetting::MulticastV6(MulticastGroup {
+            group,
+            interface,
+            membership: if joined {
+                MulticastMembership::Joined(SourceFilter::Exclude(&[]))
+            } else {
+                MulticastMembership::Left
+            },
+        }),
+    })
+}
+
+/// A joined group is the host's while joined; multicast loopback brings the socket its own multicast send, and an
+/// IPv4 socket of no membership takes it only while it takes every group's.
 pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 4);
+    const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x125);
     let link = Some(index(DUMMY));
-    let group = |membership| {
-        RawSocketSetting::Ip(IpSocketSetting::MulticastV4(MulticastGroup {
-            group: GROUP,
-            interface: link,
-            membership,
-        }))
-    };
-    let joined = || {
+    let joined = |group: IpAddr| {
         output(
             wcontainers_route_resolver_conformance::IP,
             &[&SHOW_GROUPS[..], &[DUMMY]].concat(),
         )
-        .contains(&GROUP.to_string())
+        .contains(&group.to_string())
     };
-    let member = opened(&sockets, IpVersion::V4, EXPERIMENT);
-    set(
-        &sockets,
-        &member,
-        group(MulticastMembership::Joined(SourceFilter::Exclude(&[]))),
-    );
-    assert!(joined());
-    for (looped, arrives) in [(false, false), (true, true)] {
+    for group in [IpAddr::V4(GROUP), IpAddr::V6(GROUP_V6)] {
+        let version = version_of(group);
+        let member = opened(&sockets, version, EXPERIMENT);
+        let other = opened(&sockets, version, EXPERIMENT);
+        set(&sockets, &member, membership(group, true));
+        assert!(joined(group), "{group}");
+        let send_to_group = || {
+            let header = match group {
+                IpAddr::V4(group) => IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
+                    interface: link,
+                    ..v4_route(group, under(EXPERIMENT))
+                })),
+                IpAddr::V6(group) => IpHeaderFields::V6(v6_header(Ipv6RouteSelectors {
+                    interface: link,
+                    ..v6_route(group, under(EXPERIMENT))
+                })),
+            };
+            send(
+                &sockets,
+                &member,
+                RawPacket::Payload {
+                    header,
+                    payload: PAYLOAD,
+                },
+            )
+            .expect("the multicast payload is sent");
+        };
+        for (looped, arrives) in [(false, false), (true, true)] {
+            set(
+                &sockets,
+                &member,
+                RawSocketSetting::Ip(IpSocketSetting::MulticastLoopback(looped)),
+            );
+            send_to_group();
+            assert_eq!(
+                !nothing_arrives(&sockets, &member),
+                arrives,
+                "{group} loopback {looped}"
+            );
+            if looped {
+                assert!(!nothing_arrives(&sockets, &other), "{group}");
+            }
+        }
+        for enabled in [false, true] {
+            set(
+                &sockets,
+                &other,
+                RawSocketSetting::Ip(IpSocketSetting::MulticastAllGroups { version, enabled }),
+            );
+            send_to_group();
+            assert!(!nothing_arrives(&sockets, &member), "{group}");
+            // Linux gives an IPv6 raw socket bound to no address every multicast packet of its protocol.
+            assert_eq!(
+                !nothing_arrives(&sockets, &other),
+                enabled || version == IpVersion::V6,
+                "{group} all groups {enabled}"
+            );
+        }
+        set(&sockets, &member, membership(group, false));
+        assert!(!joined(group), "{group}");
+    }
+}
+
+/// An anycast address is the host's while the socket holds it.
+pub fn anycast_is_taken<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    const ANYCAST: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 0x97);
+    let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    let listed = || {
+        std::fs::read_to_string(wcontainers_icmp_sockets_conformance::ANYCAST_LIST)
+            .expect("the anycast list")
+            .contains(&format!("{:032x}", u128::from(ANYCAST)))
+    };
+    for (membership, held) in [(Membership::Joined, true), (Membership::Left, false)] {
         set(
             &sockets,
-            &member,
-            RawSocketSetting::Ip(IpSocketSetting::MulticastLoopback(looped)),
+            &socket,
+            RawSocketSetting::Ip(IpSocketSetting::Anycast(AnycastAddress {
+                address: ANYCAST,
+                interface: Some(index(DUMMY)),
+                membership,
+            })),
         );
-        let route = Ipv4RouteSelectors {
-            interface: link,
-            ..v4_route(GROUP, under(EXPERIMENT))
-        };
+        assert_eq!(listed(), held);
+    }
+}
+
+/// A wait for data does not finish before a packet of the socket's protocol arrives, and finishes, woken once, when one does.
+pub fn a_wait_for_data_finishes_when_a_packet_arrives<S: RawSockets>(sockets: S) {
+    for to in [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ] {
+        let version = version_of(to);
+        let receiver = opened(&sockets, version, EXPERIMENT);
+        let sender = opened(&sockets, version, EXPERIMENT);
+        let wakes = Arc::new(Wakes::default());
+        let mut wait = pin!(sockets.wait_for_events(&receiver, READABLE));
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        std::thread::sleep(QUIET);
+        assert_eq!(wakes.count(), 0, "woken with nothing to read");
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+        assert!(wakes.reach(1), "woken when the packet arrives");
+        let events = finished(poll_with(wait.as_mut(), &wakes));
+        assert!(events.data_to_read, "{events:?}");
+        assert!(only_asked_for(events, READABLE), "{events:?}");
+        assert_eq!(wakes.count(), 1);
+        assert!(matches!(
+            sockets.receive(&receiver, &mut buffer()),
+            Ok(Received::Packet(_))
+        ));
+    }
+}
+
+/// A wait for what the socket already has finishes at its first poll, with only the events asked for.
+pub fn a_wait_for_writing_finishes_at_once<S: RawSockets>(sockets: S) {
+    let socket = opened(&sockets, IpVersion::V6, RAW_PROTOCOL);
+    let wakes = Arc::new(Wakes::default());
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&socket, WRITABLE)),
+        &wakes,
+    ));
+    assert!(events.writing_possible, "{events:?}");
+    assert!(only_asked_for(events, WRITABLE), "{events:?}");
+    assert_eq!(wakes.count(), 0);
+}
+
+/// A dropped wait gives up its waker and is not woken by the event it waited for; a new wait then sees it.
+pub fn a_dropped_wait_is_withdrawn<S: RawSockets>(sockets: S) {
+    let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let receiver = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let wakes = Arc::new(Wakes::default());
+    {
+        let wait = pin!(sockets.wait_for_events(&receiver, READABLE));
+        assert!(poll_with(wait, &wakes).is_pending());
+    }
+    assert_eq!(
+        Arc::strong_count(&wakes),
+        1,
+        "the dropped wait kept its waker"
+    );
+    let sender = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+    std::thread::sleep(QUIET);
+    assert_eq!(wakes.count(), 0, "a dropped wait was woken");
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&receiver, READABLE)),
+        &wakes,
+    ));
+    assert!(events.data_to_read, "{events:?}");
+}
+
+/// Many waits at once, on many sockets of one protocol and several on one, each finish woken once by the packet
+/// they all take.
+pub fn many_waits_each_wake_once<S: RawSockets>(sockets: S) {
+    let to = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    let watched: Vec<_> = (0..WAITED_SOCKETS)
+        .map(|_| opened(&sockets, IpVersion::V6, EXPERIMENT))
+        .collect();
+    let mut waits: Vec<_> = watched
+        .iter()
+        .chain(core::iter::repeat_n(&watched[0], WAITS_ON_ONE))
+        .map(|socket| {
+            (
+                Box::pin(sockets.wait_for_events(socket, READABLE)),
+                Arc::new(Wakes::default()),
+            )
+        })
+        .collect();
+    for (wait, wakes) in &mut waits {
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    let sender = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+    for (wait, wakes) in &mut waits {
+        assert!(wakes.reach(1), "a wait woken when the packet arrives");
+        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
+    }
+    std::thread::sleep(QUIET);
+    for (_, wakes) in &waits {
+        assert_eq!(wakes.count(), 1, "a wait woken more than once");
+    }
+}
+
+/// An ICMP error about a payload sent ends a wait for data with the error condition, which poll always reports.
+pub fn an_icmp_error_ends_a_wait_for_data<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    let capture = Capture::on(DUMMY);
+    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        let wakes = Arc::new(Wakes::default());
+        let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+        let sent = capture
+            .next(|packet| seen(packet).protocol == EXPERIMENT && seen(packet).destination == to);
+        let error = send_icmp_error_about(&sent);
+        assert!(wakes.reach(1), "woken by the ICMP error");
+        let events = finished(poll_with(wait.as_mut(), &wakes));
+        assert!(events.error_condition, "{events:?}");
+        let mut into = buffer();
+        let fields = receive_packet(&sockets, &socket, &mut into);
+        assert_eq!(seen(&into[..fields.length]).payload[..2], error[..2]);
+    }
+}
+
+/// An ICMP error that a too long send read off the host while looking for its own error still ends a wait at once.
+pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    let capture = Capture::on(DUMMY);
+    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let wakes = Arc::new(Wakes::default());
+    send(
+        &sockets,
+        &socket,
+        payload_to(IpAddr::V4(ON_LINK), EXPERIMENT, PAYLOAD),
+    )
+    .expect("the payload is sent");
+    let error = send_icmp_error_about(&capture.next(|packet| seen(packet).protocol == EXPERIMENT));
+    let events = finished_soon(pin!(sockets.wait_for_events(&socket, READABLE)), &wakes);
+    assert!(events.error_condition, "{events:?}");
+    let long = vec![u8::MAX; OVERSIZED_PAYLOAD];
+    let mtu = u32::try_from(OVERSIZED_PAYLOAD / 2).expect("a small MTU");
+    ip(&format!("link set {DUMMY} mtu {mtu}"));
+    let header = IpHeaderFields::V4(Ipv4HeaderFields {
+        path_mtu_discovery: PathMtuDiscovery::Do,
+        ..v4_header(v4_route(ON_LINK, under(EXPERIMENT)))
+    });
+    assert_eq!(
         send(
             &sockets,
-            &member,
+            &socket,
             RawPacket::Payload {
-                header: IpHeaderFields::V4(v4_header(route)),
-                payload: PAYLOAD,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            !nothing_arrives(&sockets, &member),
-            arrives,
-            "loopback {looped}"
-        );
-    }
-    set(&sockets, &member, group(MulticastMembership::Left));
-    assert!(!joined());
+                header,
+                payload: &long
+            }
+        ),
+        Err(SendError::MessageTooLong {
+            maximum_transmission_unit: MaximumTransmissionUnit(mtu)
+        })
+    );
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&socket, READABLE)),
+        &wakes,
+    ));
+    assert!(events.error_condition, "{events:?}");
+    let mut into = buffer();
+    let fields = receive_packet(&sockets, &socket, &mut into);
+    let packet = seen(&into[..fields.length]);
+    assert_eq!(packet.protocol, IpNumber::ICMP);
+    assert_eq!(&packet.payload[..2], &error[..2]);
+    assert!(nothing_arrives(&sockets, &socket));
+    let wait = pin!(sockets.wait_for_events(&socket, READABLE));
+    assert!(
+        poll_with(wait, &wakes).is_pending(),
+        "an error held after its entry was received"
+    );
 }
 
 /// A setting set twice answers as it did once, by Configurable's own suite.
@@ -1524,6 +1870,13 @@ macro_rules! tests {
             a_transmit_time_holds_the_send,
             ip_settings_are_taken,
             multicast_settings_are_taken,
+            anycast_is_taken,
+            a_wait_for_data_finishes_when_a_packet_arrives,
+            a_wait_for_writing_finishes_at_once,
+            a_dropped_wait_is_withdrawn,
+            many_waits_each_wake_once,
+            an_icmp_error_ends_a_wait_for_data,
+            a_wait_sees_an_error_a_send_read_first,
         );
         $crate::configurable_checks!(
             $value;

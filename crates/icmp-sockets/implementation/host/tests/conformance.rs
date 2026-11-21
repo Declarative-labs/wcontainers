@@ -4,7 +4,7 @@
 use etherparse::IpNumber;
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_icmp_sockets_linux_ping::{IPV6_SOURCE, LinuxPingSockets};
+use wcontainers_icmp_sockets_host::{HostIcmpSockets, IPV6_SOURCE};
 use wcontainers_internet_protocol::{
     IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpVersion, Ipv6HeaderFields,
     Ipv6RouteSelectors, LocalFragmentation, MobileAddressPreference, NeighbourConfirmation,
@@ -15,7 +15,7 @@ use wcontainers_internet_protocol::{
 use wcontainers_kernel::UserId;
 
 wcontainers_icmp_sockets_conformance::tests!(
-    wcontainers_icmp_sockets_linux_ping::LinuxPingSockets::new()
+    wcontainers_icmp_sockets_host::HostIcmpSockets::new().expect("the host's readiness")
 );
 
 /// Linux makes an echo socket only for a caller whose group is in the namespace's ping group range.
@@ -28,7 +28,7 @@ fn an_empty_ping_group_range_refuses_the_socket() {
         "1 0",
     )
     .unwrap();
-    let sockets = LinuxPingSockets::new();
+    let sockets = HostIcmpSockets::new().unwrap();
     for version in [IpVersion::V4, IpVersion::V6] {
         assert_eq!(
             sockets.open(version, UserId(u32::MIN)).err(),
@@ -41,7 +41,7 @@ fn an_empty_ping_group_range_refuses_the_socket() {
 #[test]
 fn an_ipv6_source_is_refused_and_counted() {
     wcontainers_icmp_sockets_conformance::enter_network_namespace();
-    let sockets = LinuxPingSockets::new();
+    let sockets = HostIcmpSockets::new().unwrap();
     let socket = sockets.open(IpVersion::V6, UserId(u32::MIN)).unwrap();
     let message = [IcmpType(128).0, u8::MIN, 0, 0, 0, 0, 0, 0];
     let route = Ipv6RouteSelectors {
