@@ -1949,16 +1949,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
-name = "llvm-bitcode"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e81c545b8986967f5d96021ee724fc6a00630b177a22930c3843f2aac0fd19f8"
-dependencies = [
- "bitflags 2.13.2",
- "num_enum",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2214,7 +2204,6 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4166,7 +4155,6 @@ dependencies = [
  "blake3",
  "bytemuck",
  "half",
- "llvm-bitcode",
  "naga",
  "png",
  "pollster",
@@ -4495,6 +4483,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "libc",
+ "linux-raw-sys",
  "rustix",
  "wcontainers-abi",
  "wcontainers-configurable",
@@ -4617,7 +4606,6 @@ dependencies = [
  "cc",
  "glam",
  "glow 0.18.0",
- "wcontainers-abi",
  "khronos-egl",
  "libloading",
  "naga",
