@@ -937,10 +937,24 @@ pub unsafe extern "C" fn draw_vbo<B: Backend>(
     }
 }
 
-/// The words of one indirect draw's arguments: count, instances, first, the base vertex of an
-/// indexed draw, and the first instance.
-const INDIRECT_WORDS: usize = 4;
-const INDEXED_INDIRECT_WORDS: usize = 5;
+/// One indirect draw's arguments as OpenGL lays them out in a buffer (`DrawArraysIndirectCommand`
+/// and `DrawElementsIndirectCommand`), for their sizes.
+#[repr(C)]
+struct DrawArraysArguments {
+    count: u32,
+    instances: u32,
+    first: u32,
+    first_instance: u32,
+}
+
+#[repr(C)]
+struct DrawElementsArguments {
+    count: u32,
+    instances: u32,
+    first: u32,
+    base_vertex: i32,
+    first_instance: u32,
+}
 
 /// An indirect draw, its arguments read back now (`IndirectReadBack`) and drawn as a direct draw,
 /// so that every rewrite a direct draw takes applies to it.
@@ -954,20 +968,19 @@ fn draw_indirect<B: Backend>(
             "a draw counted by stream output or by a buffer (the screen reports neither)"
         ));
     }
-    let words = if info.index_size > 0 {
-        INDEXED_INDIRECT_WORDS
+    let size = if info.index_size > 0 {
+        size_of::<DrawElementsArguments>()
     } else {
-        INDIRECT_WORDS
+        size_of::<DrawArraysArguments>()
     };
-    let word = size_of::<u32>();
-    let stride = (indirect.stride as usize).max(words * word);
+    let stride = (indirect.stride as usize).max(size);
     let draws = indirect.draw_count as usize;
-    let span = (draws.saturating_sub(1) * stride + words * word) as u64;
+    let span = (draws.saturating_sub(1) * stride + size) as u64;
     // SAFETY: an indirect draw names a live buffer of this driver.
     let resource = unsafe { Resource::<B>::of(indirect.buffer) };
     let buffer = resource.buffer().ok_or("a draw's arguments in a texture")?;
     let offset = u64::from(indirect.offset);
-    let mut args = vec![0; span.next_multiple_of(STORAGE_WORD) as usize];
+    let mut bytes = vec![0; span.next_multiple_of(STORAGE_WORD) as usize];
     let screen = context.screen();
     {
         let mut backend = screen.backend();
@@ -981,31 +994,45 @@ fn draw_indirect<B: Backend>(
                 &ReadSource::Buffer {
                     buffer,
                     offset,
-                    size: args.len() as u64,
+                    size: bytes.len() as u64,
                 },
-                &mut args,
+                &mut bytes,
             )
             .map_err(|e| format!("a draw's arguments: {e:?}"))?;
     }
     for d in 0..draws {
-        let at = |i: usize| {
-            let start = d * stride + i * word;
-            u32::from_le_bytes(args[start..start + word].try_into().expect("a word"))
-        };
-        let (start, index_bias, first_instance) = if info.index_size > 0 {
-            (at(2), at(3) as i32, at(4))
-        } else {
-            (at(2), 0, at(3))
+        let words: Vec<u32> = bytes[d * stride..d * stride + size]
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .map(|w| u32::from_le_bytes(*w))
+            .collect();
+        let arguments = match *words.as_slice() {
+            [count, instances, first, base_vertex, first_instance] => DrawElementsArguments {
+                count,
+                instances,
+                first,
+                base_vertex: base_vertex as i32,
+                first_instance,
+            },
+            [count, instances, first, first_instance] => DrawElementsArguments {
+                count,
+                instances,
+                first,
+                base_vertex: 0,
+                first_instance,
+            },
+            _ => return refused(format_args!("indirect arguments of another size")),
         };
         let direct = pipe_draw_info {
-            instance_count: at(1),
-            start_instance: first_instance,
+            instance_count: arguments.instances,
+            start_instance: arguments.first_instance,
             ..*info
         };
         let range = pipe_draw_start_count_bias {
-            start,
-            count: at(0),
-            index_bias,
+            start: arguments.first,
+            count: arguments.count,
+            index_bias: arguments.base_vertex,
         };
         if direct.instance_count > 0 {
             draw(context, &direct, std::slice::from_ref(&range))?;
