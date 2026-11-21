@@ -1596,22 +1596,67 @@ pub fn nonlocal_addresses_can_be_bound_when_allowed<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// The incoming processor set is the one read back, and none once unset.
+/// Up to two processors this thread may run on, from which the checks of the incoming processor take theirs.
+fn two_processors() -> Vec<usize> {
+    let allowed = rustix::thread::sched_getaffinity(None).expect("this thread's processors");
+    (0..rustix::thread::CpuSet::MAX_CPU)
+        .filter(|&processor| allowed.is_set(processor))
+        .take(2)
+        .collect()
+}
+
+/// Runs `work` on this thread held to one processor, then lets the thread run where it could before.
+fn on_processor(processor: usize, work: impl FnOnce()) {
+    let allowed = rustix::thread::sched_getaffinity(None).expect("this thread's processors");
+    let mut only = rustix::thread::CpuSet::new();
+    only.set(processor);
+    rustix::thread::sched_setaffinity(None, &only).expect("hold this thread to one processor");
+    work();
+    rustix::thread::sched_setaffinity(None, &allowed).expect("free this thread again");
+}
+
+fn processor_index(processor: usize) -> ProcessorIndex {
+    ProcessorIndex(u32::try_from(processor).expect("a processor's number"))
+}
+
+/// The incoming processor set is the one read back, and none once unset; a connected socket's is then the
+/// processor that last took in a packet for it, over loopback the one its sender ran on.
 pub fn the_incoming_processor_is_read_back<S: UdpSockets>(sockets: S) {
-    let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
-    let first = ProcessorIndex(u32::MIN);
-    set(
-        &sockets,
-        &socket,
-        UdpSocketSetting::Port(PortSetting::IncomingProcessor(Some(first))),
-    );
-    assert_eq!(sockets.read_incoming_processor(&socket), Ok(Some(first)));
+    let (socket, local) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let processors = two_processors();
+    for &processor in &processors {
+        let processor = processor_index(processor);
+        set(
+            &sockets,
+            &socket,
+            UdpSocketSetting::Port(PortSetting::IncomingProcessor(Some(processor))),
+        );
+        assert_eq!(
+            sockets.read_incoming_processor(&socket),
+            Ok(Some(processor))
+        );
+    }
     set(
         &sockets,
         &socket,
         UdpSocketSetting::Port(PortSetting::IncomingProcessor(None)),
     );
     assert_eq!(sockets.read_incoming_processor(&socket), Ok(None));
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    sockets
+        .connect(&socket, route(UdpProtocol::Udp, local, from))
+        .expect("connect");
+    let mut into = buffer();
+    for &processor in processors.iter().rev() {
+        on_processor(processor, || {
+            send(&sockets, &sender, UdpProtocol::Udp, from, local, PAYLOAD);
+        });
+        receive_packet(&sockets, &socket, &mut into);
+        assert_eq!(
+            sockets.read_incoming_processor(&socket),
+            Ok(Some(processor_index(processor)))
+        );
+    }
 }
 
 /// A connected socket given negative route advice keeps sending to its peer.
@@ -2343,10 +2388,14 @@ impl Wakes {
 
     /// Whether the call has been woken `count` times before the patience of a check ends.
     fn reach(&self, count: usize) -> bool {
+        self.reach_within(count, PATIENCE)
+    }
+
+    fn reach_within(&self, count: usize, patience: Duration) -> bool {
         let wakes = self.count.lock().expect("the wakes");
         let (wakes, _) = self
             .changed
-            .wait_timeout_while(wakes, PATIENCE, |wakes| *wakes < count)
+            .wait_timeout_while(wakes, patience, |wakes| *wakes < count)
             .expect("the wakes");
         *wakes >= count
     }
@@ -2551,6 +2600,204 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: UdpSockets>(sockets: S) {
     let packet = receive_packet(&sockets, &sender, &mut into);
     let ip = IpSlice::from_slice(&into[..packet.fields.length]).expect("a whole ICMP packet");
     assert_eq!(ip.payload_ip_number(), IpNumber::IPV6_ICMP);
+}
+
+/// A wait polled again with another waker wakes that one, the newest it was given.
+pub fn a_wait_polled_again_wakes_its_newest_waker<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let first = Arc::new(Wakes::default());
+    let newest = Arc::new(Wakes::default());
+    let mut wait = pin!(sockets.wait_for_events(&receiver, READABLE));
+    assert!(poll_with(wait.as_mut(), &first).is_pending());
+    assert!(poll_with(wait.as_mut(), &newest).is_pending());
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    assert!(newest.reach(1), "the newest waker woken");
+    assert!(finished(poll_with(wait.as_mut(), &newest)).data_to_read);
+}
+
+/// A wait woken whose event is gone by the time it is polled again waits on, and is woken by the next event.
+pub fn a_wait_whose_event_went_waits_for_the_next<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let wakes = Arc::new(Wakes::default());
+    let mut wait = pin!(sockets.wait_for_events(&receiver, READABLE));
+    assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    assert!(wakes.reach(1), "woken by the first datagram");
+    let mut into = buffer();
+    receive_packet(&sockets, &receiver, &mut into);
+    assert!(
+        poll_with(wait.as_mut(), &wakes).is_pending(),
+        "nothing left to read"
+    );
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    assert!(wakes.reach(2), "woken again by the second datagram");
+    assert!(finished(poll_with(wait.as_mut(), &wakes)).data_to_read);
+}
+
+/// Two waits on one socket finish each by its own events: the wait for writing at once, the wait for data when a
+/// datagram arrives and not before.
+pub fn two_waits_on_one_socket_finish_by_their_own_events<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
+    let reading = Arc::new(Wakes::default());
+    let writing = Arc::new(Wakes::default());
+    let mut read = pin!(sockets.wait_for_events(&receiver, READABLE));
+    assert!(poll_with(read.as_mut(), &reading).is_pending());
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&receiver, WRITABLE)),
+        &writing,
+    ));
+    assert!(
+        events.writing_possible && !events.data_to_read,
+        "{events:?}"
+    );
+    std::thread::sleep(SILENCE);
+    assert_eq!(reading.count(), 0, "the wait for data woken with no data");
+    send(&sockets, &sender, UdpProtocol::Lite, from, to, PAYLOAD);
+    assert!(reading.reach(1), "the wait for data woken by its datagram");
+    assert!(finished(poll_with(read.as_mut(), &reading)).data_to_read);
+}
+
+/// A wait for no event waits on a quiet socket, as poll does, and ends with the error condition poll always reports.
+pub fn a_wait_for_no_event_ends_on_an_error<S: UdpSockets>(sockets: S) {
+    let closed = closed_port(&sockets, IpVersion::V4);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let wakes = Arc::new(Wakes::default());
+    let mut wait = pin!(sockets.wait_for_events(&sender, NO_EVENTS));
+    assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+    std::thread::sleep(SILENCE);
+    assert_eq!(wakes.count(), 0, "woken with nothing to report");
+    send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+    assert!(wakes.reach(1), "woken by the ICMP error");
+    let events = finished(poll_with(wait.as_mut(), &wakes));
+    assert!(
+        events.error_condition && only_asked_for(events, NO_EVENTS),
+        "{events:?}"
+    );
+}
+
+/// The send buffer size the checks of a full send buffer give, of which Linux keeps twice.
+const SEND_BUFFER: usize = 16384;
+
+/// A pacing rate that holds each datagram after a socket's first for a quarter of a second.
+const SLOW_PACING_RATE: BytesPerSecond = BytesPerSecond(4000);
+
+/// How long a check waits for paced datagrams to leave room in a send buffer.
+const ROOM_PATIENCE: Duration = Duration::from_secs(5);
+
+/// The most a datagram of `PACED_LENGTH` bytes takes of a send buffer: its payload, its headers and the memory the
+/// host keeps it in.
+const PACED_DATAGRAM_ROOM: usize = 4 * PACED_LENGTH;
+
+/// Sends paced datagrams until a send would block, and answers how many were sent.
+fn fill_send_buffer<S: UdpSockets>(
+    sockets: &S,
+    sender: &S::Socket,
+    from: SocketAddr,
+    to: SocketAddr,
+    payload: &[u8],
+) -> usize {
+    let mut sent = 0;
+    loop {
+        match sockets.send_to(
+            sender,
+            header(UdpProtocol::Udp, from, to),
+            plain_fields(),
+            datagram(payload),
+        ) {
+            Ok(()) => sent += 1,
+            Err(SendError::Host(HostError::WouldBlock)) => return sent,
+            Err(error) => panic!("send: {error:?}"),
+        }
+        assert!(sent <= SEND_BUFFER, "a send buffer that never fills");
+    }
+}
+
+/// A socket on loopback whose datagrams are paced at the slow rate, and an address to send them to.
+fn slowly_paced<S: UdpSockets>(
+    sockets: &S,
+    version: IpVersion,
+    send_buffer: usize,
+) -> (S::Socket, SocketAddr, S::Socket, SocketAddr) {
+    let (receiver, to) = bound(sockets, version, UdpProtocol::Udp);
+    let (sender, from) = bound(sockets, version, UdpProtocol::Udp);
+    set(
+        sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(send_buffer))),
+    );
+    set(
+        sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::MaximumPacingRate(Some(SLOW_PACING_RATE))),
+    );
+    (sender, from, receiver, to)
+}
+
+/// A send buffer filled until a send would block holds unsent at least the size Linux keeps, twice the size
+/// given, and less than one datagram more.
+pub fn a_full_send_buffer_counts_its_unsent_bytes<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let (sender, from, _receiver, to) = slowly_paced(&sockets, version, SEND_BUFFER);
+        let payload = vec![u8::MAX; PACED_LENGTH];
+        let sent = fill_send_buffer(&sockets, &sender, from, to, &payload);
+        let unsent = sockets
+            .count_unsent_bytes(&sender)
+            .expect("count the unsent bytes")
+            .0;
+        let kept = SEND_BUFFER * 2;
+        assert!(
+            (kept..kept + PACED_DATAGRAM_ROOM).contains(&unsent),
+            "{version:?}: {unsent} bytes unsent after {sent} datagrams"
+        );
+    }
+}
+
+/// A wait for writing on a full send buffer does not finish until its paced datagrams leave room, then does.
+pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) {
+    let (sender, from, _receiver, to) = slowly_paced(&sockets, IpVersion::V4, usize::MIN);
+    let payload = vec![u8::MAX; PACED_LENGTH];
+    fill_send_buffer(&sockets, &sender, from, to, &payload);
+    let wakes = Arc::new(Wakes::default());
+    let mut wait = pin!(sockets.wait_for_events(&sender, WRITABLE));
+    assert!(
+        poll_with(wait.as_mut(), &wakes).is_pending(),
+        "writable with a full send buffer"
+    );
+    assert!(
+        wakes.reach_within(1, ROOM_PATIENCE),
+        "woken when room is made"
+    );
+    assert!(finished(poll_with(wait.as_mut(), &wakes)).writing_possible);
+    assert_eq!(
+        sockets.send_to(
+            &sender,
+            header(UdpProtocol::Udp, from, to),
+            plain_fields(),
+            datagram(&payload)
+        ),
+        Ok(())
+    );
+}
+
+/// A send whose header is IPv6 on an IPv4 socket is refused as Linux refuses a destination of another family.
+pub fn a_header_of_another_version_is_refused<S: UdpSockets>(sockets: S) {
+    let (socket, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    assert_eq!(
+        sockets.send_to(
+            &socket,
+            header(UdpProtocol::Udp, from, to),
+            plain_fields(),
+            datagram(PAYLOAD)
+        ),
+        Err(SendError::Host(HostError::Errno(
+            linux_raw_sys::errno::EAFNOSUPPORT as i32
+        )))
+    );
+    assert!(!arrives(&sockets, &receiver));
 }
 
 /// A datagram whose route must stay on its link is not sent through a gateway; one of universe scope is.
@@ -3049,6 +3296,13 @@ macro_rules! tests {
             many_waits_each_wake_once
             an_icmp_error_ends_a_wait_for_data
             a_wait_sees_an_error_a_send_read_first
+            a_wait_polled_again_wakes_its_newest_waker
+            a_wait_whose_event_went_waits_for_the_next
+            two_waits_on_one_socket_finish_by_their_own_events
+            a_wait_for_no_event_ends_on_an_error
+            a_full_send_buffer_counts_its_unsent_bytes
+            a_wait_for_writing_finishes_when_room_is_made
+            a_header_of_another_version_is_refused
         );
     };
     (@each $value:expr; $($name:ident)*) => {

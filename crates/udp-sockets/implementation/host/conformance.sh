@@ -1,11 +1,17 @@
 #!/bin/bash
-# Builds the conformance tests of the host UDP sockets and runs them as root, each in its own network namespace.
+# Builds the tests of the host UDP sockets and runs them as root, each conformance test in its own network namespace.
 #   conformance.sh <test threads> [test name filter...]
 set -euo pipefail
 threads=${1:?the number of test threads}
 shift
 cd "$(dirname "$0")/../../../.."
-binary=$(cargo test -p wcontainers-udp-sockets-host --test conformance --no-run --message-format=json 2>/dev/null |
-    sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)
-[ -n "$binary" ] || { echo "conformance.sh: the test binary did not build" >&2; exit 1; }
-sudo -n "$binary" --test-threads "$threads" "$@"
+binaries=$(for test in conformance readiness; do
+    cargo test -p wcontainers-udp-sockets-host --test "$test" --no-run --message-format=json 2>/dev/null |
+        sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1
+done)
+[ "$(echo "$binaries" | grep -c .)" -eq 2 ] || { echo "conformance.sh: the test binaries did not build" >&2; exit 1; }
+failed=0
+for binary in $binaries; do
+    sudo -n "$binary" --test-threads "$threads" "$@" || failed=1
+done
+exit "$failed"

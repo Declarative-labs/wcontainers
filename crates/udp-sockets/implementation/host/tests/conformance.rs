@@ -8,16 +8,27 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use std::net::Ipv4Addr;
+
+use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options};
 use wcontainers_configurable::Configurable;
-use wcontainers_internet_protocol::{ByteCount, IpSocketSetting, IpVersion};
+use wcontainers_internet_protocol::{
+    BindAddress, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
+    NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Port, Report, RouteScope,
+    SourceAddressCheck, TransmitReportKey, TransmitReportRequest, TransportPorts, UpperLayer,
+    UpperLayerSelector,
+};
 use wcontainers_kernel::UserId;
-use wcontainers_udp_sockets::{UdpProtocol, UdpSocketSetting, UdpSockets};
+use wcontainers_udp_sockets::{
+    UdpChecksum, UdpDatagram, UdpProtocol, UdpReceived, UdpSocketSetting, UdpSockets,
+};
 use wcontainers_udp_sockets_host::{
     HostUdpSockets, RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST,
 };
 
 /// How many networks the tests of one run can take, all made before any test opens a socket.
-const NETWORKS: usize = 64;
+const NETWORKS: usize = 80;
 
 /// The network the suite asks for, as iproute2's `ip -batch` commands: loopback with multicast and a route with
 /// an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that sends nothing anywhere, with
@@ -194,4 +205,79 @@ fn a_buffer_the_host_cuts_is_counted() {
         counted,
         [RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST]
     );
+}
+
+/// A send's report comes before a datagram that arrived after it: this implementation reads the host's error
+/// queue first while a send's reports may wait there.
+#[test]
+fn a_report_comes_before_a_datagram_that_arrived_after_it() {
+    let sockets = isolated();
+    let socket = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, UserId(u32::MIN))
+        .unwrap();
+    let address = sockets
+        .bind(
+            &socket,
+            LocalBinding {
+                address: BindAddress::V4(Ipv4Addr::LOCALHOST),
+                port: LocalPort::ChosenByKernel(Port(u16::MIN)),
+            },
+        )
+        .unwrap();
+    let options = Ipv4Options::new();
+    let header = IpHeaderFields::V4(Ipv4HeaderFields {
+        route: Ipv4RouteSelectors {
+            destination: Ipv4Addr::LOCALHOST,
+            source: None,
+            source_address_check: SourceAddressCheck::Required,
+            interface: None,
+            dscp: IpDscp::ZERO,
+            ecn: IpEcn::NotEct,
+            mark: PacketMark(u32::MIN),
+            scope: RouteScope::Universe,
+            broadcast: BroadcastPermission::Refused,
+            options: &options,
+            upper_layer: UpperLayer {
+                protocol: IpNumber::UDP,
+                selector: Some(UpperLayerSelector::Ports(TransportPorts {
+                    source: Port(address.port()),
+                    destination: Port(address.port()),
+                })),
+            },
+        },
+        time_to_live: None,
+        path_mtu_discovery: PathMtuDiscovery::Want,
+    });
+    let key = TransmitReportKey(u32::from(u16::MAX));
+    let fields = IpSendFields {
+        neighbour: NeighbourConfirmation::Unconfirmed,
+        priority: PacketPriority(u32::MIN),
+        transmit_time: None,
+        transmit_reports: TransmitReportRequest {
+            key,
+            scheduled: Report::NotRequested,
+            software: Report::Requested,
+            hardware: Report::NotRequested,
+            acknowledgement: Report::NotRequested,
+            completion: Report::NotRequested,
+            wireless_status: Report::NotRequested,
+            packet: Report::NotRequested,
+        },
+    };
+    let datagram = UdpDatagram {
+        checksum: UdpChecksum::Computed,
+        segment_size: None,
+        payload: b"to itself",
+    };
+    // Over loopback the report is queued as the datagram leaves, before it arrives back on the same socket.
+    sockets.send_to(&socket, header, fields, datagram).unwrap();
+    let mut into = vec![u8::MIN; usize::from(u16::MAX)];
+    match sockets.receive(&socket, &mut into) {
+        Ok(UdpReceived::TransmitReport(report)) => assert_eq!(report.key, key),
+        other => panic!("the report first, not {other:?}"),
+    }
+    assert!(matches!(
+        sockets.receive(&socket, &mut into),
+        Ok(UdpReceived::Packet(_))
+    ));
 }

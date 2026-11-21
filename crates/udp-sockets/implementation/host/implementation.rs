@@ -38,8 +38,7 @@ use shared::datagram::sticky::{Slot, UDP_LITE_RECEIVE_COVERAGE};
 use shared::icmp_error::write_icmp_error;
 use shared::readiness::{NO_EVENTS, Readiness, Watched};
 use shared::{
-    Shortfalls, get_option, host_error as from_errno, io_host_error, last_host_error, set_flag,
-    set_int, sock,
+    Shortfalls, host_error as from_errno, io_host_error, last_host_error, set_flag, set_int, sock,
 };
 
 /// UDP and UDP-Lite sockets of the Linux machine this runs on, with a count of each refusal by its reason.
@@ -102,21 +101,18 @@ pub const RECEIVE_BUFFER_CUT_BY_THE_HOST: &str =
 /// The largest payload of one receive: an IP packet's largest length.
 const LARGEST_PAYLOAD: usize = u16::MAX as usize;
 
-/// The receive control messages every socket turns on, by level.
-const IPV4_RECEIVE_OPTIONS: [u32; 7] = [
+/// The receive control messages every socket turns on that socket2 does not, by level.
+const IPV4_RECEIVE_OPTIONS: [u32; 6] = [
     uapi::IP_PKTINFO,
     uapi::IP_RECVORIGDSTADDR,
     uapi::IP_RECVTTL,
-    uapi::IP_RECVTOS,
     uapi::IP_RECVOPTS,
     uapi::IP_RECVFRAGSIZE,
     uapi::IP_RECVERR,
 ];
-const IPV6_RECEIVE_OPTIONS: [u32; 10] = [
+const IPV6_RECEIVE_OPTIONS: [u32; 8] = [
     uapi::IPV6_RECVPKTINFO,
     uapi::IPV6_RECVORIGDSTADDR,
-    uapi::IPV6_RECVHOPLIMIT,
-    uapi::IPV6_RECVTCLASS,
     uapi::IPV6_RECVHOPOPTS,
     uapi::IPV6_RECVDSTOPTS,
     uapi::IPV6_RECVRTHDR,
@@ -397,10 +393,16 @@ impl UdpSockets for HostUdpSockets {
         };
         let fd = shared::open_socket(version, SocketType::DGRAM, number, owner)?;
         let borrowed = fd.as_fd();
+        let host = sock(&borrowed);
+        host.set_recv_tos_v4(true)
+            .map_err(|error| io_host_error(&error))?;
         for option in IPV4_RECEIVE_OPTIONS {
             set_flag(borrowed, uapi::SOL_IP, option, true)?;
         }
         if ipv6 {
+            host.set_recv_hoplimit_v6(true)
+                .and_then(|()| host.set_recv_tclass_v6(true))
+                .map_err(|error| io_host_error(&error))?;
             for option in IPV6_RECEIVE_OPTIONS {
                 set_flag(borrowed, uapi::SOL_IPV6, option, true)?;
             }
@@ -546,7 +548,10 @@ impl UdpSockets for HostUdpSockets {
         &self,
         socket: &Self::Socket,
     ) -> Result<Option<ProcessorIndex>, HostError> {
-        let processor = get_option::<c_int>(socket.fd(), uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU)?;
+        // Linux's -1, no processor, is beyond every processor's number.
+        let processor = sock(&socket.fd())
+            .cpu_affinity()
+            .map_err(|error| io_host_error(&error))?;
         Ok(u32::try_from(processor).ok().map(ProcessorIndex))
     }
 
@@ -575,6 +580,10 @@ impl HostUdpSockets {
         let fd = socket.fd();
         let (upper_layer, ipv4) = match &header {
             IpHeaderFields::V4(header) => (header.route.upper_layer, true),
+            // Linux's answer to an IPv4 socket's send to an address of another family.
+            IpHeaderFields::V6(_) if !socket.ipv6 => {
+                return Err(SendError::Host(HostError::Errno(libc::EAFNOSUPPORT)));
+            }
             IpHeaderFields::V6(header) => (header.route.upper_layer, false),
         };
         let (source_port, destination_port) =

@@ -15,7 +15,7 @@ etherparse.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-configurable-conformance = { path = "../../configurable/conformance" }
 wcontainers-negative-route-advice-conformance = { path = "../../negative-route-advice/conformance" }
-# The clocks a transmit time is given on, the international atomic one from Linux 4.11.
-rustix = { version = "1.1.6", features = ["time", "linux_4_11"] }
+# The clocks a transmit time is given on, the international atomic one from Linux 4.11, and the processors a thread runs on.
+rustix = { version = "1.1.6", features = ["thread", "time", "linux_4_11"] }
 # The errno values, group addresses and classic BPF opcodes of Linux, which the contract's errors and checks use.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "if_tun", "net", "no_std"] }

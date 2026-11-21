@@ -1,0 +1,226 @@
+//! What waiting costs the host implementation: its watcher thread's wakes and the allocations of a wait.
+#![cfg(target_os = "linux")]
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::future::Future;
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::pin::pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
+
+use wcontainers_abi::HostError;
+use wcontainers_internet_protocol::{BindAddress, IpVersion, LocalBinding, LocalPort, Port};
+use wcontainers_internet_protocol_linux_socket_options::readiness::{NO_EVENTS, WATCHER};
+use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
+use wcontainers_udp_sockets::{UdpProtocol, UdpSockets};
+use wcontainers_udp_sockets_host::{HostUdpSocket, HostUdpSockets};
+
+/// An allocator that counts the allocations of the whole test process.
+struct Counting;
+
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+// SAFETY: every call is passed on to the system's allocator unchanged.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: as the caller of alloc promised.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: as the caller of dealloc promised.
+        unsafe { System.dealloc(pointer, layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: as the caller of realloc promised.
+        unsafe { System.realloc(pointer, layout, size) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// Taken by each test, so that one counts only its own wakes and allocations.
+static ALONE: Mutex<()> = Mutex::new(());
+
+/// How many datagrams each measurement sends.
+const DATAGRAMS: usize = 1200;
+
+/// How many waits warm a socket's waiter list before allocations are counted.
+const WARM_UP: usize = 10;
+
+/// How long one wake may take to come.
+const PATIENCE: Duration = Duration::from_secs(1);
+
+/// How long the watcher is given to show a wake it was sent.
+const SETTLE: Duration = Duration::from_millis(50);
+
+const PAYLOAD: &[u8] = b"a datagram waited for";
+
+const READABLE: PollEvents = PollEvents {
+    data_to_read: true,
+    ..NO_EVENTS
+};
+
+#[derive(Default)]
+struct Wakes {
+    count: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        *self.count.lock().expect("the wakes") += 1;
+        self.changed.notify_all();
+    }
+}
+
+impl Wakes {
+    fn reach(&self, count: usize) -> bool {
+        let wakes = self.count.lock().expect("the wakes");
+        let (wakes, _) = self
+            .changed
+            .wait_timeout_while(wakes, PATIENCE, |wakes| *wakes < count)
+            .expect("the wakes");
+        *wakes >= count
+    }
+}
+
+/// The voluntary context switches of this process's watcher threads, which count their wakes.
+fn watcher_wakes() -> u64 {
+    let mut wakes = 0;
+    for task in std::fs::read_dir("/proc/self/task").expect("this process's threads") {
+        let task = task.expect("a thread").path();
+        let name = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
+        if name.trim_end() != WATCHER {
+            continue;
+        }
+        let status = std::fs::read_to_string(task.join("status")).expect("its status");
+        wakes += status
+            .lines()
+            .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))
+            .and_then(|count| count.trim().parse::<u64>().ok())
+            .expect("its context switches");
+    }
+    wakes
+}
+
+/// A host socket on loopback with a plain socket that sends to it.
+fn pair(sockets: &HostUdpSockets) -> (HostUdpSocket, UdpSocket) {
+    let socket = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, UserId(u32::MIN))
+        .expect("open");
+    let address = sockets
+        .bind(
+            &socket,
+            LocalBinding {
+                address: BindAddress::V4(Ipv4Addr::LOCALHOST),
+                port: LocalPort::ChosenByKernel(Port(u16::MIN)),
+            },
+        )
+        .expect("bind");
+    let sender = UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), u16::MIN))
+        .expect("a plain sender");
+    sender.connect(address).expect("connect the sender");
+    (socket, sender)
+}
+
+fn poll_with<F: Future>(call: core::pin::Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output> {
+    let waker = Waker::from(Arc::clone(wakes));
+    call.poll(&mut Context::from_waker(&waker))
+}
+
+/// One datagram waited for, then taken.
+fn wait_and_take(
+    sockets: &HostUdpSockets,
+    socket: &HostUdpSocket,
+    sender: &UdpSocket,
+    wakes: &Arc<Wakes>,
+    woken: usize,
+    into: &mut [u8],
+) {
+    let mut wait = pin!(sockets.wait_for_events(socket, READABLE));
+    assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    sender.send(PAYLOAD).expect("send");
+    assert!(wakes.reach(woken), "woken by the datagram");
+    match poll_with(wait.as_mut(), wakes) {
+        Poll::Ready(Ok(events)) => assert!(events.data_to_read),
+        other => panic!("the wait did not finish: {other:?}"),
+    }
+    assert!(sockets.receive(socket, into).is_ok());
+}
+
+/// Datagrams sent and received with no call waiting do not wake the watcher; one waited for does.
+#[test]
+fn a_socket_nobody_waits_on_costs_the_watcher_nothing() {
+    let _alone = ALONE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
+    let (socket, sender) = pair(&sockets);
+    let mut into = vec![u8::MIN; usize::from(u16::MAX)];
+    std::thread::sleep(SETTLE);
+    let before = watcher_wakes();
+    for _ in 0..DATAGRAMS {
+        sender.send(PAYLOAD).expect("send");
+        while sockets.receive(&socket, &mut into) == Err(HostError::WouldBlock) {
+            std::thread::yield_now();
+        }
+    }
+    std::thread::sleep(SETTLE);
+    let unwaited = watcher_wakes() - before;
+    assert_eq!(
+        unwaited, 0,
+        "watcher wakes over {DATAGRAMS} datagrams nobody waited for"
+    );
+    // After waits, the socket costs nothing again.
+    let wakes = Arc::new(Wakes::default());
+    let before = watcher_wakes();
+    wait_and_take(&sockets, &socket, &sender, &wakes, 1, &mut into);
+    std::thread::sleep(SETTLE);
+    assert!(watcher_wakes() > before, "the watcher woke for a wait");
+    let before = watcher_wakes();
+    for _ in 0..DATAGRAMS {
+        sender.send(PAYLOAD).expect("send");
+        while sockets.receive(&socket, &mut into) == Err(HostError::WouldBlock) {
+            std::thread::yield_now();
+        }
+    }
+    std::thread::sleep(SETTLE);
+    assert_eq!(
+        watcher_wakes() - before,
+        0,
+        "watcher wakes after a wait ended"
+    );
+}
+
+/// A call that has to wait allocates nothing once its socket has been waited on.
+#[test]
+fn a_wait_allocates_nothing_once_warm() {
+    let _alone = ALONE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
+    let (socket, sender) = pair(&sockets);
+    let mut into = vec![u8::MIN; usize::from(u16::MAX)];
+    let wakes = Arc::new(Wakes::default());
+    for woken in 1..=WARM_UP {
+        wait_and_take(&sockets, &socket, &sender, &wakes, woken, &mut into);
+    }
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    for woken in WARM_UP + 1..=WARM_UP + DATAGRAMS {
+        wait_and_take(&sockets, &socket, &sender, &wakes, woken, &mut into);
+    }
+    let allocated = ALLOCATIONS.load(Ordering::Relaxed) - before;
+    assert_eq!(allocated, 0, "allocations over {DATAGRAMS} waits");
+}
