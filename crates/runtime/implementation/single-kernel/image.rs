@@ -12,6 +12,8 @@ use oci_spec::image::{
     MediaType, OciLayout, Os,
 };
 use oci_spec::runtime::{Spec, User};
+use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 use sha2::{Digest as _, Sha256};
 use wcontainers_kernel_linux::linux::general::{
     S_IRGRP, S_IROTH, S_IRUSR, S_IRWXG, S_IRWXO, S_IRWXU, S_ISGID, S_ISUID, S_ISVTX, S_IWUSR,
@@ -174,26 +176,7 @@ impl Image {
         let mut files = BTreeMap::new();
         for layer in manifest.layers() {
             let bytes = blob(directory, layer)?;
-            let name = blob_path(directory, layer);
-            match layer.media_type() {
-                MediaType::ImageLayer | MediaType::ImageLayerNonDistributable => {
-                    read_layer(bytes.as_slice(), &name, true, &mut files)?;
-                }
-                MediaType::ImageLayerGzip | MediaType::ImageLayerNonDistributableGzip => {
-                    let reader = flate2::read::GzDecoder::new(bytes.as_slice());
-                    read_layer(reader, &name, true, &mut files)?;
-                }
-                MediaType::Other(other) if other == DOCKER_LAYER_GZIP => {
-                    let reader = flate2::read::GzDecoder::new(bytes.as_slice());
-                    read_layer(reader, &name, true, &mut files)?;
-                }
-                other => {
-                    return Err(Error::Image(format!(
-                        "layer {} has media type {other}, which this runtime does not unpack",
-                        layer.digest()
-                    )));
-                }
-            }
+            apply_layer(layer, &bytes, &blob_path(directory, layer), &mut files)?;
         }
         Ok(Self {
             files,
@@ -632,6 +615,120 @@ fn find_manifest(
     )))
 }
 
+/// Applies the layer `layer` describes, whose blob `name` holds `bytes`, by its media type.
+fn apply_layer(
+    layer: &Descriptor,
+    bytes: &[u8],
+    name: &Path,
+    files: &mut BTreeMap<Vec<u8>, Entry>,
+) -> Result<(), Error> {
+    match layer.media_type() {
+        MediaType::ImageLayer | MediaType::ImageLayerNonDistributable => {
+            read_layer(bytes, name, true, files)
+        }
+        MediaType::ImageLayerGzip | MediaType::ImageLayerNonDistributableGzip => {
+            read_layer(flate2::read::GzDecoder::new(bytes), name, true, files)
+        }
+        MediaType::Other(other) if other == DOCKER_LAYER_GZIP => {
+            read_layer(flate2::read::GzDecoder::new(bytes), name, true, files)
+        }
+        MediaType::ImageLayerZstd | MediaType::ImageLayerNonDistributableZstd => {
+            let mut stream = Zstd::new(bytes);
+            read_layer(&mut stream, name, true, files)?;
+            // The rest of the stream after the tar's end, so that its last checksums are checked.
+            std::io::copy(&mut stream, &mut std::io::sink())
+                .map(drop)
+                .map_err(|error| Error::Image(format!("{}: {error}", name.display())))
+        }
+        other => Err(Error::Image(format!(
+            "layer {} has media type {other}, which this runtime does not unpack",
+            layer.digest()
+        ))),
+    }
+}
+
+/// A zstd stream's bytes, decompressed as libzstd does (RFC 8878): its frames one after another,
+/// skippable frames passed over, and each frame's checksum and declared size checked.
+struct Zstd<'a> {
+    source: &'a [u8],
+    decoder: FrameDecoder,
+    /// Bytes given of the frame being read, while one is.
+    in_frame: Option<u64>,
+}
+
+impl<'a> Zstd<'a> {
+    fn new(source: &'a [u8]) -> Self {
+        Self {
+            source,
+            decoder: FrameDecoder::new(),
+            in_frame: None,
+        }
+    }
+
+    /// Checks the frame just read to its end.
+    fn end_frame(&self, given: u64) -> std::io::Result<()> {
+        if let Some(expected) = self.decoder.get_checksum_from_data()
+            && self.decoder.get_calculated_checksum() != Some(expected)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a zstd frame's checksum does not match its contents",
+            ));
+        }
+        // A declared size of zero cannot be told from none.
+        let declared = self.decoder.content_size();
+        if declared != 0 && declared != given {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a zstd frame's contents are not of the size it declares",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Read for Zstd<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if let Some(given) = self.in_frame {
+                while self.decoder.can_collect() == 0 && !self.decoder.is_finished() {
+                    self.decoder
+                        .decode_blocks(&mut self.source, BlockDecodingStrategy::UptoBlocks(1))
+                        .map_err(std::io::Error::other)?;
+                }
+                let read = self.decoder.read(buffer)?;
+                if read > 0 {
+                    self.in_frame = Some(given + read as u64);
+                    return Ok(read);
+                }
+                self.end_frame(given)?;
+                self.in_frame = None;
+            }
+            if self.source.is_empty() {
+                return Ok(0);
+            }
+            match self.decoder.reset(&mut self.source) {
+                Ok(()) => self.in_frame = Some(0),
+                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                    length,
+                    ..
+                })) => {
+                    self.source = self.source.get(length as usize..).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "a zstd skippable frame runs past the end",
+                        )
+                    })?;
+                }
+                Err(error) => return Err(std::io::Error::other(error)),
+            }
+        }
+    }
+}
+
 /// Applies one tar to the files: with `whiteouts`, as an OCI layer (`.wh.` names remove what lower
 /// layers hold, `.wh..wh..opq` empties a directory of it).
 fn read_layer(
@@ -797,6 +894,7 @@ fn with_defaults(defaults: Vec<String>, image: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wcontainers_kernel_linux::linux::general::S_IWGRP;
 
     /// A tar of (path, contents) pairs: a path ending in `/` is a directory, contents starting with
     /// `->` a symbolic link.
@@ -1018,6 +1116,270 @@ web:x:2:
             assert_eq!(image.home(0), "/root");
             assert_eq!(image.home(5), "/");
         }
+    }
+
+    /// A layer of every kind of entry the layers hold, with the whiteouts of one above it.
+    fn layers_of_every_kind() -> [Vec<u8>; 2] {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut append = |path: &str, kind, mode, link: Option<&str>, contents: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(kind);
+            header.set_mode(mode);
+            header.set_uid(7);
+            header.set_gid(9);
+            header.set_mtime(1_700_000_000);
+            header.set_size(contents.len() as u64);
+            if kind == tar::EntryType::Char || kind == tar::EntryType::Block {
+                header.set_device_major(1).unwrap();
+                header.set_device_minor(3).unwrap();
+            }
+            match link {
+                Some(target) => builder.append_link(&mut header, path, target).unwrap(),
+                None => builder.append_data(&mut header, path, contents).unwrap(),
+            }
+        };
+        let big: Vec<u8> = (0..300_000u32)
+            .map(|n| (n.wrapping_mul(n) >> 7) as u8)
+            .collect();
+        append("d/", tar::EntryType::Directory, DIRECTORY_MODE, None, b"");
+        append(
+            "d/file",
+            tar::EntryType::Regular,
+            S_ISUID | FILE_MODE,
+            None,
+            b"text\n",
+        );
+        append(
+            "d/big",
+            tar::EntryType::Regular,
+            S_IRUSR | S_IWUSR,
+            None,
+            &big,
+        );
+        append("d/gone", tar::EntryType::Regular, FILE_MODE, None, b"x");
+        append("d/link", tar::EntryType::Symlink, 0o777, Some("file"), b"");
+        append(
+            "d/hard",
+            tar::EntryType::Link,
+            FILE_MODE,
+            Some("d/file"),
+            b"",
+        );
+        append(
+            "e/",
+            tar::EntryType::Directory,
+            S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO,
+            None,
+            b"",
+        );
+        append("e/inside", tar::EntryType::Regular, FILE_MODE, None, b"y");
+        append("null", tar::EntryType::Char, 0o666, None, b"");
+        append(
+            "block",
+            tar::EntryType::Block,
+            S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP,
+            None,
+            b"",
+        );
+        append("fifo", tar::EntryType::Fifo, FILE_MODE, None, b"");
+        let lower = builder.into_inner().unwrap();
+        let upper = layer(&[("d/.wh.gone", ""), ("e/.wh..wh..opq", ""), ("e/new", "z")]);
+        [lower, upper]
+    }
+
+    /// A descriptor of `bytes` as a blob of `media_type`.
+    fn descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
+        let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+        Descriptor::new(
+            media_type,
+            bytes.len() as u64,
+            digest.parse::<oci_spec::image::Digest>().unwrap(),
+        )
+    }
+
+    /// The files the layers give, each compressed by `compress` as a layer of `media_type`.
+    fn unpacked(
+        layers: &[Vec<u8>],
+        media_type: MediaType,
+        compress: impl Fn(&[u8]) -> Vec<u8>,
+    ) -> Result<BTreeMap<Vec<u8>, Entry>, Error> {
+        let mut files = BTreeMap::new();
+        for layer in layers {
+            let bytes = compress(layer);
+            let descriptor = descriptor(media_type.clone(), &bytes);
+            apply_layer(&descriptor, &bytes, Path::new("layer"), &mut files)?;
+        }
+        Ok(files)
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// `bytes` as libzstd compresses them at `level`, with a checksum and the content size.
+    fn libzstd(bytes: &[u8], level: i32) -> Vec<u8> {
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), level).unwrap();
+        encoder.include_checksum(true).unwrap();
+        encoder
+            .set_pledged_src_size(Some(bytes.len() as u64))
+            .unwrap();
+        std::io::Write::write_all(&mut encoder, bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// A skippable frame of `length` bytes, with the `n`th of its magic numbers (RFC 8878 3.1.2).
+    fn skippable(n: u32, length: u32) -> Vec<u8> {
+        let mut frame = (0x184D_2A50 + n).to_le_bytes().to_vec();
+        frame.extend(length.to_le_bytes());
+        frame.extend((0..length).map(|byte| byte as u8));
+        frame
+    }
+
+    /// What our reader gives of `stream`, read in pieces of `piece` bytes.
+    fn ours(stream: &[u8], piece: usize) -> std::io::Result<Vec<u8>> {
+        let mut reader = Zstd::new(stream);
+        let mut out = Vec::new();
+        let mut buffer = vec![0; piece];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(out);
+            }
+            out.extend_from_slice(&buffer[..read]);
+        }
+    }
+
+    fn the_same_files(one: &BTreeMap<Vec<u8>, Entry>, other: &BTreeMap<Vec<u8>, Entry>) -> bool {
+        format!("{one:?}") == format!("{other:?}")
+    }
+
+    #[test]
+    fn a_zstd_layer_gives_the_files_of_its_gzip_twin() {
+        let layers = layers_of_every_kind();
+        let plain = unpacked(&layers, MediaType::ImageLayer, <[u8]>::to_vec).unwrap();
+        let gzip = unpacked(&layers, MediaType::ImageLayerGzip, gzip).unwrap();
+        assert!(the_same_files(&plain, &gzip));
+        for media_type in [
+            MediaType::ImageLayerZstd,
+            MediaType::ImageLayerNonDistributableZstd,
+        ] {
+            let zstd = unpacked(&layers, media_type, |bytes| libzstd(bytes, 3)).unwrap();
+            assert!(the_same_files(&gzip, &zstd));
+        }
+        let names: Vec<_> = gzip
+            .keys()
+            .map(|key| String::from_utf8_lossy(key))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "block", "d", "d/big", "d/file", "d/hard", "d/link", "e", "e/new", "fifo", "null"
+            ]
+            .map(str::to_string)
+        );
+    }
+
+    /// Seeded random streams of several frames, with and without checksums and sizes, skippable
+    /// frames between them, decode as libzstd decodes them. `ZSTD_SEED` (0 if unset) and
+    /// `ZSTD_CASES` (100 if unset) choose them.
+    #[test]
+    fn zstd_streams_decode_as_libzstd_decodes_them() {
+        let seed: u64 = std::env::var("ZSTD_SEED").map_or(0, |seed| seed.parse().unwrap());
+        let cases: u64 = std::env::var("ZSTD_CASES").map_or(100, |cases| cases.parse().unwrap());
+        let mut state = seed;
+        // splitmix64
+        let mut next = move |below: u64| {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) % below
+        };
+        for case in 0..cases {
+            let (mut stream, mut expected) = (Vec::new(), Vec::new());
+            for _ in 0..1 + next(4) {
+                if next(3) == 0 {
+                    stream.extend(skippable(next(16) as u32, next(64) as u32));
+                }
+                let alphabet = 1 + next(255);
+                let data: Vec<u8> = (0..next(400_000)).map(|_| next(alphabet) as u8).collect();
+                let mut encoder =
+                    zstd::stream::Encoder::new(Vec::new(), 1 + next(12) as i32).unwrap();
+                encoder.include_checksum(next(2) == 0).unwrap();
+                if next(2) == 0 {
+                    encoder
+                        .set_pledged_src_size(Some(data.len() as u64))
+                        .unwrap();
+                } else {
+                    encoder.include_contentsize(false).unwrap();
+                }
+                std::io::Write::write_all(&mut encoder, &data).unwrap();
+                stream.extend(encoder.finish().unwrap());
+                expected.extend(data);
+            }
+            let piece = 1 + next(99_991) as usize;
+            assert_eq!(
+                zstd::stream::decode_all(stream.as_slice()).unwrap(),
+                expected
+            );
+            assert!(
+                ours(&stream, piece).unwrap() == expected,
+                "case {case} of seed {seed}"
+            );
+        }
+        eprintln!("{cases} cases of seed {seed}");
+    }
+
+    /// Streams libzstd refuses are refused.
+    #[test]
+    fn damaged_zstd_streams_are_refused_as_libzstd_refuses_them() {
+        let data: Vec<u8> = (0..99_991u32)
+            .map(|n| ((n % 251) ^ (n >> 9)) as u8)
+            .collect();
+        let good = libzstd(&data, 3);
+        let mut damaged = Vec::new();
+        // A changed byte inside a block, and a changed checksum.
+        for at in [good.len() / 2, good.len() - 1] {
+            let mut stream = good.clone();
+            stream[at] ^= 0x40;
+            damaged.push(stream);
+        }
+        damaged.push(good[..good.len() - 7].to_vec());
+        damaged.push([good.as_slice(), b"after"].concat());
+        let mut skipping_past_the_end = skippable(0, 8);
+        skipping_past_the_end.truncate(12);
+        damaged.push(skipping_past_the_end);
+        // A declared size one more than the contents: one byte after the descriptor of a frame
+        // whose descriptor says a single segment with a one-byte size.
+        let small = libzstd(b"small", 3);
+        let header = small[4];
+        assert_eq!((header >> 6, (header >> 5) & 1), (0, 1));
+        let mut wrong_size = small.clone();
+        wrong_size[5] += 1;
+        damaged.push(wrong_size);
+        // A frame that needs a window above libzstd's default limit, 128 MiB.
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
+        encoder.include_contentsize(false).unwrap();
+        encoder.window_log(28).unwrap();
+        std::io::Write::write_all(&mut encoder, &data).unwrap();
+        damaged.push(encoder.finish().unwrap());
+        for (n, stream) in damaged.iter().enumerate() {
+            assert!(zstd::stream::decode_all(stream.as_slice()).is_err(), "{n}");
+            assert!(ours(stream, 4093).is_err(), "{n}");
+        }
+        // And a damaged layer is refused, even after the tar's end.
+        let layers = layers_of_every_kind();
+        let mut layer = libzstd(&layers[0], 3);
+        let last = layer.len() - 1;
+        layer[last] ^= 1;
+        let descriptor = descriptor(MediaType::ImageLayerZstd, &layer);
+        let mut files = BTreeMap::new();
+        assert!(matches!(
+            apply_layer(&descriptor, &layer, Path::new("layer"), &mut files),
+            Err(Error::Image(_))
+        ));
     }
 
     #[test]

@@ -22,6 +22,7 @@ serde_ignored = { version = "0.1.14", optional = true }
 # An image's layers and a plain tar of files.
 tar = { version = "0.4.46", optional = true }
 flate2 = { version = "1.1.11", optional = true }
+ruzstd = { version = "0.9.1", optional = true }
 # Image blobs are checked against their digests.
 sha2 = { version = "0.10.9", optional = true }
 # The local system's randomness.
@@ -45,6 +46,7 @@ std = [
     "dep:serde_ignored",
     "dep:tar",
     "dep:flate2",
+    "dep:ruzstd",
     "dep:sha2",
     "dep:getrandom",
     "dep:fuse-abi",
@@ -54,6 +56,10 @@ std = [
     "dep:socket2",
     "dep:polling",
 ]
+
+[dev-dependencies]
+# libzstd, the reference that zstd layers are compared with.
+zstd = "0.13.5"
 
 [lints]
 workspace = true
