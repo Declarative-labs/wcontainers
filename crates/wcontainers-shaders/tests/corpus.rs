@@ -529,7 +529,12 @@ const READER_UNSUPPORTED: &str = "spirv-reader unsupported ";
 const CITED_FORMS: [(&str, &[&str]); 5] = [
     (
         "SAMPLE_SHADING",
-        &["'gl_Sample", "'gl_NumSamples'", "'sample'", SAMPLE_VARIABLES],
+        &[
+            "'gl_Sample",
+            "'gl_NumSamples'",
+            "'sample'",
+            SAMPLE_VARIABLES,
+        ],
     ),
     (
         "MULTISAMPLE_READ",
