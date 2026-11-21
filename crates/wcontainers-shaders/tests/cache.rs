@@ -40,17 +40,18 @@ fn key(n: u8) -> [u8; 32] {
     *blake3::hash(&[n]).as_bytes()
 }
 
-/// A cache of `n` entries with payloads of varied length, from `first` on.
+/// Every kind of entry.
+const KINDS: [Kind; 3] = [Kind::Combination, Kind::Shader, Kind::Views];
+
+/// A cache of `n` entries of every kind in turn, with payloads of varied length, from `first` on.
 fn made(first: u8, n: u8) -> Cache {
     let mut c = Cache::default();
     for i in first..first + n {
         let payload: Vec<u8> = (0..u32::from(i) * 7 % 50).map(|b| b as u8 ^ i).collect();
-        let kind = if i % 3 == 0 {
-            Kind::Combination
-        } else {
-            Kind::Shader
-        };
-        assert!(!c.insert(kind, key(i), &payload).is_empty());
+        assert!(
+            !c.insert(KINDS[usize::from(i) % KINDS.len()], key(i), &payload)
+                .is_empty()
+        );
     }
     c
 }
@@ -146,11 +147,7 @@ fn a_cut_file_keeps_every_whole_entry_before_the_cut() {
     let mut ends = Vec::new();
     let mut so_far = Cache::default();
     for (kind, key, payload) in full.entries() {
-        let kind = if kind == Kind::Shader as u8 {
-            Kind::Shader
-        } else {
-            Kind::Combination
-        };
+        let kind = KINDS.into_iter().find(|&k| k as u8 == kind).unwrap();
         so_far.insert(kind, key, payload);
         ends.push(so_far.bytes().len());
     }
