@@ -281,6 +281,25 @@ fn write<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, bytes: u32, low: u32, 
     e.sink().end();
 }
 
+/// Whether the instruction's memory is an 80-bit value, which it reads or writes in two parts.
+pub(crate) fn split(i: &Instruction) -> bool {
+    use Mnemonic::*;
+    matches!(i.iced.mnemonic(), Fld | Fstp | Fbld | Fbstp)
+        && memory_bytes(i) == VALUE_LOW + VALUE_HIGH
+}
+
+/// Check an 80-bit value's memory in its two parts, as the CPU reads and writes it.
+fn check_split<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, access: Access) {
+    let rest = e.local(ValType::I64);
+    e.check(at, VALUE_LOW, access, 0);
+    e.sink()
+        .local_get(at)
+        .i64_const(VALUE_LOW.into())
+        .i64_add()
+        .local_set(rest);
+    e.check(rest, VALUE_HIGH, access, 0);
+}
+
 /// For the instructions that save and load the unit's state, the first bytes `check_ends` checks alone (none
 /// for `fxsave` and `fxrstor`); none for any other.
 pub(crate) fn state_probe(i: &Instruction) -> Option<Option<u32>> {
@@ -348,6 +367,11 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             let at = address(e, i);
             let access = check_kind(memory.expect("a memory operand"));
             check_ends(e, i, at, bytes, access, Some(Layout::of(i).word));
+            Some(at)
+        }
+        Fld | Fbld if split(i) => {
+            let at = address(e, i);
+            check_split(e, at, Access::Read);
             Some(at)
         }
         _ => checked(e, i),
@@ -754,20 +778,33 @@ const HEADER_KEPT: i64 =
 /// `fxsave` and `fxrstor`: the x87, MXCSR and xmm state to and from a 16-byte aligned image; without REX.W
 /// the pointers are 32 bits and their selectors zero. Neither waits for a pending exception.
 fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
-    // A non-canonical address faults first, then a misaligned one, then the pages.
+    // A non-canonical first byte faults first, then a misaligned address, then a non-canonical last byte,
+    // then the pages (scratch `x7/probes/fxsave_order.c`).
     let at = address(e, i);
     let kind = memory_use(i).expect("a memory operand");
+    let bytes = memory_bytes(i);
+    let last = e.local(ValType::I64);
     e.sink()
         .local_get(at)
-        .i64_const(crate::CANONICAL_SHIFT.into())
-        .i64_shl()
-        .i64_const(crate::CANONICAL_SHIFT.into())
-        .i64_shr_s()
-        .local_get(at)
-        .i64_eq()
-        .if_(BlockType::Empty);
+        .i64_const((bytes - 1).into())
+        .i64_add()
+        .local_set(last);
+    let not_canonical = |e: &mut E, end: u32| {
+        e.sink()
+            .local_get(end)
+            .i64_const(crate::CANONICAL_SHIFT.into())
+            .i64_shl()
+            .i64_const(crate::CANONICAL_SHIFT.into())
+            .i64_shr_s()
+            .local_get(end)
+            .i64_ne()
+            .if_(BlockType::Empty);
+        e.check(at, bytes, check_kind(kind), 0);
+        e.sink().end();
+    };
+    not_canonical(e, at);
     crate::simd::aligned16(e, at);
-    e.sink().end();
+    not_canonical(e, last);
     check_ends(e, i, at, memory_bytes(i), check_kind(kind), None);
     let wide = matches!(m, Mnemonic::Fxsave64 | Mnemonic::Fxrstor64);
     let pointer_bytes = if wide {

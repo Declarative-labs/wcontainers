@@ -700,6 +700,15 @@ impl Guest for X86_64 {
                 }
             }
             let mut last = start.wrapping_add(bytes - 1);
+            // An 80-bit value's access faults by its part, the first eight bytes or the last two.
+            if crate::fpu::split(&i) {
+                let low = u64::from(crate::fpu::VALUE_LOW);
+                if address.wrapping_sub(start) < low {
+                    last = start.wrapping_add(low - 1);
+                } else {
+                    start = start.wrapping_add(low);
+                }
+            }
             // The x87 state instructions' accesses fault by the piece that met the fault (`fpu::check_ends`):
             // the first bytes, the last byte, or the whole.
             if let Some(first) = crate::fpu::state_probe(&i) {
@@ -920,6 +929,14 @@ impl Guest for X86_64 {
                     None,
                 ]
             }
+            Maskmovq => [
+                Some(MemoryAccess {
+                    segment: segment(i),
+                    address_bits: if i.address32 { W32 } else { W64 },
+                    ..through(RDI, 0, SLOT, AccessKind::Write)
+                }),
+                None,
+            ],
             // The upper half, then the lower, each wrapped by itself under an address-size prefix.
             Maskmovdqu => {
                 let half = crate::XMM_BYTES / 2;

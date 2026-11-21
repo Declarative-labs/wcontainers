@@ -351,7 +351,9 @@ impl GuestTest for X86_64 {
             let names_mmx = (0..instruction.op_count()).any(|n| {
                 instruction.op_kind(n) == OpKind::Register && instruction.op_register(n).is_mm()
             });
+            let waits = matches!(instruction.code(), Code::Wait | Code::Emms);
             let x87_side = names_mmx
+                || waits
                 || instruction.code().cpuid_features().iter().any(|f| {
                     use iced_x86::CpuidFeature::{FPU, FPU287, FPU387};
                     matches!(f, FPU | FPU287 | FPU387)
