@@ -5,8 +5,9 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, ClearValue, ColorTarget, EmptyPass, MAX_COLOR_TARGETS, Object, PassTargets,
-    PassTracker, ScissorRect, Target, TextureDimension, TextureViewDesc, ViewDimension,
+    Backend, ClearValue, ColorTarget, DeviceStatus, EmptyPass, MAX_COLOR_TARGETS, Object,
+    PassTargets, PassTracker, ScissorRect, Target, TextureDimension, TextureViewDesc,
+    ViewDimension,
 };
 
 use crate::draw::Programs;
@@ -34,6 +35,14 @@ macro_rules! unbuilt {
             Some(unsafe { std::mem::transmute::<extern "C" fn() -> !, _>(stub) })
         };
     )+};
+}
+
+/// Ends the process once the back end has lost its device: every later call of the context
+/// would fail, so a case would read nothing back, and the loss belongs to the case that made it.
+pub fn end_if_lost<B: Backend>(backend: &mut B) {
+    if let DeviceStatus::Lost(reason) = backend.status() {
+        state::refuse(format_args!("the device was lost: {reason:?}"));
+    }
 }
 
 /// What the framebuffer holds: Gallium's state, with references on its textures, and the views
@@ -240,6 +249,7 @@ unsafe extern "C" fn flush<B: Backend>(
         );
     }
     let done = backend.submit();
+    end_if_lost(&mut *backend);
     if !fence.is_null() {
         let made = Box::into_raw(Box::new(Fence::<B> {
             count: AtomicI32::new(1),
