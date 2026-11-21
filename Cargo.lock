@@ -4110,7 +4110,6 @@ dependencies = [
  "bytemuck",
  "half",
  "llvm-bitcode",
- "md-5",
  "naga",
  "png",
  "pollster",

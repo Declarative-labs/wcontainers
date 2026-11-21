@@ -4,6 +4,7 @@
 
 use std::ops::Range;
 use wcontainers_gpu::SlotKind;
+use wcontainers_shaders::container::{self, Tag};
 
 /// `D3D12_ROOT_PARAMETER_TYPE` with its payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,7 +243,7 @@ impl RootSignatureDesc {
     }
 }
 
-const RTS0: [u8; 4] = *b"RTS0";
+const RTS0: Tag = *b"RTS0";
 
 /// Reads a serialized root signature. `Err` says why it is malformed (`E_INVALIDARG`).
 pub fn deserialize(blob: &[u8]) -> Result<RootSignatureDesc, &'static str> {
@@ -318,56 +319,20 @@ pub fn deserialize(blob: &[u8]) -> Result<RootSignatureDesc, &'static str> {
 
 /// The `RTS0` part of a DXBC container.
 fn rts0_part(blob: &[u8]) -> Result<&[u8], &'static str> {
-    let word = |at: usize| -> Result<usize, &'static str> {
-        blob.get(at..at + 4)
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
-            .ok_or("the container is cut short")
-    };
-    if blob.get(..4) != Some(b"DXBC") {
+    const CUT_SHORT: &str = "the container is cut short";
+    if !container::is_container(blob) {
         return Err("not a DXBC container");
     }
-    for i in 0..word(28)? {
-        let at = word(32 + i * 4)?;
-        let size = word(at + 4)?;
-        if blob.get(at..at + 4) == Some(&RTS0) {
-            return blob
-                .get(at + 8..at + 8 + size)
+    for chunk in container::chunk_list(blob).map_err(|_| CUT_SHORT)? {
+        let chunk = chunk.map_err(|_| CUT_SHORT)?;
+        chunk.size().ok_or(CUT_SHORT)?;
+        if chunk.tag() == Some(RTS0) {
+            return chunk
+                .contents()
                 .ok_or("the root signature part is cut short");
         }
     }
     Err("the container has no root signature part")
-}
-
-/// The checksum of a DXBC container: MD5's rounds over the bytes after the checksum, with DXBC's
-/// own last block (the bit count first, then the rest of the bytes, MD5's padding, and the bit
-/// count divided by 4 with its low bit set), no MD5 finalisation.
-pub fn dxbc_checksum(container: &[u8]) -> [u8; 16] {
-    let bytes = &container[20.min(container.len())..];
-    let bits = (bytes.len() as u32).wrapping_mul(8);
-    let (a, b) = (bits.to_le_bytes(), ((bits >> 2) | 1).to_le_bytes());
-    let whole = bytes.len() - bytes.len() % 64;
-    let mut state = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
-    md5::block_api::compress(&mut state, bytes[..whole].as_chunks::<64>().0);
-    let rest = &bytes[whole..];
-    let mut last = [[0u8; 64]; 2];
-    let tail = if rest.len() >= 56 {
-        last[0][..rest.len()].copy_from_slice(rest);
-        last[0][rest.len()] = 0x80;
-        last[1][..4].copy_from_slice(&a);
-        &mut last[..]
-    } else {
-        last[0][..4].copy_from_slice(&a);
-        last[0][4..4 + rest.len()].copy_from_slice(rest);
-        last[0][4 + rest.len()] = 0x80;
-        &mut last[..1]
-    };
-    tail.last_mut().expect("a block")[60..].copy_from_slice(&b);
-    md5::block_api::compress(&mut state, tail);
-    let mut out = [0; 16];
-    for (o, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(state) {
-        *o = s.to_le_bytes();
-    }
-    out
 }
 
 /// Writes a root signature as a DXBC container with one `RTS0` part, its checksum as Direct3D
@@ -435,7 +400,7 @@ pub fn serialize(desc: &RootSignatureDesc) -> Vec<u8> {
     blob.extend(RTS0);
     blob.extend((data.len() as u32).to_le_bytes());
     blob.extend(data);
-    let checksum = dxbc_checksum(&blob);
+    let checksum = container::checksum(&blob);
     blob[4..20].copy_from_slice(&checksum);
     blob
 }

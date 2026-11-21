@@ -6,6 +6,7 @@
 
 use std::ops::Range;
 use wcontainers_gpu::SlotKind;
+use wcontainers_shaders::container::{self, Instruction, Tag, dxbc_op, token};
 
 /// The kind of value a typed view's declaration reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,41 +30,19 @@ pub struct TypedView {
     pub kind: Kind,
 }
 
-/// `D3D10_SB_OPCODE_DCL_RESOURCE`.
-const DCL_RESOURCE: u32 = 88;
-/// `D3D11_SB_OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED`, `..._RAW` and `..._STRUCTURED`.
-const DCL_UAV_TYPED: u32 = 156;
-const DCL_UAV_RAW: u32 = 157;
-const DCL_UAV_STRUCTURED: u32 = 158;
-/// `D3D11_SB_OPCODE_DCL_RESOURCE_RAW` and `..._STRUCTURED`.
-const DCL_RESOURCE_RAW: u32 = 161;
-const DCL_RESOURCE_STRUCTURED: u32 = 162;
-/// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its opcode.
-const CUSTOMDATA: u32 = 53;
-/// `D3D10_SB_RESOURCE_DIMENSION_BUFFER` and `..._TEXTURE2DMSARRAY`.
-const DIMENSION_BUFFER: u32 = 1;
-const DIMENSION_2D_MS_ARRAY: u32 = 9;
+use dxbc_op::{
+    DCL_RESOURCE, DCL_RESOURCE_RAW, DCL_RESOURCE_STRUCTURED, DCL_SAMPLER, DCL_UAV_RAW,
+    DCL_UAV_STRUCTURED, DCL_UAV_TYPED,
+};
+use token::{
+    DIMENSION_BUFFER, DIMENSION_TEXTURE_2D_MS_ARRAY, RETURN_TYPE_FLOAT, RETURN_TYPE_SINT,
+    RETURN_TYPE_SNORM, RETURN_TYPE_UINT, RETURN_TYPE_UNORM,
+};
+
 /// An operand's index dimension with one index (a register, shader model 5.0) and with three
 /// (an identifier and the range's bounds, shader model 5.1, whose declarations end in their space).
 const ONE_INDEX: u32 = 1;
 const RANGE_INDICES: u32 = 3;
-/// `D3D10_SB_OPCODE_TYPE_MASK`.
-const OPCODE_TYPE_MASK: u32 = 0x7ff;
-/// `D3D10_SB_RESOURCE_DIMENSION_MASK` and its shift.
-const RESOURCE_DIMENSION_SHIFT: u32 = 11;
-const RESOURCE_DIMENSION_MASK: u32 = 0x1f;
-/// The bit of an opcode or operand token saying an extended token follows.
-const EXTENDED_SHIFT: u32 = 31;
-/// `D3D10_SB_OPERAND_INDEX_DIMENSION_MASK` and its shift.
-const INDEX_DIMENSION_SHIFT: u32 = 20;
-const INDEX_DIMENSION_MASK: u32 = 3;
-/// `D3D10_SB_RESOURCE_RETURN_TYPE_MASK` of the x component and the return types.
-const RETURN_TYPE_MASK: u32 = 0xf;
-const RETURN_TYPE_UNORM: u32 = 1;
-const RETURN_TYPE_SNORM: u32 = 2;
-const RETURN_TYPE_SINT: u32 = 3;
-const RETURN_TYPE_UINT: u32 = 4;
-const RETURN_TYPE_FLOAT: u32 = 5;
 
 /// One view declaration: an unordered access view (else a shader resource view), its (space,
 /// register) place, its element count (none for an array without a length), its dimension and
@@ -84,7 +63,7 @@ fn views(code: &[u8]) -> Option<(Vec<Declared>, bool)> {
     let mut views = Vec::new();
     let mut spaces = false;
     declarations(code, |opcode, instruction| {
-        let storage = match opcode & OPCODE_TYPE_MASK {
+        let storage = match token::opcode(opcode) {
             DCL_UAV_TYPED | DCL_UAV_RAW | DCL_UAV_STRUCTURED => true,
             DCL_RESOURCE | DCL_RESOURCE_RAW | DCL_RESOURCE_STRUCTURED => false,
             _ => return Some(()),
@@ -95,8 +74,8 @@ fn views(code: &[u8]) -> Option<(Vec<Declared>, bool)> {
             storage,
             place,
             length,
-            dimension: (opcode >> RESOURCE_DIMENSION_SHIFT) & RESOURCE_DIMENSION_MASK,
-            opcode: opcode & OPCODE_TYPE_MASK,
+            dimension: token::resource_dimension(opcode),
+            opcode: token::opcode(opcode),
             kind,
         });
         Some(())
@@ -179,8 +158,6 @@ pub fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Optio
     Some(out)
 }
 
-/// `D3D10_SB_OPCODE_DCL_SAMPLER`.
-const DCL_SAMPLER: u32 = 90;
 /// A shader model 5.1 range's upper bound when it has none.
 const UNBOUNDED_UPPER: u32 = u32::MAX;
 
@@ -190,7 +167,7 @@ pub fn declares_unbounded_array(code: &[u8]) -> bool {
     let mut found = false;
     let _ = declarations(code, |opcode, instruction| {
         let declares = matches!(
-            opcode & OPCODE_TYPE_MASK,
+            token::opcode(opcode),
             DCL_RESOURCE
                 | DCL_RESOURCE_RAW
                 | DCL_RESOURCE_STRUCTURED
@@ -199,8 +176,8 @@ pub fn declares_unbounded_array(code: &[u8]) -> bool {
                 | DCL_UAV_STRUCTURED
                 | DCL_SAMPLER
         );
-        if declares && let Some((at, RANGE_INDICES)) = operand_indices(instruction) {
-            found |= instruction.get(at + 2) == Some(&UNBOUNDED_UPPER);
+        if declares && let Some((at, RANGE_INDICES)) = instruction.operand_indices() {
+            found |= instruction.word(at + 2) == Some(UNBOUNDED_UPPER);
         }
         Some(())
     });
@@ -220,7 +197,9 @@ pub fn multisampled_arrays(
         views
             .iter()
             .zip(slots)
-            .filter(|(v, _)| v.opcode == DCL_RESOURCE && v.dimension == DIMENSION_2D_MS_ARRAY)
+            .filter(|(v, _)| {
+                v.opcode == DCL_RESOURCE && v.dimension == DIMENSION_TEXTURE_2D_MS_ARRAY
+            })
             .flat_map(|(_, slots)| slots)
             .collect(),
     )
@@ -228,21 +207,10 @@ pub fn multisampled_arrays(
 
 /// Calls `f` with each instruction's opcode token and words; `None` where `code` holds no
 /// program chunk, its tokens are malformed or `f` fails.
-fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Option<()> {
-    let tokens = program(code)?;
-    // Past the version and length words.
-    let mut at = 2;
-    while at < tokens.len() {
-        let opcode = tokens[at];
-        let length = match opcode & OPCODE_TYPE_MASK {
-            CUSTOMDATA => *tokens.get(at + 1)? as usize,
-            _ => ((opcode >> 24) & 0x7f) as usize,
-        };
-        if length == 0 {
-            return None;
-        }
-        f(opcode, tokens.get(at..at + length)?)?;
-        at += length;
+fn declarations(code: &[u8], mut f: impl FnMut(u32, Instruction) -> Option<()>) -> Option<()> {
+    for instruction in container::instructions(program(code)?) {
+        let instruction = instruction.ok()?;
+        f(instruction.opcode_token(), instruction)?;
     }
     Some(())
 }
@@ -253,12 +221,12 @@ fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Op
 /// (space, register) place, whether the operand names a range (5.1), and the return type's x
 /// component where the declaration is typed and names one.
 #[allow(clippy::type_complexity)]
-fn view(instruction: &[u32]) -> Option<((u32, u32), Option<u32>, bool, Option<Kind>)> {
-    let (mut at, indices) = operand_indices(instruction)?;
+fn view(instruction: Instruction) -> Option<((u32, u32), Option<u32>, bool, Option<Kind>)> {
+    let (mut at, indices) = instruction.operand_indices()?;
     let (register, length, ranged) = match indices {
-        ONE_INDEX => (*instruction.get(at)?, Some(1), false),
+        ONE_INDEX => (instruction.word(at)?, Some(1), false),
         RANGE_INDICES => {
-            let (lower, upper) = (*instruction.get(at + 1)?, *instruction.get(at + 2)?);
+            let (lower, upper) = (instruction.word(at + 1)?, instruction.word(at + 2)?);
             let length = (upper != UNBOUNDED_UPPER).then(|| upper.wrapping_sub(lower) + 1);
             (lower, length, true)
         }
@@ -266,12 +234,12 @@ fn view(instruction: &[u32]) -> Option<((u32, u32), Option<u32>, bool, Option<Ki
     };
     at += indices as usize;
     let space = match ranged {
-        true => *instruction.last()?,
+        true => instruction.word(instruction.words() - 1)?,
         false => 0,
     };
     let kind = instruction
-        .get(at)
-        .and_then(|t| match t & RETURN_TYPE_MASK {
+        .word(at)
+        .and_then(|t| match token::return_type(t) {
             RETURN_TYPE_UNORM | RETURN_TYPE_SNORM | RETURN_TYPE_FLOAT => Some(Kind::Float),
             RETURN_TYPE_SINT => Some(Kind::Sint),
             RETURN_TYPE_UINT => Some(Kind::Uint),
@@ -280,62 +248,37 @@ fn view(instruction: &[u32]) -> Option<((u32, u32), Option<u32>, bool, Option<Ki
     Some(((space, register), length, ranged, kind))
 }
 
-/// Where a declaration's first operand's indices start, and how many there are (every index an
-/// immediate word): past the opcode, its extended tokens, the operand and its extended tokens.
-fn operand_indices(instruction: &[u32]) -> Option<(usize, u32)> {
-    let mut at = 1;
-    let mut extended = instruction[0] >> EXTENDED_SHIFT != 0;
-    while extended {
-        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
-        at += 1;
-    }
-    let operand = *instruction.get(at)?;
-    at += 1;
-    let mut extended = operand >> EXTENDED_SHIFT != 0;
-    while extended {
-        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
-        at += 1;
-    }
-    Some((
-        at,
-        (operand >> INDEX_DIMENSION_SHIFT) & INDEX_DIMENSION_MASK,
-    ))
-}
-
-/// The bytes of a container's first chunk named `fourcc`.
-pub(crate) fn chunk(code: &[u8], fourcc: [u8; 4]) -> Option<&[u8]> {
-    let word = |at: usize| -> Option<usize> {
-        Some(u32::from_le_bytes(code.get(at..at + 4)?.try_into().ok()?) as usize)
-    };
-    if code.get(..4)? != b"DXBC" {
+/// The first chunk of a container whose tag `wanted` takes; `None` where the bytes are not a
+/// container, or its chunk list or that chunk is cut short before it is found.
+fn first_chunk(code: &[u8], wanted: impl Fn(Tag) -> bool) -> Option<&[u8]> {
+    if !container::is_container(code) {
         return None;
     }
-    for i in 0..word(28)? {
-        let start = word(32 + i * 4)?;
-        if code.get(start..start + 4)? == fourcc {
-            let size = word(start + 4)?;
-            return code.get(start + 8..start + 8 + size);
+    for chunk in container::chunk_list(code).ok()? {
+        let chunk = chunk.ok()?;
+        if wanted(chunk.tag()?) {
+            return chunk.contents();
         }
     }
     None
 }
 
-/// The program chunk (`SHEX` or `SHDR`) of a DXBC container as words.
-fn program(code: &[u8]) -> Option<Vec<u32>> {
-    let bytes = chunk(code, *b"SHEX").or_else(|| chunk(code, *b"SHDR"))?;
-    Some(
-        bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|w| u32::from_le_bytes(*w))
-            .collect(),
-    )
+/// The bytes of a container's first chunk named `fourcc`.
+pub(crate) fn chunk(code: &[u8], fourcc: Tag) -> Option<&[u8]> {
+    first_chunk(code, |tag| tag == fourcc)
+}
+
+/// The program chunk (`SHEX` or `SHDR`) of a DXBC container: the first in its chunk list.
+fn program(code: &[u8]) -> Option<&[u8]> {
+    first_chunk(code, container::is_program)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its opcode.
+    const CUSTOMDATA: u32 = 53;
 
     /// A container holding one program chunk of `tokens`.
     fn container(tokens: &[u32]) -> Vec<u8> {

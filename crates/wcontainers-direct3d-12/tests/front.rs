@@ -85,7 +85,12 @@ fn dxbc_checksums_are_the_ones_fxc_writes() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "dxbc") {
             let bytes = std::fs::read(&path).unwrap();
-            assert_eq!(dxbc_checksum(&bytes), bytes[4..20], "{}", path.display());
+            assert_eq!(
+                wcontainers_shaders::container::checksum(&bytes),
+                bytes[4..20],
+                "{}",
+                path.display()
+            );
             checked += 1;
         }
     }
