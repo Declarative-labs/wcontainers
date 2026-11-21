@@ -48,11 +48,9 @@
 - send_delayed_acknowledgement: `TCP_QUICKACK`, which sends a scheduled delayed acknowledgement and sets the
   mode.
 - rearm_keep_alive_timer: `SO_KEEPALIVE` written again with its current value of on, which re-times the probe.
-- send_window_probe: `TCP_REPAIR_WINDOW`'s probe is the only one Linux offers: `TCP_REPAIR` on, the window probe
-  option, repair off; it needs CAP_NET_ADMIN.
-- give_negative_route_advice: `sk_dst_reset` and `sk_rethink_txhash` are reached by `SO_TXREHASH`? No: by
-  setting `IP_MTU_DISCOVER` or `IPV6_MTU_DISCOVER`? Neither; see the status file for what is used once it is
-  measured.
+- send_window_probe: the only window probe Linux offers a program is the one `TCP_REPAIR` set to
+  `TCP_REPAIR_OFF` sends: repair on, then off; it needs CAP_NET_ADMIN (EPERM without it).
+- give_negative_route_advice: `SO_CNX_ADVICE` set to one, which calls `dst_negative_advice`.
 - set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). set_authentication_counters and the
   listener's: `TCP_AO_INFO` with its counter flag.
 - read_state and read_listener_state: `TCP_INFO`, `TCP_CC_INFO`, `TCP_CONGESTION`, `SIOCINQ`/`SIOCOUTQ`/

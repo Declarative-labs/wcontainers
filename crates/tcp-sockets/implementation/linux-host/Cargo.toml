@@ -1,0 +1,33 @@
+[package]
+name = "wcontainers-tcp-sockets-linux-host"
+description = "TCP and MPTCP connections and listeners made of the Linux sockets of the machine it runs on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-configurable = { path = "../../../configurable" }
+wcontainers-internet-protocol = { path = "../../../internet-protocol" }
+wcontainers-kernel = { path = "../../../kernel" }
+wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
+wcontainers-tcp-sockets = { path = "../.." }
+etherparse.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+rustix = { version = "1.1.6", features = ["net"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+libc = "0.2.191"
+
+[dev-dependencies]
+wcontainers-tcp-sockets-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
