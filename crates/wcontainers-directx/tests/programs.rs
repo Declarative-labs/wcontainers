@@ -669,8 +669,16 @@ fn format_support_compared(
         );
         let diff1 = (want1 ^ got1) & !(ABSENT_SUPPORT1 | MULTISAMPLE_SUPPORT1);
         let diff2 = (want2 ^ got2) & !ABSENT_SUPPORT2;
+        // `R32G32B32_FLOAT`'s optional sampling is served only where the back end filters it.
+        let unfiltered = env
+            .iter()
+            .any(|(_, off)| off.contains(wgpu::Features::FLOAT32_FILTERABLE.as_str().unwrap()));
         let named = support_differences(level)
             .iter()
+            .filter(|s| {
+                !(unfiltered
+                    && s.0 == windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32G32B32_FLOAT)
+            })
             .chain(more)
             .filter(|s| s.0 == DXGI_FORMAT(format))
             .fold((0, 0), |(a, b), s| (a | s.1, b | s.2));
