@@ -6,69 +6,214 @@ use crate::desc::level;
 use crate::error::{Error, Result, not_implemented};
 use wcontainers_directx_graphics_infrastructure::{BACK_BUFFER_FORMATS, dxgi, dxgi_vertex_format};
 
-/// The back buffer formats Direct3D displays only from feature level 10_0: its 10Level9 format
-/// tables display the 8-bit ones alone.
-const DISPLAYED_FROM_10_0: [u32; 2] = [dxgi::R16G16B16A16_FLOAT, dxgi::R10G10B10A2_UNORM];
-
 /// Whether a swap chain of a device at feature level `level` takes back buffers of DXGI format
 /// `dxgi` (`D3D11_FORMAT_SUPPORT_DISPLAY`).
 pub fn displayed(dxgi: u32, level: u32) -> bool {
     BACK_BUFFER_FORMATS.contains(&dxgi)
-        && (level >= level::L10_0 || !DISPLAYED_FROM_10_0.contains(&dxgi))
+        && (level >= level::L10_0 || level9_support(dxgi, level) & support::DISPLAY != 0)
 }
 
-/// What Microsoft's 10Level9 format tables ("Format support for Direct3D Feature 10Level9 9.1
-/// hardware" and "9.3 hardware") give feature levels 9_1 to 9_3, each format with the first of them
-/// that has it: vertex buffers, blended targets and index buffers.
-const LEVEL9_VERTEX_BUFFERS: [(u32, u32); 12] = [
-    (dxgi::R32G32B32A32_FLOAT, level::L9_1),
-    (dxgi::R32G32B32_FLOAT, level::L9_1),
-    (dxgi::R16G16B16A16_SNORM, level::L9_1),
-    (dxgi::R16G16B16A16_SINT, level::L9_1),
-    (dxgi::R32G32_FLOAT, level::L9_1),
-    (dxgi::R8G8B8A8_UNORM, level::L9_1),
-    (dxgi::R8G8B8A8_UINT, level::L9_1),
-    (dxgi::R16G16_SNORM, level::L9_1),
-    (dxgi::R16G16_SINT, level::L9_1),
-    (dxgi::R32_FLOAT, level::L9_1),
-    (dxgi::R16G16B16A16_FLOAT, level::L9_3),
-    (dxgi::R16G16_FLOAT, level::L9_3),
+use crate::desc::support;
+use crate::desc::support::{
+    BACK_BUFFER_CAST, BLENDABLE, CPU_LOCKABLE, DEPTH_STENCIL, DISPLAY, IA_INDEX_BUFFER,
+    IA_VERTEX_BUFFER, MIP, MIP_AUTOGEN, MULTISAMPLE_RENDERTARGET, MULTISAMPLE_RESOLVE,
+    RENDER_TARGET, SHADER_LOAD, SHADER_SAMPLE, TEXTURE2D, TEXTURE3D, TEXTURECUBE,
+};
+
+/// Masks of the 10Level9 table below: 2D textures made and mapped only.
+const HELD: u32 = TEXTURE2D | CPU_LOCKABLE;
+/// 2D textures sampled, with mips, of one face or six.
+const SAMPLED: u32 = TEXTURE2D | TEXTURECUBE | SHADER_LOAD | SHADER_SAMPLE | MIP | CPU_LOCKABLE;
+/// 2D textures sampled and drawn into, blended, of one level.
+const FLAT_TARGET: u32 =
+    TEXTURE2D | SHADER_LOAD | SHADER_SAMPLE | RENDER_TARGET | BLENDABLE | CPU_LOCKABLE;
+/// Textures of every 10Level9 kind drawn into, multisampled, not filtered or blended.
+const UNFILTERED_TARGET: u32 = TEXTURE2D
+    | TEXTURE3D
+    | TEXTURECUBE
+    | SHADER_LOAD
+    | MIP
+    | MIP_AUTOGEN
+    | RENDER_TARGET
+    | CPU_LOCKABLE
+    | MULTISAMPLE_RESOLVE
+    | MULTISAMPLE_RENDERTARGET;
+const TARGET: u32 = UNFILTERED_TARGET | SHADER_SAMPLE | BLENDABLE;
+const SHOWN: u32 = TARGET | DISPLAY | BACK_BUFFER_CAST;
+const DEPTH: u32 = TEXTURE2D | DEPTH_STENCIL | MULTISAMPLE_RENDERTARGET;
+
+/// What a device of feature level 9_1, 9_2 or 9_3 may report of each DXGI format in the first word
+/// of `CheckFormatSupport`, as the runtime answers on the RTX 3080 (measured): Microsoft's 10Level9
+/// tables ("Format support for Direct3D Feature 10Level9 9.1 hardware", "9.3 hardware") with the
+/// optional rows the driver gives; Microsoft has no 9_2 table. Formats not listed have none.
+const LEVEL9_SUPPORT: [(u32, [u32; 3]); 51] = [
+    (
+        dxgi::R32G32B32A32_FLOAT,
+        [
+            IA_VERTEX_BUFFER,
+            IA_VERTEX_BUFFER
+                | TEXTURE2D
+                | SHADER_LOAD
+                | RENDER_TARGET
+                | CPU_LOCKABLE
+                | MULTISAMPLE_RESOLVE
+                | MULTISAMPLE_RENDERTARGET,
+            IA_VERTEX_BUFFER | UNFILTERED_TARGET,
+        ],
+    ),
+    (dxgi::R32G32B32_FLOAT, [IA_VERTEX_BUFFER; 3]),
+    (
+        dxgi::R16G16B16A16_FLOAT,
+        [0, UNFILTERED_TARGET, IA_VERTEX_BUFFER | TARGET],
+    ),
+    (
+        dxgi::R16G16B16A16_UNORM,
+        [
+            0,
+            UNFILTERED_TARGET | SHADER_SAMPLE,
+            UNFILTERED_TARGET | SHADER_SAMPLE,
+        ],
+    ),
+    (dxgi::R16G16B16A16_SNORM, [IA_VERTEX_BUFFER; 3]),
+    (dxgi::R16G16B16A16_SINT, [IA_VERTEX_BUFFER; 3]),
+    (
+        dxgi::R32G32_FLOAT,
+        [
+            IA_VERTEX_BUFFER,
+            IA_VERTEX_BUFFER,
+            IA_VERTEX_BUFFER | UNFILTERED_TARGET & !(MIP | MIP_AUTOGEN),
+        ],
+    ),
+    (dxgi::R8G8B8A8_UNORM, [IA_VERTEX_BUFFER | SHOWN; 3]),
+    (dxgi::R8G8B8A8_UNORM_SRGB, [SHOWN; 3]),
+    (dxgi::R8G8B8A8_UINT, [IA_VERTEX_BUFFER; 3]),
+    (dxgi::R8G8B8A8_SNORM, [SAMPLED; 3]),
+    (
+        dxgi::R16G16_FLOAT,
+        [0, UNFILTERED_TARGET, IA_VERTEX_BUFFER | UNFILTERED_TARGET],
+    ),
+    (
+        dxgi::R16G16_UNORM,
+        [
+            0,
+            UNFILTERED_TARGET | SHADER_SAMPLE,
+            UNFILTERED_TARGET | SHADER_SAMPLE,
+        ],
+    ),
+    (
+        dxgi::R16G16_SNORM,
+        [
+            IA_VERTEX_BUFFER | SAMPLED & !(TEXTURECUBE | SHADER_SAMPLE),
+            IA_VERTEX_BUFFER | SAMPLED | TEXTURE3D,
+            IA_VERTEX_BUFFER | SAMPLED | TEXTURE3D,
+        ],
+    ),
+    (dxgi::R16G16_SINT, [IA_VERTEX_BUFFER; 3]),
+    (
+        dxgi::R32_FLOAT,
+        [
+            IA_VERTEX_BUFFER,
+            IA_VERTEX_BUFFER | UNFILTERED_TARGET,
+            IA_VERTEX_BUFFER | UNFILTERED_TARGET,
+        ],
+    ),
+    (dxgi::R32_UINT, [0, IA_INDEX_BUFFER, IA_INDEX_BUFFER]),
+    (dxgi::D24_UNORM_S8_UINT, [DEPTH; 3]),
+    (dxgi::R8G8_UNORM, [FLAT_TARGET; 3]),
+    (dxgi::R8G8_SNORM, [SAMPLED & !TEXTURECUBE; 3]),
+    (dxgi::D16_UNORM, [DEPTH; 3]),
+    (
+        dxgi::R16_UNORM,
+        [0, SAMPLED | TEXTURE3D, SAMPLED | TEXTURE3D],
+    ),
+    (dxgi::R16_UINT, [IA_INDEX_BUFFER; 3]),
+    (
+        dxgi::R8_UNORM,
+        [SAMPLED | TEXTURE3D | RENDER_TARGET | BLENDABLE; 3],
+    ),
+    (
+        dxgi::A8_UNORM,
+        [
+            FLAT_TARGET,
+            FLAT_TARGET | TEXTURE3D | TEXTURECUBE,
+            FLAT_TARGET | TEXTURE3D | TEXTURECUBE,
+        ],
+    ),
+    (dxgi::BC1_UNORM, [SAMPLED; 3]),
+    (dxgi::BC1_UNORM_SRGB, [SAMPLED; 3]),
+    (dxgi::BC2_UNORM, [SAMPLED; 3]),
+    (dxgi::BC2_UNORM_SRGB, [SAMPLED; 3]),
+    (dxgi::BC3_UNORM, [SAMPLED; 3]),
+    (dxgi::BC3_UNORM_SRGB, [SAMPLED; 3]),
+    (dxgi::B5G6R5_UNORM, [TARGET & !TEXTURE3D; 3]),
+    (dxgi::B5G5R5A1_UNORM, [SAMPLED; 3]),
+    (dxgi::B8G8R8A8_UNORM, [SHOWN; 3]),
+    (dxgi::B8G8R8X8_UNORM, [TARGET; 3]),
+    (dxgi::B8G8R8A8_UNORM_SRGB, [SHOWN; 3]),
+    (dxgi::B8G8R8X8_UNORM_SRGB, [TARGET; 3]),
+    (dxgi::AYUV, [HELD; 3]),
+    (dxgi::Y410, [HELD; 3]),
+    (dxgi::Y416, [HELD; 3]),
+    (dxgi::NV12, [HELD, HELD, FLAT_TARGET]),
+    (dxgi::P010, [HELD; 3]),
+    (dxgi::OPAQUE_420, [TEXTURE2D; 3]),
+    (dxgi::YUY2, [HELD; 3]),
+    (dxgi::Y210, [HELD; 3]),
+    (dxgi::Y216, [HELD; 3]),
+    (dxgi::AI44, [HELD; 3]),
+    (dxgi::IA44, [HELD; 3]),
+    (dxgi::P8, [HELD; 3]),
+    (dxgi::A8P8, [HELD; 3]),
+    (dxgi::B4G4R4A4_UNORM, [SAMPLED; 3]),
 ];
-const LEVEL9_BLENDED: [(u32, u32); 11] = [
-    (dxgi::R8G8B8A8_UNORM, level::L9_1),
-    (dxgi::R8G8B8A8_UNORM_SRGB, level::L9_1),
-    (dxgi::R8G8_UNORM, level::L9_1),
-    (dxgi::R8_UNORM, level::L9_1),
-    (dxgi::A8_UNORM, level::L9_1),
-    (dxgi::B5G6R5_UNORM, level::L9_1),
-    (dxgi::B8G8R8A8_UNORM, level::L9_1),
-    (dxgi::B8G8R8A8_UNORM_SRGB, level::L9_1),
-    (dxgi::B8G8R8X8_UNORM, level::L9_1),
-    (dxgi::B8G8R8X8_UNORM_SRGB, level::L9_1),
-    (dxgi::R16G16B16A16_FLOAT, level::L9_3),
+
+/// The formats a 10Level9 device reports shareable (`D3D11_FORMAT_SUPPORT2_SHAREABLE`), measured
+/// on the RTX 3080 at 9_1 to 9_3 alike.
+const LEVEL9_SHAREABLE: [u32; 17] = [
+    dxgi::R16G16B16A16_FLOAT,
+    dxgi::R10G10B10A2_UNORM,
+    dxgi::R8G8B8A8_UNORM,
+    dxgi::R8G8B8A8_UNORM_SRGB,
+    dxgi::R8G8_UNORM,
+    dxgi::R8_UNORM,
+    dxgi::A8_UNORM,
+    dxgi::BC1_UNORM,
+    dxgi::BC1_UNORM_SRGB,
+    dxgi::BC2_UNORM,
+    dxgi::BC2_UNORM_SRGB,
+    dxgi::BC3_UNORM,
+    dxgi::BC3_UNORM_SRGB,
+    dxgi::B8G8R8A8_UNORM,
+    dxgi::B8G8R8X8_UNORM,
+    dxgi::B8G8R8A8_UNORM_SRGB,
+    dxgi::B8G8R8X8_UNORM_SRGB,
 ];
-// 32-bit indices are from 9_2 (Microsoft's feature level table, "Direct3D feature levels").
-const LEVEL9_INDEX_BUFFERS: [(u32, u32); 2] = [(R16_UINT, level::L9_1), (R32_UINT, level::L9_2)];
 
-/// Whether `table` of the 10Level9 tables gives DXGI format `dxgi` at feature level `level`;
-/// from 10_0 the tables do not limit.
-fn level9_has(table: &[(u32, u32)], dxgi: u32, level: u32) -> bool {
-    level >= level::L10_0 || table.iter().any(|&(f, from)| f == dxgi && level >= from)
+/// The first word of `CheckFormatSupport` a device of feature level `level` below 10_0 may report
+/// for DXGI format `dxgi`.
+pub fn level9_support(dxgi: u32, level: u32) -> u32 {
+    let column = match level {
+        level::L9_1 => 0,
+        level::L9_2 => 1,
+        _ => 2,
+    };
+    LEVEL9_SUPPORT
+        .iter()
+        .find(|row| row.0 == dxgi)
+        .map_or(0, |row| row.1[column])
 }
 
-/// Whether vertex buffers of `dxgi` are reported at feature level `level`.
-pub fn level_vertex_buffer(dxgi: u32, level: u32) -> bool {
-    level9_has(&LEVEL9_VERTEX_BUFFERS, dxgi, level)
+/// Whether a device below 10_0 reports DXGI format `dxgi` shareable.
+pub fn level9_shareable(dxgi: u32) -> bool {
+    LEVEL9_SHAREABLE.contains(&dxgi)
 }
 
-/// Whether targets of `dxgi` are reported blendable at feature level `level`.
-pub fn level_blended(dxgi: u32, level: u32) -> bool {
-    level9_has(&LEVEL9_BLENDED, dxgi, level)
-}
-
-/// Whether index buffers of `dxgi` are reported at feature level `level`.
-pub fn level_index_buffer(dxgi: u32, level: u32) -> bool {
-    level9_has(&LEVEL9_INDEX_BUFFERS, dxgi, level)
+/// Whether a device below 10_0 makes shared textures of DXGI format `dxgi`, which is not what it
+/// reports (measured on the RTX 3080): `R32_FLOAT` is made though not reported shareable, and
+/// `R8G8B8A8_UNORM` (with its sRGB twin, not measured) refused though reported.
+pub fn level9_shared(dxgi: u32) -> bool {
+    (level9_shareable(dxgi) || dxgi == dxgi::R32_FLOAT)
+        && !matches!(dxgi, dxgi::R8G8B8A8_UNORM | dxgi::R8G8B8A8_UNORM_SRGB)
 }
 
 /// Whether `format` is signed normalised, which Direct3D blends only from feature level 10_1.

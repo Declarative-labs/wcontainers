@@ -269,6 +269,12 @@ impl<B: Backend> Clone for Resource<B> {
     }
 }
 
+/// The depth texture of a colour view's bits a program compares through, and its view.
+pub struct ComparedDepth<B: Backend> {
+    pub texture: Kept<B, B::Texture>,
+    pub view: Kept<B, B::TextureView>,
+}
+
 /// A render target, depth-stencil or shader resource view of a 2D texture.
 pub struct View<B: Backend> {
     pub texture: Rc<Texture<B>>,
@@ -293,6 +299,10 @@ pub struct View<B: Backend> {
     /// A depth-stencil view's stencil aspect, read by pixel programs running their forced early
     /// tests themselves; made at the first such draw.
     pub stencil_aspect: RefCell<Option<Kept<B, B::TextureView>>>,
+    /// A colour view read by a program comparing through it (`R32_FLOAT`, `R16_UNORM`): a depth
+    /// texture of the same bits and its view in the view's shape, copied from the view's texels
+    /// before each such use (`ReinterpretCopy`); made at the first.
+    pub compared: RefCell<Option<ComparedDepth<B>>>,
     /// A drawn view's layers as views of one layer each, which a geometry shader choosing a layer
     /// draws into one run at a time (`LayerSplit`); made at the first such draw.
     pub layers: RefCell<Vec<Rc<View<B>>>>,
@@ -473,6 +483,8 @@ pub struct Shader<B: Backend> {
     pub samplers: u16,
     /// The texture slots the program reads, one bit each.
     pub textures: u128,
+    /// The texture slots it reads as depth textures, one bit each.
+    pub depth_textures: u128,
     /// The sampler slots it gathers, compares or offsets through, which it cannot mirror once
     /// around: through a mirror-once sampler the back end lacks it filters itself.
     pub mirror_filtered: u16,

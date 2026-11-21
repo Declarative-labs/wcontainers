@@ -6,7 +6,11 @@
 
 use super::*;
 use crate::desc::ViewDim;
-use wcontainers_gpu::{BufferUsage, CopyBufferTexture, TextureRegion};
+use wcontainers_gpu::{BufferUsage, CopyBufferTexture, TextureDesc as GpuTexture, TextureRegion};
+
+const COMPARED_FORMAT_UNCLAIMED: &str =
+    "a comparison through a view of a format Direct3D does not compare";
+const COMPARED_VIEW_INVALID: &str = "a comparison through a multisampled or 3D view";
 
 /// A storage view of a stage read through a buffer, and the copies around its uses.
 pub(crate) struct Through<B: Backend> {
@@ -253,6 +257,80 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// The handle of the depth texture view `v` is compared through (`View::compared`), made at
+    /// the first comparison: Direct3D compares `R32_FLOAT` and `R16_UNORM` views, which WebGPU
+    /// compares only as depth.
+    pub(super) fn compared_view(&mut self, v: &View<B>) -> Result<B::TextureView> {
+        if let Some(c) = &*v.compared.borrow() {
+            return Ok(c.view.handle.clone());
+        }
+        let depth = match v.values() {
+            Format::R32Float => Format::Depth32Float,
+            Format::R16Unorm => Format::Depth16Unorm,
+            _ => {
+                return not_implemented(COMPARED_FORMAT_UNCLAIMED);
+            }
+        };
+        let dimension = match v.desc.dimension {
+            ViewDim::Texture1D | ViewDim::Texture2D => ViewDimension::D2,
+            ViewDim::Texture1DArray | ViewDim::Texture2DArray => ViewDimension::D2Array,
+            ViewDim::TextureCube => ViewDimension::Cube,
+            ViewDim::TextureCubeArray => ViewDimension::CubeArray,
+            _ => {
+                return Err(Error::InvalidArg(COMPARED_VIEW_INVALID));
+            }
+        };
+        let texture = self.backend.create_texture(&GpuTexture {
+            format: depth,
+            usage: TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST,
+            reinterpret: false,
+            ..v.texture.gpu_desc
+        });
+        let texture = self.gpu(texture)?;
+        let view = self.backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format: depth,
+                dimension,
+                base_mip: v.desc.first_mip,
+                mip_count: v.desc.mip_count,
+                base_layer: v.desc.first_layer,
+                layer_count: v.desc.layer_count,
+                stencil: false,
+            },
+        );
+        let view = self.gpu(view)?;
+        let id = self.id();
+        let handle = view.clone();
+        *v.compared.borrow_mut() = Some(ComparedDepth {
+            texture: Kept::new(texture, id, Object::Texture, &self.graveyard),
+            view: Kept::new(view, id, Object::TextureView, &self.graveyard),
+        });
+        Ok(handle)
+    }
+
+    /// Copies the levels and layers view `v` sees into the depth texture it is compared through.
+    fn copy_compared(&mut self, v: &View<B>) {
+        let compared = v.compared.borrow();
+        let Some(ComparedDepth { texture: depth, .. }) = &*compared else {
+            return;
+        };
+        let stored = v.twin.as_ref().unwrap_or(&v.texture.gpu);
+        for mip in v.desc.first_mip..v.desc.first_mip + v.desc.mip_count {
+            let mut extent = v.texture.mip_extent(mip);
+            extent.depth_or_layers = v.desc.layer_count;
+            let at = |texture| TextureRegion {
+                texture,
+                mip,
+                layer: v.desc.first_layer,
+                origin: Origin { x: 0, y: 0, z: 0 },
+                stencil: false,
+            };
+            self.backend
+                .copy_texture(&at(&stored.handle), &at(&depth.handle), extent);
+        }
+    }
+
     /// The views of `stages` and the storage views of `writer` made on twins.
     fn twinned(&self, stages: &[usize], writer: usize) -> Vec<(Rc<ShaderView<B>>, bool)> {
         let mut views = Vec::new();
@@ -276,7 +354,11 @@ impl<B: Backend> Device<B> {
             return false;
         }
         let views = self.twinned(stages, writer);
-        if views.is_empty() {
+        let compared: Vec<_> = stages
+            .iter()
+            .flat_map(|&s| self.ctx.compared[s].iter().cloned())
+            .collect();
+        if views.is_empty() && compared.is_empty() {
             return false;
         }
         self.end_pass();
@@ -284,6 +366,11 @@ impl<B: Backend> Device<B> {
         for (v, _) in &views {
             if let ShaderView::Texture(t) = &**v {
                 self.copy_twin(t, true);
+            }
+        }
+        for v in &compared {
+            if let ShaderView::Texture(t) = &**v {
+                self.copy_compared(t);
             }
         }
         views.iter().any(|(_, w)| *w)

@@ -135,8 +135,11 @@ pub struct ContextState<B: Backend> {
     domain_compute: bool,
     /// Per stage, the storage views its set reads through buffers.
     through: [Vec<Through<B>>; STAGES],
-    /// Per stage, whether a view bound to it is made on a twin of its texture.
+    /// Per stage, whether a view bound to it is made on a twin of its texture or compared
+    /// through a depth copy.
     twins: [bool; STAGES],
+    /// Per stage, the colour views its program compares through depth copies (`View::compared`).
+    compared: [Vec<Rc<ShaderView<B>>>; STAGES],
     pub(crate) layout: Option<Rc<InputLayout>>,
     topology: u32,
     vertex_buffers: Vec<Option<VertexSlot<B>>>,
@@ -219,6 +222,7 @@ impl<B: Backend> ContextState<B> {
             domain_compute: false,
             through: Default::default(),
             twins: [false; STAGES],
+            compared: Default::default(),
             layout: None,
             topology: topology::UNDEFINED,
             vertex_buffers: vec![None; VERTEX_SLOTS],
@@ -388,6 +392,8 @@ const RGB10A2_BITS: [u32; 4] = [10, 10, 10, 2];
 const RG11B10_BITS: [u32; 3] = [11, 11, 10];
 const CLEAR_OF_PACKED_FORMAT: &str = "a clear of a view of a packed or BGR format";
 const CLEAR_VIEW_BUFFER_RECTS: &str = "ClearView of a buffer view's rectangles";
+const CLEAR_VIEW_FLOAT_DEPTH_OUTSIDE_RANGE: &str =
+    "ClearView of float depth to a value outside 0 to 1, which WebGPU's depth writes cannot store";
 const CLEAR_VIEW_STORAGE_RECTS_UNSERVED: &str = "ClearView of rectangles of a storage view stored through a buffer or as an integer twin, of a 3D texture or one no pass draws into";
 const CLEAR_STORAGE_UNSERVED: &str = "a clear of a storage view stored through a buffer or as an integer twin that no pass draws into";
 /// Blending into a target held as its integer twin is done in the program from a copy of the
@@ -920,13 +926,25 @@ impl<B: Backend> Device<B> {
     }
 
     /// `ClearView` of a depth view, whole or its rectangles: Direct3D clears its depth alone, to
-    /// the first value.
+    /// the first value, limited to 0 to 1 in normalised depth (NaN as 0) and stored as given in
+    /// float depth (measured on the RTX 3080). WebGPU's depth clears and draws write 0 to 1 alone,
+    /// so float depth outside it is refused by name.
     pub fn clear_view_depth(
         &mut self,
         view: &Rc<View<B>>,
         depth: f32,
         rects: &[Rect],
     ) -> Result<()> {
+        let float = matches!(
+            view.format,
+            Format::Depth32Float | Format::Depth32FloatStencil8
+        );
+        let depth = match depth {
+            d if (0.0..=1.0).contains(&d) => d,
+            _ if float => return not_implemented(CLEAR_VIEW_FLOAT_DEPTH_OUTSIDE_RANGE),
+            d if d.is_nan() => 0.0,
+            d => d.clamp(0.0, 1.0),
+        };
         if rects.is_empty() {
             self.clear_depth_stencil_view(view, desc::clear::DEPTH, depth, 0);
             return Ok(());
@@ -937,7 +955,7 @@ impl<B: Backend> Device<B> {
         let rects: Vec<ScissorRect> = rects.iter().map(|&r| pixel_rect(r)).collect();
         self.settle();
         let value = ClearValue::DepthStencil {
-            depth: Some(depth.clamp(0.0, 1.0).to_bits()),
+            depth: Some(depth.to_bits()),
             stencil: None,
         };
         self.clear_rects_drawn(view, value, &rects, desc::bind::DEPTH_STENCIL, true)
@@ -1047,6 +1065,8 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// `ClearDepthStencilView`: a depth outside 0 to 1 (NaN among them) makes Direct3D drop the
+    /// whole call, the stencil too (measured on the RTX 3080).
     pub fn clear_depth_stencil_view(
         &mut self,
         view: &Rc<View<B>>,
@@ -1054,14 +1074,14 @@ impl<B: Backend> Device<B> {
         depth: f32,
         stencil: u8,
     ) {
-        if self.predicated_out() {
+        let clears_depth = flags & desc::clear::DEPTH != 0;
+        if self.predicated_out() || clears_depth && !(0.0..=1.0).contains(&depth) {
             return;
         }
         let kind = view.format.kind();
         let has_stencil = matches!(kind, FormatKind::DepthStencil | FormatKind::Stencil);
         let value = ClearValue::DepthStencil {
-            depth: (flags & desc::clear::DEPTH != 0 && kind != FormatKind::Stencil)
-                .then(|| depth.clamp(0.0, 1.0).to_bits()),
+            depth: (clears_depth && kind != FormatKind::Stencil).then(|| depth.to_bits()),
             stencil: (flags & desc::clear::STENCIL != 0 && has_stencil).then_some(stencil),
         };
         self.add_clear(view, value);
@@ -2278,7 +2298,8 @@ impl<B: Backend> Device<B> {
             .enumerate()
             .take(u128::BITS as usize)
         {
-            if s.textures & (1 << i) == 0 {
+            // A view compared through is read through its depth copy, not decoded.
+            if s.textures & !s.depth_textures & (1 << i) == 0 {
                 continue;
             }
             if let Some(ShaderView::Texture(view)) = r.as_deref()
@@ -3469,6 +3490,7 @@ impl<B: Backend> Device<B> {
             self.ctx.sets[stage] = None;
             self.ctx.through[stage].clear();
             self.ctx.twins[stage] = false;
+            self.ctx.compared[stage].clear();
             self.ctx.sets_dirty[stage] = false;
             return Ok(());
         };
@@ -3579,6 +3601,30 @@ impl<B: Backend> Device<B> {
                 }
             };
             empty.push((b.binding, zero));
+        }
+        // Colour views the program compares through are read through depth copies of their
+        // texels.
+        let mut compared = Vec::new();
+        let mut compared_views = Vec::new();
+        for b in wanted().filter(|b| {
+            b.kind == SlotKind::Texture
+                && b.register < u128::BITS
+                && shader.depth_textures & (1 << b.register) != 0
+        }) {
+            let bound = self.ctx.resources[stage]
+                .get(b.register as usize)
+                .cloned()
+                .flatten();
+            if let Some(view) = bound
+                && let ShaderView::Texture(v) = &*view
+                && !matches!(
+                    v.format.kind(),
+                    FormatKind::Depth | FormatKind::DepthStencil
+                )
+            {
+                compared_views.push((b.register, self.compared_view(v)?));
+                compared.push(view.clone());
+            }
         }
         // A sampler read the other way than it compares reads through its twin.
         let mut twins: Vec<(u32, B::Sampler)> = Vec::new();
@@ -3772,6 +3818,12 @@ impl<B: Backend> Device<B> {
                     views.get(slot).and_then(Option::as_deref),
                     srvs.get(slot).and_then(Option::as_ref),
                 ) {
+                    (Some(ShaderView::Texture(_)), _)
+                        if let Some((_, depth)) =
+                            compared_views.iter().find(|c| c.0 == b.register) =>
+                    {
+                        Some(BindingResource::Texture(depth))
+                    }
                     (Some(ShaderView::Texture(v)), _)
                         if !empty.iter().any(|(n, _)| *n == b.binding) =>
                     {
@@ -3912,11 +3964,13 @@ impl<B: Backend> Device<B> {
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
         self.ctx.relocated[stage] = relocated_slots;
-        self.ctx.twins[stage] = self.ctx.resources[stage]
-            .iter()
-            .chain(&self.ctx.uavs[stage])
-            .flatten()
-            .any(|v| matches!(&**v, ShaderView::Texture(t) if t.twin.is_some()));
+        self.ctx.twins[stage] = !compared.is_empty()
+            || self.ctx.resources[stage]
+                .iter()
+                .chain(&self.ctx.uavs[stage])
+                .flatten()
+                .any(|v| matches!(&**v, ShaderView::Texture(t) if t.twin.is_some()));
+        self.ctx.compared[stage] = compared;
         Ok(())
     }
 
@@ -5894,8 +5948,19 @@ impl<B: Backend> Device<B> {
             return;
         }
         let t = &view.texture;
-        // Direct3D generates mips of formats it filters only: integer views take none.
-        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 || format::is_integer(view.values()) {
+        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 {
+            return;
+        }
+        // Direct3D claims mip generation of no integer format and defines no result for one;
+        // the lower levels are left as they are.
+        if format::is_integer(view.values()) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "{WARNING_PREFIX}: GenerateMips of an integer view, which Direct3D does not \
+                     claim for its format: its levels are left as they are"
+                );
+            });
             return;
         }
         let v = &view.desc;
