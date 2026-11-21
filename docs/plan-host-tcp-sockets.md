@@ -47,7 +47,8 @@
   value when uncorked (`Neither`), the two option writes Linux pushes on.
 - send_delayed_acknowledgement: `TCP_QUICKACK`, which sends a scheduled delayed acknowledgement and sets the
   mode.
-- rearm_keep_alive_timer: `SO_KEEPALIVE` written again with its current value of on, which re-times the probe.
+- rearm_keep_alive_timer: `TCP_KEEPIDLE` written again with its current value, which re-times the probe from the
+  last data or acknowledgement received when keep-alive is on.
 - send_window_probe: the only window probe Linux offers a program is the one `TCP_REPAIR` set to
   `TCP_REPAIR_OFF` sends: repair on, then off; it needs CAP_NET_ADMIN (EPERM without it).
 - give_negative_route_advice: `SO_CNX_ADVICE` set to one, which calls `dst_negative_advice`.

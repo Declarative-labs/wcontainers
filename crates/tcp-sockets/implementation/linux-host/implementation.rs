@@ -4,26 +4,24 @@
 use std::collections::BTreeMap;
 use std::ffi::c_int;
 use std::mem::size_of;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
-use rustix::net::{
-    AddressFamily, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, ipproto, sockopt,
-};
+use rustix::net::{RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BindAddress, ByteCount, DropCount, InterfaceIndex, IpSocketSetting, IpVersion, Ipv6Families,
-    LocalBinding, LocalPort, PacketMark, PacketPriority, PortChoice, PortRange,
-    PtpHardwareClockIndex, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReport,
-    TransmitReportKey, TransmitReportRequest,
+    ByteCount, DropCount, InterfaceIndex, IpSocketSetting, IpVersion, LocalBinding, PacketMark,
+    PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps, ReceivedPacketFields, Report,
+    TransmitReport, TransmitReportKey, TransmitReportRequest,
 };
 use wcontainers_internet_protocol_linux_socket_options::{
-    self as options, ControlBuffer, Shortfalls, get_int, host_error, set_flag, set_int, set_option,
+    self as options, ControlBuffer, Shortfalls, bind, family_of, get_int, host_error, open_socket,
+    peer_for, set_flag, set_int, set_option, socket_address,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
@@ -181,157 +179,10 @@ fn count(value: usize) -> Result<c_int, HostError> {
     c_int::try_from(value).map_err(|_| invalid())
 }
 
-fn family_of(address: &BindAddress) -> IpVersion {
-    match address {
-        BindAddress::V4(_) => IpVersion::V4,
-        BindAddress::V6 { .. } => IpVersion::V6,
-    }
-}
-
-fn socket_address(address: rustix::net::SocketAddrAny) -> Result<SocketAddr, HostError> {
-    SocketAddr::try_from(address).map_err(host_error)
-}
-
-/// Makes a non-blocking stream socket owned by the given user, acting as that user for the call when the host's thread is another.
-fn open_socket(
-    family: IpVersion,
-    protocol: TcpProtocol,
-    owner: UserId,
-) -> Result<OwnedFd, HostError> {
-    let domain = match family {
-        IpVersion::V4 => AddressFamily::INET,
-        IpVersion::V6 => AddressFamily::INET6,
-    };
-    let protocol = match protocol {
+fn protocol_of(protocol: TcpProtocol) -> rustix::net::Protocol {
+    match protocol {
         TcpProtocol::Tcp => ipproto::TCP,
         TcpProtocol::Multipath => ipproto::MPTCP,
-    };
-    let open = || {
-        rustix::net::socket_with(
-            domain,
-            SocketType::STREAM,
-            SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
-            Some(protocol),
-        )
-        .map_err(host_error)
-    };
-    // An invalid id changes nothing and answers the thread's filesystem user.
-    // SAFETY: setfsuid only changes this thread's filesystem user, which is restored before returning.
-    let previous = unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t;
-    if previous == owner.0 {
-        return open();
-    }
-    // SAFETY: as above.
-    let acting = unsafe {
-        libc::setfsuid(owner.0);
-        libc::setfsuid(libc::uid_t::MAX) as libc::uid_t
-    };
-    let socket = if acting == owner.0 {
-        open()
-    } else {
-        Err(HostError::Errno(libc::EPERM))
-    };
-    // SAFETY: as above.
-    unsafe { libc::setfsuid(previous) };
-    socket
-}
-
-/// The ports of a choice outside its reserved ranges, as ranges.
-fn allowed_ranges(choice: &PortChoice<'_>) -> Vec<PortRange> {
-    let mut reserved: Vec<PortRange> = choice.reserved.to_vec();
-    reserved.sort_by_key(|range| range.first.0);
-    let mut allowed = Vec::new();
-    let mut next = u32::from(choice.range.first.0);
-    let last = u32::from(choice.range.last.0);
-    for range in reserved {
-        let (first, end) = (u32::from(range.first.0), u32::from(range.last.0));
-        if first > next && next <= last {
-            allowed.push((next, (first - 1).min(last)));
-        }
-        next = next.max(end + 1);
-    }
-    if next <= last {
-        allowed.push((next, last));
-    }
-    allowed
-        .into_iter()
-        .map(|(first, last)| PortRange {
-            first: wcontainers_internet_protocol::Port(first as u16),
-            last: wcontainers_internet_protocol::Port(last as u16),
-        })
-        .collect()
-}
-
-fn set_port_range(socket: BorrowedFd<'_>, range: PortRange) -> Result<(), HostError> {
-    let value = u32::from(range.last.0) << u16::BITS | u32::from(range.first.0);
-    set_option(socket, uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, &value)
-}
-
-/// Runs an operation that takes a local port once per range the exit node may choose from, until one has a free port.
-fn in_port_ranges<T>(
-    socket: BorrowedFd<'_>,
-    choice: Option<&PortChoice<'_>>,
-    mut operation: impl FnMut() -> Result<T, HostError>,
-) -> Result<T, HostError> {
-    let Some(choice) = choice else {
-        return operation();
-    };
-    let mut outcome = Err(HostError::Errno(libc::EADDRNOTAVAIL));
-    for range in allowed_ranges(choice) {
-        set_port_range(socket, range)?;
-        outcome = operation();
-        match outcome {
-            Err(HostError::Errno(libc::EADDRNOTAVAIL | libc::EADDRINUSE)) => continue,
-            _ => break,
-        }
-    }
-    outcome
-}
-
-/// Binds the socket as the binding asks, returning the choice the exit node makes its port from, if it does.
-fn bind<'a>(
-    socket: BorrowedFd<'_>,
-    local: &LocalBinding<'a>,
-    listening: bool,
-) -> Result<Option<PortChoice<'a>>, HostError> {
-    let address = match local.address {
-        BindAddress::V4(address) => IpAddr::V4(address),
-        BindAddress::V6 { address, families } => {
-            sockopt::set_ipv6_v6only(socket, families == Ipv6Families::V6Only)
-                .map_err(host_error)?;
-            IpAddr::V6(address)
-        }
-    };
-    match local.port {
-        LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => {
-            rustix::net::bind(socket, &SocketAddr::new(address, port.0)).map_err(host_error)?;
-            Ok(None)
-        }
-        LocalPort::ChosenByExitNode(choice) => {
-            let any = SocketAddr::new(address, 0);
-            if listening {
-                in_port_ranges(socket, Some(&choice), || {
-                    rustix::net::bind(socket, &any).map_err(host_error)
-                })?;
-            } else if !address.is_unspecified() {
-                set_flag(socket, uapi::SOL_IP, uapi::IP_BIND_ADDRESS_NO_PORT, true)?;
-                rustix::net::bind(socket, &any).map_err(host_error)?;
-            }
-            Ok(Some(choice))
-        }
-    }
-}
-
-/// The peer as the socket's family takes it, an IPv4 peer of an IPv6 socket mapped into IPv6.
-fn peer_for(family: IpVersion, peer: SocketAddr) -> SocketAddr {
-    match (family, peer) {
-        (IpVersion::V6, SocketAddr::V4(peer)) => SocketAddr::V6(SocketAddrV6::new(
-            peer.ip().to_ipv6_mapped(),
-            peer.port(),
-            0,
-            0,
-        )),
-        _ => peer,
     }
 }
 
@@ -819,8 +670,11 @@ impl TcpConnections for LinuxHostTcpSockets {
         fast_open: TcpFastOpen<'_>,
     ) -> Result<TcpConnected<Self::Connection>, HostError> {
         let family = family_of(&local.address);
-        let connection =
-            LinuxHostTcpConnection::new(open_socket(family, protocol, owner)?, family, 0);
+        let connection = LinuxHostTcpConnection::new(
+            open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
+            family,
+            0,
+        );
         for setting in settings {
             self.configure(&connection, setting.clone())?;
         }
@@ -836,11 +690,12 @@ impl TcpConnections for LinuxHostTcpSockets {
                 if fast_open == TcpFastOpen::UntilFirstSend {
                     set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)?;
                 }
-                let outcome = in_progress(in_port_ranges(socket, choice.as_ref(), || {
-                    rustix::net::connect(socket, &peer)
-                        .map(|()| 0)
-                        .map_err(host_error)
-                }))?;
+                let outcome =
+                    in_progress(options::in_port_ranges(socket, choice.as_ref(), || {
+                        rustix::net::connect(socket, &peer)
+                            .map(|()| 0)
+                            .map_err(host_error)
+                    }))?;
                 match outcome {
                     None => TcpConnectStart::SynchronizeSent {
                         fast_open_data_taken: ByteCount(0),
@@ -855,7 +710,7 @@ impl TcpConnections for LinuxHostTcpSockets {
                 let flags = SendFlags::from_bits_retain(libc::MSG_FASTOPEN as u32)
                     | SendFlags::NOSIGNAL
                     | SendFlags::DONTWAIT;
-                let taken = in_progress(in_port_ranges(socket, choice.as_ref(), || {
+                let taken = in_progress(options::in_port_ranges(socket, choice.as_ref(), || {
                     rustix::net::sendto(socket, data, flags, &peer).map_err(host_error)
                 }))?;
                 TcpConnectStart::SynchronizeSent {
@@ -1180,7 +1035,7 @@ impl TcpListeners for LinuxHostTcpSockets {
     ) -> Result<TcpListening<Self::Listener>, HostError> {
         let family = family_of(&local.address);
         let listener = LinuxHostTcpListener {
-            socket: open_socket(family, protocol, owner)?,
+            socket: open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
             family,
             protocol,
             receive_timestamping: AtomicU32::new(0),

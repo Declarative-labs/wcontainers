@@ -14,6 +14,7 @@ path = "implementation.rs"
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-internet-protocol = { path = "../.." }
+wcontainers-kernel = { path = "../../../kernel" }
 etherparse.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

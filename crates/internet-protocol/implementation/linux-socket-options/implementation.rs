@@ -1,24 +1,27 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 #![cfg(target_os = "linux")]
 
+
 use std::collections::BTreeMap;
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, size_of};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
 use rustix::io::Errno;
-use rustix::net::sockopt;
+use rustix::net::{AddressFamily, Protocol, SocketFlags, SocketType, sockopt};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_internet_protocol::{
-    AddressSharing, FilterInstruction, FlowLabelChoice, IpPacketSetting, IpSocketSetting,
-    IpVersion, MobileAddressPreference, NonlocalAddresses, PathMtuDiscovery, PortSetting,
-    PortSharing, RouteScope, SocketFilter, TemporaryAddressPreference, TimestampSource,
-    Timestamping, TransmitEvent, TransmitStage,
+    AddressSharing, BindAddress, FilterInstruction, FlowLabelChoice, IpPacketSetting,
+    IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort, MobileAddressPreference,
+    NonlocalAddresses, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing,
+    RouteScope, SocketFilter, TemporaryAddressPreference, TimestampSource, Timestamping,
+    TransmitEvent, TransmitStage,
 };
+use wcontainers_kernel::UserId;
 
 const NO_MEMBERSHIPS: &str = "multicast and anycast memberships are not mapped to the host";
 
@@ -507,7 +510,7 @@ pub const TIMESTAMP_STAGE_ACKNOWLEDGED: u32 = 2;
 pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 
 /// The times of an `SCM_TIMESTAMPING` message, `struct scm_timestamping` of linux/errqueue.h: software, deprecated, hardware.
-const TIMESTAMPING_TIMES: usize = 3;
+pub const TIMESTAMPING_TIMES: usize = 3;
 
 /// The room for the control messages of one receive: timestamps, an extended error with its offender, packet information.
 const CONTROL_ROOM: usize = 512;
@@ -604,7 +607,7 @@ pub struct ErrorQueueMessage {
     pub length: usize,
 }
 
-fn socket_address(address: *const libc::sockaddr) -> Option<SocketAddr> {
+fn offender_address(address: *const libc::sockaddr) -> Option<SocketAddr> {
     // SAFETY: the address is the offender right after a sock_extended_err in its control message; read by family.
     unsafe {
         match c_int::from((*address).sa_family) {
@@ -656,7 +659,7 @@ pub fn take_error_queue_message(
             unsafe {
                 entry.error = error.read_unaligned();
                 if data.len() > size_of::<libc::sock_extended_err>() {
-                    entry.offender = socket_address(libc::SO_EE_OFFENDER(error).cast_const());
+                    entry.offender = offender_address(libc::SO_EE_OFFENDER(error).cast_const());
                 }
             }
         } else if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
@@ -689,5 +692,157 @@ pub fn transmit_event(entry: &ErrorQueueMessage) -> Option<TransmitEvent> {
             })
         }
         _ => None,
+    }
+}
+
+pub fn family_of(address: &BindAddress) -> IpVersion {
+    match address {
+        BindAddress::V4(_) => IpVersion::V4,
+        BindAddress::V6 { .. } => IpVersion::V6,
+    }
+}
+
+pub fn socket_address(address: rustix::net::SocketAddrAny) -> Result<SocketAddr, HostError> {
+    SocketAddr::try_from(address).map_err(host_error)
+}
+
+/// Makes a non-blocking socket owned by the given user, acting as that user for the call when the host's thread is another.
+pub fn open_socket(
+    family: IpVersion,
+    kind: SocketType,
+    protocol: Protocol,
+    owner: UserId,
+) -> Result<OwnedFd, HostError> {
+    let domain = match family {
+        IpVersion::V4 => AddressFamily::INET,
+        IpVersion::V6 => AddressFamily::INET6,
+    };
+    let open = || {
+        rustix::net::socket_with(
+            domain,
+            kind,
+            SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+            Some(protocol),
+        )
+        .map_err(host_error)
+    };
+    // An invalid id changes nothing and answers the thread's filesystem user.
+    // SAFETY: setfsuid only changes this thread's filesystem user, which is restored before returning.
+    let previous = unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t;
+    if previous == owner.0 {
+        return open();
+    }
+    // SAFETY: as above.
+    let acting = unsafe {
+        libc::setfsuid(owner.0);
+        libc::setfsuid(libc::uid_t::MAX) as libc::uid_t
+    };
+    let socket = if acting == owner.0 {
+        open()
+    } else {
+        Err(HostError::Errno(libc::EPERM))
+    };
+    // SAFETY: as above.
+    unsafe { libc::setfsuid(previous) };
+    socket
+}
+
+/// The ports of a choice outside its reserved ranges, as ranges.
+pub fn allowed_ranges(choice: &PortChoice<'_>) -> Vec<PortRange> {
+    let mut reserved: Vec<PortRange> = choice.reserved.to_vec();
+    reserved.sort_by_key(|range| range.first.0);
+    let mut allowed = Vec::new();
+    let mut next = u32::from(choice.range.first.0);
+    let last = u32::from(choice.range.last.0);
+    for range in reserved {
+        let (first, end) = (u32::from(range.first.0), u32::from(range.last.0));
+        if first > next && next <= last {
+            allowed.push((next, (first - 1).min(last)));
+        }
+        next = next.max(end + 1);
+    }
+    if next <= last {
+        allowed.push((next, last));
+    }
+    allowed
+        .into_iter()
+        .map(|(first, last)| PortRange {
+            first: Port(first as u16),
+            last: Port(last as u16),
+        })
+        .collect()
+}
+
+pub fn set_port_range(socket: BorrowedFd<'_>, range: PortRange) -> Result<(), HostError> {
+    let value = u32::from(range.last.0) << u16::BITS | u32::from(range.first.0);
+    set_option(socket, uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, &value)
+}
+
+/// Runs an operation that takes a local port once per range the exit node may choose from, until one has a free port.
+pub fn in_port_ranges<T>(
+    socket: BorrowedFd<'_>,
+    choice: Option<&PortChoice<'_>>,
+    mut operation: impl FnMut() -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    let Some(choice) = choice else {
+        return operation();
+    };
+    let mut outcome = Err(HostError::Errno(libc::EADDRNOTAVAIL));
+    for range in allowed_ranges(choice) {
+        set_port_range(socket, range)?;
+        outcome = operation();
+        match outcome {
+            Err(HostError::Errno(libc::EADDRNOTAVAIL | libc::EADDRINUSE)) => continue,
+            _ => break,
+        }
+    }
+    outcome
+}
+
+/// Binds the socket as the binding asks, returning the choice the exit node makes its port from, if it does;
+/// `choose_now` chooses that port at once, as a listener or a datagram socket needs, not when connecting.
+pub fn bind<'a>(
+    socket: BorrowedFd<'_>,
+    local: &LocalBinding<'a>,
+    choose_now: bool,
+) -> Result<Option<PortChoice<'a>>, HostError> {
+    let address = match local.address {
+        BindAddress::V4(address) => IpAddr::V4(address),
+        BindAddress::V6 { address, families } => {
+            sockopt::set_ipv6_v6only(socket, families == Ipv6Families::V6Only)
+                .map_err(host_error)?;
+            IpAddr::V6(address)
+        }
+    };
+    match local.port {
+        LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => {
+            rustix::net::bind(socket, &SocketAddr::new(address, port.0)).map_err(host_error)?;
+            Ok(None)
+        }
+        LocalPort::ChosenByExitNode(choice) => {
+            let any = SocketAddr::new(address, 0);
+            if choose_now {
+                in_port_ranges(socket, Some(&choice), || {
+                    rustix::net::bind(socket, &any).map_err(host_error)
+                })?;
+            } else if !address.is_unspecified() {
+                set_flag(socket, uapi::SOL_IP, uapi::IP_BIND_ADDRESS_NO_PORT, true)?;
+                rustix::net::bind(socket, &any).map_err(host_error)?;
+            }
+            Ok(Some(choice))
+        }
+    }
+}
+
+/// The peer as the socket's family takes it, an IPv4 peer of an IPv6 socket mapped into IPv6.
+pub fn peer_for(family: IpVersion, peer: SocketAddr) -> SocketAddr {
+    match (family, peer) {
+        (IpVersion::V6, SocketAddr::V4(peer)) => SocketAddr::V6(SocketAddrV6::new(
+            peer.ip().to_ipv6_mapped(),
+            peer.port(),
+            0,
+            0,
+        )),
+        _ => peer,
     }
 }

@@ -1216,6 +1216,15 @@ pub fn negative_route_advice_keeps_the_connection<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
+pub fn window_probe_keeps_the_connection<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    sockets
+        .send_window_probe(&pair.client)
+        .expect("window probe");
+    assert_carries_bytes(&sockets, &pair);
+    close(&sockets, pair);
+}
+
 pub fn timestamp_clock_needs_repair_mode<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let clock = TcpTimestampClock {
@@ -1400,6 +1409,32 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     }
 }
 
+/// The contract of `Configurable` on a connection, by its own suite.
+pub fn connection_configurable_contract_holds<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    wcontainers_configurable_conformance::setting_twice_equals_setting_once((
+        sockets,
+        pair.client,
+        TcpSetting::NoDelay(true),
+    ));
+}
+
+/// The contract of `Configurable` on a listener, by its own suite.
+pub fn listener_configurable_contract_holds<S: TcpSockets>(sockets: S) {
+    let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
+    wcontainers_configurable_conformance::setting_twice_equals_setting_once((
+        sockets,
+        listener,
+        TcpListenerSetting::Backlog(BACKLOG),
+    ));
+}
+
+/// The contract of `NegativeRouteAdvice` on a connection, by its own suite.
+pub fn negative_route_advice_contract_holds<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, pair.client));
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -1441,9 +1476,13 @@ macro_rules! tests {
             delayed_acknowledgement_can_be_sent_in_either_mode,
             keep_alive_timer_rearms_when_on,
             negative_route_advice_keeps_the_connection,
+            window_probe_keeps_the_connection,
             timestamp_clock_needs_repair_mode,
             connection_settings_set_twice_equal_set_once,
             listener_settings_set_twice_equal_set_once,
+            connection_configurable_contract_holds,
+            listener_configurable_contract_holds,
+            negative_route_advice_contract_holds,
         );
     };
     (@each $value:expr; $($check:ident),* $(,)?) => {
