@@ -92,3 +92,12 @@ fn hello_matches_linux_in_chrome_at_none_x86_64() {
 fn long_double_matches_linux_in_chrome_x86_64() {
     programs_match_linux_in_chrome::<X86_64>(&[("long_double", Library::C)], &EVERY_WAY);
 }
+
+/// MMX and the x87 unit's state instructions, every way.
+#[test]
+fn mmx_and_x87_state_match_linux_in_chrome_x86_64() {
+    programs_match_linux_in_chrome::<X86_64>(
+        &[("mmx", Library::C), ("x87_state", Library::C)],
+        &EVERY_WAY,
+    );
+}

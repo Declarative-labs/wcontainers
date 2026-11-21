@@ -995,6 +995,22 @@ fn long_double_matches_linux_x86_64() {
     match_linux::<X86_64>(&[("long_double", Library::C)]);
 }
 
+/// MMX's instructions and how they meet the x87 unit, and the x87 unit's state, environment, compare,
+/// integer, decimal, remainder and exception instructions, at every look-ahead.
+#[test]
+fn mmx_and_x87_state_match_linux_x86_64() {
+    match_linux_at::<X86_64>(
+        &[("mmx", Library::C), ("x87_state", Library::C)],
+        &[
+            (LookAhead::None, Optimise::Speed),
+            (LookAhead::Full, Optimise::Speed),
+            (LookAhead::Full, Optimise::Size),
+            (LookAhead::AT_RUN_TIME, Optimise::Speed),
+            (LookAhead::AT_RUN_TIME, Optimise::Size),
+        ],
+    );
+}
+
 #[test]
 fn stack_moved_by_a_callee_matches_linux_x86_64() {
     stack_moved_by_a_callee_matches_linux::<X86_64>();
