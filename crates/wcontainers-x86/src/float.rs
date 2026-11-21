@@ -1088,12 +1088,18 @@ fn mxcsr<E: Emitter<X86_64> + ?Sized>(e: &mut E, m: Mnemonic, at: u32) {
         e.sink().i32_const(1);
         e.set_control(Control::MxcsrTracking);
     } else {
-        e.get_control(Control::MxcsrTracking);
-        e.sink().i32_eqz().if_(BlockType::Empty);
-        e.warn(Reason::MxcsrFlagsReadNotKept);
-        e.sink().end();
-        e.get_control(Control::Mxcsr);
-        e.sink().i64_extend_i32_u().local_set(value);
+        read_mxcsr(e, value);
         store(e, at, size_of::<u32>() as u32, value);
     }
+}
+
+/// MXCSR into the i64 local `value`, its exception flags as last written: a counted slow path while they
+/// are not kept (plan 5.8).
+pub(crate) fn read_mxcsr<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32) {
+    e.get_control(Control::MxcsrTracking);
+    e.sink().i32_eqz().if_(BlockType::Empty);
+    e.warn(Reason::MxcsrFlagsReadNotKept);
+    e.sink().end();
+    e.get_control(Control::Mxcsr);
+    e.sink().i64_extend_i32_u().local_set(value);
 }

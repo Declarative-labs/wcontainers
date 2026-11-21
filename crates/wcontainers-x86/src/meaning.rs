@@ -79,6 +79,7 @@ pub fn written(i: &Instruction) -> bool {
     }
     if crate::simd::written(i)
         || crate::float::written(i)
+        || crate::fpu::written(m)
         || crate::text::written(m)
         || crate::descriptors::written(m)
         || crate::segments::written(i)
@@ -105,7 +106,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
                     | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase | Popf | Popfq | Rdtsc
                     | Rdtscp | Cpuid | Xlatb | Movnti | Lfence | Mfence | Sfence | Crc32
-                    | Enter | Andn | Bextr | Blsi | Blsmsk | Blsr
+                    | Enter | Andn | Bextr | Blsi | Blsmsk | Blsr | Emms
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -146,6 +147,11 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     }
     if crate::float::written(i) {
         crate::float::emit(e, i, m);
+        e.next();
+        return true;
+    }
+    if crate::fpu::written(m) {
+        crate::fpu::emit(e, i, m);
         e.next();
         return true;
     }
@@ -266,6 +272,10 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         Call => call(e, i),
         Enter => enter(e, i),
         Maskmovdqu => masked_store(e, i),
+        Emms => {
+            crate::fpu::pending(e);
+            crate::simd::mmx_transition(e, true);
+        }
         Ret => {
             ret(e, i);
             return true;

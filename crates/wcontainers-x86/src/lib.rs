@@ -18,6 +18,8 @@ mod flags;
 #[cfg(feature = "translate")]
 mod float;
 #[cfg(feature = "translate")]
+mod fpu;
+#[cfg(feature = "translate")]
 mod guest;
 #[cfg(feature = "translate")]
 mod habits;
@@ -28,11 +30,15 @@ mod meaning;
 #[cfg(feature = "translate")]
 mod operand;
 #[cfg(feature = "translate")]
+mod root;
+#[cfg(feature = "translate")]
 mod segments;
 #[cfg(feature = "translate")]
 mod simd;
 #[cfg(feature = "translate")]
 mod text;
+#[cfg(feature = "translate")]
+pub mod x87;
 
 pub mod claims;
 pub mod cpuid;

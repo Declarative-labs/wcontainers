@@ -12,8 +12,8 @@ use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
 use iced_x86::{
     Code, Decoder, DecoderOptions, Encoder, Formatter, Instruction, InstructionInfoFactory,
-    IntelFormatter, MemoryOperand, Mnemonic, OpAccess, OpCodeOperandKind as K, OpKind, Register,
-    RepPrefixKind,
+    IntelFormatter, MemoryOperand, MemorySize, Mnemonic, OpAccess, OpCodeOperandKind as K, OpKind,
+    Register, RepPrefixKind,
 };
 use proptest::prelude::*;
 use std::sync::OnceLock;
@@ -343,9 +343,15 @@ impl GuestTest for X86_64 {
             expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
         }
         // The CPU's part of an unmasked SIMD exception is MXCSR's flags; the kernel works out the si_code.
+        // An x87 or MMX instruction's is the x87 status word's unmasked flags.
         if let Stop::FloatException(_) = expected.stop {
-            let mxcsr = expected.state.0[MXCSR] as u32;
-            expected.stop = Stop::FloatException(wcontainers_x86::mxcsr_raised(mxcsr));
+            let raised = if is_x87_or_mmx(instruction.code()) {
+                let (fsw, fcw) = (expected.state.0[FSW] as u32, expected.state.0[FCW] as u32);
+                fsw & !fcw & u32::from(wcontainers_x86::x87::EXCEPTIONS)
+            } else {
+                wcontainers_x86::mxcsr_raised(expected.state.0[MXCSR] as u32)
+            };
+            expected.stop = Stop::FloatException(raised);
         }
         // In MXCSR's default mode, with its flags not kept, they keep what they had (plan 5.8).
         let mode = u128::from(wcontainers_x86::MXCSR_MODE);
@@ -569,7 +575,7 @@ fn default_left_out_because(code: Code) -> Option<&'static str> {
         let x7 = is_x87_or_mmx(code) || uses_x87_or_mmx(&i.iced);
         return (x7 && !wcontainers_x86::written(&i)).then_some(MILESTONE_X7);
     }
-    if is_x87_or_mmx(code) {
+    if is_x87_or_mmx(code) && drawn.is_empty() {
         return Some(MILESTONE_X7);
     }
     if !drawn.is_empty() {
@@ -871,6 +877,7 @@ const OP_MASKS: u64 = MASK_REGISTERS - 1;
 const EVEX_VECTORS: u64 = 32;
 const VECTORS: u64 = 16;
 const MMX_REGISTERS: u64 = 8;
+const X87_REGISTERS: u64 = wcontainers_x86::x87::REGISTERS as u64;
 const TILES: u64 = 8;
 const BOUNDS: u64 = 4;
 /// The registers of a group named by its first (`kp1_reg`'s pairs, `xmmp3_vvvv`'s fours).
@@ -1294,12 +1301,148 @@ fn start(draw: &mut Draw) -> (Vec<u128>, bool) {
     state[GS] = (draw.next() % USER_TOP).into();
     state[MXCSR] = mxcsr(draw).into();
     let tracking = draw.chance(TRACKED);
-    state[FCW] = wcontainers_x86::FCW_AT_START.into();
+    x87_state(draw, &mut state);
     for x in &mut state[XMM..YMMH] {
         *x = vector(draw);
     }
     (state, tracking)
 }
+
+/// In a hundred: cases with the x87 control word Linux starts with, with exception flags drawn in the status
+/// word, and with every register empty or every one in use.
+const DEFAULT_FCW: u64 = 50;
+const X87_FLAGS_DRAWN: u64 = 30;
+const ALL_EMPTY: u64 = 15;
+const ALL_USED: u64 = 25;
+
+/// The x87 control, status and tag words and registers at the start of a case: the control word mostly the
+/// default, else any with most exceptions masked; TOP, the condition codes and the tags drawn, with the
+/// summary bits as the flags and masks make them; every register an edge value of the 80-bit format.
+fn x87_state(draw: &mut Draw, state: &mut [u128]) {
+    use wcontainers_x86::x87::{
+        BUSY, C0, C1, C2, C3, CONTROL_ALWAYS, CONTROL_KEPT, EXCEPTIONS, STACK_FAULT, SUMMARY, TOP,
+    };
+    let fcw = if draw.chance(DEFAULT_FCW) {
+        wcontainers_x86::FCW_AT_START
+    } else {
+        let mut fcw = draw.next() as u16 & CONTROL_KEPT;
+        if !draw.chance(UNMASKED) {
+            fcw |= EXCEPTIONS;
+        }
+        fcw
+    };
+    let flags = if draw.chance(X87_FLAGS_DRAWN) {
+        draw.next() as u16 & (EXCEPTIONS | STACK_FAULT)
+    } else {
+        0
+    };
+    let mut fsw = flags | draw.next() as u16 & (C0 | C1 | C2 | C3 | TOP);
+    if flags & EXCEPTIONS & !fcw != 0 {
+        fsw |= SUMMARY | BUSY;
+    }
+    state[FCW] = (fcw | CONTROL_ALWAYS).into();
+    state[FSW] = fsw.into();
+    state[FTW] = if draw.chance(ALL_EMPTY) {
+        0
+    } else if draw.chance(ALL_USED) {
+        u8::MAX.into()
+    } else {
+        u128::from(draw.next() as u8)
+    };
+    for r in &mut state[R0..XMM] {
+        *r = extended(draw);
+    }
+}
+
+/// An 80-bit value weighted toward the edges: zeros, infinities, quiet and signaling not-a-numbers and the
+/// indefinite, denormals and pseudo-denormals, the unsupported encodings (unnormals, pseudo-infinities and
+/// pseudo-NaNs), the largest and smallest normals, one, integers, values near the 64-bit integer range, any
+/// normal, and anything.
+fn extended(draw: &mut Draw) -> u128 {
+    use wcontainers_x86::x87::{BIAS, EXPONENT_ALL, INTEGER_BIT, QUIET_BIT};
+    let any = draw.next();
+    let fraction = any & !INTEGER_BIT;
+    let some_exponent = (draw.next() as u16 % (EXPONENT_ALL - 1)).max(1);
+    let integer_exponent = BIAS as u16 + draw.below(u64::from(u64::BITS)) as u16;
+    let integer_bits = |e: u16| -> u64 {
+        let shift = u64::BITS - 1 - u32::from(e - BIAS as u16);
+        (any | INTEGER_BIT) >> shift << shift
+    };
+    // Up to the 64-bit integers' range, and around one.
+    let near_long = BIAS as u16 + u64::BITS as u16 - draw.below(NEAR_LONG) as u16;
+    let near_one = BIAS as u16 + draw.below(2 * NEAR_ONE) as u16 - NEAR_ONE as u16;
+    let edges = [
+        (0, 0),
+        (EXPONENT_ALL, INTEGER_BIT),
+        (EXPONENT_ALL, INTEGER_BIT | QUIET_BIT | fraction),
+        (EXPONENT_ALL, INTEGER_BIT | (fraction & !QUIET_BIT).max(1)),
+        (EXPONENT_ALL, INTEGER_BIT | QUIET_BIT),
+        (0, fraction.max(1)),
+        (0, INTEGER_BIT | fraction),
+        (some_exponent, fraction),
+        (EXPONENT_ALL, 0),
+        (EXPONENT_ALL, fraction.max(1)),
+        (EXPONENT_ALL - 1, u64::MAX),
+        (1, INTEGER_BIT),
+        (BIAS as u16, INTEGER_BIT),
+        (integer_exponent, integer_bits(integer_exponent)),
+        (near_long, INTEGER_BIT | any),
+        (some_exponent, INTEGER_BIT | any),
+        (near_one, INTEGER_BIT | any),
+    ];
+    // Every edge as often as anything.
+    let pick = draw.below(edges.len() as u64 + 1) as usize;
+    let sign = if draw.chance(NEGATIVE) {
+        1u128 << wcontainers_x86::x87::EXPONENT_BITS
+    } else {
+        0
+    };
+    let Some(&(exponent, significand)) = edges.get(pick) else {
+        return u128::from(any) | u128::from(draw.next() as u16) << u64::BITS;
+    };
+    (u128::from(exponent) | sign) << u64::BITS | u128::from(significand)
+}
+
+/// A memory value for an x87 instruction's operand, weighted toward its format's edges, or none for another
+/// operand.
+fn x87_memory_value(draw: &mut Draw, size: MemorySize) -> Option<Vec<u8>> {
+    let bytes = |v: u128, n: usize| v.to_le_bytes()[..n].to_vec();
+    Some(match size {
+        MemorySize::Float32 => bytes(float(draw, u32::BITS), size_of::<f32>()),
+        MemorySize::Float64 => bytes(float(draw, u64::BITS), size_of::<f64>()),
+        MemorySize::Float80 => bytes(extended(draw), X87_VALUE_BYTES),
+        MemorySize::Int16 | MemorySize::Int32 | MemorySize::Int64 => {
+            let n = size.size();
+            bytes(draw.value().into(), n)
+        }
+        MemorySize::Bcd => {
+            // Valid digits mostly, any nibbles else; the sign byte's top bit drawn.
+            use wcontainers_x86::x87::{DECIMAL_DIGITS, DECIMAL_RADIX, DIGIT_BITS};
+            let digits = DECIMAL_DIGITS;
+            let valid = draw.chance(VALID_DECIMAL);
+            let value = (0..digits).fold(0u128, |v, k| {
+                let nibble = if valid {
+                    draw.below(DECIMAL_RADIX as u64)
+                } else {
+                    draw.below(1 << DIGIT_BITS)
+                };
+                v | u128::from(nibble) << (k * DIGIT_BITS)
+            });
+            let sign = u128::from(draw.next() as u8) << (digits * DIGIT_BITS);
+            bytes(value | sign, X87_VALUE_BYTES)
+        }
+        _ => return None,
+    })
+}
+
+/// Exponents drawn below 2^64, and around one.
+const NEAR_LONG: u64 = 3;
+const NEAR_ONE: u64 = 8;
+/// The bytes of an 80-bit value; packed decimal's digits and nibbles; in a hundred, decimals of valid digits.
+const X87_VALUE_BYTES: usize = (wcontainers_x86::X87_REGISTER_BITS / u8::BITS) as usize;
+const VALID_DECIMAL: u64 = 80;
+/// In a hundred: x87 memory operands given a value of their format's edges.
+const X87_EDGE_VALUES: u64 = 70;
 
 /// One case of `code` from the draw `seed`, or none when the draw gives no encodable instruction.
 fn case(code: Code, seed: u64) -> Option<Case> {
@@ -1412,6 +1555,21 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                     Operand::M(m)
                 }
                 K::xmm_reg | K::xmm_rm => Operand::R(xmm(&mut draw)),
+                K::st0 => Operand::R(Register::ST0),
+                K::sti_opcode => Operand::R(register(
+                    Register::ST0 as u32 + draw.below(X87_REGISTERS) as u32,
+                )),
+                K::mm_reg | K::mm_rm => Operand::R(register(
+                    Register::MM0 as u32 + draw.below(MMX_REGISTERS) as u32,
+                )),
+                K::mm_or_mem if draw.chance(IN_REGISTER) => Operand::R(register(
+                    Register::MM0 as u32 + draw.below(MMX_REGISTERS) as u32,
+                )),
+                K::mm_or_mem => {
+                    let m = memory_operand(&mut draw, false, address32);
+                    memory = Some(m);
+                    Operand::M(m)
+                }
                 K::r8_reg | K::r8_opcode => Operand::R(general(&mut draw, 8)),
                 K::r16_reg | K::r16_rm | K::r16_opcode => Operand::R(general(&mut draw, 16)),
                 K::r32_reg | K::r32_rm | K::r32_opcode | K::r32_vvvv => {
@@ -1576,7 +1734,18 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         text_strings(&mut draw, &mut state, &instruction, source);
     }
     let seed = seed.unwrap_or_else(|| draw.next());
-    let placed = if segments::is_segment_form(&instruction) {
+    let x87_value = aimed
+        .filter(|&to| {
+            (DATA..DATA + DATA_BYTES - u64::from(memory_size(&instruction))).contains(&to)
+        })
+        .filter(|_| draw.chance(X87_EDGE_VALUES))
+        .and_then(|to| {
+            let value = x87_memory_value(&mut draw, instruction.memory_size())?;
+            Some(((to - DATA) as u32, value))
+        });
+    let placed = if let Some(placed) = x87_value {
+        placed
+    } else if segments::is_segment_form(&instruction) {
         segments::draw(
             &mut draw,
             &instruction,

@@ -48,7 +48,7 @@ const SEED: u64 = 0x5eed;
 /// 1.0 and 2.0 as 80-bit values.
 const ONE: u128 = 0x3fff_8000_0000_0000_0000;
 const TWO: u128 = 0x4000_8000_0000_0000_0000;
-const NON_CANONICAL: u128 = 0x8000_0000_0000_0000;
+const NON_CANONICAL: u128 = 1 << (u64::BITS - 1);
 
 fn at(name: &str) -> usize {
     X86_64

@@ -75,6 +75,19 @@ pub fn xmm(r: Register) -> Option<u8> {
         .then(|| (v - Register::XMM0 as u32) as u8)
 }
 
+/// An MMX register's number (mm0 to mm7).
+pub fn mmx(r: Register) -> Option<u8> {
+    let v = r as u32;
+    (Register::MM0 as u32..=Register::MM7 as u32)
+        .contains(&v)
+        .then(|| (v - Register::MM0 as u32) as u8)
+}
+
+/// The register the translator keeps MMX register `n` in.
+pub fn mmx_register(n: u8) -> u8 {
+    crate::guest::FIRST_MMX as u8 + n
+}
+
 pub fn mask(width: u8) -> i64 {
     if width == 64 { -1 } else { (1i64 << width) - 1 }
 }
@@ -241,6 +254,12 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
         | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 => 16,
         SegPtr32 | Fword6 => 6,
         SegPtr64 | Fword10 => 10,
+        Float80 | Bcd => crate::X87_REGISTER_BITS / u8::BITS,
+        FpuEnv14 => crate::x87::ENVIRONMENT_16_BYTES,
+        FpuEnv28 => crate::x87::ENVIRONMENT_32_BYTES,
+        FpuState94 => crate::x87::ENVIRONMENT_16_BYTES + crate::x87::REGISTERS_BYTES,
+        FpuState108 => crate::x87::ENVIRONMENT_32_BYTES + crate::x87::REGISTERS_BYTES,
+        Fxsave_512Byte | Fxsave64_512Byte => size_of::<crate::Fxsave>() as u32,
         _ => 0,
     }
 }
@@ -275,6 +294,18 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
             | Pextrb | Pextrw | Pextrd | Pextrq | Extractps | Sldt | Str | Smsw | Sgdt | Sidt,
         ) => AccessKind::Write,
         (0, m) if setcc(m).is_some() => AccessKind::Write,
+        // The x87 unit's and its state's: loads and operands read, stores written.
+        (
+            0,
+            Fld | Fild | Fbld | Fadd | Fiadd | Fsub | Fisub | Fsubr | Fisubr | Fmul | Fimul | Fdiv
+            | Fidiv | Fdivr | Fidivr | Fcom | Fcomp | Ficom | Ficomp | Fldcw | Fldenv | Frstor
+            | Fxrstor | Fxrstor64,
+        ) => AccessKind::Read,
+        (
+            0,
+            Fst | Fstp | Fist | Fistp | Fisttp | Fbstp | Fnstcw | Fnstsw | Fnstenv | Fnsave
+            | Fxsave | Fxsave64,
+        ) => AccessKind::Write,
         (0, _) => AccessKind::ReadWrite,
         (_, Xchg) => AccessKind::ReadWrite,
         _ => AccessKind::Read,

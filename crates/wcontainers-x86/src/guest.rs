@@ -7,7 +7,7 @@ use crate::host::Host;
 use crate::meaning::is_string;
 use crate::operand::*;
 use crate::{
-    FLAGS_WORD, FLOAT_EXCEPTION, FS_BASE, GS_BASE, MXCSR, MXCSR_AT_START, MXCSR_MODE,
+    FLAGS_WORD, FLOAT_EXCEPTION, FS_BASE, FXSAVE, GS_BASE, MXCSR, MXCSR_AT_START, MXCSR_MODE,
     MXCSR_TRACKING, RFLAGS, STEP, STEP_AT, STEP_HELD, TF, X86_64, X86Block, XMM,
 };
 use core::ops::Range;
@@ -28,6 +28,17 @@ pub enum Control {
     FloatException,
     /// i32: not zero when the trap of a single step is held back one instruction (`mov ss`).
     StepHeld,
+    /// i32: the x87 control word, then the status word.
+    X87Words,
+    /// i32: the x87 status word, then the abridged tag byte and the reserved byte after it.
+    X87StatusTag,
+    /// i64: the FXSAVE area's first eight bytes: control, status, abridged tag, reserved, FOP.
+    X87Header,
+    /// i64s: the last x87 instruction's address, and its data address.
+    X87InstructionPointer,
+    X87DataPointer,
+    /// i32: the sign and exponent of R(n) and the two zero bytes after them (plan 5.8, MMX).
+    X87High(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +48,9 @@ pub enum Hook {
     /// `(operation, a low, a high, b low, b high) -> (low, high)`: one SIMD floating point instruction on
     /// the exact path (`crate::exact`).
     Float,
+    /// `(code, a, b, data address) -> (low, high)`: one x87 instruction's work on the block
+    /// (`crate::x87`).
+    X87,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,12 +93,19 @@ pub enum Reason {
     AlignmentCheckNotProvided,
     MxcsrFlagsReadNotKept,
     FarTransferTo32Bit,
+    X87InSoftware,
 }
 
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
 const FLOAT_STATE: StateBytes = StateBytes {
     at: MXCSR as u16,
     len: (FLOAT_EXCEPTION + size_of::<u32>() - MXCSR) as u16,
+};
+
+/// The thread state the x87 hook works on: the FXSAVE area.
+const X87_STATE: StateBytes = StateBytes {
+    at: FXSAVE as u16,
+    len: size_of::<crate::Fxsave>() as u16,
 };
 
 /// What the container offers beyond the default claims: the AVX setting (x86-64-v3).
@@ -111,37 +132,47 @@ const fn flag_bit(n: u32) -> Bit {
     }
 }
 
-/// The register bit of the first flag and of the first xmm register.
+/// The register bit of the first flag, of the first xmm register and of the first MMX register.
 const FIRST_FLAG: u32 = 18;
 const FIRST_XMM: u32 = 32;
+pub(crate) const XMM_COUNT: u32 = crate::Fxsave::ZERO.xmm.len() as u32;
+pub(crate) const FIRST_MMX: u32 = FIRST_XMM + XMM_COUNT;
+pub(crate) const MMX_COUNT: u32 = crate::Fxsave::ZERO.st.len() as u32;
+/// The general registers, the segment bases and the flags before the xmm registers in `BITS`.
+const GENERAL_COUNT: usize = 16;
+const BEFORE_XMM: usize = GENERAL_COUNT + 2 + Flag::ALL.len();
+const BIT_COUNT: usize = BEFORE_XMM + XMM_COUNT as usize + MMX_COUNT as usize;
+/// An x87 register's slot in the block: its mantissa is the MMX register.
+const X87_SLOT: usize = size_of::<[u8; 16]>();
+const X87_SLOTS: usize = FXSAVE + core::mem::offset_of!(crate::Fxsave, st);
 
-const BITS: [Bit; 40] = {
-    let mut bits = [general_bit(0); 40];
+const BITS: [Bit; BIT_COUNT] = {
+    let mut bits = [general_bit(0); BIT_COUNT];
     let mut n = 0;
-    while n < 16 {
+    while n < GENERAL_COUNT {
         bits[n] = general_bit(n as u32);
         n += 1;
     }
-    bits[16] = Bit {
+    bits[GENERAL_COUNT] = Bit {
         bit: FS as u32,
         class: Class::Segment,
         ty: Ty::I64,
         offset: FS_BASE as u16,
     };
-    bits[17] = Bit {
+    bits[GENERAL_COUNT + 1] = Bit {
         bit: GS as u32,
         class: Class::Segment,
         ty: Ty::I64,
         offset: GS_BASE as u16,
     };
     let mut f = 0;
-    while f < 6 {
-        bits[18 + f] = flag_bit(FIRST_FLAG + f as u32);
+    while f < Flag::ALL.len() {
+        bits[GENERAL_COUNT + 2 + f] = flag_bit(FIRST_FLAG + f as u32);
         f += 1;
     }
     let mut x = 0;
-    while x < 16 {
-        bits[24 + x] = Bit {
+    while x < XMM_COUNT as usize {
+        bits[BEFORE_XMM + x] = Bit {
             bit: FIRST_XMM + x as u32,
             class: Class::Vector,
             ty: Ty::V128,
@@ -149,11 +180,23 @@ const BITS: [Bit; 40] = {
         };
         x += 1;
     }
+    let mut m = 0;
+    while m < MMX_COUNT as usize {
+        bits[BEFORE_XMM + XMM_COUNT as usize + m] = Bit {
+            bit: FIRST_MMX + m as u32,
+            class: Class::Vector,
+            ty: Ty::I64,
+            offset: (X87_SLOTS + X87_SLOT * m) as u16,
+        };
+        m += 1;
+    }
     bits
 };
 
+/// Every MMX register's bit: the x87 hook reads and writes their slots in the block.
+const MMX_REGISTERS: Registers = Registers(((1 << MMX_COUNT) - 1) << FIRST_MMX);
+
 /// Every xmm register's bit: the float hook reads its destination from the block.
-const XMM_COUNT: u32 = crate::Fxsave::ZERO.xmm.len() as u32;
 const XMM_REGISTERS: Registers = Registers(((1 << XMM_COUNT) - 1) << FIRST_XMM);
 
 /// Every flag's register bit.
@@ -323,7 +366,11 @@ impl Guest for X86_64 {
 
     fn control_ty(c: Control) -> ValType {
         match c {
-            Control::Rflags | Control::Selectors => ValType::I64,
+            Control::Rflags
+            | Control::Selectors
+            | Control::X87Header
+            | Control::X87InstructionPointer
+            | Control::X87DataPointer => ValType::I64,
             _ => ValType::I32,
         }
     }
@@ -336,6 +383,11 @@ impl Guest for X86_64 {
             Control::MxcsrTracking => MXCSR_TRACKING,
             Control::FloatException => FLOAT_EXCEPTION,
             Control::StepHeld => STEP_HELD,
+            Control::X87Words | Control::X87Header => FXSAVE,
+            Control::X87StatusTag => FXSAVE + core::mem::offset_of!(crate::Fxsave, fsw),
+            Control::X87InstructionPointer => FXSAVE + core::mem::offset_of!(crate::Fxsave, fip),
+            Control::X87DataPointer => FXSAVE + core::mem::offset_of!(crate::Fxsave, fdp),
+            Control::X87High(n) => X87_SLOTS + X87_SLOT * usize::from(n) + size_of::<u64>(),
         }
     }
 
@@ -371,20 +423,45 @@ impl Guest for X86_64 {
             state: FLOAT_STATE,
             body: HookBody::Cpu,
         },
+        HookType {
+            name: "x87",
+            params: &[ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+            results: &[ValType::I64, ValType::I64],
+            registers: MMX_REGISTERS,
+            state: X87_STATE,
+            body: HookBody::Cpu,
+        },
     ];
 
     fn hook_index(h: Hook) -> usize {
         match h {
             Hook::Clock => 0,
             Hook::Float => 1,
+            Hook::X87 => 2,
         }
     }
 
     fn run_hook(hook: usize, args: &[i64], state: &mut [u8]) -> HookDone {
+        if hook == Self::hook_index(Hook::X87) {
+            let &[code, a, b, data, ..] = args else {
+                unreachable!("the x87 hook's four arguments")
+            };
+            let code = crate::x87::Code::decode(code as i32);
+            let mut unit = crate::x87::Unit::new(state, code, data as u64);
+            let results = unit.run(a as u64, b as u64);
+            let reason = Self::REASONS
+                .iter()
+                .position(|(r, _)| *r == Reason::X87InSoftware)
+                .expect("listed") as u32;
+            return HookDone {
+                results,
+                reason: Some(wcontainers_guest_cpu::GUEST_REASONS + reason),
+            };
+        }
         assert_eq!(
             hook,
             Self::hook_index(Hook::Float),
-            "the float hook is x86's own"
+            "the float and x87 hooks are x86's own"
         );
         let word = |offset: usize| {
             offset - usize::from(FLOAT_STATE.at)
@@ -484,6 +561,7 @@ impl Guest for X86_64 {
             Reason::FarTransferTo32Bit,
             "far transfer to 32-bit code, not provided",
         ),
+        (Reason::X87InSoftware, "x87 floating point in software"),
     ];
 
     type Host = Host;

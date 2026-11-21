@@ -3,21 +3,26 @@
 
 use crate::decode::Instruction;
 use crate::flags::{Flag, Flags};
-use crate::guest::Trap;
+use crate::guest::{Control, Trap};
 use crate::operand::*;
 use crate::{X86_64, XMM_BYTES};
-use iced_x86::{Mnemonic, OpKind};
+use iced_x86::{Mnemonic, OpKind, Register};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
-use wcontainers_guest_cpu::Emitter;
+use wcontainers_guest_cpu::{AccessKind, Emitter};
 
-/// Whether the instruction is one of these, on xmm registers (not MMX).
+/// Whether the instruction is one of these, on xmm or MMX registers.
 pub fn written(i: &Instruction) -> bool {
     use Mnemonic::*;
     let ins = &i.iced;
     let m = ins.mnemonic();
     let known = matches!(
         m,
-        Movaps
+        Pshufw
+            | Movq2dq
+            | Movdq2q
+            | Movntq
+            | Maskmovq
+            | Movaps
             | Movups
             | Movapd
             | Movupd
@@ -108,15 +113,90 @@ pub fn written(i: &Instruction) -> bool {
             | Movsd
     ) || binary(m).is_some()
         || shift(m).is_some();
+    let vector = |r: Register| xmm(r).is_some() || mmx(r).is_some();
     known
         && (0..ins.op_count())
-            .any(|n| ins.op_kind(n) == OpKind::Register && xmm(ins.op_register(n)).is_some())
+            .any(|n| ins.op_kind(n) == OpKind::Register && vector(ins.op_register(n)))
         && (0..ins.op_count()).all(|n| match ins.op_kind(n) {
-            OpKind::Register => {
-                xmm(ins.op_register(n)).is_some() || general(ins.op_register(n)).is_some()
-            }
+            OpKind::Register => vector(ins.op_register(n)) || general(ins.op_register(n)).is_some(),
             _ => true,
         })
+        && !(m == Maskmovq && !is_mmx(i))
+}
+
+/// Whether the instruction names an MMX register.
+pub fn is_mmx(i: &Instruction) -> bool {
+    let ins = &i.iced;
+    (0..ins.op_count())
+        .any(|n| ins.op_kind(n) == OpKind::Register && mmx(ins.op_register(n)).is_some())
+}
+
+/// How an MMX instruction's 64-bit operands go into the 128-bit vectors the xmm form's meaning works on:
+/// each in the low half; both, destination first, in each operand, where the xmm form's lanes cross (its
+/// result's low half then is the MMX result); each in both halves (`pshufb`); or each moved right by 32 bits,
+/// for the forms that take the high halves, which then work as the low-half form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MmxLanes {
+    Low,
+    Paired,
+    Doubled,
+    High,
+}
+
+fn mmx_lanes(m: Mnemonic) -> MmxLanes {
+    use Mnemonic::*;
+    match m {
+        Packsswb | Packssdw | Packuswb | Phaddw | Phaddd | Phaddsw | Phsubw | Phsubd | Phsubsw => {
+            MmxLanes::Paired
+        }
+        Pshufb => MmxLanes::Doubled,
+        Punpckhbw | Punpckhwd | Punpckhdq => MmxLanes::High,
+        _ => MmxLanes::Low,
+    }
+}
+
+/// The form of the low halves that an MMX form of the high halves works as, and `pshufw` as `pshuflw`.
+fn mmx_as(m: Mnemonic) -> Mnemonic {
+    use Mnemonic::*;
+    match m {
+        Punpckhbw => Punpcklbw,
+        Punpckhwd => Punpcklwd,
+        Punpckhdq => Punpckldq,
+        Pshufw => Pshuflw,
+        _ => m,
+    }
+}
+
+/// An MMX instruction's x87 side (plan 5.8): TOP 0 and every register valid, and `emms` every one empty.
+pub(crate) fn mmx_transition<E: Emitter<X86_64> + ?Sized>(e: &mut E, empty: bool) {
+    e.get_control(Control::X87StatusTag);
+    let tags = if empty {
+        0
+    } else {
+        i32::from(u8::MAX) << u16::BITS
+    };
+    e.sink()
+        .i32_const(i32::from(!crate::x87::TOP))
+        .i32_and()
+        .i32_const(tags)
+        .i32_or();
+    e.set_control(Control::X87StatusTag);
+}
+
+/// TOP 0, the tags as they are.
+fn mmx_top<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    e.get_control(Control::X87StatusTag);
+    e.sink().i32_const(!i32::from(crate::x87::TOP)).i32_and();
+    e.set_control(Control::X87StatusTag);
+}
+
+/// Write the low 64 bits of the vector in `value` to MMX register `n`, whose sign and exponent field becomes
+/// all ones.
+fn set_mmx<E: Emitter<X86_64> + ?Sized>(e: &mut E, n: u8, value: u32) {
+    e.sink().local_get(value).i64x2_extract_lane(0);
+    e.set(mmx_register(n));
+    e.sink().i32_const(i32::from(u16::MAX));
+    e.set_control(Control::X87High(n));
 }
 
 /// The two-operand instructions, `op0 = op0 . op1`, as the WebAssembly operation on `[op0, op1]`.
@@ -311,9 +391,9 @@ fn shift(m: Mnemonic) -> Option<(u8, u8)> {
 
 /// The bytes of a vector, of its halves, and of its elements.
 const HALF: u8 = (XMM_BYTES / 2) as u8;
-const BYTE: u32 = size_of::<u8>() as u32;
-const WORD: u32 = size_of::<u16>() as u32;
-const DWORD: u32 = size_of::<u32>() as u32;
+pub(crate) const BYTE: u32 = size_of::<u8>() as u32;
+pub(crate) const WORD: u32 = size_of::<u16>() as u32;
+pub(crate) const DWORD: u32 = size_of::<u32>() as u32;
 const QWORD: u32 = size_of::<u64>() as u32;
 /// `insertps`'s immediate: the source element (register form), the target element, the zero mask below.
 const INSERTPS_SOURCE_SHIFT: u8 = 6;
@@ -427,6 +507,26 @@ pub(crate) fn aligned16<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32) {
 pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let ins = &i.iced;
+    let mmx_form = is_mmx(i);
+    // An MMX instruction makes its change to the x87 side after the memory it reads; one that writes
+    // memory sets TOP before the write may fault, the tags after it (seen on the reference).
+    let reads_memory = memory_use(i) == Some(AccessKind::Read);
+    let writes_memory = m == Maskmovq || memory_use(i).is_some() && !reads_memory;
+    if mmx_form {
+        crate::fpu::pending(e);
+        if writes_memory {
+            mmx_top(e);
+        } else if !reads_memory {
+            mmx_transition(e, false);
+        }
+        if m == Maskmovq {
+            masked_store_mmx(e, i);
+            mmx_transition(e, false);
+            return;
+        }
+    }
+    let lanes = mmx_lanes(m);
+    let m = if mmx_form { mmx_as(m) } else { m };
     let mem = memory_use(i).map(|kind| {
         let at = address(e, i);
         let bytes = memory_bytes(i);
@@ -436,10 +536,62 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         e.check(at, bytes, check_kind(kind), 0);
         at
     });
+    if mmx_form && reads_memory {
+        mmx_transition(e, false);
+    }
     let register = |n: u32| xmm(ins.op_register(n));
+    let mm = |n: u32| {
+        (ins.op_kind(n) == OpKind::Register)
+            .then(|| mmx(ins.op_register(n)))
+            .flatten()
+    };
+    // An MMX operand's 64 bits, from its register or memory, `bytes` of them zero-extended.
+    let mmx_value = |e: &mut E, n: u32, bytes: u32| {
+        match mm(n) {
+            Some(r) => e.get(mmx_register(r)),
+            None => load(e, mem.unwrap(), memory_bytes(i).min(bytes)),
+        }
+        if bytes < QWORD && mm(n).is_some() {
+            e.sink().i64_const(mask((bytes * u8::BITS) as u8)).i64_and();
+        }
+    };
+    // An MMX instruction's operand `n` as the vector the xmm form's meaning takes.
+    let mmx_vector = |e: &mut E, n: u32, bytes: u32| match lanes {
+        MmxLanes::Low => {
+            e.sink().v128_const(0);
+            mmx_value(e, n, bytes);
+            e.sink().i64x2_replace_lane(0);
+        }
+        MmxLanes::Paired => {
+            e.sink().v128_const(0);
+            mmx_value(e, 0, QWORD);
+            e.sink().i64x2_replace_lane(0);
+            mmx_value(e, 1, QWORD);
+            e.sink().i64x2_replace_lane(1);
+        }
+        MmxLanes::Doubled => {
+            mmx_value(e, n, QWORD);
+            e.sink().i64x2_splat();
+        }
+        MmxLanes::High => {
+            e.sink().v128_const(0);
+            mmx_value(e, n, QWORD);
+            e.sink()
+                .i64_const(u32::BITS.into())
+                .i64_shr_u()
+                .i64x2_replace_lane(0);
+        }
+    };
+    let dest = |e: &mut E| match register(0) {
+        Some(x) => e.get_vector(x),
+        None => mmx_vector(e, 0, QWORD),
+    };
     // Push operand `n` as a v128: a whole xmm register or 16 bytes of memory, or the low `bytes` of either
-    // (or of a general register) zero-extended.
+    // (or of a general register) zero-extended; an MMX instruction's as `mmx_vector`.
     let push = |e: &mut E, n: u32, bytes: u32| match ins.op_kind(n) {
+        _ if mm(n).is_some() || (mmx_form && ins.op_kind(n) == OpKind::Memory) => {
+            mmx_vector(e, n, bytes)
+        }
         OpKind::Register => match register(n) {
             Some(x) if bytes == XMM_BYTES => e.get_vector(x),
             Some(x) => {
@@ -469,7 +621,12 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
     };
     let immediate = (ins.op_count() > 1 && ins.op_kind(ins.op_count() - 1) == OpKind::Immediate8)
-        .then(|| ins.immediate8());
+        .then(|| ins.immediate8())
+        // An MMX register's four words.
+        .map(|k| match m {
+            Pextrw | Pinsrw if mmx_form => k & (QWORD / WORD - 1) as u8,
+            _ => k,
+        });
     let value = e.local(ValType::V128);
     if m == Ptest {
         test(e, register(0).unwrap(), |e| push(e, 1, XMM_BYTES));
@@ -491,7 +648,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                 // From memory the rest is cleared.
                 push(e, 1, bytes);
             } else {
-                e.get_vector(register(0).unwrap());
+                dest(e);
                 let whole = ins.op_kind(1) == OpKind::Register;
                 push(e, 1, if whole { XMM_BYTES } else { bytes });
                 let lanes: [u8; 16] = core::array::from_fn(|b| {
@@ -531,7 +688,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // The high halves of the 32-bit products.
         Pmulhw | Pmulhuw => {
             let (a, b) = (e.local(ValType::V128), e.local(ValType::V128));
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().local_set(a);
             push(e, 1, XMM_BYTES);
             e.sink().local_set(b);
@@ -556,7 +713,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // |dst - src| of each byte, summed in each 64-bit half.
         Psadbw => {
             let (a, b) = (e.local(ValType::V128), e.local(ValType::V128));
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().local_set(a);
             push(e, 1, XMM_BYTES);
             e.sink()
@@ -580,7 +737,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
         // Each byte from dst's byte the source's byte names, or zero where its top bit is set.
         Pshufb => {
-            e.get_vector(register(0).unwrap());
+            dest(e);
             push(e, 1, XMM_BYTES);
             e.sink()
                 .v128_const(splat8(SWIZZLE_INDEX))
@@ -599,7 +756,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // dst negated where the source is negative, zero where it is zero.
         Psignb | Psignw | Psignd => {
             let (a, b) = (e.local(ValType::V128), e.local(ValType::V128));
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().local_set(a);
             push(e, 1, XMM_BYTES);
             e.sink().local_set(b);
@@ -624,6 +781,21 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             };
             s.v128_andnot();
         }
+        // MMX's: the 16 bytes dst:src shifted right by the immediate's bytes, the low 8 kept.
+        Palignr if mmx_form => {
+            let k = immediate.unwrap();
+            let span = XMM_BYTES as u8;
+            e.sink().v128_const(0);
+            mmx_value(e, 1, QWORD);
+            e.sink().i64x2_replace_lane(0);
+            mmx_value(e, 0, QWORD);
+            e.sink()
+                .i64x2_replace_lane(1)
+                .v128_const(0)
+                .i8x16_shuffle(core::array::from_fn(|b| {
+                    (b + usize::from(k)).min(usize::from(span)) as u8
+                }));
+        }
         // The 32 bytes dst:src shifted right by the immediate's bytes, the low 16 kept.
         Palignr => {
             let k = immediate.unwrap();
@@ -631,13 +803,13 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             if k >= 2 * span {
                 e.sink().v128_const(0);
             } else if k >= span {
-                e.get_vector(register(0).unwrap());
+                dest(e);
                 e.sink()
                     .v128_const(0)
                     .i8x16_shuffle(core::array::from_fn(|b| (b as u8 + k - span).min(span)));
             } else {
                 push(e, 1, XMM_BYTES);
-                e.get_vector(register(0).unwrap());
+                dest(e);
                 e.sink()
                     .i8x16_shuffle(core::array::from_fn(|b| b as u8 + k));
             }
@@ -645,7 +817,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // The even and the odd elements of dst then the source, added or subtracted pairwise.
         Phaddw | Phaddd | Phaddsw | Phsubw | Phsubd | Phsubsw | Pmaddubsw => {
             let (a, b) = (e.local(ValType::V128), e.local(ValType::V128));
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().local_set(a);
             push(e, 1, XMM_BYTES);
             e.sink().local_set(b);
@@ -691,7 +863,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // Rounded high halves of the products; -2^15 times itself gives -2^15, where WebAssembly saturates.
         Pmulhrsw => {
             let (a, b) = (e.local(ValType::V128), e.local(ValType::V128));
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().local_set(a);
             push(e, 1, XMM_BYTES);
             let lowest = splat16(i16::MIN);
@@ -714,7 +886,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             let evens: [u8; 16] = core::array::from_fn(|b| {
                 ((b as u32 / DWORD) * QWORD % XMM_BYTES + b as u32 % DWORD) as u8
             });
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink()
                 .local_tee(value)
                 .local_get(value)
@@ -747,7 +919,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // Each element from the source where the immediate's bit is set.
         Pblendw | Blendps | Blendpd => {
             let k = immediate.unwrap();
-            e.get_vector(register(0).unwrap());
+            dest(e);
             push(e, 1, XMM_BYTES);
             e.sink().i8x16_shuffle(core::array::from_fn(|b| {
                 let b = b as u8;
@@ -761,7 +933,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // Each element from the source where xmm0's element has its top bit set.
         Pblendvb | Blendvps | Blendvpd => {
             push(e, 1, XMM_BYTES);
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.get_vector(0);
             let mut s = e.sink();
             match m {
@@ -785,7 +957,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
         Pinsrb | Pinsrd | Pinsrq => {
             let k = immediate.unwrap() & (XMM_BYTES / bytes - 1) as u8;
-            e.get_vector(register(0).unwrap());
+            dest(e);
             match ins.op_kind(1) {
                 OpKind::Register => get_general(e, general(ins.op_register(1)).unwrap()),
                 _ => load(e, mem.unwrap(), bytes),
@@ -805,7 +977,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             let source = if whole { k >> INSERTPS_SOURCE_SHIFT } else { 0 };
             let target = (k >> INSERTPS_TARGET_SHIFT) & (lanes - 1);
             let unit = DWORD as u8;
-            e.get_vector(register(0).unwrap());
+            dest(e);
             push(e, 1, if whole { XMM_BYTES } else { DWORD });
             e.sink()
                 .i8x16_shuffle(core::array::from_fn(|b| {
@@ -867,7 +1039,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                 e.local(ValType::V128),
                 e.local(ValType::V128),
             );
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().local_set(a);
             push(e, 1, XMM_BYTES);
             e.sink().local_set(b).v128_const(0).local_set(sum);
@@ -904,18 +1076,18 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // ~op0 & op1.
         Pandn | Andnps | Andnpd => {
             push(e, 1, XMM_BYTES);
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().v128_andnot();
         }
         // The low halves of each 64-bit lane, multiplied to 64 bits.
         Pmuludq => {
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().v128_const(LOW_HALVES).v128_and();
             push(e, 1, XMM_BYTES);
             e.sink().v128_const(LOW_HALVES).v128_and().i64x2_mul();
         }
         _ if binary(m).is_some() => {
-            e.get_vector(register(0).unwrap());
+            dest(e);
             push(e, 1, XMM_BYTES);
             binary(m).unwrap()(&mut e.sink());
         }
@@ -949,7 +1121,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                     8 * ((k >> n) & 1) + b % 8 + if n == 1 { 16 } else { 0 }
                 }
             });
-            e.get_vector(register(0).unwrap());
+            dest(e);
             push(e, 1, XMM_BYTES);
             e.sink().i8x16_shuffle(lanes);
         }
@@ -969,7 +1141,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                     16
                 }
             });
-            e.get_vector(register(0).unwrap());
+            dest(e);
             e.sink().v128_const(0).i8x16_shuffle(lanes);
         }
         // By the count in the source's low 64 bits: past the lane's last bit, zero, or the sign for psra.
@@ -979,7 +1151,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             push(e, 1, HALF.into());
             e.sink().i64x2_extract_lane(0).local_set(count);
             let last = i64::from(lane) - 1;
-            e.get_vector(register(0).unwrap());
+            dest(e);
             let mut s = e.sink();
             s.local_get(count);
             if kind == 2 {
@@ -1002,7 +1174,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         _ if shift(m).is_some() => {
             let (lane, kind) = shift(m).unwrap();
             let k = u32::from(immediate.unwrap());
-            e.get_vector(register(0).unwrap());
+            dest(e);
             let mut s = e.sink();
             if k >= u32::from(lane) && kind != 2 {
                 // Every bit shifted out.
@@ -1013,7 +1185,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             }
         }
         Pinsrw => {
-            e.get_vector(register(0).unwrap());
+            dest(e);
             match ins.op_kind(1) {
                 OpKind::Register => get_general(e, general(ins.op_register(1)).unwrap()),
                 _ => load(e, mem.unwrap(), 2),
@@ -1050,6 +1222,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                     e.sink().local_get(value);
                     e.set_vector(x);
                 }
+                None if mm(0).is_some() => set_mmx(e, mm(0).unwrap(), value),
                 None => {
                     let low = e.local(ValType::I64);
                     e.sink()
@@ -1075,4 +1248,49 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             }
         },
     }
+    if mmx_form && writes_memory {
+        mmx_transition(e, false);
+    }
+}
+
+/// `maskmovq`: the bytes of the first MMX register whose byte in the second has its top bit set, to the eight
+/// bytes at rdi (checked whole first, as `maskmovdqu`'s halves are).
+fn masked_store_mmx<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let ins = &i.iced;
+    let bytes = QWORD;
+    let at = register_address(e, i, RDI, 0);
+    if let Some(base) = segment(i) {
+        e.sink().local_get(at);
+        e.get(base);
+        e.sink().i64_add().local_set(at);
+    }
+    e.check(at, bytes, wcontainers_guest_cpu::Access::Write, 0);
+    let mask = e.local(ValType::I64);
+    e.get(mmx_register(
+        mmx(ins.op_register(1)).expect("an MMX register"),
+    ));
+    // Each byte's top bit spread over the byte.
+    e.sink()
+        .local_set(mask)
+        .v128_const(0)
+        .local_get(mask)
+        .i64x2_replace_lane(0)
+        .i32_const((u8::BITS - 1) as i32)
+        .i8x16_shr_s()
+        .i64x2_extract_lane(0)
+        .local_set(mask);
+    let value = e.local(ValType::I64);
+    e.get(mmx_register(
+        mmx(ins.op_register(0)).expect("an MMX register"),
+    ));
+    e.sink().local_get(mask).i64_and();
+    load(e, at, bytes);
+    e.sink()
+        .local_get(mask)
+        .i64_const(-1)
+        .i64_xor()
+        .i64_and()
+        .i64_or()
+        .local_set(value);
+    store(e, at, bytes, value);
 }

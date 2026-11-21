@@ -820,6 +820,12 @@ fn programs_match_linux_x86_64() {
     programs_match_linux::<X86_64>();
 }
 
+/// C's long double through the x87 unit.
+#[test]
+fn long_double_matches_linux_x86_64() {
+    match_linux::<X86_64>(&[("long_double", Library::C)]);
+}
+
 #[test]
 fn stack_moved_by_a_callee_matches_linux_x86_64() {
     stack_moved_by_a_callee_matches_linux::<X86_64>();

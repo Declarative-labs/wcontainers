@@ -25,7 +25,15 @@ pub struct Instruction {
     pub operand_size_prefix: bool,
     /// Longer than the CPU's 15-byte limit: general protection.
     pub too_long: bool,
+    /// For an x87 instruction, its opcode as FOP keeps it: the escape byte's low three bits, then ModRM.
+    pub x87_opcode: u16,
 }
+
+/// `wait`'s opcode.
+const WAIT: u8 = 0x9b;
+/// The x87 escape opcodes D8 to DF.
+const X87_ESCAPE: u8 = 0xd8;
+const X87_ESCAPE_MASK: u8 = 0xf8;
 
 /// The claim group of a `Code` (`claims::GROUP_*`), from iced's tables at build time.
 pub fn claim_group(code: Code) -> u8 {
@@ -46,6 +54,12 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     let address32 = code[..prefixes].contains(&ADDRESS_SIZE);
     let operand_size_prefix = code[..prefixes].contains(&OPERAND_SIZE);
     let mut too_long = false;
+    // iced reads `wait` and the x87 instruction after it as one (`fstsw` for `wait; fnstsw`); the CPU runs
+    // them as two, which a single step or a fault between them tells apart.
+    if code.get(prefixes) == Some(&WAIT) && iced.code() != Code::Wait {
+        iced.set_code(Code::Wait);
+        iced.set_len(prefixes + 1);
+    }
     // `wbnoinvd` is `wbinvd` with an F3 prefix, which a CPU without it (the one presented) ignores.
     if iced.code() == Code::Wbnoinvd {
         iced.set_code(Code::Wbinvd);
@@ -64,12 +78,21 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
         iced.set_len(length.min(u8::MAX.into()));
     }
     let length = iced.len() as u8;
+    let bytes = &code[..usize::from(length).min(code.len())];
+    let x87_opcode = bytes
+        .iter()
+        .position(|b| b & X87_ESCAPE_MASK == X87_ESCAPE)
+        .map_or(0, |at| {
+            let modrm = bytes.get(at + 1).copied().unwrap_or_default();
+            u16::from(bytes[at] & !X87_ESCAPE_MASK) << u8::BITS | u16::from(modrm)
+        });
     Some((
         Instruction {
             iced,
             address32,
             operand_size_prefix,
             too_long,
+            x87_opcode,
         },
         length,
     ))

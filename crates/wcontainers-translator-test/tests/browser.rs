@@ -86,3 +86,9 @@ fn hello_matches_linux_in_chrome_at_none_x86_64() {
         &[(LookAhead::None, Optimise::Speed)],
     );
 }
+
+/// C's long double through the x87 unit, every way.
+#[test]
+fn long_double_matches_linux_in_chrome_x86_64() {
+    programs_match_linux_in_chrome::<X86_64>(&[("long_double", Library::C)], &EVERY_WAY);
+}
