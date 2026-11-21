@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(unused_variables)]
+// TODO: a wait costs one indirect call to wake the kernel, because Rust cannot yet resolve a future's waker at compile time. Check on https://github.com/rust-lang/rfcs/pull/3434 (a future generic over its context) and on https://goals.rust-lang.org/2026/async-statemachine-optimisation.html; adopt either when it is stable.
 #![allow(async_fn_in_trait)]
 
 use core::ops::{ControlFlow, Deref, Range};
