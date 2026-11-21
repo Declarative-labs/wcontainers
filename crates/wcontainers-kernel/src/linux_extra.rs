@@ -665,7 +665,8 @@ pub(crate) struct seminfo {
 }
 
 /// POSIX message queues (`linux/mqueue.h`, `ipc_namespace.h`, `mqueue.c`): the most priorities, the
-/// limits and defaults of a new IPC namespace, the hard limits for `CAP_SYS_RESOURCE`, the sizes of
+/// limits and defaults of a new IPC namespace, the hard limits for `CAP_SYS_RESOURCE` and the
+/// least ones a sysctl may set, the sizes of
 /// the kernel's message (`struct msg_msg`) and priority node (`struct posix_msg_tree_node`) on
 /// arm64 that a queue's charge counts, the size a queue file shows, the cookie a thread
 /// notification reads, the file system's magic and `struct sigevent`'s size.
@@ -676,6 +677,8 @@ pub(crate) const MQ_MSG_DEFAULT: i64 = 10;
 pub(crate) const MQ_MSGSIZE_MAX: i64 = 8192;
 pub(crate) const MQ_MSGSIZE_DEFAULT: i64 = 8192;
 pub(crate) const HARD_MSGMAX: i64 = 65536;
+pub(crate) const MIN_MSGMAX: i32 = 1;
+pub(crate) const MIN_MSGSIZEMAX: i32 = 128;
 pub(crate) const HARD_MSGSIZEMAX: i64 = 16 << 20;
 pub(crate) const MSG_MSG_SIZE: u64 = 48;
 pub(crate) const TREE_NODE_SIZE: u64 = 48;

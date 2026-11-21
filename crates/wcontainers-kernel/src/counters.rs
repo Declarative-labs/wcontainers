@@ -185,6 +185,10 @@ pub mod reason {
     /// The task id source answered a number outside 1 to `pid_max`; the fork or clone fails with
     /// EAGAIN. Detail: the number.
     pub const TASK_ID_OUT_OF_RANGE: &str = "task id out of range";
+    /// A container's start set a sysctl this kernel holds no state for (a value fixed here, or a
+    /// file `/proc/sys` does not have): the start fails, with EROFS or ENOENT. Detail: the file's
+    /// index in `/proc`'s table, or the table's length where it has none.
+    pub const SYSCTL_NOT_BUILT: &str = "sysctl not built";
     /// A request for memory found no room below the executor's ceiling. Detail: the call's number.
     pub const PROCESS_OUTGROWN: &str = "process outgrew the ceiling";
     /// A signal the embedder sent through a process's handle names no thread of that process, has
@@ -224,6 +228,7 @@ pub mod reason {
         OPTION_NOT_BUILT,
         PROTOCOL_NOT_BUILT,
         NETLINK_REQUEST_NOT_BUILT,
+        SYSCTL_NOT_BUILT,
     ];
 }
 

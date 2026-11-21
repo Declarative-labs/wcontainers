@@ -114,6 +114,8 @@ pub struct StartOptions<'a> {
     pub io_priority: u32,
     /// Its execution domain and flags, as `personality` takes them.
     pub personality: u32,
+    /// The container's sysctls (`--sysctl`): each key, dotted, and the value written to its file.
+    pub sysctls: &'a [(&'a str, &'a str)],
 }
 
 /// What answers a container's calls before Linux does.
@@ -142,6 +144,7 @@ impl Default for StartOptions<'_> {
             scheduler: None,
             io_priority: 0,
             personality: 0,
+            sysctls: &[],
         }
     }
 }
@@ -1024,6 +1027,26 @@ impl Kernel {
         pid: Pid,
         options: &StartOptions<'_>,
     ) -> Result<(), Errno> {
+        for (key, value) in options.sysctls {
+            let path = crate::sysctl::path_of(key);
+            if let Some(written) = self.ipc.limits.write(&path, value.as_bytes()) {
+                written?;
+                continue;
+            }
+            let index = crate::fs::proc::global_index(&path);
+            let answer = if index.is_some() {
+                Errno::EROFS
+            } else {
+                Errno::ENOENT
+            };
+            let detail = index.unwrap_or_else(crate::fs::proc::global_count) as u64;
+            return Err(self.counters.refuse(
+                cx.host,
+                crate::counters::reason::SYSCTL_NOT_BUILT,
+                detail,
+                answer,
+            ));
+        }
         if let Some(attributes) = &options.scheduler {
             crate::syscall::set_own_schedule(self, pid, attributes)?;
         }

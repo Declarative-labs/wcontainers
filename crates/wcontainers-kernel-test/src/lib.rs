@@ -86,7 +86,7 @@ pub fn run_ours_injected(
         injections,
         None,
         &[],
-        false,
+        |_| {},
     )
 }
 
@@ -105,12 +105,19 @@ pub fn run_ours_published(
         ..Default::default()
     };
     run_ours_on(
-        directory, path, arguments, seed, injections, None, published, false,
+        directory,
+        path,
+        arguments,
+        seed,
+        injections,
+        None,
+        published,
+        |_| {},
     )
 }
 
 /// As [`run_ours_injected`], with the root file system on the backend (`Some("/")`) or in memory,
-/// the ports published, and the kernel on the machine's clock or a repeatable one.
+/// the ports published, and `prepare`'s changes to how it starts.
 #[allow(
     clippy::too_many_arguments,
     reason = "each names how the container runs"
@@ -123,7 +130,7 @@ fn run_ours_on(
     injections: driver::Injections,
     backend: Option<&str>,
     published: &[(u16, u16)],
-    wall_clock: bool,
+    prepare: impl FnOnce(&mut driver::Prepared),
 ) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, guest_directory_entry()));
@@ -140,7 +147,7 @@ fn run_ours_on(
         address_space: standin::SPACE_32_BIT,
     };
     let mut prepared = driver::prepare(&container);
-    prepared.wall_clock = wall_clock;
+    prepare(&mut prepared);
     driver::run_prepared(prepared, &container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
@@ -167,9 +174,32 @@ pub fn assert_same_output_on_wall_clock(out: &Path, name: &str) -> driver::Run {
         driver::Injections::default(),
         None,
         &[],
-        true,
+        |prepared| prepared.wall_clock = true,
     );
     assert_same(ours, &reference::run(&program, &[]))
+}
+
+/// As [`assert_same_output`], with ours started with `options` and the reference made with
+/// `docker_options`, which give the same.
+pub fn assert_same_output_with(
+    out: &Path,
+    name: &str,
+    options: wcontainers_kernel::StartOptions<'static>,
+    docker_options: &[&str],
+) -> driver::Run {
+    let program = guest::build(name, &[], out);
+    let path = reference::in_guest_directory(program.file_name().expect("program has a name"));
+    let ours = run_ours_on(
+        program.parent().expect("program has a directory"),
+        &path,
+        &[path.as_str()],
+        0,
+        driver::Injections::default(),
+        None,
+        &[],
+        |prepared| prepared.options = options,
+    );
+    assert_same(ours, &reference::run_with(&program, &[], docker_options))
 }
 
 /// Checks that both runs printed the same lines and ended the same way; returns ours.
@@ -267,7 +297,7 @@ fn same_output_seeded(
             injections,
             backend,
             &[],
-            false,
+            |_| {},
         );
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();

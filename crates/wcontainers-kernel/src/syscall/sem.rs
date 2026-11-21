@@ -14,6 +14,7 @@ use super::ipc::{Ids, Object, Perm, get, new_perm};
 use crate::linux::general::*;
 use crate::linux_extra::*;
 use crate::process::{Channel, Pid, Tid};
+use crate::sysctl::{SEMMNI_INDEX, SEMMNS_INDEX, SEMMSL_INDEX, SEMOPM_INDEX};
 use crate::{Context, Errno, Kernel};
 
 /// One semaphore (`struct sem`) and the waiting operations on it alone.
@@ -103,7 +104,8 @@ pub(super) fn semget(
     [key, count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let (key, count, flags) = (key as i32, count as i32, flags as u32);
-    if !(0..=SEMMSL).contains(&count) {
+    let [semmsl, semmns, _, semmni] = kernel.ipc.limits.sem;
+    if !(0..=semmsl).contains(&count) {
         return Err(Errno::EINVAL);
     }
     let count = count as usize;
@@ -123,10 +125,10 @@ pub(super) fn semget(
     if count == 0 {
         return Err(Errno::EINVAL);
     }
-    if sems.used + count as u64 > SEMMNS {
+    if sems.used as i64 + count as i64 > i64::from(semmns) {
         return Err(Errno::ENOSPC);
     }
-    let slot = sems.ids.allocate(SEMMNI)?;
+    let slot = sems.ids.allocate(semmni as u64)?;
     let perm = new_perm(&credentials, key, flags, slot);
     let id = perm.id;
     let now = kernel.now(cx).seconds;
@@ -185,7 +187,7 @@ fn operate(
         None
     };
     let (id, count) = (id as i32, count as u32);
-    if count > SEMOPM {
+    if count > kernel.ipc.limits.sem[SEMOPM_INDEX] as u32 {
         return Err(Errno::E2BIG);
     }
     if count < 1 {
@@ -809,13 +811,14 @@ pub(super) fn semctl(
     let sems = &mut kernel.ipc.sem;
     match command {
         IPC_INFO | SEM_INFO => {
+            let limits = kernel.ipc.limits.sem;
             let mut info = seminfo {
                 semmap: SEMMNS as i32,
-                semmni: SEMMNI as i32,
-                semmns: SEMMNS as i32,
+                semmni: limits[SEMMNI_INDEX],
+                semmns: limits[SEMMNS_INDEX],
                 semmnu: SEMMNS as i32,
-                semmsl: SEMMSL,
-                semopm: SEMOPM as i32,
+                semmsl: limits[SEMMSL_INDEX],
+                semopm: limits[SEMOPM_INDEX],
                 semume: SEMOPM as i32,
                 semusz: SEMUSZ,
                 semvmx: SEMVMX,

@@ -13,12 +13,13 @@ use wcontainers_abi::{PAGE_SIZE, Permissions};
 use super::{Content, FileSystem, New, Node, Time, Walk, new_inode};
 use crate::Errno;
 use crate::linux::general::*;
-use crate::linux_extra::{
-    MQ_MSG_DEFAULT, MQ_MSG_MAX, MQ_MSGSIZE_DEFAULT, MQ_MSGSIZE_MAX, MQ_QUEUES_MAX, MSGMAX, MSGMNB,
-    MSGMNI, SEMMNI, SEMMNS, SEMMSL, SEMOPM, SHMALL, SHMMAX, SHMMNI,
-};
 use crate::memory::Backing;
 use crate::process::{Channel, Fs, Pid, Process, Thread, Tid};
+use crate::sysctl::{
+    MQ_MSG_DEFAULT_PATH, MQ_MSG_MAX_PATH, MQ_MSGSIZE_DEFAULT_PATH, MQ_MSGSIZE_MAX_PATH,
+    MQ_QUEUES_MAX_PATH, MSGMAX_PATH, MSGMNB_PATH, MSGMNI_PATH, SEM_PATH, SHMALL_PATH, SHMMAX_PATH,
+    SHMMNI_PATH, SYSCTL_ROOT, VALUE_SEPARATOR,
+};
 
 /// Parts a `status` field's name from its value.
 const STATUS_SEPARATOR: char = '\t';
@@ -400,7 +401,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("scsi", Global::Directory),
     ("stat", Global::File(0o444)),
     ("swaps", Global::File(0o444)),
-    ("sys", Global::Directory),
+    (SYSCTL_ROOT, Global::Directory),
     ("sys/abi", Global::Directory),
     ("sys/debug", Global::Directory),
     ("sys/dev", Global::Directory),
@@ -418,11 +419,11 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/fs/lease-break-time", Global::File(0o644)),
     ("sys/fs/leases-enable", Global::File(0o644)),
     ("sys/fs/mqueue", Global::Directory),
-    ("sys/fs/mqueue/msg_default", Global::File(0o644)),
-    ("sys/fs/mqueue/msg_max", Global::File(0o644)),
-    ("sys/fs/mqueue/msgsize_default", Global::File(0o644)),
-    ("sys/fs/mqueue/msgsize_max", Global::File(0o644)),
-    ("sys/fs/mqueue/queues_max", Global::File(0o644)),
+    (MQ_MSG_DEFAULT_PATH, Global::File(0o644)),
+    (MQ_MSG_MAX_PATH, Global::File(0o644)),
+    (MQ_MSGSIZE_DEFAULT_PATH, Global::File(0o644)),
+    (MQ_MSGSIZE_MAX_PATH, Global::File(0o644)),
+    (MQ_QUEUES_MAX_PATH, Global::File(0o644)),
     ("sys/fs/nr_open", Global::File(0o644)),
     ("sys/fs/pipe-max-size", Global::File(0o644)),
     ("sys/fs/pipe-user-pages-hard", Global::File(0o644)),
@@ -452,9 +453,9 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/keys/root_maxbytes", Global::File(0o644)),
     ("sys/kernel/keys/root_maxkeys", Global::File(0o644)),
     (MSG_NEXT_ID, Global::File(0o444)),
-    ("sys/kernel/msgmax", Global::File(0o644)),
-    ("sys/kernel/msgmnb", Global::File(0o644)),
-    ("sys/kernel/msgmni", Global::File(0o644)),
+    (MSGMAX_PATH, Global::File(0o644)),
+    (MSGMNB_PATH, Global::File(0o644)),
+    (MSGMNI_PATH, Global::File(0o644)),
     ("sys/kernel/ngroups_max", Global::File(0o444)),
     ("sys/kernel/ns_last_pid", Global::File(0o666)),
     ("sys/kernel/osrelease", Global::File(0o444)),
@@ -469,12 +470,12 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/random/uuid", Global::File(0o444)),
     (RANDOMIZE_VA_SPACE, Global::File(0o644)),
     ("sys/kernel/sched_autogroup_enabled", Global::File(0o644)),
-    ("sys/kernel/sem", Global::File(0o644)),
+    (SEM_PATH, Global::File(0o644)),
     (SEM_NEXT_ID, Global::File(0o444)),
     (SHM_NEXT_ID, Global::File(0o444)),
-    ("sys/kernel/shmall", Global::File(0o644)),
-    ("sys/kernel/shmmax", Global::File(0o644)),
-    ("sys/kernel/shmmni", Global::File(0o644)),
+    (SHMALL_PATH, Global::File(0o644)),
+    (SHMMAX_PATH, Global::File(0o644)),
+    (SHMMNI_PATH, Global::File(0o644)),
     ("sys/kernel/tainted", Global::File(0o644)),
     ("sys/kernel/version", Global::File(0o444)),
     ("sys/net", Global::Directory),
@@ -730,8 +731,18 @@ pub(crate) fn polls(entry: &Entry) -> bool {
     }
 }
 
+/// The index in `/proc`'s table of the entry at `path` below it, if it has one.
+pub(crate) fn global_index(path: &str) -> Option<usize> {
+    GLOBAL.iter().position(|(name, _)| *name == path)
+}
+
+/// How many entries `/proc`'s table holds.
+pub(crate) fn global_count() -> usize {
+    GLOBAL.len()
+}
+
 pub(crate) fn is_sysctl_root(index: usize) -> bool {
-    GLOBAL[index].0 == "sys"
+    GLOBAL[index].0 == SYSCTL_ROOT
 }
 
 impl Entry {
@@ -1102,7 +1113,9 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
     let is_directory = mode & S_IFMT == S_IFDIR;
     // Docker mounts `/proc/sys` again over itself, read-only.
     let fs = match entry {
-        Entry::Global(index) if GLOBAL[index].0 == "sys" || GLOBAL[index].0.starts_with("sys/") => {
+        Entry::Global(index)
+            if GLOBAL[index].0 == SYSCTL_ROOT || GLOBAL[index].0.starts_with("sys/") =>
+        {
             FileSystem {
                 flags: view.fs.flags | crate::linux_extra::ST_RDONLY,
                 ..view.fs.clone()
@@ -1816,21 +1829,13 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/fs/lease-break-time" => {
                     let _ = writeln!(out, "{}", crate::syscall::lease::BREAK_SECONDS);
                 }
-                "sys/fs/mqueue/msg_default" => {
-                    let _ = writeln!(out, "{MQ_MSG_DEFAULT}");
+                MQ_MSG_DEFAULT_PATH => value_line(&mut out, source.ipc.limits.mq_msg_default),
+                MQ_MSG_MAX_PATH => value_line(&mut out, source.ipc.limits.mq_msg_max),
+                MQ_MSGSIZE_DEFAULT_PATH => {
+                    value_line(&mut out, source.ipc.limits.mq_msgsize_default)
                 }
-                "sys/fs/mqueue/msg_max" => {
-                    let _ = writeln!(out, "{MQ_MSG_MAX}");
-                }
-                "sys/fs/mqueue/msgsize_default" => {
-                    let _ = writeln!(out, "{MQ_MSGSIZE_DEFAULT}");
-                }
-                "sys/fs/mqueue/msgsize_max" => {
-                    let _ = writeln!(out, "{MQ_MSGSIZE_MAX}");
-                }
-                "sys/fs/mqueue/queues_max" => {
-                    let _ = writeln!(out, "{MQ_QUEUES_MAX}");
-                }
+                MQ_MSGSIZE_MAX_PATH => value_line(&mut out, source.ipc.limits.mq_msgsize_max),
+                MQ_QUEUES_MAX_PATH => value_line(&mut out, source.ipc.limits.mq_queues_max),
                 "sys/fs/nr_open" => out.push_str("1048576\n"),
                 "sys/fs/pipe-max-size" => {
                     let _ = writeln!(out, "{}", crate::pipe::MAX_SIZE);
@@ -1842,28 +1847,22 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 // Built and on in the reference's kernel (CONFIG_SCHED_AUTOGROUP); the made-up
                 // machine's scheduler has no groups to switch, and a container cannot write it.
                 "sys/kernel/sched_autogroup_enabled" => out.push_str("1\n"),
-                "sys/kernel/msgmax" => {
-                    let _ = writeln!(out, "{MSGMAX}");
-                }
+                MSGMAX_PATH => value_line(&mut out, source.ipc.limits.msg_max),
                 MSG_NEXT_ID | SEM_NEXT_ID | SHM_NEXT_ID => value_line(&mut out, NEXT_ID_UNSET),
-                "sys/kernel/msgmnb" => {
-                    let _ = writeln!(out, "{MSGMNB}");
+                MSGMNB_PATH => value_line(&mut out, source.ipc.limits.msg_mnb),
+                MSGMNI_PATH => value_line(&mut out, source.ipc.limits.msg_mni),
+                SEM_PATH => {
+                    for (index, value) in source.ipc.limits.sem.iter().enumerate() {
+                        if index > 0 {
+                            out.push(VALUE_SEPARATOR);
+                        }
+                        out.push_str(&alloc::string::ToString::to_string(value));
+                    }
+                    out.push(PROC_LINE_END);
                 }
-                "sys/kernel/msgmni" => {
-                    let _ = writeln!(out, "{MSGMNI}");
-                }
-                "sys/kernel/sem" => {
-                    let _ = writeln!(out, "{SEMMSL}\t{SEMMNS}\t{SEMOPM}\t{SEMMNI}");
-                }
-                "sys/kernel/shmall" => {
-                    let _ = writeln!(out, "{SHMALL}");
-                }
-                "sys/kernel/shmmax" => {
-                    let _ = writeln!(out, "{SHMMAX}");
-                }
-                "sys/kernel/shmmni" => {
-                    let _ = writeln!(out, "{SHMMNI}");
-                }
+                SHMALL_PATH => value_line(&mut out, source.ipc.limits.shm_all),
+                SHMMAX_PATH => value_line(&mut out, source.ipc.limits.shm_max),
+                SHMMNI_PATH => value_line(&mut out, source.ipc.limits.shm_mni),
                 // Nothing has tainted this kernel.
                 "sys/kernel/tainted" => out.push_str("0\n"),
                 "sys/kernel/version" => {

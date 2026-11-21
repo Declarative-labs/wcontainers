@@ -34,6 +34,7 @@ mod sharing;
 mod signal;
 mod suspend;
 mod syscall;
+mod sysctl;
 mod system;
 mod task;
 mod tty;

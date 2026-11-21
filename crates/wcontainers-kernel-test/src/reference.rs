@@ -68,8 +68,8 @@ pub mod docker {
     pub const USER_OPTION: &str = "--user";
     /// A resource limit, as `name=soft:hard`.
     pub const ULIMIT_OPTION: &str = "--ulimit";
-    /// Between a resource limit's name and its values.
-    pub const ULIMIT_SEPARATOR: &str = "=";
+    /// Between a name and its value in Docker's options (`--ulimit`, `--sysctl`).
+    pub const VALUE_SEPARATOR: &str = "=";
     /// The open files limit's name.
     pub const ULIMIT_NOFILE: &str = "nofile";
     /// A security option.
@@ -84,6 +84,8 @@ pub mod docker {
     pub const CAP_ADD_OPTION: &str = "--cap-add";
     /// Drops a capability, likewise.
     pub const CAP_DROP_OPTION: &str = "--cap-drop";
+    /// Sets a sysctl, as `key=value`.
+    pub const SYSCTL_OPTION: &str = "--sysctl";
     /// The security option that filters no call.
     pub const SECCOMP_UNCONFINED: &str = "seccomp=unconfined";
     /// Before the path of a seccomp profile, as a security option.
@@ -190,7 +192,8 @@ pub fn run_published(
     run_beside(program, arguments, &options, beside)
 }
 
-fn run_with(program: &Path, arguments: &[&str], options: &[&str]) -> Outcome {
+/// As [`run`], in a container made with `options` besides the default ones.
+pub fn run_with(program: &Path, arguments: &[&str], options: &[&str]) -> Outcome {
     run_beside(program, arguments, options, || {})
 }
 
@@ -259,6 +262,37 @@ pub fn run_command_with(options: &[&str], command: &[&str]) -> Outcome {
         .expect("running docker");
     let exit_code = output.status.code().expect("docker exited normally");
     assert_docker_ran(exit_code, &output.stderr);
+    Outcome {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code,
+    }
+}
+
+/// Starts a container made with `options` besides the default ones that Docker cannot start, and
+/// returns what Docker said.
+pub fn refused_with(options: &[&str], command: &[&str]) -> Outcome {
+    let name = container_name(REFERENCE_CONTAINERS);
+    let output = Command::new(docker::CLIENT)
+        .args([docker::START_CONTAINER, docker::REMOVE_ON_EXIT])
+        .args([
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::NAME_OPTION,
+            &name,
+        ])
+        .args(options)
+        .arg(IMAGE)
+        .args(command)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("running docker");
+    let exit_code = output.status.code().expect("docker exited normally");
+    assert!(
+        (wcontainers_kernel::EXIT_START_FAILED..=wcontainers_kernel::EXIT_NOT_FOUND)
+            .contains(&exit_code),
+        "docker ran the container (exit {exit_code})"
+    );
     Outcome {
         stdout: output.stdout,
         stderr: output.stderr,

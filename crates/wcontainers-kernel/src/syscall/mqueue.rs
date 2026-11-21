@@ -191,24 +191,35 @@ pub(crate) fn new_queue(
     let credentials = kernel.credentials(tid);
     let usage = &kernel.ipc.mq_usage;
     let resource = credentials.has(CAP_SYS_RESOURCE);
-    if usage.queues.get() >= MQ_QUEUES_MAX && !resource {
+    let namespace = kernel.ipc.limits;
+    if usage.queues.get() >= u64::from(namespace.mq_queues_max as u32) && !resource {
         return Err(Errno::ENOSPC);
     }
-    let limits = limits.unwrap_or(Limits {
-        max_messages: MQ_MSG_DEFAULT,
-        message_size: MQ_MSGSIZE_DEFAULT,
-    });
-    if limits.max_messages <= 0 || limits.message_size <= 0 {
-        return Err(Errno::EINVAL);
-    }
-    let (most_messages, largest) = if resource {
-        (HARD_MSGMAX, HARD_MSGSIZEMAX)
-    } else {
-        (MQ_MSG_MAX, MQ_MSGSIZE_MAX)
+    // `mq_attr_ok` checks only limits the caller gave.
+    let limits = match limits {
+        Some(limits) => {
+            if limits.max_messages <= 0 || limits.message_size <= 0 {
+                return Err(Errno::EINVAL);
+            }
+            let (most_messages, largest) = if resource {
+                (HARD_MSGMAX, HARD_MSGSIZEMAX)
+            } else {
+                (namespace.mq_msg_max.into(), namespace.mq_msgsize_max.into())
+            };
+            if limits.max_messages > most_messages || limits.message_size > largest {
+                return Err(Errno::EINVAL);
+            }
+            limits
+        }
+        // `mqueue_get_inode`: the defaults, at most the most.
+        None => Limits {
+            max_messages: namespace.mq_msg_default.min(namespace.mq_msg_max).into(),
+            message_size: namespace
+                .mq_msgsize_default
+                .min(namespace.mq_msgsize_max)
+                .into(),
+        },
     };
-    if limits.max_messages > most_messages || limits.message_size > largest {
-        return Err(Errno::EINVAL);
-    }
     let (count, size) = (limits.max_messages as u64, limits.message_size as u64);
     // One `msg_msg` per message and a tree node per priority that may be used.
     let tree = count * MSG_MSG_SIZE + count.min(MQ_PRIO_MAX) * TREE_NODE_SIZE;

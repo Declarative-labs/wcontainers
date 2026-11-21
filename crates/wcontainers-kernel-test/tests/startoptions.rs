@@ -1,9 +1,11 @@
 //! What a container's configuration sets at its start beyond its program (the user and group,
 //! the umask, resource limits, no_new_privs, the `oom_score_adj`, the domain name, capabilities,
-//! seccomp, scheduling, the I/O priority and the personality), compared with the reference given
+//! seccomp, scheduling, the I/O priority, the personality and the sysctls), compared with the
+//! reference given
 //! the same through Docker's options, or through the reference shell where Docker has none.
 
 use core::mem::offset_of;
+use std::path::Path;
 
 use linux_raw_sys::general::RLIMIT_NOFILE;
 use wcontainers_kernel::linux::general::{__NR_mkdirat, CAP_CHOWN, CAP_NET_ADMIN, SCHED_NORMAL};
@@ -15,7 +17,9 @@ use wcontainers_kernel::{
     ADDR_NO_RANDOMIZE, CapabilitySets, DOCKER_CAPABILITIES, DOCKER_LIMITS, DOCKER_UMASK, Errno,
     IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, Seccomp, StartOptions, sched_attr,
 };
-use wcontainers_kernel_test::busybox::run_ours_with;
+use wcontainers_kernel_test::assert_same_output_with;
+use wcontainers_kernel_test::busybox::{run_ours_with, try_ours_with};
+use wcontainers_kernel_test::driver::Failure;
 use wcontainers_kernel_test::reference::{self, docker};
 
 /// What the first process shows of its start: ids, mask, limits, powers, scores and names, and
@@ -30,7 +34,7 @@ const SHOW: &str = "id; umask; ulimit -n; ulimit -Hn; ulimit -s; ulimit -Hs; \
 fn ulimit(name: &str, soft: u64, hard: u64) -> String {
     format!(
         "{name}{}{soft}{}{hard}",
-        docker::ULIMIT_SEPARATOR,
+        docker::VALUE_SEPARATOR,
         docker::FIELD_SEPARATOR
     )
 }
@@ -276,4 +280,86 @@ fn a_seccomp_profile_of_the_containers_own_matches_reference() {
     let show = "grep -E '^Seccomp' /proc/self/status; mkdir /tmp/made; echo mkdir $?; \
         grep -E '^NoNewPrivs' /proc/self/status";
     compare_shown(options, &[docker::SECURITY_OPTION, &security], show, show);
+}
+
+/// The IPC namespace's sysctls Docker lets a container set, small enough for the guest to meet
+/// each limit; the default number of messages is above the most, which only a caller's own
+/// attributes are held to.
+const IPC_SYSCTLS: [(&str, &str); 12] = [
+    ("kernel.shmmax", "900000"),
+    ("kernel.shmmni", "3"),
+    ("kernel.shmall", "5000"),
+    ("kernel.msgmax", "100"),
+    ("kernel.msgmnb", "350"),
+    ("kernel.msgmni", "4"),
+    ("kernel.sem", "5 12 3 2"),
+    ("fs.mqueue.queues_max", "3"),
+    ("fs.mqueue.msg_max", "4"),
+    ("fs.mqueue.msgsize_max", "200"),
+    ("fs.mqueue.msg_default", "6"),
+    ("fs.mqueue.msgsize_default", "150"),
+];
+
+/// Docker's options setting `sysctls`.
+fn sysctl_options(sysctls: &[(&str, &str)]) -> Vec<String> {
+    sysctls
+        .iter()
+        .flat_map(|(key, value)| {
+            [
+                docker::SYSCTL_OPTION.to_string(),
+                format!("{key}{}{value}", docker::VALUE_SEPARATOR),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn ipc_sysctls_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let docker_options = sysctl_options(&IPC_SYSCTLS);
+    let docker_options: Vec<&str> = docker_options.iter().map(String::as_str).collect();
+    let options = StartOptions {
+        sysctls: &IPC_SYSCTLS,
+        ..Default::default()
+    };
+    assert_same_output_with(&out, "sysctlipc", options, &docker_options);
+}
+
+#[test]
+fn a_sysctl_out_of_range_fails_the_start_as_on_linux() {
+    let refused: &[(&str, &str)] = &[("kernel.msgmni", "40000")];
+    let docker_options = sysctl_options(refused);
+    let docker_options: Vec<&str> = docker_options.iter().map(String::as_str).collect();
+    let theirs = reference::refused_with(&docker_options, &["true"]);
+    let said = String::from_utf8_lossy(&theirs.stderr);
+    assert!(said.contains("invalid argument"), "{said}");
+    let ours = try_ours_with(
+        &["true"],
+        StartOptions {
+            sysctls: refused,
+            ..Default::default()
+        },
+    );
+    assert!(matches!(ours, Err(Failure::Start(Errno::EINVAL))));
+}
+
+#[test]
+fn a_sysctl_not_built_fails_the_start() {
+    // One this kernel holds as a fixed value, and one it does not have.
+    for (key, error) in [
+        ("net.core.somaxconn", Errno::EROFS),
+        ("net.ipv4.ip_unprivileged_port_start", Errno::ENOENT),
+    ] {
+        let ours = try_ours_with(
+            &["true"],
+            StartOptions {
+                sysctls: vec![(key, "100")].leak(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(ours, Err(Failure::Start(given)) if given == error),
+            "{key}"
+        );
+    }
 }

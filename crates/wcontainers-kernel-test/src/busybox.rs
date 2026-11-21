@@ -167,6 +167,15 @@ pub fn run_ours_with(
     command: &[&str],
     options: wcontainers_kernel::StartOptions<'static>,
 ) -> driver::Run {
+    try_ours_with(command, options)
+        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
+}
+
+/// As [`run_ours_with`], with a start that fails given back.
+pub fn try_ours_with(
+    command: &[&str],
+    options: wcontainers_kernel::StartOptions<'static>,
+) -> Result<driver::Run, driver::Failure> {
     let path = on_path(command[0]);
     let container = container(command, &path, None);
     let prepared = driver::Prepared {
@@ -175,7 +184,6 @@ pub fn run_ours_with(
         ..driver::prepare(&container)
     };
     driver::run_prepared(prepared, &container, 0, Default::default())
-        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }
 
 /// A container running a command of the reference image found at `path`.

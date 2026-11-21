@@ -204,6 +204,8 @@ pub(crate) struct Ipc {
     /// Pages of segments locked by `SHM_LOCK`, by the real user that locked them
     /// (`UCOUNT_RLIMIT_MEMLOCK`).
     locked_pages: BTreeMap<u32, u64>,
+    /// The namespace's limits, which its sysctls show and a start may set.
+    pub(crate) limits: crate::sysctl::IpcLimits,
 }
 
 /// Linux's `ipcget`: a new object for `IPC_PRIVATE` or a key with none and `IPC_CREAT`, else the key's
@@ -271,7 +273,8 @@ pub(super) fn shmget(
         return Ok(id as u64);
     }
     // `newseg`.
-    if !(SHMMIN..=SHMMAX).contains(&size) {
+    let limits = kernel.ipc.limits;
+    if !(SHMMIN..=limits.shm_max).contains(&size) {
         return Err(Errno::EINVAL);
     }
     let pages = size.div_ceil(PAGE_SIZE);
@@ -279,7 +282,7 @@ pub(super) fn shmget(
         .ipc
         .shm_pages
         .checked_add(pages)
-        .is_none_or(|total| total > SHMALL)
+        .is_none_or(|total| total > limits.shm_all)
     {
         return Err(Errno::ENOSPC);
     }
@@ -310,7 +313,7 @@ pub(super) fn shmget(
         return Err(Errno::EINVAL);
     }
     let ino = kernel.files.numbers.ino();
-    let slot = kernel.ipc.shm.allocate(SHMMNI)?;
+    let slot = kernel.ipc.shm.allocate(limits.shm_mni as u64)?;
     let perm = new_perm(&credentials, key, flags, slot);
     let now = kernel.now(cx);
     let mut regular = crate::fs::Regular::default();
@@ -508,11 +511,11 @@ pub(super) fn shmctl(
     match command {
         IPC_INFO => {
             let info = shminfo64 {
-                shmmax: SHMMAX,
+                shmmax: kernel.ipc.limits.shm_max,
                 shmmin: SHMMIN,
-                shmmni: SHMMNI,
-                shmseg: SHMMNI,
-                shmall: SHMALL,
+                shmmni: kernel.ipc.limits.shm_mni as u64,
+                shmseg: kernel.ipc.limits.shm_mni as u64,
+                shmall: kernel.ipc.limits.shm_all,
                 unused: [0; 4],
             };
             let max = shm.max_index();
@@ -892,7 +895,7 @@ pub(super) fn msgget(
         return Ok(id as u64);
     }
     // `newque`.
-    let slot = kernel.ipc.msg.allocate(MSGMNI)?;
+    let slot = kernel.ipc.msg.allocate(kernel.ipc.limits.msg_mni as u64)?;
     let perm = new_perm(&credentials, key, flags, slot);
     let id = perm.id;
     let now = kernel.now(cx).seconds;
@@ -903,7 +906,7 @@ pub(super) fn msgget(
             perm,
             messages: Default::default(),
             bytes: 0,
-            limit: MSGMNB,
+            limit: kernel.ipc.limits.msg_mnb as u64,
             stime: 0,
             rtime: 0,
             ctime: now,
@@ -928,7 +931,7 @@ pub(super) fn msgsnd(
     let waited = kernel.threads[&tid].call.started;
     let kind: i64 = guest(kernel, cx, tid).read_value(buffer)?;
     let (id, flags) = (id as i32, flags as u32);
-    if size > MSGMAX || (size as i64) < 0 || id < 0 || kind < 1 {
+    if size > kernel.ipc.limits.msg_max as u64 || (size as i64) < 0 || id < 0 || kind < 1 {
         return Err(Errno::EINVAL);
     }
     let text = guest(kernel, cx, tid).read(buffer + 8, size)?;
@@ -1022,7 +1025,8 @@ pub(super) fn msgrcv(
             return Err(Errno::EINVAL);
         }
         // `prepare_copy` loads the caller's buffer as a message first.
-        guest(kernel, cx, tid).read(buffer, size.min(MSGMAX))?;
+        let largest = kernel.ipc.limits.msg_max as u64;
+        guest(kernel, cx, tid).read(buffer, size.min(largest))?;
     }
     let search = Search::new(kind, flags);
     let index = kernel
@@ -1044,7 +1048,7 @@ pub(super) fn msgrcv(
         }
         if flags & MSG_COPY != 0 {
             // `copy_msg`: the copy is made at the size asked for, at most the largest message.
-            if size.min(MSGMAX) < found.text.len() as u64 {
+            if size.min(kernel.ipc.limits.msg_max as u64) < found.text.len() as u64 {
                 return Err(Errno::EINVAL);
             }
             let message = found.clone();
@@ -1118,9 +1122,9 @@ pub(super) fn msgctl(
             let mut info = msginfo {
                 msgpool: MSGPOOL,
                 msgmap: MSGMNB as i32,
-                msgmax: MSGMAX as i32,
-                msgmnb: MSGMNB as i32,
-                msgmni: MSGMNI as i32,
+                msgmax: kernel.ipc.limits.msg_max,
+                msgmnb: kernel.ipc.limits.msg_mnb,
+                msgmni: kernel.ipc.limits.msg_mni,
                 msgssz: MSGSSZ,
                 msgtql: MSGMNB as i32,
                 msgseg: MSGSEG,
@@ -1184,7 +1188,8 @@ pub(super) fn msgctl(
             let (senders, receivers) = (queue.senders(), queue.receivers_channel());
             match wanted {
                 Some(wanted) => {
-                    if wanted.msg_qbytes > MSGMNB && !credentials.has(CAP_SYS_RESOURCE) {
+                    let most = kernel.ipc.limits.msg_mnb as u64;
+                    if wanted.msg_qbytes > most && !credentials.has(CAP_SYS_RESOURCE) {
                         return Err(Errno::EPERM);
                     }
                     let perm = wanted.msg_perm;
