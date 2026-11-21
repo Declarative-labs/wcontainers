@@ -9,3 +9,7 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-configurable = { path = ".." }
+
+[dev-dependencies]
+wcontainers-abi.workspace = true
+libc = "0.2.191"

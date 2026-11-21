@@ -1,0 +1,33 @@
+[package]
+name = "wcontainers-route-resolver-linux-netlink"
+description = "A route resolver that asks the Linux kernel's routing socket of the network namespace it was made in."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-internet-protocol = { path = "../../../internet-protocol" }
+wcontainers-kernel = { path = "../../../kernel" }
+wcontainers-route-resolver = { path = "../.." }
+etherparse.workspace = true
+libc = "0.2.191"
+log = "0.4.35"
+socket2 = "0.6.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-core = "0.9.0"
+netlink-packet-route = "0.34.0"
+netlink-sys = { version = "0.9.0", default-features = false }
+
+[dev-dependencies]
+wcontainers-route-resolver-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

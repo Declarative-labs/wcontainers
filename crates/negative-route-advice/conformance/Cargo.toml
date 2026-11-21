@@ -9,3 +9,6 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-negative-route-advice = { path = ".." }
+
+[dev-dependencies]
+wcontainers-abi.workspace = true

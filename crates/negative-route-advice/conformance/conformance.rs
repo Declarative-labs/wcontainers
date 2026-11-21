@@ -1,11 +1,78 @@
 //! The tests every implementation of wcontainers-negative-route-advice runs, written against its traits alone.
+//!
+//! Each takes the implementor with a handle to advise, made by the suite of a trait that requires
+//! `NegativeRouteAdvice`, which checks the advice's effect on the route itself.
 
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
-/// TODO: temporary placeholder: a suite given only a `NegativeRouteAdvice` has no handle to call it with.
-pub fn call_negative_route_advice_methods<A, Handle>(_advice: A)
+/// Advice about a handle's route is taken.
+pub fn advice_is_taken<A, Handle>((advice, handle): (A, Handle))
 where
     A: NegativeRouteAdvice<Handle>,
 {
-    todo!("this is a placeholder: the real checks of NegativeRouteAdvice are not written yet");
+    assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
+}
+
+/// Advice is taken again when the new route fails too.
+pub fn advice_is_taken_again<A, Handle>((advice, handle): (A, Handle))
+where
+    A: NegativeRouteAdvice<Handle>,
+{
+    assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
+    assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
+}
+
+/// Runs each suite function above as its own test on the value a requiring suite gives, made anew for every test.
+#[macro_export]
+macro_rules! tests {
+    ($value:expr) => {
+        #[test]
+        fn advice_is_taken() {
+            $crate::advice_is_taken($value);
+        }
+
+        #[test]
+        fn advice_is_taken_again() {
+            $crate::advice_is_taken_again($value);
+        }
+    };
+}
+
+#[cfg(test)]
+mod suite {
+    use core::cell::Cell;
+
+    use wcontainers_abi::HostError;
+    use wcontainers_negative_route_advice::NegativeRouteAdvice;
+
+    /// Counts the advice it takes, as a correct implementation may.
+    struct Counts(Cell<u32>);
+
+    impl NegativeRouteAdvice<()> for Counts {
+        fn give_negative_route_advice(&self, _handle: &()) -> Result<(), HostError> {
+            self.0.set(self.0.get() + 1);
+            Ok(())
+        }
+    }
+
+    /// Takes advice once and refuses it after, which the suite must catch.
+    struct TakesOnce(Cell<bool>);
+
+    impl NegativeRouteAdvice<()> for TakesOnce {
+        fn give_negative_route_advice(&self, _handle: &()) -> Result<(), HostError> {
+            if self.0.replace(true) {
+                Err(HostError::NotSupported)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    crate::tests!((Counts(Cell::new(0)), ()));
+
+    #[test]
+    #[should_panic]
+    fn catches_advice_taken_only_once() {
+        crate::advice_is_taken_again((TakesOnce(Cell::new(false)), ()));
+    }
 }
