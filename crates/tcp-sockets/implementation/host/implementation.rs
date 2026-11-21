@@ -99,6 +99,7 @@ const NO_AUTHENTICATION: &str = "TCP authentication is not mapped to the host ye
 const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
+const ARRIVAL_INTERFACE_OF_THE_HANDSHAKE: &str = "Linux keeps for an IPv4 connection the interface of the segment that completed its handshake, which is given as its SYN's";
 const SYNCHRONIZE_FIELDS_OF_THE_SOCKET: &str = "Linux reports no priority, timestamps or drops for a SYN, and its mark only as the accepted socket's: the accepted socket's mark and priority are given, with no timestamps or drops";
 const LONG_SAVED_SYNCHRONIZE: &str = "a SYN's saved headers were longer than the room accept first reads them into, and were read again into a larger one";
 const NO_NETWORK_HEADER: &str =
@@ -496,7 +497,7 @@ fn network_header_start(saved: &[u8], local: SocketAddr, peer: SocketAddr) -> Op
     })
 }
 
-/// The room `IPV6_2292PKTOPTIONS` gives the SYN's packet information in: one control message, padded.
+/// The room `IP_PKTOPTIONS` or `IPV6_2292PKTOPTIONS` gives the packet information in: one control message, padded.
 const PACKET_OPTIONS_ROOM: usize =
     size_of::<libc::cmsghdr>() + size_of::<uapi::in6_pktinfo>() + size_of::<usize>();
 
@@ -906,26 +907,42 @@ impl HostTcpSockets {
         }
     }
 
-    /// The interface an IPv6 SYN came in on, from the packet information the listener's `IPV6_RECVPKTINFO` kept,
-    /// which the accepted connection goes on recording only when the guest asked for its records.
-    fn ipv6_arrival_interface(
+    /// The interface the SYN came in on, from the packet information the listener's `IP_PKTINFO` or `IPV6_RECVPKTINFO`
+    /// kept, which the accepted connection goes on recording only when the guest asked for its records.
+    fn arrival_interface(
         &self,
         socket: BorrowedFd<'_>,
+        family: IpVersion,
+        local: IpAddr,
         records: bool,
     ) -> Option<InterfaceIndex> {
         let mut control = PacketOptions {
             _aligned: [],
             bytes: [0; PACKET_OPTIONS_ROOM],
         };
-        let length = options::get_bytes(
-            socket,
-            uapi::SOL_IPV6,
-            uapi::IPV6_2292PKTOPTIONS,
-            &mut control.bytes,
-        )
+        let length = match local {
+            IpAddr::V4(_) => {
+                self.shortfalls.count(ARRIVAL_INTERFACE_OF_THE_HANDSHAKE);
+                options::get_bytes(
+                    socket,
+                    uapi::SOL_IP,
+                    uapi::IP_PKTOPTIONS,
+                    &mut control.bytes,
+                )
+            }
+            IpAddr::V6(_) => options::get_bytes(
+                socket,
+                uapi::SOL_IPV6,
+                uapi::IPV6_2292PKTOPTIONS,
+                &mut control.bytes,
+            ),
+        }
         .ok()?;
         if !records {
-            set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
+            set_flag(socket, uapi::SOL_IP, uapi::IP_PKTINFO, false).ok()?;
+            if family == IpVersion::V6 {
+                set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
+            }
         }
         Ancillary::parse(&control.bytes[..length])
             .interface
@@ -937,6 +954,7 @@ impl HostTcpSockets {
         socket: BorrowedFd<'_>,
         header: &[u8],
         local: SocketAddr,
+        family: IpVersion,
         records: bool,
     ) -> Result<ReceivedPacketFields, HostError> {
         let length = if let Ok(ipv4) = etherparse::Ipv4HeaderSlice::from_slice(header) {
@@ -952,15 +970,13 @@ impl HostTcpSockets {
             IpAddr::V4(address) => Some(address),
             IpAddr::V6(_) => None,
         };
-        let interface = match local {
-            IpAddr::V6(_) => self.ipv6_arrival_interface(socket, records),
-            IpAddr::V4(_) => None,
-        }
-        .or_else(|| {
-            self.shortfalls.count(ARRIVAL_INTERFACE_BY_ADDRESS);
-            self.interfaces.holding(local)
-        })
-        .unwrap_or(NO_INTERFACE);
+        let interface = self
+            .arrival_interface(socket, family, local, records)
+            .or_else(|| {
+                self.shortfalls.count(ARRIVAL_INTERFACE_BY_ADDRESS);
+                self.interfaces.holding(local)
+            })
+            .unwrap_or(NO_INTERFACE);
         self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET);
         Ok(ReceivedPacketFields {
             length,
@@ -1086,9 +1102,8 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     &TcpSetting::RecordsLastReceivedHeader(report),
                     0,
                 )?;
-                // An IPv6 SYN's packet information still comes with each accepted connection, for its arrival interface.
-                if listener.protocol == TcpProtocol::Tcp && listener.family == IpVersion::V6 {
-                    set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, true)?;
+                if listener.protocol == TcpProtocol::Tcp {
+                    self.record_arrival_interfaces(socket, listener.family)?;
                 }
                 listener
                     .records_last_received
@@ -1150,6 +1165,20 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
 }
 
 impl HostTcpSockets {
+    /// Makes a TCP listener keep the packet information, with the arrival interface, of what each accepted connection
+    /// came with.
+    fn record_arrival_interfaces(
+        &self,
+        socket: BorrowedFd<'_>,
+        family: IpVersion,
+    ) -> Result<(), HostError> {
+        set_flag(socket, uapi::SOL_IP, uapi::IP_PKTINFO, true)?;
+        if family == IpVersion::V6 {
+            set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, true)?;
+        }
+        Ok(())
+    }
+
     /// Binds the socket as the binding asks, taking a port the exit node chooses at once: Linux chooses only inside
     /// the host's own port range, so the shared crate tries the rest of a range port by port.
     fn bind(&self, socket: BorrowedFd<'_>, local: &LocalBinding<'_>) -> Result<(), HostError> {
@@ -1627,10 +1656,7 @@ impl TcpListeners for HostTcpSockets {
         // Multipath sockets have no TCP_SAVE_SYN.
         if protocol == TcpProtocol::Tcp {
             set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, true)?;
-            // An IPv6 SYN's packet information, with its arrival interface, then comes with each accepted connection.
-            if family == IpVersion::V6 {
-                set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, true)?;
-            }
+            self.record_arrival_interfaces(socket, family)?;
         }
         let (backlogs, others): (Vec<_>, Vec<_>) = settings
             .iter()
@@ -1695,7 +1721,8 @@ impl TcpListeners for HostTcpSockets {
             *locked(&connection.saved_synchronize) = Some(kept.to_vec());
         }
         let records = listener.records_last_received.load(Ordering::Relaxed);
-        let synchronize = self.synchronize_fields(socket, network, local, records)?;
+        let synchronize =
+            self.synchronize_fields(socket, network, local, listener.family, records)?;
         let length = network.len().min(synchronize_header.len());
         synchronize_header[..length].copy_from_slice(&network[..length]);
         Ok(TcpAccepted {
