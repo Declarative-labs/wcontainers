@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard};
 
-use wcontainers_gpu::{Backend, Caps, Features, Format, FormatUse, Object};
+use wcontainers_gpu::{Backend, Caps, Features, Format, FormatUse, Object, SlotKind};
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
 use crate::device::HostWindows;
@@ -224,10 +224,13 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     caps.max_const_buffer0_size = limits.max_uniform_buffer_size;
     // One of the stage's uniform buffers holds a converted program's helper constants.
     caps.max_const_buffers = limits.uniform_buffers_per_stage - 1;
-    // Each OpenGL sampler is split into a texture and a sampler at the same binding.
+    // Each OpenGL sampler is split into a texture and a sampler at the same binding, each within
+    // its kind's range of the stage's bindings.
     let samplers = limits
         .samplers_per_stage
         .min(limits.textures_per_stage)
+        .min(SlotKind::Sampler.slots())
+        .min(SlotKind::Texture.slots())
         .min(PIPE_MAX_SAMPLERS);
     caps.max_texture_samplers = samplers;
     caps.max_sampler_views = samplers;
