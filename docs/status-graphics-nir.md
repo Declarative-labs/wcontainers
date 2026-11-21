@@ -5,137 +5,136 @@ G9).
 
 ## Where it stands
 
-G9 run 9 (2026-11-20). G9 is still short of its bar. The driver reports OpenGL ES 3.0 and GLSL
+G9 run 10 (2026-11-20). G9 is still short of its bar. The driver reports OpenGL ES 3.0 and GLSL
 1.30; ES 3.1 and 3.2 and desktop 3.3 and 4.6 cannot start (no compute dispatch, storage buffers or
 images, geometry or tessellation stages in the context), so five of the nine lists run no case.
 
 The table of lists and shares on our driver, WHOLE lists (desktop, RTX 3080, one GPU job, 8 glcts
-at once, other tracks' jobs queued beside), at 6ca57f59 (index rewrites, the blitter's viewport,
-outputs fitted to targets, integer textures sampled by nearest loads; the later commits of this
-run are not in it):
-- dEQP-GLES2: 17,165 cases; Pass 16,744, Warn 6, Fail 141, Crash 139, Skip (NotSupported) 135:
-  16,750 of 17,030 run, 98.36%.
-- dEQP-GLES3: 44,768 cases; Pass 41,063, Warn 51, Fail 1,807, Crash 1,314, Skip 533: 41,114 of
-  44,235 run, 92.94%.
-- KHR-GLES2: 473 cases; Pass 438, Skip 35: 438 of 438 run, 100.00%.
-- KHR-GLES3: 6,498 cases; Pass 5,899, Fail 145, Crash 223, Skip 231: 5,899 of 6,267 run, 94.13%.
-- dEQP-GLES31, KHR-GLES31, KHR-GLES32, KHR-GL33, KHR-GL46: cannot start (no context of their
-  version): no case run.
-- No Flake in any list. Over the four lists that start: 64,201 of 67,970 run, 94.46%. The bar's
-  measure is over the GLES lists and KHR-GL33 together, five of which run nothing, so the bar
-  is not met: its 92.9% is over cases the driver cannot yet start.
-- Times: the job ran 16:04:42 to about 16:31 (dEQP-GLES2 about 4 minutes, dEQP-GLES3 about 20,
-  the KHR lists about 3), with other tracks' jobs queued beside it.
-- Results: scratch `results/g9r9/full/<list>/results.csv`, the job's output in
-  `results/g9r9/full/g9r9-a.log`, dEQP-GLES3's runner logs in `results/g9r9/full/gles3-main/logs`.
-- A second whole run at cd5162cf (every fix of this run) was started at 16:31 (scratch
-  `logs/g9r9-b.log`, results on the desktop in `C:\wc\graphics-nir\cts\results\wcontainers`);
-  it ran 16:34:12 to about 16:59 (same machine and queue). Its table, the run's best:
-  - dEQP-GLES2: Pass 16,828, Warn 6, Fail 57, Crash 139, Skip 135: 16,834 of 17,030, 98.85%.
-  - dEQP-GLES3: Pass 40,960, Warn 183, Fail 2,317, Crash 775, Skip 533: 41,143 of 44,235,
-    93.01%.
-  - KHR-GLES2: 438 of 438, 100.00%. KHR-GLES3: Pass 5,939, Fail 146, Crash 182, Skip 231: 5,939
-    of 6,267, 94.77%.
-  - Over the four: 64,354 of 67,970 run, 94.68%. No Flake. Results in scratch
-    `results/g9r9/second/<list>/results.csv`, output `results/g9r9/second/g9r9-b.log`.
-  - Gained against the first: ubo.random 130 and ubo's nested structs about 100 (Crash to Pass),
-    shaders.derivate 108 and fbo.msaa 50 (the resolve), texture.filtering 96 and dEQP-GLES2's 84
-    (the 0.25 maximum), fragment_ops.blend 48 (the second source).
-  - REGRESSIONS, not yet explained (cases that passed in the first and fail in the second):
-    shaders.random 210, texture.wrap 94, texture.filtering 60, texture.format 40,
-    shaders.constant_expressions 35 (Pass to Fail), ubo.single_basic_type 72 (Pass to Crash).
-    Suspects, by what each touches: the uniform block sizing (`wc_nir_uniform_blocks_as_words`
-    now runs `wc_optimize` before it notes the loads, and sizes blocks by std140, which can make
-    a block declared larger than the buffer bound, a refusal of `ConstantBufferGrown`: likely the
-    72 crashes), the sampler's 0.25 maximum for samplers without mipmaps (texture.wrap,
-    filtering, format), `b2b32`. First thing next run: run each regressed group alone
-    (`-Include`) and bisect these three commits (bc5c0da1, 15cbc920, cd5162cf).
+at once, other tracks' jobs queued beside), at 9a5baaf7 (run B, 18:02 to 18:15):
+- dEQP-GLES2: 17,165 cases; Pass 16,925, Warn 6, Fail 57, Crash 42, Skip 135: 16,931 of 17,030
+  run, 99.42%.
+- dEQP-GLES3: 44,768 cases; Pass 43,796, Warn 5, Fail 245, Crash 188, Flake 1, Skip 533: 43,801
+  of 44,235 run, 99.02%.
+- KHR-GLES2: 473 cases; Pass 438, Skip 35: 438 of 438, 100.00%.
+- KHR-GLES3: 6,498 cases; Pass 6,107, Fail 87, Crash 73, Skip 231: 6,107 of 6,267, 97.45%.
+- dEQP-GLES31, KHR-GLES32, KHR-GL33, KHR-GL46: cannot start (deqp-runner gets no context of their
+  version). KHR-GLES31: its 4,101 cases are reported Missing (no context), counted as run and
+  failed.
+- Over the four lists that start: 67,277 of 67,970 run, 98.98% (run 9's best: 94.68%). The bar's
+  measure is over the GLES lists and KHR-GL33 together, five of which run nothing: not met.
+- Flakes (failures by the measure, listed): run B dEQP-GLES3.functional.flush_finish.wait, run A
+  (at a6f887ee) dEQP-GLES3.functional.flush_finish.flush; both time GL calls against each other
+  and passed when run again; not yet read.
+- Built after run B and measured on its groups alone (desktop, same queue), ad51f14f: occlusion
+  queries ended now start their read back at the next flush; dEQP-GLES3's occlusion_query group
+  went from 62 Fail to all passing ("failed to return a result after glFinish"), and
+  transform_feedback has no Fail left. Not in the table above.
+- Run A at a6f887ee (17:40 to 17:56, same machine and queue): dEQP-GLES2 99.40%, dEQP-GLES3
+  98.30%, KHR-GLES2 100%, KHR-GLES3 97.45%; over the four 66,956 of 67,970, 98.51%.
+- Results: scratch `results/g9r10/full-a` and `full-b` (`<list>/results.csv`, the runner's logs of
+  dEQP-GLES2, -GLES3 and KHR-GLES3 in `<list>/logs`, the job's output `g9r10-full-*.log`); the
+  group runs in `results/g9r10/groups-1` to `groups-4`.
 
-Older runs, for comparison: run 7 dEQP-GLES2 97.84%, KHR-GLES2 97.46%; run 8 only 1% shards.
-Run 8's whole-list job did run (15:31) but on a build with two faults this run found, so its
-numbers are not used: the blitter's viewport of depth -1..1, which wgpu refuses, cascaded into
-1,929 dEQP-GLES2 failures; it was stopped in dEQP-GLES3 to free the GPU.
+Run 9's "regressions" were not regressions: every one was a cascade. One case's wgpu validation
+error (a sampler's level-of-detail bounds, an HLSL compile failure, a partial depth or stencil
+write) marked the device lost and every later case of that glcts process read nothing back;
+deqp-runner groups cases into processes by where the crashes fall, so the cascades moved between
+the runs. The driver now ends the process when the back end reports its device lost (the
+fault stays with its case), and the faults behind them are fixed (below) or named.
 
 Done this run (each from the failing cases' logs):
-- Index rewrites by Mesa's own translator, generator and restart splitter (`src/indices.rs`,
-  `u_indices` and `u_prim_restart`, MIT): flat values from OpenGL's last vertex where the host
-  takes the first (every primitive reordered, strips and fans made lists; `ProvokingRewrite`),
-  restart in lists, which the host's lists lack, and strips drawn without restart whose indices
-  hold the largest value (`RestartRewrite`), and indices of one byte in a buffer on a back end
-  without them (read back, `ReadBackWait`, and widened, `IndexWidened`; was a refusal). Indices in
-  a buffer are read back for these (`ReadBackWait`). Known gap: a strip drawn without restart
-  from an index buffer whose indices hold the largest value is not detected (the indices are not
-  read back for every such draw); no case has been seen to hit it.
-- Mesa's blitter draws with a viewport mapping depth -1..1 to itself, which the host refuses
-  (wgpu: "Viewport minDepth -1 and/or maxDepth 1 are not in [0, 1]"); OpenGL clamps its own
-  ranges to 0..1, so such a viewport is read as the zero-to-one one (the blitter's depths are 0
-  or above). This was 240 validation errors in dEQP-GLES2 and 636 in dEQP-GLES3, each failing
-  every later case of its process.
-- A fragment program's outputs are fitted to the framebuffer's targets (`src/outputs.rs`): every
-  output at a target is widened to four components (0, 0, 0, 1 filling) of the target's kind
-  (wgpu refused "Output format Uint32x4 is incompatible with the shader Float32x4" and fewer
-  components than the format: 254 logs in dEQP-GLES3).
-- A sampler's level-of-detail bounds below zero read as zero (wgpu refused a negative maximum);
-  a sampler without mipmaps keeps the base level with a maximum of 0.25, so the host still tells
-  minifying from magnifying (dEQP-GLES2 texture.filtering's 72 nearest_linear and linear_nearest
-  cases; built after the measured job).
-- Integer textures are sampled as OpenGL samples them, by their nearest texel's load
-  (`wc_nir_nearest_integer_textures` in the bridge): the sampler's wraps (repeat, clamp to edge,
-  mirrored repeat), the level by OpenGL's nearest mipmap rule from the level of detail (from
-  derivatives in fragment programs, given or zero elsewhere, with the bias and the sampler's
-  bounds), offsets, projection and array layers. Cube maps, and samplers with the border or the
-  mirrored clamp, are still refused by name (627 logs in the stopped dEQP-GLES3 run).
-- A blend block reading the blend constant's colour and its alpha as colour factors, for a
-  constant whose colour is not its alpha, takes the alpha from a second source the fragment
-  program gives (the constant's alpha in every channel, `BlendInShader`), where the back end has
-  dual-source blending and the draw has one target (150 logs in dEQP-GLES2; built after the
-  measured job).
-- Uniform blocks are sized by std140 as well as by their type's explicit size, and by the
-  furthest constant load, and every block a load names gets its words (dEQP-GLES3 ubo's "not
-  taken: load_ubo", 156 logs, and "Accessing index 17 is out of bounds", 76; built after the
-  measured job).
-- A blit that resolves a whole multisampled level into one of its size and format goes to the
-  back end's resolve (fbo.msaa and shaders.derivate's multisampled cases, 146 logs of "a blit
-  Gallium's blitter does not make"; built after the measured job).
-- The literal check: from 47 findings to 9 (Literal check).
+- The driver ends the process, naming the loss, when the back end reports its device lost (after
+  each submit and on a failed read back): `context::end_if_lost`.
+- Uniform blocks are sized at the block index the loads name (the linker's, in the variable's
+  `driver_location`), not at `data.binding`, which OpenGL ES 3.0 leaves at zero for every block;
+  and by the linker's explicit layout, not by std140's rules on the type, which read row-major
+  matrices as column-major. dEQP-GLES3 ubo 291 crashes and KHR-GLES3 uniform_block 115 crashes to
+  none.
+- Part of a depth or stencil level is written through a buffer and the interface's
+  `copy_buffer_to_texture` (which draws such regions on WebGPU), not `write_texture` (whose
+  stencil aspect wgpu refuses unless whole: "Partial copy ... Depth24PlusStencil8").
+- A sampler's level-of-detail bounds past the deepest level any texture can have read as that
+  level (the back end clamped the maximum to 32 and not the minimum of 100 or 1000).
+- An output of another kind than its target reaches it as its bits, not converted (st/mesa's
+  scissored integer clears and the blitter's integer copies hand integers through float
+  outputs): fbo.blit 188 and fbo.color 60 Fail to none.
+- Stream output counts only draws of at least one whole primitive (the stage helper writes no
+  statistics for none, and the stale count was read), and streams the program's own position,
+  before the depth range rewrite and flips (`ClipDepthRewrite` was streamed): transform_feedback
+  648 Fail to none.
+- An integer cube map is loaded from a 2D array view of its six faces: the bridge makes its
+  variable a 2D array, picks the face and texel by OpenGL's cube map table, the level by
+  OpenGL's nearest rule (from the face coordinates' derivatives), and the driver binds the view
+  of the faces (`View::faces`). dEQP-GLES3's 486 refusals to none.
+- Route B reads `fcanonicalize` as the value itself (Mesa's algebraic step does the same where
+  denormals are not flushed; the host keeps denormals).
+- The texture units the screen reports fit the sampler and texture binding ranges (16): the
+  adapter's own limit was larger, and texture.units refused "more resources of a kind than its
+  range holds" (100 logs).
+- The literal check: 7 findings, the same as run 9 (none new).
+- Not a fix: run 9's first item (bisect bc5c0da1, 15cbc920, cd5162cf) is closed by the above;
+  bc5c0da1's std140 term was wrong for row-major matrices and is gone, 15cbc920's maximum stays,
+  cd5162cf had no effect on the regressions.
+
+Every failure left in run B, with its reason (dEQP-GLES3 unless named):
+- fbo.render 109 Fail: recreate_color 70, shared_colorbuffer 26, resize 10, stencil_clear 3
+  (dEQP-GLES2's fbo.render 35 are the same, with STENCIL_INDEX8). The draw after the colour
+  buffer is re-specified (with the framebuffer unbound) does not show: in dEQP-GLES2's
+  no_rebind_rbo_rgb565_stencil_index8 the flat blue quad drawn before the depth test is missing
+  entirely. Not yet found; next to read (case alone, the pass tracker's targets around the
+  framebuffer rebind).
+- Fetched vertex components across words (shaders track's fetch): vertex_arrays 83 crashes, and
+  dEQP-GLES2's 37 (76 logs).
+- shaders.texture_functions 45 crashes: 3D textures with constant offsets, which naga's HLSL
+  writer writes as `int2(int3(...))` and DXC refuses ("too many elements in vector
+  initialization"; 40 logs): naga's, asked of the shaders track. And comparisons with a bias or
+  gradients (34 logs) and at a level other than 0 (16), not taken by route B yet.
+- shaders.builtin_functions 26 Fail and shaders.invariance 20 (and dEQP-GLES2's 20): precision
+  and invariance; not yet read.
+- fbo.msaa 18, fbo.invalidate 12, fbo.blit 8 crashes: "a blit Gallium's blitter does not make"
+  (76 logs) and depth-stencil resolves.
+- Vertex formats the screen does not report (R10G10B10A2 SSCALED, USCALED, SNORM; 84 logs):
+  OpenGL ES 3.0 requires them as vertex formats; to fetch in the vertex program.
+- transform_feedback.point_size 6 crashes ("a streamed value that is neither at a location nor
+  the position": gl_PointSize), random 5 crashes.
+- multisample.fbo_* 9 Fail, fbo.completeness 3, state_query.floats 4 and
+  implementation_limits.max_texture_lod_bias 1 (the bias limit), rasterization.fbo 2,
+  fragment_ops.scissor 2, negative_api.vertex_array 1, draw.random 5, shaders.random 3,
+  shaders.builtin_variable 2 (a stage value of Mesa's slots 24 and 25), texture.specification 3:
+  not yet read.
+- KHR-GLES3: copy_tex_image_conversions 140 (forbidden 70 Fail: glCopyTexImage from an RGB565
+  cube face gives GL_INVALID_FRAMEBUFFER_OPERATION where GL_INVALID_OPERATION is expected, so the
+  framebuffer holding the 565 texture is incomplete: the 565 format is sampled but not rendered;
+  required 63 Crash: "sampling an integer texture" still refused in these programs, 126 logs,
+  not yet traced); packed_depth_stencil 8 crashes and framebuffer_blit 3 (the blitter);
+  packed_pixels 6 Fail; shader_integer_mix 3 Fail.
+- dEQP-GLES2: polygon_offset 2 Fail, an array of arrays of textures (4 logs), shaders.random 4,
+  uniform_api.random 2: not yet read.
+- None of these is checked yet against the RTX 3080's own OpenGL (`-Driver system`), which the
+  bar asks for every failure.
 
 What is left, in order:
-1. The second run's regressions (above): bisect bc5c0da1, 15cbc920 and cd5162cf with the
-   regressed groups alone, fix, and run the four lists again. 39974b13 (the second source drops
-   the outputs at other locations: dEQP-GLES2's 93 blend crashes, "a second source for a program
-   writing a target past the first", 186 logs) is built after both runs and not yet measured.
-2. Transform feedback: about 600 Fails in dEQP-GLES3's transform_feedback groups (basic_types,
-   array, array_element, random, interpolation) and 22 "a streamed value that is neither at a
-   location nor the position": to read case by case (scratch `results/g9r9/full/gles3-main/logs`
-   has the runner's logs, the qpa files are on the desktop).
-3. dEQP-GLES3 fbo.blit (188 Fail), fbo.render (111), fbo.color (60), texture.filtering (126),
-   texture.specification (92), texture.shadow (58), texture.wrap (43), shaders.texture_functions
-   (59), shaders.builtin_functions (43): not yet read case by case nor compared with the RTX
-   3080's own OpenGL (`-Driver system`); dEQP-GLES2's left Fails are texture.filtering 72 (the
-   0.25 maximum should take them; built after the measured run), fbo.render 35 (all with
-   STENCIL_INDEX8), shaders.invariance 20, texture.vertex 12.
-4. Refusals left by count of logs in the measured dEQP-GLES3 run: `load_ubo` 778 and "Accessing
-   index" about 150 (both should go with the block sizing built after it), the blitter's blits
-   548 (the multisampled resolve built after it takes the whole-level ones; the rest are to
-   read), sampling an integer cube map 486 (needs a 2D-array view of the cube for the load, or
-   the face's own sampling), the blend constant's colour and alpha 188 (second source built
-   after it), "more resources of a kind than its range holds" 100 (texture.units.all_units and
-   8_units: to trace which kind), components across words 92 (shaders track), a vertex format
-   84 (the refusal now names it), `fcanonicalize` 54, `b2b32` 46 (built after it), a comparison
-   with a bias or gradients 34, at a level other than 0 16. KHR-GLES3: shaders.uniform_block
-   155 crashes (the block sizing), copy_tex_image_conversions 140, packed_pixels 63.
+1. fbo.render's re-specified colour buffers (above): about 145 cases over the two lists.
+2. The integer sampling still refused in KHR-GLES3 copy_tex_image_conversions.required (63), and
+   the 565 framebuffer that is incomplete (70): both one cause each, to trace.
+3. Run the whole lists again at ad51f14f (or later) for the table; run every failing group with
+   `-Driver system` and list which the RTX 3080's own OpenGL passes.
+4. Vertex formats of 10-10-10-2 and scaled integers fetched in the vertex program; comparisons
+   with a bias, gradients or a level; the blits the blitter does not make; gl_PointSize streamed.
 5. ES 3.1 (compute dispatch, storage buffers and images, indirect draws, the 3.10 shading
    language) for dEQP-GLES31 and KHR-GLES31; then 3.2, desktop 3.3 (geometry shaders) and 4.6.
 6. Reach 92.9% over the GLES lists and KHR-GL33 together, and 98.6% over KHR-GL46.
 7. bgfx's and Godot's OpenGL renderers on the rig, with every slow path counted.
 8. Check whether u_vbuf converts vertex formats the screen does not report on the CPU without
-   being counted (the screen's caps make cso create it: `needs_fallback` whenever a format
-   translates); if so, report those formats and fetch them in the vertex program, counted.
-9. The known gap above (a strip without restart from an index buffer holding the largest index).
+   being counted.
+9. Known gap: a strip drawn without restart from an index buffer whose indices hold the largest
+   value is not detected (no case has been seen to hit it). Known gap: an array of integer cube
+   samplers whose units have samplers of different wraps (one with a border) is retyped whole
+   while the driver binds the faces view only where a unit's sampler is listed (no case seen).
 
-
-Earlier runs (G8 runs 1 to 15, G9 runs 1 to 8) are told in this file's history:
-`git show 054465ac:docs/status-graphics-nir.md` is the last version that held them in full.
+Earlier runs (G8 runs 1 to 15, G9 runs 1 to 9) are told in this file's history:
+`git show 054465ac:docs/status-graphics-nir.md` held runs up to G9 run 8 in full, and
+`git show 8d7f5472:docs/status-graphics-nir.md` held G9 run 9.
 
 ## How to run
 
@@ -296,6 +295,17 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 8) are told in this file's history:
 
 ## Measurements
 
+- G9 run 10, the whole lists on our driver (desktop, RTX 3080, one GPU job each, 8 glcts at
+  once, other tracks' jobs queued beside): run A 17:40:35 to 17:56:43 (about 16 minutes with the
+  build; dEQP-GLES2 about 3, dEQP-GLES3 about 11), run B 18:02:36 to 18:15:19 (about 13). Group
+  runs alone (`-Include`): ubo and texture, 8,252 cases, about 6 minutes; transform_feedback,
+  ubo.random and fbo.blit and color, 2,588 cases, about 3.
+- G9 run 10, wcontainers-nir's tests with Mesa and clippy (x86-64 machine, load 3 to 19): fmt
+  clean; clippy with warnings denied clean for wcontainers-nir and wcontainers-opengl with and
+  without Mesa; with Mesa `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known
+  failures), `narrow` 2, `route` 11 passed. The corpus run was not repeated (route B's changes:
+  `fcanonicalize` read as a move, and the driver's own passes, which the corpus does not take).
+
 - G9 run 9, the whole corpus run (12,748 items of route B's count, 96 children, x86-64 machine,
   load 15.7 at the end; Mesa's build kept from earlier runs): 742 s. Route B: 12,090 match, 156
   differ, 6 not compared (run 1 of G9: 12,068, 156, 6): the 22 more matches are programs the
@@ -442,6 +452,10 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 8) are told in this file's history:
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 run 10: nothing new. The driver now also calls Mesa's `nir_fixup_deref_types` and the GLSL
+  type constructors (`glsl_sampler_type`, `glsl_texture_type`, `glsl_type_wrap_in_arrays`), all
+  in Mesa's MIT `src/compiler` files already linked.
+
 - G9 run 9: nothing new from outside. Three more of Mesa's MIT files are called by the driver:
   `src/gallium/auxiliary/indices/u_indices.c` and the `u_indices_gen.c` Mesa's build makes from
   `u_indices_gen.py` (both VMware, MIT: the index translator and generator), and
@@ -556,6 +570,15 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 8) are told in this file's history:
   link it), GCC 16.2.0 (GPL-3.0 with the GCC runtime library exception).
 
 ## Departures from the plan
+
+- G9 run 10: an integer cube map is sampled through a 2D array view of its faces, loaded at the
+  texel OpenGL's cube map table and nearest rule pick, in a program variant keyed on the bound
+  samplers (WebGPU loads no cube texel and gathers only the base level). Its level of detail comes
+  from the face coordinates' derivatives, as OpenGL's does.
+- G9 run 10: the driver ends the process when the back end reports its device lost; a context of
+  OpenGL ES 3.0 without robustness has no way to tell a program, and going on would make every
+  later call read nothing.
+- G9 run 10: route B reads NIR's `fcanonicalize` as the value itself.
 
 - G9 run 5: llvmpipe's LLVM on Windows is built from LLVM's source on the desktop rather than
   taken from LLVM's release (the plan names no source for it; the release's integrated allocator
@@ -738,6 +761,18 @@ None.
 
 ## Requests to other tracks
 
+- Shaders track (G9 run 10, a finding): naga's HLSL writer writes every constant texture offset
+  as `int2(...)` (`back/hlsl/writer.rs`, the DXC workaround), so a 3D texture's `int3` offset
+  becomes `int2(int3(...))`, which DXC refuses ("too many elements in vector initialization").
+  40 logs of dEQP-GLES3 shaders.texture_functions; Direct3D 11's 3D textures with offsets reach
+  the same writer.
+- WebGPU back end (G9 run 10, findings): `create_sampler` clamps the largest level of detail to
+  wgpu's 32 and not the smallest, so a sampler with a minimum over 32 is invalid (the driver now
+  clamps both itself); `write_texture` of part of a stencil aspect, or of 16-bit depth, goes
+  straight to wgpu, which refuses it (the driver now writes such parts through
+  `copy_buffer_to_texture`); `copy_buffer_to_texture` of part of a 16-bit depth level still
+  fails ("part of a 16-bit depth level written from a buffer").
+
 - Interface track (G9 run 9): a slow path for a blend factor's value given by the program as the
   second source (the OpenGL driver's constant colour and alpha in one block on WebGPU), apart
   from `BlendInShader`, which names blending that reads a copy of the target. Counted as
@@ -822,6 +857,11 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 10: exit 1 at 9a5baaf7 (x86-64 machine, from a git bundle; marks 0; the clone, its build
+and the bundle deleted after; output in scratch `logs/g9r10-literals.out`): the same 7 findings
+as run 9, none new (`unbuilt!`'s three, the two `OUT_DIR` ones, `CUBE_FACES` twice).
+wcontainers-nir and wcontainers-opengl have no baseline lines.
 
 G9 run 9: exit 1 at cd5162cf, the run's last code commit (x86-64 machine, from a git bundle;
 marks 0; the clone, its build and the bundle deleted after; output in scratch
