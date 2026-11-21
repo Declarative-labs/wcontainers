@@ -7,14 +7,12 @@
 //! the corpus in `WCONTAINERS_SHADER_CORPUS`. Each case is written to stderr before it runs, so a case
 //! that ends the process names itself; `WCONTAINERS_FUZZ_FIRST` starts at that case.
 
-use md5::block_api::{Md5Core, compress};
-use md5::digest::common::hazmat::SerializableState;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use wcontainers_gpu::VariantKey;
-use wcontainers_shaders::{ConvertError, Source, convert, token};
+use wcontainers_shaders::{ConvertError, Source, container, convert, token};
 
 /// The largest single allocation the test's Rust code may make: a larger one is refused, as on a host
 /// short of memory, so a size taken unchecked from the bytecode ends the test on every machine.
@@ -56,39 +54,13 @@ impl Rng {
     }
 }
 
-/// Direct3D's container checksum: MD5's block function (the `md-5` crate's) over the container past
-/// the checksum, with its own last block (as dxbc-spirv's `hashDxbcBinary`), from MD5's initial state.
-fn sign(container: &mut [u8]) {
-    let data = &container[20..];
-    let bits = (data.len() as u32).wrapping_mul(8);
-    let (a, b) = (bits.to_le_bytes(), ((bits >> 2) | 1).to_le_bytes());
-    let full = data.len() - data.len() % 64;
-    let rest = &data[full..];
-    let mut tail = Vec::new();
-    if rest.len() >= 56 {
-        tail.extend_from_slice(rest);
-        tail.push(0x80);
-        tail.resize(64, 0);
-        tail.extend_from_slice(&a);
-        tail.resize(124, 0);
-        tail.extend_from_slice(&b);
-    } else {
-        tail.extend_from_slice(&a);
-        tail.extend_from_slice(rest);
-        tail.push(0x80);
-        tail.resize(60, 0);
-        tail.extend_from_slice(&b);
-    }
-    let initial = Md5Core::default().serialize();
-    let mut state = [0u32; 4];
-    for (word, bytes) in state.iter_mut().zip(initial.as_chunks::<4>().0) {
-        *word = u32::from_le_bytes(*bytes);
-    }
-    compress(&mut state, data[..full].as_chunks::<64>().0);
-    compress(&mut state, tail.as_chunks::<64>().0);
-    for (i, word) in state.iter().enumerate() {
-        container[4 + 4 * i..8 + 4 * i].copy_from_slice(&word.to_le_bytes());
-    }
+/// Where a container's header holds its checksum.
+const CHECKSUM_AT: usize = 4;
+
+/// Writes Direct3D's checksum of the container `bytes` into its header.
+fn sign(bytes: &mut [u8]) {
+    let checksum = container::checksum(bytes);
+    bytes[CHECKSUM_AT..CHECKSUM_AT + checksum.len()].copy_from_slice(&checksum);
 }
 
 fn inputs() -> Vec<(String, Vec<u8>)> {
@@ -119,7 +91,7 @@ fn inputs() -> Vec<(String, Vec<u8>)> {
 fn signing_again_gives_the_compilers_checksum() {
     for (name, original) in inputs() {
         let mut again = original.clone();
-        again[4..20].fill(0);
+        again[CHECKSUM_AT..CHECKSUM_AT + size_of::<container::Checksum>()].fill(0);
         sign(&mut again);
         assert_eq!(again, original, "{name}");
     }
