@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
+use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -338,46 +339,42 @@ pub fn set_port_setting(
             .set_reuse_port(sharing == PortSharing::Shared)
             .map_err(|error| io_host_error(&error)),
         PortSetting::NonlocalAddresses(permission) => {
-            let (level, free_bind, transparent) = match family {
-                IpVersion::V4 => (uapi::SOL_IP, uapi::IP_FREEBIND, uapi::IP_TRANSPARENT),
-                IpVersion::V6 => (uapi::SOL_IPV6, uapi::IPV6_FREEBIND, uapi::IPV6_TRANSPARENT),
-            };
-            set_flag(
-                socket,
-                level,
-                transparent,
-                permission == NonlocalAddresses::Transparent,
-            )?;
-            set_flag(
-                socket,
-                level,
-                free_bind,
-                permission == NonlocalAddresses::Bindable,
-            )
+            let transparent = permission == NonlocalAddresses::Transparent;
+            let bindable = permission == NonlocalAddresses::Bindable;
+            let socket = sock(&socket);
+            match family {
+                IpVersion::V4 => socket
+                    .set_ip_transparent_v4(transparent)
+                    .and_then(|()| socket.set_freebind_v4(bindable)),
+                IpVersion::V6 => socket
+                    .set_ip_transparent_v6(transparent)
+                    .and_then(|()| socket.set_freebind_v6(bindable)),
+            }
+            .map_err(|error| io_host_error(&error))
         }
-        PortSetting::BoundInterface(interface) => set_option(
-            socket,
-            uapi::SOL_SOCKET,
-            uapi::SO_BINDTOIFINDEX,
-            &interface.map_or(0, |interface| interface.0),
-        ),
+        PortSetting::BoundInterface(interface) => {
+            let index = interface.and_then(|interface| NonZeroU32::new(interface.0));
+            match family {
+                IpVersion::V4 => sock(&socket).bind_device_by_index_v4(index),
+                IpVersion::V6 => sock(&socket).bind_device_by_index_v6(index),
+            }
+            .map_err(|error| io_host_error(&error))
+        }
         PortSetting::GroupFilter(filter) => set_filter(
             socket,
             uapi::SO_ATTACH_REUSEPORT_CBPF,
             uapi::SO_DETACH_REUSEPORT_BPF,
             filter,
         ),
-        PortSetting::IncomingProcessor(processor) => set_int(
-            socket,
-            uapi::SOL_SOCKET,
-            uapi::SO_INCOMING_CPU,
-            match processor {
-                Some(processor) => {
-                    c_int::try_from(processor.0).map_err(|_| HostError::Errno(libc::EINVAL))?
-                }
-                None => -1,
-            },
-        ),
+        PortSetting::IncomingProcessor(Some(processor)) => sock(&socket)
+            .set_cpu_affinity(
+                usize::try_from(processor.0).map_err(|_| HostError::Errno(libc::EINVAL))?,
+            )
+            .map_err(|error| io_host_error(&error)),
+        // socket2 sets only a processor; none is Linux's -1.
+        PortSetting::IncomingProcessor(None) => {
+            set_int(socket, uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU, -1)
+        }
     }
 }
 
