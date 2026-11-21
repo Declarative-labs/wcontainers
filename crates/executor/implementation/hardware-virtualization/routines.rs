@@ -24,7 +24,7 @@ fn routines() -> (Vec<u32>, [usize; ROUTINES]) {
     let second = FloatStatusMoves::with(SECOND);
     let ret = encode::branch_register(form::RET, LINK);
     let vectors = Vectors::default().len() as u8;
-    let each = |name: &str| -> Vec<u32> {
+    let each = |name: encode::Form| -> Vec<u32> {
         (0..vectors)
             .map(|v| {
                 encode::load_store(name, v, FIRST, u64::from(v) * VECTOR_BYTES, VECTOR_BYTES)

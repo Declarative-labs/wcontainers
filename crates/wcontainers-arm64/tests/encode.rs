@@ -283,13 +283,13 @@ fn exception_forms_read_back() {
         for imm in [0, 1, u16::MAX] {
             let word = encode::exception(name, imm);
             let found = wcontainers_arm64::forms::form(word).expect("a form");
-            assert_eq!(found.name, name);
+            assert_eq!(found.name, name.name());
             assert_eq!(found.field(word, field::IMM16), Some(imm.into()));
         }
     }
     let eret = encode::exception_return();
     assert_eq!(
         wcontainers_arm64::forms::form(eret).map(|f| f.name.as_str()),
-        Some(form::ERET)
+        Some(form::ERET.name())
     );
 }

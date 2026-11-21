@@ -14,7 +14,7 @@ pub mod functions;
 use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
 use wcontainers_arm64::carry::{LINK, PAGE, RegisterPage, TAG_LOW, WITHHELD, call_word};
-use wcontainers_arm64::encode::{self, field, form};
+use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::thread_state::{Exclusive, untag_address};
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode};
 use wcontainers_executor_hardware_virtualization::{
@@ -231,21 +231,11 @@ const DOORBELL_REGISTER: u8 = 0;
 /// The immediate of the doorbell's `hvc`, as the inside's floor rings it.
 const DOORBELL_IMMEDIATE: u16 = 0;
 
-/// A call to the monitor: x0 kept in [`KEPT_X0`] (TPIDR_EL1: op0 3, op1 0, CRn 13, CRm 0, op2 4), then the
-/// doorbell.
+/// A call to the monitor: x0 kept in [`KEPT_X0`] (TPIDR_EL1: op0 3, which is o0 1, op1 0, CRn 13, CRm 0, op2 4),
+/// then the doorbell.
 fn monitor_call() -> Vec<u32> {
-    let keep = encode::word(
-        form::MSR,
-        &[
-            ("o0", 1),
-            (field::OP1, 0),
-            (field::CRN, 13),
-            (field::CRM, 0),
-            (field::OP2, 4),
-            (field::RT, DOORBELL_REGISTER.into()),
-        ],
-    )
-    .expect("the move fits its fields");
+    let keep = encode::write_system_register([1, 0, 13, 0, 4], DOORBELL_REGISTER)
+        .expect("the move fits its fields");
     let mut words = vec![keep];
     words.extend(encode::move_constant(
         DOORBELL_REGISTER,

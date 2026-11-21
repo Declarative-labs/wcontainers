@@ -1367,7 +1367,7 @@ fn float_status(out: &mut Out, i: &I, word: u32) {
 }
 
 /// The forms that load or swap `bytes` at a bare register.
-fn sized(bytes: u32) -> (&'static str, &'static str, &'static str) {
+fn sized(bytes: u32) -> (encode::Form, encode::Form, encode::Form) {
     match u8::try_from(bytes) {
         Ok(1) => (form::LDRB, form::LDADDB, form::CASB),
         Ok(H_BYTES) => (form::LDRH, form::LDADDH, form::CASH),
