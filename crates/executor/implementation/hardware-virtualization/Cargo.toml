@@ -68,6 +68,10 @@ unicorn-engine = "2.1.5"
 # The system calls the exits test answers, by Linux's numbers.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The speed test's counts of the whole process's cycles and instructions.
+perf-event2 = "0.7.4"
+
 [[test]]
 name = "exits"
 harness = false
