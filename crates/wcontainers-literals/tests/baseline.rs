@@ -1298,3 +1298,161 @@ mod gets_through {
         );
     }
 }
+
+/// A file moved with git keeps its baseline lines under its new path; growth moved with it is still
+/// growth; and a line added after the start is accepted only with a reason that names the adoption
+/// that removes it.
+mod moves_and_accepted {
+    use super::*;
+    use wcontainers_literals::{ACCEPTED_HEADING, ACCEPTED_MARK};
+
+    const MOVED: &str = "crates/a/moved.rs";
+
+    fn repathed(text: &str) -> String {
+        let mut lines: Vec<String> = text.lines().map(|l| l.replace(LIB, MOVED)).collect();
+        lines.sort();
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    fn move_lib(root: &Path) {
+        git(root, &["mv", LIB, MOVED]);
+        replace(
+            root,
+            "crates/a/Cargo.toml",
+            "\"a\"\n",
+            "\"a\"\n[lib]\npath = \"moved.rs\"\n",
+        );
+        set_baseline(root, &repathed(&baseline(root)));
+    }
+
+    #[test]
+    fn a_moved_file_keeps_its_lines() {
+        let root = started("moved-file");
+        move_lib(&root);
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+        commit_all(&root, "moved the library");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+    }
+
+    #[test]
+    fn a_line_under_a_path_no_file_was_renamed_to_is_growth() {
+        let root = started("moved-line-only");
+        append(&root, MOVED, CODE);
+        commit_all(&root, "a second copy of the code");
+        let lines = [
+            key("four", "1000"),
+            key("one", "4096"),
+            key("three", "12"),
+            key("two", "77"),
+        ];
+        let mut text = baseline(&root);
+        for line in &lines {
+            text = with(&text, &line.replace(LIB, MOVED));
+        }
+        set_baseline(&root, &text);
+        commit_all(&root, "lines for the copy");
+        let out = check(&root);
+        assert_eq!(
+            lines_starting(&out, GROWN_MARK).len(),
+            lines.len(),
+            "{}",
+            out.report()
+        );
+    }
+
+    #[test]
+    fn growth_moved_with_its_file_is_still_growth() {
+        let root = started("moved-growth");
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+        set_baseline(&root, &with(&baseline(&root), &key("five", "31337")));
+        commit_all(&root, "grew the baseline");
+        move_lib(&root);
+        commit_all(&root, "moved the library");
+        let out = check(&root);
+        let grown = lines_starting(&out, GROWN_MARK);
+        assert!(
+            grown.len() == 1 && grown[0].contains(MOVED) && grown[0].contains("31337"),
+            "{}",
+            out.report()
+        );
+    }
+
+    fn accepted(line: &str, reason: &str) -> String {
+        format!("{line}{FIELD_SEPARATOR}{ACCEPTED_MARK}{reason}")
+    }
+
+    #[test]
+    fn a_line_whose_reason_names_its_adoption_is_accepted_and_listed() {
+        let root = started("accepted");
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+        let line = accepted(
+            &key("five", "31337"),
+            "the copy here goes when kernel adopts it",
+        );
+        set_baseline(&root, &with(&baseline(&root), &line));
+        commit_all(&root, "accepted a line");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+        assert!(
+            out.summary
+                .iter()
+                .any(|l| l == &format!("{ACCEPTED_HEADING}1"))
+                && out.summary.iter().any(|l| l.contains(&line)),
+            "{}",
+            out.report()
+        );
+        // Another literal without a line is still a finding.
+        append(&root, LIB, "\npub fn six(x: u64) -> u64 { x * 31338 }\n");
+        let out = check(&root);
+        let new = lines_starting(&out, NEW_MARK);
+        assert!(
+            new.len() == 1 && new[0].contains("31338"),
+            "{}",
+            out.report()
+        );
+        // When the literal goes, its line is asked to go, reason and all.
+        replace(&root, LIB, "x * 31337", "x");
+        let out = check(&root);
+        assert!(
+            lines_starting(&out, STALE_MARK)
+                .iter()
+                .any(|l| l.starts_with(&format!("{STALE_MARK}{line}{FIELD_SEPARATOR}"))),
+            "{}",
+            out.report()
+        );
+    }
+
+    #[test]
+    fn a_reason_that_names_no_adoption_is_growth() {
+        let root = started("accepted-without-adoption");
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+        let line = accepted(&key("five", "31337"), "it is fine");
+        set_baseline(&root, &with(&baseline(&root), &line));
+        commit_all(&root, "accepted a line");
+        let out = check(&root);
+        assert!(
+            lines_starting(&out, GROWN_MARK).len() == 1,
+            "{}",
+            out.report()
+        );
+    }
+
+    #[test]
+    fn a_policy_line_cannot_be_accepted() {
+        let root = started("accepted-policy");
+        let skip = accepted(
+            &policy_line(PolicyKind::Skip, "crates/a"),
+            "goes when kernel adopts it",
+        );
+        set_baseline(&root, &with(&baseline(&root), &skip));
+        commit_all(&root, "skipped a crate");
+        let out = check(&root);
+        assert!(
+            lines_starting(&out, &format!("{GROWN_MARK}{skip}")).len() == 1,
+            "{}",
+            out.report()
+        );
+    }
+}

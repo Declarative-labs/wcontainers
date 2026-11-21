@@ -774,6 +774,7 @@ fn literal_keys(root: &Path, rel: &str, text: &str) -> HashSet<String> {
 /// The path of the literal a baseline line stands for, and its key among [`literal_keys`]; none for a
 /// policy line.
 fn line_literal(line: &str) -> Option<(String, String)> {
+    let (line, _) = baseline::split_reason(line);
     let (list, rest) = line.split_once(FIELD_SEPARATOR)?;
     let list = List::named(list)?;
     let mut fields = rest.split(FIELD_SEPARATOR);
@@ -1534,6 +1535,23 @@ fn additions_report(additions: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Heads the list of lines added after the baseline started whose reason names the adoption that
+/// removes them, with their count.
+pub const ACCEPTED_HEADING: &str = "accepted growth, until the adoption each names: ";
+pub use baseline::ACCEPTED_MARK;
+
+/// Every accepted line the baseline gained, after a line that counts them: a reviewer judges each
+/// reason, as with marks, so that accepted lines cannot pile up unseen.
+fn accepted_report(accepted: Vec<String>) -> Vec<String> {
+    std::iter::once(format!("{ACCEPTED_HEADING}{}", accepted.len()))
+        .chain(
+            accepted
+                .into_iter()
+                .map(|a| format!("{ADDITION_INDENT}{a}")),
+        )
+        .collect()
+}
+
 fn canonical(root: &Path) -> Result<PathBuf, String> {
     root.canonicalize()
         .map_err(|e| format!("{}: {e}", root.display()))
@@ -1578,11 +1596,24 @@ pub fn init(root: &Path) -> Result<Outcome, String> {
     } else {
         scan_tree(&root, policy.clone())?
     };
+    // An accepted line keeps its reason for as long as its literal is there.
+    let mut reasons: HashMap<String, Vec<String>> = HashMap::new();
+    for (line, n) in &accepted {
+        if let (key, Some(_)) = baseline::split_reason(line) {
+            reasons
+                .entry(key.to_string())
+                .or_default()
+                .extend(std::iter::repeat_n(line.clone(), *n));
+        }
+    }
     let mut keys: Vec<String> = scanned
         .findings
         .iter()
         .filter(|f| f.list.gated())
-        .map(|f| f.key())
+        .map(|f| {
+            let key = f.key();
+            reasons.get_mut(&key).and_then(Vec::pop).unwrap_or(key)
+        })
         .collect();
     keys.extend(
         policy
@@ -1617,8 +1648,17 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     let root = canonical(root)?;
     let path = root.join(BASELINE_FILE);
     let text = baseline::read(&path)?;
-    let mut accepted = baseline::parse(&text);
-    let current = accepted.clone();
+    let current = baseline::parse(&text);
+    // Findings are matched without the reason an accepted line carries; each key keeps its line as written.
+    let mut accepted = baseline::Keys::new();
+    let mut written: HashMap<String, String> = HashMap::new();
+    for (line, n) in &current {
+        let (key, _) = baseline::split_reason(line);
+        *accepted.entry(key.to_string()).or_default() += n;
+        written
+            .entry(key.to_string())
+            .or_insert_with(|| line.clone());
+    }
     let scanned = scan_tree(&root, Policy::of_keys(&accepted))?;
     let history = history::read(&root, BASELINE_FILE, &literals(&root, &scanned), &current)?;
     let mut lines = Vec::new();
@@ -1639,6 +1679,7 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     }
     // A restated literal leaves its list when the constant it restated goes, not by being moved.
     let hidden = |key: &str| -> Option<String> {
+        let (key, _) = baseline::split_reason(key);
         let (list, rest) = key.split_once(FIELD_SEPARATOR)?;
         if list == List::Restated.name() {
             return None;
@@ -1677,7 +1718,8 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
                     format!("{HIDDEN_MARK}{h}")
                 }
                 None => {
-                    format!("{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE}")
+                    let line = written.get(key).unwrap_or(key);
+                    format!("{STALE_MARK}{line}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE}")
                 }
             });
         }
@@ -1685,17 +1727,27 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     for key in history
         .removed
         .iter()
-        .filter(|k| !current.contains_key(*k) && !hidden_keys.contains(*k))
+        .filter(|k| !current.contains_key(*k) && !hidden_keys.contains(baseline::split_reason(k).0))
     {
         if let Some(h) = hidden(key) {
             lines.push(format!("{HIDDEN_MARK}{h} (removed from the baseline)"));
         }
     }
+    let mut accepted_growth = Vec::new();
     for (key, commit) in history
         .grown
         .iter()
         .filter(|(k, _)| current.contains_key(k))
     {
+        if line_literal(key).is_some()
+            && baseline::split_reason(key)
+                .1
+                .and_then(baseline::adopter)
+                .is_some()
+        {
+            accepted_growth.push(format!("{key} (added by {commit})"));
+            continue;
+        }
         lines.push(format!(
             "{GROWN_MARK}{key}{FIELD_SEPARATOR}{NOTE_MARK}added by {commit}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE} {DO_NOT_GROW}"
         ));
@@ -1706,6 +1758,7 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     let summary = [scanned.summary, history.start]
         .into_iter()
         .chain(additions_report(history.additions))
+        .chain(accepted_report(accepted_growth))
         .collect();
     Ok(Outcome {
         clean: lines.is_empty(),

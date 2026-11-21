@@ -89,6 +89,25 @@ const REV_LIST: &str = "rev-list";
 const MERGES: &str = "--merges";
 const ANCESTRY_PATH: &str = "--ancestry-path";
 const SHALLOW: &str = "the git history is shallow, so the baseline's growth cannot be checked: fetch the whole history (git fetch --unshallow)";
+/// The files a change renamed, as `R<similarity>`, the old path and the new one, each ended by a nul;
+/// `-l0` lifts the limit on how many files rename detection compares.
+const RENAMES: &[&str] = &[
+    "diff",
+    "--find-renames",
+    "-l0",
+    "--name-status",
+    "-z",
+    "--no-color",
+    "--no-ext-diff",
+    "--diff-filter=R",
+];
+const RENAME_END: char = '\0';
+/// The fields of one rename: its status, the old path and the new one.
+const RENAME_FIELDS: usize = 3;
+/// A pathspec that matches its path character for character, never as a pattern.
+const LITERAL_PATHSPEC: &str = ":(literal)";
+/// A field of a baseline line that holds a string literal, never a path.
+const STRING_QUOTE: char = '"';
 
 /// The keys of the literals in a file's text, given its path relative to the root.
 pub type FileLiterals<'a> = Box<dyn Fn(&str, &str) -> HashSet<String> + 'a>;
@@ -693,6 +712,83 @@ impl Walker<'_> {
         })
     }
 
+    /// The files renamed between `from` and `to` (the working tree when `to` is none), new path to old,
+    /// looked for only among the paths the lines name.
+    fn renames(
+        &self,
+        from: &str,
+        to: Option<&str>,
+        lines: &[&String],
+    ) -> Result<HashMap<String, String>, String> {
+        let paths: BTreeSet<String> = lines
+            .iter()
+            .flat_map(|l| l.split(crate::FIELD_SEPARATOR))
+            .filter(|f| {
+                f.contains(crate::findings::PATH_COMPONENT_SEPARATOR)
+                    && !f.starts_with(STRING_QUOTE)
+            })
+            .map(|f| format!("{LITERAL_PATHSPEC}{f}"))
+            .collect();
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut args: Vec<&str> = RENAMES.to_vec();
+        args.push(from);
+        args.extend(to);
+        args.push(PATHS);
+        args.extend(paths.iter().map(String::as_str));
+        let out = text(self.root, &args)?;
+        let fields: Vec<&str> = out.split(RENAME_END).collect();
+        Ok(fields
+            .chunks_exact(RENAME_FIELDS)
+            .filter_map(|r| match r {
+                [_, old, new] => Some((new.to_string(), old.to_string())),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// The lines of `added` that are not a line of `removed` under a path the change renamed: a moved
+    /// file keeps its lines. A moved line that had grown is still growth, under its new path.
+    fn unmoved(
+        &mut self,
+        from: &str,
+        to: Option<&str>,
+        added: &[String],
+        removed: &[String],
+    ) -> Result<Vec<String>, String> {
+        if added.is_empty() || removed.is_empty() {
+            return Ok(added.to_vec());
+        }
+        let both: Vec<&String> = added.iter().chain(removed).collect();
+        let renames = self.renames(from, to, &both)?;
+        if renames.is_empty() {
+            return Ok(added.to_vec());
+        }
+        let mut left = baseline::Keys::new();
+        for line in removed {
+            *left.entry(line.clone()).or_default() += 1;
+        }
+        let mut out = Vec::new();
+        for line in added {
+            let before = line
+                .split(crate::FIELD_SEPARATOR)
+                .map(|f| renames.get(f).map_or(f, String::as_str))
+                .collect::<Vec<_>>()
+                .join(&crate::FIELD_SEPARATOR.to_string());
+            match left.get_mut(&before) {
+                Some(n) if before != *line && *n > usize::default() => {
+                    *n -= 1;
+                    if let Some(grown) = self.grown.iter_mut().find(|(l, _)| *l == before) {
+                        grown.0 = line.clone();
+                    }
+                }
+                _ => out.push(line.clone()),
+            }
+        }
+        Ok(out)
+    }
+
     /// Checks the chain from `tip` down to `stop`, and every other side merged into it.
     fn chain(&mut self, tip: &str, stop: Option<&str>) -> Result<Chain, String> {
         if !self.seen.insert((tip.to_string(), stop.map(String::from))) {
@@ -711,6 +807,12 @@ impl Walker<'_> {
             let allowed = chain.allowed.iter().find(|(c, ..)| *c == change.commit);
             let exempt = allowed.is_some();
             if let Some((_, diff)) = diffs.iter().find(|(c, _)| *c == change.commit) {
+                let added = match change.parents.first() {
+                    Some(first) => {
+                        self.unmoved(first, Some(&change.commit), &diff.added, &diff.removed)?
+                    }
+                    None => diff.added.clone(),
+                };
                 // A line removed after it grew is no longer growth.
                 for line in &diff.removed {
                     if let Some(at) = self.grown.iter().position(|(l, _)| l == line) {
@@ -718,13 +820,11 @@ impl Walker<'_> {
                     }
                 }
                 match allowed {
-                    None => self.grown.extend(
-                        diff.added
-                            .iter()
-                            .map(|l| (l.clone(), short(&change.commit))),
-                    ),
+                    None => self
+                        .grown
+                        .extend(added.iter().map(|l| (l.clone(), short(&change.commit)))),
                     Some((_, _, Some(bases))) => {
-                        let grown = self.not_there(bases, &diff.added, &short(&change.commit))?;
+                        let grown = self.not_there(bases, &added, &short(&change.commit))?;
                         self.grown.extend(grown);
                     }
                     Some((_, _, None)) => {}
@@ -841,6 +941,10 @@ pub fn read(
         .into_iter()
         .filter(|k| !from_merge.contains_key(k))
         .collect();
+    let added = match head {
+        true => walker.unmoved(HEAD, None, &added, &multiset_minus(&committed, working))?,
+        false => added,
+    };
     if fresh || (chain.arrived && chain.changes == 1) {
     } else if let Some(bases) = &working_bases {
         let grown = walker.not_there(bases, &added, WORKING_TREE)?;
