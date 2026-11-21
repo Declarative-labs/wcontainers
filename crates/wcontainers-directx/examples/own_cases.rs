@@ -454,11 +454,12 @@ fn main() -> windows::core::Result<()> {
             }
         }
         // Normalised targets the back end may hold as their integer twins: drawn, read back and
-        // their mips generated.
+        // their mips generated. The channels that vary are positive: the RTX 3080 averages
+        // R8G8B8A8_SNORM's bytes as unsigned in its mips.
         "norm_targets" => {
             let full = vs(FULL);
             let shade = ps("float4 main(float4 p : SV_Position) : SV_Target {
-                    return float4(0.2 * (p.x + 0.5), 0.4 * p.y - 0.6, -0.6, 1.0);
+                    return float4(0.2 * (p.x + 0.5), 0.2 * (p.y + 0.5), -0.6, 1.0);
                 }");
             for (name, format, texel) in [
                 ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM, 4),
