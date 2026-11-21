@@ -586,6 +586,8 @@ struct Builder<'a> {
     /// atomics take the operation's signedness from the word's type.
     signed_atomic_fields: Vec<(u32, u32)>,
     signed_atomic_vars: Vec<u32>,
+    /// The derefs into those signed words, whose loads, stores and atomics take signed values.
+    signed_derefs: std::collections::HashSet<u32>,
     /// The samples `demote_samples` has left, ANDed into the sample mask output on return.
     kept_samples: Option<Handle<LocalVariable>>,
     /// What only the shaders crate's rewrites make fit for the common form.
@@ -674,6 +676,7 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         atomic_vars: Vec::new(),
         signed_atomic_fields: Vec::new(),
         signed_atomic_vars: Vec::new(),
+        signed_derefs: std::collections::HashSet::new(),
         kept_samples: None,
         rewrites: Rewrites::default(),
     };
@@ -1041,6 +1044,39 @@ impl Builder<'_> {
                     Deref::Cast => break,
                 }
             }
+        }
+        if self.signed_atomic_vars.is_empty() && self.signed_atomic_fields.is_empty() {
+            return;
+        }
+        for d in derefs.values() {
+            let mut at = Some(*d);
+            while let Some(step) = at {
+                let signed = match deref_kind(step.op) {
+                    Deref::Array => {
+                        at = derefs.get(&step.src[0].def).copied();
+                        continue;
+                    }
+                    Deref::Struct => derefs.get(&step.src[0].def).is_some_and(|parent| {
+                        self.signed_atomic_fields
+                            .contains(&(parent.ty, step.value[0]))
+                    }),
+                    Deref::Var => self.signed_atomic_vars.contains(&step.value[0]),
+                    Deref::Cast => false,
+                };
+                if signed {
+                    self.signed_derefs.insert(d.def);
+                }
+                break;
+            }
+        }
+    }
+
+    /// The scalar kind of the values a pointer from deref `def` of flat type `ty` holds: a
+    /// signed atomic word's are signed.
+    fn pointer_kind(&self, def: u32, ty: u32) -> ScalarKind {
+        match self.kind_of(ty) {
+            ScalarKind::Uint if self.signed_derefs.contains(&def) => ScalarKind::Sint,
+            kind => kind,
         }
     }
 
@@ -2695,7 +2731,7 @@ impl Builder<'_> {
                     self.set(i, Value::Expr(e, Float));
                     return Ok(());
                 }
-                let kind = self.kind_of(ty);
+                let kind = self.pointer_kind(i.src[0].def, ty);
                 let e = self.add(Expression::Load { pointer });
                 self.set(i, Value::Expr(e, kind));
             }
@@ -2704,7 +2740,7 @@ impl Builder<'_> {
                 if self.is_row_major(ty) {
                     return Err(unsupported(format_args!("a store into a row-major matrix")));
                 }
-                let kind = self.kind_of(ty);
+                let kind = self.pointer_kind(i.src[0].def, ty);
                 let (value, components) = self.whole(i.src[1].def, kind)?;
                 self.store(pointer, value, components, i.value[2]);
             }
@@ -3051,7 +3087,7 @@ impl Builder<'_> {
         use naga::AtomicFunction as F;
         let op = atomic_op(i.value[VectorSize::MAX - 1]);
         let (pointer, ty) = self.pointer(i.src[0].def)?;
-        let kind = self.kind_of(ty);
+        let kind = self.pointer_kind(i.src[0].def, ty);
         let needs = |want: ScalarKind| {
             if kind == want {
                 Ok(())
