@@ -5,125 +5,136 @@ G9).
 
 ## Where it stands
 
-G9 run 11 (2026-11-20). G9 is still short of its bar. The driver now reports OpenGL ES 3.1
-(GLSL ES 3.10; desktop stays 3.0 and GLSL 1.30), so dEQP-GLES31 and KHR-GLES31 run. ES 3.2 and
-desktop 3.3 and 4.6 still cannot start (no geometry or tessellation stages, no fragment storage),
-so KHR-GLES32, KHR-GL33 and KHR-GL46 run no case.
+G9 run 12 (2026-11-20). G9 is still short of its bar, and cannot reach it from this track alone:
+the bar's lists for ES 3.2 and desktop 3.3 and 4.6 need geometry and tessellation stages, which
+wait on a public entry point in the shaders crate (Requests, the first item). The driver reports
+OpenGL ES 3.1 (GLSL ES 3.10; desktop 3.0 and GLSL 1.30), so KHR-GLES32, KHR-GL33 and KHR-GL46
+run no case.
 
 The table of lists and shares on our driver, WHOLE lists (desktop, RTX 3080, one GPU job, 8 glcts
-at once, other tracks' jobs queued beside), run A at 670eac2e, 18:55:50 to 19:24:49:
+at once, other tracks' jobs queued beside), run A at 317f65fe, 20:15:12 to 20:39:31 (Pacific):
 - dEQP-GLES2: 17,165 cases; Pass 16,925, Warn 6, Fail 57, Crash 42, Skip 135: 16,931 of 17,030
-  run, 99.42%.
-- dEQP-GLES3: 44,768 cases; Pass 43,872, Warn 5, Fail 183, Crash 175, Skip 533: 43,877 of 44,235
-  run, 99.19% (run 10: 99.02%; the occlusion query fix).
-- dEQP-GLES31: 37,802 cases; Pass 14,726, Warn 4, Fail 94, Crash 1,313, Flake 1, Skip 21,664:
-  14,730 of 16,138 run, 91.28%.
+  run, 99.42% (run 11: the same).
+- dEQP-GLES3: 44,768 cases; Pass 43,881, Warn 5, Fail 174, Crash 175, Skip 533: 43,886 of 44,235
+  run, 99.21% (run 11: 99.19%).
+- dEQP-GLES31: 37,802 cases; Pass 15,644, Warn 4, Fail 21, Crash 327, Flake 2, Skip 21,804:
+  15,648 of 15,998 run, 97.81% (run 11's run B: 93.31%).
 - KHR-GLES2: 473 cases; Pass 438, Skip 35: 100.00%.
 - KHR-GLES3: 6,498 cases; Pass 6,107, Fail 87, Crash 73, Skip 231: 6,107 of 6,267, 97.45%.
-- KHR-GLES31: 4,101 cases; Pass 2,426, Fail 27, Crash 56, Skip 1,592: 2,426 of 2,509, 96.69%.
+- KHR-GLES31: 4,101 cases; Pass 2,466, Fail 18, Crash 15, Skip 1,602: 2,466 of 2,499, 98.68%
+  (run 11: 97.01%).
 - KHR-GLES32 (1,405 cases), KHR-GL33 (9,886), KHR-GL46 (19,714): cannot start (deqp-runner gets
   no context of their version).
-- Over the six lists that start: 84,509 of 86,617 run, 97.57%. The bar's measure, over the GLES
+- Over the six lists that start: 85,476 of 86,467 run, 98.85%. The bar's measure, over the GLES
   lists and KHR-GL33 together, counting the 11,291 cases of KHR-GLES32 and KHR-GL33 as run and
-  failed (they cannot start): 84,509 of 97,908, 86.31%; not met (92.9%). KHR-GL46: none run.
-- Flake: dEQP-GLES31 synchronization.inter_invocation (one case); not yet read.
-- Run B at c6daf776 (the image twins, the measured-only images, single-layer multisampled
-  textures, the atomic word types), ES 3.1 lists only, 19:30:59 to 19:43:42 with the build:
-  dEQP-GLES31 Pass 15,055, Warn 4, Fail 146, Crash 930, Flake 3, Skip 21,664: 15,059 of 16,138,
-  93.31%; KHR-GLES31 Pass 2,434, Fail 37, Crash 38, Skip 1,592: 2,434 of 2,509, 97.01%. With run
-  A's other lists: 84,846 of 86,617 run, 97.96%, over the six that start; the bar's measure
-  (KHR-GLES32 and KHR-GL33 counted as failed) 84,846 of 97,908, 86.66%.
-- Run B's flakes: dEQP-GLES31 image_load_store.2d_array.qualifiers coherent_r32ui and
-  volatile_r32f, synchronization.inter_invocation.ssbo_atomic_read_write; not yet read.
-- In run B the image_load_store crashes fell from 410 to 162 (the rest: image atomics and 3D
-  slices) and ssbo.layout's 56 to none; texture.multisample's 60 are all Fail now: the bound
-  sample mask (`glSampleMaski`, `set_sample_mask`) is kept but never given to the draw's
-  rasterizer block, a gap to close (Gallium's mask into the interface's `RasterDesc`).
-- Results: scratch `results/g9r11/full-a` (`<list>/results.csv`, `failures.csv`, the job's
-  output `g9r11-full-a.log`); a 10% sample of dEQP-GLES3, -GLES31 and KHR-GLES31 at 7e3496f0 in
-  `results/g9r11/f10` with the runner's logs.
+  failed: 85,476 of 97,758, 87.44%; not met (92.9%). KHR-GL46: none run.
+- Run B at 35710fc3 (the signed atomic words' first form and read-write compute buffers), the
+  two ES 3.1 lists only, 20:42:58 to 20:54:11: dEQP-GLES31 Pass 15,645, Warn 4,
+  Fail 22, Crash 322, Flake 5, Skip 21,804: 15,649 of 15,998, 97.82%; KHR-GLES31 as run A. Its
+  results.csv was overwritten by the group run after it; the failing cases are kept from its log
+  (scratch `results/g9r12/full-b/failures-from-log.csv`).
+- A group run at 1c711c04 (ssbo, synchronization, compute, atomic_counter; KHR's
+  shader_storage_buffer_object and compute_shader): against run A, 15 crashes now pass (the
+  signed atomics, the storage aliasing), 2 crashes now fail (ssbo_alias_write: below), 1 pass
+  now fails (synchronization.inter_invocation.ssbo_atomic_alias_overwrite), flakes moved within
+  synchronization.inter_invocation. Not yet in a whole run.
+- Flakes of run A: dEQP-GLES31 synchronization.inter_invocation (one) and
+  image_load_store.2d_array (one); not yet read.
+- Results: scratch `results/g9r12/full-a` (`<list>/results.csv`, `failures.csv`), the jobs'
+  output `full-a.log`, `full-b.log`, `groups-*.log`.
 
 Done this run (each from the failing cases' logs):
-- ES 3.1 in the screen: compute work (the interface's limits as Gallium's compute caps), storage
-  buffers and images in compute programs (WebGPU's 8 and 4 at least; st/mesa gives half the
-  buffers to atomic counters), the storage offset alignment and block size, indirect draws,
-  multisampled textures (single 2D layers, the host's), gathers of four components, stencil
-  texturing (X24S8 and S8X24 views of the depth-stencil texture's stencil) and framebuffers
-  without attachments (the pass tracker's empty pass, at the samples its own target takes).
-- The context: compute programs (`create_compute_state`), `launch_grid` (`compute.rs`: the
-  program converted by route B, bound as a draw's, direct or indirect groups),
-  `set_shader_buffers` and `set_shader_images`, each slot holding a reference.
-- Storage blocks bind past the image units (`PIPE_MAX_SHADER_IMAGES` plus the block index), so
-  images and blocks share the storage range without meeting; images are viewed by the texture's
-  target (a cube as a 2D array of its faces, as the common form holds storage cubes).
-- An image of another format than its texture's, of the same texel size, is bound through a
-  twin of its format, copied in and back (`ReinterpretCopy`); measured on no run yet (run B).
-- Indirect draws: their arguments read back (`IndirectReadBack`) and drawn as direct draws, sized
-  by OpenGL's command layouts.
-- Route B: an image only measured is declared written (WebGPU's layout read it as read-only and
-  refused the pipeline); a storage block reached by atomics has a word type of its own, so the
-  other blocks' words are not made atomic (DXC refused atomic loads of read-only buffers).
-- Two regressions this run's first build made, found by the sample and fixed: images were
-  looked up for the vertex program's fetched streams (288 dEQP-GLES3 crashes), and depth
-  textures were made for storage, which lost the device (Requests).
-- The literal check: one new finding (a refusal text) fixed; the 7 of run 10 remain.
+- Border colours (WebGPU has none): a sampler with a border wrap is made clamping on the host and
+  keeps its asked state; a float texture's border is applied in the program by the shaders crate's
+  filter library (`VariantKey::border_in_shader`, through route B's rewrite, `BorderInShader`),
+  an integer texture's in the bridge's nearest load (the border colour in `NearestSampler`).
+  The variant's sampler and texture slots are the program's own (`slots_of`, `unit_of`), not
+  OpenGL's units. dEQP-GLES31 texture.border_clamp: 595 of 619 pass (was 0); the 24 left are
+  comparisons (below).
+- Helper constants of every stage (fragment and compute too), in the one helper set.
+- The bound sample mask reaches the draw: rasterizer blocks made with the mask, kept by
+  description (`masked_blocks`); sample positions are Gallium's standard ones
+  (`u_default_get_sample_position`, WebGPU's 4x pattern).
+- A Mesa patch (`mesa/patches/multisample-arrays-where-made.patch`): st/mesa reports
+  `OES_texture_storage_multisample_2d_array` only where the screen makes multisampled 2D arrays
+  (it reported it with every multisampled texture). Our screen makes none (WebGPU), so those
+  cases are NotSupported now; llvmpipe still reports it.
+- Integer cube maps: made a 2D array of faces only where the program samples them; gathers of a
+  cube are the host's own (texture.gather's 42 Fail pass). The driver binds the faces where the
+  program's binding is a 2D array (`layered`).
+- Stencil textures (`STENCIL_INDEX8`) are integer textures; the stencil view of 32-bit float
+  depth is Mesa's `X32_S8X24_UINT` (it was `S8X24_UINT`, another format's).
+- The host resolves only formats it can resolve (`FormatUse::RESOLVE`); integer resolves go to
+  Gallium's blitter (they lost the device: "R16Uint is not resolvable").
+- Route B: signed atomic minimum and maximum act on signed words (the block's atomic word type,
+  and every load, store and atomic through it); a compute program's storage buffers are all
+  read-write (WebGPU refuses one buffer bound at a read-only and a written block of one
+  dispatch; OpenGL allows it).
+- The literal check: the volume texture refusal reworded (it held "3D" and "2D", numbers); the 7
+  of run 10 remain.
 
-Every failure left in run A, with its reason (dEQP-GLES31 unless named; the ES 3.0 lists' are
-run 10's list below, unchanged but for occlusion_query and transform_feedback):
-- texture.border_clamp 619 crashes: border colours, which WebGPU lacks (`BORDER_COLOR` absent);
-  st/mesa reports border clamp in every context. The shaders crate's `border_in_shader` rewrite
-  exists for Direct3D 11; route B's `direct::rewrite` does not take it yet (it needs the
-  sampler's border colour in a fragment program's helper constants, which the driver refuses).
-- image_load_store 410 crashes: images of another format (432 refusals, now bound through a
-  twin), image atomics (`image_deref_atomic` 302, `_swap` 32: naga's `ImageAtomic` returns no
-  value, GLSL's does), one slice of a 3D texture as a 2D image (52: WebGPU has no 2D view of a
-  3D texture).
-- shaders.helper_invocation 80 crashes: `load_helper_invocation` (WGSL has no such value).
-- ssbo.layout 56 crashes: the atomic loads of read-only blocks (fixed after run A), and others
-  not yet read.
-- texture.multisample 60, state_query.texture_level 36: multisampled 2D arrays, which WebGPU
-  lacks (now reported absent), and others not yet read.
-- texture.gather 42 Fail: not yet read.
-- synchronization 38, compute 10, ssbo.atomic 6 (signed minimum and maximum on words: 30
-  refusals), stencil_texturing 9, uniform_location 6, draw_indirect 4, smaller: not yet read.
-- KHR-GLES31 83: texture_storage_multisample 24 (multisampled arrays and others), draw_buffers_indexed
-  2, shader_integer_mix 3, texture_gather 2, others one each; not yet read.
-- None of these is checked yet against the RTX 3080's own OpenGL (`-Driver system`).
-- NotSupported (dEQP-GLES31 21,664): by group, copy_image 12,395 (OES_copy_image), builtin
-  functions 1,336 and linkage 431 (geometry and tessellation stages), implicit conversions
-  1,034 (EXT_shader_implicit_conversions), texture_buffer 351 and image_load_store.buffer 125
-  (OES_texture_buffer), sample_variables 207 (OES_sample_variables), tessellation 192,
-  multisample_interpolation 169, the program_interface_query groups (their geometry and
-  tessellation variants) and others: read from the groups' names and dEQP's requirements, not
-  yet checked case by case as the bar asks.
+Every failure left in run A, with its reason (from the refusals in the logs; "not yet read"
+where none was read):
+- dEQP-GLES31 image_load_store 162 crashes and KHR-GLES31 shader_image_load_store 3,
+  compute_shader atomic 2: image atomics (`image_deref_atomic` 302 refusals,
+  `image_deref_atomic_swap` 32): WebGPU has no texture atomics in its core; to be done as a
+  storage buffer copy of the image (a slow path, not built); and one slice of a volume texture as
+  a flat image (52 refusals: WebGPU has no 2D view of a 3D texture).
+- dEQP-GLES31 shaders.helper_invocation 80 crashes: `gl_HelperInvocation` (`load_helper_invocation`,
+  160 refusals): WGSL has no such value.
+- dEQP-GLES31 texture.border_clamp 24 crashes, KHR-GLES31 texture_border_clamp 2: a border on a
+  comparison sampler (the filter library compares no depth: `BorderInShaderOnComparison`).
+- dEQP-GLES31 synchronization 34 (16 inter_call crashes among them) and compute 8: not yet read;
+  ssbo_alias_write (2): the same buffer bound at two blocks, both written, which WebGPU leaves
+  undefined.
+- dEQP-GLES31 uniform_location.nested_array 6, shaders.opaque_type_indexing 6: arrays of arrays
+  of textures (12 refusals) and others; draw_indirect.random 4, stencil_texturing.render 2
+  (scissored stencil clears, drawn by st/mesa as quads), debug.negative_coverage 2,
+  shaders.builtin_functions 9: not yet read. ssbo.atomic: a block with both signed and unsigned
+  minimum or maximum (6 refusals, "an atomic Umin on a Sint").
+- KHR-GLES31 texture_storage_multisample 9 Fail (API errors and completeness with the host's 1
+  and 4 samples) and 1 crash, draw_buffers_indexed 2, shader_integer_mix 3, layout_binding 3
+  ("a uniform block bound smaller than the program declares", 20 refusals), vertex_attrib_binding
+  3, texture_stencil8.multisample 1: not yet read.
+- The ES 3.0 lists' failures are run 10's (in `git show cb0371e1:docs/status-graphics-nir.md`):
+  fbo.render 144 Fail over dEQP-GLES2 and -GLES3; fetched vertex components across words (168
+  refusals, the shaders crate's fetch); shaders.texture_functions 45 (naga's HLSL writer's
+  `int2(int3(...))`, which DXC refuses: the device is then lost; and comparisons with a bias,
+  gradients or a level: 50 refusals); the 10-10-10-2 scaled and signed vertex formats the
+  interface lacks (96 refusals); blits the blitter does not make (62); gl_PointSize streamed (22);
+  KHR-GLES3 copy_tex_image_conversions 140 (forbidden 70: the RGB565 framebuffer incomplete, as
+  WebGPU renders no 565; required 63: a vertex program sampling integer samplers at units that
+  hold no integer texture, in a branch it does not take); precision and invariance (46), smaller
+  groups not yet read.
+- The RTX 3080's own OpenGL (`-Driver system`) on run A's failing groups: results below (System
+  run), when it has ended.
+- NotSupported (dEQP-GLES31 21,804): by group, copy_image (OES_copy_image), builtin functions and
+  linkage (geometry and tessellation stages), implicit conversions
+  (EXT_shader_implicit_conversions), texture_buffer and image_load_store.buffer
+  (OES_texture_buffer), sample_variables (OES_sample_variables), tessellation,
+  multisample_interpolation, the program_interface_query groups' geometry and tessellation
+  variants, and now the multisampled 2D arrays (OES_texture_storage_multisample_2d_array): read
+  from the groups' names and dEQP's requirements, not yet checked case by case.
 
 What is left, in order:
-1. Read run B (below) and the twin's effect; then the ES 3.1 groups above, largest first: border
-   colour in the program (route B taking `border_in_shader`, with helper constants in fragment
-   programs), image atomics, helper invocations.
-2. fbo.render's re-specified colour buffers (run 10's first item, 145 cases over two lists) and
-   KHR-GLES3 copy_tex_image_conversions (133).
-3. Run every failing group with `-Driver system` and list which the RTX 3080's own OpenGL passes;
-   check every NotSupported group's requirement case by case.
-4. Storage in fragment programs (the pass tracker told of each draw's storage uses), then ES 3.2
-   (geometry and tessellation stages through the stage helper, `OES_copy_image`,
-   `OES_texture_buffer`, sample variables), desktop 3.3 and 4.6.
-5. Vertex formats of 10-10-10-2 and scaled integers fetched in the vertex program; comparisons
-   with a bias, gradients or a level; the blits the blitter does not make; gl_PointSize streamed.
-6. Reach 92.9% over the GLES lists and KHR-GL33 together, and 98.6% over KHR-GL46.
-7. bgfx's and Godot's OpenGL renderers on the rig, with every slow path counted.
-8. Check whether u_vbuf converts vertex formats the screen does not report on the CPU without
-   being counted; measure what storage use costs a texture on the RTX 3080.
-9. Known gaps of run 10 (a strip without restart holding the largest index; an array of integer
-   cube samplers with mixed wraps); a direct host draw for indirect draws that need no rewrite.
+1. Geometry and tessellation stages, which ES 3.2 and desktop 3.2 and later require: waiting on
+   the shaders track's public entry point (Requests). Then ES 3.2 (`OES_copy_image`,
+   `OES_texture_buffer`, sample variables, fragment storage), desktop 3.3 (multisampled 2D
+   arrays are core there: they need a back end that makes them, or a counted slow path), 4.6.
+2. Image atomics through a storage buffer copy of the image (about 170 cases).
+3. Read the not yet read groups above; check every NotSupported group case by case.
+4. fbo.render's re-specified colour buffers (144) and the 565 framebuffer (70).
+5. Smaller items: the 10-10-10-2 scaled and signed vertex formats (an interface request),
+   comparisons with a bias, gradients or a level, the blits the blitter does not make,
+   gl_PointSize streamed, integer samplers at units without an integer texture.
+6. bgfx's and Godot's OpenGL renderers on the rig, with every slow path counted.
+7. Check whether u_vbuf converts vertex formats on the CPU without counting it; measure what
+   storage use costs a texture; a direct host draw for indirect draws that need no rewrite.
 
-Run 10's list of the ES 3.0 failures and their reasons is in `git show
-cb0371e1:docs/status-graphics-nir.md` (Where it stands); unchanged this run but for
-occlusion_query (all passing) and transform_feedback (no Fail).
-
-Earlier runs (G8 runs 1 to 15, G9 runs 1 to 10) are told in this file's history:
-`git show 054465ac:docs/status-graphics-nir.md` held runs up to G9 run 8 in full, `git show 8d7f5472:docs/status-graphics-nir.md` held G9 run 9, and
-`git show cb0371e1:docs/status-graphics-nir.md` G9 run 10.
+Earlier runs (G8 runs 1 to 15, G9 runs 1 to 11) are told in this file's history:
+`git show 054465ac:docs/status-graphics-nir.md` held runs up to G9 run 8 in full, `git show
+8d7f5472:docs/status-graphics-nir.md` G9 run 9, `git show cb0371e1:docs/status-graphics-nir.md`
+G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
 
 ## How to run
 
@@ -283,6 +294,22 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 10) are told in this file's history:
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- G9 run 12, the whole lists on our driver (desktop, RTX 3080, one GPU job, 8 glcts at once,
+  other tracks' jobs queued beside): run A 20:15:12 to 20:39:31 (24 min for the six lists that
+  start), run B of the two ES 3.1 lists 20:42:58 to 20:54:11 (11 min). Group runs: border_clamp
+  alone (619 cases) 47 s; the texture groups of both ES 3.1 lists (2,078 cases) about 2 min.
+  The Windows Mesa build after the patch (most of st/mesa again): about 6 minutes, 8 jobs.
+- G9 run 12, the whole corpus run (18,738 items, 96 children, x86-64 machine, load 0.06 at the
+  start and 2.1 at the end) at 35710fc3: 741 s. Route B: 12,090 match, 156 differ, 6 not
+  compared, as run 11; route A unchanged. On the 1,072 shaders both routes match: A median
+  426 us, mean 620 us; B median 338 us, mean 412 us. Results: scratch
+  `results/g9r12/nir-results-g9r12.jsonl`. A second run at 1c711c04 (the signed words' loads and
+  stores): Measurements below when read.
+- G9 run 12, the suite of wcontainers-nir and wcontainers-opengl at 1c711c04 (x86-64 machine,
+  load 0.0 to 0.9): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa
+  `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2, `route`
+  11 passed; the Mesa build with the new patch made again first (32 s with the tests).
 
 - G9 run 11, the whole lists on our driver (desktop, RTX 3080, one GPU job, 8 glcts at once,
   other tracks' jobs queued beside): run A 18:55:50 to 19:24:49 (29 minutes for the 110,807 cases of the six lists that start
@@ -456,6 +483,11 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 10) are told in this file's history:
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 run 12: nothing new. The driver now also calls Gallium's `u_default_get_sample_position`
+  (`src/gallium/auxiliary/util/u_sample_positions.c`, Alyssa Rosenzweig, SPDX MIT), in
+  `libgallium` already linked; the new Mesa patch changes Mesa's own MIT files
+  (`st_extensions.c`, `extensions_table.h`, `consts_exts.h`).
+
 - G9 run 11: nothing new. The driver's new paths use only Gallium's headers and Mesa's MIT
   files already linked; no crate was added.
 
@@ -577,6 +609,16 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 10) are told in this file's history:
   link it), GCC 16.2.0 (GPL-3.0 with the GCC runtime library exception).
 
 ## Departures from the plan
+
+- G9 run 12: every storage buffer of a compute program is read-write in route B's module, so one
+  buffer bound at a read-only and a written block of one dispatch is valid on WebGPU (OpenGL and
+  Vulkan allow it). Its cost against read-only bindings is not measured.
+- G9 run 12: a Mesa patch reports `OES_texture_storage_multisample_2d_array` only where the
+  screen makes multisampled 2D arrays (st/mesa tied it to multisampled textures); it lives in
+  `mesa/patches/` with Zink's until the fork 15.2 describes exists.
+- G9 run 12: an integer cube map's gather through a program that also samples it (made a 2D
+  array of faces) reads its face's edge texels past the edge, not the next face's; a program
+  that only gathers keeps the cube.
 
 - G9 run 11: indirect draws read their arguments back and draw as direct draws
   (`IndirectReadBack`), so every rewrite a direct draw takes (fans, restart, provoking vertex,
@@ -783,6 +825,14 @@ None.
 
 ## Requests to other tracks
 
+- Interface track (G9 run 12): the 10-10-10-2 vertex formats OpenGL ES 3.0 requires that
+  `VertexFormat` lacks: signed normalized, and signed and unsigned integers read as floats
+  (Gallium's R10G10B10A2_SNORM, _SSCALED, _USCALED; 96 refusals in dEQP-GLES3 and KHR-GLES31).
+  The driver refuses them by name until then.
+- WebGPU back end (G9 run 12, a finding): a multisampled resolve of an integer format reaches
+  wgpu and loses the device ("R16Uint is not resolvable"); the driver now checks
+  `FormatUse::RESOLVE` first, as every front must.
+
 - Shaders track (G9 run 12, the one item between G9 and its bar): a public entry point for the
   stage helper's geometry and tessellation forms taken from a naga module, as `lower/geometry.rs`
   and `lower/hull.rs` already make them for the DXBC and DXIL routes (`pub(crate)` today, and fed
@@ -900,6 +950,13 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 12: exit 1 at 317f65fe with b7e3bb83's change (x86-64 machine, from a git bundle; marks 0; the clone, its build
+and the bundle deleted after; output in scratch `logs/g9r12-literals.out`): the 7 findings of run
+10 (`unbuilt!`'s three, the two `OUT_DIR` ones, `CUBE_FACES` twice). The run's one new finding,
+the volume texture refusal (it held "3D" and "2D"), was reworded and checked again. Nothing new
+since in the files the check reads but numbers derived or Gallium's. wcontainers-nir and
+wcontainers-opengl have no baseline lines.
 
 G9 run 11: exit 1 at f6fe1681 (x86-64 machine, from a git bundle; marks 0; the clone, its build
 and the bundle deleted after; output in scratch `logs/g9r11-literals.out`): 8 findings, the 7 of
