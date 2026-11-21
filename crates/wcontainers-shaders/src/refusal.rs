@@ -11,6 +11,9 @@ pub const CLEAR_DIMENSION: &str = "ClearDimension";
 pub const CLIP_DISTANCE: &str = "ClipDistance";
 pub const CLIP_DISTANCE_PER_SAMPLE: &str = "ClipDistancePerSample";
 pub const CLIP_DISTANCE_SAMPLES: &str = "ClipDistanceSamples";
+/// A component past its vector in dxbc-spirv's IR: its loads through a dynamically indexed range of
+/// registers whose component mask has a gap address the components as though it had none.
+pub const COMPONENT_PAST_VECTOR: &str = "ComponentPastVector";
 pub const CONSTANTS_AS_TEXTURE_LAYOUT: &str = "ConstantsAsTextureLayout";
 pub const CONSTANT_COMPONENT_INDEXING: &str = "ConstantComponentIndexing";
 pub const CONTINUE_CONSTRUCT: &str = "ContinueConstruct";

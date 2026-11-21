@@ -119,6 +119,8 @@ fn geometry_shaders_have_a_replay_form() {
         "gs_clip",
         "gs_layers",
         "gs_streams",
+        "gs_rows_lines",
+        "gs_rows_streams",
     ];
     for name in names {
         let bytes = own(&format!("{name}.dxbc"));
@@ -620,9 +622,11 @@ fn converted_own(name: &str, ext: &str) -> Converted {
 }
 
 /// Hull shaders taking three control points and giving four, each holding the position, a vector and
-/// an array of rows (which dxc writes as one array of rows), and the domain shader reading them: the
-/// two builds make the same records (the same extras and inputs), so either build's hull stage hands
-/// its values to either build's domain stage (drawn in tests/tessellation_draw.rs).
+/// an array of rows (which dxc writes as one array of rows), and the domain shader reading them: for
+/// these programs the two builds make the same records (the same extras and inputs). Records are not
+/// the same for every program (a quad hull's patch constants can take another count of locations in
+/// each build), and a front pairs a hull and a domain stage of one build only (drawn in
+/// tests/tessellation_draw.rs).
 #[test]
 fn hull_values_make_the_same_records_on_both_routes() {
     for hs in [
@@ -671,7 +675,8 @@ fn hull_values_make_the_same_records_on_both_routes() {
 }
 
 /// dxc's build of each own geometry shader reflects the outputs fxc's does: each at its stream,
-/// register and semantic, the streams past the first included (`gs_streams`).
+/// register and semantic, the streams past the first included (`gs_streams`), each row of an array
+/// at its own register (`gs_rows_*`).
 #[test]
 fn dxil_geometry_outputs_match_dxbc_on_every_stream() {
     for gs in [
@@ -685,6 +690,8 @@ fn dxil_geometry_outputs_match_dxbc_on_every_stream() {
         "gs_line_adjacent",
         "gs_clip",
         "gs_streams",
+        "gs_rows_lines",
+        "gs_rows_streams",
     ] {
         let keyed = |c: Converted| {
             let mut keys: Vec<_> = c

@@ -3639,3 +3639,83 @@ Runs at the tip:
 - Clean-up at the end: the desktop's build folder of this branch (C:\wc\target), the laptop's
   (4.6 GB) and this run's output folders and clone on the x86 machine deleted (its build folder
   kept, the machine's own); no build was made in the Mac checkout.
+
+## G6b run 3 (run 67): the check's findings
+
+Nothing new on the branches merged. Run 66's section is in the history file. Logs in scratch
+`graphics-shaders/g6b3`; GPU figures from the RTX 3080 through the queue (other tracks' jobs
+beside), seeds 1 to 4 (draw5.log at the code committed).
+
+The check's findings, each:
+- Several streams from a DXIL geometry shader (blocking): dxil-spirv gives each stream's outputs
+  locations past the rows of the streams before it (`build_geometry_stream_row_offsets`), and
+  `element_at` matched signature elements by register alone. Now a signature element carries its
+  stream (`container::Element::stream`, from `OSG5`/`ISG1`/`OSG1`), `element_at` matches it, and
+  `dxil::geometry::finish` takes each output's stream's first row off its location. Test
+  `dxil_geometry_outputs_match_dxbc_on_every_stream` (tests/geometry.rs: every own geometry
+  shader's outputs, stream, semantic, register and location, equal for both builds; fails with the
+  stream ignored, x86-mutants.log). Drawn: the four-stream test with dxc's build, below.
+- Stream output tests with dxc's builds (blocking): `stream_output_matches_direct3d`,
+  `stream_output_after_replay_matches_direct3d` and `streams_past_the_first_match_direct3d` now run
+  every case as fxc and as dxc build it. dxc's builds are compared with real Direct3D 12 running
+  them (`direct3d12_streamed`, new in tests/geometry_draw.rs: the same draw, buffers, starts,
+  strip cuts and statistics queries as the Direct3D 11 reference), fxc's with Direct3D 11 as
+  before. Cause of the 1 to 2 ulp of `gs_cut` established: dxc's DXIL divides by 3 and keeps the
+  lerp's subtract, multiply and add apart, where fxc's DXBC multiplies by 0.333333 and uses `mad`
+  (disassembly, gs_cut-disasm.txt), so fxc's build on Direct3D 11 is no reference for dxc's. Against
+  Direct3D 12 running dxc's builds, the IEEE-strict (`-Gis`) builds differed by 1 to 4 ulp in words
+  made by a multiply and an add (`gs_unplaced`, `gs_cut`; draw3.log): the WGSL keeps them apart
+  (`a + b * c`), the back end's compiler fuses them, and the common form has no way to forbid
+  that (gap A21). The geometry test programs' dxc builds are now made without `-Gis` (compile.cmd,
+  as programs are built; no NaN test among them), and the comparison allows 4 ulp
+  (`CONTRACTED_ULPS`) on dxc's builds' normal floats only (integers are subnormal as floats and
+  stay exact; every count exact). Results: 112 comparisons, 0 failed (WebGPU); 96, 0 failed
+  (replay on ANGLE); four streams: 32, 0 failed, 16 known: Direct3D 12 writes zeros for stream
+  0 of dxc's four-stream build while every count and streams 1 to 3 are word-equal (gap A22). The
+  DXBC cases are as before, all equal.
+- Three behaviours without a failing test (blocking):
+  - Arrays of rows (`dims.reverse` in `staged::ir_ty`): own `tessellation_values.hlsl` (from the
+    check's inputs) hands a hull's `float2 rows[2]` per control point to the domain; without the
+    reverse the own records fail (x86-mutants.log), and the drawn values cases below fail.
+  - `SV_Position` as control point data taken as the position built-in: removed. It only made a
+    DXIL hull's records match a DXBC domain's; a front never pairs the routes, and within a route
+    it changed nothing (the check's m3). Drawn: the values cases carry the position in every
+    control point and pass on both routes without it.
+  - The patch constant function after every control point: the values hull's patch constant
+    function reads output control points 1 to 3, so the drawn cases fail if it runs first (the
+    check's m2 failed the same cases).
+- DXBC hull shaders reading an output control point past the input count (minor, G6a's scope):
+  dxbc-spirv bounded every vertex-indexed load by the input count, a fork phase's `vocp` reads too.
+  Its option `boundCheckShaderIo` is now off (cpp/dxbc.cpp): each stage's inputs are arrays of the
+  declared count here and an index past them is undefined in Direct3D. No corpus verdict changed.
+  Drawn: `stream_output_after_the_domain_stage_matches_direct3d` with the values hulls (3 control
+  points in, 4 out) and `ds_values`, with and without `gs_tess_*`, both builds: 304 comparisons
+  (40 of them these), 0 failed, 14 known (subnormal factors, as before).
+- Raster-fill and the tessellation scene through the Direct3D 12 front (minor): not changed; the
+  isoline cell is lines too, equal on wgpu's Direct3D 12 path (this crate's Direct3D 11
+  comparison) and 36 pixels apart on its Vulkan path (the Direct3D 12 front's library), which fits
+  the line rule being the path's. Not measured further.
+- `GeometryPrimitiveIdAfterDomain` (minor): on the gap list (A20) and in the refusal accounting.
+  Own `gs_values_tess` (instanced, reading its primitive number after the domain stage) converts
+  on both routes (records); the stage helper refuses it by name.
+- A10 and A12 with dxc's builds (minor): the same patterns as fxc's, recorded under A10 and A12.
+- Stale count of the own records (minor): fixed in pass bar item 1.
+- WebAssembly and Chrome on the new WGSL files: the check ran both (all 100 newly converting DXIL
+  files compile in Chrome; the WebAssembly build writes them byte-equal but the A8 list).
+
+Runs at the tip:
+- x86 machine (96 processors, load 1 to 8, -j 64): clippy with warnings denied clean; the whole
+  suite with every corpus: every binary passes but gap A16's known failure (x86-suite2.log; the
+  geometry test as committed passed in x86-mutants.log's base).
+- Desktop (RTX 3080): `geometry_draw` 8 passed, `tessellation_draw` 4 passed (draw5.log);
+  Windows clippy (win-clippy.log).
+- Mutated copies (not committed; the commands in x86-mutants.sh): the stream ignored in
+  `element_at` fails `dxil_geometry_outputs_match_dxbc_on_every_stream`; `dims.reverse` removed
+  fails the own records (`hs_values_*.dxil` convert invalid).
+- Literal check (x86 machine, a clone of the tip): passes; this crate's baseline unchanged (530
+  lines), no new literal outside it.
+- Clean-up: the desktop's build folder of this branch and the x86 machine's literal clone and its
+  build folder deleted; no build in the Mac checkout or scratch.
+- Not run this run: the check's seeds 6601 to 6612, the laptop's glslang suite
+  (the new records' GLSL outcomes are the x86 machine's, which has no glslang: they read
+  `absent compute` and a write refusal, neither compiled by glslang).

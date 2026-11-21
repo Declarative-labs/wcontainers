@@ -15,6 +15,7 @@ cs_view_kinds.dxil	ok views:R32Float ; glsl absent compute
 cs_view_sampled.dxil	ok views:R32Float ; glsl absent compute
 ds_line.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_quad.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_rows_gap.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
 ds_tri.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_values.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
 gs_adjacent.dxil	ok ; glsl absent compute
@@ -25,6 +26,8 @@ gs_line_adjacent.dxil	ok ; glsl absent compute
 gs_lines.dxil	ok ; glsl absent compute
 gs_points.dxil	ok ; glsl absent compute
 gs_quads.dxil	ok ; glsl absent compute
+gs_rows_lines.dxil	ok ; glsl absent compute
+gs_rows_streams.dxil	ok ; glsl absent compute
 gs_streams.dxil	ok ; glsl absent compute
 gs_tess_line.dxil	ok ; glsl absent compute
 gs_tess_point.dxil	ok ; glsl absent compute
@@ -130,6 +133,7 @@ vs_line.dxil	ok ; glsl compiles
 vs_pack.dxil	ok ; glsl compiles
 vs_patch.dxil	ok ; glsl compiles
 vs_pull.dxil	ok ; glsl compiles
+vs_rows.dxil	ok ; glsl compiles
 vs_rows_io.dxil	ok ; glsl compiles
 vs_store_raw.dxil	unsupported VertexStorageWrite
 vs_store_texture.dxil	unsupported VertexStorageWrite (with views)
