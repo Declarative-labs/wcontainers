@@ -989,10 +989,27 @@ fn programs_match_linux_x86_64() {
     programs_match_linux::<X86_64>();
 }
 
-/// C's long double through the x87 unit.
+/// The bounds the programs of one unit of the CPU (x87, MMX, the vector extensions) run at beside none and full:
+/// one instruction a piece, a few, the comparison's, and past the largest function.
+const UNIT_BOUNDS: [u32; 6] = [1, 5, 17, 64, wcontainers_translator::BOUND, 4096];
+
+/// None first, full, and every bound of [`UNIT_BOUNDS`], each for speed and size.
+fn every_unit_look_ahead() -> Vec<(LookAhead, Optimise)> {
+    let optimised = |look_ahead| [Optimise::Speed, Optimise::Size].map(|o| (look_ahead, o));
+    std::iter::once((LookAhead::None, Optimise::Speed))
+        .chain(optimised(LookAhead::Full))
+        .chain(
+            UNIT_BOUNDS
+                .into_iter()
+                .flat_map(|n| optimised(LookAhead::Bounded(n))),
+        )
+        .collect()
+}
+
+/// C's long double through the x87 unit, at every look-ahead.
 #[test]
 fn long_double_matches_linux_x86_64() {
-    match_linux::<X86_64>(&[("long_double", Library::C)]);
+    match_linux_at::<X86_64>(&[("long_double", Library::C)], &every_unit_look_ahead());
 }
 
 /// MMX's instructions and how they meet the x87 unit, and the x87 unit's state, environment, compare,
@@ -1001,13 +1018,7 @@ fn long_double_matches_linux_x86_64() {
 fn mmx_and_x87_state_match_linux_x86_64() {
     match_linux_at::<X86_64>(
         &[("mmx", Library::C), ("x87_state", Library::C)],
-        &[
-            (LookAhead::None, Optimise::Speed),
-            (LookAhead::Full, Optimise::Speed),
-            (LookAhead::Full, Optimise::Size),
-            (LookAhead::AT_RUN_TIME, Optimise::Speed),
-            (LookAhead::AT_RUN_TIME, Optimise::Size),
-        ],
+        &every_unit_look_ahead(),
     );
 }
 

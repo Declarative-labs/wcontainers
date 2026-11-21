@@ -796,19 +796,18 @@ impl<G: GuestTest> Machine<G> {
         &self.store.data().stderr
     }
 
-    /// Every slow path taken so far: how often and the time spent.
+    /// Every slow path taken so far, the translator's and the guest's own, by number: how often and the time
+    /// spent.
     pub fn counters(&self) -> Vec<CounterReading> {
-        let counters = &self.store.data().counters;
-        Reason::ALL
+        let mut taken: Vec<_> = self.store.data().counters.iter().collect();
+        taken.sort_by_key(|&(&number, _)| number);
+        taken
             .into_iter()
-            .filter_map(|reason| {
-                let &(count, time) = counters.get(&reason.number())?;
-                Some(CounterReading {
-                    reason: reason.name(),
-                    detail: 0,
-                    count,
-                    nanoseconds: time.as_nanos() as u64,
-                })
+            .map(|(&number, &(count, time))| CounterReading {
+                reason: Reason::name_of::<G>(number).expect("a counter of a known slow path"),
+                detail: 0,
+                count,
+                nanoseconds: time.as_nanos() as u64,
             })
             .collect()
     }
