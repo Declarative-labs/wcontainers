@@ -146,6 +146,44 @@ struct Key {
     offer: u64,
 }
 
+/// A writer that keeps the error it met, which postcard's writer replaces with one of its own, so
+/// a store that fails reports the host's error number.
+struct KeptError<W> {
+    writer: W,
+    error: Option<std::io::Error>,
+}
+
+impl<W: Write> Write for KeptError<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.writer.write(bytes).map_err(|error| {
+            let kind = error.kind();
+            self.error = Some(error);
+            kind.into()
+        })
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush().map_err(|error| {
+            let kind = error.kind();
+            self.error = Some(error);
+            kind.into()
+        })
+    }
+}
+
+/// Writes a cache file's magic and body, failing with the error the writer met.
+fn write_cache(writer: impl Write, body: &[CacheModule]) -> std::io::Result<()> {
+    let mut writer = KeptError {
+        writer,
+        error: None,
+    };
+    writer.writer.write_all(CACHE_MAGIC)?;
+    match postcard::to_io(body, &mut writer) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(writer.error.unwrap_or_else(|| std::io::Error::other(error))),
+    }
+}
+
 /// A translation as wasmtime compiled it.
 struct Compiled {
     modules: Vec<Module>,
@@ -270,11 +308,11 @@ impl<G: Guest> Compiler<G> {
                 code,
             })
             .collect();
-        let bytes = postcard::to_extend(&body, CACHE_MAGIC.to_vec()).expect("a cache file");
         let directory = file.parent().expect("a directory");
         std::fs::create_dir_all(directory)?;
-        let mut partial = tempfile::NamedTempFile::new_in(directory)?;
-        partial.write_all(&bytes)?;
+        let mut partial = std::io::BufWriter::new(tempfile::NamedTempFile::new_in(directory)?);
+        write_cache(&mut partial, &body)?;
+        let partial = partial.into_inner().map_err(|error| error.into_error())?;
         partial.persist(file)?;
         Ok(())
     }
@@ -2752,6 +2790,59 @@ mod tests {
     use wcontainers_abi::LOWEST_ADDRESS;
     use wcontainers_arm64::Arm64;
     use zerocopy::FromZeros;
+
+    /// Takes bytes until it holds `room`, then fails with the host's "no space" error.
+    struct Full {
+        bytes: Vec<u8>,
+        room: usize,
+    }
+
+    impl std::io::Write for Full {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let taken = bytes.len().min(self.room - self.bytes.len());
+            if taken == 0 && !bytes.is_empty() {
+                return Err(std::io::Error::from_raw_os_error(libc::ENOSPC));
+            }
+            self.bytes.extend_from_slice(&bytes[..taken]);
+            Ok(taken)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn cache_body(code: &[u8]) -> Vec<super::CacheModule<'_>> {
+        vec![super::CacheModule {
+            pieces: std::borrow::Cow::Owned(vec![0x40, 0xc0]),
+            code,
+        }]
+    }
+
+    #[test]
+    fn a_cache_file_is_the_magic_then_the_postcard_of_its_modules() {
+        let code: Vec<u8> = (0..=255).collect();
+        let body = cache_body(&code);
+        let mut file = Vec::new();
+        super::write_cache(&mut file, &body).expect("written");
+        let mut expected = super::CACHE_MAGIC.to_vec();
+        expected.extend(postcard::to_allocvec(&body).expect("a body"));
+        assert_eq!(file, expected);
+    }
+
+    #[test]
+    fn a_cache_write_that_fails_gives_the_host_error_number() {
+        let code: Vec<u8> = (0..=255).collect();
+        let body = cache_body(&code);
+        for room in [0, 4, 8, 12, 100] {
+            let full = Full {
+                bytes: Vec::new(),
+                room,
+            };
+            let error = super::write_cache(full, &body).expect_err("no room");
+            assert_eq!(error.raw_os_error(), Some(libc::ENOSPC), "room {room}");
+        }
+    }
 
     /// Leaves at the thread's first exit, keeping it and the pc then.
     struct First {
