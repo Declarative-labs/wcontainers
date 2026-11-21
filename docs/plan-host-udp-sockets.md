@@ -18,11 +18,13 @@
   that waits on it. A socket owns its descriptor through the `Watched` it gets at open, which deletes any
   registration before the descriptor closes. A waiting call lists itself in its socket's waiter list (whose room
   is kept, so a wait allocates nothing once it has grown) and asks the socket with a `poll` of no timeout; only
-  if it has to wait does it arm the socket's one-shot, level-triggered registration for the events its socket's
-  waiting calls ask for (added at the socket's first such wait). The thread, on an event, asks the socket the same
-  way, wakes each waiter whose events have come (taking its waker, so each poll is woken once) and arms the
-  registration again only for calls still waiting. So a socket nobody waits on costs the thread nothing. Dropping
-  a call removes it from the list, and the last call gone deletes a registration still armed.
+  if it has to wait does it register the socket, edge-triggered, for the events its unwoken calls ask for
+  (changed only when a call asks for more). The thread, on an event, asks the socket the same way, wakes each
+  waiter whose events have come (taking its waker, so each poll is woken once), and deletes the registration
+  once no call waits unwoken. So a socket nobody waits on costs the thread nothing, and a call waiting for an
+  event the poller only approximates (POLLRDBAND, POLLMSG and POLLRDHUP by the socket being readable) is looked
+  at again at each change of its socket, not at once forever, as a level-triggered one would be. Dropping a
+  call removes it from the list, and the last call waiting unwoken takes the registration with it.
 - Work on the shared types of crates/internet-protocol goes into the one shared crate
   `crates/internet-protocol/implementation/linux-socket-options`, which the TCP track created: its errno
   mapping, raw option call, `IpSocketSetting` and `PortSetting` onto options, owner and bind. This track adds
@@ -63,8 +65,11 @@
   broadcast, transparency, flow label, source preferences, checksum omission and UDP-Lite coverage, transmit
   time mode and errors) written as socket options only when they differ from what the socket last had.
   `EMSGSIZE` with a local error queued is `MessageTooLong` with that error's MTU.
-- receive (libc's `recvmsg`, as socket2's gives no `MSG_CTRUNC`): `recvmsg(MSG_ERRQUEUE)` first while a send's reports may wait, else after a normal receive that fails
-  (an ICMP error becomes the ICMP packet, IP header first, quoting the
+- receive (libc's `recvmsg`, as socket2's gives no `MSG_CTRUNC`): the entries kept, and `recvmsg(MSG_ERRQUEUE)`
+  while a send's reports may wait, first; else after a normal receive that fails with an error other than
+  would-block, since Linux sets the socket error with each ICMP error it queues and answers that error first (a
+  send that fails may have taken it, so it moves the host's entries into the kept ones). An error queue entry
+  is read on the stack, so only its own bytes are allocated (an ICMP error becomes the ICMP packet, IP header first, quoting the
   datagram's headers; a timestamp becomes a `TransmitReport`; a local error was already the send's answer),
   else `recvmsg(MSG_TRUNC)`; the payload is moved up and the IP and UDP headers written before it from the
   control messages; `UDP_GRO` gives the segment size.
@@ -101,11 +106,18 @@
   error ends a wait for data with the error condition, also when a too-long send read it off the host first; a
   wait polled again wakes its newest waker; a wait whose event went is woken by the next; two waits on one
   socket finish each by its own events; a wait for no event ends on an error; a wait for writing on a full send
-  buffer finishes when its paced datagrams leave room, also after a wait for data on it was woken first.
-- The unsent bytes of a send buffer filled until a send would block lie between twice the size given (what
-  Linux keeps) and one datagram more; a connected socket's incoming processor is the processor its sender ran on.
-- The implementation's own tests: the watcher thread does not wake for datagrams nobody waits for, a wait
-  allocates nothing once warm, and a send's report is read before a datagram that arrived after it (an order the
-  contract leaves open, so not in the suite).
+  buffer finishes when its paced datagrams leave room, also after a wait for data on it was woken first, and a
+  wait for data or writing made while a wait for data waits; a wait for every event gives exactly what Linux's
+  poll gives a UDP socket (room to send as POLLOUT, POLLWRNORM and POLLWRBAND, then data as POLLIN and
+  POLLRDNORM, then an error); a wait for POLLRDNORM, POLLWRNORM or POLLWRBAND alone gives it alone; waits for
+  the events a UDP socket never has (POLLPRI, POLLHUP, POLLRDBAND, POLLMSG, POLLRDHUP) wait on.
+- A send whose header's upper layer or whose checksum is the other protocol's is refused and sends nothing.
+- The unsent bytes of a send buffer filled until a send would block are at least the payload it holds and less
+  than twice the size given (what Linux keeps) and one datagram more; a connected socket's incoming processor
+  is the processor its sender ran on.
+- The implementation's own tests: the watcher thread does not wake for datagrams nobody waits for, nor keeps
+  running for a wait for an event the socket lacks; a wait allocates nothing once warm, nor a receive that would
+  block; a send's report is read before a datagram that arrived after it (an order the contract leaves open);
+  the unsent bytes of a full send buffer are Linux's memory count (the owner has not ruled on it).
 - The implementation's own test runs `tests!` with each test in a network namespace of its own, all made before
   any test opens a socket, as root on the ARM64 machine: one command, `conformance.sh` in the crate.

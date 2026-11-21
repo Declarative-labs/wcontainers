@@ -3,6 +3,23 @@
 Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
 
 ## For the other socket tracks (TCP, ICMP and raw)
+- New, run 7: the shared `readiness` registers a waited socket edge-triggered (it was one-shot, level-triggered)
+  and deletes the registration once no call waits unwoken. Reason: polling can register only readable,
+  writable and priority, so a wait for POLLRDBAND, POLLMSG or POLLRDHUP is registered as readable; one-shot
+  level-triggered, a socket with data to read but none of those fired again at every arming, and the watcher
+  ran without stop (measured by `a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still`, which fails
+  on the old code). Edge-triggered, it is looked at once per change of the socket. A wait that has to wait now
+  costs one `epoll_ctl` more (add, then delete when woken, instead of one re-arm). Your public calls did not
+  change; TCP's 95, raw's 46 + 2, ICMP's 38 + 1 and the resolver's 31 tests pass with it on the ARM machine.
+- New, run 7: `ErrorEntry::read` reads on the stack and allocates only the entry's bytes (it zeroed a new
+  64 KiB vector for every read, also of an empty queue). `ErrorQueue::keep_host_entries` reads the host's
+  queue into the kept entries. ICMP and raw: your receives still make an error queue `recvmsg` before every
+  normal one. UDP now reads the error queue only when a normal receive fails with an error other than
+  would-block: Linux sets the socket error with every ICMP error it queues (`__udp4_lib_err`,
+  `__udp6_lib_err`) and a receive answers that error before anything else; a send that fails may have taken
+  it, so a failed send moves the host's entries into the kept ones. Measured for UDP: a receive that would
+  block 332 ns (it was 1.146 µs; a plain `recv` 203 ns). Whether ping and raw sockets set the socket error the
+  same way is yours to check.
 - New, run 6: the shared `readiness` asks the host about a socket only while a call waits on it. `watch` no
   longer registers; a wait that has to wait arms a one-shot, level-triggered registration for the events its
   socket's waiting calls ask for, the thread arms it again only for calls still waiting, and the last call gone
@@ -18,7 +35,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   through socket2 (`set_ip_transparent_*`, `set_freebind_*`, `bind_device_by_index_*`, `set_cpu_affinity`);
   only an incoming processor of none stays raw (`SO_INCOMING_CPU` -1, which socket2 cannot set).
 - ICMP track: the literal check reports `WAITED_SOCKETS` and `WAITS_ON_ONE` in both our suites as one
-  redefinition; yours is the copy of the UDP suite's.
+  redefinition; yours is the copy of the UDP suite's, whose two are public since run 7: please import them from
+  `wcontainers-udp-sockets-conformance` and delete yours (this track keeps its suite free of a dependency on
+  another suite under work).
 - Git, run 5 (this track's mistakes, all left as they are, since history is not rewritten): f0463350, a lock
   file commit, committed the whole staging area and took the TCP track's staged folder rename (four pure renames,
   no content); 93340ae9 took the route resolver track's folders back from `host` to `linux-netlink` and another
@@ -69,6 +88,29 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   sends with no rejection there; `holds_entries`. ICMP and raw tracks: switching from `error_entry` to
   `ErrorQueue::received` gives your sockets the same.
 
+## Milestone U1, run 7 (2026-11-21): the second independent check's findings fixed
+- Every poll bit is now waited for in the suite: `a_wait_gives_the_events_the_socket_has_and_no_others`
+  (every bit asked; exactly POLLOUT, POLLWRNORM, POLLWRBAND, then also POLLIN, POLLRDNORM with a datagram, then
+  POLLERR with an ICMP error; IPv4 and IPv6), `a_wait_for_one_event_gives_that_event_alone` (POLLWRNORM and
+  POLLWRBAND at once, POLLRDNORM when a datagram comes, each alone), `a_wait_for_an_event_udp_never_has_waits_on`
+  (POLLPRI, POLLHUP, POLLRDBAND, POLLMSG, POLLRDHUP: unwoken for 200 ms with data queued). A wait that reports
+  every bit asked (the check's M21) fails two of them.
+- A receive that would block makes one system call and allocates nothing (it made a second, on the error
+  queue, after zeroing a new 64 KiB vector): see "For the other socket tracks". Own test
+  `a_receive_that_would_block_allocates_nothing` (allocations of its own thread over 1200 receives: 0).
+- The readiness is edge-triggered (above), found while writing the never-had checks.
+- New suite checks: `a_wait_for_data_or_writing_finishes_when_room_is_made` (catches a registration not
+  widened for an overlapping interest, M11), `a_header_of_another_protocol_is_refused` (UDP and UDP-Lite each
+  sent as the other: refused, nothing arrives; M14), `a_checksum_of_the_other_protocol_is_refused` (partial
+  coverage on UDP, omitted on UDP-Lite; M15).
+- `a_full_send_buffer_counts_its_unsent_bytes` now holds for either accounting: at least the payload held (all
+  but the first two datagrams) and less than twice the size given and one datagram more. Linux's own count (at
+  least twice the size given) is checked by the implementation's own `a_full_send_buffer_counts_the_memory_linux_counts`.
+- `conformance.sh` builds with cargo's messages first, so a failed build says why.
+- Checked here: 74 + 4 tests pass on the ARM machine, 20 runs in a row with none failing; the five broken copies
+  (M21, M11, M14, M15, and the readiness of before this run) are each caught by the checks named above
+  (scratch `run7/mutants.sh`, log `run7/mutants.log`).
+
 ## Milestone U1, run 6 (2026-11-21): the independent check's findings fixed
 - The crate builds on every unix system: `implementation.rs` is its root, `linux.rs` the Linux body (unchanged
   but for the items below), `portable.rs` the body elsewhere (opening, binding, connecting, waiting and the
@@ -114,7 +156,8 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   two test binaries, `conformance` and `readiness`, with `sudo -n`.
 - The build for macOS, checked on the ARM machine: `RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=/work/target/host-udp-sockets-darwin
   cargo clippy -Zbuild-std=std,core,alloc,panic_abort --target aarch64-apple-darwin -p wcontainers-internet-protocol-linux-socket-options
-  -p wcontainers-udp-sockets-host -p wcontainers-udp-sockets-conformance --tests`. The test makes 64 network namespaces at the first test's start, while every other
+  -p wcontainers-udp-sockets-host -p wcontainers-udp-sockets-conformance --tests`.
+- The test makes 80 network namespaces (`NETWORKS`) at the first test's start, while every other
   test waits before opening a socket (a child process holds its parent's descriptors until it starts its
   program, which kept closed sockets alive), with `ip -batch` and `tc` (test tools, never dependencies); each
   test then enters one of its own.
@@ -129,6 +172,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - No random tests: every check is a fixed scenario.
 
 ## Measurements
+- Run 7, 2026-11-21, ARM64 machine, load 2.7: a receive that would block 332 ns (three runs, 331 to 332), a
+  plain `recv` that would block 203 ns, a receive of a datagram 1.036 to 1.041 µs (the check's `verify_alloc.rs`,
+  10 000 each, as root). The 74 + 4 tests take 1.10 to 1.12 s and 0.52 s at 12 threads (load 2 to 4).
 - Run 6, 2026-11-21, ARM64 machine, load 6 to 20: the 67 + 2 tests take 0.90 to 0.92 s and 0.21 to 0.22 s at 12
   threads. The watcher thread's wakes (voluntary context switches) over 1200 datagrams sent and received with
   no wait: 0 (the independent check measured 9473 of 10 000 before the change); allocations over 1200 waits
@@ -187,15 +233,19 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - open: every check (owner: an_owner_is_routed_as_its_user). bind: bind_returns_the_bound_address, the sharing
   checks, both exit node checks, a_dual_stack_socket_takes_ipv4. connect: a_connected_socket_takes_only_its_peers_datagrams,
   and connect_takes_its_route_selectors for its selectors. disconnect: disconnect_keeps_the_binding. send_to:
-  every check that sends; each header and send field by its own check. receive: every check that receives;
+  every check that sends; each header and send field by its own check; a header of the other protocol or a
+  checksum of the other protocol sent anyway by the two refusal checks. receive: every check that receives;
   a_short_buffer_keeps_the_whole_length (cut in the UDP header and in the payload), receive_with_nothing_queued_would_block,
   a_closed_port_answers_with_an_icmp_error, transmit_reports_carry_the_key_of_their_send,
   rejected_transmit_times_are_reported_with_their_keys. count_unsent_bytes: pacing_holds_datagrams_in_the_send_buffer,
-  sending_settings_are_taken, and a_full_send_buffer_counts_its_unsent_bytes for its value (a count off by a
-  factor is caught). read_incoming_processor: the_incoming_processor_is_read_back (two processors set, and a
+  sending_settings_are_taken, and a_full_send_buffer_counts_its_unsent_bytes for its value (a count doubled is
+  caught; one halved only by the implementation's own a_full_send_buffer_counts_the_memory_linux_counts). read_incoming_processor: the_incoming_processor_is_read_back (two processors set, and a
   connected socket's from its sender's processor). close:
   close_frees_the_port. configure: each setting's check, and the two Configurable contract checks.
-  wait_for_events: the thirteen waiting checks; a wait that keeps its first waker is caught by
+  wait_for_events: the seventeen waiting checks; a wait giving events it lacks is caught by
+  a_wait_gives_the_events_the_socket_has_and_no_others, one not widened for an overlapping interest by
+  a_wait_for_data_or_writing_finishes_when_room_is_made, a watcher kept running by the implementation's own
+  a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still; a wait that keeps its first waker is caught by
   a_wait_polled_again_wakes_its_newest_waker, a registration not armed again for calls still waiting by
   a_wait_for_writing_finishes_when_room_is_made, a registration left on by the readiness test. The order of a
   send's reports before later datagrams: the implementation's own a_report_comes_before_a_datagram_that_arrived_after_it.
@@ -208,8 +258,10 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   choice around a wide reserved range and from a range below the host's own, IPv6 only and dual stack),
   connect (with its selectors), disconnect (explicit port kept, a kernel-chosen port given up, as Linux does),
   send_to, receive, count_unsent_bytes, read_incoming_processor, negative route advice, close, and
-  wait_for_events (every poll bit; the error condition also for entries the implementation took off the
-  error queue).
+  wait_for_events (POLLIN, POLLRDNORM, POLLOUT, POLLWRNORM, POLLWRBAND, POLLERR each seen, alone and with
+  every bit asked; POLLPRI, POLLHUP, POLLRDBAND, POLLMSG and POLLRDHUP waited for and not given, as Linux gives
+  them to no UDP socket: no shutdown call, no `SO_SELECT_ERR_QUEUE` setting, no priority band; POLLNVAL cannot
+  come for an open socket; the error condition also for entries the implementation took off the error queue).
 - Header fields checked by what arrives or what is refused: TTL, hop limit, DSCP, ECN, flow label, IPv4 options,
   IPv6 hop-by-hop, destination and routing destination options, segment routing header, IPv4 and IPv6 source
   address, mark, interface; link scope (`ENETUNREACH` to an address behind a gateway, universe sends); every
@@ -237,7 +289,17 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   checksum coverage (set, and none: any coverage arrives).
 - ICMP errors on the error queue as whole ICMP packets with valid checksums (port unreachable, IPv4 and IPv6).
 
+## Not checked
+- The wake `Watched::hold` gives when a send moves an error off the host into the kept entries while a call
+  waits: it matters only when the send wins a race with the watcher thread, which sees the host's error too, so
+  no check through the traits can make it happen (the check's M19, dropping that wake, passes).
+
 ## Not honoured on other unix systems (portable.rs), each a counted refusal
+- Run 7, the check's finding that no datagram can be exchanged there: left as it is. A send's header asks for
+  IPv4 path MTU discovery Want (Linux's default, DF set) and fields socket2 has no call for there, and a receive
+  owes the whole IP header, which needs control messages (`IP_RECVTTL`, `IP_RECVDSTADDR`, `IP_RECVIF`) that
+  socket2 does not parse; parsing them by hand for a system no machine of this project runs tests on would be
+  untested code. The refusals stay counted under their reasons.
 - UDP-Lite (no such sockets), an owner other than the process's user (only Linux has a thread's filesystem
   user), the exit node's port choice (Linux's `IP_LOCAL_PORT_RANGE`), route selectors beyond destination and
   ports, disconnect (socket2 has no connect to `AF_UNSPEC`), every send (the IPv4 path MTU discovery of Linux's
@@ -264,7 +326,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - Neighbour confirmation (`MSG_CONFIRM`): taken, but its only effect is the neighbour entry's confirmed time,
   which no socket can read; loopback and the dummy interfaces have no neighbour entries.
 - Negative route advice has no system call: a connected socket is connected again to its peer, which drops its
-  cached route and takes a new transmit hash. Its effect cannot be seen through the traits: Linux uses that hash
+  cached route and takes a new transmit hash. An unconnected socket answers Ok and does nothing, which is all
+  there is to do: Linux caches a route only for a connected UDP socket (`udp_sendmsg` checks `sk_dst_cache`
+  only when connected), so there is no route to drop. Its effect cannot be seen through the traits: Linux uses that hash
   for the automatic IPv6 flow label, which the contract replaces by the label each send gives (measured: label 0
   before and after), and UDP's multipath hash is of addresses and ports.
 - Transmit time rejections: a rejection Linux makes at once also fails the send with ENOBUFS, as Linux does for
@@ -292,6 +356,10 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   test tool the implementation's test runs, never a dependency.
 
 ## Departures from the plan
+- Run 7: the readiness is edge-triggered, not one-shot level-triggered (the plan says so now): a one-shot
+  level-triggered registration cannot wait for an event the poller only approximates without running at once.
+- Run 7: the suite's unsent byte check takes either accounting, and Linux's own count moved to the
+  implementation's test, until the owner rules (below).
 - Run 6: the brief asks for socket2 everywhere with what Linux alone has behind `cfg(target_os = "linux")`;
   run 5 built nothing off Linux. Now the crate and the shared crate build on every unix system, with two bodies
   (Linux's whole one, and the socket2 one elsewhere), since nearly every call of the Linux body is a Linux
@@ -338,7 +406,8 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - There is no way through the interfaces to read the counters of refusals; `counters()` is inherent.
 - `count_unsent_bytes` says "the bytes sent ... that have not yet left its send buffer", but Linux's `SIOCOUTQ`
   on a UDP socket gives the memory its datagrams take. Example (measured): one paced datagram of 1000 bytes held
-  counts 2304. This implementation gives Linux's value, which is what a Linux program reads.
+  counts 2304. This implementation gives Linux's value, which is what a Linux program reads; the suite takes
+  either (at least the payload held, less than the most the buffer holds).
 - Off Linux the host's error numbers become Linux's through a table in the shared crate; the runtime's
   `crates/runtime/implementation/single-kernel/errno.rs` has the same kind of table, private. One crate of it
   would serve both.

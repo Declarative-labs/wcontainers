@@ -122,7 +122,7 @@ const PACING_RATE: BytesPerSecond = BytesPerSecond(50_000);
 
 /// How many datagrams of PACED_LENGTH a paced check sends.
 const PACED_DATAGRAMS: usize = 5;
-const PACED_LENGTH: usize = 1000;
+pub const PACED_LENGTH: usize = 1000;
 
 /// The routing type of a segment routing header, [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754#section-2).
 const SEGMENT_ROUTING: u8 = 4;
@@ -2414,8 +2414,8 @@ const NEVER_ON_UDP: [PollEvents; 5] = [
 ];
 
 /// How many sockets a check waits on at once, and how many more waits it makes on the first of them.
-const WAITED_SOCKETS: usize = 32;
-const WAITS_ON_ONE: usize = 3;
+pub const WAITED_SOCKETS: usize = 32;
+pub const WAITS_ON_ONE: usize = 3;
 
 /// The wakes a waiting call has given, counted, for a check that polls the call by hand.
 #[derive(Default)]
@@ -2840,17 +2840,17 @@ pub fn a_wait_for_an_event_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
 }
 
 /// The send buffer size the checks of a full send buffer give, of which Linux keeps twice.
-const SEND_BUFFER: usize = 16384;
+pub const SEND_BUFFER: usize = 16384;
 
 /// A pacing rate that holds each datagram after a socket's first for a quarter of a second.
-const SLOW_PACING_RATE: BytesPerSecond = BytesPerSecond(4000);
+pub const SLOW_PACING_RATE: BytesPerSecond = BytesPerSecond(4000);
 
 /// How long a check waits for paced datagrams to leave room in a send buffer.
 const ROOM_PATIENCE: Duration = Duration::from_secs(5);
 
 /// The most a datagram of `PACED_LENGTH` bytes takes of a send buffer: its payload, its headers and the memory the
 /// host keeps it in.
-const PACED_DATAGRAM_ROOM: usize = 4 * PACED_LENGTH;
+pub const PACED_DATAGRAM_ROOM: usize = 4 * PACED_LENGTH;
 
 /// Sends paced datagrams until a send would block, and answers how many were sent.
 fn fill_send_buffer<S: UdpSockets>(

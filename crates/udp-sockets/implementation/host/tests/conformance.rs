@@ -14,8 +14,8 @@ use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BindAddress, BroadcastPermission, ByteCount, BytesPerSecond, IpHeaderFields, IpSendFields,
-    IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
+    BindAddress, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
     NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Port, Report, RouteScope,
     SendError, SourceAddressCheck, TransmitReportKey, TransmitReportRequest, TransportPorts,
     UpperLayer, UpperLayerSelector,
@@ -23,6 +23,9 @@ use wcontainers_internet_protocol::{
 use wcontainers_kernel::UserId;
 use wcontainers_udp_sockets::{
     UdpChecksum, UdpDatagram, UdpProtocol, UdpReceived, UdpSocketSetting, UdpSockets,
+};
+use wcontainers_udp_sockets_conformance::{
+    PACED_DATAGRAM_ROOM, PACED_LENGTH, SEND_BUFFER, SLOW_PACING_RATE,
 };
 use wcontainers_udp_sockets_host::{
     HostUdpSocket, HostUdpSockets, RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST,
@@ -306,14 +309,7 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
     ));
 }
 
-/// The send buffer size the full buffer check gives, of which Linux keeps twice.
-const SEND_BUFFER: usize = 16384;
-
-/// The payload of each paced datagram, and the most memory Linux keeps one in: its payload, headers and buffer.
-const PACED_LENGTH: usize = 1000;
-const PACED_DATAGRAM_ROOM: usize = 4 * PACED_LENGTH;
-
-/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket: at least the twice the size
+/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket: at least twice the size
 /// given that Linux keeps, and less than one datagram more.
 #[test]
 fn a_full_send_buffer_counts_the_memory_linux_counts() {
@@ -321,8 +317,7 @@ fn a_full_send_buffer_counts_the_memory_linux_counts() {
     let (socket, address) = on_loopback(&sockets);
     for setting in [
         IpSocketSetting::SendBuffer(ByteCount(SEND_BUFFER)),
-        // A quarter of a second for each datagram after the first, so that the buffer fills.
-        IpSocketSetting::MaximumPacingRate(Some(BytesPerSecond(4 * PACED_LENGTH as u64))),
+        IpSocketSetting::MaximumPacingRate(Some(SLOW_PACING_RATE)),
     ] {
         sockets
             .configure(&socket, UdpSocketSetting::Ip(setting))
