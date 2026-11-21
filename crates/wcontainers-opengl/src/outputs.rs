@@ -1,6 +1,7 @@
 //! A fragment program's outputs fitted to the framebuffer's targets: the host requires each output
 //! to hold every component of its target's format, of the target's kind, where OpenGL leaves the
-//! components a program does not write, and the values of an output of another kind, undefined.
+//! components a program does not write undefined. An output of another kind reaches its target as
+//! its bits, as Gallium's targets take them (st/mesa's clears hand integers through float outputs).
 
 use crate::state::refused;
 
@@ -154,7 +155,7 @@ pub fn fit(module: &mut Module, targets: &Targets) {
                 let cast = Expression::As {
                     expr: e,
                     kind: f.target,
-                    convert: Some(WIDTH),
+                    convert: None,
                 };
                 e = exprs.append(cast, Span::UNDEFINED);
             }
