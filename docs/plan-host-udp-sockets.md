@@ -3,8 +3,9 @@
 ## What it is
 - Crate `crates/udp-sockets/implementation/host`, package `wcontainers-udp-sockets-host`, type
   `HostUdpSockets`, socket `HostUdpSocket`. It implements `UdpSockets` (with `Configurable<_, UdpSocketSetting>` and
-  `NegativeRouteAdvice`) with real UDP and UDP-Lite sockets of the Linux machine it runs on. Its body is
-  `cfg(target_os = "linux")`, so the workspace still builds on the Mac.
+  `NegativeRouteAdvice`) with real UDP and UDP-Lite sockets of the Linux machine it runs on (`linux.rs`). On
+  every other unix system (`portable.rs`) it opens, binds and connects UDP sockets, waits on them and makes the
+  settings socket2 covers there, and answers a counted `NotSupported` for the rest (below).
 - A socket is its own type: the non-blocking `OwnedFd`, its family and protocol, and the host state the
   implementation keeps for it (the per-send options last written, the peer, the drop counter last read),
   ordered by descriptor. Nothing waits: what would wait answers `HostError::WouldBlock`.
@@ -13,18 +14,29 @@
   transparency, IPv6 only), and on rustix, linux-raw-sys and libc on the same descriptor for the rest (MIT or
   Apache-2.0); polling (Apache-2.0 or MIT) for the host's readiness; etherparse (MIT or Apache-2.0, already the
   interface's) writes the headers receive owes.
-- Waiting: the value owns a `Readiness` of the shared crate, one epoll set and one thread that waits on it. Each
-  socket is registered at open, edge-triggered for every event, and owns its descriptor through the `Watched`
-  it gets back, which deletes the registration before the descriptor closes. A waiting call registers itself in
-  its socket's waiter list (whose room is kept, so a wait allocates nothing once it has grown), then asks the
-  socket with a `poll` of no timeout; the thread, on an event, asks the socket the same way and wakes each waiter
-  whose events have come, taking its waker so each poll is woken once. Dropping a call removes it from the list.
+- Waiting: the value owns a `Readiness` of the shared crate, one poller (epoll; kqueue elsewhere) and one thread
+  that waits on it. A socket owns its descriptor through the `Watched` it gets at open, which deletes any
+  registration before the descriptor closes. A waiting call lists itself in its socket's waiter list (whose room
+  is kept, so a wait allocates nothing once it has grown) and asks the socket with a `poll` of no timeout; only
+  if it has to wait does it arm the socket's one-shot, level-triggered registration for the events its socket's
+  waiting calls ask for (added at the socket's first such wait). The thread, on an event, asks the socket the same
+  way, wakes each waiter whose events have come (taking its waker, so each poll is woken once) and arms the
+  registration again only for calls still waiting. So a socket nobody waits on costs the thread nothing. Dropping
+  a call removes it from the list, and the last call gone deletes a registration still armed.
 - Work on the shared types of crates/internet-protocol goes into the one shared crate
   `crates/internet-protocol/implementation/linux-socket-options`, which the TCP track created: its errno
   mapping, raw option call, `IpSocketSetting` and `PortSetting` onto options, owner and bind. This track adds
   to it the datagram half the ICMP and raw tracks need too: `IpHeaderFields` and `IpSendFields` onto options
   and control messages, and control messages and the error queue onto `ReceivedPacketFields`,
   `TransmitReport` and ICMP errors written whole from their IP header.
+- On other unix systems: open (UDP as the process's own user), bind (requested or kernel-chosen port, IPv6 only or
+  dual stack), connect (destination and ports alone), wait_for_events, close, and the settings socket2 covers
+  (buffers, address and port sharing, multicast loopback) through socket2; the settings at the value every socket
+  there has and cannot leave are taken. Everything else is refused, counted under a named reason: UDP-Lite,
+  another owner, the exit node's port choice, other route selectors, disconnect (no socket2 call), send (the
+  IPv4 path MTU discovery the header asks for, and most fields, have no socket2 call), receive (the IP header
+  needs control messages socket2 does not parse), the unsent bytes, the incoming processor, negative route advice
+  and the other settings. No Windows build: its sockets are not descriptors.
 - What the host cannot honour answers `HostError::NotSupported` (or Linux's own errno), counted per named
   reason, readable as abi `CounterReading`s, and warned once on standard error.
 - The interface has no constructor: the crate has the smallest public `new()`, and the owner is asked for a
@@ -56,7 +68,8 @@
   datagram's headers; a timestamp becomes a `TransmitReport`; a local error was already the send's answer),
   else `recvmsg(MSG_TRUNC)`; the payload is moved up and the IP and UDP headers written before it from the
   control messages; `UDP_GRO` gives the segment size.
-- count_unsent_bytes: `ioctl(SIOCOUTQ)`. read_incoming_processor: `SO_INCOMING_CPU`, -1 is none.
+- count_unsent_bytes: `ioctl(SIOCOUTQ)`. read_incoming_processor: socket2's `cpu_affinity` (`SO_INCOMING_CPU`),
+  -1 is none.
 - give_negative_route_advice: Linux has no call for it; a connected socket is connected again to its peer,
   which drops its cached route and takes a new flow hash; an unconnected socket caches no route.
 - wait_for_events: `Watched::wait_for_events`, the events of `poll` (asked for and always reported), with an
@@ -85,6 +98,14 @@
 - Waits are polled by hand with a waker that counts its wakes (no executor): a wait for data is pending and not
   woken until a datagram arrives, then woken once and finished; a wait for writing finishes at its first poll;
   a dropped wait gives back its waker and is not woken; 35 waits at once on 32 sockets each wake once; an ICMP
-  error ends a wait for data with the error condition, also when a too-long send read it off the host first.
+  error ends a wait for data with the error condition, also when a too-long send read it off the host first; a
+  wait polled again wakes its newest waker; a wait whose event went is woken by the next; two waits on one
+  socket finish each by its own events; a wait for no event ends on an error; a wait for writing on a full send
+  buffer finishes when its paced datagrams leave room, also after a wait for data on it was woken first.
+- The unsent bytes of a send buffer filled until a send would block lie between twice the size given (what
+  Linux keeps) and one datagram more; a connected socket's incoming processor is the processor its sender ran on.
+- The implementation's own tests: the watcher thread does not wake for datagrams nobody waits for, a wait
+  allocates nothing once warm, and a send's report is read before a datagram that arrived after it (an order the
+  contract leaves open, so not in the suite).
 - The implementation's own test runs `tests!` with each test in a network namespace of its own, all made before
   any test opens a socket, as root on the ARM64 machine: one command, `conformance.sh` in the crate.
