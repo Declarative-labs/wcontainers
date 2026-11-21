@@ -14,6 +14,8 @@ and hardware-virtualization-inside.
   The Mac's suite passes with the changes (below, "Results"). Not complete: both wait on the owner's ruling.
 - Run 3 built nothing new: no ruling had come. It ran the whole suite again on both hosts after another track's
   commit 88d924b3 (the translation kept through tempfile's persist, in translate.rs), with the same results.
+- Run 4 built and ran nothing: still no ruling, and the only commit since run 3 (1e37c4ab, the icmp and raw
+  sockets) changes nothing this track builds, so run 3's results stand.
 
 ## Results (run 3)
 
