@@ -942,8 +942,8 @@ pub unsafe extern "C" fn draw_vbo<B: Backend>(
 const INDIRECT_WORDS: usize = 4;
 const INDEXED_INDIRECT_WORDS: usize = 5;
 
-/// An indirect draw, its arguments read back now (`ReadBackWait`) and drawn as a direct draw, so
-/// that every rewrite a direct draw takes applies to it.
+/// An indirect draw, its arguments read back now (`IndirectReadBack`) and drawn as a direct draw,
+/// so that every rewrite a direct draw takes applies to it.
 fn draw_indirect<B: Backend>(
     context: &mut Context<B>,
     info: &pipe_draw_info,
@@ -971,6 +971,7 @@ fn draw_indirect<B: Backend>(
     let screen = context.screen();
     {
         let mut backend = screen.backend();
+        backend.slow_paths().hit(SlowPath::IndirectReadBack);
         context
             .tracker
             .close(&mut backend)
