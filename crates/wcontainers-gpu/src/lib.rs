@@ -72,9 +72,9 @@ pub use reflect::{
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{
     BindingEntry, BindingLayoutKey, BindingResource, BufferDesc, BufferRange, BufferUsage,
-    CopyBufferTexture, Extent, MapIntent, Origin, QueryKind, ReadSource, ReadState, SamplerDesc,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
-    WriteMode,
+    CUBE_FACES, CopyBufferTexture, Extent, MapIntent, Origin, QueryKind, ReadSource, ReadState,
+    SamplerDesc, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    ViewDimension, WriteMode,
 };
 pub use shader::{Program, ShaderModule, ShaderStage, StageSet};
 pub use slow::{SlowPath, SlowPaths};

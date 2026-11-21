@@ -148,6 +148,9 @@ impl TextureDesc {
     }
 }
 
+/// The layers of one cube: its faces.
+pub const CUBE_FACES: u32 = 6;
+
 /// How a view sees a texture. Each fits its texture and layer count, as WebGPU, WebGL 2 and Direct3D
 /// all require.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
