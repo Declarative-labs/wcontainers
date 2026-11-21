@@ -102,7 +102,19 @@ readings, repair, authentication, multipath state, the privileged settings).
 ## Measurements
 - ARM machine (Graviton4, 96 cores, Linux 7.0.0-1018-aws), 2026-11-21 19:34, load 3.4 to 5.8: 72 passed, 0
   failed, five runs in a row, each 3.3 s (the keep-alive, SYN retry and retransmission checks wait about 3 s).
-- Broken copies, same machine, job host-tcp-sockets 2026-11-21 19:38: see the list below (mutants.sh, 63 copies).
+- Broken copies (mutants.sh), same machine: 63 copies, 2026-11-21 19:50 to 19:57 (load 4 to 9.5, 6 min 53 s),
+  each failed the suite; the 64th (exit-node port by the kernel only, as before the binding change) at 19:58 failed
+  exit_node_chooses_a_port_outside_the_reserved. Each copy breaks one method, request or setting (every setting
+  of the list above doing nothing, one at a time); the checks each one failed are in the scratch log
+  mutants-run-3.log and mutants-run-4.log. Two copies of the first run passed and were mended: the timestamping
+  copy broke code connections never reach (it now breaks the arm they use), and the retransmission maximum was
+  missed because Linux can send a tail loss probe first (the check now looks at the longest gap over 3.2 s).
+- Independent check from a clean clone of main at 239247f8 (job host-tcp-sockets-clean, 2026-11-21 19:49, load
+  10 to 11): main's own Cargo.lock now parses; build directory emptied, clippy with warnings denied clean (9.3 s),
+  72 passed; `cargo tree` of tcp-sockets, internet-protocol, configurable, negative-route-advice, kernel, abi and
+  the suite shows no implementation crate; `git diff 4308b9f7 HEAD` of every interface.rs and data file this track
+  uses is empty (only other tracks' conformance suites of configurable and negative-route-advice changed).
+- After the binding change, 72 passed three times (19:52, load 9.3 to 9.6), clippy clean on Linux and the Mac.
 - Calibration with Python on the same kernel (scratch tools/probe*.py), load 6 to 12: a connection whose peer
   reads nothing takes 2 720 256 bytes; with a 64 KiB send buffer 256 000, a locked send buffer 175 589, a 16 KiB
   not-sent low water 160 768. The peer then holds 113 152 unread; with a 1 MiB receive low water 2 069 998.
