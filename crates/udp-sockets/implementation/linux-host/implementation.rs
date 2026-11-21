@@ -9,7 +9,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use etherparse::{IpNumber, UdpHeader};
 use libc::c_int;
 use linux_raw_sys::net as uapi;
-use rustix::net::{AddressFamily, SocketFlags, SocketType};
+use rustix::net::{AddressFamily, SocketFlags, SocketType, sockopt};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
@@ -95,6 +95,10 @@ pub const TRANSMIT_TIME_REJECTION_WITHOUT_KEY: &str =
     "linux reports a rejected transmit time with the time, not the key of its send";
 pub const ERROR_OF_NO_REPORT: &str =
     "an error queue entry of an origin the contract has no report for";
+pub const SEND_BUFFER_CUT_BY_THE_HOST: &str =
+    "a send buffer size above the host's net.core.wmem_max, which the host cuts to it";
+pub const RECEIVE_BUFFER_CUT_BY_THE_HOST: &str =
+    "a receive buffer size above the host's net.core.rmem_max, which the host cuts to it";
 pub const PORT_RANGE_OUTSIDE_THE_HOSTS: &str =
     "no port of a range the exit node chooses from is in the host's own range";
 
@@ -1010,6 +1014,33 @@ impl<'a> Configurable<LinuxHostUdpSocket, UdpSocketSetting<'a>> for LinuxHostUdp
             }
             UdpSocketSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {
                 state.send.set_receive_timestamps(fd, &timestamping)
+            }
+            UdpSocketSetting::Ip(
+                setting @ (IpSocketSetting::SendBuffer(bytes)
+                | IpSocketSetting::ReceiveBuffer(bytes)),
+            ) => {
+                shared::set_ip_socket_setting(
+                    fd,
+                    socket.version(),
+                    &setting,
+                    u32::MIN,
+                    &self.shortfalls,
+                )?;
+                let (kept, reason) = match setting {
+                    IpSocketSetting::SendBuffer(_) => (
+                        sockopt::socket_send_buffer_size(fd),
+                        SEND_BUFFER_CUT_BY_THE_HOST,
+                    ),
+                    _ => (
+                        sockopt::socket_recv_buffer_size(fd),
+                        RECEIVE_BUFFER_CUT_BY_THE_HOST,
+                    ),
+                };
+                // Linux keeps twice the size asked for, or twice its own limit when that is less.
+                if kept.map_err(from_errno)? < bytes.0.saturating_add(bytes.0) {
+                    self.count(reason);
+                }
+                Ok(())
             }
             UdpSocketSetting::Ip(setting) => shared::set_ip_socket_setting(
                 fd,

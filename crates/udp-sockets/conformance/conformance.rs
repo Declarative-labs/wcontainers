@@ -1,8 +1,14 @@
 //! The tests every implementation of wcontainers-udp-sockets runs, written against its traits alone.
 //!
-//! Each check talks over the loopback addresses only, with ports the kernel chooses. A network a check needs
-//! beyond loopback is the caller's to provide: ipv6_memberships_take_their_datagrams needs one interface other
-//! than loopback that takes IPv6 multicast, on a network of its own.
+//! Each check talks over the loopback addresses, with ports the kernel chooses. The rest of the network the
+//! checks need is the caller's to provide, on a network of its own:
+//! - one interface other than loopback that takes IPv6 multicast (ipv6_memberships_take_their_datagrams);
+//! - a route to 192.0.2.0/24 for the superuser, with user 1000's datagrams to it prohibited
+//!   (an_owner_is_routed_as_its_user);
+//! - loopback taking segment routing headers (a_routing_header_arrives_in_the_header);
+//! - loopback pacing each socket's datagrams to its maximum pacing rate, one at a time at the rate
+//!   pacing_holds_datagrams_in_the_send_buffer sets (Linux's fq qdisc);
+//! - no hardware clock on loopback (loopback_has_no_hardware_clock).
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU16;
@@ -11,17 +17,17 @@ use std::time::{Duration, Instant};
 use etherparse::{IpDscp, IpEcn, IpNumber, IpSlice, Ipv4Options, Ipv6FlowLabel, UdpHeaderSlice};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, AnycastAddress, BindAddress, BroadcastPermission, ByteCount, FilterInstruction,
-    FilterJump, FilterOperand, FilterOperation, InterfaceIndex, IpHeaderFields, IpSendFields,
-    IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6Families,
+    AddressSharing, AnycastAddress, BindAddress, BroadcastPermission, ByteCount, BytesPerSecond,
+    FilterInstruction, FilterJump, FilterOperand, FilterOperation, InterfaceIndex, IpHeaderFields,
+    IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6Families,
     Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding, LocalFragmentation, LocalPort,
     MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
     MulticastMembership, NeighbourConfirmation, NonlocalAddresses, PacketMark, PacketPriority,
     PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing, ProcessorIndex,
-    Report, RouteScope, RouteSelectors, SendError, SocketFilter, SourceAddressCheck, SourceFilter,
-    SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent,
-    TransmitReportKey, TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer,
-    UpperLayerSelector,
+    PtpHardwareClockIndex, Report, RouteScope, RouteSelectors, SendError, SocketFilter,
+    SourceAddressCheck, SourceFilter, SourcePreferences, TemporaryAddressPreference,
+    TimestampSource, Timestamping, TransmitEvent, TransmitReportKey, TransmitReportRequest,
+    TransmitStage, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_udp_sockets::{
@@ -37,6 +43,27 @@ const PATIENCE: Duration = Duration::from_secs(1);
 
 /// ff0e, the first group of an IPv6 multicast address of global scope.
 const GLOBAL_MULTICAST: u16 = 0xff0e;
+
+/// A user other than the superuser, whose datagrams the caller's network prohibits beyond this host.
+const OTHER_OWNER: UserId = UserId(1000);
+
+/// 192.0.2.1, an address of TEST-NET-1 ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)), routed nowhere.
+const ROUTED_NOWHERE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+
+/// The pacing rate of pacing_holds_datagrams_in_the_send_buffer, below fq's 550 kbit/s at which it paces
+/// datagrams one at a time.
+const PACING_RATE: BytesPerSecond = BytesPerSecond(50_000);
+
+/// How many datagrams of PACED_LENGTH a paced check sends.
+const PACED_DATAGRAMS: usize = 5;
+const PACED_LENGTH: usize = 1000;
+
+/// The routing type of a segment routing header, [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754#section-2).
+const SEGMENT_ROUTING: u8 = 4;
+
+/// The bytes of a segment routing header after its next header and length, up to its segments: type,
+/// segments left, last entry, flags and tag.
+const SEGMENT_ROUTING_FIXED: usize = 6;
 
 /// fe80, the first group of an IPv6 link-local address.
 const LINK_LOCAL: u16 = 0xfe80;
@@ -1604,6 +1631,201 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     );
 }
 
+/// A socket's owner is the user its datagrams are routed for: the caller's network prohibits user 1000's
+/// datagrams to an address it routes for the superuser.
+pub fn an_owner_is_routed_as_its_user<S: UdpSockets>(sockets: S) {
+    let to = SocketAddr::new(IpAddr::V4(ROUTED_NOWHERE), u16::MAX);
+    let answers = [OWNER, OTHER_OWNER].map(|owner| {
+        let socket = sockets
+            .open(IpVersion::V4, UdpProtocol::Udp, owner)
+            .unwrap();
+        let from = sockets
+            .bind(
+                &socket,
+                binding(IpAddr::V4(Ipv4Addr::UNSPECIFIED), u16::MIN),
+            )
+            .unwrap();
+        sockets.send_to(
+            &socket,
+            header(UdpProtocol::Udp, from, to),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+    });
+    assert_eq!(
+        answers,
+        [
+            Ok(()),
+            Err(SendError::Host(HostError::Errno(
+                linux_raw_sys::errno::EACCES as i32
+            )))
+        ]
+    );
+}
+
+/// A segment routing header arrives in the header as sent, after the routing destination options when they
+/// are sent too.
+pub fn a_routing_header_arrives_in_the_header<S: UdpSockets>(sockets: S) {
+    let padding = [u8::MIN; etherparse::Ipv6RawExtHeader::MIN_LEN];
+    let options = etherparse::Ipv6RawExtHeaderSlice::from_slice(&padding).unwrap();
+    for with_options in [false, true] {
+        let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+        let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+        let IpAddr::V6(destination) = to.ip() else {
+            unreachable!("an IPv6 socket's address")
+        };
+        // No segment left: the only segment is the destination.
+        let mut segments = vec![SEGMENT_ROUTING];
+        segments.resize(SEGMENT_ROUTING_FIXED, u8::MIN);
+        segments.extend(destination.octets());
+        let routing = etherparse::Ipv6RawExtHeader::new_raw(IpNumber::UDP, &segments)
+            .unwrap()
+            .to_bytes();
+        let mut route = ipv6_route(UdpProtocol::Udp, from, to);
+        route.routing_header =
+            Some(etherparse::Ipv6RawExtHeaderSlice::from_slice(&routing).unwrap());
+        let mut fields = ipv6_header(route);
+        if with_options {
+            fields.routing_destination_options = Some(options.clone());
+        }
+        sockets
+            .send_to(
+                &sender,
+                IpHeaderFields::V6(fields),
+                plain_fields(),
+                datagram(PAYLOAD),
+            )
+            .unwrap();
+        let mut into = buffer();
+        let packet = receive_packet(&sockets, &receiver, &mut into);
+        let whole = &into[..packet.fields.length];
+        let header = etherparse::Ipv6HeaderSlice::from_slice(whole).unwrap();
+        let mut next = header.next_header();
+        let mut rest = &whole[header.slice().len()..];
+        if with_options {
+            assert_eq!(next, IpNumber::IPV6_DESTINATION_OPTIONS);
+            let options = etherparse::Ipv6RawExtHeaderSlice::from_slice(rest).unwrap();
+            next = options.next_header();
+            rest = &rest[options.slice().len()..];
+        }
+        assert_eq!(next, IpNumber::IPV6_ROUTE_HEADER);
+        let arrived = etherparse::Ipv6RawExtHeaderSlice::from_slice(rest).unwrap();
+        assert_eq!(
+            (arrived.next_header(), arrived.payload()),
+            (IpNumber::UDP, &segments[..])
+        );
+        assert_eq!(seen(whole).payload, PAYLOAD);
+    }
+}
+
+/// Datagrams paced to a socket's maximum pacing rate arrive that far apart, waiting in its send buffer
+/// meanwhile, so that a small send buffer fills and a send would block.
+pub fn pacing_holds_datagrams_in_the_send_buffer<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::Timestamping(Timestamping {
+            receive_software: Report::Requested,
+            receive_hardware: Report::NotRequested,
+            bound_clock: None,
+        })),
+    );
+    let datagrams = PACED_DATAGRAMS * PACED_LENGTH;
+    set(
+        &sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(
+            datagrams * PACED_DATAGRAMS,
+        ))),
+    );
+    set(
+        &sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::MaximumPacingRate(Some(PACING_RATE))),
+    );
+    let payload = vec![u8::MAX; PACED_LENGTH];
+    for _ in 0..PACED_DATAGRAMS {
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, &payload);
+    }
+    assert_ne!(
+        sockets.count_unsent_bytes(&sender),
+        Ok(ByteCount(usize::MIN))
+    );
+    let mut into = buffer();
+    let times: Vec<Duration> = (0..PACED_DATAGRAMS)
+        .map(|_| {
+            receive_packet(&sockets, &receiver, &mut into)
+                .fields
+                .timestamps
+                .software
+                .expect("a receive time")
+        })
+        .collect();
+    // Each datagram after the first waits at least its payload's time at the rate.
+    let gaps = (PACED_DATAGRAMS - 1) * PACED_LENGTH;
+    let least = Duration::from_secs_f64(gaps as f64 / PACING_RATE.0 as f64);
+    assert!(times[PACED_DATAGRAMS - 1] - times[0] >= least, "{times:?}");
+    set(
+        &sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(usize::MIN))),
+    );
+    let blocked = (0..PACED_DATAGRAMS).any(|_| {
+        sockets.send_to(
+            &sender,
+            header(UdpProtocol::Udp, from, to),
+            plain_fields(),
+            datagram(&payload),
+        ) == Err(SendError::Host(HostError::WouldBlock))
+    });
+    assert!(
+        blocked,
+        "a paced send into the smallest send buffer would block"
+    );
+}
+
+/// Loopback has no hardware clock: hardware receive times are taken as a setting but none arrives, and no
+/// hardware clock can be bound, on a socket bound to loopback or to no interface.
+pub fn loopback_has_no_hardware_clock<S: UdpSockets>(sockets: S) {
+    let interface = loopback_interface(&sockets);
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let hardware = Timestamping {
+        receive_software: Report::NotRequested,
+        receive_hardware: Report::Requested,
+        bound_clock: None,
+    };
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::Timestamping(hardware)),
+    );
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    let packet = receive_packet(&sockets, &receiver, &mut buffer());
+    assert_eq!(packet.fields.timestamps.hardware, None);
+    let bound_clock = Timestamping {
+        bound_clock: Some(PtpHardwareClockIndex(u32::MIN)),
+        ..hardware
+    };
+    for bound_interface in [None, Some(interface)] {
+        set(
+            &sockets,
+            &receiver,
+            UdpSocketSetting::Port(PortSetting::BoundInterface(bound_interface)),
+        );
+        assert!(
+            sockets
+                .configure(
+                    &receiver,
+                    UdpSocketSetting::Ip(IpSocketSetting::Timestamping(bound_clock))
+                )
+                .is_err()
+        );
+    }
+}
+
 /// Closing a socket frees its port for another.
 pub fn close_frees_the_port<S: UdpSockets>(sockets: S) {
     let address = closed_port(&sockets, IpVersion::V6);
@@ -1655,6 +1877,10 @@ macro_rules! tests {
             a_waived_source_check_sends_from_an_absent_address
             a_group_filter_chooses_the_socket
             ipv6_memberships_take_their_datagrams
+            an_owner_is_routed_as_its_user
+            a_routing_header_arrives_in_the_header
+            pacing_holds_datagrams_in_the_send_buffer
+            loopback_has_no_hardware_clock
             close_frees_the_port
         );
     };
