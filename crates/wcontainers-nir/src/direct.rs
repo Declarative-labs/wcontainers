@@ -3391,8 +3391,9 @@ const NO_MODULE: &str = "the shaders crate's rewrite gave no module";
 /// The shaders crate's rewrites of plan 15.4 on route B's module: arrays of textures, storage
 /// textures and samplers split into a binding an element, gathers at offsets known only at run
 /// time moved into their coordinates, and each storage texture whose slot `variant` names given
-/// the bound view's format; and vertex inputs fetched in the program (`VariantKey::pulled`), which
-/// find their inputs by location. A slot declared without a format that `variant` does not name is
+/// the bound view's format; vertex inputs fetched in the program (`VariantKey::pulled`), which
+/// find their inputs by location; and border colours applied in the program
+/// (`VariantKey::border_in_shader`), which read the sampler's state from helper constants. A slot declared without a format that `variant` does not name is
 /// refused by name, as is a variant asking for more than these (its rewrites read the program's
 /// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
 /// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it;
@@ -3413,6 +3414,7 @@ pub fn rewrite(
         storage_formats: variant.storage_formats.clone(),
         texels_through_buffer: variant.texels_through_buffer,
         pulled: variant.pulled.clone(),
+        border_in_shader: variant.border_in_shader,
         ..VariantKey::default()
     };
     if *variant != routed_rewrites {
