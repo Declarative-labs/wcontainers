@@ -712,9 +712,11 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
         [0, BASE_LEVEL_ONLY_MAX_LOD.to_bits()]
     } else {
         // The host's levels of detail start at zero, where its magnifying filter takes over, as
-        // OpenGL's does at and below zero: a negative bound reads as zero, alike.
-        let min = state.min_lod.max(0.0);
-        [min.to_bits(), state.max_lod.max(min).to_bits()]
+        // OpenGL's does at and below zero: a negative bound reads as zero, alike, and a bound past
+        // the deepest level reads as that level, which it selects all the same.
+        let deepest = crate::screen::deepest_level(context.screen().caps()) as f32;
+        let min = state.min_lod.clamp(0.0, deepest);
+        [min.to_bits(), state.max_lod.clamp(min, deepest).to_bits()]
     };
     let desc = SamplerDesc {
         min: filter(state.min_img_filter()),

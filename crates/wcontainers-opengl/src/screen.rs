@@ -95,6 +95,18 @@ fn levels(size: u32) -> u32 {
     size.ilog2() + 1
 }
 
+/// The last level any texture the screen reports can have: a level of detail past it selects
+/// that level, as one at it does.
+pub fn deepest_level(ours: &Caps) -> u32 {
+    let limits = &ours.limits;
+    levels(
+        limits
+            .max_texture_2d
+            .max(limits.max_texture_cube)
+            .max(limits.max_texture_3d),
+    ) - 1
+}
+
 /// The GLSL version st/mesa's GLSL compiler takes for this driver, and OpenGL ES's: the
 /// versions whose programs the NIR route converts and whose state the context draws with.
 const GLSL_VERSION: c_uint = 130;
