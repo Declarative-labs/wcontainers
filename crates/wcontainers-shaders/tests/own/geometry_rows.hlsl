@@ -118,3 +118,25 @@ void gs_rows_streams(point GsIn p[1], uint primitive : SV_PrimitiveID,
         s2.Append(o);
     }
 }
+
+struct RowsOut {
+    float4 position : SV_Position;
+    float3 c[3] : COLOR0;
+    nointerpolation int2 n[2] : TEXCOORD1;
+};
+
+// Flat inputs, arrays of rows out only: three to five vertices a primitive.
+[maxvertexcount(5)]
+void gs_rows_out(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                 inout TriangleStream<RowsOut> s) {
+    for (uint i = 0; i < 3 + primitive % 3; i++) {
+        RowsOut o;
+        o.position = t[i % 3].position;
+        [unroll] for (uint r = 0; r < 3; r++) {
+            o.c[r] = t[(i + r) % 3].colour.rgb * (r + 1);
+        }
+        o.n[0] = int2(t[i % 3].ids) - int2(primitive, 7);
+        o.n[1] = int2(i, -(int)primitive);
+        s.Append(o);
+    }
+}

@@ -121,6 +121,7 @@ fn geometry_shaders_have_a_replay_form() {
         "gs_streams",
         "gs_rows_lines",
         "gs_rows_streams",
+        "gs_rows_out",
     ];
     for name in names {
         let bytes = own(&format!("{name}.dxbc"));
@@ -692,6 +693,7 @@ fn dxil_geometry_outputs_match_dxbc_on_every_stream() {
         "gs_streams",
         "gs_rows_lines",
         "gs_rows_streams",
+        "gs_rows_out",
     ] {
         let keyed = |c: Converted| {
             let mut keys: Vec<_> = c

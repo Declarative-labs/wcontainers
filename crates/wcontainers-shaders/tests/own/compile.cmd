@@ -89,7 +89,7 @@ for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjac
 )
 "%FXC%" /nologo /T vs_5_0 /E vs_rows /Fo vs_rows.dxbc geometry_rows.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_rows -Fo vs_rows.dxil geometry_rows.hlsl || exit /b 1
-for %%e in (gs_rows_lines gs_rows_streams) do (
+for %%e in (gs_rows_lines gs_rows_streams gs_rows_out) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry_rows.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Fo %%e.dxil geometry_rows.hlsl || exit /b 1
 )
