@@ -16,7 +16,7 @@ wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = 
 # The kernel, which runs inside.
 wcontainers-kernel-linux = { path = "../kernel/implementation/linux" }
 # The loop, which runs inside beside the kernel.
-wcontainers-runtime = { package = "wcontainers-runtime-single-kernel", path = "../wcontainers-runtime", default-features = false }
+wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-kernel", default-features = false }
 # The kernel test crate's policy, for the test program `native-kernel` only.
 wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy", optional = true }
 # The container's files and start as the link carries them.

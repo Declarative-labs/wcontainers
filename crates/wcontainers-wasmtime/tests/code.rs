@@ -4,7 +4,7 @@
 
 use wcontainers_abi::{Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, Resume, Warning};
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
+use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, reason};
 use zerocopy::FromZeros;
 

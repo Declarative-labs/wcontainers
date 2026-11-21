@@ -16,7 +16,7 @@ use rand::{Rng, SeedableRng};
 use spin::Mutex;
 use wcontainers_abi::{BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
-use wcontainers_runtime::{Execution, System, TerminalSize, Turn};
+use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
 
 /// The ends this policy names for the first process's standard output and error; it gives no input.
 pub const OUTPUT: End = End(1);

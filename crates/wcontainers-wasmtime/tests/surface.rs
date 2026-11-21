@@ -12,8 +12,8 @@ use std::time::Instant;
 use serde_json::json;
 
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::oci_spec::runtime::Spec;
-use wcontainers_runtime::{
+use wcontainers_runtime_single_kernel::oci_spec::runtime::Spec;
+use wcontainers_runtime_single_kernel::{
     Container, Ending, GuestMachine, Image, LocalSystem, MASKED_PATHS_FIELD, READONLY_PATHS_FIELD,
     Runtime, RuntimeConfig, Step, base_spec,
 };
@@ -1151,7 +1151,7 @@ fn a_program_not_in_the_path_is_not_found() {
         &GuestMachine { offer: () },
         system,
     ) {
-        Err(wcontainers_runtime::Error::NotFound(name)) => assert_eq!(name, "ls"),
+        Err(wcontainers_runtime_single_kernel::Error::NotFound(name)) => assert_eq!(name, "ls"),
         Err(other) => panic!("{other}"),
         Ok(_) => panic!("ls was run from the working directory"),
     }

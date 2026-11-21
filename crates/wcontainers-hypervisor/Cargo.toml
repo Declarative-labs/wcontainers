@@ -45,7 +45,7 @@ wcontainers-translator-test = { path = "../wcontainers-translator-test" }
 proptest = "1.12.0"
 # The exits test's other side: the WebAssembly output's CPU side, run as the runtime's loop runs it.
 wcontainers-wasmtime = { path = "../wcontainers-wasmtime" }
-wcontainers-runtime = { package = "wcontainers-runtime-single-kernel", path = "../wcontainers-runtime" }
+wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-kernel" }
 # The kernel test's policy, the same on both sides.
 wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy" }
 # The root's files at a container's end.

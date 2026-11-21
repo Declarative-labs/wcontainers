@@ -9,7 +9,7 @@ use wcontainers_kernel_linux::{Attributes, Kernel, NewFile, ROOT_GID, ROOT_UID};
 
 // The image's user and group databases, and how their lines are made: fields apart and a group's
 // members apart, as the runtime reads them.
-use wcontainers_runtime::image::{
+use wcontainers_runtime_single_kernel::image::{
     FIELD_SEPARATOR, GROUP as GROUP_PATH, MEMBER_SEPARATOR, PASSWD as PASSWD_PATH,
 };
 

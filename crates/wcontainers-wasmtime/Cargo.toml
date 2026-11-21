@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-abi.workspace = true
-wcontainers-runtime = { package = "wcontainers-runtime-single-kernel", path = "../wcontainers-runtime" }
+wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-kernel" }
 # The words wcon shares with `docker run`.
 wcontainers-docker = { path = "../wcontainers-docker" }
 wcontainers-translator = { path = "../wcontainers-translator" }

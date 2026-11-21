@@ -18,7 +18,7 @@ use wcontainers_kernel_linux::{
 use wcontainers_kernel_test_policy::{
     PROGRESS_PICOSECONDS, REPEATABLE_START_NANOSECONDS, Schedule, TURN_NANOSECONDS,
 };
-use wcontainers_runtime::{Ending, Execution, TerminalSize, Turn};
+use wcontainers_runtime_single_kernel::{Ending, Execution, TerminalSize, Turn};
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
 use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
@@ -1195,7 +1195,7 @@ where
         .expect("the kernel runs a process serially with exact replay");
     host.started(&mut kernel, &mut cpu);
     let mut system = TestSystem(Mutex::new(host));
-    let ending = wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut system);
+    let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &mut system);
     let mut host = system
         .0
         .into_inner()
@@ -1539,7 +1539,7 @@ where
     }
 }
 
-/// The test host behind a lock, as the loop's [`wcontainers_runtime::System`], whose every method
+/// The test host behind a lock, as the loop's [`wcontainers_runtime_single_kernel::System`], whose every method
 /// takes `&self`. The kernel's calls go to the host held for each call; what the host hands the
 /// kernel while the loop holds it, it hands as itself.
 struct TestSystem<H>(Mutex<TestHost<H>>);
@@ -1550,7 +1550,7 @@ impl<H> TestSystem<H> {
     }
 }
 
-impl<H: BetweenSteps + Send> wcontainers_runtime::System for TestSystem<H>
+impl<H: BetweenSteps + Send> wcontainers_runtime_single_kernel::System for TestSystem<H>
 where
     TestHost<H>: System,
 {

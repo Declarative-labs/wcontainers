@@ -5,7 +5,7 @@
 
 use wcontainers_abi::{Cpu, Exit, Permissions, RegisterBlock, Resume, Warning};
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::{Answer, Carry, Execution, Executor, Leaving, Turn};
+use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Executor, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, reason};
 use zerocopy::FromZeros;
 

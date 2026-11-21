@@ -9,7 +9,7 @@ use wcontainers_kernel_linux::{
     ARM64_ADDRESS_SPACE_BYTES, Attributes, Errno, ExecutionConfig, FileRecord, Kernel, NewFile,
     Start, StartOptions,
 };
-use wcontainers_runtime::System;
+use wcontainers_runtime_single_kernel::System;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{Link, Ring};

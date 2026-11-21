@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hasher};
 
 use wcontainers_abi::{BackendRequestId, ConnectionId, End, Event, HostError, MemoryId};
-use wcontainers_runtime::Turn;
+use wcontainers_runtime_single_kernel::Turn;
 
 /// One thing the host gave, in the order the kernel took it.
 #[derive(Clone, Debug, PartialEq, Eq)]

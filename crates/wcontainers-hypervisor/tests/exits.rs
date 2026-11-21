@@ -45,7 +45,7 @@ mod macos {
     use wcontainers_inside::link::{self, Fatal, LINK_BYTES, Link, Start};
     use wcontainers_inside::reason::IDENTIFIERS_RAN_OUT;
     use wcontainers_inside::{routines as inside_routines, translation};
-    use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
+    use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
     use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
     use zerocopy::{FromBytes, IntoBytes};
 

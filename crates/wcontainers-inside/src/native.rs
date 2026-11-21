@@ -27,7 +27,7 @@ use wcontainers_arm64::mirror::{
 };
 use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
 use wcontainers_guest_cpu::position::{NativeReason, Span};
-use wcontainers_runtime::{Answer, Carry, Execution, Turn};
+use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Turn};
 
 use crate::floor::{
     self, AddressSpace, FIRST_PROCESS_IDENTIFIER, Frames, Full, IDLE_IDENTIFIER, Table, Taken,

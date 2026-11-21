@@ -7,9 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "implementation.rs"
+
 [dependencies]
 wcontainers-abi.workspace = true
-wcontainers-kernel-linux = { path = "../kernel/implementation/linux" }
+wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 # What to run: the OCI runtime configuration, and the OCI image types it is made from.
 oci-spec = { version = "0.10.0", default-features = false, features = ["runtime", "image"], optional = true }
 serde_json = { version = "1.0.154", optional = true }

@@ -18,7 +18,7 @@ use wcontainers_inside::link::{self, Fatal, Link, Parts, Ring};
 use wcontainers_inside::{host, routines as inside_routines, translation};
 use wcontainers_kernel_linux::FileRecord;
 use wcontainers_kernel_test_policy::{ERROR, TestPolicy, Warned};
-use wcontainers_runtime::{Ending, Kernel, drive};
+use wcontainers_runtime_single_kernel::{Ending, Kernel, drive};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use zerocopy::FromZeros;
 

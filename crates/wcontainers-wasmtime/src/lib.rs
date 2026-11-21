@@ -27,7 +27,7 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
-use wcontainers_runtime::{
+use wcontainers_runtime_single_kernel::{
     Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
 use wcontainers_translator::contract::{self, Reason, TrapKind};

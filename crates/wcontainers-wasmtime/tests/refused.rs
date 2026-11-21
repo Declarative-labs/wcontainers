@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::{
+use wcontainers_runtime_single_kernel::{
     Error, GuestMachine, Image, LocalSystem, MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, Runtime,
     RuntimeConfig, base_spec, bind_mount, spec_from_json,
 };

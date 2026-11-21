@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::{
+use wcontainers_runtime_single_kernel::{
     Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Warned, bind_mount,
     spec_from_json,
 };
@@ -51,8 +51,10 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("wcon: {error}");
-            match error.downcast_ref::<wcontainers_runtime::Error>() {
-                Some(wcontainers_runtime::Error::NotFound(_)) => ExitCode::from(NOT_FOUND),
+            match error.downcast_ref::<wcontainers_runtime_single_kernel::Error>() {
+                Some(wcontainers_runtime_single_kernel::Error::NotFound(_)) => {
+                    ExitCode::from(NOT_FOUND)
+                }
                 _ => ExitCode::from(RUNTIME_FAILED),
             }
         }
@@ -100,10 +102,10 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     };
     let mut spec = match config {
         Some(path) => {
-            let (spec, ignored) = spec_from_json(
-                &std::fs::read(&path)
-                    .map_err(|error| wcontainers_runtime::Error::Io { path, error })?,
-            )?;
+            let (spec, ignored) =
+                spec_from_json(&std::fs::read(&path).map_err(|error| {
+                    wcontainers_runtime_single_kernel::Error::Io { path, error }
+                })?)?;
             for (count, path) in (1..).zip(&ignored) {
                 eprintln!("wcon: configuration: {IGNORED}: {path}: {count}");
             }
