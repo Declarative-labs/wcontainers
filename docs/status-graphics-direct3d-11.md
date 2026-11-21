@@ -11,7 +11,7 @@ round 3 run 1 and round 4 runs 2 to 6 (2026-11-20).
 G4 is reported complete for its sixth independent check. What is left on the pass bar waits on
 other tracks (Gap list), or is the joint step with the Direct3D 12 track after both milestones.
 
-Round 4, run 6 (2026-11-20, about 18:30 to RUN6_END Pacific), the tenth check's findings:
+Round 4, run 6 (2026-11-20, about 18:30 to 21:30 Pacific), the tenth check's findings:
 - Merged origin/phase-2-graphics-shaders (its g6b run 4); no conflict. No other branch had news.
 - Comparisons through colour views (blocking): `SampleCmp`, `SampleCmpLevelZero` and `GatherCmp`
   through views of `R32_FLOAT` and `R16_UNORM` colour textures, which Microsoft's 11_0 table
@@ -22,7 +22,8 @@ Round 4, run 6 (2026-11-20, about 18:30 to RUN6_END Pacific), the tenth check's 
   back end copies by a draw, `DepthWrittenByDraw`). A comparison through a colour view of any
   other format (which Direct3D claims for none) is refused by name. New listed case
   `compare_colour` (compute and pixel shaders, point and linear comparison filters, gathers with
-  comparison, texels changed between uses), with 16-bit norm on and off: RESULT_COMPARE.
+  comparison, texels changed between uses), with 16-bit norm on and off: both match real Direct3D line by line (real Direct3D's results mix
+  passes and failures, logs/r6c.log).
 - Feature levels 9_1 to 9_3 (blocking): `CheckFormatSupport` reports only what the 10Level9
   tables give (`format::LEVEL9_SUPPORT`, the runtime's answers on the RTX 3080, which agree with
   Microsoft's 9_1 and 9_3 tables but for video formats; Microsoft has no 9_2 table), intersected
@@ -30,12 +31,15 @@ Round 4, run 6 (2026-11-20, about 18:30 to RUN6_END Pacific), the tenth check's 
   binding, mips, mip generation, samples, CPU access; multisampled textures are never read by
   shaders there) and refuses viewed and stream output buffers, all as `E_INVALIDARG`. The old
   three partial 9_x lists are gone. New tests compare every bit at 9_1, 9_2 and 9_3 and a list of
-  creations line by line: RESULT_LEVEL9.
+  creations line by line: all three levels match (logs/r6g.log). Sharing below 10_0 is served
+  as the RTX 3080 serves it (measured, logs/r6e.log): `SHAREABLE` for the 17 formats it reports,
+  and shared textures of those it makes (`format::level9_shared`; `R32_FLOAT` made though not
+  reported, `R8G8B8A8_UNORM` refused though reported).
 - Depth clears outside 0 to 1 (minor): `ClearDepthStencilView` drops the whole call for such a
   depth (NaN and the infinities among them), as the RTX 3080 does; `ClearView` of a depth view
   limits normalised depth to 0 to 1 (NaN as 0) and refuses by name float depth outside that range
   (`CLEAR_VIEW_FLOAT_DEPTH_OUTSIDE_RANGE`), which the RTX 3080 stores as given and WebGPU's depth
-  clears and draws cannot write (Gap list). New listed case `depth_clears`: RESULT_DEPTH.
+  clears and draws cannot write (Gap list). New listed case `depth_clears`: matches real Direct3D (logs/r6g.log).
 - `GenerateMips` of an integer view (minor): neither side claims `MIP_AUTOGEN` there and Direct3D
   defines no result; the RTX 3080 fills the levels by a rule of its driver's (measured in the
   check's probe: 8-bit formats as their unorm twins' truncated box average, 32-bit components
@@ -46,16 +50,22 @@ Round 4, run 6 (2026-11-20, about 18:30 to RUN6_END Pacific), the tenth check's 
   and why 11_0 is still reported (for the owner).
 - Building ahead (minor): unchanged, still no hit (What comes next 3).
 - test_generate_mips' count corrected to 410 checks, as real Direct3D's; this file cut from 1,296
-  lines to about LINES lines.
-- The bar rerun: BAR_SUMMARY.
+  lines to about 680 lines.
+- The first format query now fails where the first word has no uses though the second has
+  (sharing at 9_x; Wine's test_format_support found it at 9_1 to 9_3, 8 checks), and the format
+  support tests compare the first query's result too.
+- The bar rerun (Measurements): lint of both builds clean; library com 15 (1 ignored), programs 55
+  (3 ignored); the WebGL 2 build's 10_0 cases 5 pass, 1 ignored; front 60, unit 5, cache 1; Wine
+  d3d11 151 of 166 and d3d10core 110 of 111, the same tests as before; scenes 135 pass; the bar's
+  three programs match; building ahead unchanged; sizes and load times measured.
 
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
-3080 through the queue, not alone, rigfix/wine.sh, WINE_WHEN:
-- d3d11: WINE11 (logs/WINE11LOG); the failing tests are in the Gap list. test_format_support's 7
+3080 through the queue, not alone, rigfix/wine.sh, round 4 run 6 at the code of the run's last commit (logs/r6y-wine*.log):
+- d3d11: 151 pass of 166, the same 15 failing as in round 4 runs 3 to 5; the failing tests are in the Gap list. test_format_support's 7
   checks are the B5 targets (6) and XR_BIAS's display (1).
-- d3d10core: WINE10 (logs/WINE10LOG): test_desktop_window (Gap list).
+- d3d10core: 110 of 111: test_desktop_window (Gap list).
 - d3d10core through the WebGL 2 build (10_0): 98 of 111 at round 4 run 5 (logs/r5z-wine10gl.log),
   the same 13 failing as at round 2 run 12; they are under the WebGL 2 item of the Gap list.
 - dxgi (not on G4's bar): 4 of the 17 tests without a Direct3D 12 part at round 2 run 8.
@@ -190,7 +200,7 @@ rerun at round 4 run 5 with the integer twins with the same 13; the rig's scenes
 - Wine's d3d11 file through the WebGL 2 build (not on the bar): 78 of 166 at round 2 run 12.
 
 Real programs: the three of the pass bar (godot-platformer-3d-d3d11, chocolate-doom,
-atg-simplelightingpc) match real Direct3D on every compared frame (PROGRAMS_LOG), and so do
+atg-simplelightingpc) match real Direct3D on every compared frame (logs/r6z-programs.log, round 4 run 6), and so do
 atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
 to 07; of bgfx's six (logs/q2f-bgfx.log, round 4 run 2) five pass or run to their end. Outside
 the bar's three, three differ:
@@ -421,7 +431,7 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 ## Tests
 
 At round 4 run 6: front.rs 60, tests/cache.rs 1, unit 5 (wcontainers-direct3d-11, recording back
-end); com.rs 16 (1 ignored) and programs.rs TESTS_PROGRAMS (3 ignored) (wcontainers-directx, real
+end); com.rs 16 (1 ignored) and programs.rs 55 (3 ignored) (wcontainers-directx, real
 devices). New in round 4 run 6: programs.rs `comparisons_through_colour_views_as_direct3d_does`
 (own_cases `compare_colour`, 16-bit norm on and off), `depth_clears_outside_the_range_as_direct3d_does`
 (`depth_clears`) and `format_support_and_creations_below_10_0_as_direct3d_reports_them` (9_1, 9_2
@@ -571,7 +581,41 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
-MEASUREMENTS
+Round 4 run 6. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
+alone except the load times (other tracks' jobs sharing it; the NIR track's OpenGL CTS runs,
+display-reset hazard jobs, held the queue for about 35 minutes before several steps). Times
+Pacific, 2026-11-20. The bar (scratch q5-final.sh r6z, logs/r6z-*) ran at 6b3ea847's code but the
+first query's failure on an empty first word (committed after it, then rerun: Wine, scenes, the
+format support tests, lint; logs/r6y-*).
+- Library (r6z-lib, 20:05 to 20:09): com 15 pass, 1 ignored; programs 55 pass, 3 ignored. The
+  WebGL 2 build's 10_0 cases: 5 pass, 1 ignored. Front 60, unit 5, cache 1 on the rented x86
+  machine (96 processors, load about 8 to 25 from other jobs).
+- Scenes through the library: 135 pass, 0 fail, 4 absent (r6y-scenes, 21:15; the bar's own
+  scenes step lost its connection, exit 255). The WebGL 2 build's scenes 95 pass, 17 fail, 30 absent
+  (r6z-webgl), as before.
+- Programs (r6z-programs, 20:54 to 20:56): the bar's three (godot-platformer-3d-d3d11,
+  chocolate-doom, atg-simplelightingpc) match real Direct3D on every compared frame, and so do
+  atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
+  to 07; atg-simplecomputepc and atg-simplemsaa_pc differ as before (Gap list). bgfx's were not
+  run this run.
+- Module sizes (section 10), release builds 20:56 to 20:58 (r6z-sizes): `wcontainers_directx.dll`
+  14,304,256 bytes on WebGPU and 9,881,600 bytes on WebGL 2; the forwarders 1,024 bytes each;
+  `wcontainers_d3d12.dll` (the Direct3D 12 track's code as merged here)
+  13,733,376 bytes.
+- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (r6z-load,
+  20:58 to 21:02): the system's d3d11.dll 1,147 us; ours on WebGPU 1,637 us; ours on WebGL 2
+  1,110 us; `wcontainers_d3d12.dll` 1,643 us.
+- Building ahead (plan 4.4; run-warm.sh, five programs run twice from one cache directory, 21:02
+  to 21:06, r6z-warm): Godot 3D's cold run built 124 ahead and drew none, 66 at their first draw;
+  its warm start built its 61 recorded combinations at start and drew all 61, built 124 ahead and
+  drew none, and 26 at their first draw. Godot 2D's warm start built 3 at start and drew 3.
+  Unchanged: building ahead has never hit.
+- Real Direct3D's own outputs of the new cases (logs/r6c.log, r6e.log): comparisons through
+  colour views give a mix of 0 and 1 by texel; at 9_x the RTX 3080 makes shared textures of
+  `B8G8R8A8_UNORM`, `BC1_UNORM`, `R16G16B16A16_FLOAT` and (from 9_2) `R32_FLOAT`, and refuses
+  `R8G8B8A8_UNORM` ones whatever the bindings.
+
+Earlier runs' measurements are in this file's git history.
 
 ## Known issues
 
@@ -606,7 +650,11 @@ MEASUREMENTS
 
 ## Literals
 
-LITERALS
+- Round 4 run 6: the new refusals' messages are named once (`COMPARED_FORMAT_UNCLAIMED`,
+  `COMPARED_VIEW_INVALID`, `LEVEL9_BUFFER_VIEWED`, `LEVEL9_USE_ABSENT`); new code adds no line and
+  makes no mark. wcontainers-direct3d-11 499 lines, wcontainers-directx 229 (728), as at round 4
+  run 5 (no line cut this run: the run went to the findings). The check exits 0 at 318f6a9e
+  (logs/r6x-literals.log).
 Left: the export names in build.rs (a build script cannot import the crate it builds), and the rest
 of the fix list (orchestrator magic-literals/fix-graphics.md), a part per run.
 
