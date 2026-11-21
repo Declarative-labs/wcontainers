@@ -14,9 +14,10 @@ use linux_raw_sys::net::{IPV6_SRCRT_TYPE_0, IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, Ipv4RouteSelectors,
-    Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, NeighbourConfirmation,
-    PacketMark, Port, Route, RouteKind, RouteScope, RouteSelectors, SourceAddressCheck,
-    SourcePreferences, TemporaryAddressPreference, TransportPorts, UpperLayer, UpperLayerSelector,
+    Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, MobilityHeaderType,
+    NeighbourConfirmation, PacketMark, Port, Route, RouteKind, RouteScope, RouteSelectors,
+    SourceAddressCheck, SourcePreferences, TemporaryAddressPreference, TransportPorts, UpperLayer,
+    UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
@@ -605,6 +606,33 @@ pub fn icmp_type_and_code_select_the_route<R: RouteResolver>(resolver: R) {
     }
 }
 
+/// The kernel's flow keeps a mobility header's type in the first byte of a destination port, so a port rule selects on it.
+pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
+    const BINDING_UPDATE: u8 = 5;
+    const BINDING_ACKNOWLEDGEMENT: u8 = 6;
+    let network = network();
+    /// Type 5 as the port the flow keeps it in.
+    const RULE_V6: &str = "rule add ipproto 135 dport 1280 lookup 100";
+    ip(IPV6, RULE_V6);
+    for (message_type, expected) in [
+        (BINDING_UPDATE, network.b),
+        (BINDING_ACKNOWLEDGEMENT, network.a),
+    ] {
+        let route = Ipv6RouteSelectors {
+            upper_layer: UpperLayer {
+                protocol: IpNumber::MOBILITY_HEADER,
+                selector: Some(UpperLayerSelector::MobilityHeader(MobilityHeaderType(
+                    message_type,
+                ))),
+            },
+            ..v6(FAR_V6)
+        };
+        unless_refused(resolve6(&resolver, route), |route| {
+            assert_eq!(interface(route), expected, "{message_type}");
+        });
+    }
+}
+
 /// A rule on the flow label sends only lookups with that label to the other table.
 pub fn flow_label_selects_the_route<R: RouteResolver>(resolver: R) {
     const LABEL: u32 = 0x12345;
@@ -753,6 +781,39 @@ pub fn loose_source_route_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     );
 }
 
+/// A strict source route takes only a first hop on a link, and is looked up to it.
+pub fn strict_source_route_takes_only_a_first_hop_on_the_link<R: RouteResolver>(resolver: R) {
+    let network = network();
+    let strict = |first_hop: Ipv4Addr| {
+        let [a, b, c, d] = first_hop.octets();
+        /// The option's type, length and pointer, and one address.
+        const OPTION_LENGTH: u8 = 7;
+        Ipv4Options::from([
+            libc::IPOPT_SSRR,
+            OPTION_LENGTH,
+            libc::IPOPT_MINOFF,
+            a,
+            b,
+            c,
+            d,
+            libc::IPOPT_END,
+        ])
+    };
+    let on_link = strict(B_GATEWAY);
+    unless_refused(resolve4(&resolver, v4(&on_link, FAR)), |route| {
+        let route = route.expect("resolves");
+        assert_eq!(
+            (route.interface, route.source),
+            (network.b, IpAddr::V4(B_ADDRESS))
+        );
+    });
+    let through_gateway = strict(FAR);
+    unless_refused(
+        resolve4(&resolver, v4(&through_gateway, B_GATEWAY)),
+        |route| assert!(route.is_err(), "{route:?}"),
+    );
+}
+
 /// A type 2 header is looked up to its address and a type 4 one to its next segment; a type 0 one is refused as `IPV6_RTHDR` refuses it.
 pub fn routing_header_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     let network = network();
@@ -823,10 +884,12 @@ pub fn link_scope_takes_only_routes_on_the_link<R: RouteResolver>(resolver: R) {
     });
 }
 
-/// A confirmed lookup confirms the next hop's neighbour entry and an unconfirmed one does not, the route the same either way.
+/// A confirmed lookup confirms the next hop's neighbour entry and an unconfirmed one does not, the route the same
+/// either way, and neither sends a packet.
 pub fn confirmed_neighbour_is_confirmed<R: RouteResolver>(resolver: R) {
-    /// The gateways of `FAR` on da, as neighbours last confirmed long ago; da resolves neighbours so that IPv6 confirms them.
-    const NEIGHBOURS: &str = "link set da arp on
+    /// The gateways of `FAR` on da, as neighbours last confirmed long ago; da resolves neighbours so that IPv6
+    /// confirms them, and sends no multicast reports of its own while the check counts what it sends.
+    const NEIGHBOURS: &str = "link set da arp on multicast off
 neigh add 10.1.0.2 lladdr 02:00:00:00:00:02 dev da nud stale
 neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
     const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 2);
@@ -839,6 +902,7 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
         (RouteSelectors::V6(v6(FAR_V6)), IpAddr::V6(GATEWAY_V6)),
     ];
     for (route, gateway) in lookups {
+        let sent = packets_sent(A);
         let unconfirmed =
             resolver.resolve_route(route.clone(), ROOT, NeighbourConfirmation::Unconfirmed);
         let age = seconds_since_confirmed(gateway);
@@ -846,7 +910,39 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
         let confirmed = resolver.resolve_route(route, ROOT, NeighbourConfirmation::Confirmed);
         assert_eq!(confirmed, unconfirmed);
         assert_eq!(seconds_since_confirmed(gateway), 0, "{gateway}");
+        assert_eq!(
+            packets_sent(A),
+            sent,
+            "a lookup towards {gateway} sent a packet"
+        );
     }
+}
+
+/// The number of packets a link has sent, from its statistics.
+fn packets_sent(link: &str) -> u64 {
+    /// Shows the link with its statistics, as JSON.
+    const SHOW: [&str; 5] = ["-s", "-j", "link", "show", "dev"];
+    const TRANSMITTED: &str = "\"tx\":{";
+    const PACKETS: &str = "\"packets\":";
+    let output = Command::new(IP)
+        .args(SHOW)
+        .arg(link)
+        .output()
+        .expect("ip runs");
+    let text = String::from_utf8(output.stdout).expect("ip writes text");
+    let transmitted = text
+        .find(TRANSMITTED)
+        .unwrap_or_else(|| panic!("no statistics: {text}"));
+    let start = text[transmitted..]
+        .find(PACKETS)
+        .unwrap_or_else(|| panic!("no packet count: {text}"))
+        + transmitted
+        + PACKETS.len();
+    let digits: String = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().unwrap_or_else(|_| panic!("{text}"))
 }
 
 /// How long ago the neighbour entry of da for the address was confirmed, in whole seconds.
@@ -935,12 +1031,14 @@ macro_rules! tests {
             protocol_and_ports_select_the_route,
             source_port_selects_the_route,
             icmp_type_and_code_select_the_route,
+            mobility_header_type_selects_the_route,
             flow_label_selects_the_route,
             broadcast_needs_permission,
             multicast_route_is_multicast,
             required_source_check_refuses_a_foreign_address,
             waived_source_check_takes_a_foreign_address,
             loose_source_route_goes_to_its_first_hop,
+            strict_source_route_takes_only_a_first_hop_on_the_link,
             routing_header_goes_to_its_first_hop,
             link_scope_takes_only_routes_on_the_link,
             confirmed_neighbour_is_confirmed,

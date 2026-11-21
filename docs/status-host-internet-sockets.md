@@ -65,7 +65,7 @@ source preferences other than the default with no source; protocols the routing 
 TCP, UDP, ICMP for IPv4, ICMPv6 for IPv6; so GRE, the mobility header and the rest); route kinds other than
 unicast, local, broadcast and multicast; routes with a lightweight-tunnel encapsulation (path MTU less a
 headroom the routing socket does not give: measured, a seg6 encap route on a 1400 link gives `IPV6_MTU`
-1336). Why they stay: the routing socket has no field for them, and connect-and-read, which could take
+1336). Why they stay: the routing socket has no field for them (it carries `rtm_scope` but ignores it on a lookup), and connect-and-read, which could take
 link scope, `IP_TRANSPARENT`, `IPV6_ADDR_PREFERENCES` or any protocol (raw socket), cannot tell the
 interface a route must give. Their checks accept NotSupported or the right answer, never a wrong one.
 

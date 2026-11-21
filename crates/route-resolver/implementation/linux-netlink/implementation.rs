@@ -7,7 +7,6 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Mutex;
 
 use etherparse::{IpDscp, IpEcn, Ipv4Options, Ipv6RawExtHeaderSlice};
-use linux_raw_sys::net as uapi;
 use linux_raw_sys::net::{
     IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
 };
@@ -30,7 +29,7 @@ use wcontainers_internet_protocol::{
     TemporaryAddressPreference, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options::{
-    Shortfalls, host_error, set_option, set_packet_setting,
+    Shortfalls, host_error, set_packet_setting,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
@@ -304,12 +303,12 @@ impl LinuxNetlinkRouteResolver {
             ),
         };
         let socket = datagram_socket(version)?;
-        // Both versions take the index in network byte order.
-        let (level, name) = match version {
-            IpVersion::V4 => (uapi::SOL_IP, uapi::IP_UNICAST_IF),
-            IpVersion::V6 => (uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF),
-        };
-        set_option(socket.as_fd(), level, name, &interface.0.to_be())?;
+        set_packet_setting(
+            socket.as_fd(),
+            version,
+            &IpPacketSetting::UnicastInterface(Some(interface)),
+            &self.shortfalls,
+        )?;
         let probe = SendFlags::CONFIRM | SendFlags::from_bits_retain(MSG_PROBE);
         rustix::net::sendto(&socket, &[], probe, &peer).map_err(host_error)?;
         Ok(())

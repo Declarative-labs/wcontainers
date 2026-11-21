@@ -16,7 +16,7 @@ link request on a netlink socket the value holds, so a value answers for the net
 
 Chosen over connect-and-read (connect a UDP socket, then getsockname and `IP_MTU`) because connect-and-read
 cannot tell the outgoing interface or the route kind, cannot take another user than the caller (`RTA_UID`),
-and needs `CAP_NET_ADMIN` for a mark. The routing socket cannot take a link scope or a waived source check for
+and needs `CAP_NET_RAW` or `CAP_NET_ADMIN` for a mark (`SO_MARK`). The routing socket cannot take a link scope or a waived source check for
 IPv4, nor IPv6 source preferences, which connect-and-read can; those few are refused (below).
 
 What each selector maps to:
@@ -44,7 +44,8 @@ What each selector maps to:
   `ip_default_ttl` (read as an unset socket's `IP_TTL`) or the device's IPv6 `hop_limit`.
 
 Refused with `HostError::NotSupported`, a counter and a warning, each with a named reason:
-- IPv4 link scope (`SO_DONTROUTE`, and so a strict source route): the routing socket has no scope field.
+- IPv4 link scope (`SO_DONTROUTE`, and so a strict source route): the request's `rtm_scope` is ignored by the
+  kernel on `RTM_GETROUTE` (Universe, Link and Host give the same route through a gateway).
 - IPv4 waived source check with an address the host lacks: the routing socket always checks.
 - IPv6 source preferences other than the system's default, with no source given.
 - An upper-layer protocol the routing socket refuses (it takes TCP, UDP, and ICMP or ICMPv6).
