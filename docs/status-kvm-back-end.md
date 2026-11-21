@@ -16,6 +16,8 @@ and hardware-virtualization-inside.
   commit 88d924b3 (the translation kept through tempfile's persist, in translate.rs), with the same results.
 - Run 4 built and ran nothing: still no ruling, and the only commit since run 3 (1e37c4ab, the icmp and raw
   sockets) changes nothing this track builds, so run 3's results stand.
+- Run 5 built and ran nothing: no ruling in the orchestrator's open-with-owner.md (it names neither item), and no
+  commit since run 4 (origin/main was 290be510), so run 3's results stand.
 
 ## Results (run 3)
 
