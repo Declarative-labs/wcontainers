@@ -224,6 +224,30 @@ Measured:
 - The literal check (the Mac, `x7r4/literals.log`) exits 1, with no finding in this track's crates: its six
   new findings are in OpenGL and NIR. Baseline lines of the track's crates, unchanged since X6f run 2: x86
   134, guest-cpu 26, the test crate 1,746, the translator 8 (the C programs are not scanned).
+- The verdict, the i7-8750H (load 3 to 8, another track's build beside it, 4 at once, main at d6cdc8d9 with other
+  tracks' uncommitted edits; `x7r4/laptop-l1a.log`): every x87 and MMX form and every other form whose name
+  holds "mm", 715 forms, 1,000 cases a form, seed 9852: 0 failing (2,234 s); 23 known failures, each with its
+  reason: F2xm1 3, Fcos 3, Fptan 8, Fsin 2, Fsincos 2, Fyl2x 3, Fyl2xp1 2 (7 of them C1 only).
+- The laptop's other verdicts (`x7r4/laptop-l1b.log`): the 108 hand cases, 64 cases in no form (the default
+  count) and the Chrome sample (1,329 cases) at seed 9854, and the refusal test: pass (27 s). The unoffered
+  forms, 2,991 at 20 a form, seed 9855: 0 failing (158 s). Every default form, 1,329 forms at 100 a form, seed
+  9856: 0 failing, 4 known failures (Fcos, Fptan, Fsin, Fyl2xp1, one each; 360 s).
+- The suite in pieces (scratch `x6f/suite.sh`, now with `--no-deps` in its lint piece; logs `x7r4/suite/`),
+  rented x86-64 machine, main at 1ba26a5b as the pieces started: every piece passes but 36 tests. 26 are ARM64
+  tests with no ARM64 reference there, among them four the translator track added since X7 run 3 without the
+  `_arm64` suffix (`a_container_that_does_not_start_fails_the_case`,
+  `jumps_to_their_function_beyond_what_was_explored_are_unrecognised`,
+  `only_jumps_inside_their_function_are_unrecognised`, `switch_cases_in_other_parts_are_not_slow`) and
+  `csmith_programs_count_the_same_everywhere` (it builds ARM64 Csmith programs in Docker); the other five are the
+  x86 tests whose verdict is the laptop's (above), and `bytes_in_no_form_stop_as_on_the_cpu_x86_64` passed there
+  this time. On the rented ARM64 machine (`x7r4/arm2.log`) those five pass, but
+  `a_container_that_does_not_start_fails_the_case` failed once beside five other programs tests and passed three
+  times after (alone, and twice beside the two other container tests): a flaky test of the translator track's,
+  recorded under "For the orchestrator". The lint piece with `--no-deps`: pass (its "exit 1" is its output
+  filter finding no line; with dependencies it stops in `crates/kernel/interface.rs`, `x7r4/lint-with-deps.log`).
+- Every part of X7's bar holds on main: layer 1 for every x87 and MMX form at 1,000 cases a form with 0
+  failing and the known failures counted with their reasons, and C programs using `long double`, MMX and the x87
+  state instructions give the native output at every look-ahead in wasmtime and Chrome.
 
 Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws, load 0 to 43 with my jobs) for lint, the
 x86 crate's tests, layer 1 while building and the program tests; the i7-8750H (load 0 to 2.1 before my jobs)
@@ -1510,6 +1534,9 @@ wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the 
   executor (`crates/executor/implementation/wasmtime/implementation.rs`, `compiled(&code.bytes, (code.hash,
   None), ...)`) always passes no link address, so in a real container a fixed x86 program's `main` is still
   translated only when first reached, and no test drives the cache key's `link_address` with `Some`.
+- X7 run 4, for the translator track: `a_container_that_does_not_start_fails_the_case` (tests/programs.rs,
+  `#[should_panic(expected = "Docker failed")]`) failed once on the rented ARM64 machine with five other
+  programs tests beside it, then passed three times; it looks flaky under load.
 - For the owner (X7, run 4): the reviewed kernel interface `crates/kernel/interface.rs` fails clippy's
   `type_complexity` at lines 40 and 93, so a lint of the wasmtime executor with its dependencies (`cargo clippy
   -p wcontainers-executor-wasmtime -- -D warnings`) exits 101 for a file only the owner may edit. This track's
@@ -3759,6 +3786,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X7 run 4: layer 1 on the i7-8750H, the 715 x87 and "mm" forms at 1,000 a form (seed 9852), every default form
+  at 100 a form (seed 9856), the unoffered forms at 20 a form (seed 9855), 64 cases in no form, the hand cases
+  and the Chrome sample at 1 a form (seed 9854); layer 2 for x86 at 10,000, all on the CPU (seed 9853, rented
+  x86-64 machine); the suite's other random tests at their defaults.
 - X7 run 2: layer 1 of the eight transcendental forms at 1,000 a form, seeds 9801 to 9804, and 2,000 a form,
   9805 to 9812 (rented x86-64 machine); the 715 x87 and "mm" forms at 1,000 a form, seed 9821, every default
   form at 100 a form, seed 9824, the hand cases, 1,000 no-form cases and the Chrome sample at 9822, the
