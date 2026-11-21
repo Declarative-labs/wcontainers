@@ -2424,6 +2424,25 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   reserved-NOP space (CET's `endbr` and `rdssp`, `cldemote`, MPX, `prefetchw` and the rest), and prefixes
   such a CPU ignores (`xacquire`, `xrelease`, `bnd`, `notrack`) are ignored. The multi-byte NOP (iced's
   `MULTIBYTENOP`, which the `Reservednop_*` Codes carry) is part of the default claims.
+- **What a program is told, per process (built at X8, the owner's ruling of 2026-11-20).** The "AVX setting"
+  below is no setting of the build or the container: the kernel asks the embedder once per program, before its
+  first instruction, which features it is told (`choose_processor_features`, handed what this host runs at full
+  speed), and that list, the kernel interface's `X86_64Features`, is x86's `Offer`: `Offer::new(features)`
+  takes it and refuses a feature with no meanings here by name (`NotBuilt`, for AES, PCLMULQDQ, SHA, RDRAND,
+  AVX-512 and every other family not built yet; a family is added later by writing its meanings and its name
+  in `claims::TOLD_FEATURES`). The translator takes the offer with every translation and `offer_key` (now a
+  u64: the told features' bits and the signature) puts it in the cache key and the description section;
+  `cpuid` answers leaf 1's signature and every feature bit the list has a field for from it (OSXSAVE with
+  XSAVE, XCR0 and leaf 0xD from XSAVE and AVX), the bits every x86-64 processor has from `cpuid`'s own
+  constants; `xgetbv` answers XCR0 from it. Every family of the list is switched by it: each `Code` has one
+  claim byte from iced's tables (the baseline every x86-64 CPU has, one told feature, kernel only, or never),
+  and an instruction of a told feature the program's list leaves out raises illegal instruction, counted
+  "an instruction of a feature the program was not told of was reached", as on a CPU without it; `lahf` and
+  `sahf` follow LAHF_SAHF_64. Two hints that name no instruction (ENH_REP_MOVSB_STOSB, FAST_SHORT_REP_MOVSB)
+  are answered as told. `offer::FULL_SPEED` is the default (the list below, x86-64-v2, the reference's
+  identity) and `offer::V3` adds the v3 level's families; which list a host reports as full speed is the
+  owner's to rule on (orchestrator/cpu-features/REPORT.md). What the kernel answers in /proc/cpuinfo and
+  AT_HWCAP2 comes from the same offer (X10). The text below says "the AVX setting" for the v3 families.
 - **The AVX setting**: one container setting turns on the claim of the x86-64-v3 level: AVX, AVX2, FMA,
   F16C, BMI2, XSAVE and OSXSAVE (with `xgetbv` answering x87, SSE and AVX state). AVX and AVX2 are built in
   full, each 256-bit operation as two 128-bit ones; 128-bit VEX forms clear the upper half, legacy SSE
