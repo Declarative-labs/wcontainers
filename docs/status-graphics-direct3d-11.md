@@ -1,6 +1,7 @@
 # Direct3D 11 front status
 
-Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
+Branch: main, in the one shared checkout (since 2026-11-21; the old phase-2-graphics-direct3d-11
+branch is merged into it). Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
 This file keeps the current state only; each earlier run's record (what it did, its measurements,
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
@@ -350,7 +351,12 @@ In order:
 Everything builds and runs on the desktop through the rig (docs/status-graphics-rig.md, "How to
 run"); the Mac runs only formatting, git, `cargo check -j 2` of the front, and the front's tests
 on the rented x86 machine. Scripts named below are in scratch (pyro-parked/wcontainers-scratch/
-graphics-direct3d-11); logs go to its logs/. Do not send this checkout's tree (remote, gpu-job,
+graphics-direct3d-11); logs go to its logs/. Since every track is on main, the rig's own commands
+would give all tracks one desktop folder (they name it by the branch), so this track runs the copies
+in scratch main/ (the scripts below, run from the checkout after `source main/env.sh`), which
+use scratch rigmain/: the rig with the desktop folder named `phase-2-graphics-direct3d-11`
+(`WC_RIG_BRANCH`) and only committed trees sent, so other agents' unfinished edits are never built.
+Commit before running anything. Do not send this checkout's tree (remote, gpu-job,
 scenes) while another of its jobs waits in the queue: the waiting job then stops ("holds tree
 ..., not the sent ..."). Never run `tools/graphics-rig/gpu-job --help` (it queues `--help` as a
 command). The desktop's checkout needs the shaders crate's submodules, so commands start with

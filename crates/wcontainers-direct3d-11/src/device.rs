@@ -293,8 +293,7 @@ pub fn top_level(caps: &wcontainers_gpu::Caps, cube_arrays: bool) -> Option<u32>
         .find(|&l| serves(caps, l, cube_arrays))
 }
 
-/// Faces of a cube.
-pub const CUBE_FACES: u32 = 6;
+pub use wcontainers_gpu::CUBE_FACES;
 
 /// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
 /// two cubes of one texel, made and destroyed.
