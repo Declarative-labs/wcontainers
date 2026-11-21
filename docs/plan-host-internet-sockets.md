@@ -90,7 +90,7 @@ Both are built on the shared crate's datagram half (`SendState` for header and s
 packets and reports), which this milestone adds there for all three datagram tracks.
 
 Both wait on the shared crate's `readiness` (polling 3.11.0 over epoll, which the UDP track added: one epoll
-set and one thread per value, a socket registered edge-triggered as long as it lives and deleted before its
+set and one thread per value, a socket registered one-shot only while a call waits on it and deleted before its
 descriptor closes, a waiting call that allocates nothing once its socket's waiter list has grown and withdraws
 itself when dropped). Error queue entries a send reads off the host while it looks for its own are held as an
 error condition in that readiness until a receive takes them. The basic calls and the options socket2 covers
@@ -106,7 +106,9 @@ bind_identifier is `SO_REUSEADDR` as asked and a bind to the identifier as port;
 send fields as the UDP track does, then one `sendmsg` of the message (Linux puts the identifier in it and
 computes the checksum); receive gives an error queue entry first (an ICMP error whole from its IP header, or a
 transmit report), else an echo reply with its IP header written in front (from the sender, `IP_PKTINFO`, the
-TTL, TOS and options messages; IPv6 with its extension headers); count_unsent_bytes is `SO_MEMINFO`'s
+TTL, TOS and options messages; IPv6 with its extension headers), read with a tail buffer behind the caller's
+because Linux cuts a ping socket's packet to the buffers given and tells only what it copied, and its drop count
+asked of `SO_MEMINFO` (counted, one more system call per packet); count_unsent_bytes is `SO_MEMINFO`'s
 `SK_MEMINFO_WMEM_ALLOC`, which is what `SIOCOUTQ` gives a UDP socket (ping sockets take no ioctl); close drops
 the descriptor.
 
@@ -143,4 +145,6 @@ Configurable's own suite runs on a setting of each socket kind. Waits are polled
 counts its wakes: a wait for data is pending until the reply or packet arrives and is then woken once; a wait for
 writing finishes at its first poll; a dropped wait gives up its waker and is not woken; 35 waits on 32 sockets
 each wake once; an ICMP error ends a wait for data with the error condition, also when a too long send took it
-off the host first.
+off the host first. Each implementation crate's own test counts the waiting thread's allocations over a hundred
+waits that have to wait, after a hundred that warm the socket, and expects none. IPv6 source preferences are
+checked with a temporary address beside the link's public one, so that the preference decides the source.
