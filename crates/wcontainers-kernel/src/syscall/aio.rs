@@ -4,6 +4,7 @@
 //! event when the file's readiness changes; io_getevents takes them.
 
 use alloc::vec::Vec;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
 use crate::linux::general::*;
@@ -563,10 +564,11 @@ fn timeout(
     }
     let value: __kernel_timespec = guest(kernel, cx, tid).read_value(at)?;
     // Seconds past `KTIME_SEC_MAX`, negative ones among them, wait for ever.
-    if value.tv_sec as u64 >= i64::MAX as u64 / 1_000_000_000 {
+    if value.tv_sec as u64 >= i64::MAX as u64 / NANOSECONDS_PER_SECOND {
         return Ok(None);
     }
-    let nanoseconds = i128::from(value.tv_sec) * 1_000_000_000 + i128::from(value.tv_nsec);
+    let nanoseconds =
+        i128::from(value.tv_sec) * i128::from(NANOSECONDS_PER_SECOND) + i128::from(value.tv_nsec);
     Ok(Some(nanoseconds.clamp(0, i128::from(i64::MAX)) as u64))
 }
 

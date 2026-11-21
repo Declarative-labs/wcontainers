@@ -13,6 +13,7 @@ use alloc::collections::BTreeMap;
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use alloc::vec;
 use core::cell::Cell;
@@ -40,8 +41,8 @@ pub(crate) struct Time {
 impl Time {
     pub fn from_nanoseconds(nanoseconds: u64) -> Self {
         Self {
-            seconds: (nanoseconds / 1_000_000_000) as i64,
-            nanoseconds: (nanoseconds % 1_000_000_000) as u32,
+            seconds: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
+            nanoseconds: (nanoseconds % NANOSECONDS_PER_SECOND) as u32,
         }
     }
 }

@@ -6,6 +6,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use wcontainers_abi::{PAGE_SIZE, Permissions, RegisterBlock};
 use zerocopy::IntoBytes;
@@ -437,8 +438,8 @@ const PROC_FIELDS_CORE: u64 = 6;
 /// A time in nanoseconds as `struct __kernel_old_timeval`.
 fn timeval(nanoseconds: u64) -> [i64; 2] {
     [
-        (nanoseconds / 1_000_000_000) as i64,
-        (nanoseconds % 1_000_000_000 / 1000) as i64,
+        (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
+        (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
     ]
 }
 

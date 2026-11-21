@@ -2,6 +2,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 
@@ -3323,12 +3324,12 @@ pub(super) fn read_timeout(
         return Ok(None);
     }
     let value: __kernel_timespec = guest(kernel, cx, tid).read_value(timeout)?;
-    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+    if value.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&value.tv_nsec) {
         return Err(Errno::EINVAL);
     }
     Ok(Some(
         (value.tv_sec as u64)
-            .saturating_mul(1_000_000_000)
+            .saturating_mul(NANOSECONDS_PER_SECOND)
             .saturating_add(value.tv_nsec as u64),
     ))
 }
@@ -3420,8 +3421,8 @@ fn finish_wait(
     if timeout != 0 && call.deadline.is_some() {
         let left = call.progress.saturating_sub(cx.monotonic());
         let value = __kernel_timespec {
-            tv_sec: (left / 1_000_000_000) as i64,
-            tv_nsec: (left % 1_000_000_000) as i64,
+            tv_sec: (left / NANOSECONDS_PER_SECOND) as i64,
+            tv_nsec: (left % NANOSECONDS_PER_SECOND) as i64,
         };
         let _ = guest(kernel, cx, tid).write_value(timeout, &value);
     }

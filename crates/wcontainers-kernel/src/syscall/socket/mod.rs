@@ -16,6 +16,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
 use crate::file::{FileRef, OpenFile};
@@ -3562,7 +3563,7 @@ pub(super) fn setsockopt(
                 0
             } else {
                 (seconds as u64)
-                    .saturating_mul(1_000_000_000)
+                    .saturating_mul(NANOSECONDS_PER_SECOND)
                     .saturating_add(micros as u64 * 1000)
             };
             if matches!(name, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) {
@@ -3985,8 +3986,12 @@ pub(super) fn getsockopt(
                 } else {
                     own.send_timeout
                 };
-                let mut bytes = (nanoseconds / 1_000_000_000).to_le_bytes().to_vec();
-                bytes.extend_from_slice(&(nanoseconds % 1_000_000_000 / 1000).to_le_bytes());
+                let mut bytes = (nanoseconds / NANOSECONDS_PER_SECOND)
+                    .to_le_bytes()
+                    .to_vec();
+                bytes.extend_from_slice(
+                    &(nanoseconds % NANOSECONDS_PER_SECOND / 1000).to_le_bytes(),
+                );
                 bytes
             }
             SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE
@@ -4506,11 +4511,11 @@ pub(super) fn recvmmsg(
     let flags = flags as u32;
     let end = if timeout != 0 {
         let value: __kernel_timespec = guest(kernel, cx, tid).read_value(timeout)?;
-        if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+        if value.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&value.tv_nsec) {
             return Err(Errno::EINVAL);
         }
         let length = (value.tv_sec as u64)
-            .saturating_mul(1_000_000_000)
+            .saturating_mul(NANOSECONDS_PER_SECOND)
             .saturating_add(value.tv_nsec as u64);
         Some(kernel.settle_once(tid, kernel.entry_now.saturating_add(length)))
     } else {
@@ -4553,8 +4558,8 @@ pub(super) fn recvmmsg(
     if let Some(end) = end {
         let left = end.saturating_sub(kernel.entry_now);
         let value = __kernel_timespec {
-            tv_sec: (left / 1_000_000_000) as i64,
-            tv_nsec: (left % 1_000_000_000) as i64,
+            tv_sec: (left / NANOSECONDS_PER_SECOND) as i64,
+            tv_nsec: (left % NANOSECONDS_PER_SECOND) as i64,
         };
         guest(kernel, cx, tid).write_value(timeout, &value)?;
     }

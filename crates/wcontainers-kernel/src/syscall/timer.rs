@@ -8,6 +8,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::rc::{Rc, Weak};
 use core::cell::RefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
 use crate::file::{Anon, FileRef, OpenFile};
@@ -286,7 +287,7 @@ fn cpu_limit(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid) {
 fn cpu_limit_times(kernel: &Kernel, pid: Pid) -> Option<(u64, Option<u64>)> {
     let limit = kernel.processes[&pid].limits[RLIMIT_CPU as usize];
     let infinite = RLIM_INFINITY as u64;
-    let nanoseconds = |seconds: u64| seconds.saturating_mul(1_000_000_000);
+    let nanoseconds = |seconds: u64| seconds.saturating_mul(NANOSECONDS_PER_SECOND);
     (limit.current != infinite).then(|| {
         (
             nanoseconds(limit.current),
@@ -705,17 +706,17 @@ pub(crate) fn thread_end(kernel: &mut Kernel, tid: Tid) {
 /// A time as a `__kernel_timespec`.
 fn timespec(nanoseconds: u64) -> __kernel_timespec {
     __kernel_timespec {
-        tv_sec: (nanoseconds / 1_000_000_000) as i64,
-        tv_nsec: (nanoseconds % 1_000_000_000) as i64,
+        tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
+        tv_nsec: (nanoseconds % NANOSECONDS_PER_SECOND) as i64,
     }
 }
 
 fn checked_nanoseconds(seconds: i64, nanoseconds: i64) -> Result<u64, Errno> {
-    if seconds < 0 || !(0..1_000_000_000).contains(&nanoseconds) {
+    if seconds < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&nanoseconds) {
         return Err(Errno::EINVAL);
     }
     Ok((seconds as u64)
-        .saturating_mul(1_000_000_000)
+        .saturating_mul(NANOSECONDS_PER_SECOND)
         .saturating_add(nanoseconds as u64))
 }
 
@@ -1070,8 +1071,8 @@ fn write_itimerval(
     (value, interval): (u64, u64),
 ) -> Result<(), Errno> {
     let timeval = |nanoseconds: u64| __kernel_old_timeval {
-        tv_sec: (nanoseconds / 1_000_000_000) as i64,
-        tv_usec: (nanoseconds % 1_000_000_000 / 1000) as i64,
+        tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
+        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
     };
     let out = __kernel_old_itimerval {
         it_interval: timeval(interval),
@@ -1110,7 +1111,7 @@ pub(super) fn setitimer(
                 return Err(Errno::EINVAL);
             }
             Ok((time.tv_sec as u64)
-                .saturating_mul(1_000_000_000)
+                .saturating_mul(NANOSECONDS_PER_SECOND)
                 .saturating_add(time.tv_usec as u64 * 1000))
         };
         value = micro(given.it_value)?;
@@ -1374,10 +1375,10 @@ pub(super) fn fdinfo(kernel: &Kernel, id: u64) -> alloc::string::String {
         timer.clock_id,
         timer.ticks,
         timer.settime_flags,
-        left / 1_000_000_000,
-        left % 1_000_000_000,
-        interval / 1_000_000_000,
-        interval % 1_000_000_000,
+        left / NANOSECONDS_PER_SECOND,
+        left % NANOSECONDS_PER_SECOND,
+        interval / NANOSECONDS_PER_SECOND,
+        interval % NANOSECONDS_PER_SECOND,
     )
 }
 

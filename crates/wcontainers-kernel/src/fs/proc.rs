@@ -6,6 +6,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 
@@ -1759,8 +1760,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     let _ = writeln!(
                         out,
                         "{}.{:02} 0.00",
-                        up / 1_000_000_000,
-                        up % 1_000_000_000 / 10_000_000
+                        up / NANOSECONDS_PER_SECOND,
+                        up % NANOSECONDS_PER_SECOND / 10_000_000
                     );
                 }
                 "version" => {

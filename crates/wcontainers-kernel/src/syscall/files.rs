@@ -3,6 +3,7 @@
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
 use crate::container::make;
@@ -2437,7 +2438,7 @@ pub(super) fn utimensat(
             let nanoseconds = time.tv_nsec;
             if nanoseconds != i64::from(UTIME_NOW)
                 && nanoseconds != i64::from(UTIME_OMIT)
-                && !(0..1_000_000_000).contains(&nanoseconds)
+                && !(0..NANOSECONDS_PER_SECOND as i64).contains(&nanoseconds)
             {
                 return Err(Errno::EINVAL);
             }

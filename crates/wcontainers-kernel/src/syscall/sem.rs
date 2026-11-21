@@ -4,6 +4,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -201,11 +202,12 @@ fn operate(
     }
     let deadline = match timeout {
         Some(timeout) => {
-            if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            if timeout.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&timeout.tv_nsec)
+            {
                 return Err(Errno::EINVAL);
             }
             let length = (timeout.tv_sec as u64)
-                .saturating_mul(1_000_000_000)
+                .saturating_mul(NANOSECONDS_PER_SECOND)
                 .saturating_add(timeout.tv_nsec as u64);
             Some(cx.monotonic().saturating_add(length))
         }

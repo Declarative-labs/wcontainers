@@ -8,6 +8,7 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::mem::offset_of;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use smallvec::SmallVec;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
@@ -278,11 +279,11 @@ fn read_timespec(
 ) -> Result<u64, Errno> {
     let value: __kernel_timespec = guest(kernel, cx, tid).read_value(address)?;
     // `timespec64_valid`.
-    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+    if value.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&value.tv_nsec) {
         return Err(Errno::EINVAL);
     }
     Ok((value.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
+        .saturating_mul(NANOSECONDS_PER_SECOND)
         .saturating_add(value.tv_nsec as u64))
 }
 

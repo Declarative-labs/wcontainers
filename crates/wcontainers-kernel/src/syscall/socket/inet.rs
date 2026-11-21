@@ -7,6 +7,7 @@ use alloc::collections::VecDeque;
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{
     Outgoing, Packet, RCV_SHUTDOWN, Received, SEND_SHUTDOWN, SHUTDOWN_MASK, Socket, SocketRef,
@@ -1664,7 +1665,7 @@ fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener:
     let requests = inet_ref(listener).deferred.len();
     if defer > 0 && requests <= listener.borrow().max_backlog as usize {
         let now = kernel.entry_now;
-        let until = now + defer * 1_000_000_000;
+        let until = now + defer * NANOSECONDS_PER_SECOND;
         inet(&embryo).deferral = Some((Rc::downgrade(listener), now, until));
         inet(listener).deferred.push(embryo);
         crate::syscall::timer::start_deferral(kernel, Rc::downgrade(listener), until);
@@ -1795,7 +1796,7 @@ pub(super) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener:
 pub(super) fn deferred_request(socket: &Socket, now: u64) -> Option<(u64, u64)> {
     let (_, made, _) = socket.inet.as_deref()?.deferral.as_ref()?;
     let elapsed = now.saturating_sub(*made);
-    let (mut fires, mut at, mut timeout) = (0u64, 1_000_000_000u64, 1_000_000_000u64);
+    let (mut fires, mut at, mut timeout) = (0u64, NANOSECONDS_PER_SECOND, NANOSECONDS_PER_SECOND);
     while at <= elapsed {
         fires += 1;
         timeout = (timeout * 2).min(120_000_000_000);

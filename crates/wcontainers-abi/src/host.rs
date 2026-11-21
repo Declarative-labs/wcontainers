@@ -3,6 +3,9 @@
 //! Nothing here waits. A request whose answer takes time returns at once and the answer arrives later as an
 //! [`Event`], which the driver hands to the kernel.
 
+/// The host's clocks count nanoseconds: how many make a second.
+pub const NANOSECONDS_PER_SECOND: u64 = core::time::Duration::from_secs(1).as_nanos() as u64;
+
 /// One connection to the world outside the container.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(pub u32);

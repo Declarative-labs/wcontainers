@@ -2,6 +2,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
 use crate::counters::reason;
@@ -102,7 +103,7 @@ pub(super) fn sysinfo(
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
-    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic) / 1_000_000_000;
+    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic) / NANOSECONDS_PER_SECOND;
     let memory = kernel.machine.memory_bytes;
     let (in_use, shared) = kernel.memory_in_use();
     kernel
@@ -612,8 +613,8 @@ pub(super) fn sched_rr_get_interval(
         _ => slice(&schedule) / TICK * TICK,
     };
     let value = __kernel_timespec {
-        tv_sec: (interval / 1_000_000_000) as i64,
-        tv_nsec: (interval % 1_000_000_000) as i64,
+        tv_sec: (interval / NANOSECONDS_PER_SECOND) as i64,
+        tv_nsec: (interval % NANOSECONDS_PER_SECOND) as i64,
     };
     guest(kernel, cx, tid).write_value(out, &value)?;
     Ok(0)

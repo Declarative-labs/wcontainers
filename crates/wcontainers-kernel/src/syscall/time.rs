@@ -10,6 +10,7 @@ use crate::linux_extra::{
 };
 use crate::process::{Channel, Pid, Restart, Tid};
 use crate::{Context, Errno, Kernel};
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 /// The CPU time the caller's process has used: the time its threads have run, as charged when each
 /// came back, and that of its threads that have ended.
@@ -38,8 +39,8 @@ pub(crate) fn process_times(kernel: &Kernel, pid: Pid) -> (u64, u64) {
 /// A time in nanoseconds as a `timeval`.
 pub(super) fn timeval(nanoseconds: u64) -> __kernel_old_timeval {
     __kernel_old_timeval {
-        tv_sec: (nanoseconds / 1_000_000_000) as i64,
-        tv_usec: (nanoseconds % 1_000_000_000 / 1000) as i64,
+        tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
+        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
     }
 }
 
@@ -109,8 +110,8 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<
 
 fn timespec_bytes(nanoseconds: u64) -> __kernel_timespec {
     __kernel_timespec {
-        tv_sec: (nanoseconds / 1_000_000_000) as i64,
-        tv_nsec: (nanoseconds % 1_000_000_000) as i64,
+        tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
+        tv_nsec: (nanoseconds % NANOSECONDS_PER_SECOND) as i64,
     }
 }
 
@@ -169,11 +170,11 @@ pub(super) fn gettimeofday(
         let mut guest = guest(kernel, cx, tid);
         guest.put(
             out + core::mem::offset_of!(__kernel_old_timeval, tv_sec) as u64,
-            &(now / 1_000_000_000).to_le_bytes(),
+            &(now / NANOSECONDS_PER_SECOND).to_le_bytes(),
         )?;
         guest.put(
             out + core::mem::offset_of!(__kernel_old_timeval, tv_usec) as u64,
-            &(now % 1_000_000_000 / 1000).to_le_bytes(),
+            &(now % NANOSECONDS_PER_SECOND / 1000).to_le_bytes(),
         )?;
     }
     if zone != 0 {
@@ -190,7 +191,7 @@ fn read_duration(
     address: u64,
 ) -> Result<__kernel_timespec, Errno> {
     let value: __kernel_timespec = guest(kernel, cx, tid).read_value(address)?;
-    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+    if value.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&value.tv_nsec) {
         return Err(Errno::EINVAL);
     }
     Ok(value)
@@ -198,7 +199,7 @@ fn read_duration(
 
 fn nanoseconds(value: &__kernel_timespec) -> u64 {
     (value.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
+        .saturating_mul(NANOSECONDS_PER_SECOND)
         .saturating_add(value.tv_nsec as u64)
 }
 
@@ -545,8 +546,8 @@ fn adjust(
         constant: NTP_TIME_CONSTANT,
         precision: 1,
         tolerance: NTP_TOLERANCE,
-        time_sec: (now / 1_000_000_000) as i64,
-        time_usec: (now % 1_000_000_000 / 1000) as i64,
+        time_sec: (now / NANOSECONDS_PER_SECOND) as i64,
+        time_usec: (now % NANOSECONDS_PER_SECOND / 1000) as i64,
         tick: USER_TICK_USEC,
         ppsfreq: 0,
         jitter: 0,

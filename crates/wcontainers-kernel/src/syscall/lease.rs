@@ -5,6 +5,7 @@
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use crate::file::{FileRef, OpenFile};
 use crate::fs::{Kind, Node};
@@ -252,7 +253,7 @@ pub(crate) fn break_leases(
 ) -> Result<(), Errno> {
     time_out(kernel, cx, node);
     let want_write = flags & O_ACCMODE != O_RDONLY;
-    let deadline = cx.monotonic() + BREAK_SECONDS * 1_000_000_000;
+    let deadline = cx.monotonic() + BREAK_SECONDS * NANOSECONDS_PER_SECOND;
     let mut told = Vec::new();
     let mut waits_until = None::<u64>;
     for lease in node.borrow_mut().leases.iter_mut() {

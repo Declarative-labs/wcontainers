@@ -5,6 +5,7 @@ use crate::linux::general::*;
 use crate::process::{Channel, Pid, Tid};
 use crate::signal::{UNBLOCKABLE, sender_info};
 use crate::{Context, Errno, Kernel};
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 /// The number of signals.
 const SIGNALS: u32 = crate::process::SIGNALS as u32;
@@ -388,11 +389,11 @@ pub(super) fn rt_sigtimedwait(
                 Ok(value) => value,
                 Err(error) => return Err(error).into(),
             };
-            if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+            if value.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&value.tv_nsec) {
                 return Err(Errno::EINVAL).into();
             }
             let duration = (value.tv_sec as u64)
-                .saturating_mul(1_000_000_000)
+                .saturating_mul(NANOSECONDS_PER_SECOND)
                 .saturating_add(value.tv_nsec as u64);
             Some(cx.monotonic().saturating_add(duration))
         } else {

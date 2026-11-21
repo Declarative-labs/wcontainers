@@ -7,6 +7,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use zerocopy::IntoBytes;
 
@@ -257,11 +258,11 @@ fn deadline(
         return Ok(None);
     }
     let timeout: __kernel_timespec = guest(kernel, cx, tid).read_value(address)?;
-    if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+    if timeout.tv_sec < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&timeout.tv_nsec) {
         return Err(Errno::EINVAL);
     }
     let at = (timeout.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
+        .saturating_mul(NANOSECONDS_PER_SECOND)
         .saturating_add(timeout.tv_nsec as u64);
     let left = at.saturating_sub(cx.host.realtime_nanoseconds());
     Ok(Some(cx.monotonic().saturating_add(left)))
