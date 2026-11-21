@@ -6711,18 +6711,6 @@ code	crates/wcontainers-directx/src/com/convert.rs	str	rtv	"render target views 
 code	crates/wcontainers-directx/src/com/convert.rs	str	srv	"shader resource views of an unknown dimension"
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	3
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	4
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_blend_state1	"logic operations"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_compute_shader	"class linkage"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_compute_shader	"compute shaders without the back end's compute programs"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_pixel_shader	"class linkage"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_query1	"predicates made by CreateQuery1"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_query1	"queries of one context type"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_vertex_shader	"class linkage"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::geometry_shader	"class linkage"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::rasterizer_state1	"forced sample counts"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::tessellation_shader	"class linkage"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::tessellation_shader	"hull and domain shaders without the back end's compute programs"
-code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::texture_of	"target views of buffers"
 code	crates/wcontainers-directx/src/com/factory.rs	str	system_directory	"\\"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Buffer_Impl as IDXGIResource1_Impl>::CreateSubresourceSurface	"IDXGIResource1::CreateSubresourceSurface"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Buffer_Impl as IDXGISurface_Impl>::Map	"IDXGISurface::Map"
@@ -6796,11 +6784,6 @@ code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::new	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::new	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::pitch	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::read	3
-code	crates/wcontainers-directx/src/com/swapchain.rs	str	Factory_Impl::make	"fullscreen swap chains"
-code	crates/wcontainers-directx/src/com/swapchain.rs	str	Factory_Impl::make	"multisampled or stereo swap chains"
-code	crates/wcontainers-directx/src/com/swapchain.rs	str	SwapChain_Impl::set_fullscreen_state	"fullscreen swap chains"
-code	crates/wcontainers-directx/src/com/swapchain.rs	str	SwapChain_Impl::set_hdr_meta_data	"HDR metadata"
-code	crates/wcontainers-directx/src/com/swapchain.rs	str	SwapChain_Impl::set_rotation	"swap chains rotating their back buffers"
 code	crates/wcontainers-gpu-test/src/compute.rs	int	Recorder::dispatch_call	3
 code	crates/wcontainers-gpu-test/src/compute.rs	int	bits	4
 code	crates/wcontainers-gpu-test/src/compute.rs	int	cube	3
