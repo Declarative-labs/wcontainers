@@ -6,10 +6,11 @@ two generic suites; I2 ICMP and raw sockets.
 
 ## I1: the route resolver
 
-`crates/route-resolver/implementation/linux-netlink`, package `wcontainers-route-resolver-linux-netlink`.
-It asks the kernel's routing socket (`RTM_GETROUTE`, the request behind `ip route get`) through
-netlink-packet-route, netlink-packet-core and netlink-sys (all MIT), with rustix and linux-raw-sys for the few
-socket calls, and the shared crate `crates/internet-protocol/implementation/linux-socket-options` for
+`crates/route-resolver/implementation/host`, package `wcontainers-route-resolver-host`, type
+`HostRouteResolver`. It asks the kernel's routing socket (`RTM_GETROUTE`, the request behind `ip route get`)
+through netlink-packet-route, netlink-packet-core and netlink-sys (all MIT), with socket2 (MIT OR Apache-2.0)
+for the datagram sockets of the IPv6 source check, the neighbour confirmation and the default TTL, and the
+shared crate `crates/internet-protocol/implementation/linux-socket-options` for
 `Shortfalls` (a counter per refusal reason and a warning on stderr at its first count), `host_error` and the
 option calls. Each lookup is one route request and one
 link request on a netlink socket the value holds, so a value answers for the network namespace it was made in.
@@ -41,7 +42,10 @@ What each selector maps to:
   the kernel sends from it); interface `RTA_OIF`; device MTU `IFLA_MTU`; path MTU the route's `RTAX_MTU`,
   else the device MTU (IPv4; capped at 576 when the MTU is locked with no value and the route has a
   gateway, as `ip_dst_mtu_maybe_forward`) or the device's IPv6 MTU (`mtu6`); hop limit `RTAX_HOPLIMIT`, else
-  `ip_default_ttl` (read as an unset socket's `IP_TTL`) or the device's IPv6 `hop_limit`.
+  `ip_default_ttl` (read as an unset socket's `IP_TTL`, socket2's `ttl_v4`) or the device's IPv6 `hop_limit`.
+- socket2 covers the datagram calls (socket, bind, `sendto` with flags, `IP_TTL`); the unicast interface
+  (`IP_UNICAST_IF`/`IPV6_UNICAST_IF`, which socket2 lacks) and `IPV6_RTHDR` are the shared crate's
+  `set_packet_setting` on the same descriptor. The routing socket is netlink-sys's, the netlink crates' own.
 
 Refused with `HostError::NotSupported`, a counter and a warning, each with a named reason:
 - IPv4 link scope (`SO_DONTROUTE`, and so a strict source route): the request's `rtm_scope` is ignored by the

@@ -1,9 +1,49 @@
 # Status: host internet sockets
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done, three
-runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
+runs, then run 1 after the reorganization and the async ruling, below), I2 ICMP and raw sockets (done in run 1
+of I2 before the async ruling; to redo for it, see "Next").
 
-## I2: done (2026-11-21)
+## I1 after the reorganization (2026-11-21, run 1): done
+- The resolver is `crates/route-resolver/implementation/host`, package `wcontainers-route-resolver-host`, type
+  `HostRouteResolver` (folder moved with `git mv`). Its datagram sockets (the IPv6 source check's bind, the
+  neighbour confirmation's `sendto` with `MSG_CONFIRM | MSG_PROBE`, the default TTL read) are socket2's; the
+  unicast interface and `IPV6_RTHDR` stay the shared crate's `set_packet_setting` on the same descriptor,
+  socket2 having neither; the routing socket stays netlink-sys's. The RouteResolver interface did not change
+  in the async ruling, and needs no wait: Linux answers `RTM_GETROUTE` within the request's send (rtnetlink
+  runs in the sender's context), so the read that follows has its answer queued (known from Linux's design,
+  not measured).
+- Independent check, `independent-check-i1.sh` in scratch (ARM64 machine, 20:35 to 20:36 UTC, load 0.5 to
+  5.5): a fresh target folder, clippy with warnings denied clean on the four packages, then three rounds:
+  resolver 28 of 28 (0.02 s each, 12 threads), Configurable self-tests 2 of 2, NegativeRouteAdvice 3 of 3; 23 s
+  in all with the build. Twelve broken copies of the resolver, each caught by exactly one check: mark not sent
+  (mark_selects_the_route), owner not sent (owner_selects_the_route), interface not sent
+  (interface_selects_the_route), loose source route ignored (loose_source_route_goes_to_its_first_hop), route
+  MTU ignored (route_metrics_give_path_mtu_and_hop_limit), locked MTU not capped
+  (locked_mtu_without_value_uses_the_device_mtu), broadcast permission ignored (broadcast_needs_permission),
+  flow label not sent (flow_label_selects_the_route), confirmation skipped (confirmed_neighbour_is_confirmed),
+  IPv6 source check skipped (required_source_check_refuses_a_foreign_address), default TTL fixed at 64
+  (ipv4_route_gives_link_source_and_sizes), type 4 segment ignored (routing_header_goes_to_its_first_hop).
+- cargo tree (normal, build and dev edges) of all 15 interface crates and the three conformance crates against
+  the workspace's 17 implementation crates: none named (control: the resolver's own tree names itself and the
+  shared crate). The 46 reviewed files (every interface.rs and the files beside it) have no change against HEAD
+  and in the working tree.
+- The generic suites: `setting_twice_equals_setting_once((implementor, handle, setting))`, `advice_is_taken`
+  and `advice_is_taken_again((implementor, handle))`, each with its `tests!`; the UDP, TCP, ICMP and raw suites
+  make the tuples. Their self-tests catch a setting taken only once and advice taken only once.
+- Literal check: no finding in this track's files (18 findings elsewhere, all other tracks' work in progress).
+
+## Next: I2 for the async ruling
+- The stopped agent's uncommitted I2 work (counters for the received and ICMP error fields Linux does not give,
+  an ICMP check that a reply matches the wire, a raw router alert check that needs the hop-by-hop header, and
+  more raw checks: 840 lines of diff) is saved as `i2-stopped-work.patch` in scratch and the files were put
+  back to HEAD; `git apply` takes it on HEAD 072dfbea. It is untested: the ICMP and raw crates no longer build,
+  because their interfaces gained `wait_for_events`.
+- To do: `wait_for_events` on both (mio or polling), the basic calls on socket2, the folders renamed to `host`
+  (`linux-ping` and `linux-host`), then the suites on the ARM machine. Another track is adding
+  `readiness.rs` to the shared crate (uncommitted at 20:40): read it before writing a private one.
+
+## I2: done (2026-11-21, before the async ruling)
 - `crates/icmp-sockets/implementation/linux-ping` (package `wcontainers-icmp-sockets-linux-ping`, type
   `LinuxPingSockets`, socket `LinuxPingSocket`): Linux ping sockets. Needs the caller's group inside
   `net.ipv4.ping_group_range` (the suite's namespace sets it to every group; the crate's own test checks that an
@@ -34,15 +74,18 @@ runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
 ## How to run
 - Scripts in pyro-parked/wcontainers-scratch/host-internet-sockets, passed to arm-run from the orchestrator's
   cloud folder: `./arm-run <checkout> --name host-internet-sockets -- "$(cat <scratch>/rounds.sh)"` (raw, ICMP and
-  resolver suites three times), `independent-check-i2.sh` (clean build with clippy, the nine packages' tests,
-  twelve broken copies, cargo tree). Test tools put on the path there: iproute2 7.x and nftables from nixpkgs.
+  resolver suites three times), `independent-check-i1.sh` (the resolver and generic suites from a clean build,
+  three rounds, twelve broken copies, cargo tree of every interface crate), `independent-check-i2.sh` (clean
+  build with clippy, the nine packages' tests, thirteen broken copies, cargo tree). Test tools put on the path there: iproute2 7.x and nftables from nixpkgs.
 - On the Mac: `CARGO_TARGET_DIR=target/host-internet-sockets cargo clippy --target aarch64-unknown-linux-gnu
   --no-deps --all-targets -p <package> -- -D warnings` checks and lints the Linux code without the ARM machine
   (the gnu target's standard library was added with rustup; musl does not build the shared crate).
 - Literal check: `cargo run -q -p wcontainers-literals -- check`; no finding in this track's files.
 - Committing Cargo.lock in the shared checkout: `git commit -- Cargo.lock` takes the whole working file with
   other tracks' entries. Build the wanted file (HEAD's plus this track's hunks, `lock-hunks.py` in scratch), then
-  `git update-index --cacheinfo 100644,$(git hash-object -w <file>),Cargo.lock` and commit the index.
+  `git update-index --cacheinfo 100644,$(git hash-object -w <file>),Cargo.lock` and commit the index. Other
+  tracks stage renames in the shared index, so commit from a private one: `GIT_INDEX_FILE=<scratch>/idx git
+  read-tree HEAD`, add this track's paths and the lock there, then `git commit` with the same variable.
 
 ## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores)
 - 20:01 UTC, load 8.4 to 17 (final code): three rounds, each ICMP 37 of 37 (0.61 s), raw 28 of 28 (0.62 s),
@@ -147,7 +190,9 @@ runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
 - The plan named I2 ICMP and I3 raw; the task made both one milestone, done together.
 - The suites share test tools across suite crates (the raw suite depends on the ICMP and route resolver suites,
   the ICMP suite on the resolver suite) so that each fact has one definition.
-- The generic suites still test themselves with private implementors under `#[cfg(test)]`.
+- The generic suites still test themselves with private implementors under `#[cfg(test)]`: a named test double
+  would go under crates/configurable/implementation/ and crates/negative-route-advice/implementation/, which
+  this track does not own, and no other suite needs one.
 
 ## For the owner
 - No interface can build its implementation. Proposed, as `StandaloneRuntime` does:
@@ -163,6 +208,7 @@ runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
 - No way through the interfaces to read the refusal counters; `counters()` is inherent.
 
 ## Dependencies (licences checked)
+- socket2 0.6.5 (MIT OR Apache-2.0), added to the resolver in I1's run after the reorganization.
 - netlink-packet-core 0.9.0, netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT); rustix 1.1.6 (Apache-2.0 WITH
   LLVM-exception OR Apache-2.0 OR MIT), linux-raw-sys 0.12.1 (same), libc 0.2.191 (MIT OR Apache-2.0), etherparse
   0.21.0 (MIT OR Apache-2.0). No new crate in I2. iproute2 and nftables (GPL) are test tools the suites run,
