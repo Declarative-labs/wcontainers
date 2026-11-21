@@ -70,6 +70,9 @@ pub struct Context<B: Backend> {
     /// The occlusion query sets, and the query running in them.
     pub queries: query::Sets<B>,
     pub running: Option<*mut pipe_query>,
+    /// Queries ended whose counts are not yet read back: their reads start at the next flush, so
+    /// that a finished context has every answer.
+    pub unread: Vec<*mut pipe_query>,
     /// The count of primitives streamed that is running.
     pub counting: Option<*mut pipe_query>,
     pub streams: stream::Bound<B>,
@@ -114,6 +117,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         blit_bytes: Vec::new(),
         queries: query::Sets::default(),
         running: None,
+        unread: Vec::new(),
         counting: None,
         streams: stream::Bound::default(),
     });
@@ -248,6 +252,7 @@ unsafe extern "C" fn flush<B: Backend>(
             DRIVER_NAME.to_string_lossy()
         );
     }
+    query::start_reads(context, &mut backend);
     let done = backend.submit();
     end_if_lost(&mut *backend);
     if !fence.is_null() {

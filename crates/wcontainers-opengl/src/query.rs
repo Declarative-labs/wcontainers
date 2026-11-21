@@ -212,11 +212,12 @@ pub unsafe extern "C" fn destroy_query<B: Backend>(
     pipe: *mut pipe_context,
     query: *mut pipe_query,
 ) {
+    // SAFETY: Mesa passes this driver's context.
+    let context = unsafe { Context::<B>::of(pipe) };
+    context.unread.retain(|&q| q != query);
     // SAFETY: Mesa destroys a query it made once.
     let query = unsafe { Box::from_raw(query.cast::<Query<B>>()) };
     if let Some(emitted) = query.emitted {
-        // SAFETY: Mesa passes this driver's context.
-        let context = unsafe { Context::<B>::of(pipe) };
         context.screen().retire(Object::Buffer(emitted.slots));
     }
 }
@@ -287,7 +288,25 @@ pub unsafe extern "C" fn end_query<B: Backend>(
         queries: first..end,
         read: None,
     });
+    context.unread.push(std::ptr::from_mut(query).cast());
     true
+}
+
+/// Starts the read back of every query ended since the last flush (outside a pass).
+pub fn start_reads<B: Backend>(context: &mut Context<B>, backend: &mut B) {
+    for query in std::mem::take(&mut context.unread) {
+        // SAFETY: a query in the list is live: destroying one takes it out.
+        let query = unsafe { of::<B>(query) };
+        if let Some(Answer::Ended { set, queries, read }) = &mut query.answer
+            && read.is_none()
+            && !Range::is_empty(queries)
+        {
+            match backend.read_queries(set, queries.start, queries.len() as u32) {
+                Ok(started) => *read = Some(started),
+                Err(error) => refuse(format!("an occlusion query's read back: {error:?}")),
+            }
+        }
+    }
 }
 
 pub unsafe extern "C" fn get_query_result<B: Backend>(
