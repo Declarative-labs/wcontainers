@@ -7,6 +7,14 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
+domain = { version = "0.12.3", default-features = false }
 wcontainers-abi.workspace = true
-wcontainers-kernel = { path = "../wcontainers-kernel" }
 wcontainers-kernel-interface = { path = "../kernel-interface" }
+wcontainers-clock = { path = "../clock" }
+wcontainers-executor = { path = "../executor" }
+wcontainers-random-source = { path = "../random-source" }
+wcontainers-tcp-sockets = { path = "../tcp-sockets" }
+wcontainers-udp-sockets = { path = "../udp-sockets" }
+wcontainers-icmp-sockets = { path = "../icmp-sockets" }
+wcontainers-raw-sockets = { path = "../raw-sockets" }
+wcontainers-route-resolver = { path = "../route-resolver" }

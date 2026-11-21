@@ -1,21 +1,31 @@
-//! The kernel's side of its interface to the embedder: the kernel, one process, what it shows, and the data it hands out.
-
 #![no_std]
+// TODO: remove these two lines, and `RUSTC_BOOTSTRAP` in .cargo/config.toml, once Rust lets a tool register its own lints on a stable compiler (https://github.com/rust-lang/rust/issues/66079).
+#![feature(register_tool)]
+#![register_tool(reviewable)]
 
 extern crate alloc;
 
-use alloc::string::String;
+pub mod arm64_features;
+pub mod errno;
+pub mod signal;
+pub mod signal_information;
+pub mod x86_64_features;
+
 use alloc::vec::Vec;
 use core::ops::Range;
 use core::time::Duration;
 
+use arm64_features::Arm64Features;
+use errno::Errno;
+use signal_information::SignalInformation;
 use wcontainers_abi::{CpuError, MemoryId};
 use wcontainers_executor::{Executor, PerThreadWatch};
-use wcontainers_kernel::linux::general::siginfo;
-use wcontainers_kernel::{Errno, TaskId};
+use x86_64_features::X86_64Features;
+
+pub trait Kernel: ProcessController + FuseClient {}
 
 /// The owner of processes, which suspends and resumes their tasks and their contexts.
-pub trait Kernel {
+pub trait ProcessController {
     type Executor: Executor;
     type SuspendedTask;
     type ProcessContext;
@@ -43,66 +53,87 @@ pub trait Kernel {
     ) -> impl Iterator<Item = Self::SuspendedTask>;
 }
 
+pub trait FuseClient {
+    fn receive_reply(&mut self, reply: &[u8]);
+}
+
 /// A handle to one process of a kernel.
-pub trait Process {
+pub trait Process: ProcessInfo {
     type State;
     type Kernel: Kernel;
 
     fn id(&self) -> TaskId;
-    fn info(&self) -> impl ProcessInfo;
-    fn execution_config(&self) -> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>;
+    fn execution_config(&self) -> &ExecutionConfig<ExecutorOf<Self::Kernel>>;
     fn state(&mut self) -> &mut Self::State;
-    fn memory_id(&self) -> MemoryId;
 
+    fn memory_id(&self) -> MemoryId;
     fn read_memory(
         &mut self,
         range: Range<u64>,
     ) -> Result<impl Iterator<Item = &[u8]>, MemoryError>;
-    fn write_memory(&mut self, range: Range<u64>, bytes: &[u8]) -> Result<(), MemoryError>;
+    fn write_memory(&mut self, range: Range<u64>, bytes: &[u8]) -> Result<(), WriteMemoryError>;
+    /// Sets which accesses to a range fire `ProcessTracer::on_watched_memory_accessing`.
     fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
+    /// Sets the same watch as `watch_memory`, for one thread's accesses only.
     fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor)
     where
-        <Self::Kernel as Kernel>::Executor: PerThreadWatch;
+        ExecutorOf<Self::Kernel>: PerThreadWatch;
+    /// Returns the pages written since the last call, hardware accelerated when possible.
     fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
 
     fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
+    /// Takes the given tasks out of the kernel atomically, returning each one it could find.
     fn suspend_tasks(
         &mut self,
         tasks: &[TaskId],
-    ) -> impl Iterator<Item = (TaskId, <Self::Kernel as Kernel>::SuspendedTask)>;
+    ) -> impl Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>;
+    /// Takes the process off this kernel, returning its context and every task it could find.
     fn suspend_process(
         self,
     ) -> (
-        <Self::Kernel as Kernel>::ProcessContext,
-        impl Iterator<Item = (TaskId, <Self::Kernel as Kernel>::SuspendedTask)>,
+        ProcessContextOf<Self::Kernel>,
+        impl Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>,
     );
-    fn copy_process_context(&self) -> <Self::Kernel as Kernel>::ProcessContext;
+    fn copy_process_context(&self) -> ProcessContextOf<Self::Kernel>;
 }
 
-/// A short-lived view of what the kernel keeps for one process.
+pub trait ProcessOf<State, E: Executor>:
+    Process<State = State, Kernel: ProcessController<Executor = E>>
+{
+}
+
+pub type ExecutorOf<K> = <K as ProcessController>::Executor;
+pub type SuspendedTaskOf<K> = <K as ProcessController>::SuspendedTask;
+pub type ProcessContextOf<K> = <K as ProcessController>::ProcessContext;
+
 pub trait ProcessInfo {
-    fn memory_mapped(&self) -> u64;
-    fn ceiling_distance(&self) -> u64;
-    fn compute_used(&self) -> Duration;
+    /// Returns the number of bytes of address space the process has mapped.
+    fn mapped_memory(&self) -> u64;
+    /// Returns the number of bytes the process can still map before it reaches the executor's highest possible address.
+    fn address_ceiling_distance(&self) -> u64;
+    /// Returns the CPU time the process's threads have used, ended ones included.
+    fn cpu_time(&self) -> Duration;
+    /// Returns the process's current [parent](https://man7.org/linux/man-pages/man2/getppid.2.html), or none for the container's first process.
     fn parent(&self) -> Option<TaskId>;
+    /// Tells whether another process is reading this one's internal state.
     fn is_inspected(&self) -> bool;
 }
 
-/// The way one process is run.
 pub struct ExecutionConfig<E: Executor> {
     pub thread_ordering: ThreadOrdering,
     pub replay_determinism: ReplayDeterminism,
     pub translator: E::TranslatorConfig,
 }
 
-/// The way the threads of one process are run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadOrdering {
+    /// Executes a thread only while no other thread sharing its memory executes.
     Serial,
+    /// Executes threads one or more at a time.
     Parallel,
 }
 
-/// The guarantee a run of a process gives about running it again from the same inputs.
+/// The guarantee one execution of a process gives about executing it again from the same inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayDeterminism {
     Exact,
@@ -111,7 +142,6 @@ pub enum ReplayDeterminism {
     None,
 }
 
-/// The accesses of a process's memory that come back to the embedder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WatchesFor {
     None,
@@ -119,7 +149,6 @@ pub enum WatchesFor {
     All,
 }
 
-/// The kind of a watched access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessKind {
     Read,
@@ -127,52 +156,64 @@ pub enum AccessKind {
     Execute,
 }
 
-/// The reason the embedder's read or write of a process's memory failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError {
     NotMapped,
     NotRead,
-    SharedNotWritable,
     InvalidRange,
     Executor(CpuError),
 }
 
-/// The answer to a system call: its value, or the error it fails with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMemoryError {
+    Memory(MemoryError),
+    SharedNotWritable,
+}
+
 pub type SystemCallResponse = Result<u64, Errno>;
 
-/// Linux's own record of a signal.
-pub type SignalInformation = siginfo;
+/// A [process or thread ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TaskId(pub u32);
 
-/// The memory behind a shared mapping, as the embedder addresses it.
+/// A Linux [user ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UserId(pub u32);
+
+/// The memory behind a shared mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemoryObject {
+    /// A file mapped with [`MAP_SHARED`](https://man7.org/linux/man-pages/man2/mmap.2.html).
     File {
         device: DeviceId,
         inode: InodeNumber,
     },
+    /// A [System V shared memory segment](https://man7.org/linux/man-pages/man7/sysvipc.7.html).
     SystemVSegment(SystemVSegmentId),
+    /// A mapping made with [`MAP_SHARED | MAP_ANONYMOUS`](https://man7.org/linux/man-pages/man2/mmap.2.html).
     Anonymous(AnonymousMemoryId),
 }
 
-/// The device a file lives on.
+/// A Linux [device ID](https://man7.org/linux/man-pages/man3/dev_t.3type.html).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId(pub u64);
 
-/// The number of a file on its device.
+/// A file's [inode number](https://man7.org/linux/man-pages/man7/inode.7.html).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InodeNumber(pub u64);
 
-/// The id of a System V shared memory segment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SystemVSegmentId(pub i32);
 
-/// The kernel's own number for a shared anonymous memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AnonymousMemoryId(pub u64);
 
-/// A set of optional processor features, in one guest architecture's own form.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DomainResolutionId(pub u64);
+
+/// The processor a program is told it has: what it reads when it asks the processor to identify itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProcessorFeatures {
-    Arm64 { hwcap: u64, hwcap2: u64 },
-    X86_64 { cpuid_features: Vec<String> },
+    Arm64(Arm64Features),
+    X86_64(X86_64Features),
 }

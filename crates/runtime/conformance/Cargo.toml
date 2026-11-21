@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-runtime-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-runtime = { path = ".." }
+wcontainers-executor = { path = "../../executor" }
+wcontainers-kernel-interface = { path = "../../kernel-interface" }
+wcontainers-system = { path = "../../system" }

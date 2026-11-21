@@ -147,7 +147,7 @@ Kernel, crates/wcontainers-kernel/src/system.rs
       abi's `Host` trait (abi host.rs:95) goes: each of its methods is on a concern (see g), with
       `random` named `fill_random_bytes` and `backend_send` named `send_backend`. Its types
       (`ConnectionId`, `BackendRequestId`, `End`, `HostError`, `Warning`) and `Event` stay in abi.
-      The hooks, the proxy and `type ProcessState` are on `ProcessTracer`, the task ids on `TaskIdSource`.
+      The hooks, the proxy and `type ProcessState` are on `ProcessTracer`, the task ids on `TaskIdAllocator`.
 - [ ] New `type ProcessState: Clone + Send` (system 31, on `ProcessTracer`).
 - [ ] Every hook and both proxy calls: `process: Process<'_>` becomes `process: P` with
       `P: Process<State = Self::ProcessState>`; default bodies `let _ = (...);` become `{}`.
@@ -267,7 +267,7 @@ Distributed Everything
 
 Ruled before, and written now
 - The stream services as services of `System` (naming rule, "Later on 2026-11-18"), which until now stayed
-  on abi's `Host`: they are on `StreamPeer` (system 135 to 138), a concern of `System`. Whether `Host`
+  on abi's `Host`: they are on `StreamTransport` (system 135 to 138), a concern of `System`. Whether `Host`
   folds into `System`: it does ("how the interface files are organised": the kernel-facing services were
   on abi's `Host`). Every method of `Host` is on a concern (see g); abi's own `Host` trait is not changed
   here and goes at the migration (b).
@@ -379,7 +379,7 @@ through the trait's own operations, and nothing is passed in from outside.
   - The suite is not added here: its checks rest on the unruled meaning above and on the open
     `watch_thread_memory` question.
 - `System` has no methods of its own; its suite is the concerns'. Each suite function is bounded by the
-  one concern it checks (`<C: Clocks>`), and `tests!` hands it the implementation's `System` value.
+  one concern it checks (`<C: Clock>`), and `tests!` hands it the implementation's `System` value.
   Written (system conformance.rs):
   - `allocate_task_ids_apart` (line 15): an id handed out and not freed is not handed out next. Both calls
     start from `BEFORE_FIRST_TASK_ID` (line 9), `TaskId(u32::MIN)`: not an id ever handed out, but the
@@ -397,10 +397,10 @@ through the trait's own operations, and nothing is passed in from outside.
   Not written, and the state-building operation each lacks:
   - `ProcessTracer`, every hook and both proxy calls: a `P: Process<State = Self::ProcessState>`, and a
     `ProcessState` value (`Clone + Send`, no constructor). No concern gives either.
-  - `StreamPeer`: an `End` that is open. Ends are chosen by the kernel and opened by nothing on the trait,
+  - `StreamTransport`: an `End` that is open. Ends are chosen by the kernel and opened by nothing on the trait,
     so send, credit and close have nothing to act on, and the embedder's side (data, credit, closing)
     comes back only as abi `Event`s, which no trait gives back.
-  - `Clocks::realtime_nanoseconds`: nothing to build; the wall clock may be set back, so two reads promise
+  - `Clock::realtime_nanoseconds`: nothing to build; the wall clock may be set back, so two reads promise
     nothing. A check needs a ruled promise, not an operation.
   - `WarningLog::warn`: an operation that reads warnings back; nothing observes `warn`.
   - `FileServer::send_backend`: the reply arrives as abi `Event::BackendReply`, handed to the kernel by the
@@ -448,7 +448,7 @@ The linter now runs `comment-grammar` too, on by default (its decision 69, open 
 with the key for this reorganisation sent 633 doc summaries of the whole workspace to the model, the
 kernel's and the abi's included, and its answers are in reviewable-answers.toml. Nothing in `off` was
 changed. Four of my type summaries it rejected were rewritten as plain noun phrases (`ExecutionConfig`,
-`MemoryObject`, `GuestMachine`, `StreamPeer`), and the summary of every suite's `tests!` was put on one
+`MemoryObject`, `GuestMachine`, `StreamTransport`), and the summary of every suite's `tests!` was put on one
 line, as the stricter `comments` rules now need. After the review of the reorganisation the trait
 summaries lost their endings on what is ruled; the model's answers for the shorter summaries are
 recorded, and the findings are the same 55. The processor features (h) add three, each a
@@ -495,14 +495,14 @@ The split, one concern per piece an embedder would write or reuse whole (name, t
   handed the same process with the same state, and the ruled uses combine them (locks across machines
   read the proxy and `on_memory_written_by_kernel` together). The name is ptrace's: a tracer stops a
   process at system call entry and exit, at signal delivery, exec, clone and exit.
-- `TaskIdSource` (line 127; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. The methods are
+- `TaskIdAllocator` (line 127; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. The methods are
   ruled; the trait is mine. Apart from the hooks because the first ruling made it "an id source given at
   start", and because a stock counter is reused unchanged by an embedder that writes its own hooks, while
   a distributed one replaces it alone.
-- `StreamPeer` (line 135; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. The
+- `StreamTransport` (line 135; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. The
   methods are ruled; the trait is mine. The embedder holds the other side of every end, and the three
   calls share it.
-- `Clocks` (line 142; or `TimeSource`): `monotonic_nanoseconds` (143), `realtime_nanoseconds` (144).
+- `Clock` (line 142; or `TimeSource`): `monotonic_nanoseconds` (143), `realtime_nanoseconds` (144).
   Plural because it holds two clocks. Apart, because a replaying or simulated embedder replaces time alone.
   These are the kernel's own reads, with no process; a program's time read by an instruction is not on
   it (proposed on `ProcessTracer`, see h, proposal 2, where this is weighed).
@@ -522,7 +522,7 @@ The split, one concern per piece an embedder would write or reuse whole (name, t
   is reused or replaced on its own (a fixed table for tests, DNS over HTTPS in a browser) and shares no
   id with the connections. The other way: `look_up` folded into `Network`.
 
-The thirteen never-ruled service methods, by concern, with their lines in system/interface.rs: `Clocks`
+The thirteen never-ruled service methods, by concern, with their lines in system/interface.rs: `Clock`
 143, 144; `RandomSource` 149; `WarningLog` 154; `FileServer` 159; `Network` 164, 171, 172, 173, 174, 175,
 176; `NameResolver` 181. Their parameters and types are today's (abi host.rs:97 to 145), with these
 exceptions and open points:
@@ -553,7 +553,7 @@ an associated type of its subtrait, so `ProcessTracer` would need the type anywa
 (`ProcessTracer<State>`), which `System` and every bound on a tracer would then spell out. So `System`
 has no items at all.
 
-What this settles among the conflicts listed before: where the stream calls live (on `StreamPeer`, a
+What this settles among the conflicts listed before: where the stream calls live (on `StreamTransport`, a
 concern of `System`, no longer on abi's `Host`), and whether abi's `Host` folds in (it does, method by
 method, see d). abi's `Host` trait itself, and today's kernel `System: Host + Sync`, are not changed here
 (b).
@@ -592,7 +592,7 @@ Ruled, and written as ruled
 - It supersedes "the processor is fixed for the whole container". abi machine.rs's module doc ("it is never
   emulated in software") is contradicted by the ruling and changes at the migration.
 - Agreed in discussion, not shown as code: "the kernel reading the clock for itself is a separate concern
-  (the existing clock service, no process)". So `Clocks` is unchanged.
+  (the existing clock service, no process)". So `Clock` is unchanged.
 
 My reading, which the ruling does not state
 - "The embedder can see which features a host runs at full speed": in the files it sees them only as
@@ -645,7 +645,7 @@ PROPOSED, for you to rule (none of these is in the ruling as code)
    ```
    Not hooks: each returns the value the program gets, and has no default (a default would need the
    embedder's clock or random source, which `ProcessTracer` cannot reach). Time is nanoseconds on the
-   monotonic clock, the unit of `Clocks::monotonic_nanoseconds`; turning it into what the counter
+   monotonic clock, the unit of `Clock::monotonic_nanoseconds`; turning it into what the counter
    instruction reads (ARM `CNTVCT_EL0` at the claimed `CNTFRQ_EL0`, x86 `RDTSC`) would be the kernel's or
    the executor's. The random number is 64 bits, the widest that ARM `RNDR` and x86 `RDRAND` give.
    Which time reads reach the embedder (the midday default: our time routine logs its reads without
@@ -658,10 +658,24 @@ PROPOSED, for you to rule (none of these is in the ruling as code)
    `RandomSource::fill_random_bytes` with the process, which serves any width.
    Where they live. On `ProcessTracer`, because each is handed the process with its state, as every hook
    is, and is an input of that process, as a system call's response is: a replaying embedder then replays
-   all of a process's inputs on one concern. This does not match why `Clocks` is apart (g: "a replaying
+   all of a process's inputs on one concern. This does not match why `Clock` is apart (g: "a replaying
    or simulated embedder replaces time alone"), since a program's time reads are now replaced with the
-   tracer, and only the kernel's own reads with `Clocks`.
+   tracer, and only the kernel's own reads with `Clock`.
    Alternative for where: the midday direction's form, each on its existing concern and told the process
-   and thread, `Clocks::read_monotonic_nanoseconds` and `RandomSource::read_random_number` with the same
-   signatures; time is then replaced alone again, but `Clocks` and `RandomSource` gain `ProcessState`,
+   and thread, `Clock::read_monotonic_nanoseconds` and `RandomSource::read_random_number` with the same
+   signatures; time is then replaced alone again, but `Clock` and `RandomSource` gain `ProcessState`,
    and the afternoon ruling calls the kernel's own clock reads "a separate concern" from a program's.
+
+## (i) Ruled while the owner read `crates/system/interface.rs` on 2026-11-20
+
+- `ProcessTracer` holds the system call proxy and every hook, in the order system calls, lifecycle, memory with
+  shared memory, signals, inspection. `ProcessorInputs: ProcessTracer` holds `choose_processor_features`,
+  `read_monotonic_nanoseconds` and `read_random_number`.
+- `TaskIdAllocator` and `StreamTransport` are the ruled names of those two concerns.
+- A stream's end is the embedder's own type: `StreamTransport::Endpoint: Ord`, passed by reference as `peer`.
+  abi's `End(pub u32)` is not used here any more and goes away when the existing crates move.
+- Not written yet, because nothing in the kernel's interface uses it: the kernel's own endpoint type. When the
+  calls that drive the kernel are written (stream data, credit and closing arriving from the embedder, and the
+  container's standard streams at start), `Kernel` declares its own associated endpoint type and a kernel
+  implementation sets it equal to its system's. The kernel's interface still names nothing of the system.
+- Doc comments that only restate a name are removed by the owner; write none where the name says it.

@@ -1,0 +1,6 @@
+# TODO: remove this once Rust lets a tool register its own lints on a stable compiler
+# (https://github.com/rust-lang/rust/issues/66079). Until then it makes the pinned stable compiler
+# accept `#![register_tool(reviewable)]`, so that a file can switch a reviewable rule off with the
+# standard `#![allow(reviewable::<rule>, reason = "...")]`.
+[env]
+RUSTC_BOOTSTRAP = "1"

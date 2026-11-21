@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "crates/executor/conformance", "crates/kernel-interface/conformance", "crates/system/conformance", "crates/container/conformance"]
+members = ["crates/*", "crates/executor/conformance", "crates/kernel-interface/conformance", "crates/system/conformance", "crates/runtime/conformance", "crates/clock/conformance", "crates/random-source/conformance", "crates/tcp-sockets/conformance", "crates/udp-sockets/conformance", "crates/icmp-sockets/conformance", "crates/raw-sockets/conformance", "crates/route-resolver/conformance", "crates/configurable/conformance"]
 
 [workspace.metadata.reviewable]
 prefix = "wcontainers"
@@ -16,6 +16,7 @@ repository = "https://github.com/stack1ng/wcontainers"
 wcontainers-abi = { path = "crates/wcontainers-abi" }
 bitflags = { version = "2", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
+etherparse = { version = "0.21.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

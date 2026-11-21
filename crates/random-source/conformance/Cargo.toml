@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-container-conformance"
+name = "wcontainers-random-source-conformance"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -8,4 +8,4 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
-wcontainers-container = { path = ".." }
+wcontainers-random-source = { path = ".." }

@@ -7,6 +7,6 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
+bitflags.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-executor = { path = "../executor" }
-wcontainers-kernel = { path = "../wcontainers-kernel" }

@@ -1,14 +1,12 @@
-//! What runs a container's guest threads, as the kernel's interface to its embedder names it.
-
 #![no_std]
 
 use core::ops::Range;
 
 use wcontainers_abi::{CpuError, Permissions, ThreadId};
 
-/// A runner of guest threads with its own translator settings.
+/// Executes guest threads.
 pub trait Executor {
-    type TranslatorConfig;
+    type TranslatorConfig: Default;
 }
 
 /// An executor that can watch one thread and not its siblings.

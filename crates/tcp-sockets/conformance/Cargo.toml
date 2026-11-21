@@ -1,0 +1,13 @@
+[package]
+name = "wcontainers-tcp-sockets-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-tcp-sockets = { path = ".." }
+wcontainers-internet-protocol = { path = "../../internet-protocol" }
+wcontainers-kernel-interface = { path = "../../kernel-interface" }
