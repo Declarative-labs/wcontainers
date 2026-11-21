@@ -51,6 +51,14 @@ mutant records-refused "$implementation" 'let on = report == Report::Requested;
                 for option in IPV4_RECORDS {' 'let on = report == Report::Requested; if on { return Err(HostError::NotSupported); }
                 for option in IPV4_RECORDS {'
 mutant receive-unlocked "$implementation" 'let _receiving = locked(&connection.receiving);' 'let _receiving = ();'
+mutant window-probe-repair-queue-lost "$implementation" 'set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, queue)?;' 'let _ = queue;'
+mutant push-leaves-no-delay-on "$implementation" 'if !no_delay {' 'if false {'
+mutant md5-key-ignored "$implementation" 'TcpSetting::Md5Key(change) => set_md5_key(socket, family, change),' 'TcpSetting::Md5Key(_) => Ok(()),'
+mutant md5-absent-removal-refused "$implementation" 'Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),' ''
+mutant fixed-flow-label-not-held "$implementation" 'hold_flow_label(socket, peer, label)?;' 'let _ = (peer, label);'
+mutant fixed-flow-label-forgotten "$implementation" 'let _ = connection.fixed_flow_label.set(label);' ';'
+mutant multicast-refused "$implementation" 'TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group(' \
+    'TcpSetting::Ip(IpSocketSetting::MulticastV4(_)) => Err(HostError::NotSupported), TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group('
 mutant urgent-wait-unregistered "$readiness" 'event.set_priority(interest.contains(PollFlags::PRI));' 'event.set_priority(false);'
 mutant peer-shutdown-unregistered "$readiness" $'    .union(PollFlags::RDHUP)\n    .union(PollFlags::from_bits_retain(' \
     $'    .union(PollFlags::from_bits_retain('

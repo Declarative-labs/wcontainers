@@ -37,19 +37,21 @@ use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AddressSharing, AnycastAddress, BindAddress, ByteCount, BytesPerSecond, FilterInstruction,
     FilterJump, FilterOperand, FilterOperation, FlowLabelChoice, HopLimit, InterfaceIndex,
-    IpPacketSetting, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort, Membership,
-    MobileAddressPreference, MulticastGroup, MulticastMembership, NonlocalAddresses, PacketMark,
-    PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing,
-    ReceivedPacketFields, Report, RouteScope, SocketFilter, SourceFilter, SourcePreferences,
-    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent, TransmitReportKey,
-    TransmitReportRequest, TransmitStage,
+    IpPacketSetting, IpPrefix, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort,
+    Membership, MobileAddressPreference, MulticastGroup, MulticastMembership, NonlocalAddresses,
+    PacketMark, PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting,
+    PortSharing, PrefixLength, ReceivedPacketFields, Report, RouteScope, SocketFilter,
+    SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping,
+    TransmitEvent, TransmitReportKey, TransmitReportRequest, TransmitStage,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal_information::PollEvents;
-use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
+use wcontainers_tcp_sockets::authentication::{
+    TcpAuthenticationCounters, TcpMd5KeyChange, TcpMd5Peer,
+};
 use wcontainers_tcp_sockets::repair::{
-    TcpRepair, TcpTimestamp, TcpTimestampClock, TcpTimestampUnit,
+    TcpRepair, TcpRepairQueue, TcpTimestamp, TcpTimestampClock, TcpTimestampUnit,
 };
 use wcontainers_tcp_sockets::settings::{
     BufferLocks, BufferTuning, FAST_OPEN_KEY_LENGTH, FastOpenKey, FastOpenKeys, MaximumSegmentSize,
@@ -213,8 +215,8 @@ const NOTIFYING_CONGESTION_CONTROL: &str = "dctcp";
 
 /// A pacing rate and a transfer it spreads over more than the given time.
 const PACING_RATE: BytesPerSecond = BytesPerSecond(1 << 20);
-const PACED_BYTES: usize = 1 << 19;
-const PACED_AT_LEAST: Duration = Duration::from_millis(100);
+const PACED_BYTES: usize = 1 << 20;
+const PACED_AT_LEAST: Duration = Duration::from_millis(400);
 
 const TRANSMIT_DELAY: Duration = Duration::from_millis(50);
 
@@ -534,6 +536,9 @@ fn assert_carries_bytes<S: TcpSockets>(sockets: &S, pair: &Pair<S>) {
 /// The TCP option kind of Multipath TCP (RFC 8684, section 3), which neither libc nor linux-raw-sys carries.
 const MULTIPATH_OPTION: u8 = 30;
 
+/// The TCP option kind of an MD5 signature, which etherparse does not parse.
+const MD5_OPTION: u8 = 19;
+
 /// One TCP segment loopback carried, as the host's packet socket saw it.
 #[derive(Clone, Debug)]
 struct Segment {
@@ -555,6 +560,8 @@ struct Segment {
     timestamp: Option<u32>,
     /// Whether the segment carries a Multipath TCP option.
     multipath: bool,
+    /// Whether the segment carries an MD5 signature option.
+    signed: bool,
 }
 
 impl Segment {
@@ -614,6 +621,9 @@ impl Segment {
             multipath: tcp
                 .options_iterator()
                 .any(|option| option == Err(TcpOptionReadError::UnknownId(MULTIPATH_OPTION))),
+            signed: tcp
+                .options_iterator()
+                .any(|option| option == Err(TcpOptionReadError::UnknownId(MD5_OPTION))),
         })
     }
 
@@ -2263,16 +2273,24 @@ pub fn rearming_the_keep_alive_timer_sends_a_due_probe<S: TcpSockets>(sockets: S
 
 /// The peer answering nothing, a second small send waits for the first to be acknowledged, unless without delay.
 pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSockets>(sockets: S) {
-    for (settings, segments) in [
-        (vec![], 1),
-        (vec![TcpSetting::NoDelay(true)], 2),
+    for (settings, pushed_first, segments) in [
+        (vec![], false, 1),
+        (vec![TcpSetting::NoDelay(true)], false, 2),
         (
             vec![TcpSetting::NoDelay(true), TcpSetting::NoDelay(false)],
+            false,
             1,
         ),
+        // A push past cork and Nagle's algorithm leaves the algorithm on for what follows.
+        (vec![], true, 1),
     ] {
         let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &settings, &[]);
         drop_arrivals(&sockets, &pair.server, IpVersion::V4);
+        if pushed_first {
+            sockets
+                .push_queued_data(&pair.client, TcpPushOverride::CorkAndNagle)
+                .expect("push");
+        }
         let start = Instant::now();
         send_all(&sockets, &pair.client, plain(), MESSAGE);
         send_all(&sockets, &pair.client, plain(), REPLY);
@@ -2284,7 +2302,11 @@ pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSocke
             .map(|segment| segment.sequence)
             .collect();
         sequences.dedup();
-        assert_eq!(sequences.len(), segments, "{settings:?}");
+        assert_eq!(
+            sequences.len(),
+            segments,
+            "{settings:?}, pushed first: {pushed_first}"
+        );
         close(&sockets, pair);
     }
 }
@@ -2810,6 +2832,219 @@ pub fn header_settings_mark_each_segment<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
+/// Flow labels a connection may carry for good: below 0x80000, which Linux keeps for the labels it makes itself.
+const FIXED_FLOW_LABEL: u32 = 0x12345;
+const OTHER_FIXED_FLOW_LABEL: u32 = 0x23456;
+
+fn fixed_flow_label(label: u32) -> TcpSetting<'static> {
+    TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Label(
+        Ipv6FlowLabel::try_new(label).expect("a flow label"),
+    )))
+}
+
+/// A flow label given at connect marks every segment the connection sends, its SYN first; given again it changes
+/// nothing; another label afterwards is either refused, the first kept, or carried from then on.
+pub fn fixed_flow_label_marks_every_segment<S: TcpSockets>(sockets: S) {
+    let automatic = TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Automatic));
+    for settings in [
+        vec![fixed_flow_label(FIXED_FLOW_LABEL)],
+        vec![
+            fixed_flow_label(FIXED_FLOW_LABEL),
+            fixed_flow_label(FIXED_FLOW_LABEL),
+        ],
+        vec![automatic, fixed_flow_label(FIXED_FLOW_LABEL)],
+        vec![
+            fixed_flow_label(OTHER_FIXED_FLOW_LABEL),
+            fixed_flow_label(FIXED_FLOW_LABEL),
+        ],
+    ] {
+        let (pair, capture) = watched_pair(&sockets, ipv6_loopback(), &settings, &[]);
+        assert_eq!(
+            data_flow_label(&sockets, &pair, &capture),
+            FIXED_FLOW_LABEL,
+            "{settings:?}"
+        );
+        let sent: Vec<Segment> = capture
+            .segments()
+            .into_iter()
+            .filter(|segment| segment.to_listener)
+            .collect();
+        assert!(sent.iter().any(|segment| segment.synchronize), "the SYN");
+        assert!(
+            sent.iter()
+                .all(|segment| segment.flow_label == Some(FIXED_FLOW_LABEL)),
+            "{settings:?}: {:?}",
+            sent.iter()
+                .map(|segment| segment.flow_label)
+                .collect::<Vec<_>>()
+        );
+        sockets
+            .configure(&pair.client, fixed_flow_label(FIXED_FLOW_LABEL))
+            .expect("the label the connection has");
+        assert_eq!(data_flow_label(&sockets, &pair, &capture), FIXED_FLOW_LABEL);
+        let expected =
+            match sockets.configure(&pair.client, fixed_flow_label(OTHER_FIXED_FLOW_LABEL)) {
+                Ok(()) => OTHER_FIXED_FLOW_LABEL,
+                Err(error) => {
+                    assert_eq!(error, HostError::NotSupported);
+                    FIXED_FLOW_LABEL
+                }
+            };
+        assert_eq!(data_flow_label(&sockets, &pair, &capture), expected);
+        close(&sockets, pair);
+    }
+}
+
+/// A connection joins a multicast group on an interface and leaves it, each twice the same as once, and still
+/// carries bytes.
+pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
+    let interface = Some(loopback_interface());
+    for (address, joined, left) in [
+        (
+            ipv4_loopback(),
+            IpSocketSetting::MulticastV4(MulticastGroup {
+                group: MULTICAST_V4,
+                interface,
+                membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
+            }),
+            IpSocketSetting::MulticastV4(MulticastGroup {
+                group: MULTICAST_V4,
+                interface,
+                membership: MulticastMembership::Left,
+            }),
+        ),
+        (
+            ipv6_loopback(),
+            IpSocketSetting::MulticastV6(MulticastGroup {
+                group: MULTICAST_V6,
+                interface,
+                membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
+            }),
+            IpSocketSetting::MulticastV6(MulticastGroup {
+                group: MULTICAST_V6,
+                interface,
+                membership: MulticastMembership::Left,
+            }),
+        ),
+    ] {
+        let pair = pair_at(&sockets, address, &[], &[]);
+        for setting in [&joined, &joined, &left, &left] {
+            assert_eq!(
+                sockets.configure(&pair.client, TcpSetting::Ip(*setting)),
+                Ok(()),
+                "{setting:?}"
+            );
+        }
+        assert_carries_bytes(&sockets, &pair);
+        close(&sockets, pair);
+    }
+}
+
+const MD5_KEY: &[u8] = b"conformance key";
+const OTHER_MD5_KEY: &[u8] = b"another key";
+
+/// An MD5 key for the peers at 127.0.0.1 set, or with none removed.
+fn md5_key(key: Option<&'static [u8]>) -> TcpSetting<'static> {
+    let peer = TcpMd5Peer {
+        prefix: IpPrefix {
+            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            length: PrefixLength(32),
+        },
+        interface: None,
+    };
+    TcpSetting::Md5Key(match key {
+        Some(key) => TcpMd5KeyChange::Set { peer, key },
+        None => TcpMd5KeyChange::Removed(peer),
+    })
+}
+
+/// A listener with an MD5 key for its peers takes only connections signed with that key, whose every segment carries
+/// the signature; a key set again replaces the last, and removed (once or twice) it bars no plain connection.
+pub fn md5_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: S) {
+    for (listener_keys, client_keys, admitted) in [
+        (vec![Some(MD5_KEY)], vec![Some(MD5_KEY)], true),
+        (
+            vec![Some(MD5_KEY)],
+            vec![Some(MD5_KEY), Some(MD5_KEY)],
+            true,
+        ),
+        (
+            vec![Some(OTHER_MD5_KEY), Some(MD5_KEY)],
+            vec![Some(MD5_KEY)],
+            true,
+        ),
+        (vec![Some(MD5_KEY)], vec![Some(OTHER_MD5_KEY)], false),
+        (vec![Some(MD5_KEY)], vec![], false),
+        (vec![Some(MD5_KEY)], vec![Some(MD5_KEY), None], false),
+        (vec![Some(MD5_KEY), None, None], vec![], true),
+    ] {
+        let listener_settings: Vec<_> = listener_keys
+            .iter()
+            .map(|key| TcpListenerSetting::Socket(md5_key(*key)))
+            .collect();
+        let client_settings: Vec<_> = client_keys.iter().map(|key| md5_key(*key)).collect();
+        let case = format!("listener {listener_keys:?}, client {client_keys:?}");
+        let (listener, local) = listen(&sockets, ipv4_loopback(), &listener_settings);
+        let capture = Capture::start(local);
+        let client = sockets
+            .connect(
+                TcpProtocol::Tcp,
+                OWNER,
+                bind_any_port(ipv4_any()),
+                local,
+                &client_settings,
+                TcpFastOpen::Off,
+            )
+            .expect("connect")
+            .connection;
+        let signed = client_keys.last().copied().flatten().is_some();
+        let mut header = [0; 0];
+        if admitted {
+            let server = retry(|| {
+                sockets
+                    .accept(&listener, &mut header)
+                    .map(|taken| taken.connection)
+            })
+            .expect(&case);
+            let pair = Pair {
+                listener,
+                local,
+                client,
+                server,
+            };
+            assert_carries_bytes(&sockets, &pair);
+            std::thread::sleep(SETTLE);
+            let segments = capture.segments();
+            assert!(
+                segments.iter().all(|segment| segment.signed == signed),
+                "{case}"
+            );
+            close(&sockets, pair);
+        } else {
+            std::thread::sleep(SETTLE);
+            assert!(
+                matches!(
+                    sockets.accept(&listener, &mut header),
+                    Err(HostError::WouldBlock)
+                ),
+                "{case}"
+            );
+            let segments = capture.segments();
+            let synchronize = segments
+                .iter()
+                .find(|segment| segment.to_listener && segment.synchronize)
+                .expect("the SYN");
+            assert_eq!(synchronize.signed, signed, "{case}");
+            assert!(
+                segments.iter().all(|segment| segment.to_listener),
+                "{case}: answered"
+            );
+            sockets.close(client, TcpClose::Abort);
+            sockets.stop_listening(listener);
+        }
+    }
+}
+
 /// A congestion control that needs explicit congestion notification marks the data it sends as capable of it.
 pub fn congestion_control_is_the_one_named<S: TcpSockets>(sockets: S) {
     let control = TcpSetting::CongestionControl(NOTIFYING_CONGESTION_CONTROL);
@@ -2981,7 +3216,7 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
                 .configure(&listener, smallest.clone())
                 .expect("a smaller backlog");
         }
-        let clients = [(); BACKLOG_OVERFLOW].map(|_| {
+        let connect = || {
             sockets
                 .connect(
                     TcpProtocol::Tcp,
@@ -2993,14 +3228,45 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
                 )
                 .expect("connect")
                 .connection
-        });
+        };
+        // The first connection fills the queue before the others come, so that none of theirs can race it: a full
+        // queue drops their SYNs.
+        let first = connect();
+        {
+            let (_, waker) = counting_waker();
+            let mut queued = pin!(sockets.wait_for_listener_events(&listener, READABLE));
+            let start = Instant::now();
+            while poll_once(queued.as_mut(), &waker).is_pending() {
+                assert!(
+                    start.elapsed() < DEADLINE,
+                    "the first connection was never queued"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let clients: Vec<_> = std::iter::once(first)
+            .chain((1..BACKLOG_OVERFLOW).map(|_| connect()))
+            .collect();
         std::thread::sleep(SETTLE);
         let mut header = [0; 0];
-        let mut accepted = Vec::new();
+        let mut accepted = vec![
+            retry(|| {
+                sockets
+                    .accept(&listener, &mut header)
+                    .map(|taken| taken.connection)
+            })
+            .expect("the one connection the queue holds"),
+        ];
+        // The others wait for a retransmitted SYN (a second at the least), so none comes while this is watched; the
+        // last try is made after the period, however late this thread ran.
         let start = Instant::now();
-        while start.elapsed() < HELD_FOR {
+        loop {
+            let done = start.elapsed() >= HELD_FOR;
             if let Ok(taken) = sockets.accept(&listener, &mut header) {
                 accepted.push(taken.connection);
+            }
+            if done {
+                break;
             }
         }
         assert_eq!(accepted.len(), 1, "later: {later}");
@@ -3142,8 +3408,27 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
         .configure(&pair.client, TcpSetting::Repair(TcpRepair::On))
         .expect("repair mode");
     sockets
+        .configure(
+            &pair.client,
+            TcpSetting::RepairQueue(TcpRepairQueue::Receive),
+        )
+        .expect("the receive queue");
+    sockets
         .send_window_probe(&pair.client)
         .expect("window probe in repair mode");
+    // In repair mode a send fills the queue chosen and a peek reads it; with no queue chosen, both are refused.
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    let mut queued = vec![0; MESSAGE.len()];
+    let peeked = sockets
+        .receive(
+            &pair.client,
+            TcpReceiveRequest::Peek {
+                offset: ByteCount(0),
+            },
+            &mut queued,
+        )
+        .expect("a peek at the receive queue still chosen");
+    assert_eq!(&queued[..peeked.length.0], MESSAGE);
     assert_eq!(sockets.set_timestamp_clock(&pair.client, clock), Ok(()));
     sockets
         .configure(&pair.client, TcpSetting::Repair(TcpRepair::Off))
@@ -4569,6 +4854,9 @@ macro_rules! tests {
             fin_wait_2_settings_decide_how_a_closed_connection_ends,
             arrival_settings_drop_what_they_refuse,
             header_settings_mark_each_segment,
+            fixed_flow_label_marks_every_segment,
+            multicast_groups_are_joined_and_left,
+            md5_keys_admit_only_connections_signed_with_them,
             congestion_control_is_the_one_named,
             pacing_rate_spreads_what_is_sent,
             transmit_delay_holds_each_segment,

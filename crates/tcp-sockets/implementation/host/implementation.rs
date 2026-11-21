@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
-use etherparse::IpNumber;
+use etherparse::{IpNumber, Ipv6FlowLabel};
 use linux_raw_sys::net as uapi;
 use netlink_packet_core::{NlasIterator, parse_u8, parse_u16, parse_u32, parse_u64};
 use rustix::io::Errno;
@@ -20,10 +20,15 @@ use socket2::{MsgHdr, SockAddr, SockRef};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, BytesPerSecond, DropCount, HopLimit, InterfaceIndex, IpSocketSetting, IpVersion,
-    LocalBinding, LocalPort, PacketMark, PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps,
-    ReceivedPacketFields, Report, TransmitEvent, TransmitReport, TransmitReportKey,
-    TransmitReportRequest, WirelessAcknowledgement,
+    ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, HopLimit, InterfaceIndex,
+    IpPacketSetting, IpSocketSetting, IpVersion, LocalBinding, LocalPort, PacketMark,
+    PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps, ReceivedPacketFields, Report,
+    TransmitEvent, TransmitReport, TransmitReportKey, TransmitReportRequest,
+    WirelessAcknowledgement,
+};
+use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{in6_addr, storage};
+use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::{
+    AnycastMemberships, set_multicast_group,
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::receive::Ancillary;
 use wcontainers_internet_protocol_linux_socket_options::datagram::send::Control;
@@ -36,7 +41,7 @@ use wcontainers_internet_protocol_linux_socket_options::{
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
-use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
+use wcontainers_tcp_sockets::authentication::{TcpAuthenticationCounters, TcpMd5KeyChange};
 use wcontainers_tcp_sockets::repair::{
     TcpRepair, TcpRepairQueue, TcpTimestampClock, TcpTimestampUnit,
 };
@@ -95,7 +100,7 @@ const IPV6_RECORDS: [u32; 6] = [
 ];
 
 /// The reasons the host could not honour a request, each counted by [`Shortfalls`].
-const NO_AUTHENTICATION: &str = "TCP authentication is not mapped to the host yet";
+const NO_AUTHENTICATION: &str = "the TCP Authentication Option is not mapped to the host yet";
 const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
@@ -117,6 +122,7 @@ const NO_CONNECTION_STATE: &str = "reading a TCP connection's state is not mappe
 const ABORT_CLOSED_IN_ORDER: &str = "an abort closed in order: the host refused a linger of zero";
 const CLOCK_UNIT_OF_THE_ROUTE: &str = "a TCP timestamp clock counts in the unit its route gives (the tcp_usec_ts route feature), which Linux cannot change";
 const NO_LISTENER_STATE: &str = "reading a TCP listener's state is not mapped to the host yet";
+const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow label only as it connects: a listener, an accepted connection or a connected one takes no other";
 
 /// Linux's TCP sockets as the exit node's TCP connections and listeners.
 pub struct HostTcpSockets {
@@ -297,6 +303,9 @@ pub struct HostTcpConnection {
     saved_synchronize: Mutex<Option<Vec<u8>>>,
     /// Held by every receive, since a peek at an offset sets the socket-wide `SO_PEEK_OFF` for its call.
     receiving: Mutex<()>,
+    anycast: Mutex<AnycastMemberships>,
+    /// The IPv6 flow label the connection was given as it connected, which Linux keeps for good.
+    fixed_flow_label: OnceLock<Ipv6FlowLabel>,
 }
 
 pub struct HostTcpListener {
@@ -310,6 +319,7 @@ pub struct HostTcpListener {
     saves_synchronize: AtomicI32,
     /// Whether the guest asked the listener's sockets to record the last header they received.
     records_last_received: AtomicBool,
+    anycast: Mutex<AnycastMemberships>,
 }
 
 macro_rules! ordered_by_descriptor {
@@ -350,6 +360,8 @@ impl HostTcpConnection {
             reports: Mutex::default(),
             saved_synchronize: Mutex::default(),
             receiving: Mutex::default(),
+            anycast: Mutex::default(),
+            fixed_flow_label: OnceLock::new(),
         }
     }
 
@@ -558,6 +570,62 @@ fn protocol_of(protocol: TcpProtocol) -> rustix::net::Protocol {
 }
 
 /// The `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
+/// Makes the socket hold a flow label to the peer, shared with this process's other sockets, and send the label its
+/// connect address carries: Linux connects with a label only when the socket holds it.
+fn hold_flow_label(
+    socket: BorrowedFd<'_>,
+    peer: SocketAddr,
+    label: Ipv6FlowLabel,
+) -> Result<(), HostError> {
+    // SAFETY: in6_flowlabel_req is plain data.
+    let mut request: uapi::in6_flowlabel_req = unsafe { std::mem::zeroed() };
+    request.flr_dst = in6_addr(match peer.ip() {
+        IpAddr::V4(address) => address.to_ipv6_mapped(),
+        IpAddr::V6(address) => address,
+    });
+    request.flr_label = label.value().to_be();
+    request.flr_action = uapi::IPV6_FL_A_GET as u8;
+    request.flr_share = uapi::IPV6_FL_S_PROCESS as u8;
+    request.flr_flags = uapi::IPV6_FL_F_CREATE as u16;
+    set_option(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request)?;
+    set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, true)
+}
+
+/// Sets or removes the MD5 signature key of the peers a prefix holds, through `TCP_MD5SIG_EXT`; an IPv4 prefix of an
+/// IPv6 socket is given mapped, as Linux takes it. Removing a key that is not there leaves the socket as asked.
+fn set_md5_key(
+    socket: BorrowedFd<'_>,
+    family: IpVersion,
+    change: TcpMd5KeyChange<'_>,
+) -> Result<(), HostError> {
+    let (peer, key) = match change {
+        TcpMd5KeyChange::Set { peer, key } => (peer, key),
+        TcpMd5KeyChange::Removed(peer) => (peer, &[][..]),
+    };
+    // SAFETY: tcp_md5sig is plain data.
+    let mut request: uapi::tcp_md5sig = unsafe { std::mem::zeroed() };
+    request.tcpm_addr = storage(match (family, peer.prefix.address) {
+        (IpVersion::V6, IpAddr::V4(address)) => IpAddr::V6(address.to_ipv6_mapped()),
+        (_, address) => address,
+    });
+    request.tcpm_flags = uapi::TCP_MD5SIG_FLAG_PREFIX as u8;
+    request.tcpm_prefixlen = peer.prefix.length.0;
+    if let Some(interface) = peer.interface {
+        request.tcpm_flags |= uapi::TCP_MD5SIG_FLAG_IFINDEX as u8;
+        request.tcpm_ifindex = c_int::try_from(interface.0).map_err(|_| invalid())?;
+    }
+    request
+        .tcpm_key
+        .get_mut(..key.len())
+        .ok_or_else(invalid)?
+        .copy_from_slice(key);
+    request.tcpm_keylen = key.len() as u16;
+    match set_option(socket, uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, &request) {
+        Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),
+        other => other,
+    }
+}
+
 fn record_flags(request: &TransmitReportRequest) -> (u32, u32) {
     let mut flags = 0;
     let mut reports = 0;
@@ -704,10 +772,32 @@ impl HostTcpSockets {
         family: IpVersion,
         setting: &TcpSetting<'_>,
         report_flags: u32,
+        anycast: &Mutex<AnycastMemberships>,
     ) -> Result<(), HostError> {
         let tcp = |name: u32, value: c_int| set_int(socket, uapi::SOL_TCP, name, value);
         let refuse = |reason| Err(self.shortfalls.refuse(reason));
         match *setting {
+            // Linux takes memberships on TCP sockets through `MCAST_JOIN_GROUP` (`IP_ADD_MEMBERSHIP` is EPROTO).
+            TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group(
+                socket,
+                uapi::SOL_IP,
+                IpAddr::V4(group.group),
+                group,
+                |source| IpAddr::V4(*source),
+            ),
+            TcpSetting::Ip(IpSocketSetting::MulticastV6(ref group)) => set_multicast_group(
+                socket,
+                uapi::SOL_IPV6,
+                IpAddr::V6(group.group),
+                group,
+                |source| IpAddr::V6(*source),
+            ),
+            TcpSetting::Ip(IpSocketSetting::Anycast(ref address)) => {
+                locked(anycast).set(socket, address)
+            }
+            TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Label(_))) => {
+                refuse(FLOW_LABEL_FIXED_AT_CONNECT)
+            }
             TcpSetting::Ip(ref ip) => {
                 options::set_ip_socket_setting(socket, family, ip, report_flags, &self.shortfalls)
             }
@@ -859,8 +949,8 @@ impl HostTcpSockets {
                 uapi::TCP_INQ,
                 report == Report::Requested,
             ),
-            TcpSetting::Md5Key(_)
-            | TcpSetting::AddAuthenticationKey(_)
+            TcpSetting::Md5Key(change) => set_md5_key(socket, family, change),
+            TcpSetting::AddAuthenticationKey(_)
             | TcpSetting::RemoveAuthenticationKey(_)
             | TcpSetting::AuthenticationOptions(_)
             | TcpSetting::InitialAuthenticationCounters(_)
@@ -1062,13 +1152,29 @@ impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets {
                 Ok(())
             }
             TcpSetting::UnreadByteReports(report) => {
-                self.configure_socket(socket, connection.family, &setting, 0)?;
+                self.configure_socket(socket, connection.family, &setting, 0, &connection.anycast)?;
                 connection
                     .unread_reports
                     .store(report == Report::Requested, Ordering::Relaxed);
                 Ok(())
             }
-            _ => self.configure_socket(socket, connection.family, &setting, 0),
+            // The label a connection connected with is the one it keeps; asking for it again changes nothing.
+            TcpSetting::Packet(IpPacketSetting::FlowLabel(choice))
+                if connection.fixed_flow_label.get().is_some() =>
+            {
+                if connection
+                    .fixed_flow_label
+                    .get()
+                    .copied()
+                    .map(FlowLabelChoice::Label)
+                    == Some(choice)
+                {
+                    Ok(())
+                } else {
+                    Err(self.shortfalls.refuse(FLOW_LABEL_FIXED_AT_CONNECT))
+                }
+            }
+            _ => self.configure_socket(socket, connection.family, &setting, 0, &connection.anycast),
         }
     }
 }
@@ -1101,6 +1207,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     listener.family,
                     &TcpSetting::RecordsLastReceivedHeader(report),
                     0,
+                    &listener.anycast,
                 )?;
                 if listener.protocol == TcpProtocol::Tcp {
                     self.record_arrival_interfaces(socket, listener.family)?;
@@ -1111,7 +1218,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 Ok(())
             }
             TcpListenerSetting::Socket(setting) => {
-                self.configure_socket(socket, listener.family, &setting, 0)
+                self.configure_socket(socket, listener.family, &setting, 0, &listener.anycast)
             }
             TcpListenerSetting::Backlog(backlog) => SockRef::from(&socket)
                 .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
@@ -1226,12 +1333,38 @@ impl TcpConnections for HostTcpSockets {
             family,
             0,
         );
+        let fixed_flow_label = settings
+            .iter()
+            .rev()
+            .find_map(|setting| match setting {
+                TcpSetting::Packet(IpPacketSetting::FlowLabel(choice)) => Some(*choice),
+                _ => None,
+            })
+            .and_then(|choice| match choice {
+                FlowLabelChoice::Label(label) => Some(label),
+                _ => None,
+            });
         for setting in settings {
-            self.configure(&connection, setting.clone())?;
+            // A fixed label is given as the connection connects.
+            if !matches!(
+                setting,
+                TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Label(_)))
+            ) {
+                self.configure(&connection, setting.clone())?;
+            }
         }
         let socket = connection.socket.fd();
         self.bind(socket, &local)?;
         let peer = peer_for(family, peer);
+        let mut destination = peer;
+        if let Some(label) = fixed_flow_label {
+            hold_flow_label(socket, peer, label)?;
+            // The standard library keeps `sin6_flowinfo` as it is, which Linux reads in network order.
+            if let SocketAddr::V6(ref mut address) = destination {
+                address.set_flowinfo(label.value().to_be());
+            }
+            let _ = connection.fixed_flow_label.set(label);
+        }
         let in_progress = |outcome: Result<usize, HostError>| match outcome {
             Err(HostError::Errno(libc::EINPROGRESS)) => Ok(None),
             other => other.map(Some),
@@ -1243,7 +1376,7 @@ impl TcpConnections for HostTcpSockets {
                 }
                 let outcome = in_progress(
                     SockRef::from(&socket)
-                        .connect(&SockAddr::from(peer))
+                        .connect(&SockAddr::from(destination))
                         .map(|()| 0)
                         .map_err(io_host_error),
                 )?;
@@ -1261,7 +1394,7 @@ impl TcpConnections for HostTcpSockets {
                 let flags = libc::MSG_FASTOPEN | libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT;
                 let taken = in_progress(
                     SockRef::from(&socket)
-                        .send_to_with_flags(data, &SockAddr::from(peer), flags)
+                        .send_to_with_flags(data, &SockAddr::from(destination), flags)
                         .map_err(io_host_error),
                 )?;
                 TcpConnectStart::SynchronizeSent {
@@ -1651,6 +1784,7 @@ impl TcpListeners for HostTcpSockets {
             bound_clock: Mutex::new(None),
             saves_synchronize: AtomicI32::new(SAVE_NONE),
             records_last_received: AtomicBool::new(false),
+            anycast: Mutex::default(),
         };
         let socket = listener.socket.fd();
         // Multipath sockets have no TCP_SAVE_SYN.
