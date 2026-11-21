@@ -5,12 +5,36 @@ branch is merged into it). Plan: docs/phase-2-graphics.md, milestone G4 (section
 This file keeps the current state only; each earlier run's record (what it did, its measurements,
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
-round 3 run 1 and round 4 runs 2 to 6 (2026-11-20).
+round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main run 1 (2026-11-21).
 
 ## Where things stand
 
-G4 is reported complete for its sixth independent check. What is left on the pass bar waits on
+G4 is reported complete for its next independent check. What is left on the pass bar waits on
 other tracks (Gap list), or is the joint step with the Direct3D 12 track after both milestones.
+
+Main run 1 (2026-11-21, about 09:40 to 12:00 Pacific), the first run on main:
+- The rig on main: its commands name the desktop's folder by the branch, now `main` for every
+  track, so this track runs a copy (scratch rigmain, How to run) that keeps its own folder, sends
+  one pinned commit with this track's crates as they are, and, while main's Cargo.lock did not
+  parse (another track's 8eaca3b6, all of this run), sends the newest lock that does.
+- The carried findings of the fifth check, all closed in round 4 runs 2 to 6 and confirmed in this
+  run's bar: the WebGL 2 build reports 10_0 and its listed cases pass (5 pass, 1 ignored with its
+  reason); the family library is the joint step (orchestrator's ruling, sizes measured apart);
+  B5G6R5, the extended-range format and B8G8R8X8's vertex elements are listed as failures of the
+  reported 11_0, each waiting on a named track, with 11_0 kept as a departure for the owner;
+  `CheckFormatSupport` and `FORMAT_SUPPORT2` are compared bit by bit with the RTX 3080 for every
+  format at every level (Format support against the RTX 3080); the constant buffers' counts on the
+  WebGPU back end have their test, a known failure that is the WebGPU track's; `ClearView` is
+  served and reported TRUE; the swap chain refusal is of any other process's window, warned
+  (`chosen.rs`), not keyed on the desktop window; `ReadFromSubresource` and `WriteToSubresource`
+  are listed as removing the device; this file is cut to the current state.
+- Building ahead (the minor finding): traced in Godot 3D; the cause of no hit is the tuple, not the
+  pairing (Differences from the RTX 3080). Nothing changed in the code.
+- bgfx-26-occlusion's difference found: one overlay line of GPU memory that ours, without a memory
+  budget to report, leaves out (Gap list); not the occlusion counts.
+- The literal check's one finding in this track's code, the cube faces defined both here and in the
+  NIR crate (the branches met on main), fixed through the interface (Interface changes).
+- The bar rerun on main (Measurements): everything as at round 4 run 6.
 
 Round 4, run 6 (2026-11-20, about 18:30 to 21:30 Pacific), the tenth check's findings:
 - Merged origin/phase-2-graphics-shaders (its g6b run 4); no conflict. No other branch had news.
@@ -205,10 +229,13 @@ atg-simplelightingpc) match real Direct3D on every compared frame (logs/r6z-prog
 atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
 to 07; of bgfx's six (logs/q2f-bgfx.log, round 4 run 2) five pass or run to their end. Outside
 the bar's three, three differ:
-- bgfx-26-occlusion: 6,458 pixels beyond the tolerance in each saved frame, in the overlay's text
-  (the passing pixel count it prints from its occlusion queries). Real Direct3D 11's own two runs
-  passed its references (169 pixels beyond, within the allowance, logs/q3j-sysruns.log), so
-  run-to-run variation does not explain ours; the cause is not found.
+- bgfx-26-occlusion: 6,458 pixels beyond the tolerance in each saved frame, all in one line of
+  the overlay: real Direct3D's frames print "GPU mem: 341 MiB / 10 GiB", ours leave that line out
+  (scratch m2bgfx, crops of both frames; every other pixel within the tolerance). bgfx prints it
+  only when DXGI gives a memory budget (`IDXGIAdapter3::QueryVideoMemoryInfo`); our adapter is
+  `IDXGIAdapter1` alone and reports memory sizes of zero, as no browser API reports memory (the
+  infrastructure crate's rule). An absent feature, reported absent through `QueryInterface`; the
+  occlusion queries themselves match. Found in main run 1; earlier runs thought it the counts.
 - atg-simplecomputepc: every pixel inside the Mandelbrot set differs; the converted compute
   program's division gives just below 4 where real Direct3D gives 4 (inferred). The shaders
   track's (Asked).
@@ -603,39 +630,41 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
-Round 4 run 6. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
-alone except the load times (other tracks' jobs sharing it; the NIR track's OpenGL CTS runs,
-display-reset hazard jobs, held the queue for about 35 minutes before several steps). Times
-Pacific, 2026-11-20. The bar (scratch q5-final.sh r6z, logs/r6z-*) ran at 6b3ea847's code but the
-first query's failure on an empty first word (committed after it, then rerun: Wine, scenes, the
-format support tests, lint; logs/r6y-*).
-- Library (r6z-lib, 20:05 to 20:09): com 15 pass, 1 ignored; programs 55 pass, 3 ignored. The
-  WebGL 2 build's 10_0 cases: 5 pass, 1 ignored. Front 60, unit 5, cache 1 on the rented x86
-  machine (96 processors, load about 8 to 25 from other jobs).
-- Scenes through the library: 135 pass, 0 fail, 4 absent (r6y-scenes, 21:15; the bar's own
-  scenes step lost its connection, exit 255). The WebGL 2 build's scenes 95 pass, 17 fail, 30 absent
-  (r6z-webgl), as before.
-- Programs (r6z-programs, 20:54 to 20:56): the bar's three (godot-platformer-3d-d3d11,
+Main run 1 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
+the queue, not alone except the load times; other tracks' jobs shared it (the shaders track's
+display-reset hazard jobs held the queue for about 25 minutes before the WebGL 2 cases). Code: main
+as it moved under other tracks' commits from d6cdc8d9 (the bar, scratch main/q5-final.sh m2,
+logs/m2-*) and 1b47d3dc (Wine's two files and the load times, m3-*); this track's two crates are
+those of 5e34f8ff throughout.
+- Lint of both builds clean (m2-lint, 10:37). Library (m2-lib, 10:37 to 10:47): com 15 pass,
+  1 ignored; programs 55 pass, 3 ignored. The WebGL 2 build's 10_0 cases: 5 pass, 1 ignored
+  (m2-webgllib). Front 60, unit 5, cache 1 on the rented x86 machine (96 cores, load 6 to 42,
+  logs/m2-front.log).
+- Wine (m3-wine, m3-wine10, 11:42 to 11:47): d3d11 151 of 166, d3d10core 110 of 111, the same
+  failing tests as before (Gap list). Through the WebGL 2 build d3d10core 98 of 111, the same 13
+  (m2-wine10gl).
+- Scenes through the library 135 pass, 0 fail, 4 absent; the WebGL 2 build's 95 pass, 17 fail,
+  30 absent (m2-bar), as before.
+- Programs (m2-programs, 11:20 to 11:22): the bar's three (godot-platformer-3d-d3d11,
   chocolate-doom, atg-simplelightingpc) match real Direct3D on every compared frame, and so do
   atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
-  to 07; atg-simplecomputepc and atg-simplemsaa_pc differ as before (Gap list). bgfx's were not
-  run this run.
-- Module sizes (section 10), release builds 20:56 to 20:58 (r6z-sizes): `wcontainers_directx.dll`
-  14,304,256 bytes on WebGPU and 9,881,600 bytes on WebGL 2; the forwarders 1,024 bytes each;
-  `wcontainers_d3d12.dll` (the Direct3D 12 track's code as merged here)
-  13,733,376 bytes.
-- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (r6z-load,
-  20:58 to 21:02): the system's d3d11.dll 1,147 us; ours on WebGPU 1,637 us; ours on WebGL 2
-  1,110 us; `wcontainers_d3d12.dll` 1,643 us.
-- Building ahead (plan 4.4; run-warm.sh, five programs run twice from one cache directory, 21:02
-  to 21:06, r6z-warm): Godot 3D's cold run built 124 ahead and drew none, 66 at their first draw;
-  its warm start built its 61 recorded combinations at start and drew all 61, built 124 ahead and
-  drew none, and 26 at their first draw. Godot 2D's warm start built 3 at start and drew 3.
-  Unchanged: building ahead has never hit.
-- Real Direct3D's own outputs of the new cases (logs/r6c.log, r6e.log): comparisons through
-  colour views give a mix of 0 and 1 by texel; at 9_x the RTX 3080 makes shared textures of
-  `B8G8R8A8_UNORM`, `BC1_UNORM`, `R16G16B16A16_FLOAT` and (from 9_2) `R32_FLOAT`, and refuses
-  `R8G8B8A8_UNORM` ones whatever the bindings.
+  to 07; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (8 pixels, 4 beyond their
+  tiles' allowance) differ as before. bgfx (m2-bgfx): 26-occlusion differs by its one overlay line
+  (Gap list), the rest as before.
+- Module sizes (section 10), release builds 11:23 to 11:29 (m2-sizes): `wcontainers_directx.dll`
+  14,333,440 bytes on WebGPU and 9,909,248 bytes on WebGL 2; the forwarders 1,024 bytes each;
+  the Direct3D 12 track's `wcontainers_d3d12.dll` 13,766,656 bytes. At 1b47d3dc that library no
+  longer builds (its code uses the shaders crate's private `container` module; m3-sizes), so its
+  load time below is of the 5e34f8ff build.
+- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (m3-load,
+  11:47): the system's d3d11.dll 1,156 us; ours on WebGPU 1,627 us; ours on WebGL 2 1,099 us;
+  `wcontainers_d3d12.dll` 1,625 us.
+- Building ahead (plan 4.4; main/run-warm.sh, five programs run twice from one cache directory,
+  11:29 to 11:33, m2-warm): Godot 3D's cold run built 124 ahead and drew none, 66 at their first
+  draw; its warm start built its 61 recorded combinations at start and drew all 61, built 124
+  ahead and drew none, and 26 at their first draw. Godot 2D: 13 at first draw cold; warm, 3 built
+  at start and drawn, 10 at first draw. Why building ahead does not hit: Differences from the RTX
+  3080 (traced, programs/m1dbg).
 
 Earlier runs' measurements are in this file's git history.
 
