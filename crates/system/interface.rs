@@ -188,6 +188,7 @@ pub trait FallbackObserver {
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
 
+    /// Sends a FUSE request and returns its reply; a request that FUSE gives no reply finishes at once with an empty one.
     async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>;
 }
 
