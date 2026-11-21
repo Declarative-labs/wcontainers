@@ -10,5 +10,5 @@ path = "conformance.rs"
 [dependencies]
 wcontainers-runtime = { path = ".." }
 wcontainers-executor = { path = "../../executor" }
-wcontainers-kernel-interface = { path = "../../kernel-interface" }
+wcontainers-kernel = { path = "../../kernel" }
 wcontainers-system = { path = "../../system" }

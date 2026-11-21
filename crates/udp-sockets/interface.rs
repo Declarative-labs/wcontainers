@@ -9,7 +9,7 @@ use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, PortSetting,
     ProcessorIndex, ReceivedPacketFields, RouteSelectors, SendError, TransmitReport,
 };
-use wcontainers_kernel_interface::UserId;
+use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.

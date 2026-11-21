@@ -4286,7 +4286,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4296,7 +4296,7 @@ dependencies = [
  "etherparse",
  "wcontainers-icmp-sockets",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4308,7 +4308,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-kernel-interface"
+name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
@@ -4317,10 +4317,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-kernel-interface-conformance"
+name = "wcontainers-kernel-conformance"
 version = "0.1.0"
 dependencies = [
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4422,7 +4422,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4431,7 +4431,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-raw-sockets",
 ]
 
@@ -4441,7 +4441,7 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-abi",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
 ]
 
 [[package]]
@@ -4450,7 +4450,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-route-resolver",
 ]
 
@@ -4460,7 +4460,7 @@ version = "0.1.0"
 dependencies = [
  "oci-spec",
  "wcontainers-executor",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-system",
 ]
 
@@ -4469,7 +4469,7 @@ name = "wcontainers-runtime-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-executor",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-runtime",
  "wcontainers-system",
 ]
@@ -4526,7 +4526,7 @@ dependencies = [
  "wcontainers-clock",
  "wcontainers-executor",
  "wcontainers-icmp-sockets",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-random-source",
  "wcontainers-raw-sockets",
  "wcontainers-route-resolver",
@@ -4539,7 +4539,7 @@ name = "wcontainers-system-conformance"
 version = "0.1.0"
 dependencies = [
  "domain",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-system",
 ]
 
@@ -4561,7 +4561,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-negative-route-advice",
 ]
 
@@ -4570,7 +4570,7 @@ name = "wcontainers-tcp-sockets-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-tcp-sockets",
 ]
 
@@ -4624,7 +4624,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-negative-route-advice",
 ]
 
@@ -4634,7 +4634,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "wcontainers-internet-protocol",
- "wcontainers-kernel-interface",
+ "wcontainers-kernel",
  "wcontainers-udp-sockets",
 ]
 

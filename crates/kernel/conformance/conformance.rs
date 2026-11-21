@@ -1,7 +1,7 @@
-//! The tests every implementation of wcontainers-kernel-interface runs, written against its traits alone.
+//! The tests every implementation of wcontainers-kernel runs, written against its traits alone.
 
-use wcontainers_kernel_interface::TaskId;
-use wcontainers_kernel_interface::{FuseClient, Kernel};
+use wcontainers_kernel::TaskId;
+use wcontainers_kernel::{FuseClient, Kernel};
 
 /// The process the kernel placeholder asks for.
 const PLACEHOLDER_PROCESS: TaskId = TaskId(u32::MIN);

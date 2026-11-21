@@ -1,8 +1,8 @@
 //! The tests every implementation of wcontainers-system runs, written against its traits alone.
 
 use domain::base::Name;
-use wcontainers_kernel_interface::DomainResolutionId;
-use wcontainers_kernel_interface::TaskId;
+use wcontainers_kernel::DomainResolutionId;
+use wcontainers_kernel::TaskId;
 use wcontainers_system::{DomainNameResolver, FuseServer, TaskIdAllocator};
 
 /// The id today's kernel gives as the one before its first.

@@ -7,7 +7,7 @@ use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4RouteSelectors,
     Ipv6RouteSelectors, Received, RouterAlertValue, SendError,
 };
-use wcontainers_kernel_interface::UserId;
+use wcontainers_kernel::UserId;
 
 /// Sockets for [raw](https://man7.org/linux/man-pages/man7/raw.7.html) IP packets.
 pub trait RawSockets: for<'a> Configurable<Self::Socket, RawSocketSetting<'a>> {

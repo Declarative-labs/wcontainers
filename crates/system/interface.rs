@@ -8,8 +8,8 @@ use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_kernel_interface::signal_information::SignalInformation;
-use wcontainers_kernel_interface::{
+use wcontainers_kernel::signal_information::SignalInformation;
+use wcontainers_kernel::{
     AccessKind, DomainResolutionId, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse,
     TaskId,
 };

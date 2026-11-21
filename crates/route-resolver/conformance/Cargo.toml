@@ -10,5 +10,5 @@ path = "conformance.rs"
 [dependencies]
 wcontainers-route-resolver = { path = ".." }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
-wcontainers-kernel-interface = { path = "../../kernel-interface" }
+wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true

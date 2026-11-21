@@ -7,7 +7,7 @@ use wcontainers_internet_protocol::{
     BroadcastPermission, Ipv4RouteSelectors, NeighbourConfirmation, PacketMark, RouteScope,
     RouteSelectors, SourceAddressCheck, UpperLayer,
 };
-use wcontainers_kernel_interface::UserId;
+use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
 
 /// Calls each method of `RouteResolver` as a placeholder that fails until the real checks are written.

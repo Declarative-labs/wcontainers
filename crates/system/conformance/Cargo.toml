@@ -10,4 +10,4 @@ path = "conformance.rs"
 [dependencies]
 domain = { version = "0.12.3", default-features = false }
 wcontainers-system = { path = ".." }
-wcontainers-kernel-interface = { path = "../../kernel-interface" }
+wcontainers-kernel = { path = "../../kernel" }

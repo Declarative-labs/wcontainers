@@ -7,7 +7,7 @@ use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Received, SendError,
 };
-use wcontainers_kernel_interface::UserId;
+use wcontainers_kernel::UserId;
 
 /// Sockets for [ICMP](https://man7.org/linux/man-pages/man7/icmp.7.html) echo requests and replies.
 pub trait IcmpSockets: for<'a> Configurable<Self::Socket, IpSocketSetting<'a>> {

@@ -11,7 +11,7 @@ use wcontainers_internet_protocol::{
     PathMtuDiscovery, Report, RouteScope, SourceAddressCheck, TransmitReportKey,
     TransmitReportRequest, UpperLayer,
 };
-use wcontainers_kernel_interface::UserId;
+use wcontainers_kernel::UserId;
 
 /// Calls each method of `IcmpSockets` as a placeholder that fails until the real checks are written.
 pub fn call_icmp_sockets_methods<S: IcmpSockets>(sockets: S) {

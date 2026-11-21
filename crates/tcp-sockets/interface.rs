@@ -13,7 +13,7 @@ use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, LocalBinding, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
 };
-use wcontainers_kernel_interface::UserId;
+use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
 use crate::authentication::TcpAuthenticationCounters;

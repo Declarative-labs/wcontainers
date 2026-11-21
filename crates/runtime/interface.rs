@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use oci_spec::runtime::Spec;
-use wcontainers_kernel_interface::errno::Errno;
-use wcontainers_kernel_interface::signal::Signal;
-use wcontainers_kernel_interface::{ExecutionConfig, ReplayDeterminism, ThreadOrdering};
+use wcontainers_kernel::errno::Errno;
+use wcontainers_kernel::signal::Signal;
+use wcontainers_kernel::{ExecutionConfig, ReplayDeterminism, ThreadOrdering};
 use wcontainers_system::{ProcessTracer, StreamTransport, System};
 
 /// A maker of containers that run on one kind of executor for one kind of system.

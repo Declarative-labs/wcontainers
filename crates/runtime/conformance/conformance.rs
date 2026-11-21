@@ -1,6 +1,6 @@
 //! The tests every implementation of wcontainers-runtime runs, written against its traits alone.
 
-use wcontainers_kernel_interface::{ExecutionConfig, ReplayDeterminism, ThreadOrdering};
+use wcontainers_kernel::{ExecutionConfig, ReplayDeterminism, ThreadOrdering};
 use wcontainers_runtime::{Container, ContainerConfig, Image, Interrupter, Runtime};
 use wcontainers_system::{ProcessTracer, StreamTransport};
 
