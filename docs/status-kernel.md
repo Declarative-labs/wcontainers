@@ -69,6 +69,16 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   know (the WebAssembly ceiling is the wasmtime crate's, from the translator's contract). A ruling
   or a shared constant in wcontainers-abi for that tier would settle it (Departures).
 
+- KF, third run: three of the runtime's start values are not built, each for a reason that
+  needs a decision or more than a start value (Departures): `timeOffsets` needs time namespaces
+  (every monotonic and boot time clock read, absolute timer, `/proc/uptime` and the vDSO's data
+  shifted per namespace); `sysctls` needs each namespaced sysctl Docker allows to become kernel
+  state the kernel honours (they are constants today, and `/proc/sys` is read-only); leaving a
+  default mount out needs the mounts that depend on it (`/dev/null` for the masks and the first
+  process's input, `/dev/pts` in `/dev`) settled. `execCPUAffinity` needs no start value: the
+  guest has one CPU, so a set holding CPU 0 changes nothing and one without it fails as runc's
+  `sched_setaffinity` would (EINVAL); the runtime can decide that alone.
+
 - KF, second run: the literal fix list's step 2 wants `NANOSECONDS_PER_MICROSECOND` in the abi;
   named, the literal check finds wcontainers-arm64's test literal `1000` (tests/exact.rs:95,
   `square_roots_round_as_asked`, a square root, not a time) restating it, in a crate this track
@@ -101,6 +111,16 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, third run: origin/phase-1 and origin/phase-1-literals had nothing new. Built: the second
+batch of the runtime's start values (capability sets, seccomp as Docker's profile, none or a
+filter of the container's own, scheduling as `sched_attr`, the I/O priority, the personality),
+each applied as the first process's own call would before its program runs, with reference
+tests; `/proc/<pid>/personality`; and Docker's default mounts, read-only paths and masked paths
+as public constants that the mount table is made from. The literal baseline is 8205 lines (8252
+before). Not done: sysctls, timeOffsets and leaving a default mount out (For the orchestrator),
+the rest of the literal fix list, and the lowest tier under the WebAssembly ceiling (a ruling).
+KF is not complete. See "KF, third run".
 
 KF, second run: origin/phase-1 (the streams track's S3: tasks taken off the kernel, embedder
 signals, sharing notes) is merged, its tests pass here. Built: the record and replay test (the
@@ -280,6 +300,55 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KF, third run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (02:47 UTC on the 21st).
+Heavy runs on the ARM64 machine (load 1 to 12 on 96 cores), one lint on the x86 machine; the
+literal check and the Mac's part on the Mac (load 6 to 35, -j 4; the check needs the git
+checkout). Scratch folder kernel/kf3.
+
+The second run's whole suite at c1ab0d84 was stopped at 03:00 UTC, superseded by this run's code
+(its partial log kf3/suite-c1ab0d84-partial/log: 197 passed and one failure so far,
+backend `file_capabilities_match_reference`, which is on the ARM list).
+
+The start values, second batch (2c35120c), new fields of `StartOptions` with Docker's defaults:
+- `capabilities`, a `CapabilitySets` (effective, permitted, inheritable, bounding, ambient;
+  default `DOCKER_CAPABILITY_SETS`). Refused (the start fails with EPERM) where Linux refuses
+  such sets: effective beyond permitted, or ambient beyond permitted and inheritable.
+- `seccomp`, a `Seccomp`: `DockerProfile` (the measured profile, as before), `Unconfined`, or
+  `Filter(&[sock_filter])`, a classic BPF program installed as the first process's own filter.
+  The profile is now a kernel setting (`Kernel::docker_profile`); `/proc/<pid>/status`'s
+  `Seccomp` and `Seccomp_filters` and `PR_GET_SECCOMP` follow it (0 and 0 when unconfined).
+- `scheduler: Option<sched_attr>` (`sched_attr` exported), `io_priority` and `personality`: set
+  through the same code as the process's own `sched_setattr`, `ioprio_set` and `personality`
+  (new `set_own_schedule`, `set_io_priority`, `set_personality`), before its program runs, as
+  runc sets them; a value those calls refuse fails the start with their errno.
+- `ADDR_NO_RANDOMIZE`, `IOPRIO_CLASS_BE` and `IOPRIO_CLASS_SHIFT` are exported for building them.
+- `/proc/<pid>/personality` is built (`proc_pid_personality`, mode 0400, behind the trace check).
+- Tests, startoptions.rs: `added_and_dropped_capabilities_match_reference` (`--cap-drop CHOWN
+  --cap-add NET_ADMIN`: the five sets and a refused chown),
+  `unconfined_with_a_personality_a_nice_value_and_an_io_priority_matches_reference`
+  (`seccomp=unconfined`; the reference's shell runs `renice`, `ionice -c 2 -n 6` and `linux64 -R`
+  first, as Docker has no option for them and its profile refuses that personality: the seccomp
+  lines, `/proc/self/personality`, `nice`, `ionice -p`, and stat's nice and policy) and
+  `a_seccomp_profile_of_the_containers_own_matches_reference` (a profile refusing mkdirat with
+  EACCES, given to ours as the equivalent filter). All six of startoptions.rs passed on the ARM64
+  machine (03:06 UTC, load 1 to 12; kf3/startopts3.log). The first run of the second test failed
+  only on `/proc/self/personality`, which was not built (kf3/startopts1.log).
+
+The mounts (0fb7432a): `DockerMount` (point, source, type, options), `PROC_MOUNT`, `DEV_MOUNT`,
+`DEVPTS_MOUNT`, `SYS_MOUNT`, `CGROUP_MOUNT`, `MQUEUE_MOUNT`, `SHM_MOUNT`, `DOCKER_MOUNTS` (in
+Docker's order), `DOCKER_READ_ONLY_PATHS` and `DOCKER_MASKED_PATHS` (the paths of Docker's lists
+that the container's file systems have) are public, and `make_mounts` makes the mount table from
+them. procns `masked_entries_match_reference` passed on the ARM64 machine; the mount tables are
+on the ARM list and run in the Mac's part.
+
+The literal baseline: 8252 to 8244 (2c35120c: Linux's nice range named once as `MIN_NICE` and
+`MAX_NICE`; status's hexadecimal fields from a helper sized by the type, its labels a named
+table) and to 8205 (0fb7432a). The check passes (kf3/lit6.txt).
+
+Verdicts changed on purpose in this run: none of the old tests; new are startoptions' three.
 
 ## KF, second run
 
@@ -4483,6 +4552,19 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- KF, third run: Docker has no option for scheduling, the I/O priority or the personality, so
+  startoptions' reference shell sets them (`renice`, `ionice`, `linux64 -R`) before its program,
+  where runc would. The image has no `chrt`, so the policy is compared only as SCHED_NORMAL (stat's
+  policy field); other policies take the same code as `sched_setattr`, whose reference tests
+  (schedattr, priorities) cover them.
+- KF, third run: Docker's seccomp profile stays the kernel's native check (it is the default and
+  the fastest), chosen at start as `Seccomp::DockerProfile`; a profile of the container's own
+  comes as a classic BPF program (`Seccomp::Filter`), which the runtime compiles from the
+  configuration. Names (`StartOptions`, `CapabilitySets`, `Seccomp`, `DockerMount`) are
+  suggestions for the owner.
+- KF, third run: sysctls, timeOffsets and leaving a default mount out are not built (For the
+  orchestrator); a configuration with them stays refused by the runtime, so nothing pretends.
+
 - KF, second run: the record and replay test records at the test host (what the host gives the
   kernel, the events handed in and where turns end), as the brief's item asks, not per process at
   its system calls as the owner's ruling of 2026-11-19 places replay; that ruling's two kernel
@@ -5269,6 +5351,15 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KF, after its third run (the bar as below):
+1. The start values not built (For the orchestrator, third run): sysctls, timeOffsets, leaving a
+   default mount out. Each needs the orchestrator's or owner's word on its scope first.
+2. The literal fix list: step 2's other units (microseconds, once the arm64 test's `1000` is
+   settled; milliseconds; the tick), then step 3 on, in the audit's order.
+3. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
+4. The whole suite on the ARM64 machine and the Mac's part (scratch kf3/mac.sh, layer 1 seeds
+   from 9191138 next) at the final code.
 
 KF, after its second run (the bar as below):
 1. The rest of the runtime's start values, each with a reference test in startoptions.rs: the
