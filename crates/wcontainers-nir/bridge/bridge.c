@@ -1090,18 +1090,48 @@ wc_nir_split_resource_arrays(nir_shader *nir)
    _mesa_hash_table_destroy(r.elements, NULL);
 }
 
+/* The uniform blocks the loads reach, and the bytes each reaches at constant offsets. */
+struct uniform_use {
+   uint32_t blocks;
+   uint32_t bytes[PIPE_MAX_CONSTANT_BUFFERS];
+};
+
+static bool
+note_uniforms(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct uniform_use *use = data;
+   if (intr->intrinsic != nir_intrinsic_load_ubo || !nir_src_is_const(intr->src[0]) ||
+       nir_src_as_uint(intr->src[0]) >= ARRAY_SIZE(use->bytes))
+      return false;
+   uint32_t index = nir_src_as_uint(intr->src[0]);
+   use->blocks = MAX2(use->blocks, index + 1);
+   if (nir_src_is_const(intr->src[1])) {
+      uint32_t end = nir_src_as_uint(intr->src[1]) +
+                     intr->def.num_components * intr->def.bit_size / CHAR_BIT;
+      use->bytes[index] = MAX2(use->bytes[index], end);
+   }
+   return false;
+}
+
 void
 wc_nir_uniform_blocks_as_words(nir_shader *nir)
 {
-   uint32_t bytes[PIPE_MAX_CONSTANT_BUFFERS] = {0};
-   uint32_t blocks = 0;
+   /* Block indices and offsets that are constants show as constants. */
+   wc_optimize(nir);
+   struct uniform_use use = {0};
+   nir_shader_intrinsics_pass(nir, note_uniforms, nir_metadata_all, &use);
+   uint32_t *bytes = use.bytes;
+   uint32_t blocks = use.blocks;
    nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
       /* An array of blocks, or one block (the default uniforms' an array of vectors). */
       const bool arrayed =
          glsl_type_is_array(var->type) && glsl_without_array(var->type) == var->interface_type;
       uint32_t count = arrayed ? glsl_get_aoa_size(var->type) : 1;
-      uint32_t size = glsl_get_explicit_size(arrayed ? var->interface_type : var->type, false);
-      for (uint32_t i = 0; i < count && var->data.binding + i < ARRAY_SIZE(bytes); i++) {
+      const struct glsl_type *block = arrayed ? var->interface_type : var->type;
+      /* OpenGL ES's blocks are laid out by std140 (shared and packed ones as it), which the
+       * block's type may not carry as explicit offsets. */
+      uint32_t size = MAX2(glsl_get_explicit_size(block, false), glsl_get_std140_size(block, false));
+      for (uint32_t i = 0; i < count && var->data.binding + i < ARRAY_SIZE(use.bytes); i++) {
          bytes[var->data.binding + i] = MAX2(bytes[var->data.binding + i], size);
          blocks = MAX2(blocks, var->data.binding + i + 1);
       }
