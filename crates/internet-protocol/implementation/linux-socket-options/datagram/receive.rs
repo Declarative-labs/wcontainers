@@ -350,6 +350,10 @@ impl Headers {
         self.length
     }
 
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+
     pub fn push(&mut self, bytes: &[u8]) {
         self.bytes[self.length..self.length + bytes.len()].copy_from_slice(bytes);
         self.length += bytes.len();

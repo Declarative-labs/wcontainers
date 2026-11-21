@@ -306,22 +306,20 @@ impl SendState {
                 )?;
                 let mtu = header.fragment_mtu.map_or(u32::MIN, |mtu| mtu.0);
                 sticky.ensure_int(fd, Slot::Ipv6FragmentMtu, mtu as c_int)?;
-                let raw = |header: &Option<etherparse::Ipv6RawExtHeaderSlice<'_>>| {
-                    header
-                        .as_ref()
-                        .map_or(&[][..], |header| header.slice())
-                        .to_vec()
-                };
-                sticky.ensure_bytes(fd, Slot::HopByHopOptions, &raw(&header.hop_by_hop_options))?;
+                sticky.ensure_bytes(
+                    fd,
+                    Slot::HopByHopOptions,
+                    extension_bytes(&header.hop_by_hop_options),
+                )?;
                 sticky.ensure_bytes(
                     fd,
                     Slot::RoutingDestinationOptions,
-                    &raw(&header.routing_destination_options),
+                    extension_bytes(&header.routing_destination_options),
                 )?;
                 sticky.ensure_bytes(
                     fd,
                     Slot::DestinationOptions,
-                    &raw(&header.destination_options),
+                    extension_bytes(&header.destination_options),
                 )?;
                 Ok(destination)
             }
@@ -402,6 +400,11 @@ fn path_mtu_discovery(mode: PathMtuDiscovery) -> c_int {
         PathMtuDiscovery::Interface => uapi::IP_PMTUDISC_INTERFACE,
         PathMtuDiscovery::Omit => uapi::IP_PMTUDISC_OMIT,
     }) as c_int
+}
+
+/// The bytes of an extension header as its sticky option takes them, none for no header.
+fn extension_bytes<'a>(header: &'a Option<etherparse::Ipv6RawExtHeaderSlice<'_>>) -> &'a [u8] {
+    header.as_ref().map_or(&[], |header| header.slice())
 }
 
 fn address_preferences(route: &wcontainers_internet_protocol::Ipv6RouteSelectors<'_>) -> c_int {

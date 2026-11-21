@@ -3,9 +3,8 @@
 use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr};
 
-use etherparse::{
-    Icmpv4Header, Icmpv4Type, Icmpv6Header, Icmpv6Type, IpNumber, Ipv6Header, icmpv4, icmpv6,
-};
+use etherparse::checksum::Sum16BitWords;
+use etherparse::{Icmpv4Header, Icmpv6Header, IpNumber, icmpv4, icmpv6};
 
 use crate::datagram::receive::{Ancillary, Headers, ipv4_header, push_ipv6_headers};
 
@@ -23,66 +22,44 @@ pub fn write_icmp_error(
     protocol: IpNumber,
     quoted: &[u8],
 ) -> Option<usize> {
-    let offender = offender?.ip().to_canonical();
-    let destination = destination.to_canonical();
-    let us = ancillary.header_destination.unwrap_or(local).to_canonical();
-    let quiet = Ancillary::default();
-    let inner_payload = quoted.len() + copied;
-    let rest = rest_of_header(error);
-    let mut headers = Headers::new();
-    let icmp_start;
-    let icmp_length;
-    let icmp_header;
-    match (offender, us, destination) {
-        (IpAddr::V4(offender), IpAddr::V4(us), IpAddr::V4(destination)) => {
-            let inner = ipv4_header(us, destination, protocol, inner_payload, &quiet)?;
-            icmp_length = Icmpv4Header::MIN_LEN + inner.header_len() + inner_payload;
-            let outer = ipv4_header(offender, us, IpNumber::ICMP, icmp_length, ancillary)?;
-            headers.push(&outer.to_bytes());
-            icmp_start = headers.len();
-            icmp_header = Icmpv4Header::MIN_LEN;
-            headers.push(&[u8::MIN; Icmpv4Header::MIN_LEN]);
-            headers.push(&inner.to_bytes());
-        }
-        (IpAddr::V6(offender), IpAddr::V6(us), IpAddr::V6(destination)) => {
-            icmp_length = Icmpv6Header::MIN_LEN + Ipv6Header::LEN + inner_payload;
-            push_ipv6_headers(
-                &mut headers,
-                offender,
-                us,
-                IpNumber::IPV6_ICMP,
-                icmp_length,
-                ancillary,
-            )?;
-            icmp_start = headers.len();
-            icmp_header = Icmpv6Header::MIN_LEN;
-            headers.push(&[u8::MIN; Icmpv6Header::MIN_LEN]);
-            push_ipv6_headers(
-                &mut headers,
-                us,
-                destination,
-                protocol,
-                inner_payload,
-                &quiet,
-            )?;
-        }
-        _ => return None,
-    }
-    headers.push(quoted);
-    let placed = headers.place(into, copied);
-    if placed >= headers.len() {
-        write_icmp_header(
-            into,
-            icmp_start,
-            icmp_header,
-            placed,
-            offender,
-            us,
-            rest,
-            error,
-        )?;
-    }
-    Some(icmp_start + icmp_length)
+    let (headers, length) = payload_error(
+        &into[..copied],
+        ancillary,
+        error,
+        offender,
+        local,
+        destination,
+        protocol,
+        quoted,
+    )?;
+    headers.place(into, copied);
+    Some(length)
+}
+
+/// Writes the ICMP error as `write_icmp_error` does, of all the `data` Linux gave, which `into` may cut.
+#[allow(clippy::too_many_arguments)]
+pub fn write_whole_icmp_error(
+    into: &mut [u8],
+    data: &[u8],
+    ancillary: &Ancillary<'_>,
+    error: &libc::sock_extended_err,
+    offender: Option<SocketAddr>,
+    local: IpAddr,
+    destination: IpAddr,
+    protocol: IpNumber,
+    quoted: &[u8],
+) -> Option<usize> {
+    let error = payload_error(
+        data,
+        ancillary,
+        error,
+        offender,
+        local,
+        destination,
+        protocol,
+        quoted,
+    )?;
+    Some(place_whole(into, data, error))
 }
 
 /// Writes the ICMP error of an error queue entry whose `copied` bytes at the start of `into` quote the packet
@@ -95,22 +72,100 @@ pub fn write_icmp_error_quoting_header(
     offender: Option<SocketAddr>,
     local: IpAddr,
 ) -> Option<usize> {
-    let offender = offender?.ip().to_canonical();
+    let (headers, length) = header_error(&into[..copied], ancillary, error, offender, local)?;
+    headers.place(into, copied);
+    Some(length)
+}
+
+/// Writes the ICMP error as `write_icmp_error_quoting_header` does, of all the `data` Linux gave, which `into`
+/// may cut.
+pub fn write_whole_icmp_error_quoting_header(
+    into: &mut [u8],
+    data: &[u8],
+    ancillary: &Ancillary<'_>,
+    error: &libc::sock_extended_err,
+    offender: Option<SocketAddr>,
+    local: IpAddr,
+) -> Option<usize> {
+    let error = header_error(data, ancillary, error, offender, local)?;
+    Some(place_whole(into, data, error))
+}
+
+/// Puts the headers and then as much of `data` as fits into `into`, giving the error's whole length.
+fn place_whole(into: &mut [u8], data: &[u8], (headers, length): (Headers, usize)) -> usize {
+    let fit = data.len().min(into.len());
+    into[..fit].copy_from_slice(&data[..fit]);
+    headers.place(into, fit);
+    length
+}
+
+/// The headers before `data` of an ICMP error about a payload, from its outer IP header to `quoted`, and the
+/// error's whole length.
+#[allow(clippy::too_many_arguments)]
+fn payload_error(
+    data: &[u8],
+    ancillary: &Ancillary<'_>,
+    error: &libc::sock_extended_err,
+    offender: Option<SocketAddr>,
+    local: IpAddr,
+    destination: IpAddr,
+    protocol: IpNumber,
+    quoted: &[u8],
+) -> Option<(Headers, usize)> {
     let us = ancillary.header_destination.unwrap_or(local).to_canonical();
-    let rest = rest_of_header(error);
+    let quiet = Ancillary::default();
+    let inner_payload = quoted.len() + data.len();
+    let mut inner = Headers::new();
+    match (us, destination.to_canonical()) {
+        (IpAddr::V4(us), IpAddr::V4(destination)) => {
+            inner.push(&ipv4_header(us, destination, protocol, inner_payload, &quiet)?.to_bytes())
+        }
+        (IpAddr::V6(us), IpAddr::V6(destination)) => {
+            push_ipv6_headers(&mut inner, us, destination, protocol, inner_payload, &quiet)?;
+        }
+        _ => return None,
+    }
+    inner.push(quoted);
+    error_headers(ancillary, error, offender?, us, inner.as_slice(), data)
+}
+
+/// The headers before `data` of an ICMP error that quotes a packet from its IP header on, and the error's whole
+/// length.
+fn header_error(
+    data: &[u8],
+    ancillary: &Ancillary<'_>,
+    error: &libc::sock_extended_err,
+    offender: Option<SocketAddr>,
+    local: IpAddr,
+) -> Option<(Headers, usize)> {
+    let us = ancillary.header_destination.unwrap_or(local).to_canonical();
+    error_headers(ancillary, error, offender?, us, &[], data)
+}
+
+/// The outer IP header, the ICMP header with its checksum over `quoted` and `data`, then `quoted`, of an error from
+/// `offender` to `us`; and the error's whole length. `quoted` is whole headers, of an even length.
+fn error_headers(
+    ancillary: &Ancillary<'_>,
+    error: &libc::sock_extended_err,
+    offender: SocketAddr,
+    us: IpAddr,
+    quoted: &[u8],
+    data: &[u8],
+) -> Option<(Headers, usize)> {
     let mut headers = Headers::new();
-    let icmp_header;
+    let mut words = Sum16BitWords::new()
+        .add_2bytes([error.ee_type, error.ee_code])
+        .add_4bytes(rest_of_header(error));
     let icmp_length;
-    match (offender, us) {
+    let sum = match (offender.ip().to_canonical(), us) {
         (IpAddr::V4(offender), IpAddr::V4(us)) => {
-            icmp_header = Icmpv4Header::MIN_LEN;
-            icmp_length = icmp_header + copied;
+            icmp_length = Icmpv4Header::MIN_LEN + quoted.len() + data.len();
             let outer = ipv4_header(offender, us, IpNumber::ICMP, icmp_length, ancillary)?;
             headers.push(&outer.to_bytes());
+            words
         }
         (IpAddr::V6(offender), IpAddr::V6(us)) => {
-            icmp_header = Icmpv6Header::MIN_LEN;
-            icmp_length = icmp_header + copied;
+            icmp_length = Icmpv6Header::MIN_LEN + quoted.len() + data.len();
             push_ipv6_headers(
                 &mut headers,
                 offender,
@@ -119,67 +174,21 @@ pub fn write_icmp_error_quoting_header(
                 icmp_length,
                 ancillary,
             )?;
+            words
+                .add_16bytes(offender.octets())
+                .add_16bytes(us.octets())
+                .add_4bytes(u32::try_from(icmp_length).ok()?.to_be_bytes())
+                .add_2bytes([u8::MIN, IpNumber::IPV6_ICMP.0])
         }
         _ => return None,
-    }
-    let icmp_start = headers.len();
-    headers.push(&[u8::MIN; Icmpv6Header::MIN_LEN][..icmp_header]);
-    let placed = headers.place(into, copied);
-    if placed >= headers.len() {
-        write_icmp_header(
-            into,
-            icmp_start,
-            icmp_header,
-            placed,
-            offender,
-            us,
-            rest,
-            error,
-        )?;
-    }
-    Some(icmp_start + icmp_length)
-}
-
-/// Writes the ICMP header with its checksum over the body placed after it.
-#[allow(clippy::too_many_arguments)]
-fn write_icmp_header(
-    into: &mut [u8],
-    icmp_start: usize,
-    icmp_header: usize,
-    placed: usize,
-    offender: IpAddr,
-    us: IpAddr,
-    rest: [u8; size_of::<u32>()],
-    error: &libc::sock_extended_err,
-) -> Option<()> {
-    let body = &into[icmp_start + icmp_header..placed];
-    let header = match (offender, us) {
-        (IpAddr::V6(offender), IpAddr::V6(us)) => Icmpv6Header::with_checksum(
-            Icmpv6Type::Unknown {
-                type_u8: error.ee_type,
-                code_u8: error.ee_code,
-                bytes5to8: rest,
-            },
-            offender.octets(),
-            us.octets(),
-            body,
-        )
-        .ok()?
-        .to_bytes()
-        .to_vec(),
-        _ => Icmpv4Header::with_checksum(
-            Icmpv4Type::Unknown {
-                type_u8: error.ee_type,
-                code_u8: error.ee_code,
-                bytes5to8: rest,
-            },
-            body,
-        )
-        .to_bytes()
-        .to_vec(),
     };
-    into[icmp_start..icmp_start + header.len()].copy_from_slice(&header);
-    Some(())
+    let checksum = sum.add_slice(quoted).add_slice(data).ones_complement();
+    let length = headers.len() + icmp_length;
+    headers.push(&[error.ee_type, error.ee_code]);
+    headers.push(&checksum.to_ne_bytes());
+    headers.push(&rest_of_header(error));
+    headers.push(quoted);
+    Some((headers, length))
 }
 
 /// The four bytes after an ICMP message's checksum: the MTU of a packet too big, the pointer of a parameter
