@@ -25,6 +25,8 @@ pub struct View<B: Backend> {
     pub swizzle: [Swizzle; VectorSize::MAX],
     /// Its texels are integers, which programs sample as their nearest texel's load.
     pub integer: bool,
+    /// For an integer cube map, a 2D array of its faces, which programs load from.
+    faces: Option<Result<B::TextureView, &'static str>>,
 }
 
 /// The identity swizzle, which needs no change to a program.
@@ -53,6 +55,13 @@ impl<B: Backend> View<B> {
     /// The view a program samples, or why the driver could not make it.
     pub fn view(&self) -> Result<&B::TextureView, String> {
         self.view.as_ref().map_err(|why| (*why).to_owned())
+    }
+
+    /// The 2D array of an integer cube map's faces, or none for another view.
+    pub fn faces(&self) -> Option<Result<&B::TextureView, String>> {
+        self.faces
+            .as_ref()
+            .map(|faces| faces.as_ref().map_err(|why| (*why).to_owned()))
     }
 }
 
@@ -104,11 +113,13 @@ pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut p
     unsafe { release(view) };
 }
 
-/// The interface's view of a Gallium sampler view, or why there is none.
+/// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a
+/// cube map's as a 2D array of its faces.
 fn texture_view<B: Backend>(
     backend: &mut B,
     resource: &Resource<B>,
     view: &pipe_sampler_view,
+    cube_faces: bool,
 ) -> Result<B::TextureView, &'static str> {
     let (texture, desc) = resource
         .texture()
@@ -121,6 +132,7 @@ fn texture_view<B: Backend>(
     // SAFETY: a live view.
     let dimension = match unsafe { wc_sampler_view_target(view) } {
         PIPE_TEXTURE_3D => ViewDimension::D3,
+        PIPE_TEXTURE_CUBE if cube_faces => ViewDimension::D2Array,
         PIPE_TEXTURE_CUBE => ViewDimension::Cube,
         PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
         PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
@@ -169,18 +181,23 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     base.context = pipe;
     // SAFETY: as above; the view takes its own reference.
     unsafe { resource::reference(&mut base.texture, texture) };
-    let view = texture_view::<B>(&mut *context.screen().backend(), resource, &base);
+    let mut backend = context.screen().backend();
+    let view = texture_view::<B>(&mut backend, resource, &base, false);
     let mut swizzles = [0; naga::VectorSize::MAX];
     // SAFETY: a live view, and a place for one swizzle a component.
     unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
     let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
     let integer = crate::format::format(base.format())
         .is_some_and(|f| matches!(f.kind(), FormatKind::Uint | FormatKind::Sint));
+    // SAFETY: a live view.
+    let cube = unsafe { wc_sampler_view_target(&base) } == PIPE_TEXTURE_CUBE;
+    let faces = (integer && cube).then(|| texture_view::<B>(&mut backend, resource, &base, true));
     Box::into_raw(Box::new(View::<B> {
         base,
         view,
         swizzle,
         integer,
+        faces,
     }))
     .cast()
 }
@@ -197,7 +214,11 @@ pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
             Box::from_raw(view.cast::<View<B>>()),
         )
     };
-    if let Ok(made) = view.view {
+    for made in [Some(view.view), view.faces]
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         context.screen().retire(Object::TextureView(made));
     }
     // SAFETY: the view held one reference on its texture.

@@ -760,6 +760,7 @@ fn binding_sets<B: Backend>(
                 resource: BindingResource::UniformBuffer(range),
             });
         }
+        let nearest: Vec<u32> = nearest_samplers(bound).iter().map(|n| n.unit).collect();
         for b in built.bindings.iter().filter(|b| b.added.is_none()) {
             let resource = match b.kind {
                 SlotKind::Uniform => continue,
@@ -770,7 +771,13 @@ fn binding_sets<B: Backend>(
                     }
                     // SAFETY: the slot holds a reference on a live view of this driver.
                     let view = unsafe { View::<B>::of(view) };
-                    BindingResource::Texture(view.view()?)
+                    // An integer cube map the program samples is loaded from its faces.
+                    match view.faces() {
+                        Some(faces) if nearest.contains(&b.register) => {
+                            BindingResource::Texture(faces?)
+                        }
+                        _ => BindingResource::Texture(view.view()?),
+                    }
                 }
                 SlotKind::Sampler => {
                     let sampler = bound.samplers[b.register as usize];
