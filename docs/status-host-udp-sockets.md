@@ -3,10 +3,29 @@
 Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
 
 ## For the other socket tracks (TCP, ICMP and raw)
-- TCP track: my lock file commit f0463350 (2026-11-21) also took the rename of your folder
-  `crates/tcp-sockets/implementation/linux-host` to `host`, which you had staged with `git mv` (four pure renames,
-  no content). Nothing else of yours went in; your edits are still uncommitted in the tree. My mistake: I committed
-  the index without paths.
+- New, run 6: the shared `readiness` asks the host about a socket only while a call waits on it. `watch` no
+  longer registers; a wait that has to wait arms a one-shot, level-triggered registration for the events its
+  socket's waiting calls ask for, the thread arms it again only for calls still waiting, and the last call gone
+  deletes one still armed. Measured: no watcher wake over 1200 datagrams nobody waited for (it was about one per
+  datagram). Your public calls did not change; TCP's 90, raw's 45, ICMP's 37 and the resolver's 31 tests pass
+  with it on the ARM machine. The watcher thread is now named `socket waits` (`readiness::WATCHER`; Linux keeps
+  15 bytes of a thread's name, so the old one was cut).
+- New, run 6: the shared crate builds on every unix system. `implementation.rs` is now only its root:
+  `host.rs` (every unix: `sock`, `io_host_error`, `host_error`, `last_host_error`, `Shortfalls`; off Linux the
+  host's error numbers become Linux's through a table) and `readiness.rs` are built everywhere, `linux.rs` (what
+  was `implementation.rs`), `datagram` and `icmp_error` on Linux only. Every path you use is unchanged.
+- New, run 6: `set_port_setting` makes the nonlocal addresses, bound interface and incoming processor settings
+  through socket2 (`set_ip_transparent_*`, `set_freebind_*`, `bind_device_by_index_*`, `set_cpu_affinity`);
+  only an incoming processor of none stays raw (`SO_INCOMING_CPU` -1, which socket2 cannot set).
+- ICMP track: the literal check reports `WAITED_SOCKETS` and `WAITS_ON_ONE` in both our suites as one
+  redefinition; yours is the copy of the UDP suite's.
+- Git, run 5 (this track's mistakes, all left as they are, since history is not rewritten): f0463350, a lock
+  file commit, committed the whole staging area and took the TCP track's staged folder rename (four pure renames,
+  no content); 93340ae9 took the route resolver track's folders back from `host` to `linux-netlink` and another
+  track's `translate.rs` edit; 5296c9c4 then renamed the resolver's folders back and changed
+  `crates/executor/implementation/hardware-virtualization/translate.rs` (76 lines). The end state is consistent:
+  the resolver's folder is `host`, and `translate.rs` has a later commit by its own track (88d924b3). Every
+  commit since names its paths.
 - New, run 5: `readiness` in the shared crate, the host's readiness of sockets on `polling` 3.11.0 (Apache-2.0
   OR MIT), chosen over mio because it registers a socket of any kind on every system (mio cannot register an
   arbitrary socket on Windows). `Readiness::new()` makes one epoll set and one thread that waits on it;
@@ -50,6 +69,25 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   sends with no rejection there; `holds_entries`. ICMP and raw tracks: switching from `error_entry` to
   `ErrorQueue::received` gives your sockets the same.
 
+## Milestone U1, run 6 (2026-11-21): the independent check's findings fixed
+- The crate builds on every unix system: `implementation.rs` is its root, `linux.rs` the Linux body (unchanged
+  but for the items below), `portable.rs` the body elsewhere (opening, binding, connecting, waiting and the
+  settings socket2 covers; a counted refusal for the rest, listed below). Checked for macOS with clippy on the
+  ARM machine (`-Zbuild-std`, target aarch64-apple-darwin): clean. Not run there: no Mac tests, by the rule that
+  the Mac only edits. The suite builds only on Linux now (it checks Linux on a Linux network; it already did not
+  build elsewhere, for the atomic clock).
+- Readiness: see "For the other socket tracks"; the implementation's own `tests/readiness.rs` checks it
+  (`a_socket_nobody_waits_on_costs_the_watcher_nothing`, `a_wait_allocates_nothing_once_warm`).
+- socket2 now also: `set_recv_tos_v4`, `set_recv_hoplimit_v6`, `set_recv_tclass_v6` at open, `cpu_affinity` for
+  the incoming processor, and the shared port settings above.
+- A send with an IPv6 header on an IPv4 socket answers EAFNOSUPPORT, as Linux's sendto does (it answered
+  ENOPROTOOPT from the IPv6 option written first).
+- Suite: 7 new checks (newest waker, a wait whose event went, two waits on one socket, a wait for no event,
+  unsent bytes of a full send buffer, a wait for writing until room is made, the other version's header), and
+  the incoming processor check now sets two processors and reads a connected socket's from where its sender ran.
+  The implementation's own test `a_report_comes_before_a_datagram_that_arrived_after_it` checks the errors-first
+  order. 67 + 2 tests pass on the ARM machine.
+
 ## Milestone U1: done again after the async ruling (run 5, 2026-11-21)
 - Run 5 did the ruling's three items: the crate is named `host`; `wait_for_events` waits on the host's
   readiness (shared `readiness`, on polling); the basic calls and the settings socket2 covers go through
@@ -73,7 +111,10 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - On the ARM64 machine (root):
   `arm-run /Users/thomaseaton/Documents/GitHub/wcontainers --name host-udp-sockets -- 'crates/udp-sockets/implementation/host/conformance.sh 12'`
   (the argument is the test threads; further arguments filter tests by name). It builds as the user and runs the
-  test binary with `sudo -n`. The test makes 64 network namespaces at the first test's start, while every other
+  two test binaries, `conformance` and `readiness`, with `sudo -n`.
+- The build for macOS, checked on the ARM machine: `RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=/work/target/host-udp-sockets-darwin
+  cargo clippy -Zbuild-std=std,core,alloc,panic_abort --target aarch64-apple-darwin -p wcontainers-internet-protocol-linux-socket-options
+  -p wcontainers-udp-sockets-host -p wcontainers-udp-sockets-conformance --tests`. The test makes 64 network namespaces at the first test's start, while every other
   test waits before opening a socket (a child process holds its parent's descriptors until it starts its
   program, which kept closed sockets alive), with `ip -batch` and `tc` (test tools, never dependencies); each
   test then enters one of its own.
@@ -88,6 +129,12 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - No random tests: every check is a fixed scenario.
 
 ## Measurements
+- Run 6, 2026-11-21, ARM64 machine, load 6 to 20: the 67 + 2 tests take 0.90 to 0.92 s and 0.21 to 0.22 s at 12
+  threads. The watcher thread's wakes (voluntary context switches) over 1200 datagrams sent and received with
+  no wait: 0 (the independent check measured 9473 of 10 000 before the change); allocations over 1200 waits
+  that had to wait, once warm: 0.
+- Run 6, ARM64 machine, load 22: Linux's `SIOCOUTQ` of a UDP socket with paced datagrams of 1000 bytes held is
+  2304 bytes per datagram held (Python, fq on loopback): 0, 2304, 4608, 6912, 9216 after 1 to 5 sends.
 - Run 5, 2026-11-21, ARM64 machine, load 9.8 to 12.6: the 59 tests take 0.89 to 0.90 s at 12 threads; a clean
   build and run 12 s; 30 runs in a row 29 s. No timing of a wait itself was taken.
 - 2026-11-21, ARM64 machine (96 cores): the 53 tests take 0.88 s at 12 threads, load 1.1 (making the 64
@@ -104,6 +151,23 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - Source preferences (Python, run 4): with `use_tempaddr` 2 and 2001:db8:1::1/64 mngtmpaddr, connect to
   2001:db8:1::99 takes the temporary address by default and with temporary, the public one with public; home
   and care-of change nothing, even with an address marked home.
+
+## Independent check (run 6, 2026-11-21, ARM64 machine, load 15 to 19, 184 s)
+- Script: scratch `independent-check.sh` (run 5's kept as `independent-check-run5.sh`); log
+  `independent-check-run6.log`. Clean build (fresh target folder, 13 s): 67 + 2 pass. 30 runs in a row: none
+  failing (38 s).
+- 46 broken copies: 44 caught by a named check, among them the findings' four (incoming processor always the
+  first: the_incoming_processor_is_read_back; unsent bytes doubled: a_full_send_buffer_counts_its_unsent_bytes;
+  first waker kept: a_wait_polled_again_wakes_its_newest_waker and a_wait_whose_event_went_waits_for_the_next;
+  errors-first off: a_report_comes_before_a_datagram_that_arrived_after_it), and the new ones (registration kept
+  edge-triggered: a_socket_nobody_waits_on_costs_the_watcher_nothing; never armed: 8 checks and both readiness
+  tests; not armed again for calls still waiting: a_wait_for_writing_finishes_when_room_is_made; the other
+  family sent: a_header_of_another_version_is_refused). The two expected to pass still pass (below).
+- cargo tree (normal, build and dev edges) of the udp-sockets, internet-protocol, configurable,
+  negative-route-advice and kernel interface crates and the UDP suite: no implementation crate. No reviewed
+  file changed: this run's commits touch only the two implementation crates, the suite and this track's docs,
+  and `git diff ae9c53ca HEAD` of the udp-sockets, internet-protocol, configurable and negative-route-advice
+  interfaces is empty.
 
 ## Independent check (run 5, 2026-11-21, ARM64 machine, load 9.8 to 12.6, 120 s)
 - Clean build (fresh target folder, 12 s): 59 of 59 pass. 30 runs in a row at 12 threads: none failing (29 s).
@@ -127,9 +191,14 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   a_short_buffer_keeps_the_whole_length (cut in the UDP header and in the payload), receive_with_nothing_queued_would_block,
   a_closed_port_answers_with_an_icmp_error, transmit_reports_carry_the_key_of_their_send,
   rejected_transmit_times_are_reported_with_their_keys. count_unsent_bytes: pacing_holds_datagrams_in_the_send_buffer,
-  sending_settings_are_taken. read_incoming_processor: the_incoming_processor_is_read_back. close:
+  sending_settings_are_taken, and a_full_send_buffer_counts_its_unsent_bytes for its value (a count off by a
+  factor is caught). read_incoming_processor: the_incoming_processor_is_read_back (two processors set, and a
+  connected socket's from its sender's processor). close:
   close_frees_the_port. configure: each setting's check, and the two Configurable contract checks.
-  wait_for_events: the six waiting checks (above); each broken copy of it was caught.
+  wait_for_events: the thirteen waiting checks; a wait that keeps its first waker is caught by
+  a_wait_polled_again_wakes_its_newest_waker, a registration not armed again for calls still waiting by
+  a_wait_for_writing_finishes_when_room_is_made, a registration left on by the readiness test. The order of a
+  send's reports before later datagrams: the implementation's own a_report_comes_before_a_datagram_that_arrived_after_it.
 - give_negative_route_advice: negative_route_advice_keeps_a_socket_sending and negative_route_advice_contract_holds
   catch only a refusal. One that does nothing and answers Ok passes the suite: its effect cannot be seen
   through the traits (see below).
@@ -167,6 +236,18 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   buffer, maximum pacing rate (set and unset), timestamping, receive coalescing, zero checksum receipt, minimum
   checksum coverage (set, and none: any coverage arrives).
 - ICMP errors on the error queue as whole ICMP packets with valid checksums (port unreachable, IPv4 and IPv6).
+
+## Not honoured on other unix systems (portable.rs), each a counted refusal
+- UDP-Lite (no such sockets), an owner other than the process's user (only Linux has a thread's filesystem
+  user), the exit node's port choice (Linux's `IP_LOCAL_PORT_RANGE`), route selectors beyond destination and
+  ports, disconnect (socket2 has no connect to `AF_UNSPEC`), every send (the IPv4 path MTU discovery of Linux's
+  default, Want, and most header and send fields have no socket2 call there), every receive (the IP header needs
+  the control messages socket2 does not parse), the unsent bytes, the incoming processor, negative route advice,
+  and every setting but buffers, address and port sharing and multicast loopback. Settings at the one value
+  every socket there has (no pacing, nonlocal refused, no bound interface, group filter or processor, separate
+  receives, zero checksums dropped, no timestamps) are taken; a minimum checksum coverage answers ENOPROTOOPT,
+  as Linux does on a UDP socket. No Windows build: its sockets are not descriptors and its readiness check would
+  need WSAPoll.
 
 ## Not honoured or not checkable, with the Linux reason
 - Mobile IPv6 source preferences (home, care-of): written (`IPV6_PREFER_SRC_HOME`, `_COA`), but Linux applies
@@ -211,6 +292,13 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   test tool the implementation's test runs, never a dependency.
 
 ## Departures from the plan
+- Run 6: the brief asks for socket2 everywhere with what Linux alone has behind `cfg(target_os = "linux")`;
+  run 5 built nothing off Linux. Now the crate and the shared crate build on every unix system, with two bodies
+  (Linux's whole one, and the socket2 one elsewhere), since nearly every call of the Linux body is a Linux
+  option or control message. Windows is not built (above).
+- Run 6: the errors-first order is checked by the implementation's own test, not the suite: the contract does
+  not say in which order a report and a datagram come.
+- Run 6: the suite is `cfg(target_os = "linux")`.
 - Run 5: the crate is `host` (the ruling's name); the plan says so now. The readiness lives in the shared crate,
   so that TCP, ICMP and raw share one; it runs one thread per implementation value, since nothing else waits on
   the host's events. `recvmsg` stays on libc (socket2 gives no `MSG_CTRUNC`), and `connect` to `AF_UNSPEC`
@@ -248,5 +336,13 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - `TransmitReport.interface` cannot be filled for a report without its packet: an `Option<InterfaceIndex>` would
   say so; this implementation writes 0.
 - There is no way through the interfaces to read the counters of refusals; `counters()` is inherent.
+- `count_unsent_bytes` says "the bytes sent ... that have not yet left its send buffer", but Linux's `SIOCOUTQ`
+  on a UDP socket gives the memory its datagrams take. Example (measured): one paced datagram of 1000 bytes held
+  counts 2304. This implementation gives Linux's value, which is what a Linux program reads.
+- Off Linux the host's error numbers become Linux's through a table in the shared crate; the runtime's
+  `crates/runtime/implementation/single-kernel/errno.rs` has the same kind of table, private. One crate of it
+  would serve both.
+- The shared crate's name says linux; it now also holds what every unix build shares (readiness, socket2
+  handles, errors, refusals).
 - `PollEvents` has no empty value or set operations, so every user writes its own all-false value (the suite
   and the shared crate each have `NO_EVENTS`).
