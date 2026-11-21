@@ -1393,8 +1393,7 @@ pub fn ours<B: Backend + 'static>(
             texels.len() as u32 / draw.size,
             draw.size,
             WriteMode::Ordered,
-        )
-        .unwrap();
+        );
         (texture, view)
     });
     if let Some((_, view)) = &copy {
