@@ -13,6 +13,9 @@ use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::guest_directory_entry;
 use wcontainers_executor_unicorn::hooks::Hooks;
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
+use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal::Signal;
+use wcontainers_kernel::signal_information::{ProcessIdentity, SendCode};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
     ContextOrigin, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext,
@@ -335,7 +338,7 @@ impl Hooks for Script {
                 kernel
                     .process(cpu, parent)
                     .expect("the process is here")
-                    .send_signal(reader, user_signal(general::SIGUSR1));
+                    .send_signal(reader, user_signal(Signal::SIGUSR1));
             }
             (Plan::Sent, 2) if self.asked(PARENT, general::__NR_getppid) > 1 => {
                 self.put_back(kernel, cpu);
@@ -411,14 +414,15 @@ fn as_the_reference_runs(plan: Plan, arguments: &[&str], reference: &[&str]) -> 
 }
 
 /// A record of `signal` sent from outside the container (no sender process).
-fn user_signal(signal: u32) -> SignalInformation {
-    // SAFETY: every member of the record is made of integers, for which zero is valid.
-    let mut record: SignalInformation = unsafe { std::mem::zeroed() };
-    // SAFETY: a record built from zero has every member's bytes set.
-    let header = unsafe { &mut record.__bindgen_anon_1.__bindgen_anon_1 };
-    header.si_signo = signal as i32;
-    header.si_code = general::SI_USER as i32;
-    record
+fn user_signal(signal: Signal) -> SignalInformation {
+    SignalInformation::SentByProcess {
+        signal,
+        code: SendCode::SI_USER,
+        sender: ProcessIdentity {
+            process: TaskId(0),
+            real_user: UserId(0),
+        },
+    }
 }
 
 #[test]

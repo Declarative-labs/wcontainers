@@ -3,6 +3,7 @@
 use std::ops::{ControlFlow, Range};
 
 use wcontainers_abi::{Cpu, SystemCallRequest};
+use wcontainers_kernel_linux::linux::general::{SI_DETHREAD, SI_KERNEL, SI_TIMER};
 use wcontainers_kernel_linux::{
     AccessKind, Kernel, MemoryObject, Process, SignalInformation, SystemCallResponse, TaskId,
     task_id_after,
@@ -125,4 +126,42 @@ impl BetweenSteps for Box<dyn Hooks> {
     fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
         (**self).between_steps(kernel, cpu)
     }
+}
+
+/// A record's signal number, code and value (`si_value.sival_int`, where its layout has one), as
+/// a handler reads them.
+pub fn signal_parts(record: &SignalInformation) -> (i32, i32, i32) {
+    use wcontainers_kernel::signal::Signal;
+    use wcontainers_kernel::signal_information::SignalInformation as Record;
+    let (signal, code, value) = match *record {
+        Record::SentByProcess { signal, code, .. } => (signal, code as i32, 0),
+        Record::QueuedByProcess {
+            signal,
+            code,
+            value,
+            ..
+        } => (signal, code as i32, value.0 as i32),
+        Record::SuppliedByProcess { signal, code, .. } => (signal, code.0, 0),
+        Record::TimerExpired { signal, value, .. } => (signal, SI_TIMER, value.0 as i32),
+        Record::SentByKernel { signal } => (signal, SI_KERNEL as i32, 0),
+        Record::ThreadDestroyedByExecve => (Signal::SIGKILL, SI_DETHREAD, 0),
+        Record::InputOutputEvent { signal, code, .. } => (signal, code as i32, 0),
+        Record::IllegalInstruction { code, .. } => (Signal::SIGILL, code as i32, 0),
+        Record::ArithmeticError { code, .. } => (Signal::SIGFPE, code as i32, 0),
+        Record::SegmentationFault { code, .. } => (Signal::SIGSEGV, discriminant(&code), 0),
+        Record::BusError { code, .. } => (Signal::SIGBUS, discriminant(&code), 0),
+        Record::Trap { code, .. } => (Signal::SIGTRAP, discriminant(&code), 0),
+        Record::ChildTerminated { signal, code, .. } => (signal, discriminant(&code), 0),
+        Record::ChildStateChanged { code, .. } => (Signal::SIGCHLD, discriminant(&code), 0),
+        Record::BadSystemCall { code, .. } => (Signal::SIGSYS, discriminant(&code), 0),
+        Record::TracerStop { .. } => (Signal::SIGTRAP, 0, 0),
+    };
+    (signal as i32, code, value)
+}
+
+/// The number of one of the interface's `repr(i32)` codes that carry fields.
+fn discriminant<T: Copy>(code: &T) -> i32 {
+    // SAFETY: called only with the interface's `repr(i32)` code enums, which start with their
+    // discriminant as an `i32`.
+    unsafe { std::ptr::from_ref(code).cast::<i32>().read() }
 }

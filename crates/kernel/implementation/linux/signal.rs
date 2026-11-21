@@ -11,7 +11,6 @@ use crate::linux_extra::{SIG_DFL, SIG_IGN};
 use crate::memory::Backing;
 use crate::process::{Channel, Pid, Queued, Report, Tid};
 use crate::syscall::Outcome;
-use crate::system::SignalInformation;
 use crate::{Context, Errno, Kernel};
 
 /// The bit for a signal in a signal set.
@@ -106,38 +105,6 @@ pub(crate) fn fault_info(signal: u32, code: i32, address: u64) -> [u8; 128] {
     info
 }
 
-/// The bytes the kernel keeps for a signal's information.
-type InformationBytes = [u8; core::mem::size_of::<SignalInformation>()];
-
-/// One word of a signal's information.
-type Word = super::linux::ctypes::c_int;
-const WORD_BYTES: usize = core::mem::size_of::<Word>();
-
-/// The words of a signal's information (its `_si_pad` member).
-type InformationWords = [Word; core::mem::size_of::<SignalInformation>() / WORD_BYTES];
-
-/// Linux's record of a signal from the bytes the kernel keeps.
-pub(crate) fn information(bytes: &InformationBytes) -> SignalInformation {
-    let (chunks, _) = bytes.as_chunks::<WORD_BYTES>();
-    let words: InformationWords = core::array::from_fn(|at| Word::from_le_bytes(chunks[at]));
-    SignalInformation {
-        __bindgen_anon_1: siginfo__bindgen_ty_1 { _si_pad: words },
-    }
-}
-
-/// The bytes the kernel keeps for a record of a signal built from zero.
-pub(crate) fn information_bytes(information: &SignalInformation) -> InformationBytes {
-    // SAFETY: every member of the record is made of integers, any bytes are valid for them, and
-    // a record built from zero (Linux's `clear_siginfo`) has every byte set.
-    let words: InformationWords = unsafe { information.__bindgen_anon_1._si_pad };
-    let mut bytes: InformationBytes = [0; core::mem::size_of::<SignalInformation>()];
-    let (chunks, _) = bytes.as_chunks_mut::<WORD_BYTES>();
-    for (chunk, word) in chunks.iter_mut().zip(words) {
-        *chunk = word.to_le_bytes();
-    }
-    bytes
-}
-
 /// The signal number a `siginfo` carries.
 fn signal_of(info: &[u8; 128]) -> u32 {
     u32::from_le_bytes(info[0..4].try_into().expect("four bytes"))
@@ -202,7 +169,7 @@ impl Kernel {
         cx: &mut Context<'_>,
         pid: Pid,
         tid: Tid,
-        info: InformationBytes,
+        info: crate::siginfo::Bytes,
     ) {
         let signal = signal_of(&info);
         // A task of the process taken off the kernel is still one of its tasks.
@@ -768,7 +735,7 @@ impl Kernel {
                     let Some(queued) = self.dequeue_signal(tid, !mask) else {
                         break;
                     };
-                    let signal = information(&queued.info);
+                    let signal = crate::siginfo::decode(&queued.info);
                     self.announce(cx, pid, |system, process| {
                         system.on_signal_delivering(process, crate::system::task_id(tid), &signal)
                     });

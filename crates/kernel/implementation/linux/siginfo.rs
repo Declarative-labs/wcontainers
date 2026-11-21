@@ -1,0 +1,683 @@
+//! The interface's record of a signal and the `siginfo` bytes the kernel keeps, each made from the
+//! other by Linux's layout of the record for its code (`siginfo_layout`).
+
+use core::mem::offset_of;
+
+use wcontainers_kernel::signal::Signal;
+use wcontainers_kernel::signal_information::*;
+use wcontainers_kernel::{TaskId, UserId};
+
+use crate::linux::general::{
+    __sifields__bindgen_ty_1 as Kill, __sifields__bindgen_ty_2 as Timer,
+    __sifields__bindgen_ty_3 as Queued, __sifields__bindgen_ty_4 as Child,
+    __sifields__bindgen_ty_5 as Fault,
+    __sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1 as Bounds,
+    __sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2 as Key,
+    __sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3 as Perf, __sifields__bindgen_ty_6 as Poll,
+    __sifields__bindgen_ty_7 as System, NSIGPOLL, POLLERR, POLLHUP, POLLIN, POLLMSG, POLLNVAL,
+    POLLOUT, POLLPRI, POLLRDBAND, POLLRDHUP, POLLRDNORM, POLLWRBAND, POLLWRNORM, SI_DETHREAD,
+    SI_KERNEL, SI_TIMER, TRAP_PERF_FLAG_ASYNC, siginfo,
+    siginfo__bindgen_ty_1__bindgen_ty_1 as Header,
+};
+
+/// The bytes the kernel keeps for a signal's information.
+pub(crate) type Bytes = [u8; SI_MAX_SIZE];
+
+const _: () = assert!(size_of::<siginfo>() == SI_MAX_SIZE);
+const _: () = assert!(offset_of!(Header, _sifields) == SIGINFO_HEADER_SIZE + size_of::<u32>());
+
+const SIGNAL: usize = offset_of!(Header, si_signo);
+const ERROR_NUMBER: usize = offset_of!(Header, si_errno);
+const CODE: usize = offset_of!(Header, si_code);
+const FIELDS: usize = offset_of!(Header, _sifields);
+const PROCESS: usize = FIELDS + offset_of!(Kill, _pid);
+const USER: usize = FIELDS + offset_of!(Kill, _uid);
+const QUEUED_VALUE: usize = FIELDS + offset_of!(Queued, _sigval);
+const TIMER: usize = FIELDS + offset_of!(Timer, _tid);
+const OVERRUN: usize = FIELDS + offset_of!(Timer, _overrun);
+const TIMER_VALUE: usize = FIELDS + offset_of!(Timer, _sigval);
+const STATUS: usize = FIELDS + offset_of!(Child, _status);
+const USER_TIME: usize = FIELDS + offset_of!(Child, _utime);
+const SYSTEM_TIME: usize = FIELDS + offset_of!(Child, _stime);
+const ADDRESS: usize = FIELDS + offset_of!(Fault, _addr);
+const FAULT_DETAIL: usize = FIELDS + offset_of!(Fault, __bindgen_anon_1);
+const LOWER: usize = FAULT_DETAIL + offset_of!(Bounds, _lower);
+const UPPER: usize = FAULT_DETAIL + offset_of!(Bounds, _upper);
+const KEY: usize = FAULT_DETAIL + offset_of!(Key, _pkey);
+const PERF_DATA: usize = FAULT_DETAIL + offset_of!(Perf, _data);
+const PERF_TYPE: usize = FAULT_DETAIL + offset_of!(Perf, _type);
+const PERF_FLAGS: usize = FAULT_DETAIL + offset_of!(Perf, _flags);
+const BAND: usize = FIELDS + offset_of!(Poll, _band);
+const DESCRIPTOR: usize = FIELDS + offset_of!(Poll, _fd);
+const CALL_ADDRESS: usize = FIELDS + offset_of!(System, _call_addr);
+const SYSTEM_CALL: usize = FIELDS + offset_of!(System, _syscall);
+const ARCHITECTURE: usize = FIELDS + offset_of!(System, _arch);
+
+/// Names every signal of the interface by its number.
+macro_rules! signals {
+    ($($name:ident),* $(,)?) => {
+        /// The interface's signal of a number, if Linux has one.
+        pub(crate) fn signal(number: u32) -> Option<Signal> {
+            [$(Signal::$name),*].into_iter().find(|signal| *signal as u32 == number)
+        }
+    };
+}
+
+signals!(
+    SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGKILL, SIGUSR1, SIGSEGV,
+    SIGUSR2, SIGPIPE, SIGALRM, SIGTERM, SIGSTKFLT, SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN,
+    SIGTTOU, SIGURG, SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF, SIGWINCH, SIGIO, SIGPWR, SIGSYS,
+    SIGRTMIN, SIGRT_1, SIGRT_2, SIGRT_3, SIGRT_4, SIGRT_5, SIGRT_6, SIGRT_7, SIGRT_8, SIGRT_9,
+    SIGRT_10, SIGRT_11, SIGRT_12, SIGRT_13, SIGRT_14, SIGRT_15, SIGRT_16, SIGRT_17, SIGRT_18,
+    SIGRT_19, SIGRT_20, SIGRT_21, SIGRT_22, SIGRT_23, SIGRT_24, SIGRT_25, SIGRT_26, SIGRT_27,
+    SIGRT_28, SIGRT_29, SIGRT_30, SIGRT_31, SIGRTMAX,
+);
+
+/// The number Linux gives a code: the discriminant of the interface's `repr(i32)` enum.
+fn number<T: Copy>(code: &T) -> i32 {
+    // SAFETY: called only with the interface's code enums, each `repr(i32)`, whose values start
+    // with their discriminant as an `i32` (a primitive representation).
+    unsafe { core::ptr::from_ref(code).cast::<i32>().read() }
+}
+
+/// The code of `candidates` whose number Linux gives as `code`.
+fn code_of<T: Copy>(candidates: impl IntoIterator<Item = T>, code: i32) -> Option<T> {
+    candidates
+        .into_iter()
+        .find(|candidate| number(candidate) == code)
+}
+
+fn read<const N: usize>(bytes: &Bytes, at: usize) -> [u8; N] {
+    bytes[at..at + N].try_into().expect("in the record")
+}
+
+fn put(bytes: &mut Bytes, at: usize, value: &[u8]) {
+    bytes[at..at + value.len()].copy_from_slice(value);
+}
+
+fn i32_at(bytes: &Bytes, at: usize) -> i32 {
+    i32::from_le_bytes(read(bytes, at))
+}
+
+fn u32_at(bytes: &Bytes, at: usize) -> u32 {
+    u32::from_le_bytes(read(bytes, at))
+}
+
+fn u64_at(bytes: &Bytes, at: usize) -> u64 {
+    u64::from_le_bytes(read(bytes, at))
+}
+
+/// The events of a `poll` mask.
+fn poll_events(mask: u64) -> PollEvents {
+    let has = |bit: u32| mask & u64::from(bit) != 0;
+    PollEvents {
+        data_to_read: has(POLLIN),
+        exceptional_condition: has(POLLPRI),
+        writing_possible: has(POLLOUT),
+        error_condition: has(POLLERR),
+        hang_up: has(POLLHUP),
+        descriptor_not_open: has(POLLNVAL),
+        normal_data_to_read: has(POLLRDNORM),
+        priority_band_data_to_read: has(POLLRDBAND),
+        normal_data_writable: has(POLLWRNORM),
+        priority_data_writable: has(POLLWRBAND),
+        message_available: has(POLLMSG),
+        peer_shut_down_writing: has(POLLRDHUP),
+    }
+}
+
+/// The `poll` mask of a set of events.
+fn poll_mask(events: PollEvents) -> u64 {
+    [
+        (events.data_to_read, POLLIN),
+        (events.exceptional_condition, POLLPRI),
+        (events.writing_possible, POLLOUT),
+        (events.error_condition, POLLERR),
+        (events.hang_up, POLLHUP),
+        (events.descriptor_not_open, POLLNVAL),
+        (events.normal_data_to_read, POLLRDNORM),
+        (events.priority_band_data_to_read, POLLRDBAND),
+        (events.normal_data_writable, POLLWRNORM),
+        (events.priority_data_writable, POLLWRBAND),
+        (events.message_available, POLLMSG),
+        (events.peer_shut_down_writing, POLLRDHUP),
+    ]
+    .into_iter()
+    .filter(|(set, _)| *set)
+    .map(|(_, bit)| u64::from(bit))
+    .sum()
+}
+
+fn identity(bytes: &Bytes) -> ProcessIdentity {
+    ProcessIdentity {
+        process: TaskId(u32_at(bytes, PROCESS)),
+        real_user: UserId(u32_at(bytes, USER)),
+    }
+}
+
+/// The record the bytes make in the layout their code gives, if the interface has one for it.
+fn structured(bytes: &Bytes) -> Option<SignalInformation> {
+    let number = u32_at(bytes, SIGNAL);
+    let signal = self::signal(number)?;
+    let code = i32_at(bytes, CODE);
+    let address = u64_at(bytes, ADDRESS);
+    let child = || identity(bytes);
+    let user_time = ClockTicks(u64_at(bytes, USER_TIME));
+    let system_time = ClockTicks(u64_at(bytes, SYSTEM_TIME));
+    let status = i32_at(bytes, STATUS);
+    let status_signal = || self::signal(u32::try_from(status).ok()?);
+    let lsb = || {
+        AddressLeastSignificantBit::new(
+            u8::try_from(i16::from_le_bytes(read(bytes, FAULT_DETAIL))).ok()?,
+        )
+    };
+    let poll = |code| {
+        Some(SignalInformation::InputOutputEvent {
+            signal,
+            code,
+            band: PollBand::new(poll_events(u64_at(bytes, BAND)))?,
+            descriptor: FileDescriptor(u32_at(bytes, DESCRIPTOR)),
+        })
+    };
+    // A code a signal gives itself (`sig_specific_sicodes`); Linux's own codes are positive.
+    if code > 0 && code != SI_KERNEL as i32 {
+        let specific = match signal {
+            Signal::SIGILL => code_of(
+                [
+                    IllegalInstructionCode::ILL_ILLOPC,
+                    IllegalInstructionCode::ILL_ILLOPN,
+                    IllegalInstructionCode::ILL_ILLADR,
+                    IllegalInstructionCode::ILL_ILLTRP,
+                    IllegalInstructionCode::ILL_PRVOPC,
+                    IllegalInstructionCode::ILL_PRVREG,
+                    IllegalInstructionCode::ILL_COPROC,
+                    IllegalInstructionCode::ILL_BADSTK,
+                    IllegalInstructionCode::ILL_BADIADDR,
+                    IllegalInstructionCode::__ILL_BREAK,
+                    IllegalInstructionCode::__ILL_BNDMOD,
+                ],
+                code,
+            )
+            .map(|code| SignalInformation::IllegalInstruction { code, address }),
+            Signal::SIGFPE => code_of(
+                [
+                    ArithmeticErrorCode::FPE_INTDIV,
+                    ArithmeticErrorCode::FPE_INTOVF,
+                    ArithmeticErrorCode::FPE_FLTDIV,
+                    ArithmeticErrorCode::FPE_FLTOVF,
+                    ArithmeticErrorCode::FPE_FLTUND,
+                    ArithmeticErrorCode::FPE_FLTRES,
+                    ArithmeticErrorCode::FPE_FLTINV,
+                    ArithmeticErrorCode::FPE_FLTSUB,
+                    ArithmeticErrorCode::__FPE_DECOVF,
+                    ArithmeticErrorCode::__FPE_DECDIV,
+                    ArithmeticErrorCode::__FPE_DECERR,
+                    ArithmeticErrorCode::__FPE_INVASC,
+                    ArithmeticErrorCode::__FPE_INVDEC,
+                    ArithmeticErrorCode::FPE_FLTUNK,
+                    ArithmeticErrorCode::FPE_CONDTRAP,
+                ],
+                code,
+            )
+            .map(|code| SignalInformation::ArithmeticError { code, address }),
+            Signal::SIGSEGV => code_of(
+                [
+                    SegmentationFaultCode::SEGV_MAPERR,
+                    SegmentationFaultCode::SEGV_ACCERR,
+                    SegmentationFaultCode::SEGV_BNDERR(AddressBounds {
+                        lower: u64_at(bytes, LOWER),
+                        upper: u64_at(bytes, UPPER),
+                    }),
+                    SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(u32_at(bytes, KEY))),
+                    SegmentationFaultCode::SEGV_ACCADI,
+                    SegmentationFaultCode::SEGV_ADIDERR,
+                    SegmentationFaultCode::SEGV_ADIPERR,
+                    SegmentationFaultCode::SEGV_MTEAERR,
+                    SegmentationFaultCode::SEGV_MTESERR,
+                    SegmentationFaultCode::SEGV_CPERR,
+                ],
+                code,
+            )
+            .map(|code| SignalInformation::SegmentationFault { code, address }),
+            Signal::SIGBUS => {
+                let mut codes = alloc::vec![
+                    BusErrorCode::BUS_ADRALN,
+                    BusErrorCode::BUS_ADRERR,
+                    BusErrorCode::BUS_OBJERR,
+                ];
+                if let Some(lsb) = lsb() {
+                    codes.extend([
+                        BusErrorCode::BUS_MCEERR_AR(lsb),
+                        BusErrorCode::BUS_MCEERR_AO(lsb),
+                    ]);
+                }
+                code_of(codes, code).map(|code| SignalInformation::BusError { code, address })
+            }
+            Signal::SIGTRAP => code_of(
+                [
+                    TrapCode::TRAP_BRKPT,
+                    TrapCode::TRAP_TRACE,
+                    TrapCode::TRAP_BRANCH,
+                    TrapCode::TRAP_HWBKPT,
+                    TrapCode::TRAP_UNK,
+                    TrapCode::TRAP_PERF {
+                        data: PerfEventSignalData(u64_at(bytes, PERF_DATA)),
+                        event_type: PerfEventType(u32_at(bytes, PERF_TYPE)),
+                        delivery: if u32_at(bytes, PERF_FLAGS) & TRAP_PERF_FLAG_ASYNC != 0 {
+                            PerfEventDelivery::Asynchronous
+                        } else {
+                            PerfEventDelivery::Synchronous
+                        },
+                    },
+                ],
+                code,
+            )
+            .map(|code| SignalInformation::Trap { code, address }),
+            Signal::SIGCHLD => {
+                let mut states = alloc::vec![ChildStateCode::CLD_CONTINUED];
+                if let Some(stopped) = status_signal() {
+                    states.extend([
+                        ChildStateCode::CLD_TRAPPED(stopped),
+                        ChildStateCode::CLD_STOPPED(stopped),
+                    ]);
+                }
+                code_of(states, code)
+                    .map(|code| SignalInformation::ChildStateChanged {
+                        code,
+                        child: child(),
+                        user_time,
+                        system_time,
+                    })
+                    .or_else(|| {
+                        terminated(
+                            signal,
+                            code,
+                            status,
+                            status_signal(),
+                            child(),
+                            user_time,
+                            system_time,
+                        )
+                    })
+            }
+            Signal::SIGSYS => {
+                let codes = [
+                    BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(
+                        u16::try_from(i32_at(bytes, ERROR_NUMBER)).ok()?,
+                    )),
+                    BadSystemCallCode::SYS_USER_DISPATCH,
+                ];
+                let architecture = [
+                    SystemCallArchitecture::AUDIT_ARCH_AARCH64,
+                    SystemCallArchitecture::AUDIT_ARCH_X86_64,
+                    SystemCallArchitecture::AUDIT_ARCH_I386,
+                ]
+                .into_iter()
+                .find(|architecture| *architecture as u32 == u32_at(bytes, ARCHITECTURE));
+                code_of(codes, code)
+                    .zip(architecture)
+                    .map(|(code, architecture)| SignalInformation::BadSystemCall {
+                        code,
+                        instruction_address: u64_at(bytes, CALL_ADDRESS),
+                        system_call: SystemCallNumber(i32_at(bytes, SYSTEM_CALL)),
+                        architecture,
+                    })
+            }
+            _ => None,
+        };
+        if specific.is_some() {
+            return specific;
+        }
+        // Linux reads any other signal's small codes as an I/O event's, also a child's end in a
+        // signal other than SIGCHLD (`siginfo_layout`).
+        let polls = [
+            PollCode::POLL_IN,
+            PollCode::POLL_OUT,
+            PollCode::POLL_MSG,
+            PollCode::POLL_ERR,
+            PollCode::POLL_PRI,
+            PollCode::POLL_HUP,
+        ];
+        return code_of(polls, code)
+            .filter(|_| code <= NSIGPOLL as i32)
+            .and_then(poll);
+    }
+    if code == SI_KERNEL as i32 {
+        return Some(SignalInformation::SentByKernel { signal });
+    }
+    if code == SI_DETHREAD && signal == Signal::SIGKILL {
+        return Some(SignalInformation::ThreadDestroyedByExecve);
+    }
+    if code == SI_TIMER {
+        return Some(SignalInformation::TimerExpired {
+            signal,
+            timer: KernelTimerId(u32_at(bytes, TIMER)),
+            overrun: TimerOverrunCount(u32_at(bytes, OVERRUN)),
+            value: SignalValue(u64_at(bytes, TIMER_VALUE)),
+        });
+    }
+    if code == PollCode::SI_SIGIO as i32 {
+        return poll(PollCode::SI_SIGIO);
+    }
+    if let Some(code) = code_of([SendCode::SI_USER, SendCode::SI_TKILL], code) {
+        return Some(SignalInformation::SentByProcess {
+            signal,
+            code,
+            sender: identity(bytes),
+        });
+    }
+    let queued = [
+        QueueCode::SI_QUEUE,
+        QueueCode::SI_MESGQ,
+        QueueCode::SI_ASYNCIO,
+        QueueCode::SI_ASYNCNL,
+    ];
+    code_of(queued, code).map(|code| SignalInformation::QueuedByProcess {
+        signal,
+        code,
+        sender: identity(bytes),
+        value: SignalValue(u64_at(bytes, QUEUED_VALUE)),
+    })
+}
+
+/// A child's end, in the signal it was made to end with.
+fn terminated(
+    signal: Signal,
+    code: i32,
+    status: i32,
+    status_signal: Option<Signal>,
+    child: ProcessIdentity,
+    user_time: ClockTicks,
+    system_time: ClockTicks,
+) -> Option<SignalInformation> {
+    let mut codes = alloc::vec::Vec::new();
+    if let Ok(exit) = u8::try_from(status) {
+        codes.push(ChildTerminationCode::CLD_EXITED(ExitStatus(exit)));
+    }
+    if let Some(killer) = status_signal {
+        codes.extend([
+            ChildTerminationCode::CLD_KILLED(killer),
+            ChildTerminationCode::CLD_DUMPED(killer),
+        ]);
+    }
+    code_of(codes, code).map(|code| SignalInformation::ChildTerminated {
+        signal,
+        code,
+        child,
+        user_time,
+        system_time,
+    })
+}
+
+/// The interface's record of the bytes: the one their code's layout gives where it holds every
+/// byte, else the bytes as a process supplied them.
+pub(crate) fn decode(bytes: &Bytes) -> SignalInformation {
+    if let Some(information) = structured(bytes).filter(|information| encode(information) == *bytes)
+    {
+        return information;
+    }
+    let mut fields = [0; SUPPLIED_FIELDS_SIZE];
+    fields.copy_from_slice(&bytes[SIGINFO_HEADER_SIZE..]);
+    SignalInformation::SuppliedByProcess {
+        signal: signal(u32_at(bytes, SIGNAL)).expect("a queued signal is one of Linux's"),
+        error_number: SuppliedErrorNumber(i32_at(bytes, ERROR_NUMBER)),
+        code: SuppliedCode(i32_at(bytes, CODE)),
+        fields: SuppliedFields(fields),
+    }
+}
+
+/// The bytes of a record, built from zero as Linux's `clear_siginfo` builds one.
+pub(crate) fn encode(information: &SignalInformation) -> Bytes {
+    let mut bytes = [0; SI_MAX_SIZE];
+    let mut header = |signal: Signal, code: i32| {
+        put(&mut bytes, SIGNAL, &(signal as u32).to_le_bytes());
+        put(&mut bytes, CODE, &code.to_le_bytes());
+    };
+    let child_times = |bytes: &mut Bytes,
+                       child: &ProcessIdentity,
+                       status: i32,
+                       user: ClockTicks,
+                       system: ClockTicks| {
+        put(bytes, PROCESS, &child.process.0.to_le_bytes());
+        put(bytes, USER, &child.real_user.0.to_le_bytes());
+        put(bytes, STATUS, &status.to_le_bytes());
+        put(bytes, USER_TIME, &user.0.to_le_bytes());
+        put(bytes, SYSTEM_TIME, &system.0.to_le_bytes());
+    };
+    match *information {
+        SignalInformation::SentByProcess {
+            signal,
+            code,
+            sender,
+        } => {
+            header(signal, code as i32);
+            put(&mut bytes, PROCESS, &sender.process.0.to_le_bytes());
+            put(&mut bytes, USER, &sender.real_user.0.to_le_bytes());
+        }
+        SignalInformation::QueuedByProcess {
+            signal,
+            code,
+            sender,
+            value,
+        } => {
+            header(signal, code as i32);
+            put(&mut bytes, PROCESS, &sender.process.0.to_le_bytes());
+            put(&mut bytes, USER, &sender.real_user.0.to_le_bytes());
+            put(&mut bytes, QUEUED_VALUE, &value.0.to_le_bytes());
+        }
+        SignalInformation::SuppliedByProcess {
+            signal,
+            error_number,
+            code,
+            fields,
+        } => {
+            header(signal, code.0);
+            put(&mut bytes, ERROR_NUMBER, &error_number.0.to_le_bytes());
+            put(&mut bytes, SIGINFO_HEADER_SIZE, &fields.0);
+        }
+        SignalInformation::TimerExpired {
+            signal,
+            timer,
+            overrun,
+            value,
+        } => {
+            header(signal, SI_TIMER);
+            put(&mut bytes, TIMER, &timer.0.to_le_bytes());
+            put(&mut bytes, OVERRUN, &overrun.0.to_le_bytes());
+            put(&mut bytes, TIMER_VALUE, &value.0.to_le_bytes());
+        }
+        SignalInformation::SentByKernel { signal } => header(signal, SI_KERNEL as i32),
+        SignalInformation::ThreadDestroyedByExecve => header(Signal::SIGKILL, SI_DETHREAD),
+        SignalInformation::InputOutputEvent {
+            signal,
+            code,
+            band,
+            descriptor,
+        } => {
+            header(signal, code as i32);
+            put(&mut bytes, BAND, &poll_mask(band.get()).to_le_bytes());
+            put(&mut bytes, DESCRIPTOR, &descriptor.0.to_le_bytes());
+        }
+        SignalInformation::IllegalInstruction { code, address } => {
+            header(Signal::SIGILL, code as i32);
+            put(&mut bytes, ADDRESS, &address.to_le_bytes());
+        }
+        SignalInformation::ArithmeticError { code, address } => {
+            header(Signal::SIGFPE, code as i32);
+            put(&mut bytes, ADDRESS, &address.to_le_bytes());
+        }
+        SignalInformation::SegmentationFault { code, address } => {
+            header(Signal::SIGSEGV, number(&code));
+            put(&mut bytes, ADDRESS, &address.to_le_bytes());
+            match code {
+                SegmentationFaultCode::SEGV_BNDERR(bounds) => {
+                    put(&mut bytes, LOWER, &bounds.lower.to_le_bytes());
+                    put(&mut bytes, UPPER, &bounds.upper.to_le_bytes());
+                }
+                SegmentationFaultCode::SEGV_PKUERR(key) => {
+                    put(&mut bytes, KEY, &key.0.to_le_bytes())
+                }
+                _ => {}
+            }
+        }
+        SignalInformation::BusError { code, address } => {
+            header(Signal::SIGBUS, number(&code));
+            put(&mut bytes, ADDRESS, &address.to_le_bytes());
+            if let BusErrorCode::BUS_MCEERR_AR(lsb) | BusErrorCode::BUS_MCEERR_AO(lsb) = code {
+                put(
+                    &mut bytes,
+                    FAULT_DETAIL,
+                    &i16::from(lsb.get()).to_le_bytes(),
+                );
+            }
+        }
+        SignalInformation::Trap { code, address } => {
+            header(Signal::SIGTRAP, number(&code));
+            put(&mut bytes, ADDRESS, &address.to_le_bytes());
+            if let TrapCode::TRAP_PERF {
+                data,
+                event_type,
+                delivery,
+            } = code
+            {
+                put(&mut bytes, PERF_DATA, &data.0.to_le_bytes());
+                put(&mut bytes, PERF_TYPE, &event_type.0.to_le_bytes());
+                let flags = match delivery {
+                    PerfEventDelivery::Synchronous => 0,
+                    PerfEventDelivery::Asynchronous => TRAP_PERF_FLAG_ASYNC,
+                };
+                put(&mut bytes, PERF_FLAGS, &flags.to_le_bytes());
+            }
+        }
+        SignalInformation::ChildTerminated {
+            signal,
+            code,
+            child,
+            user_time,
+            system_time,
+        } => {
+            header(signal, number(&code));
+            let status = match code {
+                ChildTerminationCode::CLD_EXITED(status) => i32::from(status.0),
+                ChildTerminationCode::CLD_KILLED(signal)
+                | ChildTerminationCode::CLD_DUMPED(signal) => signal as i32,
+            };
+            child_times(&mut bytes, &child, status, user_time, system_time);
+        }
+        SignalInformation::ChildStateChanged {
+            code,
+            child,
+            user_time,
+            system_time,
+        } => {
+            header(Signal::SIGCHLD, number(&code));
+            let status = match code {
+                ChildStateCode::CLD_TRAPPED(signal) | ChildStateCode::CLD_STOPPED(signal) => {
+                    signal as i32
+                }
+                ChildStateCode::CLD_CONTINUED => Signal::SIGCONT as i32,
+            };
+            child_times(&mut bytes, &child, status, user_time, system_time);
+        }
+        SignalInformation::BadSystemCall {
+            code,
+            instruction_address,
+            system_call,
+            architecture,
+        } => {
+            header(Signal::SIGSYS, number(&code));
+            if let BadSystemCallCode::SYS_SECCOMP(data) = code {
+                put(&mut bytes, ERROR_NUMBER, &i32::from(data.0).to_le_bytes());
+            }
+            put(&mut bytes, CALL_ADDRESS, &instruction_address.to_le_bytes());
+            put(&mut bytes, SYSTEM_CALL, &system_call.0.to_le_bytes());
+            put(
+                &mut bytes,
+                ARCHITECTURE,
+                &(architecture as u32).to_le_bytes(),
+            );
+        }
+        SignalInformation::TracerStop { stop, tracee } => {
+            let code = match stop {
+                TracerStop::SystemCall => Signal::SIGTRAP as i32,
+                TracerStop::SystemCallMarked => Signal::SIGTRAP as i32 | PTRACE_SYSCALL_MARK,
+                TracerStop::Event(event) => {
+                    Signal::SIGTRAP as i32 | (event as i32) << PTRACE_EVENT_SHIFT
+                }
+            };
+            header(Signal::SIGTRAP, code);
+            put(&mut bytes, PROCESS, &tracee.process.0.to_le_bytes());
+            put(&mut bytes, USER, &tracee.real_user.0.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// What `PTRACE_O_TRACESYSGOOD` adds to a syscall-stop's code (`ptrace_report_syscall`).
+const PTRACE_SYSCALL_MARK: i32 = 0x80;
+
+/// Where a ptrace event sits in a stop's code (`ptrace_event`: `SIGTRAP | event << 8`).
+const PTRACE_EVENT_SHIFT: u32 = u8::BITS;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every code from the queue codes to the kernel's own, on every signal, with zero fields and
+    /// with every field byte set: each comes back from the interface's record as it was.
+    #[test]
+    fn every_record_comes_back_as_its_bytes() {
+        let mut structured = 0;
+        for number in Signal::SIGHUP as u32..=Signal::SIGRTMAX as u32 {
+            for code in QueueCode::SI_ASYNCNL as i32..=SI_KERNEL as i32 {
+                for fill in [0, u8::MAX, 1] {
+                    let mut bytes = [fill; SI_MAX_SIZE];
+                    put(&mut bytes, SIGNAL, &number.to_le_bytes());
+                    put(&mut bytes, ERROR_NUMBER, &0i32.to_le_bytes());
+                    put(&mut bytes, CODE, &code.to_le_bytes());
+                    let information = decode(&bytes);
+                    if !matches!(information, SignalInformation::SuppliedByProcess { .. }) {
+                        structured += 1;
+                    }
+                    assert_eq!(encode(&information), bytes, "{information:?}");
+                }
+            }
+        }
+        assert!(structured > 0);
+    }
+
+    #[test]
+    fn the_kernels_own_records_take_their_layouts() {
+        let kill =
+            crate::signal::sender_info(Signal::SIGTERM as u32, SendCode::SI_USER as i32, 7, 1000);
+        assert_eq!(
+            decode(&kill),
+            SignalInformation::SentByProcess {
+                signal: Signal::SIGTERM,
+                code: SendCode::SI_USER,
+                sender: ProcessIdentity {
+                    process: TaskId(7),
+                    real_user: UserId(1000)
+                },
+            }
+        );
+        let fault = crate::signal::fault_info(
+            Signal::SIGSEGV as u32,
+            number(&SegmentationFaultCode::SEGV_MAPERR),
+            0x1000,
+        );
+        assert_eq!(
+            decode(&fault),
+            SignalInformation::SegmentationFault {
+                code: SegmentationFaultCode::SEGV_MAPERR,
+                address: 0x1000
+            }
+        );
+        assert_eq!(
+            decode(&crate::signal::kernel_info(Signal::SIGKILL as u32)),
+            SignalInformation::SentByKernel {
+                signal: Signal::SIGKILL
+            }
+        );
+    }
+}

@@ -31,6 +31,7 @@ mod schedule;
 mod seccomp;
 mod shared;
 mod sharing;
+mod siginfo;
 mod signal;
 mod suspend;
 mod syscall;
@@ -215,10 +216,10 @@ pub struct Kernel {
     signalled: VecDeque<Tid>,
     /// Signals the embedder sent to a thread of a process, with their information, sent when the
     /// kernel settles.
-    signals_sent: VecDeque<(Pid, Tid, [u8; core::mem::size_of::<SignalInformation>()])>,
+    signals_sent: VecDeque<(Pid, Tid, siginfo::Bytes)>,
     /// Signals the kernel sent a process while its context was away, sent to it when the kernel
     /// settles after it is back.
-    signals_to_returning: VecDeque<(Pid, u32, [u8; core::mem::size_of::<SignalInformation>()])>,
+    signals_to_returning: VecDeque<(Pid, u32, siginfo::Bytes)>,
     /// Processes sent a fatal signal while their memory is watched, with the signal: their
     /// threads end of it on their way back to the program, once the kernel's stores at the end
     /// have met the watches (`SIGNAL_GROUP_EXIT`).

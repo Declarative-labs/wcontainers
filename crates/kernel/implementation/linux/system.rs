@@ -66,8 +66,7 @@ impl ExecutionConfig {
     }
 }
 
-/// Linux's own record of a signal.
-pub type SignalInformation = crate::linux::general::siginfo;
+pub use wcontainers_kernel::signal_information::SignalInformation;
 
 /// What an embedder implements: the abi's services, the task ids, and the hooks. Every hook is
 /// synchronous, fires only when every operation on its process is legal, and never nests.
@@ -345,7 +344,7 @@ impl Process<'_> {
     /// Sends `signal` to one thread of the process when the kernel next settles, before any
     /// thread runs again; a record must be built from zero, as Linux's `clear_siginfo` builds one.
     pub fn send_signal(&mut self, thread: TaskId, signal: SignalInformation) {
-        let information = crate::signal::information_bytes(&signal);
+        let information = crate::siginfo::encode(&signal);
         self.kernel
             .signals_sent
             .push_back((self.pid, pid_of(thread), information));

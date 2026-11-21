@@ -14,6 +14,9 @@ use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::guest_directory_entry;
 use wcontainers_executor_unicorn::hooks::Hooks;
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
+use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal::Signal;
+use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalValue};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
     AccessKind, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext, SignalInformation,
@@ -106,7 +109,7 @@ impl Hooks for Alone {
                 }
                 1 => {
                     let worker = self.worker.expect("the worker");
-                    process.send_signal(worker, queued(general::SIGUSR1, SENT_VALUE));
+                    process.send_signal(worker, queued(Signal::SIGUSR1, SENT_VALUE));
                     log.push("sent".to_owned());
                 }
                 _ => {
@@ -124,8 +127,7 @@ impl Hooks for Alone {
     }
 
     fn on_signal_delivering(&mut self, _: Process<'_>, _: TaskId, signal: &SignalInformation) {
-        // SAFETY: the kernel builds every record it hands over from all of its bytes.
-        let number = unsafe { signal.__bindgen_anon_1.__bindgen_anon_1.si_signo };
+        let (number, ..) = wcontainers_executor_unicorn::hooks::signal_parts(signal);
         self.log
             .lock()
             .unwrap()
@@ -134,15 +136,16 @@ impl Hooks for Alone {
 }
 
 /// A record of `signal` queued with `value` from outside the container (no sender process).
-fn queued(signal: u32, value: i32) -> SignalInformation {
-    // SAFETY: every member of the record is made of integers, for which zero is valid.
-    let mut record: SignalInformation = unsafe { std::mem::zeroed() };
-    // SAFETY: a record built from zero has every member's bytes set.
-    let header = unsafe { &mut record.__bindgen_anon_1.__bindgen_anon_1 };
-    header.si_signo = signal as i32;
-    header.si_code = general::SI_QUEUE;
-    header._sifields._rt._sigval.sival_int = value;
-    record
+fn queued(signal: Signal, value: i32) -> SignalInformation {
+    SignalInformation::QueuedByProcess {
+        signal,
+        code: QueueCode::SI_QUEUE,
+        sender: ProcessIdentity {
+            process: TaskId(0),
+            real_user: UserId(0),
+        },
+        value: SignalValue(value as u32 as u64),
+    }
 }
 
 #[test]
@@ -305,8 +308,7 @@ struct Announced(Arc<Mutex<Vec<i32>>>);
 
 impl Hooks for Announced {
     fn on_signal_delivering(&mut self, _: Process<'_>, _: TaskId, signal: &SignalInformation) {
-        // SAFETY: the kernel builds every record it hands over from all of its bytes.
-        let number = unsafe { signal.__bindgen_anon_1.__bindgen_anon_1.si_signo };
+        let (number, ..) = wcontainers_executor_unicorn::hooks::signal_parts(signal);
         self.0.lock().unwrap().push(number);
     }
 }

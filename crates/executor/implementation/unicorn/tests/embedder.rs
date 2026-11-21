@@ -14,8 +14,11 @@ use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::hooks::{EMBEDDER_SENDS, Hooks};
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_executor_unicorn::{busybox, guest_directory_entry};
+use wcontainers_kernel::UserId;
 use wcontainers_kernel::WriteMemoryError;
 use wcontainers_kernel::errno::Errno;
+use wcontainers_kernel::signal::Signal;
+use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalValue};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
     AccessKind, ContextOrigin, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
@@ -201,8 +204,6 @@ impl Recorder {
         );
         // No task asked for: none taken. Taking the process itself is the suspend tests' part.
         assert_eq!(process.suspend_tasks(&[]).count(), 0, "{seen}");
-        // A signal of number 0 is counted and not sent.
-        process.send_signal(process.id(), queued_signal(0, 0));
         *self.depth.lock().unwrap() -= 1;
     }
 }
@@ -1962,23 +1963,20 @@ type Delivered = Arc<Mutex<Vec<(TaskId, i32, i32, i32)>>>;
 
 /// A record's number, code and value (`si_value.sival_int`, the bytes a handler reads as it).
 fn signal_fields(signal: &SignalInformation) -> (i32, i32, i32) {
-    // SAFETY: the kernel builds every record it hands over from all of its bytes.
-    let header = unsafe { signal.__bindgen_anon_1.__bindgen_anon_1 };
-    // SAFETY: as above.
-    let value = unsafe { header._sifields._rt._sigval.sival_int };
-    (header.si_signo, header.si_code, value)
+    wcontainers_executor_unicorn::hooks::signal_parts(signal)
 }
 
 /// A record of `signal` queued with `value` from outside the container (no sender process).
-fn queued_signal(signal: u32, value: i32) -> SignalInformation {
-    // SAFETY: every member of the record is made of integers, for which zero is valid.
-    let mut record: SignalInformation = unsafe { std::mem::zeroed() };
-    // SAFETY: a record built from zero has every member's bytes set.
-    let header = unsafe { &mut record.__bindgen_anon_1.__bindgen_anon_1 };
-    header.si_signo = signal as i32;
-    header.si_code = general::SI_QUEUE;
-    header._sifields._rt._sigval.sival_int = value;
-    record
+fn queued_signal(signal: Signal, value: i32) -> SignalInformation {
+    SignalInformation::QueuedByProcess {
+        signal,
+        code: QueueCode::SI_QUEUE,
+        sender: ProcessIdentity {
+            process: TaskId(0),
+            real_user: UserId(0),
+        },
+        value: SignalValue(value as u32 as u64),
+    }
 }
 
 /// Lines `signal S code C value V` of embedder.c's output, as the hook's fields.
@@ -2069,13 +2067,11 @@ struct SignalSender {
 }
 
 impl SignalSender {
-    /// Sends the reader SIGUSR1 with 42, and two that are not sent: one to a thread of another
-    /// process and one with no number.
+    /// Sends the reader SIGUSR1 with 42, and one that is not sent, to a thread of another process.
     fn send(&mut self, process: &mut Process<'_>, thread: TaskId) {
-        process.send_signal(thread, queued_signal(general::SIGUSR1, SENT_VALUE));
+        process.send_signal(thread, queued_signal(Signal::SIGUSR1, SENT_VALUE));
         let parent = process.info().parent().expect("a parent");
-        process.send_signal(parent, queued_signal(general::SIGUSR1, SENT_VALUE));
-        process.send_signal(thread, queued_signal(0, SENT_VALUE));
+        process.send_signal(parent, queued_signal(Signal::SIGUSR1, SENT_VALUE));
         self.sent = true;
     }
 }

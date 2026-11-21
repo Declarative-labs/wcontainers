@@ -86,7 +86,7 @@ pub(crate) struct ProcessAway {
     pub signals: Vec<(u32, [u8; SIGNAL_INFORMATION_SIZE])>,
 }
 
-const SIGNAL_INFORMATION_SIZE: usize = size_of::<crate::system::SignalInformation>();
+const SIGNAL_INFORMATION_SIZE: usize = size_of::<crate::siginfo::Bytes>();
 
 impl Kernel {
     /// Takes the tasks named, as of one moment; a task not on this kernel is absent from the
