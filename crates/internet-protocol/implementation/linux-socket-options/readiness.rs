@@ -1,0 +1,380 @@
+//! The host's readiness of sockets, watched by one thread that wakes the calls waiting on them.
+
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Context, Poll, Waker};
+use std::thread::JoinHandle;
+
+use polling::{Event, Events, PollMode, Poller};
+use rustix::event::{PollFd, PollFlags, Timespec};
+use wcontainers_abi::HostError;
+use wcontainers_kernel::signal_information::PollEvents;
+
+use crate::host_error;
+
+/// The host's readiness of the sockets it watches, with the thread that waits on it and wakes their waiting calls.
+pub struct Readiness {
+    shared: Arc<Shared>,
+    watcher: Option<JoinHandle<()>>,
+}
+
+struct Shared {
+    poller: Poller,
+    watches: Mutex<BTreeMap<RawFd, Arc<Watch>>>,
+    stopping: AtomicBool,
+}
+
+/// A socket the host's readiness watches, until it drops and its descriptor closes after its registration.
+pub struct Watched {
+    watch: Arc<Watch>,
+    shared: Arc<Shared>,
+    fd: OwnedFd,
+}
+
+struct Watch {
+    fd: RawFd,
+    state: Mutex<WatchState>,
+}
+
+struct WatchState {
+    open: bool,
+    /// Events the implementation holds for the socket beside the host's, as entries it has taken off a queue.
+    held: PollFlags,
+    next: u64,
+    /// The calls waiting on the socket; its room is kept, so a wait allocates nothing once it has grown.
+    waiters: Vec<Waiter>,
+}
+
+struct Waiter {
+    id: u64,
+    interest: PollFlags,
+    /// Taken when the waiter is woken, so that each poll is woken at most once.
+    waker: Option<Waker>,
+}
+
+/// One call waiting for events of a watched socket; dropping it withdraws the wait.
+pub struct WaitForEvents<'a> {
+    watched: &'a Watched,
+    interest: PollFlags,
+    id: Option<u64>,
+}
+
+/// The events poll reports whether or not they are asked for.
+const ALWAYS_REPORTED: PollFlags = PollFlags::ERR.union(PollFlags::HUP).union(PollFlags::NVAL);
+
+/// A poll that answers at once.
+const NO_WAIT: Timespec = Timespec {
+    tv_sec: 0,
+    tv_nsec: 0,
+};
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The field of PollEvents that stands for one poll bit.
+type PollField = fn(&mut PollEvents) -> &mut bool;
+
+/// The poll bits and the fields of PollEvents that stand for them.
+fn poll_bits() -> [(PollFlags, PollField); 12] {
+    [
+        (PollFlags::IN, |events| &mut events.data_to_read),
+        (PollFlags::PRI, |events| &mut events.exceptional_condition),
+        (PollFlags::OUT, |events| &mut events.writing_possible),
+        (PollFlags::ERR, |events| &mut events.error_condition),
+        (PollFlags::HUP, |events| &mut events.hang_up),
+        (PollFlags::NVAL, |events| &mut events.descriptor_not_open),
+        (PollFlags::RDNORM, |events| &mut events.normal_data_to_read),
+        (PollFlags::RDBAND, |events| {
+            &mut events.priority_band_data_to_read
+        }),
+        (PollFlags::WRNORM, |events| &mut events.normal_data_writable),
+        (PollFlags::WRBAND, |events| {
+            &mut events.priority_data_writable
+        }),
+        (
+            PollFlags::from_bits_retain(linux_raw_sys::general::POLLMSG as u16),
+            |events| &mut events.message_available,
+        ),
+        (PollFlags::RDHUP, |events| {
+            &mut events.peer_shut_down_writing
+        }),
+    ]
+}
+
+pub fn poll_flags(mut events: PollEvents) -> PollFlags {
+    poll_bits()
+        .into_iter()
+        .filter(|(_, field)| *field(&mut events))
+        .fold(PollFlags::empty(), |flags, (bit, _)| flags | bit)
+}
+
+pub const NO_EVENTS: PollEvents = PollEvents {
+    data_to_read: false,
+    exceptional_condition: false,
+    writing_possible: false,
+    error_condition: false,
+    hang_up: false,
+    descriptor_not_open: false,
+    normal_data_to_read: false,
+    priority_band_data_to_read: false,
+    normal_data_writable: false,
+    priority_data_writable: false,
+    message_available: false,
+    peer_shut_down_writing: false,
+};
+
+pub fn poll_events(flags: PollFlags) -> PollEvents {
+    let mut events = NO_EVENTS;
+    for (bit, field) in poll_bits() {
+        *field(&mut events) = flags.contains(bit);
+    }
+    events
+}
+
+/// The events a socket has now, of those asked for and those always reported.
+fn events_now(fd: BorrowedFd<'_>, interest: PollFlags) -> Result<PollFlags, HostError> {
+    let mut polled = [PollFd::new(&fd, interest)];
+    rustix::event::poll(&mut polled, Some(&NO_WAIT)).map_err(host_error)?;
+    Ok(polled[0].revents())
+}
+
+impl Readiness {
+    pub fn new() -> Result<Self, HostError> {
+        let shared = Arc::new(Shared {
+            poller: Poller::new().map_err(|error| io_error(&error))?,
+            watches: Mutex::new(BTreeMap::new()),
+            stopping: AtomicBool::new(false),
+        });
+        let watcher = {
+            let shared = Arc::clone(&shared);
+            std::thread::Builder::new()
+                .name("host socket readiness".into())
+                .spawn(move || shared.watch_events())
+                .map_err(|error| io_error(&error))?
+        };
+        Ok(Self {
+            shared,
+            watcher: Some(watcher),
+        })
+    }
+
+    /// Watches a socket from now on, edge-triggered for every event the host reports.
+    pub fn watch(&self, fd: OwnedFd) -> Result<Watched, HostError> {
+        let raw = fd.as_raw_fd();
+        let key = usize::try_from(raw).map_err(|_| HostError::Errno(libc::EBADF))?;
+        let watch = Arc::new(Watch {
+            fd: raw,
+            state: Mutex::new(WatchState {
+                open: true,
+                held: PollFlags::empty(),
+                next: u64::MIN,
+                waiters: Vec::new(),
+            }),
+        });
+        locked(&self.shared.watches).insert(raw, Arc::clone(&watch));
+        // SAFETY: the registration is deleted when the Watched drops, before the descriptor it owns closes.
+        let added = unsafe {
+            self.shared
+                .poller
+                .add_with_mode(raw, Event::all(key).with_priority(), PollMode::Edge)
+        };
+        if let Err(error) = added {
+            locked(&self.shared.watches).remove(&raw);
+            return Err(io_error(&error));
+        }
+        Ok(Watched {
+            watch,
+            shared: Arc::clone(&self.shared),
+            fd,
+        })
+    }
+}
+
+impl Drop for Readiness {
+    fn drop(&mut self) {
+        self.shared.stopping.store(true, Ordering::Release);
+        // A watcher that cannot be told to stop is left waiting; it holds only what it shares.
+        if self.shared.poller.notify().is_ok()
+            && let Some(watcher) = self.watcher.take()
+        {
+            let _ = watcher.join();
+        }
+    }
+}
+
+fn io_error(error: &std::io::Error) -> HostError {
+    HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO))
+}
+
+impl Shared {
+    fn watch_events(&self) {
+        let mut events = Events::new();
+        let mut woken = Vec::new();
+        while !self.stopping.load(Ordering::Acquire) {
+            events.clear();
+            // An interrupted wait is waited again.
+            if self.poller.wait(&mut events, None).is_err() {
+                continue;
+            }
+            for event in events.iter() {
+                let Ok(fd) = RawFd::try_from(event.key) else {
+                    continue;
+                };
+                let watch = locked(&self.watches).get(&fd).cloned();
+                if let Some(watch) = watch {
+                    watch.take_woken(&mut woken);
+                }
+                wake(&mut woken.drain(..));
+            }
+        }
+    }
+}
+
+/// Wakes the calls whose events have come, the one place a waiting call's wake is fired.
+fn wake(woken: &mut impl Iterator<Item = Waker>) {
+    for waker in woken {
+        waker.wake();
+    }
+}
+
+impl Watch {
+    /// Moves the wakers of the calls whose events the socket now has into `woken`.
+    fn take_woken(&self, woken: &mut Vec<Waker>) {
+        let mut state = locked(&self.state);
+        if !state.open || state.waiters.is_empty() {
+            return;
+        }
+        // SAFETY: the descriptor stays open while the state says so, under its lock.
+        let fd = unsafe { BorrowedFd::borrow_raw(self.fd) };
+        let all = state
+            .waiters
+            .iter()
+            .fold(PollFlags::empty(), |all, waiter| all | waiter.interest);
+        let now = match events_now(fd, all) {
+            Ok(now) => now | state.held,
+            // A socket whose events cannot be read wakes every call, which reads the error itself.
+            Err(_) => PollFlags::all(),
+        };
+        for waiter in &mut state.waiters {
+            if now.intersects(waiter.interest | ALWAYS_REPORTED)
+                && let Some(waker) = waiter.waker.take()
+            {
+                woken.push(waker);
+            }
+        }
+    }
+}
+
+impl Watched {
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
+    /// Sets the events the implementation holds for the socket beside the host's, waking the calls they finish.
+    pub fn hold(&self, events: PollEvents) {
+        let held = poll_flags(events);
+        locked(&self.watch.state).held = held;
+        // One waker at a time, each woken outside the lock.
+        loop {
+            let waker = locked(&self.watch.state)
+                .waiters
+                .iter_mut()
+                .filter(|waiter| held.intersects(waiter.interest | ALWAYS_REPORTED))
+                .find_map(|waiter| waiter.waker.take());
+            match waker {
+                Some(waker) => wake(&mut core::iter::once(waker)),
+                None => return,
+            }
+        }
+    }
+
+    /// The events the socket has now, of those asked for and those always reported.
+    pub fn events_now(&self, interest: PollEvents) -> Result<PollEvents, HostError> {
+        let interest = poll_flags(interest);
+        let held = locked(&self.watch.state).held;
+        let now = events_now(self.fd(), interest)?;
+        Ok(poll_events(now | (held & (interest | ALWAYS_REPORTED))))
+    }
+
+    /// A call that finishes when the socket has one of the events asked for, giving the events it has.
+    pub fn wait_for_events(&self, interest: PollEvents) -> WaitForEvents<'_> {
+        WaitForEvents {
+            watched: self,
+            interest: poll_flags(interest),
+            id: None,
+        }
+    }
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        locked(&self.watch.state).open = false;
+        let _ = self.shared.poller.delete(self.fd.as_fd());
+        locked(&self.shared.watches).remove(&self.watch.fd);
+    }
+}
+
+impl WaitForEvents<'_> {
+    fn withdraw(&mut self) {
+        if let Some(id) = self.id.take() {
+            locked(&self.watched.watch.state)
+                .waiters
+                .retain(|waiter| waiter.id != id);
+        }
+    }
+}
+
+impl Future for WaitForEvents<'_> {
+    type Output = Result<PollEvents, HostError>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let held = {
+            // Registered before the socket is asked, so an event after the asking finds the waiter.
+            let mut state = locked(&this.watched.watch.state);
+            match this.id {
+                None => {
+                    let id = state.next;
+                    state.next = state.next.wrapping_add(1);
+                    state.waiters.push(Waiter {
+                        id,
+                        interest: this.interest,
+                        waker: Some(context.waker().clone()),
+                    });
+                    this.id = Some(id);
+                }
+                Some(id) => {
+                    if let Some(waiter) = state.waiters.iter_mut().find(|waiter| waiter.id == id)
+                        && !waiter
+                            .waker
+                            .as_ref()
+                            .is_some_and(|waker| waker.will_wake(context.waker()))
+                    {
+                        waiter.waker = Some(context.waker().clone());
+                    }
+                }
+            }
+            state.held & (this.interest | ALWAYS_REPORTED)
+        };
+        match events_now(this.watched.fd(), this.interest).map(|now| now | held) {
+            Ok(now) if now.is_empty() => Poll::Pending,
+            answer => {
+                this.withdraw();
+                Poll::Ready(answer.map(poll_events))
+            }
+        }
+    }
+}
+
+impl Drop for WaitForEvents<'_> {
+    fn drop(&mut self) {
+        self.withdraw();
+    }
+}
