@@ -214,7 +214,7 @@ pub fn image_view<B: Backend>(
     let size = |n: u32| (n >> mip).max(1);
     let (dimension, base_layer, layer_count) = if range.single_layer_view {
         if three_d {
-            return Err("one slice of a 3D texture as a 2D image".to_owned());
+            return crate::state::refused(format_args!("one slice of a 3D texture as a 2D image"));
         }
         (ViewDimension::D2, range.first_layer(), 1)
     } else if three_d {
