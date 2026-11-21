@@ -4073,3 +4073,77 @@ Runs at the tip:
 - Clean-up: this branch's build folders on the desktop (C:\wc\target\phase-2-graphics-shaders)
   and the x86 machine (/work/target/graphics-shaders, the literal clone and its build folder)
   deleted; the laptop was not used; logs and probe scripts kept in scratch g6b5.
+
+## G6a again, run 3 (run 72): the third check's findings at the tip of main
+
+Every figure here comes from runs at 1130f618, the tip of `main` when this run's suites ran, each
+built from a clean build folder of the committed tip, not the shared tree (How to run, first
+item). Logs in scratch `graphics-shaders/g6a-r72`. Since the third check's tip (1b204981) one
+commit changed this crate, another track's 260d36d8 (a DXIL module's views read in one
+dxil-spirv call and kept in the cache file); the figures include it. This run changed only this
+file and the history file: nothing of the crate's code or tests.
+
+Runs at the tip (1130f618):
+- Laptop (i7-8750H, load 2.3 at the start, 1.1 at the end; 4 cargo jobs under choom; clean
+  target; r72-suite.log): the whole suite with every corpus and glslang 8.13, `--include-ignored
+  --skip mutated`: 120 passed, 1 failed, the failing one `damaged_records_decode_without_a_panic`,
+  gap A16's known failure. The corpus test: 12 passed, every record of the nine corpora unchanged.
+  Every WGSL and GLSL file it wrote (8,192 files) equals run 71's: `diff -rq` against run 71's
+  `out` shows only `cache.txt` (its content keys), `converter-version.txt`, glslang's `.log` files
+  and Chrome's `chrome.txt` from run 71, and every record hash in `cache.txt` is the same in all
+  nine corpora.
+- x86 machine (96 processors, load 0.1 to 2.6, -j 64; x86-checks.log, literals.txt): rustfmt of
+  every file of this crate clean; `cargo clippy -p wcontainers-shaders -p wcontainers-gpu
+  --all-targets -- -D warnings` clean. The literal check prints no line of this crate; it fails
+  at the tip on 13 lines of other tracks (opengl 5, icmp-sockets 2, udp-sockets 2, raw-sockets 1,
+  tcp-sockets 1, nir 1, direct3d-12's baseline 1). This crate's baseline lines: 4,820 naming its
+  paths, 389 under src (4,821 and 390 at run 71; the line went with the other track's commit).
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs, clean build folder; gpu.log, gpu-err.log):
+  Windows clippy with warnings denied clean; every test binary at its default seeds: 165 passed, 0
+  failed, 6 ignored (the three corpora, which ran on the laptop; the fuzz test; A16's known
+  failure; `print_geometry_programs`). Then `geometry_draw` at the check's seed 5252, 12 cases:
+  `geometry_shaders_draw_as_direct3d_does` 576 comparisons, 11 failed, the check's eleven: ten
+  of A10's triangle edges (5253 and 5256 `gs_clip` TriangleList, 5257 and 5262 `gs_clip`
+  TriangleStrip, each on both routes; 5259 `vs_cull` TriangleList indexed and 5262 `vs_cull`
+  TriangleStrip, DXBC) and 5257 `gs_instances` with dxc's build (1 texel by 1, A21); the replay on
+  WebGL 2 456, 8 failed (the eight `gs_clip` cases); the depth clamp 72, 0 failed (largest 8
+  steps, at the allowance); the four stream tests 192, 288, 336 and 96 comparisons, 0 failed, 60
+  known (A22).
+- Chrome on the RTX 3080 (`web/check` on the laptop's written files at the tip, one GPU job;
+  chrome.log): every WGSL file compiles (4,442: corpus 185, games 527, games DXIL 441, own 144, own
+  DXIL 135, rig 79, rig DXIL 72, runner 1438, runner DXIL 1418, and the rewrite probe's 3). WebGL 2
+  compiles 3,585 GLSL files and refuses 40, each a shader whose record names a need the back end
+  declares absent: multisampled reads 23 (`sampler2DMS` 22, `usampler2DMS` 1), the primitive
+  index 8 (`gl_PrimitiveID`), cull distances 9 (vertex programs; the writer's array size, Known
+  gaps). The same figures as run 71's.
+- Not run: WebAssembly (A8's figures are from G6a run 4), the fuzz test (A11's from the checks),
+  the Direct3D 12 scenes (A6's from run 69).
+- Clean-up at the end: the build folders of this run deleted (laptop `target/shaders-tip`, its
+  source copy and its `out-r72`; x86 `/work/target/shaders-tip`, its clone and bundle; desktop
+  `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip` and `C:\wc\out\shaders-tip`; the
+  scratch clone of the tip); scratch keeps the logs and `out` (52 MB, the files Chrome compiled).
+
+The third check's findings, each against the tip:
+1. Item 2's write-refusal figures (blocking): corrected from the records at the tip (pass bar item
+   2): 211 write refusals, 198 at naga's GLSL ES 3.00 writer and 13 at the two-samplers path,
+   naga's own reason naming `BUFFER_STORAGE` in 157; the check's counts, recounted with `grep`.
+2. A7's cause for cull distances (blocking): corrected. A geometry or domain shader writing them
+   is refused at conversion (`CullDistance`) on both routes, so no pass-through is made for it;
+   A7 now says so, with where in the code, and that only a vertex program's cull route culls.
+3. Figures from before another track's commit (minor): this section's figures are all from
+   1130f618, which holds every commit to this crate so far.
+4. The DXBC unordered not-equal (minor): gap A26 (both routes; the DXBC cause is this crate's
+   lowering, the DXIL cause the carried reader), with the drawn test it takes. Not fixed in this
+   run: the milestone asks for nothing new, and a fix changes every shader that compares so and
+   needs that drawn NaN test against Direct3D to stand on; listed in "Next".
+5. Refusal names in no list (minor): gap A27 lists the 93 refusals by name that no corpus meets,
+   by kind, each with what it refuses and where.
+6. The `gs_instances` texel (minor): reproduced at the tip with the same figures, recorded under
+   A21 (cause inferred, not measured) with what it takes.
+7. The corpus test's two holes (minor): both named in pass bar item 2 with what guards them and
+   what closing them takes; no record falls in either at the tip (98 glslang refusals, each
+   citing its record's need). Not closed: (1) waits on the WebGL 2 back end exporting
+   `SAMPLE_QUALIFIER_EXTENSION`, still private at the tip; (2) is a change of the test's rule,
+   new work after the check.
+8. Seeds and counts (information): the check's figures stand; this run drew seed 5252 again and
+   got the same failures (above).
