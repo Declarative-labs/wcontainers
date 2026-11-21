@@ -42,7 +42,8 @@
   broadcast, transparency, flow label, source preferences, checksum omission and UDP-Lite coverage, transmit
   time mode and errors) written as socket options only when they differ from what the socket last had.
   `EMSGSIZE` with a local error queued is `MessageTooLong` with that error's MTU.
-- receive: `recvmsg(MSG_ERRQUEUE)` first (an ICMP error becomes the ICMP packet, IP header first, quoting the
+- receive: `recvmsg(MSG_ERRQUEUE)` first while a send's reports may wait, else after a normal receive that fails
+  (an ICMP error becomes the ICMP packet, IP header first, quoting the
   datagram's headers; a timestamp becomes a `TransmitReport`; a local error was already the send's answer),
   else `recvmsg(MSG_TRUNC)`; the payload is moved up and the IP and UDP headers written before it from the
   control messages; `UDP_GRO` gives the segment size.
@@ -68,5 +69,5 @@
   drops after a small receive buffer, address and port sharing, nonlocal binding, multicast and anycast
   membership, the incoming processor, the unsent byte count, negative route advice and close.
 - Each setting is also set twice and must answer and behave as set once.
-- The implementation's own test runs `tests!` with each test in a network namespace of its own thread
-  (unshare, loopback up), as root on the ARM64 machine: one command, `scripts/conformance.sh` in the crate.
+- The implementation's own test runs `tests!` with each test in a network namespace of its own, all made before
+  any test opens a socket, as root on the ARM64 machine: one command, `conformance.sh` in the crate.
