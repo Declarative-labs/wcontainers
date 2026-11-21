@@ -261,10 +261,11 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
         | Packed32_UInt16 | Packed32_Int16 => 4,
         UInt64 | Int64 | QwordOffset | Float64 | Packed64_UInt8 | Packed64_Int8
         | Packed64_UInt16 | Packed64_Int16 | Packed64_UInt32 | Packed64_Int32
-        | Packed64_Float32 => 8,
+        | Packed64_Float32 | Packed64_Float16 => 8,
         UInt128 | Int128 | Packed128_UInt8 | Packed128_Int8 | Packed128_UInt16
         | Packed128_Int16 | Packed128_UInt32 | Packed128_Int32 | Packed128_UInt64
-        | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 | Float128 => 16,
+        | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 | Packed128_Float16
+        | Float128 => 16,
         UInt256 | Int256 | Packed256_UInt8 | Packed256_Int8 | Packed256_UInt16
         | Packed256_Int16 | Packed256_UInt32 | Packed256_Int32 | Packed256_UInt64
         | Packed256_Int64 | Packed256_UInt128 | Packed256_Float32 | Packed256_Float64
@@ -475,7 +476,7 @@ pub fn operand_access(i: &Instruction, kind: AccessKind) -> MemoryAccess<u8> {
             ins.memory_displacement64() as i64,
         ),
     };
-    MemoryAccess {
+    let access = MemoryAccess {
         segment: segment(i),
         base,
         index: general(ins.memory_index()).map(|g| Index::Register {
@@ -491,5 +492,6 @@ pub fn operand_access(i: &Instruction, kind: AccessKind) -> MemoryAccess<u8> {
         write_back: WriteBack::None,
         bytes: AccessBytes::Fixed(memory_bytes(i) as u16),
         kind,
-    }
+    };
+    crate::masked::access(i, access)
 }

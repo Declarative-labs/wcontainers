@@ -116,8 +116,8 @@ impl GuestTest for X86_64 {
         format!("{text} ({:?})", instruction.code())
     }
 
-    // Not-a-number results follow x86's rules or not.
-    const PROBE_ANSWERS: &'static [i32] = &[0, 1];
+    // Not-a-number results follow x86's rules or not, and the relaxed multiply-add fuses or not.
+    const PROBE_ANSWERS: &'static [i32] = &[0, 1, 2, 3];
 
     /// The baseline every x86-64 CPU has and the features of the default list, `lahf` and `sahf` in 64-bit
     /// mode as iced files them (the 8086's).
@@ -1721,6 +1721,19 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                     memory = Some(m);
                     Operand::M(m)
                 }
+                // A gather's: a general base and a vector index, whose elements are made small below.
+                K::mem_vsib32x | K::mem_vsib64x | K::mem_vsib32y | K::mem_vsib64y => {
+                    let first = if matches!(kind, K::mem_vsib32x | K::mem_vsib64x) {
+                        Register::XMM0
+                    } else {
+                        Register::YMM0
+                    };
+                    let op = vsib(&mut draw, first, VECTORS);
+                    if let Operand::M(m) = op {
+                        memory = Some(m);
+                    }
+                    op
+                }
                 K::st0 => Operand::R(Register::ST0),
                 K::sti_opcode => Operand::R(register(
                     Register::ST0 as u32 + draw.below(X87_REGISTERS) as u32,
@@ -1872,6 +1885,17 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         // Most 16-byte operands aligned, as SSE's aligned forms need.
         if size == 16 && draw.chance(80) {
             to &= !15;
+        }
+        // A gather's elements near the operand's address, a share of them across the end of the data.
+        if m.index.is_vector_register() {
+            let wide_lanes = (0..info.op_count())
+                .any(|n| matches!(info.op_kind(n), K::mem_vsib64x | K::mem_vsib64y));
+            let lane_bytes = if wide_lanes {
+                size_of::<u64>()
+            } else {
+                size_of::<u32>()
+            } as u32;
+            index_lanes_near(&mut draw, &mut state, m.index, lane_bytes);
         }
         // A bit offset in a register moves the address by whole operands: most are aimed with it.
         let moved = if draw.chance(AIMED_BIT_OFFSETS) {

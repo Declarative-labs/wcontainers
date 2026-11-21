@@ -241,8 +241,8 @@ pub const FUNCTION_BLOCKS: usize = 2048;
 /// By reason number, the translator's and then the guest's own from `GUEST_REASONS`, how many places in
 /// the code may take that slow path.
 pub type Sites = [u64; SITES];
-/// Room for the translator's reasons and up to 16 of a guest's own.
-pub const SITES: usize = GUEST_REASONS as usize + 16;
+/// Room for the translator's reasons and up to 32 of a guest's own.
+pub const SITES: usize = GUEST_REASONS as usize + 32;
 
 /// The number of a guest's own slow path.
 pub(crate) fn guest_reason<G: Guest>(reason: G::Reason) -> u32 {

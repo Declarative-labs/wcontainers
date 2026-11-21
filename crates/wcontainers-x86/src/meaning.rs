@@ -81,6 +81,9 @@ pub fn written(i: &Instruction) -> bool {
     if crate::simd::written(i)
         || crate::vex::written(i)
         || crate::wide::written(i)
+        || crate::fused::written(i)
+        || crate::half::written(i)
+        || crate::masked::written(i)
         || crate::float::written(i)
         || crate::fpu::written(m)
         || crate::text::written(m)
@@ -140,6 +143,21 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     }
     if crate::wide::written(i) {
         crate::wide::emit(e, i, i.iced.mnemonic());
+        e.next();
+        return true;
+    }
+    if crate::fused::written(i) {
+        crate::fused::emit(e, i, i.iced.mnemonic());
+        e.next();
+        return true;
+    }
+    if crate::half::written(i) {
+        crate::half::emit(e, i, i.iced.mnemonic());
+        e.next();
+        return true;
+    }
+    if crate::masked::written(i) {
+        crate::masked::emit(e, i);
         e.next();
         return true;
     }

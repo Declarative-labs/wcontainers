@@ -167,8 +167,8 @@ pub fn estimates(m: Mnemonic) -> bool {
 }
 
 /// The float type's operations, chosen by element size.
-struct Lanes {
-    double: bool,
+pub(crate) struct Lanes {
+    pub(crate) double: bool,
 }
 
 impl Lanes {
@@ -208,7 +208,7 @@ impl Lanes {
         };
     }
     /// The low element of `r` with the rest of `a`, on the stack.
-    fn merge_low(&self, s: &mut InstructionSink<'_>, a: u32, r: u32) {
+    pub(crate) fn merge_low(&self, s: &mut InstructionSink<'_>, a: u32, r: u32) {
         let element = if self.double {
             wcontainers_guest_cpu::DOUBLE
         } else {
@@ -229,6 +229,16 @@ fn nans<E: Emitter<X86_64> + ?Sized>(e: &mut E, lanes: &Lanes, r: u32, operands:
     if e.host().x86_nans {
         return;
     }
+    chosen_nans(e, lanes, r, operands);
+}
+
+/// `nans` whatever the host's engine does, for operations its probe does not try.
+pub(crate) fn chosen_nans<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    lanes: &Lanes,
+    r: u32,
+    operands: &[u32],
+) {
     let pick = e.local(ValType::V128);
     let mut s = e.sink();
     s.v128_const(lanes.default_nan()).local_set(pick);
@@ -632,7 +642,13 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         e.sink().if_(BlockType::Empty);
         transition(e);
         let part = i.vex_lane.unwrap_or(crate::exact::Part::Whole);
-        exact(e, encode(op, double, scalar, immediate, part), a, b, r);
+        exact(
+            e,
+            encode(op, double, scalar, immediate, part),
+            [a, b],
+            None,
+            r,
+        );
         e.sink().else_();
         transition(e);
         fast(e, op, double, scalar, immediate, a, b, r);
@@ -699,17 +715,27 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     }
 }
 
-/// The exact path: the hook does the instruction on `a` (the destination's value) and `b` into `r`, or stops
-/// the thread with the unmasked exception it met.
-fn exact<E: Emitter<X86_64> + ?Sized>(e: &mut E, code: i32, a: u32, b: u32, r: u32) {
+/// The exact path: the hook does the instruction on `a` (the destination's value), `b` and a fused
+/// multiply-add's third operand `c` into `r`, or stops the thread with the unmasked exception it met.
+pub(crate) fn exact<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    code: i32,
+    [a, b]: [u32; 2],
+    c: Option<u32>,
+    r: u32,
+) {
     let (low, high, exception) = (
         e.local(ValType::I64),
         e.local(ValType::I64),
         e.local(ValType::I64),
     );
-    for half in 0..2 {
-        e.sink().local_get(a).i64x2_extract_lane(half);
-        e.set_control(Control::FloatOperand(half));
+    let halves = XMM_BYTES / size_of::<u64>() as u32;
+    for (first, operand) in [(0, Some(a)), (halves, c)] {
+        let Some(operand) = operand else { continue };
+        for half in 0..halves {
+            e.sink().local_get(operand).i64x2_extract_lane(half as u8);
+            e.set_control(Control::FloatOperand((first + half) as u8));
+        }
     }
     e.sink()
         .i32_const(code)
@@ -1045,6 +1071,7 @@ fn fast<E: Emitter<X86_64> + ?Sized>(
             to_integer(e, op, double, scalar, b, r);
             return;
         }
+        O::Fused | O::FromHalf | O::ToHalf => unreachable!("{op:?} has meanings of its own"),
     }
     if scalar && !matches!(op, O::OrderedCompare | O::UnorderedCompare) {
         let mut s = e.sink();

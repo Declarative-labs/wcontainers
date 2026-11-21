@@ -1,5 +1,5 @@
 //! The start-up probe of what the host's engine does where WebAssembly leaves results open: whether its
-//! not-a-number results already follow x86's rules (the first operand's quieted, then the second's, else the
+//! relaxed fused multiply-add fuses, and whether its not-a-number results already follow x86's rules (the first operand's quieted, then the second's, else the
 //! negative default one; conversions and roundings keep the payload). A runner instantiates
 //! [`probe_module`], calls its one export, and gives the answer to [`Host::from_probe`].
 
@@ -12,19 +12,22 @@ use wasm_encoder::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Host {
     pub x86_nans: bool,
+    pub fused_multiply_add: bool,
 }
 
 const X86_NANS: i32 = 1;
+const FUSED: i32 = 2;
 
 impl Host {
     pub fn from_probe(answer: i32) -> Host {
         Host {
             x86_nans: answer & X86_NANS != 0,
+            fused_multiply_add: answer & FUSED != 0,
         }
     }
 
     pub fn answer(self) -> i32 {
-        i32::from(self.x86_nans) * X86_NANS
+        (i32::from(self.x86_nans) * X86_NANS) | (i32::from(self.fused_multiply_add) * FUSED)
     }
 }
 
@@ -191,6 +194,29 @@ pub fn probe_module() -> Vec<u8> {
         }
         s.i64_const(case.expected as i64).i64_eq().i32_and();
     }
+    // Fused: with e = 2^-(p/2 + 2), (1 + e)(1 - e) - 1 is -e^2 exactly, and 0 when the product is rounded first,
+    // as e^2 is below half a unit of 1.
+    let e64 = 2f64.powi(-(f64::MANTISSA_DIGITS as i32 / 2 + 2));
+    let e32 = 2f32.powi(-(f32::MANTISSA_DIGITS as i32 / 2 + 2));
+    let (a64, b64, a32, b32) = (1.0 + e64, 1.0 - e64, 1.0 + e32, 1.0 - e32);
+    s.v128_const(splat64(a64.to_bits()))
+        .v128_const(splat64(b64.to_bits()))
+        .v128_const(splat64((-1f64).to_bits()))
+        .f64x2_relaxed_madd()
+        .f64x2_extract_lane(0)
+        .f64_const(0.0.into())
+        .f64_ne()
+        .v128_const(splat32(a32.to_bits()))
+        .v128_const(splat32(b32.to_bits()))
+        .v128_const(splat32((-1f32).to_bits()))
+        .f32x4_relaxed_madd()
+        .f32x4_extract_lane(0)
+        .f32_const(0.0.into())
+        .f32_ne()
+        .i32_and()
+        .i32_const(FUSED)
+        .i32_mul()
+        .i32_or();
     s.end();
     let mut code = CodeSection::new();
     code.function(&f);

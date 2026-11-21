@@ -10,7 +10,7 @@ use crate::{
     MXCSR_FLUSH_TO_ZERO, MXCSR_INVALID, MXCSR_MASK_SHIFT, MXCSR_OVERFLOW, MXCSR_PRECISION,
     MXCSR_ROUNDING, MXCSR_ROUNDING_SHIFT, MXCSR_UNDERFLOW, PF, ZF,
 };
-use rustc_apfloat::ieee::{Double, Quad, Single};
+use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
 
 /// One instruction's operation. With the element size, whether it is scalar and the immediate, it is the
@@ -46,9 +46,97 @@ pub enum Operation {
     ToInt64,
     TruncateToInt32,
     TruncateToInt64,
+    /// FMA: the immediate byte holds the `Fused` kind and the `FusedOrder` (`fused_immediate`), and the third
+    /// operand is the hook's `c`.
+    Fused,
+    /// F16C: four half precision numbers of `b`'s low 64 bits made single, and four singles made half precision
+    /// (rounded as the immediate says, `vcvtps2ph`'s), into the low 64 bits.
+    FromHalf,
+    ToHalf,
 }
 
-const OPERATIONS: [Operation; 22] = {
+/// What a fused multiply-add does with the product and the addend, element by element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Fused {
+    Add,
+    Subtract,
+    NegatedAdd,
+    NegatedSubtract,
+    /// `vfmaddsub`: even elements subtract, odd ones add.
+    SubtractAdd,
+    /// `vfmsubadd`: even elements add, odd ones subtract.
+    AddSubtract,
+}
+
+const FUSED: [Fused; 6] = {
+    use Fused::*;
+    [
+        Add,
+        Subtract,
+        NegatedAdd,
+        NegatedSubtract,
+        SubtractAdd,
+        AddSubtract,
+    ]
+};
+
+/// Which operands are multiplied and which is added, by the form's digits: `132` is operand 1 times operand 3
+/// plus operand 2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FusedOrder {
+    Order132,
+    Order213,
+    Order231,
+}
+
+const FUSED_ORDERS: [FusedOrder; 3] = [
+    FusedOrder::Order132,
+    FusedOrder::Order213,
+    FusedOrder::Order231,
+];
+
+/// The operands of a fused multiply-add, and of the hook's work: the two multiplied and the one added.
+pub const FUSED_OPERANDS: usize = 3;
+
+/// The immediate byte's half that holds a fused multiply-add's order.
+const FUSED_ORDER_SHIFT: u32 = u8::BITS / 2;
+
+pub fn fused_immediate(kind: Fused, order: FusedOrder) -> u8 {
+    kind as u8 | (order as u8) << FUSED_ORDER_SHIFT
+}
+
+/// `vcvtps2ph`'s immediate: its rounding, and the bit that takes MXCSR's instead.
+pub(crate) const HALF_ROUND_FROM_MXCSR: u8 = 1 << 2;
+
+/// The multiplicands and the addend of a fused multiply-add of operands 1, 2 and 3, in that order, which is
+/// also the order its not-a-number operands are chosen in (seen on the reference).
+pub fn fused_operands<T: Copy>(
+    order: FusedOrder,
+    [first, second, third]: [T; FUSED_OPERANDS],
+) -> [T; FUSED_OPERANDS] {
+    match order {
+        FusedOrder::Order132 => [first, third, second],
+        FusedOrder::Order213 => [second, first, third],
+        FusedOrder::Order231 => [second, third, first],
+    }
+}
+
+/// Whether element `n`'s product is negated and whether its addend is.
+pub fn fused_signs(kind: Fused, n: usize) -> (bool, bool) {
+    let even = n.is_multiple_of(2);
+    match kind {
+        Fused::Add => (false, false),
+        Fused::Subtract => (false, true),
+        Fused::NegatedAdd => (true, false),
+        Fused::NegatedSubtract => (true, true),
+        Fused::SubtractAdd => (false, even),
+        Fused::AddSubtract => (false, !even),
+    }
+}
+
+const OPERATIONS: [Operation; 25] = {
     use Operation::*;
     [
         Add,
@@ -73,6 +161,9 @@ const OPERATIONS: [Operation; 22] = {
         ToInt64,
         TruncateToInt32,
         TruncateToInt64,
+        Fused,
+        FromHalf,
+        ToHalf,
     ]
 };
 
@@ -157,23 +248,37 @@ pub fn encode(operation: Operation, double: bool, scalar: bool, immediate: u8, p
         | i32::from(immediate) << IMMEDIATE_SHIFT
 }
 
-/// Run one instruction on `a` (the destination's value) and `b` (the source's) with MXCSR as it is, adding
-/// the flags raised. The result; or, for an unmasked exception, `a` unchanged and MXCSR's raised unmasked
-/// flags, from which the kernel works out the `si_code` as Linux does (0 for none). The low lane of a 256-bit
-/// instruction leaves MXCSR alone and puts its flags in `low_lane_flags`, which the high lane's call adds to
-/// its own; an unmasked exception is then the high lane's, before either lane is written.
-pub fn run(code: i32, a: u128, b: u128, mxcsr: &mut u32, low_lane_flags: &mut u32) -> (u128, u32) {
-    let operation = OPERATIONS[(code & i32::from(u8::MAX)) as usize];
+/// The operation the hook's i32 names.
+pub fn operation(code: i32) -> Operation {
+    OPERATIONS[(code & i32::from(u8::MAX)) as usize]
+}
+
+/// Run one instruction on `a` (the destination's value), `b` (the source's) and `c` (a fused multiply-add's
+/// third operand) with MXCSR as it is, adding the flags raised. The result; or, for an unmasked exception, `a`
+/// unchanged and MXCSR's raised unmasked flags, from which the kernel works out the `si_code` as Linux does (0
+/// for none). The low lane of a 256-bit instruction leaves MXCSR alone and puts its flags in
+/// `low_lane_flags`, which the high lane's call adds to its own; an unmasked exception is then the high
+/// lane's, before either lane is written.
+pub fn run(
+    code: i32,
+    [a, b, c]: [u128; FUSED_OPERANDS],
+    mxcsr: &mut u32,
+    low_lane_flags: &mut u32,
+) -> (u128, u32) {
+    let operation = operation(code);
     let immediate = (code >> IMMEDIATE_SHIFT) as u8;
     let scalar = code & SCALAR != 0;
     let mut x = Context {
         mxcsr: *mxcsr,
         flags: 0,
     };
-    let result = if code & DOUBLE != 0 {
-        x.instruction::<Double, Single>(operation, scalar, immediate, a, b)
-    } else {
-        x.instruction::<Single, Double>(operation, scalar, immediate, a, b)
+    let result = match operation {
+        Operation::FromHalf => x.half_to_single(b),
+        Operation::ToHalf => x.single_to_half(immediate, b),
+        _ if code & DOUBLE != 0 => {
+            x.instruction::<Double, Single>(operation, scalar, immediate, [a, b, c])
+        }
+        _ => x.instruction::<Single, Double>(operation, scalar, immediate, [a, b, c]),
     };
     if code & LOW_LANE != 0 {
         *low_lane_flags = x.flags;
@@ -222,8 +327,12 @@ trait Bits: Float + FloatConvert<Quad> {
     }
 }
 
+impl Bits for Half {}
 impl Bits for Single {}
 impl Bits for Double {}
+
+/// The half precision numbers of a vector's low 64 bits.
+const HALVES_IN_LANE: usize = (u64::BITS / u16::BITS) as usize;
 
 /// A lane of `v`, of `F`'s width.
 fn lane<F: Bits>(v: u128, n: usize) -> u128 {
@@ -412,6 +521,83 @@ impl Context {
         self.finish(Self::odd(r))
     }
 
+    /// `x * y + z` rounded once, with the product and the addend negated as `negate` says. A not-a-number
+    /// operand gives the first one quieted, raising invalid only for a signaling one, even where the product is
+    /// infinity times zero (seen on the reference).
+    fn fused<F: Bits>(&mut self, [x, y, z]: [F; FUSED_OPERANDS], negate: (bool, bool)) -> F
+    where
+        Quad: FloatConvert<F>,
+    {
+        if let Some(nan) = self.nans(&[x, y, z]) {
+            return nan;
+        }
+        let before = self.flags;
+        let [x, y, z] = [x, y, z].map(|v| self.number(v, true));
+        let denormal = self.flags & MXCSR_DENORMAL;
+        self.flags = before;
+        let wide = |v: F| -> Quad { v.convert(&mut false).value };
+        // Exact: quadruple precision holds the product of two doubles.
+        let product = wide(x).mul_r(wide(y), Round::NearestTiesToEven);
+        if product.status.contains(Status::INVALID_OP) {
+            return self.invalid();
+        }
+        let product = if negate.0 {
+            -product.value
+        } else {
+            product.value
+        };
+        let addend = if negate.1 { -wide(z) } else { wide(z) };
+        let r = product.add_r(addend, Round::TowardZero);
+        if r.status.contains(Status::INVALID_OP) {
+            return self.invalid();
+        }
+        self.flags |= denormal;
+        if r.value.is_zero() {
+            return self.finish(product.add_r(addend, self.round()).value);
+        }
+        self.finish(Self::odd(r))
+    }
+
+    /// `vcvtph2ps`: exact, raising invalid for a signaling not-a-number; DAZ does not apply and a denormal
+    /// raises nothing (seen on the reference).
+    fn half_to_single(&mut self, b: u128) -> u128 {
+        let mut out = 0;
+        for n in 0..HALVES_IN_LANE {
+            let v = Half::from_bits(lane::<Half>(b, n));
+            let r: Single = match self.nans(&[v]) {
+                Some(nan) => convert_nan(nan),
+                None => v.convert(&mut false).value,
+            };
+            out = with_lane::<Single>(out, n, r.to_bits());
+        }
+        out
+    }
+
+    /// `vcvtps2ph`: rounded as its immediate says, or as MXCSR does; flush to zero does not apply (seen on
+    /// the reference).
+    fn single_to_half(&mut self, immediate: u8, b: u128) -> u128 {
+        let mxcsr = self.mxcsr;
+        self.mxcsr &= !MXCSR_FLUSH_TO_ZERO;
+        if immediate & HALF_ROUND_FROM_MXCSR == 0 {
+            let rounding = u32::from(immediate) % ROUNDINGS.len() as u32;
+            self.mxcsr = self.mxcsr & !MXCSR_ROUNDING | rounding << MXCSR_ROUNDING_SHIFT;
+        }
+        let mut out = 0;
+        for n in 0..HALVES_IN_LANE {
+            let v = Single::from_bits(lane::<Single>(b, n));
+            let r: Half = match self.nans(&[v]) {
+                Some(nan) => convert_nan(nan),
+                None => {
+                    let v = self.number(v, true);
+                    self.finish(v.convert(&mut false).value)
+                }
+            };
+            out = with_lane::<Half>(out, n, r.to_bits());
+        }
+        self.mxcsr = mxcsr;
+        out
+    }
+
     fn sqrt<F>(&mut self, v: F) -> F
     where
         Quad: FloatConvert<F>,
@@ -547,8 +733,7 @@ impl Context {
         op: Operation,
         scalar: bool,
         immediate: u8,
-        a: u128,
-        b: u128,
+        [a, b, c]: [u128; FUSED_OPERANDS],
     ) -> u128
     where
         Quad: FloatConvert<F> + FloatConvert<T>,
@@ -590,6 +775,16 @@ impl Context {
                     out = with_lane::<F>(out, n, r.to_bits());
                 }
             }
+            Fused => {
+                let kind = FUSED[usize::from(immediate) % (1 << FUSED_ORDER_SHIFT)];
+                let order = FUSED_ORDERS[usize::from(immediate >> FUSED_ORDER_SHIFT)];
+                for n in 0..lanes {
+                    let operands = fused_operands(order, [f(a, n), f(b, n), f(c, n)]);
+                    let r = self.fused(operands, fused_signs(kind, n));
+                    out = with_lane::<F>(out, n, r.to_bits());
+                }
+            }
+            FromHalf | ToHalf => unreachable!("run takes the half precision conversions"),
             Min | Max => {
                 for n in 0..lanes {
                     let r = self.min_max(op == Max, f(a, n), f(b, n));

@@ -40,7 +40,8 @@ pub enum Control {
     X87DataPointer,
     /// i32: the sign and exponent of R(n) and the two zero bytes after them (plan 5.8, MMX).
     X87High(u8),
-    /// i64s: the low and high half of the value the float hook takes as its destination's.
+    /// i64s: the low and high half of the value the float hook takes as its destination's, then of a fused
+    /// multiply-add's third operand.
     FloatOperand(u8),
 }
 
@@ -98,6 +99,7 @@ pub enum Reason {
     FarTransferTo32Bit,
     X87InSoftware,
     BitDepositOrExtractInSoftware,
+    HalfPrecisionInSoftware,
 }
 
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
@@ -218,6 +220,16 @@ fn rsp_based(access: &MemoryAccess<u8>) -> bool {
             access.base,
             Some(Base::Register(RSP)) | Some(Base::Register(RBP))
         )
+}
+
+impl X86_64 {
+    /// A reason's number among x86's own.
+    fn reason_number(reason: Reason) -> u32 {
+        Self::REASONS
+            .iter()
+            .position(|(r, _)| *r == reason)
+            .expect("listed") as u32
+    }
 }
 
 impl Guest for X86_64 {
@@ -460,13 +472,12 @@ impl Guest for X86_64 {
             let code = crate::x87::Code::decode(code as i32);
             let mut unit = crate::x87::Unit::new(state, code, data as u64);
             let results = unit.run(a as u64, b as u64);
-            let reason = Self::REASONS
-                .iter()
-                .position(|(r, _)| *r == Reason::X87InSoftware)
-                .expect("listed") as u32;
             return HookDone {
                 results,
-                reason: Some(wcontainers_guest_cpu::GUEST_REASONS + reason),
+                reason: Some(
+                    wcontainers_guest_cpu::GUEST_REASONS
+                        + Self::reason_number(Reason::X87InSoftware),
+                ),
             };
         }
         assert_eq!(
@@ -482,24 +493,42 @@ impl Guest for X86_64 {
         let wide =
             |low: i64, high: i64| u128::from(low as u64) | u128::from(high as u64) << u64::BITS;
         let code = args[0] as i32;
-        let operand = word(FLOAT_OPERAND);
-        let a = &state[operand.start..operand.start + size_of::<u128>()];
-        let a = u128::from_le_bytes(a.try_into().unwrap());
+        let operand = |n: usize| {
+            let at = word(FLOAT_OPERAND).start + n * size_of::<u128>();
+            u128::from_le_bytes(state[at..at + size_of::<u128>()].try_into().unwrap())
+        };
+        let (a, c) = (operand(0), operand(1));
+        let tracking = u32::from_le_bytes(state[word(MXCSR_TRACKING)].try_into().unwrap());
+        let default_mode = mxcsr & MXCSR_MODE == MXCSR_AT_START & MXCSR_MODE && tracking == 0;
         let low_lane = word(FLOAT_LOW_LANE_FLAGS);
         let mut low_lane_flags = u32::from_le_bytes(state[low_lane.clone()].try_into().unwrap());
         let (result, exception) = crate::exact::run(
             code,
-            a,
-            wide(args[1], args[2]),
+            [a, wide(args[1], args[2]), c],
             &mut mxcsr,
             &mut low_lane_flags,
         );
         state[low_lane].copy_from_slice(&low_lane_flags.to_le_bytes());
-        state[word(MXCSR)].copy_from_slice(&mxcsr.to_le_bytes());
+        // In the default mode with its flags not kept, the hook keeps MXCSR as the fast path does (plan 5.8).
+        if !default_mode {
+            state[word(MXCSR)].copy_from_slice(&mxcsr.to_le_bytes());
+        }
         state[word(FLOAT_EXCEPTION)].copy_from_slice(&exception.to_le_bytes());
+        // What the fast path cannot do in MXCSR's default mode: a fused multiply-add on a host that does not
+        // fuse, and half precision rounding.
+        let reason = match crate::exact::operation(code) {
+            crate::exact::Operation::Fused if default_mode => {
+                wcontainers_guest_cpu::Reason::SoftwareFusedMultiplyAdd as u32
+            }
+            crate::exact::Operation::ToHalf if default_mode => {
+                wcontainers_guest_cpu::GUEST_REASONS
+                    + Self::reason_number(Reason::HalfPrecisionInSoftware)
+            }
+            _ => wcontainers_guest_cpu::Reason::ExactFloatingPointRequested as u32,
+        };
         HookDone {
             results: [result as u64 as i64, (result >> u64::BITS) as u64 as i64],
-            reason: Some(wcontainers_guest_cpu::Reason::ExactFloatingPointRequested as u32),
+            reason: Some(reason),
         }
     }
 
@@ -585,6 +614,10 @@ impl Guest for X86_64 {
         (
             Reason::BitDepositOrExtractInSoftware,
             "software bit deposit or extract: pdep and pext, a pass for each bit of the mask",
+        ),
+        (
+            Reason::HalfPrecisionInSoftware,
+            "half precision rounding in software: vcvtps2ph, which WebAssembly has no operation for",
         ),
     ];
 
@@ -707,6 +740,32 @@ impl Guest for X86_64 {
                     start = start.wrapping_add((offset << (width / W8).trailing_zeros()) as u64);
                 }
                 _ => {}
+            }
+            // A masked access faults at the span its mask selects, which the meaning checked.
+            if let AccessBytes::Masked { .. } = access.bytes {
+                let before = start;
+                let finish = |at: u64| {
+                    let at = if access.address_bits == W32 {
+                        at & u64::from(u32::MAX)
+                    } else {
+                        at
+                    };
+                    at.wrapping_add(access.segment.map_or(0, value))
+                };
+                let Some((first, last)) = crate::masked::fault_span(&i, block, before, finish)
+                else {
+                    continue;
+                };
+                if address.wrapping_sub(first) > last.wrapping_sub(first) {
+                    continue;
+                }
+                return if crate::is_canonical(first) && crate::is_canonical(last) {
+                    MemoryFault::Page
+                } else if rsp_based(&access) {
+                    MemoryFault::Stack
+                } else {
+                    MemoryFault::GeneralProtection
+                };
             }
             if access.address_bits == W32 {
                 start &= u64::from(u32::MAX);

@@ -20,11 +20,17 @@ mod float;
 #[cfg(feature = "translate")]
 mod fpu;
 #[cfg(feature = "translate")]
+mod fused;
+#[cfg(feature = "translate")]
 mod guest;
 #[cfg(feature = "translate")]
 mod habits;
 #[cfg(feature = "translate")]
+mod half;
+#[cfg(feature = "translate")]
 mod host;
+#[cfg(feature = "translate")]
+mod masked;
 #[cfg(feature = "translate")]
 mod meaning;
 #[cfg(feature = "translate")]
@@ -185,6 +191,10 @@ pub const fn mxcsr_raised(mxcsr: u32) -> u32 {
     mxcsr & !(mxcsr >> MXCSR_MASK_SHIFT) & MXCSR_FLAGS
 }
 
+/// The words of the float hook's two vector operands in the private words: the destination's value and a
+/// fused multiply-add's third operand.
+pub const FLOAT_OPERAND_WORDS: usize = 2 * (XMM_BYTES as usize / size_of::<u64>());
+
 /// x86's words of the thread state after the block, which the kernel never sees.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -200,8 +210,9 @@ pub struct X86Private {
     /// Not zero when the instruction running alone loaded ss, which holds its trap back one instruction.
     pub step_held: u32,
     pub step_at: u64,
-    /// The destination's value the float hook works on, which the meaning stores before the call.
-    pub float_operand: [u64; 2],
+    /// The destination's value the float hook works on, then a fused multiply-add's third operand, which the
+    /// meaning stores before the call.
+    pub float_operand: [u64; FLOAT_OPERAND_WORDS],
     /// The MXCSR flags the low lane of a 256-bit instruction raised, which its high lane's call adds to its own.
     pub float_low_lane_flags: u64,
 }

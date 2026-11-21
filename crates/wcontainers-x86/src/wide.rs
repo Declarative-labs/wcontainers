@@ -15,7 +15,7 @@ use wcontainers_guest_cpu::Emitter;
 
 const HALF_BYTES: u8 = XMM_BYTES as u8;
 /// The halves of a ymm register.
-const HALVES: usize = 2;
+pub(crate) const HALVES: usize = 2;
 /// The sign bit of each dword and of each qword, which `vtestps` and `vtestpd` test.
 const DWORD_SIGNS: i128 = signs(DWORD as usize);
 const QWORD_SIGNS: i128 = signs(QWORD as usize);
@@ -131,7 +131,7 @@ fn extension(m: Mnemonic) -> Option<(u32, u32, bool)> {
 
 /// Operand `n`'s halves in fresh locals: an xmm register's upper one zero, and the bytes past a memory
 /// operand's size zero; `at` is the checked memory operand's data address.
-fn halves<E: Emitter<X86_64> + ?Sized>(
+pub(crate) fn halves<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     i: &Instruction,
     n: u32,
@@ -193,7 +193,7 @@ fn upper() -> MemArg {
 
 /// Write the result's halves to operand 0: both to a ymm register, the lower to an xmm register with its
 /// upper half cleared, or the operand's bytes to memory.
-fn put<E: Emitter<X86_64> + ?Sized>(
+pub(crate) fn put<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     i: &Instruction,
     at: Option<u32>,

@@ -17,7 +17,10 @@ const HOST: Host = Host {
 };
 
 /// A host whose NaNs are not x86's, so the fix-ups' code is checked too.
-const HOST_X86_64: wcontainers_x86::Host = wcontainers_x86::Host { x86_nans: false };
+const HOST_X86_64: wcontainers_x86::Host = wcontainers_x86::Host {
+    x86_nans: false,
+    fused_multiply_add: false,
+};
 
 fn validate(wasm: &[u8]) {
     if let Err(error) = check(wasm) {
