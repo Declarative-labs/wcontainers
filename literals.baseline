@@ -1636,8 +1636,6 @@ code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"ma
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"the counting program of a draw without a pixel shader"
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	4
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	0x15
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	4
 code	crates/wcontainers-direct3d-11/src/device.rs	float	gpu_sampler	32.0
@@ -1662,18 +1660,7 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Variant	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	16
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	2048
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x10
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x40
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x80
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0xd5
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	16
 code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	5
-code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	5
 code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	16384
 code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	16384
 code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	2048

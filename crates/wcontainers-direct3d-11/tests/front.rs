@@ -1817,20 +1817,22 @@ fn format_support_reports_the_uses_the_front_serves_by_its_own_routes_at_their_l
     let depth = l11.format_support(dxgi::D32_FLOAT).support1;
     assert_eq!(depth & support::SHADER_LOAD, 0);
     assert_ne!(depth & support::CPU_LOCKABLE, 0);
-    // Typed storage views are shader model 5's, gathers 4.1's, buffers and comparisons 10_0's.
+    // Typed storage views and atomics are shader model 5's; below 11_0 the second word holds
+    // sharing alone, served from 10_0. Gathers are 4.1's of formats of a red channel alone,
+    // 11_0's of the others; buffers and comparisons 10_0's.
     for d in [&l10, &l10_1] {
         let s = d.format_support(dxgi::R32_UINT);
         assert_eq!(s.support1 & support::TYPED_UNORDERED_ACCESS_VIEW, 0);
-        assert_eq!(s.support2, 0);
+        assert_eq!(s.support2, SUPPORT2_SHAREABLE);
+        assert_eq!(
+            d.format_support(dxgi::R8G8B8A8_UNORM).support1 & support::SHADER_GATHER,
+            0
+        );
     }
-    assert_eq!(
-        l10.format_support(dxgi::R8G8B8A8_UNORM).support1 & support::SHADER_GATHER,
-        0
-    );
-    assert_ne!(
-        l10_1.format_support(dxgi::R8G8B8A8_UNORM).support1 & support::SHADER_GATHER,
-        0
-    );
+    let gathered = |d: &Dev| d.format_support(dxgi::R32_FLOAT).support1 & support::SHADER_GATHER;
+    assert_eq!(gathered(&l10), 0);
+    assert_ne!(gathered(&l10_1), 0);
+    assert_eq!(l9.format_support(dxgi::R8G8B8A8_UNORM).support2, 0);
     for f in 0..=dxgi::B4G4R4A4_UNORM {
         let s = l9.format_support(f).support1;
         let off = support::BUFFER | support::SO_BUFFER | support::SHADER_SAMPLE_COMPARISON;

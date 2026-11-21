@@ -211,16 +211,18 @@ fn case(name: &str) {
 /// As [`case`], ours run with environment variables `env` set (in a directory labelled `label`),
 /// returning what ours wrote to its error output.
 fn case_env(name: &str, label: &str, env: &[(&str, &str)]) -> String {
-    let (code, want) = run_with(
-        "own_cases",
-        &place(&format!("{name}-system"), false),
-        &[name],
-    );
+    case_args(&[name], label, env)
+}
+
+/// As [`case_env`], the case and its further arguments (a feature level) given as `args`.
+fn case_args(args: &[&str], label: &str, env: &[(&str, &str)]) -> String {
+    let name = args.join("-");
+    let (code, want) = run_with("own_cases", &place(&format!("{name}-system"), false), args);
     assert_eq!(code, 0, "{want}");
     let (code, got, errors) = run_logged(
         "own_cases",
         &place(&format!("{name}-{label}"), true),
-        &[name],
+        args,
         env,
     );
     assert_eq!(code, 0, "{got}");
@@ -346,19 +348,28 @@ const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
     ]
 };
 
-/// Formats whose support differs from the RTX 3080's outside the absent abilities: each with the
-/// bits of both words that differ and why (the status file's Gap list names each).
-const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
+/// Formats whose support differs from the RTX 3080's at feature level `level` (`"11_0"`,
+/// `"10_1"` or `"10_0"`) outside the absent abilities: each with the bits of both words that
+/// differ and why (the status file's Gap list names each). Below 11_0 no format claims storage
+/// views, and only formats of a red channel alone claim gathers (at 10_1), so those differences
+/// are 11_0's alone.
+fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)> {
     use windows::Win32::Graphics::Dxgi::Common::*;
     const TARGET: i32 = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
         | D3D11_FORMAT_SUPPORT_BLENDABLE.0
         | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN.0;
-    &[
+    let at_11_0 = level == "11_0";
+    let gather = if at_11_0 {
+        D3D11_FORMAT_SUPPORT_SHADER_GATHER.0
+    } else {
+        0
+    };
+    let mut differences = vec![
         (
             DXGI_FORMAT_R32G32B32_FLOAT,
-            D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | D3D11_FORMAT_SUPPORT_SHADER_GATHER.0,
+            D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
             0,
-            "sampling, optional at 11_0: served, where the back end filters the format",
+            "sampling, optional: served, where the back end filters the format",
         ),
         (
             DXGI_FORMAT_B5G6R5_UNORM,
@@ -373,12 +384,6 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
             "B5G5R5A1 targets: the back end has no such target",
         ),
         (
-            DXGI_FORMAT_A8_UNORM,
-            D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0,
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0 | D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
-            "A8_UNORM storage views: the shaders crate has no storage form of it",
-        ),
-        (
             DXGI_FORMAT_B8G8R8X8_UNORM,
             D3D11_FORMAT_SUPPORT_BUFFER.0 | D3D11_FORMAT_SUPPORT_IA_VERTEX_BUFFER.0,
             0,
@@ -390,17 +395,43 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
             0,
             "extended-range swap chains: the infrastructure crate makes none",
         ),
-    ]
-};
+    ];
+    if at_11_0 {
+        differences.push((
+            DXGI_FORMAT_A8_UNORM,
+            D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0,
+            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0 | D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
+            "A8_UNORM storage views: the shaders crate has no storage form of it",
+        ));
+    }
+    differences
+}
 
 /// Both words of every format's support, and whether the second query succeeds, as real Direct3D
 /// answers them, every bit compared: the bits of absent abilities are never claimed, multisampling
 /// is claimed only where real Direct3D claims it, and the others differ only as
-/// `SUPPORT_DIFFERENCES` names. Direct3D fails the second query where a format has none of its
+/// `support_differences` names. Direct3D fails the second query where a format has none of its
 /// bits, so it fails on ours where real Direct3D's word holds only bits ours lacks.
 #[test]
 fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
-    format_support_compared("ours", &[], &[]);
+    format_support_compared("11_0", "ours", &[], &[]);
+}
+
+/// The same on devices of feature level 10_1, which claim gathers only of formats of a red
+/// channel alone and of the video formats, no storage views and, in the second word, sharing
+/// alone.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn format_support_at_level_10_1_as_direct3d_reports_it_but_the_named_shortfalls() {
+    format_support_compared("10_1", "ours", &[], &[]);
+}
+
+/// The same on devices of feature level 10_0, which also read no multisampled depth. The WebGL 2
+/// build's own 10_0 table is compared in the Gap list's WebGL 2 item, not here.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn format_support_at_level_10_0_as_direct3d_reports_it_but_the_named_shortfalls() {
+    format_support_compared("10_0", "ours", &[], &[]);
 }
 
 /// The same where the back end lacks the 16-bit normalised formats (a browser without
@@ -428,26 +459,28 @@ fn format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_short
         DXGI_FORMAT_R16_SNORM,
     ]
     .map(unblended);
-    format_support_compared("ours-no16", &[(FEATURES_OFF, off)], &twins);
+    format_support_compared("11_0", "ours-no16", &[(FEATURES_OFF, off)], &twins);
 }
 
-/// Compares every format's support through ours, run with `env` in a directory labelled `label`,
-/// with real Direct3D's, allowing `SUPPORT_DIFFERENCES` and `more` (whose bits are added).
+/// Compares every format's support on a device of feature level `level` through ours, run with
+/// `env` in a directory labelled `label`, with real Direct3D's, allowing `support_differences`
+/// and `more` (whose bits are added).
 fn format_support_compared(
+    level: &str,
     label: &str,
     env: &[(&str, &str)],
     more: &[(DXGI_FORMAT, i32, i32, &str)],
 ) {
     let (code, want) = run_with(
         "own_cases",
-        &place("format_support-system", false),
-        &["format_support"],
+        &place(&format!("format_support-{level}-system"), false),
+        &["format_support", level],
     );
     assert_eq!(code, 0, "{want}");
     let (code, got) = run_env(
         "own_cases",
-        &place(&format!("format_support-{label}"), true),
-        &["format_support"],
+        &place(&format!("format_support-{level}-{label}"), true),
+        &["format_support", level],
         env,
     );
     assert_eq!(code, 0, "{got}");
@@ -479,7 +512,7 @@ fn format_support_compared(
         );
         let diff1 = (want1 ^ got1) & !(ABSENT_SUPPORT1 | MULTISAMPLE_SUPPORT1);
         let diff2 = (want2 ^ got2) & !ABSENT_SUPPORT2;
-        let named = SUPPORT_DIFFERENCES
+        let named = support_differences(level)
             .iter()
             .chain(more)
             .filter(|s| s.0 == DXGI_FORMAT(format))
@@ -499,8 +532,9 @@ fn format_support_compared(
 }
 
 /// `ClearView` clears targets' and storage views' rectangles, clipped to the view, in each
-/// layer or slice, and whole views of buffers and of 1D, 2D and 3D textures; integer values are
-/// clamped to the channel; `D3D11_OPTIONS.ClearView` is TRUE.
+/// layer or slice, whole views of buffers and of 1D, 2D and 3D textures, and the depth of depth
+/// views; integer values past 32 bits and the infinities are converted as the RTX 3080's target
+/// clears convert them; `D3D11_OPTIONS.ClearView` is TRUE.
 #[test]
 fn clear_view_of_rectangles_and_storage_as_direct3d_does() {
     case("clear_view");
@@ -516,6 +550,16 @@ fn clear_view_without_texture_formats_tier1_as_direct3d_does() {
         .as_str()
         .unwrap();
     case_env("clear_view", "untiered", &[(FEATURES_OFF, tier1)]);
+}
+
+/// Four-sample depth textures made for shaders to read, refused below 10_1, and views of each
+/// aspect.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn multisampled_depth_read_by_shaders_as_direct3d_takes_it_at_each_level() {
+    for level in ["11_0", "10_1", "10_0"] {
+        case_args(&["ms_depth_read", level], "ours", &[]);
+    }
 }
 
 /// A compute shader sampling, loading and gathering under resource clamps takes the clamped
@@ -838,6 +882,10 @@ fn interfaces_answer_as_direct3d_does() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "it makes an 11_0 device and a 10_1 state, and the WebGL 2 build reports 10_0 alone"
+)]
 fn direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does() {
     let (code, want) = run("own_d3d10", &place("d3d10-system", false));
     assert_eq!(code, 0, "{want}");

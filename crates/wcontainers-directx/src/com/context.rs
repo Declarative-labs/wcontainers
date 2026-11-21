@@ -1500,8 +1500,8 @@ impl Context {
 
     pub(super) fn discard_view1(&self, _view: Ref<ID3D11View>, _rects: *const RECT, _n: u32) {}
 
-    /// `ClearView` of a render target or storage view, whole or its rectangles; video views are
-    /// not served.
+    /// `ClearView` of a render target, storage or depth view, whole or its rectangles; video
+    /// views are not served.
     pub(super) fn clear_view(
         &self,
         view: Ref<ID3D11View>,
@@ -1523,6 +1523,10 @@ impl Context {
         };
         if let Some(v) = front_of(&view, |v: &UnorderedAccessView| &*v.front) {
             self.run(CLEAR_VIEW, move |f| f.clear_view_uav(&v, c, &rects));
+            return;
+        }
+        if let Some(v) = front_of(&view, |v: &DepthStencilView| &*v.front) {
+            self.run(CLEAR_VIEW, move |f| f.clear_view_depth(&v, c[0], &rects));
             return;
         }
         let Some(v) = front_of(&view, |v: &RenderTargetView| &*v.front) else {
@@ -2692,4 +2696,5 @@ fn box3(b: &D3D11_BOX) -> Box3 {
 }
 
 const CLEAR_VIEW: &str = "ClearView";
-const CLEAR_VIEW_VIDEO: &str = "ID3D11DeviceContext1::ClearView of a video view";
+const CLEAR_VIEW_VIDEO: &str =
+    "ID3D11DeviceContext1::ClearView of a view not of a target, storage or depth (a video view)";

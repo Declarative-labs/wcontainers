@@ -179,6 +179,29 @@ pub enum ViewDim {
     Texture2DMSArray,
 }
 
+/// The bits of `D3D11_FILTER`.
+pub mod filter {
+    pub const MIP_LINEAR: u32 = 0x1;
+    pub const MAG_LINEAR: u32 = 0x4;
+    pub const MIN_LINEAR: u32 = 0x10;
+    pub const ANISOTROPIC: u32 = 0x40;
+    pub const COMPARISON: u32 = 0x80;
+    /// Every bit but the minimum and maximum reductions.
+    pub const SERVED: u32 = MIP_LINEAR | MAG_LINEAR | MIN_LINEAR | ANISOTROPIC | COMPARISON;
+}
+
+/// `D3D11_TEXTURE_ADDRESS_MODE`.
+pub mod address {
+    pub const WRAP: u32 = 1;
+    pub const MIRROR: u32 = 2;
+    pub const CLAMP: u32 = 3;
+    pub const BORDER: u32 = 4;
+    pub const MIRROR_ONCE: u32 = 5;
+}
+
+/// `D3D11_REQ_MAXANISOTROPY`.
+pub const REQ_MAXANISOTROPY: u32 = 16;
+
 /// `D3D11_SAMPLER_DESC`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SamplerDesc {
@@ -196,11 +219,11 @@ impl SamplerDesc {
     /// What an empty sampler slot samples with: linear filtering, clamped addressing.
     pub fn default_state() -> Self {
         SamplerDesc {
-            filter: 0x15,
-            address: [3; 3],
+            filter: filter::MIP_LINEAR | filter::MAG_LINEAR | filter::MIN_LINEAR,
+            address: [address::CLAMP; 3],
             mip_lod_bias: 0.0,
             max_anisotropy: 1,
-            comparison: 1,
+            comparison: comparison::NEVER,
             border: [1.0; 4],
             min_lod: -f32::MAX,
             max_lod: f32::MAX,
