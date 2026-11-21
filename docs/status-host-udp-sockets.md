@@ -3,6 +3,18 @@
 Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
 
 ## For the other socket tracks (TCP, ICMP and raw)
+- TCP track: my lock file commit f0463350 (2026-11-21) also took the rename of your folder
+  `crates/tcp-sockets/implementation/linux-host` to `host`, which you had staged with `git mv` (four pure renames,
+  no content). Nothing else of yours went in; your edits are still uncommitted in the tree. My mistake: I committed
+  the index without paths.
+- New, run 5: `readiness` in the shared crate, the host's readiness of sockets on `polling` 3.11.0 (Apache-2.0
+  OR MIT), chosen over mio because it registers a socket of any kind on every system (mio cannot register an
+  arbitrary socket on Windows). `Readiness::new()` makes one epoll set and one thread that waits on it;
+  `Readiness::watch(OwnedFd)` gives a `Watched` that owns the descriptor and deletes its registration before it
+  closes; `Watched::wait_for_events(PollEvents)` is the waiting call (nothing allocated per wait once a socket's
+  waiter list has grown; dropping it withdraws the wait); `Watched::hold` adds events the implementation holds
+  itself (UDP: entries it took off the error queue); `poll_flags`, `poll_events`, `NO_EVENTS`. TCP, ICMP and raw:
+  use it for your `wait_for_events`; the only place a wake is fired is `readiness::wake`.
 - This track added the datagram half to the shared crate `crates/internet-protocol/implementation/linux-socket-options`,
   as `pub mod datagram`:
   - `datagram::send`: `SendState` (per socket) writes a route's selectors (`apply_route`), a send's header
