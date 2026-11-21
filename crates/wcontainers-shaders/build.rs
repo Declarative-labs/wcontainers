@@ -380,8 +380,12 @@ fn compile(build: &cc::Build, name: &str, hash: &str) {
     base().objects(objects).compile(name);
 }
 
+/// A submodule's git link or directory, which depends on where the checkout keeps its git data.
+const GIT_DATA: &str = ".git";
+
 /// Hashes the files under each `(path, recursive)` (a path may be one file) by name and contents,
-/// carriage returns left out, so every checkout of the same sources gives the same hash.
+/// carriage returns and git's own data left out, so every checkout of the same sources gives the
+/// same hash.
 fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
     let mut files = Vec::new();
     for (path, recursive) in paths {
@@ -396,6 +400,9 @@ fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
             };
             for entry in entries {
                 let path = entry.unwrap().path();
+                if path.file_name().is_some_and(|n| n == GIT_DATA) {
+                    continue;
+                }
                 if path.is_dir() {
                     if *recursive {
                         stack.push(path);
