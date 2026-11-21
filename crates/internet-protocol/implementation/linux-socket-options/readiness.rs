@@ -63,6 +63,9 @@ pub struct WaitForEvents<'a> {
     id: Option<u64>,
 }
 
+/// The name of the thread that waits on the host's readiness.
+const WATCHER: &str = "host socket readiness";
+
 /// The events poll reports whether or not they are asked for.
 const ALWAYS_REPORTED: PollFlags = PollFlags::ERR.union(PollFlags::HUP).union(PollFlags::NVAL);
 
@@ -82,37 +85,35 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 type PollField = fn(&mut PollEvents) -> &mut bool;
 
 /// The poll bits and the fields of PollEvents that stand for them.
-fn poll_bits() -> [(PollFlags, PollField); 12] {
-    [
-        (PollFlags::IN, |events| &mut events.data_to_read),
-        (PollFlags::PRI, |events| &mut events.exceptional_condition),
-        (PollFlags::OUT, |events| &mut events.writing_possible),
-        (PollFlags::ERR, |events| &mut events.error_condition),
-        (PollFlags::HUP, |events| &mut events.hang_up),
-        (PollFlags::NVAL, |events| &mut events.descriptor_not_open),
-        (PollFlags::RDNORM, |events| &mut events.normal_data_to_read),
-        (PollFlags::RDBAND, |events| {
-            &mut events.priority_band_data_to_read
-        }),
-        (PollFlags::WRNORM, |events| &mut events.normal_data_writable),
-        (PollFlags::WRBAND, |events| {
-            &mut events.priority_data_writable
-        }),
-        (
-            PollFlags::from_bits_retain(linux_raw_sys::general::POLLMSG as u16),
-            |events| &mut events.message_available,
-        ),
-        (PollFlags::RDHUP, |events| {
-            &mut events.peer_shut_down_writing
-        }),
-    ]
-}
+const POLL_BITS: &[(PollFlags, PollField)] = &[
+    (PollFlags::IN, |events| &mut events.data_to_read),
+    (PollFlags::PRI, |events| &mut events.exceptional_condition),
+    (PollFlags::OUT, |events| &mut events.writing_possible),
+    (PollFlags::ERR, |events| &mut events.error_condition),
+    (PollFlags::HUP, |events| &mut events.hang_up),
+    (PollFlags::NVAL, |events| &mut events.descriptor_not_open),
+    (PollFlags::RDNORM, |events| &mut events.normal_data_to_read),
+    (PollFlags::RDBAND, |events| {
+        &mut events.priority_band_data_to_read
+    }),
+    (PollFlags::WRNORM, |events| &mut events.normal_data_writable),
+    (PollFlags::WRBAND, |events| {
+        &mut events.priority_data_writable
+    }),
+    (
+        PollFlags::from_bits_retain(linux_raw_sys::general::POLLMSG as u16),
+        |events| &mut events.message_available,
+    ),
+    (PollFlags::RDHUP, |events| {
+        &mut events.peer_shut_down_writing
+    }),
+];
 
 pub fn poll_flags(mut events: PollEvents) -> PollFlags {
-    poll_bits()
-        .into_iter()
+    POLL_BITS
+        .iter()
         .filter(|(_, field)| *field(&mut events))
-        .fold(PollFlags::empty(), |flags, (bit, _)| flags | bit)
+        .fold(PollFlags::empty(), |flags, (bit, _)| flags | *bit)
 }
 
 pub const NO_EVENTS: PollEvents = PollEvents {
@@ -132,8 +133,8 @@ pub const NO_EVENTS: PollEvents = PollEvents {
 
 pub fn poll_events(flags: PollFlags) -> PollEvents {
     let mut events = NO_EVENTS;
-    for (bit, field) in poll_bits() {
-        *field(&mut events) = flags.contains(bit);
+    for (bit, field) in POLL_BITS {
+        *field(&mut events) = flags.contains(*bit);
     }
     events
 }
@@ -155,7 +156,7 @@ impl Readiness {
         let watcher = {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
-                .name("host socket readiness".into())
+                .name(WATCHER.into())
                 .spawn(move || shared.watch_events())
                 .map_err(|error| io_host_error(&error))?
         };

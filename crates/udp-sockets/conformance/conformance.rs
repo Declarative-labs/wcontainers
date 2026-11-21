@@ -2451,7 +2451,7 @@ pub fn a_dropped_wait_is_withdrawn<S: UdpSockets>(sockets: S) {
     assert!(events.data_to_read, "{events:?}");
 }
 
-/// Many waits at once, on many sockets and several on one, each finish woken once when their datagram arrives.
+/// Many waits at once, on many sockets and several on one, each woken once when a datagram arrives, however many do.
 pub fn many_waits_each_wake_once<S: UdpSockets>(sockets: S) {
     let receivers: Vec<_> = (0..WAITED_SOCKETS)
         .map(|_| bound(&sockets, IpVersion::V4, UdpProtocol::Udp))
@@ -2474,13 +2474,17 @@ pub fn many_waits_each_wake_once<S: UdpSockets>(sockets: S) {
     for (_, to) in &receivers {
         send(&sockets, &sender, UdpProtocol::Udp, from, *to, PAYLOAD);
     }
-    for (wait, wakes) in &mut waits {
+    for (_, wakes) in &waits {
         assert!(wakes.reach(1), "a wait woken when its datagram arrives");
-        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
+    }
+    // More datagrams before the waits are polled again wake none of them again.
+    for (_, to) in &receivers {
+        send(&sockets, &sender, UdpProtocol::Udp, from, *to, PAYLOAD);
     }
     std::thread::sleep(SILENCE);
-    for (_, wakes) in &waits {
+    for (wait, wakes) in &mut waits {
         assert_eq!(wakes.count(), 1, "a wait woken more than once");
+        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
     }
 }
 
