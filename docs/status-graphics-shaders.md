@@ -17,39 +17,44 @@ drawn as lines (gap A6).
 
 ## G6a again, run 2 (run 71): the second check's findings at the tip of main
 
-Every figure here comes from runs of this crate as at 632d6039 (its last commit; later commits on
-`main` are other tracks' and this file), each built from the committed tip, not the shared tree
-(How to run, first item). Logs in scratch `graphics-shaders/g6a-r71`.
+Every figure here comes from runs at 277a2891, the tip of `main` when this run's suites ran
+(Chrome's compile at 632d6039, whose written files are byte for byte the tip's), each built from
+the committed tip, not the shared tree (How to run, first item). Logs in scratch
+`graphics-shaders/g6a-r71`. Between them another track committed to this crate (f4302b4a: the
+container reader made public, `wcontainers_shaders::container`, with the DXBC checksum; a1b731f1:
+the fuzz test signing with it); the figures at 277a2891 include those commits.
 
 What this run changed besides this file and the history file: the corpus test (tests/corpus.rs,
 31efb075 and 632d6039). Nothing else of the crate.
 
-Runs at the tip:
-- Laptop (i7-8750H, load 4 to 5 from another track's job beside, 4 cargo jobs under choom;
-  r71-suite2.log on the laptop, copied to scratch): the whole suite with every corpus and glslang
-  8.13, `--include-ignored --skip mutated`: 116 passed, 1 failed, the failing one
+Runs at the tip (277a2891):
+- Laptop (i7-8750H, load 4 at the start, 1 at the end, another track's job beside; 4 cargo jobs
+  under choom; r71-suite3.log): the whole suite with every corpus and glslang 8.13,
+  `--include-ignored --skip mutated`: 116 passed, 1 failed, the failing one
   `damaged_records_decode_without_a_panic`, gap A16's known failure. The corpus test: 12 passed
-  (run 70's 11 and the new test), every record of the nine corpora unchanged.
-- x86 machine (96 processors, load 50 to 72 from others' jobs, -j 64; x86-checks-r71b.log): rustfmt
-  of every file of this crate clean; `cargo clippy -p wcontainers-shaders -p wcontainers-gpu
-  --all-targets -- -D warnings` clean. The literal check prints no line of this crate or of the
-  interface crate; it fails at the tip on 18 lines of other tracks (executor 6, tcp-sockets 6,
-  opengl 5, nir 1). This crate's baseline lines: 4,826 naming its paths, 395 under src, unchanged.
-  Its first run flagged one line of this run's first commit (the `sample` qualifier's directive,
-  restating the WebGL 2 back end's constant); 632d6039 removed it (item 1).
-- Desktop (RTX 3080, one GPU job in the hazard group, 3 cargo jobs; gpu.log, gpu-err.log), at
-  31efb075, which differs from the tip only in tests/corpus.rs: Windows clippy with warnings
-  denied clean; every test binary at its default seeds: 161 passed, 0 failed, 6 ignored (the three
-  corpora, which need their folders and ran on the laptop; the fuzz test; A16's known failure;
-  `print_geometry_programs`, which only prints). Then `geometry_draw` at the second check's seed
-  3131, 8 cases: the check's failures and nothing else, `geometry_shaders_draw_as_direct3d_does`
-  384 comparisons, 2 failed (seed 3135 `gs_clip` TriangleStrip, DXBC and DXIL, 4 of 749 texels,
-  largest 64), the replay on WebGL 2 304, 2 failed (the same case), the depth clamp 48, 2 failed
-  (seed 3137 TriangleList 97 clamped, 189 differ, 28 steps; seed 3138 TriangleStrip 165 clamped,
-  208 differ, 10 steps); the stream tests 0 failed. At the tip itself (desktop-corpus.log):
-  Windows clippy with warnings denied clean, and the corpus test
-  binary 9 passed, 0 failed, 3 ignored (the three corpora), the new test among the passed.
-- Chrome on the RTX 3080 (`web/check` on the laptop's written files at the tip, one GPU job;
+  (run 70's 11 and the new test), every record of the nine corpora unchanged. Every WGSL and GLSL
+  file it wrote equals 632d6039's (diff over 8,192 files; only `converter-version.txt` and the
+  content keys in `cache.txt` differ, as the crate's sources changed; every record hash is the
+  same).
+- x86 machine (96 processors, load 0 to 3, -j 64; x86-checks-r71c.log): rustfmt of every file of
+  this crate clean; `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D
+  warnings` clean. The literal check prints no line of this crate or of the interface crate; it
+  fails at the tip on 19 lines of other tracks (tcp-sockets 9, opengl 5, directx 3, executor 1,
+  nir 1). This crate's baseline lines: 4,821 naming its paths, 390 under src (4,826 and 395 at
+  run 70; the five went with the other track's container commit). At 31efb075 the check flagged
+  one line of this run's first commit (the `sample` qualifier's directive, restating the WebGL 2
+  back end's constant); 632d6039 removed it (item 1).
+- Desktop (RTX 3080, one GPU job in the hazard group, 3 cargo jobs; gpu2.log, gpu2-err.log):
+  Windows clippy with warnings denied clean; every test binary at its default seeds: 161 passed, 0
+  failed, 6 ignored (the three corpora, which need their folders and ran on the laptop; the fuzz
+  test; A16's known failure; `print_geometry_programs`, which only prints). Then `geometry_draw`
+  at the second check's seed 3131, 8 cases: the check's failures and nothing else,
+  `geometry_shaders_draw_as_direct3d_does` 384 comparisons, 2 failed (seed 3135 `gs_clip`
+  TriangleStrip, DXBC and DXIL, 4 of 749 texels, largest 64), the replay on WebGL 2 304, 2 failed
+  (the same case), the depth clamp 48, 2 failed (seed 3137 TriangleList 97 clamped, 189 differ, 28
+  steps; seed 3138 TriangleStrip 165 clamped, 208 differ, 10 steps); the stream tests 0 failed.
+  The same job at 31efb075 (gpu.log) gave the same figures.
+- Chrome on the RTX 3080 (`web/check` on the laptop's written files at 632d6039, one GPU job;
   chrome.log): every WGSL file compiles (4,442: corpus 185, games 527, games DXIL 441, own 144, own
   DXIL 135, rig 79, rig DXIL 72, runner 1438, runner DXIL 1418, and the rewrite probe's 3). WebGL 2
   compiles 3,585 GLSL files and refuses 40, each a shader whose record names a need the back end
@@ -59,11 +64,11 @@ Runs at the tip:
   glslang refuses) and one is refused for `sampler2DMS` (games `88a47056729cb2a2`, whose record
   names `MULTISAMPLE_READ`).
 - Not run: WebAssembly (A8's figures are from G6a run 4), the fuzz test (A11's from the checks), the
-  Direct3D 12 scenes (A6's from run 69): nothing they reach changed.
+  Direct3D 12 scenes (A6's from run 69).
 - Clean-up at the end: the build folders of this run deleted (laptop
   `target/shaders-tip` and its source copy; x86 `/work/target/shaders-tip` and its clone; desktop
   `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip` and `C:\wc\out\shaders-tip`); scratch keeps
-  the logs and `out` (51 MB, the files Chrome compiled).
+  the logs and `out` (51 MB, the files Chrome compiled), of both rounds of runs.
 
 The second check's findings, each against the tip:
 1. GLSL refusals by reason (blocking): settled by the test, as the check proposed. A glslang
@@ -130,12 +135,13 @@ target copy, a clear value and a blend constant, with no draw test using them ye
 ## New for the owner
 
 - Run 71: nothing new in behaviour; the corpus test holds a glslang refusal to the needs the WebGL
-  2 back end lacks or declares through a directive the file carries (above). Another track's
-  uncommitted edits sit in this crate in the shared checkout at this run's end (src/container.rs
-  made public as `container` with a checksum and op codes for the Direct3D fronts, md-5 moved to
-  the crate's dependencies, tests/fuzz.rs taking its signing from it, and the Direct3D 12 front's
-  dxbc.rs and root.rs using it): not this track's, not committed, not reviewed here, and not in
-  any figure above.
+  2 back end lacks or declares through a directive the file carries (above). Another track works
+  in this crate in the shared checkout: it committed f4302b4a and a1b731f1 (the container reader
+  public as `wcontainers_shaders::container` for the Direct3D fronts, md-5 moved to the crate's
+  dependencies, the fuzz test signing with it), which this run's suites at 277a2891 include, and
+  at this run's end it has more uncommitted edits here (build.rs, cpp/boundary.h,
+  src/container.rs, tests/fuzz.rs: a DXIL view list and two more DXBC enums). Not this track's
+  work, not reviewed here; the next check should know its tip may hold more of it.
 
 - Run 70: nothing new in behaviour. The paused combine commit's 45 literals are named (two
   interface constants, `BLEND_HALF_CODES` and `BLEND_CONSTANT_COMPONENTS`), and the drawn tests
