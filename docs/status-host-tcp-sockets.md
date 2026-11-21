@@ -8,10 +8,9 @@ readings, repair, authentication, multipath state, the privileged settings).
   notes on it, for its owner: (1) every socket is registered edge-triggered for every event from the moment it
   is watched, so the watcher thread wakes, looks the socket up and takes its lock on every edge of every socket,
   even with nothing waiting (each segment a busy connection receives); arming a oneshot registration with the
-  waiters' interest at a wait that has to wait would cost nothing on sockets nobody waits on. (2) TCP's sockets
-  are still made by the shared `open_socket` on rustix: making it socket2's `Socket::new` belongs in the shared
-  crate (its owner switch around `socket` is shared), so this track leaves it to whoever moves the shared crate to
-  socket2 (a `sock` helper was being added there during run 4).
+  waiters' interest at a wait that has to wait would cost nothing on sockets nobody waits on (a one-shot
+  registration of that kind was in the working tree, uncommitted, during run 5). (2) Done by the UDP track in
+  9ad7b201: the shared `open_socket` makes TCP's sockets with socket2's `Socket::new`.
 - The shared crate is `crates/internet-protocol/implementation/linux-socket-options` (package
   `wcontainers-internet-protocol-linux-socket-options`), made by this track. Its body is
   `cfg(target_os = "linux")`. It holds: `host_error`, `last_host_error`; the raw option calls `set_option`,
@@ -39,6 +38,13 @@ readings, repair, authentication, multipath state, the privileged settings).
   with them.
 - Still refused there with a counted reason: multicast and anycast memberships, a fixed IPv6 flow label. The
   UDP track needs them more: add them there.
+
+## Done in run 5 (2026-11-21): T1 complete
+- The suite finds the loopback interface by its `IFF_LOOPBACK` flag (nix's `getifaddrs`) instead of naming it
+  "lo": the literal check finds nothing in this track's files now.
+- Socket creation is socket2's (the shared `open_socket`, moved by the UDP track in 9ad7b201). The one rustix
+  `socket_with` left in the implementation opens the netlink socket that hears of address changes, not a TCP socket.
+- Independent check, see Measurements.
 
 ## Done in run 4 (2026-11-21, after the async ruling and the reorganization)
 - Renamed to `host`: folder `crates/tcp-sockets/implementation/host`, package `wcontainers-tcp-sockets-host`, types
@@ -139,6 +145,17 @@ readings, repair, authentication, multipath state, the privileged settings).
   T1.
 
 ## Measurements
+- Run 5, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 21:28, load 14 to 15: clippy with warnings
+  denied clean, 90 passed in 3.43 s. Literal check (21:29): no finding in this track's files.
+- Run 5 independent check from a clean clone of main at 02f9c69c (job host-tcp-sockets-clean, 21:30 to 21:32, load
+  11 to 31; log clean-check-run5.log in scratch): build folder emptied, clippy clean (9.6 s), 90 passed in 3.42 s;
+  `cargo tree` of tcp-sockets, internet-protocol, configurable, negative-route-advice, kernel, abi and the suite
+  shows no implementation crate; four broken copies each failed: abort-closes-in-order (abort_resets_the_peer,
+  wait_ends_with_the_errors_always_reported), push-does-nothing (more_to_come_holds_data_until_pushed,
+  push_ignoring_neither_keeps_the_cork), wait-never-finishes (seven wait checks and the allocation check),
+  readiness-wakes-nothing (four wait checks). `git diff ae9c53ca HEAD` of every interface.rs and data file this
+  track uses (tcp-sockets, internet-protocol, kernel, configurable, negative-route-advice) is empty; abi's and
+  system's interface.rs changed only in other tracks' commits 564626c0, fd65d351, 4ee5def7.
 - Run 4, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 21:20, load 1.7 to 3.2: clippy with warnings
   denied clean; 90 passed, 0 failed, three runs in a row, each 3.4 s (89 suite checks and the allocation check).
 - Run 4 broken copies (mutants.sh, now 90 copies), same machine, 20:49 to 21:19, load 2 to 21: every copy failed the
@@ -187,16 +204,15 @@ readings, repair, authentication, multipath state, the privileged settings).
   them: `touch` the changed files in the command when a result looks stale.
 - The literal check (run 4, on the ARM machine in a copy given its own `git init`, since arm-run copies no .git)
   found eight findings in this track's files that earlier runs had not seen; seven are fixed (named constants,
-  a different test flow label, alignment by `cmsghdr`'s type, the fast open sysctl as its two named bits). One
-  stays: `LOOPBACK_INTERFACE = "lo"` in the suite restates the kernel implementation's `LOOPBACK_NAME`, which the
-  suite may not import (an interface crate must not lean on an implementation); removing it needs the name in a
-  crate both can use, or the suite finding loopback by its `IFF_LOOPBACK` flag (next run).
-
-## Next (finishing T1 after run 4)
-- Socket creation on socket2: move the shared `open_socket` (rustix `socket_with` inside the owner switch) to
-  `socket2::Socket::new` with `Type::STREAM.nonblocking().cloexec()`, agreed with the UDP track, who is moving the
-  shared crate to socket2.
-- The one literal finding left (`"lo"` in the suite, see How to run).
+  a different test flow label, alignment by `cmsghdr`'s type, the fast open sysctl as its two named bits); the
+  eighth, the name "lo", went in run 5. Command: `rm -rf target/lit && mkdir -p target/lit && tar
+  --exclude=./target -cf - . | tar -xf - -C target/lit && cd target/lit && git init -q && git add -A && cargo run
+  -q -p wcontainers-literals -- check`, then look for tcp-sockets in its output.
+- Cargo.lock in this shared checkout: commit this track's lines through a private index (`GIT_INDEX_FILE` set to
+  a scratch file, `git read-tree HEAD`, `git apply --cached` of a patch of those lines, `git add` of own files,
+  `git commit`), then `git add` own files in the real index; other tracks' staged and unstaged changes stay.
+- The shared crate linux-socket-options was being reorganized by another track during run 5 (its
+  implementation.rs staged as linux.rs): if this crate stops building on it, wait and try again.
 
 ## Next (T2)
 - read_state and read_listener_state (every query), authentication (MD5, AO, counters), repair options, queues
@@ -226,6 +242,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   packet socket.
 
 ## Dependencies added
+- Run 5: nix 0.31.4 in the suite too (Linux only, `net` feature: the loopback interface by its flag): MIT.
 - Run 4: socket2 0.6.5 with feature `all` (the basic calls): MIT OR Apache-2.0. polling 3.11.0 comes through the
   shared crate (the UDP track added it): Apache-2.0 OR MIT.
 - rustix 1.1.6 (also in the suite, for its raw and packet sockets): Apache-2.0 WITH LLVM-exception OR Apache-2.0
@@ -241,8 +258,6 @@ readings, repair, authentication, multipath state, the privileged settings).
 - `PollEvents` has `message_available` (`POLLMSG`), which Linux never reports for a socket: a wait asking only
   for it finishes only on an error, hang-up or closed descriptor, as `poll` does on Linux. Not a fault, but the
   contract does not say it.
-- No way to build one: the crate has `HostTcpSockets::new()`. Suggested trait beside `TcpSockets`:
-  `pub trait StandaloneTcpSockets: TcpSockets { fn new() -> Self; }`.
 - `owner: UserId` is undefined when the exit node runs as one user: a guest's root (`UserId(0)`) connecting
   through a host process running as uid 1000 can only be answered EPERM (the host cannot make a socket owned
   by another user without CAP_SETUID), so on an unprivileged host every guest connect fails. The suite
