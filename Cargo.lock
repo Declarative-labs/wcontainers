@@ -4767,9 +4767,12 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "linux-raw-sys",
+ "rustix",
  "wcontainers-abi",
+ "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-negative-route-advice-conformance",
  "wcontainers-udp-sockets",
 ]
 

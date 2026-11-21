@@ -2,26 +2,31 @@
 //!
 //! Each check talks over the loopback addresses, with ports the kernel chooses. The rest of the network the
 //! checks need is the caller's to provide, on a network of its own:
-//! - one interface other than loopback that takes IPv6 multicast (ipv6_memberships_take_their_datagrams);
-//! - a route to 192.0.2.0/24 for the superuser, with user 1000's datagrams to it prohibited
-//!   (an_owner_is_routed_as_its_user);
+//! - one interface other than loopback with an address in 192.0.2.0/24 and the routes of IPv4 and IPv6
+//!   multicast (multicast_membership_takes_the_groups_datagrams, ipv6_memberships_take_their_datagrams);
+//! - user 1000's datagrams to 192.0.2.0/24 prohibited (an_owner_is_routed_as_its_user);
 //! - loopback taking segment routing headers (a_routing_header_arrives_in_the_header);
 //! - loopback pacing each socket's datagrams to its maximum pacing rate, one at a time at the rate
 //!   pacing_holds_datagrams_in_the_send_buffer sets (Linux's fq qdisc);
-//! - no hardware clock on loopback (loopback_has_no_hardware_clock).
+//! - no hardware clock on loopback (loopback_has_no_hardware_clock);
+//! - 198.51.100.0/24 routed through a gateway (link_scope_keeps_a_datagram_on_its_link);
+//! - loopback holding each datagram until its transmit time (a_transmit_time_holds_a_datagram_until_then);
+//! - the local addresses 127.0.0.2 and 2001:db8::2 routed with an MTU of 1500 bytes
+//!   (path_mtu_discovery_modes_take_the_routes_mtu).
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU16;
 use std::time::{Duration, Instant};
 
+use etherparse::checksum::Sum16BitWords;
 use etherparse::{IpDscp, IpEcn, IpNumber, IpSlice, Ipv4Options, Ipv6FlowLabel, UdpHeaderSlice};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AddressSharing, AnycastAddress, BindAddress, BroadcastPermission, ByteCount, BytesPerSecond,
-    FilterInstruction, FilterJump, FilterOperand, FilterOperation, InterfaceIndex, IpHeaderFields,
-    IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6Families,
-    Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding, LocalFragmentation, LocalPort,
-    MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
+    FilterInstruction, FilterJump, FilterOperand, FilterOperation, FragmentSize, InterfaceIndex,
+    IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
+    Ipv6Families, Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding, LocalFragmentation,
+    LocalPort, MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
     MulticastMembership, NeighbourConfirmation, NonlocalAddresses, PacketMark, PacketPriority,
     PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing, ProcessorIndex,
     PtpHardwareClockIndex, Report, RouteScope, RouteSelectors, SendError, SocketFilter,
@@ -40,6 +45,38 @@ const OWNER: UserId = UserId(u32::MIN);
 
 /// How long a check waits for a datagram sent over loopback.
 const PATIENCE: Duration = Duration::from_secs(1);
+
+/// How long a check waits to see that no datagram arrives.
+const SILENCE: Duration = Duration::from_millis(200);
+
+/// How long a transmit time holds a datagram back.
+const HELD: Duration = Duration::from_millis(200);
+
+/// 198.51.100.1, an address of TEST-NET-2 ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)), which the
+/// caller's network routes through a gateway.
+const BEYOND_A_GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
+
+/// Local addresses the caller's network routes with an MTU of ROUTE_MTU: 127.0.0.2 and 2001:db8::2 (of the
+/// documentation prefix, [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849)).
+const NARROW_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+const ROUTE_MTU: u16 = 1500;
+
+/// The unit of a fragment's data and offset, [RFC 8200](https://www.rfc-editor.org/rfc/rfc8200#section-4.5).
+const FRAGMENT_UNIT: u16 = 8;
+
+/// How many ports above a free one a reserved range covers: a choice that ignores it is caught every time.
+const RESERVED_WIDTH: u16 = 20;
+
+/// Ports below the range Linux chooses from by default (32768 to 60999), and how many at their start are reserved.
+const LOW_PORTS: PortRange = PortRange {
+    first: Port(2000),
+    last: Port(2010),
+};
+const LOW_PORTS_RESERVED: u16 = 5;
+
+/// How many senders a check uses so that a port group's default choice reaches every socket of the group.
+const SENDERS: usize = 32;
 
 /// ff0e, the first group of an IPv6 multicast address of global scope.
 const GLOBAL_MULTICAST: u16 = 0xff0e;
@@ -243,12 +280,102 @@ fn bound<S: UdpSockets>(
     (socket, address)
 }
 
-/// Sets one setting twice, as setting it once must equal.
+/// Sets one setting twice, which must answer as setting it once did.
 fn set<S: UdpSockets>(sockets: &S, socket: &S::Socket, setting: UdpSocketSetting<'_>) {
-    sockets.configure(socket, setting).expect("set a setting");
-    sockets
-        .configure(socket, setting)
-        .expect("set the same setting again");
+    let once = sockets.configure(socket, setting);
+    assert_eq!(
+        sockets.configure(socket, setting),
+        once,
+        "setting {setting:?} again"
+    );
+    once.expect("set a setting");
+}
+
+/// Whether a datagram arrives for a socket before the silence of a check ends, taking it.
+fn arrives<S: UdpSockets>(sockets: &S, socket: &S::Socket) -> bool {
+    let start = Instant::now();
+    let mut into = buffer();
+    loop {
+        match sockets.receive(socket, &mut into) {
+            Ok(_) => return true,
+            Err(HostError::WouldBlock) if start.elapsed() < SILENCE => std::thread::yield_now(),
+            Err(HostError::WouldBlock) => return false,
+            Err(error) => panic!("receive: {error:?}"),
+        }
+    }
+}
+
+fn unspecified(version: IpVersion) -> IpAddr {
+    match version {
+        IpVersion::V4 => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpVersion::V6 => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    }
+}
+
+fn version_of(address: IpAddr) -> IpVersion {
+    match address {
+        IpAddr::V4(_) => IpVersion::V4,
+        IpAddr::V6(_) => IpVersion::V6,
+    }
+}
+
+/// An IPv6 multicast address of global scope.
+fn global_group(last: u16) -> Ipv6Addr {
+    Ipv6Addr::new(
+        GLOBAL_MULTICAST,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        last,
+    )
+}
+
+/// Joining a group with no source filtered out, or leaving it.
+fn membership(
+    group: IpAddr,
+    interface: Option<InterfaceIndex>,
+    joined: bool,
+) -> UdpSocketSetting<'static> {
+    fn of<A>(joined: bool) -> MulticastMembership<'static, A> {
+        if joined {
+            MulticastMembership::Joined(SourceFilter::Exclude(&[]))
+        } else {
+            MulticastMembership::Left
+        }
+    }
+    UdpSocketSetting::Ip(match group {
+        IpAddr::V4(group) => IpSocketSetting::MulticastV4(MulticastGroup {
+            group,
+            interface,
+            membership: of(joined),
+        }),
+        IpAddr::V6(group) => IpSocketSetting::MulticastV6(MulticastGroup {
+            group,
+            interface,
+            membership: of(joined),
+        }),
+    })
+}
+
+/// A header to a destination through a given interface.
+fn header_through(
+    from: SocketAddr,
+    to: SocketAddr,
+    interface: Option<InterfaceIndex>,
+) -> IpHeaderFields<'static> {
+    match route(UdpProtocol::Udp, from, to) {
+        RouteSelectors::V4(mut route) => {
+            route.interface = interface;
+            ipv4_header(route)
+        }
+        RouteSelectors::V6(mut route) => {
+            route.interface = interface;
+            IpHeaderFields::V6(ipv6_header(route))
+        }
+    }
 }
 
 fn send<S: UdpSockets>(
@@ -291,7 +418,7 @@ fn receive_packet<S: UdpSockets>(
     }
 }
 
-/// A received UDP or UDP-Lite packet's IP header fields, ports and payload.
+/// A received UDP or UDP-Lite packet's IP header fields, ports, checksum and payload.
 struct Seen<'a> {
     source: SocketAddr,
     destination: SocketAddr,
@@ -301,11 +428,46 @@ struct Seen<'a> {
     flow_label: Option<Ipv6FlowLabel>,
     protocol: IpNumber,
     options: &'a [u8],
+    checksum: u16,
     payload: &'a [u8],
 }
 
+/// Whether a checksum over a transport message and the pseudo-header of its IP header holds.
+fn pseudo_header_checksum_holds(ip: &IpSlice<'_>, protocol: IpNumber, message: &[u8]) -> bool {
+    let sum = match (ip.source_addr(), ip.destination_addr()) {
+        (IpAddr::V4(source), IpAddr::V4(destination)) => Sum16BitWords::new()
+            .add_4bytes(source.octets())
+            .add_4bytes(destination.octets()),
+        (IpAddr::V6(source), IpAddr::V6(destination)) => Sum16BitWords::new()
+            .add_16bytes(source.octets())
+            .add_16bytes(destination.octets()),
+        _ => return false,
+    };
+    let length = u32::try_from(ip.payload().payload.len()).expect("a packet's length");
+    sum.add_2bytes([u8::MIN, protocol.0])
+        .add_4bytes(length.to_be_bytes())
+        .add_slice(message)
+        .ones_complement()
+        == u16::MIN
+}
+
+/// Checks an IPv4 header's checksum.
+fn check_ipv4_header(packet: &[u8]) {
+    if let Ok(header) = etherparse::Ipv4HeaderSlice::from_slice(packet) {
+        let whole = header.to_header();
+        assert_eq!(
+            whole.calc_header_checksum(),
+            header.header_checksum(),
+            "the IPv4 header checksum"
+        );
+    }
+}
+
+/// A packet's header fields, after checking its IPv4 header checksum and its UDP or UDP-Lite checksum, which
+/// may be absent (zero) only for UDP.
 fn seen(packet: &[u8]) -> Seen<'_> {
     let ip = IpSlice::from_slice(packet).expect("a whole IP packet");
+    check_ipv4_header(packet);
     let (hop_limit, dscp, ecn, flow_label, options) = match &ip {
         IpSlice::Ipv4(_) => {
             let header = etherparse::Ipv4HeaderSlice::from_slice(packet).expect("an IPv4 header");
@@ -330,6 +492,19 @@ fn seen(packet: &[u8]) -> Seen<'_> {
     };
     let transport = ip.payload().payload;
     let udp = UdpHeaderSlice::from_slice(transport).expect("a UDP header");
+    let protocol = ip.payload_ip_number();
+    // A UDP-Lite length field is its checksum's coverage, zero for the whole datagram.
+    let covered = match usize::from(udp.length()) {
+        0 => transport,
+        coverage if protocol == IpNumber::UDP_LITE => &transport[..coverage.min(transport.len())],
+        _ => transport,
+    };
+    assert!(
+        (udp.checksum() == u16::MIN && protocol == IpNumber::UDP)
+            || pseudo_header_checksum_holds(&ip, protocol, covered),
+        "the checksum {:#06x} of a {protocol:?} datagram",
+        udp.checksum()
+    );
     Seen {
         source: SocketAddr::new(ip.source_addr(), udp.source_port()),
         destination: SocketAddr::new(ip.destination_addr(), udp.destination_port()),
@@ -337,8 +512,9 @@ fn seen(packet: &[u8]) -> Seen<'_> {
         dscp,
         ecn,
         flow_label,
-        protocol: ip.payload_ip_number(),
+        protocol,
         options,
+        checksum: udp.checksum(),
         payload: &transport[udp.slice().len()..],
     }
 }
@@ -464,10 +640,9 @@ pub fn port_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S) {
 /// A port the exit node chooses lies in the range and outside its reserved part.
 pub fn bind_chosen_by_exit_node_avoids_reserved_ports<S: UdpSockets>(sockets: S) {
     let free = closed_port(&sockets, IpVersion::V4).port();
-    let next = Port(free + 1);
     let reserved = [PortRange {
-        first: next,
-        last: next,
+        first: Port(free + 1),
+        last: Port(free + RESERVED_WIDTH),
     }];
     let socket = sockets
         .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
@@ -477,7 +652,7 @@ pub fn bind_chosen_by_exit_node_avoids_reserved_ports<S: UdpSockets>(sockets: S)
         port: LocalPort::ChosenByExitNode(PortChoice {
             range: PortRange {
                 first: Port(free),
-                last: next,
+                last: reserved[0].last,
             },
             reserved: &reserved,
         }),
@@ -485,6 +660,29 @@ pub fn bind_chosen_by_exit_node_avoids_reserved_ports<S: UdpSockets>(sockets: S)
     assert_eq!(
         sockets.bind(&socket, local).map(|address| address.port()),
         Ok(free)
+    );
+}
+
+/// The exit node chooses from any range, also one a host would not choose from by itself.
+pub fn bind_chosen_by_exit_node_takes_any_range<S: UdpSockets>(sockets: S) {
+    let reserved = [PortRange {
+        first: LOW_PORTS.first,
+        last: Port(LOW_PORTS.first.0 + LOW_PORTS_RESERVED - 1),
+    }];
+    let socket = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let local = LocalBinding {
+        address: BindAddress::V4(Ipv4Addr::LOCALHOST),
+        port: LocalPort::ChosenByExitNode(PortChoice {
+            range: LOW_PORTS,
+            reserved: &reserved,
+        }),
+    };
+    let port = sockets.bind(&socket, local).unwrap().port();
+    assert!(
+        (reserved[0].last.0 + 1..=LOW_PORTS.last.0).contains(&port),
+        "port {port}"
     );
 }
 
@@ -508,6 +706,7 @@ pub fn a_datagram_arrives_with_its_ipv4_header<S: UdpSockets>(sockets: S) {
         let packet = receive_packet(&sockets, &receiver, &mut into);
         let seen = seen(&into[..packet.fields.length]);
         assert_eq!((seen.source, seen.destination), (from, to));
+        assert_ne!(seen.checksum, u16::MIN, "the checksum the sender computed");
         assert_eq!(
             (seen.hop_limit, seen.dscp, seen.ecn),
             (u8::MAX, IpDscp::MAX, IpEcn::Ect1)
@@ -543,6 +742,7 @@ pub fn a_datagram_arrives_with_its_ipv6_header<S: UdpSockets>(sockets: S) {
         let packet = receive_packet(&sockets, &receiver, &mut into);
         let seen = seen(&into[..packet.fields.length]);
         assert_eq!((seen.source, seen.destination), (from, to));
+        assert_ne!(seen.checksum, u16::MIN, "the checksum the sender computed");
         assert_eq!(
             (seen.hop_limit, seen.dscp, seen.ecn),
             (u8::MAX, IpDscp::MAX, IpEcn::Ect0)
@@ -888,6 +1088,12 @@ pub fn a_closed_port_answers_with_an_icmp_error<S: UdpSockets>(sockets: S) {
             (ip.payload_ip_number(), [message[0], message[1]]),
             unreachable
         );
+        check_ipv4_header(&into[..packet.fields.length]);
+        let checksum_holds = match version {
+            IpVersion::V4 => Sum16BitWords::new().add_slice(message).ones_complement() == u16::MIN,
+            IpVersion::V6 => pseudo_header_checksum_holds(&ip, IpNumber::IPV6_ICMP, message),
+        };
+        assert!(checksum_holds, "the ICMP checksum");
         let quoted = seen(&message[etherparse::Icmpv6Header::MIN_LEN..]);
         assert_eq!((quoted.source, quoted.destination), (from, closed));
         assert_eq!(quoted.payload, PAYLOAD);
@@ -1072,81 +1278,149 @@ pub fn sending_settings_are_taken<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// A member of a multicast group takes its datagrams, through the loopback of its sender, until it leaves.
+/// A member of a multicast group takes its datagrams through the loopback of its sender while that is on, from
+/// the sources its filter lets through, until it leaves.
+///
+/// Runs over the interface the multicast route chooses: Linux's loopback interface brings back every datagram
+/// sent over it, looped or not.
 pub fn multicast_membership_takes_the_groups_datagrams<S: UdpSockets>(sockets: S) {
-    let interface = loopback_interface(&sockets);
     // The last group of the local network control block, which no interface joins by itself.
     let group = Ipv4Addr::from_bits(linux_raw_sys::net::INADDR_MAX_LOCAL_GROUP);
     let receiver = sockets
         .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
         .unwrap();
     let port = sockets
-        .bind(
-            &receiver,
-            binding(IpAddr::V4(Ipv4Addr::UNSPECIFIED), u16::MIN),
-        )
+        .bind(&receiver, binding(unspecified(IpVersion::V4), u16::MIN))
         .unwrap()
         .port();
-    set(
-        &sockets,
-        &receiver,
-        UdpSocketSetting::Ip(IpSocketSetting::MulticastAllGroups {
-            version: IpVersion::V4,
-            enabled: false,
-        }),
-    );
-    let member = |membership| MulticastGroup {
-        group,
-        interface: Some(interface),
-        membership,
+    let join = |filter| {
+        set(
+            &sockets,
+            &receiver,
+            UdpSocketSetting::Ip(IpSocketSetting::MulticastV4(MulticastGroup {
+                group,
+                interface: None,
+                membership: MulticastMembership::Joined(filter),
+            })),
+        );
     };
-    set(
-        &sockets,
-        &receiver,
-        UdpSocketSetting::Ip(IpSocketSetting::MulticastV4(member(
-            MulticastMembership::Joined(SourceFilter::Exclude(&[])),
-        ))),
-    );
-    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
-    set(
-        &sockets,
-        &sender,
-        UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(true)),
-    );
-    let to = SocketAddr::new(IpAddr::V4(group), port);
-    let mut route = ipv4_route(UdpProtocol::Udp, from, to);
-    route.interface = Some(interface);
-    sockets
-        .send_to(
-            &sender,
-            ipv4_header(route),
-            plain_fields(),
-            datagram(PAYLOAD),
-        )
+    join(SourceFilter::Exclude(&[]));
+    let sender = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
         .unwrap();
+    let from = sockets
+        .bind(&sender, binding(unspecified(IpVersion::V4), u16::MIN))
+        .unwrap();
+    let to = SocketAddr::new(IpAddr::V4(group), port);
+    let send_one = || {
+        sockets
+            .send_to(
+                &sender,
+                header_through(from, to, None),
+                plain_fields(),
+                datagram(PAYLOAD),
+            )
+            .unwrap();
+    };
+    let looped = |on| {
+        set(
+            &sockets,
+            &sender,
+            UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(on)),
+        );
+    };
+    looped(true);
+    send_one();
     let mut into = buffer();
     let packet = receive_packet(&sockets, &receiver, &mut into);
-    assert_eq!(seen(&into[..packet.fields.length]).destination, to);
+    let arrived = seen(&into[..packet.fields.length]);
+    assert_eq!(arrived.destination, to);
+    let IpAddr::V4(source) = arrived.source.ip() else {
+        unreachable!("an IPv4 datagram's source")
+    };
+    looped(false);
+    send_one();
+    assert!(!arrives(&sockets, &receiver), "a datagram not looped back");
+    looped(true);
+    let only_source = [source];
+    let only_another = [Ipv4Addr::from_bits(source.to_bits() + 1)];
+    for (filter, takes) in [
+        (SourceFilter::Include(&only_source[..]), true),
+        (SourceFilter::Include(&only_another[..]), false),
+        (SourceFilter::Exclude(&only_source[..]), false),
+        (SourceFilter::Exclude(&only_another[..]), true),
+    ] {
+        join(filter);
+        send_one();
+        assert_eq!(arrives(&sockets, &receiver), takes, "{filter:?}");
+    }
     set(
         &sockets,
         &receiver,
-        UdpSocketSetting::Ip(IpSocketSetting::MulticastV4(member(
-            MulticastMembership::Left,
-        ))),
+        membership(IpAddr::V4(group), None, false),
     );
-    sockets
-        .send_to(
-            &sender,
-            ipv4_header(route),
-            plain_fields(),
-            datagram(PAYLOAD),
-        )
-        .unwrap();
-    std::thread::sleep(PATIENCE / 2);
-    assert_eq!(
-        sockets.receive(&receiver, &mut into),
-        Err(HostError::WouldBlock)
+    send_one();
+    assert!(!arrives(&sockets, &receiver), "a datagram after leaving");
+}
+
+/// A socket on a group's port takes the datagrams of a group only another socket joined while all-groups is on,
+/// over IPv4 and IPv6.
+pub fn all_groups_decides_whether_other_sockets_memberships_count<S: UdpSockets>(sockets: S) {
+    let ipv4 = (
+        IpAddr::V4(Ipv4Addr::from_bits(
+            linux_raw_sys::net::INADDR_MAX_LOCAL_GROUP,
+        )),
+        Some(loopback_interface(&sockets)),
+        loopback(IpVersion::V4),
     );
+    // IPv6 multicast is not looped back from the loopback address (see ipv6_memberships_take_their_datagrams).
+    let ipv6 = (
+        IpAddr::V6(global_group(u16::MAX)),
+        None,
+        unspecified(IpVersion::V6),
+    );
+    for (group, interface, sender_address) in [ipv4, ipv6] {
+        let version = version_of(group);
+        let sharing = UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared));
+        let member = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+        set(&sockets, &member, sharing);
+        let port = sockets
+            .bind(&member, binding(unspecified(version), u16::MIN))
+            .unwrap()
+            .port();
+        set(&sockets, &member, membership(group, interface, true));
+        let bystander = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+        set(&sockets, &bystander, sharing);
+        sockets
+            .bind(&bystander, binding(unspecified(version), port))
+            .unwrap();
+        let sender = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+        let from = sockets
+            .bind(&sender, binding(sender_address, u16::MIN))
+            .unwrap();
+        let to = SocketAddr::new(group, port);
+        for enabled in [true, false] {
+            set(
+                &sockets,
+                &bystander,
+                UdpSocketSetting::Ip(IpSocketSetting::MulticastAllGroups { version, enabled }),
+            );
+            sockets
+                .send_to(
+                    &sender,
+                    header_through(from, to, interface),
+                    plain_fields(),
+                    datagram(PAYLOAD),
+                )
+                .unwrap();
+            assert!(arrives(&sockets, &member), "{version:?} to the member");
+            assert_eq!(
+                arrives(&sockets, &bystander),
+                enabled,
+                "{version:?} to the bystander with all-groups {enabled}"
+            );
+        }
+    }
 }
 
 /// The interface a datagram over the IPv4 loopback arrives on.
@@ -1381,19 +1655,33 @@ pub fn broadcast_needs_its_permission<S: UdpSockets>(sockets: S) {
     assert_eq!(seen(&into[..packet.fields.length]).destination, to);
 }
 
-/// Every mode of path MTU discovery sends, over IPv4 and IPv6.
-pub fn every_path_mtu_discovery_mode_sends<S: UdpSockets>(sockets: S) {
-    for version in [IpVersion::V4, IpVersion::V6] {
-        let (receiver, to) = bound(&sockets, version, UdpProtocol::Udp);
+/// What sending a datagram longer than a route's MTU came to.
+#[derive(Debug, PartialEq, Eq)]
+enum OverTheMtu {
+    TooLong(MaximumTransmissionUnit),
+    Fragmented,
+    Whole,
+}
+
+/// Each mode of path MTU discovery treats a datagram longer than its route's MTU as Linux does: fragmented
+/// (Want, Dont), too long (Do), or sent whole by the interface's larger MTU (Probe, Interface, Omit), over IPv4
+/// and IPv6.
+pub fn path_mtu_discovery_modes_take_the_routes_mtu<S: UdpSockets>(sockets: S) {
+    let mtu = MaximumTransmissionUnit(u32::from(ROUTE_MTU));
+    let payload = vec![u8::MIN; usize::from(ROUTE_MTU) * 2];
+    for narrow in [IpAddr::V4(NARROW_V4), IpAddr::V6(NARROW_V6)] {
+        let version = version_of(narrow);
+        let receiver = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+        let to = sockets.bind(&receiver, binding(narrow, u16::MIN)).unwrap();
         let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
         let mut into = buffer();
-        for mode in [
-            PathMtuDiscovery::Dont,
-            PathMtuDiscovery::Want,
-            PathMtuDiscovery::Do,
-            PathMtuDiscovery::Probe,
-            PathMtuDiscovery::Interface,
-            PathMtuDiscovery::Omit,
+        for (mode, expected) in [
+            (PathMtuDiscovery::Want, OverTheMtu::Fragmented),
+            (PathMtuDiscovery::Dont, OverTheMtu::Fragmented),
+            (PathMtuDiscovery::Do, OverTheMtu::TooLong(mtu)),
+            (PathMtuDiscovery::Probe, OverTheMtu::Whole),
+            (PathMtuDiscovery::Interface, OverTheMtu::Whole),
+            (PathMtuDiscovery::Omit, OverTheMtu::Whole),
         ] {
             let header = match header(UdpProtocol::Udp, from, to) {
                 IpHeaderFields::V4(mut header) => {
@@ -1405,11 +1693,30 @@ pub fn every_path_mtu_discovery_mode_sends<S: UdpSockets>(sockets: S) {
                     IpHeaderFields::V6(header)
                 }
             };
-            sockets
-                .send_to(&sender, header, plain_fields(), datagram(PAYLOAD))
-                .unwrap();
-            let packet = receive_packet(&sockets, &receiver, &mut into);
-            assert_eq!(seen(&into[..packet.fields.length]).payload, PAYLOAD);
+            let outcome = match sockets.send_to(&sender, header, plain_fields(), datagram(&payload))
+            {
+                Err(SendError::MessageTooLong {
+                    maximum_transmission_unit,
+                }) => OverTheMtu::TooLong(maximum_transmission_unit),
+                Err(error) => panic!("{mode:?}: {error:?}"),
+                Ok(()) => {
+                    let packet = receive_packet(&sockets, &receiver, &mut into);
+                    assert_eq!(seen(&into[..packet.fields.length]).payload, payload);
+                    match packet.fields.largest_fragment {
+                        // The largest fragment is the MTU less what a fragment's data cannot fill: it holds
+                        // a multiple of 8 bytes.
+                        Some(FragmentSize(size)) => {
+                            assert!(
+                                (ROUTE_MTU - FRAGMENT_UNIT..=ROUTE_MTU).contains(&size),
+                                "{version:?} {mode:?}: largest fragment {size}"
+                            );
+                            OverTheMtu::Fragmented
+                        }
+                        None => OverTheMtu::Whole,
+                    }
+                }
+            };
+            assert_eq!(outcome, expected, "{version:?} {mode:?}");
         }
     }
 }
@@ -1517,6 +1824,15 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
         &first,
         UdpSocketSetting::Port(PortSetting::GroupFilter(None)),
     );
+    // Detached, the group chooses by each sender's addresses again, so some of many senders reach the first.
+    for _ in 0..SENDERS {
+        let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+        send(&sockets, &sender, UdpProtocol::Udp, from, address, PAYLOAD);
+    }
+    assert!(
+        arrives(&sockets, &first),
+        "a datagram reaches the first socket"
+    );
 }
 
 /// An IPv6 multicast member takes the group's datagrams with all-groups off, joined on the interface the route
@@ -1526,18 +1842,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
 /// its loopback interface, drops a looped one whose source is the loopback address, and lets a host join only
 /// an anycast address in a prefix of the interface.
 pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
-    let group = |last| {
-        Ipv6Addr::new(
-            GLOBAL_MULTICAST,
-            u16::MIN,
-            u16::MIN,
-            u16::MIN,
-            u16::MIN,
-            u16::MIN,
-            u16::MIN,
-            last,
-        )
-    };
+    let group = global_group;
     let unspecified = binding(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN);
     let receiver = sockets
         .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
@@ -1590,6 +1895,37 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     };
     let interface = take(group(u16::MAX), None);
     assert_eq!(take(group(u16::MAX - 1), Some(interface)), interface);
+    let send_to_group = |group| {
+        let to = SocketAddr::new(IpAddr::V6(group), port);
+        sockets
+            .send_to(
+                &sender,
+                header_through(from, to, Some(interface)),
+                plain_fields(),
+                datagram(PAYLOAD),
+            )
+            .unwrap();
+    };
+    set(
+        &sockets,
+        &receiver,
+        membership(IpAddr::V6(group(u16::MAX)), None, false),
+    );
+    send_to_group(group(u16::MAX));
+    assert!(!arrives(&sockets, &receiver), "a datagram after leaving");
+    let looped = |on| {
+        set(
+            &sockets,
+            &sender,
+            UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(on)),
+        );
+    };
+    looped(false);
+    send_to_group(group(u16::MAX - 1));
+    assert!(!arrives(&sockets, &receiver), "a datagram not looped back");
+    looped(true);
+    send_to_group(group(u16::MAX - 1));
+    assert!(arrives(&sockets, &receiver), "a datagram looped back again");
     // fe80::ffff, a link-local address, in the prefix of every interface with IPv6.
     let anycast = Ipv6Addr::new(
         LINK_LOCAL,
@@ -1617,7 +1953,7 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     sockets
         .send_to(
             &sender,
-            IpHeaderFields::V6(ipv6_header(route)),
+            IpHeaderFields::V6(ipv6_header(route.clone())),
             plain_fields(),
             datagram(PAYLOAD),
         )
@@ -1628,6 +1964,18 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
         &sockets,
         &receiver,
         UdpSocketSetting::Ip(IpSocketSetting::Anycast(member(Membership::Left))),
+    );
+    sockets
+        .send_to(
+            &sender,
+            IpHeaderFields::V6(ipv6_header(route)),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    assert!(
+        !arrives(&sockets, &receiver),
+        "a datagram to an anycast address left"
     );
 }
 
@@ -1838,6 +2186,176 @@ pub fn close_frees_the_port<S: UdpSockets>(sockets: S) {
     );
 }
 
+/// A datagram whose route must stay on its link is not sent through a gateway; one of universe scope is.
+pub fn link_scope_keeps_a_datagram_on_its_link<S: UdpSockets>(sockets: S) {
+    let to = SocketAddr::new(IpAddr::V4(BEYOND_A_GATEWAY), u16::MAX);
+    let sender = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let from = sockets
+        .bind(&sender, binding(unspecified(IpVersion::V4), u16::MIN))
+        .unwrap();
+    let answers = [RouteScope::Universe, RouteScope::Link].map(|scope| {
+        let mut route = ipv4_route(UdpProtocol::Udp, from, to);
+        route.scope = scope;
+        sockets.send_to(
+            &sender,
+            ipv4_header(route),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+    });
+    assert_eq!(
+        answers,
+        [
+            Ok(()),
+            Err(SendError::Host(HostError::Errno(
+                linux_raw_sys::errno::ENETUNREACH as i32
+            )))
+        ]
+    );
+}
+
+/// A datagram with a transmit time on the monotonic clock arrives no earlier than that time.
+pub fn a_transmit_time_holds_a_datagram_until_then<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let now = Duration::new(
+        u64::try_from(now.tv_sec).unwrap(),
+        u32::try_from(now.tv_nsec).unwrap(),
+    );
+    let mut fields = plain_fields();
+    fields.transmit_time = Some(wcontainers_internet_protocol::TransmitTime {
+        clock: wcontainers_internet_protocol::TransmitClock::Monotonic,
+        at: now + HELD,
+        mode: wcontainers_internet_protocol::TransmitTimeMode::Strict,
+        errors: Report::NotRequested,
+    });
+    let start = Instant::now();
+    sockets
+        .send_to(
+            &sender,
+            header(UdpProtocol::Udp, from, to),
+            fields,
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert!(
+        start.elapsed() >= HELD,
+        "arrived after {:?}",
+        start.elapsed()
+    );
+    assert_eq!(seen(&into[..packet.fields.length]).payload, PAYLOAD);
+}
+
+/// A dual-stack IPv6 socket holds its port for IPv4 too, takes IPv4 datagrams with their IPv4 header and sends
+/// IPv4 ones with the IPv4 header fields given; an IPv6-only one leaves the port's IPv4 side to others.
+pub fn a_dual_stack_socket_takes_ipv4<S: UdpSockets>(sockets: S) {
+    let dual = sockets
+        .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let local = sockets
+        .bind(
+            &dual,
+            LocalBinding {
+                address: BindAddress::V6 {
+                    address: Ipv6Addr::UNSPECIFIED,
+                    families: Ipv6Families::DualStack,
+                },
+                port: LocalPort::Requested(Port(u16::MIN)),
+            },
+        )
+        .unwrap();
+    let ipv4_side = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    assert_eq!(
+        sockets.bind(
+            &ipv4_side,
+            binding(unspecified(IpVersion::V4), local.port())
+        ),
+        Err(HostError::Errno(linux_raw_sys::errno::EADDRINUSE as i32))
+    );
+    let (ipv4, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let to = SocketAddr::new(loopback(IpVersion::V4), local.port());
+    let with_time_to_live = |from, to, ttl| {
+        let IpHeaderFields::V4(mut header) = header(UdpProtocol::Udp, from, to) else {
+            unreachable!("an IPv4 destination")
+        };
+        header.time_to_live = Some(wcontainers_internet_protocol::HopLimit(ttl));
+        IpHeaderFields::V4(header)
+    };
+    let mut into = buffer();
+    for (sender, receiver, from, to, ttl) in [
+        (&ipv4, &dual, from, to, u8::MAX),
+        (&dual, &ipv4, to, from, u8::MAX - 1),
+    ] {
+        sockets
+            .send_to(
+                sender,
+                with_time_to_live(from, to, ttl),
+                plain_fields(),
+                datagram(PAYLOAD),
+            )
+            .unwrap();
+        let packet = receive_packet(&sockets, receiver, &mut into);
+        let seen = seen(&into[..packet.fields.length]);
+        assert_eq!(
+            (seen.source, seen.destination, seen.hop_limit, seen.payload),
+            (from, to, ttl, PAYLOAD)
+        );
+    }
+    let only_any = sockets
+        .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let port = sockets
+        .bind(&only_any, binding(unspecified(IpVersion::V6), u16::MIN))
+        .unwrap()
+        .port();
+    assert_eq!(
+        sockets
+            .bind(&ipv4_side, binding(unspecified(IpVersion::V4), port))
+            .map(|address| address.port()),
+        Ok(port)
+    );
+}
+
+/// The contract of `Configurable` on a socket, by its own suite, for a setting taken.
+pub fn configurable_contract_holds_for_a_setting_taken<S: UdpSockets>(sockets: S) {
+    let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    wcontainers_configurable_conformance::setting_twice_equals_setting_once((
+        sockets,
+        socket,
+        UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
+    ));
+}
+
+/// The contract of `Configurable` on a socket, by its own suite, for a setting refused.
+pub fn configurable_contract_holds_for_a_setting_refused<S: UdpSockets>(sockets: S) {
+    let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let no_interface =
+        UdpSocketSetting::Port(PortSetting::BoundInterface(Some(InterfaceIndex(u32::MAX))));
+    assert!(sockets.configure(&socket, no_interface).is_err());
+    wcontainers_configurable_conformance::setting_twice_equals_setting_once((
+        sockets,
+        socket,
+        no_interface,
+    ));
+}
+
+/// The contract of `NegativeRouteAdvice` on a connected socket, by its own suite.
+pub fn negative_route_advice_contract_holds<S: UdpSockets>(sockets: S) {
+    let (socket, local) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let (_peer, peer_address) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    sockets
+        .connect(&socket, route(UdpProtocol::Udp, local, peer_address))
+        .unwrap();
+    wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, socket));
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -1873,7 +2391,7 @@ macro_rules! tests {
             send_fields_reach_the_receiver
             ipv6_options_arrive_in_the_header
             broadcast_needs_its_permission
-            every_path_mtu_discovery_mode_sends
+            path_mtu_discovery_modes_take_the_routes_mtu
             a_waived_source_check_sends_from_an_absent_address
             a_group_filter_chooses_the_socket
             ipv6_memberships_take_their_datagrams
@@ -1882,6 +2400,14 @@ macro_rules! tests {
             pacing_holds_datagrams_in_the_send_buffer
             loopback_has_no_hardware_clock
             close_frees_the_port
+            bind_chosen_by_exit_node_takes_any_range
+            all_groups_decides_whether_other_sockets_memberships_count
+            link_scope_keeps_a_datagram_on_its_link
+            a_transmit_time_holds_a_datagram_until_then
+            a_dual_stack_socket_takes_ipv4
+            configurable_contract_holds_for_a_setting_taken
+            configurable_contract_holds_for_a_setting_refused
+            negative_route_advice_contract_holds
         );
     };
     (@each $value:expr; $($name:ident)*) => {
