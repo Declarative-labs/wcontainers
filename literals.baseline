@@ -6178,19 +6178,6 @@ code	crates/wcontainers-direct3d-11/src/record.rs	str	<Recorder as Backend>::end
 code	crates/wcontainers-direct3d-11/src/record.rs	str	<Recorder as Backend>::end_query	"end_query"
 code	crates/wcontainers-direct3d-11/src/record.rs	str	Recorder::new	"wcontainers recording back end (draws nothing)"
 code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	check_model	b"Aon9"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	check_model	b"SHDR"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	check_model	b"SHEX"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	chunks	b"DXBC"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	declarations	b"SHDR"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	declarations	b"SHEX"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	input_signature	b"ISG1"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	input_signature	b"ISGN"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	output_signature	b"OSG1"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	output_signature	b"OSG5"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	output_signature	b"OSGN"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	signature	b"DXBC"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	stage	b"SHDR"
-code	crates/wcontainers-direct3d-11/src/shader.rs	bytestr	stage	b"SHEX"
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	StageVariant::key	128
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	base_key	128
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	base_key	64
@@ -6202,71 +6189,17 @@ code	crates/wcontainers-direct3d-11/src/shader.rs	int	check_model	4
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	check_model	4
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	check_model	4
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	check_model	5
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	check_model	8
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	24
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	28
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	32
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	32
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	chunks	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	0x1f
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	0x7f
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	0x7ff
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	0x7ff
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	0x7ff
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	0x7ff
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	11
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	20
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	24
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	3
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	3
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	31
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	31
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	31
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	31
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	declarations	8
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	input_signature	24
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	input_signature	32
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	mirror_filtered_slots	16
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	multisampled_arrays	128
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	output_signature	24
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	output_signature	28
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	output_signature	32
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	sampler_slots	16
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	12
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	16
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	20
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	28
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	32
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	32
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	8
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	8
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	signature	8
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	stage	16
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	stage	3
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	stage	4
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	stage	5
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	stage	8
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	texture_slots	128
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	texture_slots	128
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	texture_slots	128
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	typed_views	0xf
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	typed_views	3
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	typed_views	4
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	typed_views	5
-code	crates/wcontainers-direct3d-11/src/shader.rs	int	word	4
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	SignatureElement::generated	"SV_InstanceID"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	SignatureElement::generated	"SV_VertexID"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders converted into several program stages"
@@ -6433,22 +6366,6 @@ code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_progra
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	256
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	64
 code	crates/wcontainers-direct3d-12/src/device/through.rs	str	Device<B>::texels_through	"a storage texture read through a buffer at a slot past 63"
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	bytestr	chunk	b"DXBC"
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	bytestr	program	b"SHDR"
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	bytestr	program	b"SHEX"
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	28
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	32
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	4
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	4
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	4
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	4
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	4
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	4
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	8
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	chunk	8
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	declarations	0x7f
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	declarations	24
-code	crates/wcontainers-direct3d-12/src/dxbc.rs	int	program	4
 code	crates/wcontainers-direct3d-12/src/dxil.rs	bytestr	<Reader as BitStreamVisitor>::visit	b"dx.resources"
 code	crates/wcontainers-direct3d-12/src/dxil.rs	bytestr	resource_lists	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	<Reader as BitStreamVisitor>::visit	10
@@ -6495,7 +6412,6 @@ code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	3
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::full_chain	64
-code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	rts0_part	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	serialize	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	12
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	3
@@ -6531,36 +6447,6 @@ code	crates/wcontainers-direct3d-12/src/root.rs	int	deserialize	8
 code	crates/wcontainers-direct3d-12/src/root.rs	int	deserialize	8
 code	crates/wcontainers-direct3d-12/src/root.rs	int	deserialize	8
 code	crates/wcontainers-direct3d-12/src/root.rs	int	deserialize	8
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	0x1032_5476
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	0x6745_2301
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	0x80
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	0x80
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	0x98ba_dcfe
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	0xefcd_ab89
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	16
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	16
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	20
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	56
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	60
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	64
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	64
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	64
-code	crates/wcontainers-direct3d-12/src/root.rs	int	dxbc_checksum	8
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	28
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	32
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	4
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	8
-code	crates/wcontainers-direct3d-12/src/root.rs	int	rts0_part	8
 code	crates/wcontainers-direct3d-12/src/root.rs	int	serialize	16
 code	crates/wcontainers-direct3d-12/src/root.rs	int	serialize	20
 code	crates/wcontainers-direct3d-12/src/root.rs	int	serialize	24
@@ -12738,11 +12624,6 @@ code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storag
 code	crates/wcontainers-shaders/src/cache.rs	str	<LoadError as core::fmt::Display>::fmt	"not a cache file"
 code	crates/wcontainers-shaders/src/cache.rs	str	Cache::insert_raw	"a cache payload under 4 GiB"
 code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"DXIL"
-code	crates/wcontainers-shaders/src/container.rs	int	ChunkHeader	4
-code	crates/wcontainers-shaders/src/container.rs	int	Header	16
-code	crates/wcontainers-shaders/src/container.rs	int	Header	4
-code	crates/wcontainers-shaders/src/container.rs	int	chunks	4
-code	crates/wcontainers-shaders/src/container.rs	int	signature	4
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a binding past the resource list"
@@ -22664,10 +22545,6 @@ redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_wi
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw::SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/src/device/bind.rs	int	VERTEX	VERTEX = 1
-redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	CUSTOMDATA	CUSTOMDATA = 53
-redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DCL_RESOURCE	DCL_RESOURCE = 88
-redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DCL_UAV_TYPED	DCL_UAV_TYPED = 156
-redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DIMENSION_BUFFER	DIMENSION_BUFFER = 1
 redefinition	crates/wcontainers-direct3d-12/src/list.rs	int	DSV_READ_ONLY_DEPTH	DSV_READ_ONLY_DEPTH = 1
 redefinition	crates/wcontainers-direct3d-12/src/list.rs	int	DSV_READ_ONLY_STENCIL	DSV_READ_ONLY_STENCIL = 2
 redefinition	crates/wcontainers-direct3d-12/src/resource.rs	int	DIMENSION_BUFFER	DIMENSION_BUFFER = 1
