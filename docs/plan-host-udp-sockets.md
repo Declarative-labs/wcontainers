@@ -52,13 +52,15 @@
   which drops its cached route and takes a new flow hash; an unconnected socket caches no route.
 - close: the descriptor closes.
 - Settings: `Ip` and `Port` through the shared crate; `ReceiveCoalescing` is `UDP_GRO`,
-  `ZeroChecksumReceipt` is `UDP_NO_CHECK6_RX`, `MinimumChecksumCoverage` is `UDPLITE_RECV_CSCOV`.
+  `ZeroChecksumReceipt` is `UDP_NO_CHECK6_RX`, `MinimumChecksumCoverage` is `UDPLITE_RECV_CSCOV`
+  (none is 8, the UDP header, which takes every valid coverage).
 
 ## What cannot be honoured (expected; each confirmed on the machine before it is recorded)
 - Header fields Linux never gives a UDP socket: IPv4 identification, flags and the received UDP checksum and
   UDP-Lite coverage; they are written as zero, no flags, a computed checksum and full coverage.
 - Wireless status reports carry no key on Linux; asking for one answers `NotSupported`.
-- A transmit time rejection carries the packet's time, not its key, so it cannot become a `TransmitReport`.
+- A transmit time rejection carries the packet's time, not its key: each send that asks for its errors is
+  noted with its time, so that the rejection of that time gives its key.
 
 ## The suite (crates/udp-sockets/conformance/conformance.rs)
 - Written against the traits alone. Each function takes one `UdpSockets` value, opens sockets on 127.0.0.1

@@ -801,14 +801,23 @@ pub fn ipv4_options_arrive_in_the_header<S: UdpSockets>(sockets: S) {
 pub fn a_short_buffer_keeps_the_whole_length<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
-    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    // Longer than the headers, so that a cut inside it leaves the buffer shorter than the payload, and of varied
+    // bytes, as words of all ones leave a checksum as it was.
+    let payload: Vec<u8> = (0..usize::from(ROUTE_MTU))
+        .map(|place| place as u8)
+        .collect();
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, &payload);
     let mut whole = buffer();
     let length = receive_packet(&sockets, &receiver, &mut whole)
         .fields
         .length;
+    let headers = length - payload.len();
     // Cut inside the UDP header, then inside the payload, where the checksum is still the whole datagram's.
-    for cut in [length / 2, length - 1] {
-        send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    for cut in [
+        headers - etherparse::UdpHeader::LEN / 2,
+        length - payload.len() / 2,
+    ] {
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, &payload);
         let mut short = vec![u8::MIN; cut];
         assert_eq!(
             receive_packet(&sockets, &receiver, &mut short)
@@ -2618,7 +2627,6 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(socke
         .unwrap();
     let to = SocketAddr::new(IpAddr::V4(SCHEDULED_V4_PEER), from.port());
     let atomic = clock_now(rustix::time::ClockId::Tai);
-    let realtime = clock_now(rustix::time::ClockId::Realtime);
     // Each send's clock, time, mode, whether it asks for errors, and what is reported; its key is its place.
     let sends = [
         (
@@ -2637,14 +2645,14 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(socke
         ),
         (
             TransmitClock::Realtime,
-            realtime + HELD,
+            atomic + HELD + APART,
             TransmitTimeMode::Strict,
             Report::Requested,
             Some(TransmitTimeError::InvalidParameter),
         ),
         (
             TransmitClock::InternationalAtomicTime,
-            atomic + HELD + APART,
+            atomic + HELD + APART + APART,
             TransmitTimeMode::Deadline,
             Report::Requested,
             Some(TransmitTimeError::InvalidParameter),
