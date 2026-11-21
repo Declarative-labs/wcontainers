@@ -263,7 +263,8 @@ const GLSLANG_TERMINATED: &str = "compilation terminated";
 
 /// The WebGL 2 back end's verdict on one module: the features it needs beyond the core language
 /// (`needs NAME|NAME`, absent from the part where none), then `absent compute`, `written`,
-/// `compiles`, `compile` with glslang's first error, or `write` with the back end's reason and naga's.
+/// `compiles`, `compile` with glslang's first error, `write` with the back end's reason and naga's,
+/// or `undeclared` with the directives the written file lacks.
 #[cfg(not(target_arch = "wasm32"))]
 fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     use wcontainers_gpu_webgl::glsl;
@@ -301,6 +302,10 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
         Ok(t) => t,
         Err(e) => return format!("{needed}{WRITE_FAILED}{e:?}{}", naga_refusal(m)),
     };
+    let missing = undeclared(&names, &text.source);
+    if !missing.is_empty() {
+        return format!("{needed}{UNDECLARED}{}", missing.join("|"));
+    }
     let (Some(out), Ok(glslang)) = (out, std::env::var("GLSLANG")) else {
         return format!("{needed}{WRITTEN}");
     };
@@ -326,6 +331,54 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
         glslang_error(&String::from_utf8_lossy(&run.stdout))
     )
 }
+
+/// What written GLSL ES `text` lacks for the needs in `names` that the WebGL 2 back end declares
+/// through an extension: each directive a form of the need shows in the text and the text does not
+/// carry, and each such need that shows in no form at all.
+#[cfg(not(target_arch = "wasm32"))]
+fn undeclared(names: &[&str], text: &str) -> Vec<String> {
+    let carried = |d: &str| text.contains(&format!("{EXTENSION_DIRECTIVE}{d}{EXTENSION_REQUIRED}"));
+    let mut missing = Vec::new();
+    for (need, forms) in DIRECTIVES.iter().filter(|(n, _)| names.contains(n)) {
+        let shown: Vec<&str> = forms
+            .iter()
+            .filter(|(form, _)| text.contains(form))
+            .map(|(_, d)| *d)
+            .collect();
+        if shown.is_empty() {
+            missing.push(need.to_string());
+        }
+        missing.extend(shown.into_iter().filter(|d| !carried(d)).map(String::from));
+    }
+    missing.sort_unstable();
+    missing.dedup();
+    missing
+}
+
+/// The needs the WebGL 2 back end declares through an extension, each with the text its GLSL ES shows
+/// it by and the extension that text requires: OES_sample_variables's built-ins,
+/// OES_shader_multisample_interpolation's `sample` qualifier (written after an interpolation
+/// qualifier) and EXT_blend_func_extended's second source.
+const DIRECTIVES: [(&str, &[(&str, &str)]); 2] = [
+    (
+        "SAMPLE_SHADING",
+        &[
+            ("gl_Sample", SAMPLE_VARIABLES),
+            ("gl_NumSamples", SAMPLE_VARIABLES),
+            (" sample in ", SAMPLE_QUALIFIER),
+            (" sample out ", SAMPLE_QUALIFIER),
+        ],
+    ),
+    ("DUAL_SOURCE_BLEND", &[("index = 1)", BLEND_FUNC_EXTENDED)]),
+];
+const SAMPLE_VARIABLES: &str = "GL_OES_sample_variables";
+const SAMPLE_QUALIFIER: &str = "GL_OES_shader_multisample_interpolation";
+const BLEND_FUNC_EXTENDED: &str = "GL_EXT_blend_func_extended";
+/// An extension directive's line around the extension's name.
+#[cfg(not(target_arch = "wasm32"))]
+const EXTENSION_DIRECTIVE: &str = "#extension ";
+#[cfg(not(target_arch = "wasm32"))]
+const EXTENSION_REQUIRED: &str = " : require";
 
 /// naga's own reason for refusing to write `m` as GLSL ES 3.00 for WebGL, as the back end's options
 /// ask, where it refuses (the back end's refusal says only that naga refused); empty where it writes.
@@ -442,23 +495,27 @@ fn class_of(verdict: &str) -> String {
 }
 
 /// A verdict names its outcome: a conversion, or a refusal by name. A GLSL ES compile failure only
-/// where the shader needs a feature the core language lacks (glslang's error, recorded, is then the
+/// where the shader needs a feature the WebGL 2 back end never declares, or one it declares through
+/// an extension whose directive the written file carries (glslang's error, recorded, is then the
 /// feature's absence there, and Chrome's compile decides where WebGL 2 has it); a write failure
 /// only where it needs a feature the WebGL 2 back end never declares, so a shader it can run is
-/// written.
+/// written; never a file lacking a directive its needs require.
 fn is_named(verdict: &str) -> bool {
     let (wgsl, glsl) = verdict.split_once(GLSL_PART).unwrap_or((verdict, ""));
     let wgsl_named = ["ok", UNSUPPORTED.trim(), "spirv-reader"]
         .contains(&wgsl.split_whitespace().next().unwrap_or(""));
     let (needed, outcome) = split_needs(glsl);
     let names = || needed.trim().strip_prefix(NEEDS).unwrap_or("").split('|');
-    let compile_named = !outcome.starts_with(COMPILE_FAILED) || !needed.is_empty();
-    let write_named = !outcome.starts_with(WRITE_FAILED)
-        || names().any(|n| !n.is_empty() && !WEBGL_DECLARABLE.contains(&n));
+    let never_declared = |n: &str| !n.is_empty() && !WEBGL_DECLARABLE.contains(&n);
+    let by_directive = |n: &str| DIRECTIVES.iter().any(|(d, _)| *d == n);
+    let compile_named = !outcome.starts_with(COMPILE_FAILED)
+        || names().any(|n| never_declared(n) || by_directive(n));
+    let write_named = !outcome.starts_with(WRITE_FAILED) || names().any(never_declared);
+    let declared = !outcome.starts_with(UNDECLARED);
     let key_named = outcome
         .strip_prefix(KEY_FAILED)
         .is_none_or(|refusal| refusal.starts_with(UNSUPPORTED));
-    wgsl_named && compile_named && write_named && key_named
+    wgsl_named && compile_named && write_named && declared && key_named
 }
 
 /// The features `glsl::needs` names that the WebGL 2 back end declares where its context has the
@@ -487,6 +544,8 @@ fn split_needs(glsl: &str) -> (&str, &str) {
 const NEEDS: &str = "needs ";
 const WRITE_FAILED: &str = "write ";
 const KEY_FAILED: &str = "key ";
+/// The written file lacks the directives named after it (or shows the need named in no form).
+const UNDECLARED: &str = "undeclared ";
 /// A named refusal's first word.
 const UNSUPPORTED: &str = "unsupported ";
 
@@ -671,6 +730,57 @@ fn runner_shaders_give_their_recorded_verdicts() {
         "{dxbc_failures}\n{dxil_failures}"
     );
     assert!(dxbc.values().sum::<usize>() > 0 && dxil.values().sum::<usize>() > 0);
+}
+
+/// The rig's per-sample pixel shaders, whose GLSL ES needs OES_sample_variables: as written, the
+/// file carries the directive; written without it, the verdict names what is missing and is not a
+/// named outcome, whatever glslang says.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_written_file_without_its_needs_directive_is_not_a_named_outcome() {
+    use wcontainers_gpu_webgl::glsl;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
+    let directive = format!("{EXTENSION_DIRECTIVE}{SAMPLE_VARIABLES}{EXTENSION_REQUIRED}");
+    for file in [
+        "dxbc/msaa.ps_sample.dxbc",
+        "dxbc/msaa.ps_coverage.dxbc",
+        "dxil/msaa.ps_sample.dxil",
+        "dxil/msaa.ps_coverage.dxil",
+    ] {
+        let bytes = std::fs::read(dir.join(file)).unwrap();
+        let source = if file.ends_with(".dxil") {
+            Source::Dxil(&bytes)
+        } else {
+            Source::Dxbc(&bytes)
+        };
+        let converted = convert(source, &webgl_key(&VariantKey::default()), None).unwrap();
+        let m = &converted.modules[0];
+        let names: Vec<&str> = glsl::needs(m).iter_names().map(|(n, _)| n).collect();
+        assert_eq!(names, ["SAMPLE_SHADING"], "{file}");
+        let settings = glsl::GlslSettings {
+            flip_y: false,
+            noperspective: true,
+        };
+        let text = glsl::write(m, settings).unwrap().source;
+        assert!(text.contains(&directive), "{file}");
+        assert!(undeclared(&names, &text).is_empty(), "{file}");
+        let dropped: String = text
+            .lines()
+            .filter(|l| *l != directive)
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let missing = undeclared(&names, &dropped);
+        assert_eq!(missing, [SAMPLE_VARIABLES], "{file}");
+        let verdict = format!(
+            "ok{GLSL_PART}{NEEDS}SAMPLE_SHADING {UNDECLARED}{}",
+            missing.join("|")
+        );
+        assert!(!is_named(&verdict), "{file}");
+        let compile = format!("ok{GLSL_PART}{NEEDS}SAMPLE_SHADING {COMPILE_FAILED}an error");
+        assert!(is_named(&compile), "{file}");
+        let core = format!("ok{GLSL_PART}{NEEDS}POINT_SIZE {COMPILE_FAILED}an error");
+        assert!(!is_named(&core), "{file}");
+    }
 }
 
 #[test]
