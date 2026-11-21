@@ -189,6 +189,11 @@ pub mod reason {
     /// file `/proc/sys` does not have): the start fails, with EROFS or ENOENT. Detail: the file's
     /// index in `/proc`'s table, or the table's length where it has none.
     pub const SYSCTL_NOT_BUILT: &str = "sysctl not built";
+    /// A container's start asked for mounts other than Docker's with some left out that this
+    /// kernel makes: one not Docker's, `/dev` left out, or one inside a mount left out. The start
+    /// fails with EINVAL. Detail: the mount's index in Docker's list, or the list's length for one
+    /// not in it.
+    pub const MOUNT_NOT_BUILT: &str = "mount not built";
     /// A request for memory found no room below the executor's ceiling. Detail: the call's number.
     pub const PROCESS_OUTGROWN: &str = "process outgrew the ceiling";
     /// A signal the embedder sent through a process's handle names no thread of that process, has
@@ -229,6 +234,7 @@ pub mod reason {
         PROTOCOL_NOT_BUILT,
         NETLINK_REQUEST_NOT_BUILT,
         SYSCTL_NOT_BUILT,
+        MOUNT_NOT_BUILT,
     ];
 }
 

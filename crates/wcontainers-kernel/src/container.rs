@@ -116,6 +116,8 @@ pub struct StartOptions<'a> {
     pub personality: u32,
     /// The container's sysctls (`--sysctl`): each key, dotted, and the value written to its file.
     pub sysctls: &'a [(&'a str, &'a str)],
+    /// Which of Docker's default mounts it has.
+    pub mounts: &'a [DockerMount],
 }
 
 /// What answers a container's calls before Linux does.
@@ -145,6 +147,7 @@ impl Default for StartOptions<'_> {
             io_priority: 0,
             personality: 0,
             sysctls: &[],
+            mounts: &DOCKER_MOUNTS,
         }
     }
 }
@@ -219,6 +222,35 @@ pub const DOCKER_MASKED_PATHS: [&str; 6] = [
     "/sys/firmware",
 ];
 
+/// The index in [`DOCKER_MOUNTS`] (its length for a mount not there) of the first mount of
+/// `mounts` this kernel cannot make as asked: one that is not Docker's, `/dev` left out (runc
+/// would make the devices in the root file system), or one whose point lies in a mount of
+/// Docker's left out (runc would make the point there).
+fn unmade_mount(mounts: &[DockerMount]) -> Option<usize> {
+    let index_of = |mount: &DockerMount| DOCKER_MOUNTS.iter().position(|docker| docker == mount);
+    if mounts.iter().any(|mount| index_of(mount).is_none()) {
+        return Some(DOCKER_MOUNTS.len());
+    }
+    if !mounts.contains(&DEV_MOUNT) {
+        return index_of(&DEV_MOUNT);
+    }
+    mounts
+        .iter()
+        .find(|mount| {
+            DOCKER_MOUNTS.iter().any(|outer| {
+                !mounts.contains(outer)
+                    && mount.point.strip_prefix(outer.point).is_some_and(|below| {
+                        below.as_bytes().first() == Some(&crate::fs::PATH_SEPARATOR)
+                    })
+            })
+        })
+        .and_then(index_of)
+}
+
+/// The mode of a directory everyone may make files in but remove only their own (`/tmp`'s, and
+/// Docker's `/dev/shm` and `/dev/mqueue`).
+const STICKY_SHARED_MODE: u32 = 0o1777;
+
 /// The file mode creation mask a default Docker container's first process starts with.
 pub const DOCKER_UMASK: u32 = 0o022;
 
@@ -257,6 +289,8 @@ pub(crate) struct Starting {
     environment: Vec<Vec<u8>>,
     working_directory: Vec<u8>,
     standard: Standard,
+    /// Which of Docker's mounts it has.
+    mounts: Vec<DockerMount>,
     /// Whether the mounts are made.
     mounted: bool,
 }
@@ -359,16 +393,30 @@ fn mount_tmpfs(
     flags: u32,
     space: Option<Rc<fs::Space>>,
 ) -> Node {
+    let root = file_system_root(numbers, mode, now, kind, flags, space);
+    fs::mount(on, &root);
+    root
+}
+
+/// A new file system's root directory, not mounted anywhere.
+fn file_system_root(
+    numbers: &mut Numbers,
+    mode: u32,
+    now: Time,
+    kind: Kind,
+    flags: u32,
+    space: Option<Rc<fs::Space>>,
+) -> Node {
     let mut fs = numbers.file_system(kind, flags);
     fs.space = space;
     let ino = numbers.ino();
-    let root = fs::new_inode(
+    fs::new_inode(
         fs,
         ino,
         New {
             mode: S_IFDIR | mode,
-            uid: 0,
-            gid: 0,
+            uid: ROOT_UID,
+            gid: ROOT_GID,
             rdev: 0,
             now,
             content: Content::Directory(Directory::new()),
@@ -376,9 +424,12 @@ fn mount_tmpfs(
             name: Vec::new(),
         },
     )
-    .expect("a new container's file systems have room");
-    fs::mount(on, &root);
-    root
+    .expect("a new container's file systems have room")
+}
+
+/// The name in `/dev` of a mount Docker makes there.
+fn name_in_dev(mount: DockerMount) -> &'static [u8] {
+    &mount.point.as_bytes()[DEV_MOUNT.point.len() + 1..]
 }
 
 fn fs_of(node: &Node) -> FileSystem {
@@ -567,7 +618,9 @@ fn sys_directory(numbers: &mut Numbers, at: &Node, name: &[u8], now: Time) -> No
 
 /// `/sys/fs/cgroup`: the container's cgroup ([`crate::cgroup`]), read-only on a writable file
 /// system, its root numbered 1 as kernfs numbers roots.
-fn make_cgroup(numbers: &mut Numbers, sys: &Node, now: Time) -> Node {
+/// sysfs's directories down to the cgroup mount's point, and the cgroup file system mounted
+/// there when the container has that mount.
+fn make_cgroup(numbers: &mut Numbers, sys: &Node, now: Time, mounted: bool) -> Option<Node> {
     // The directories below `/sys` on the way.
     let mut point = sys.clone();
     for name in crate::cgroup::MOUNT
@@ -577,6 +630,9 @@ fn make_cgroup(numbers: &mut Numbers, sys: &Node, now: Time) -> Node {
         .skip(2)
     {
         point = sys_directory(numbers, &point, name, now);
+    }
+    if !mounted {
+        return None;
     }
     let root = mount_tmpfs(
         numbers,
@@ -602,7 +658,7 @@ fn make_cgroup(numbers: &mut Numbers, sys: &Node, now: Time) -> Node {
         )
         .expect("a new container's file systems have room");
     }
-    root
+    Some(root)
 }
 
 /// `/sys/kernel/mm`: `hugepages`, a directory per huge page size, none of them ever reserved, as
@@ -1012,6 +1068,7 @@ impl Kernel {
             environment: owned(start.environment),
             working_directory: start.working_directory.to_vec(),
             standard: start.standard,
+            mounts: start.options.mounts.to_vec(),
             mounted: false,
         }));
         self.run_start(&mut cx);
@@ -1027,6 +1084,14 @@ impl Kernel {
         pid: Pid,
         options: &StartOptions<'_>,
     ) -> Result<(), Errno> {
+        if let Some(index) = unmade_mount(options.mounts) {
+            return Err(self.counters.refuse(
+                cx.host,
+                crate::counters::reason::MOUNT_NOT_BUILT,
+                index as u64,
+                Errno::EINVAL,
+            ));
+        }
         for (key, value) in options.sysctls {
             let path = crate::sysctl::path_of(key);
             if let Some(written) = self.ipc.limits.write(&path, value.as_bytes()) {
@@ -1088,7 +1153,7 @@ impl Kernel {
                     Ok((dev, proc, self.directories(pid, b"/sys")?))
                 });
                 points.map(|(dev, proc, sys)| {
-                    self.make_mounts(&dev, &proc, &sys);
+                    self.make_mounts(&dev, &proc, &sys, &starting.mounts);
                     starting.mounted = true;
                     false
                 })
@@ -1433,9 +1498,16 @@ impl Kernel {
         self.files.backend = Some(client);
     }
 
-    /// The mounts and device files `docker run` sets up, on the directories `/dev`, `/proc` and
-    /// `/sys`.
-    fn make_mounts(&mut self, dev_point: &Node, proc_point: &Node, sys_point: &Node) {
+    /// The mounts of Docker's `made` and the device files `docker run` sets up, on the
+    /// directories `/dev`, `/proc` and `/sys`.
+    fn make_mounts(
+        &mut self,
+        dev_point: &Node,
+        proc_point: &Node,
+        sys_point: &Node,
+        made: &[DockerMount],
+    ) {
+        let has = |mount: DockerMount| made.contains(&mount);
         let now = self.boot;
         // tmpfs's default limits are half the machine's pages, in pages and in inodes
         // (`shmem_default_max_blocks`, `shmem_default_max_inodes`); Docker mounts `/dev` and
@@ -1446,9 +1518,12 @@ impl Kernel {
             space.set_limits(half, half);
         }
         // Mount points are held while mounted, as Linux holds their dentries.
-        self.files
-            .mount_points
-            .extend([dev_point.clone(), proc_point.clone(), sys_point.clone()]);
+        self.files.mount_points.push(dev_point.clone());
+        for (mount, point) in [(PROC_MOUNT, proc_point), (SYS_MOUNT, sys_point)] {
+            if has(mount) {
+                self.files.mount_points.push(point.clone());
+            }
+        }
         let dev_space = self.new_space(docker_size, half);
         let dev = mount_tmpfs(
             &mut self.files.numbers,
@@ -1461,11 +1536,18 @@ impl Kernel {
         );
         // In runc's order, which a listing of `/dev` shows (newest first): the mount points in the
         // order of Docker's mounts, the devices, the `ptmx` link, then the standard links.
-        for (name, mode) in [(&b"pts"[..], 0o755), (b"mqueue", 0o1777), (b"shm", 0o1777)] {
+        for (mount, mode) in [
+            (DEVPTS_MOUNT, 0o755),
+            (MQUEUE_MOUNT, STICKY_SHARED_MODE),
+            (SHM_MOUNT, STICKY_SHARED_MODE),
+        ] {
+            if !has(mount) {
+                continue;
+            }
             make(
                 &mut self.files.numbers,
                 &dev,
-                name,
+                name_in_dev(mount),
                 S_IFDIR | mode,
                 0,
                 0,
@@ -1515,83 +1597,102 @@ impl Kernel {
             )
             .expect("a new container's file systems have room");
         }
-        let shm_point = dev
-            .borrow()
-            .directory()
-            .expect("dev")
-            .get(b"shm")
-            .expect("the dev mount holds its shared memory directory");
-        let shm_space = self.new_space(docker_size, half);
-        let shm = mount_tmpfs(
-            &mut self.files.numbers,
-            &shm_point,
-            0o1777,
-            now,
-            Kind::Tmpfs,
-            ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
-            Some(shm_space),
-        );
-        let mqueue_point = dev
-            .borrow()
-            .directory()
-            .expect("dev")
-            .get(b"mqueue")
-            .expect("the dev mount holds its message queue directory");
-        let mqueue = mount_tmpfs(
-            &mut self.files.numbers,
-            &mqueue_point,
-            0o1777,
-            now,
-            Kind::Mqueue,
-            ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
-            None,
-        );
+        let point_in_dev = |mount: DockerMount| {
+            dev.borrow()
+                .directory()
+                .expect("dev")
+                .get(name_in_dev(mount))
+                .expect("the dev mount holds the points of Docker's mounts in it")
+        };
+        let shm = if has(SHM_MOUNT) {
+            let shm_space = self.new_space(docker_size, half);
+            Some(mount_tmpfs(
+                &mut self.files.numbers,
+                &point_in_dev(SHM_MOUNT),
+                STICKY_SHARED_MODE,
+                now,
+                Kind::Tmpfs,
+                ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+                Some(shm_space),
+            ))
+        } else {
+            None
+        };
+        // The namespace's own mount of its queues (`mq_mnt`), whether or not `/dev/mqueue` shows
+        // it.
+        let mqueue_flags = ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME;
+        let mqueue = if has(MQUEUE_MOUNT) {
+            mount_tmpfs(
+                &mut self.files.numbers,
+                &point_in_dev(MQUEUE_MOUNT),
+                STICKY_SHARED_MODE,
+                now,
+                Kind::Mqueue,
+                mqueue_flags,
+                None,
+            )
+        } else {
+            file_system_root(
+                &mut self.files.numbers,
+                STICKY_SHARED_MODE,
+                now,
+                Kind::Mqueue,
+                mqueue_flags,
+                None,
+            )
+        };
         let mqueue_fs = fs_of(&mqueue);
         self.ipc.mqueue_root = Some(mqueue);
-        let pts_point = dev
-            .borrow()
-            .directory()
-            .expect("dev")
-            .get(b"pts")
-            .expect("pts");
-        let pts = mount_tmpfs(
-            &mut self.files.numbers,
-            &pts_point,
-            0o755,
-            now,
-            Kind::Devpts,
-            ST_NOSUID | ST_NOEXEC | ST_RELATIME,
-            None,
-        );
-        let ptmx = make(
-            &mut self.files.numbers,
-            &pts,
-            b"ptmx",
-            S_IFCHR | 0o666,
-            0,
-            0,
-            encode_device(5, 2),
-            now,
-            Content::Special,
-        )
-        .expect("a new container's file systems have room");
-        // devpts numbers its root 1 and `ptmx` 2 (`devpts_fill_super`), each on its own device.
-        pts.borrow_mut().ino = 1;
-        ptmx.borrow_mut().ino = 2;
+        let pts = if has(DEVPTS_MOUNT) {
+            let pts = mount_tmpfs(
+                &mut self.files.numbers,
+                &point_in_dev(DEVPTS_MOUNT),
+                0o755,
+                now,
+                Kind::Devpts,
+                ST_NOSUID | ST_NOEXEC | ST_RELATIME,
+                None,
+            );
+            let ptmx = make(
+                &mut self.files.numbers,
+                &pts,
+                b"ptmx",
+                S_IFCHR | 0o666,
+                0,
+                0,
+                encode_device(5, 2),
+                now,
+                Content::Special,
+            )
+            .expect("a new container's file systems have room");
+            // devpts numbers its root 1 and `ptmx` 2 (`devpts_fill_super`), each on its own device.
+            pts.borrow_mut().ino = 1;
+            ptmx.borrow_mut().ino = 2;
+            Some(pts)
+        } else {
+            None
+        };
 
         // sysfs, read-only as in a container without CAP_SYS_ADMIN, its root numbered 1.
-        let sys = mount_tmpfs(
-            &mut self.files.numbers,
-            sys_point,
-            0o555,
-            now,
-            Kind::Sysfs,
-            ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
-            None,
-        );
-        sys.borrow_mut().ino = 1;
-        make_memory_management(&mut self.files.numbers, &sys, now);
-        let cgroup = make_cgroup(&mut self.files.numbers, &sys, now);
+        let sys = if has(SYS_MOUNT) {
+            let sys = mount_tmpfs(
+                &mut self.files.numbers,
+                sys_point,
+                0o555,
+                now,
+                Kind::Sysfs,
+                ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+                None,
+            );
+            sys.borrow_mut().ino = 1;
+            make_memory_management(&mut self.files.numbers, &sys, now);
+            Some(sys)
+        } else {
+            None
+        };
+        let cgroup = sys.as_ref().and_then(|sys| {
+            make_cgroup(&mut self.files.numbers, sys, now, has(crate::cgroup::MOUNT))
+        });
 
         let view = fs::proc::View {
             processes: &self.processes,
@@ -1607,7 +1708,9 @@ impl Kernel {
             docker_profile: self.docker_profile,
         };
         let proc_root = fs::proc::root(&view);
-        fs::mount(proc_point, &proc_root);
+        if has(PROC_MOUNT) {
+            fs::mount(proc_point, &proc_root);
+        }
 
         // Docker's masks: `/dev/null` bound over the files of `/proc` that tell of the host, and
         // one empty read-only tmpfs over `/proc/scsi` and `/sys/firmware`.
@@ -1625,7 +1728,7 @@ impl Kernel {
                 fs,
                 empty_ino,
                 New {
-                    mode: S_IFDIR | 0o1777,
+                    mode: S_IFDIR | STICKY_SHARED_MODE,
                     uid: 0,
                     gid: 0,
                     rdev: 0,
@@ -1637,36 +1740,40 @@ impl Kernel {
             )
             .expect("an empty tmpfs has room for its root")
         };
-        let scsi = empty_root(empty_fs.clone());
-        {
-            let mut inode = scsi.borrow_mut();
-            inode.place.parent = Some(Rc::downgrade(&proc_root));
-            inode.place.name = b"scsi".to_vec();
-            inode.place.mount_root = true;
+        if let Some(sys) = &sys {
+            let firmware = make(
+                &mut self.files.numbers,
+                sys,
+                b"firmware",
+                S_IFDIR | 0o755,
+                0,
+                0,
+                0,
+                now,
+                Content::Directory(Directory::new()),
+            )
+            .expect("a new container's file systems have room");
+            let firmware_root = empty_root(empty_fs.clone());
+            fs::mount(&firmware, &firmware_root);
         }
-        let firmware = make(
-            &mut self.files.numbers,
-            &sys,
-            b"firmware",
-            S_IFDIR | 0o755,
-            0,
-            0,
-            0,
-            now,
-            Content::Directory(Directory::new()),
-        )
-        .expect("a new container's file systems have room");
-        let firmware_root = empty_root(empty_fs.clone());
-        fs::mount(&firmware, &firmware_root);
+        if has(PROC_MOUNT) {
+            let scsi = empty_root(empty_fs.clone());
+            {
+                let mut inode = scsi.borrow_mut();
+                inode.place.parent = Some(Rc::downgrade(&proc_root));
+                inode.place.name = b"scsi".to_vec();
+                inode.place.mount_root = true;
+            }
+            self.files.proc_masked = alloc::vec![
+                (&b"interrupts"[..], null.clone()),
+                (b"kcore", null.clone()),
+                (b"keys", null.clone()),
+                (b"scsi", scsi),
+                (b"timer_list", null),
+            ];
+        }
         // `size=4k,nr_inodes=1`, the root filling it.
         empty_space.set_limits(1, 1);
-        self.files.proc_masked = alloc::vec![
-            (&b"interrupts"[..], null.clone()),
-            (b"kcore", null.clone()),
-            (b"keys", null.clone()),
-            (b"scsi", scsi),
-            (b"timer_list", null),
-        ];
 
         // Docker's order: the root, `/proc`, `/dev` and the mounts in it, the volumes (mounted
         // already), then `/proc/sys` again, read-only.
@@ -1689,21 +1796,34 @@ impl Kernel {
             mount(root_fs, "/", "tmpfs", "tmpfs", "")
         };
         let volumes = core::mem::take(&mut self.files.mounts);
-        self.files.mounts = alloc::vec![
-            root,
-            docker(proc_root.borrow().fs.clone(), PROC_MOUNT),
-            docker(fs_of(&dev), DEV_MOUNT),
-            docker(fs_of(&pts), DEVPTS_MOUNT),
-            Mount {
-                read_only_super: true,
-                ..docker(fs_of(&sys), SYS_MOUNT)
-            },
-            docker(fs_of(&cgroup), crate::cgroup::MOUNT),
-            docker(mqueue_fs, MQUEUE_MOUNT),
-            docker(fs_of(&shm), SHM_MOUNT),
+        let proc_fs = has(PROC_MOUNT).then(|| proc_root.borrow().fs.clone());
+        let mqueue_fs = has(MQUEUE_MOUNT).then_some(mqueue_fs);
+        let table = [
+            (proc_fs, PROC_MOUNT),
+            (Some(fs_of(&dev)), DEV_MOUNT),
+            (pts.as_ref().map(fs_of), DEVPTS_MOUNT),
+            (sys.as_ref().map(fs_of), SYS_MOUNT),
+            (cgroup.as_ref().map(fs_of), crate::cgroup::MOUNT),
+            (mqueue_fs, MQUEUE_MOUNT),
+            (shm.as_ref().map(fs_of), SHM_MOUNT),
         ];
+        self.files.mounts = alloc::vec![root];
+        for (fs, made) in table {
+            if let Some(fs) = fs {
+                self.files.mounts.push(Mount {
+                    read_only_super: made == SYS_MOUNT,
+                    ..docker(fs, made)
+                });
+            }
+        }
         self.files.mounts.extend(volumes);
-        for point in DOCKER_READ_ONLY_PATHS {
+        // Docker's paths in a file system the container does not mount are left alone, as runc
+        // leaves a path that is not there.
+        let mounted = |point: &str| made.iter().any(|mount| point.starts_with(mount.point));
+        for point in DOCKER_READ_ONLY_PATHS
+            .into_iter()
+            .filter(|point| mounted(point))
+        {
             let below_proc = point
                 .strip_prefix(PROC_MOUNT.point)
                 .expect("Docker's read-only paths lie in the proc mount");
@@ -1727,7 +1847,10 @@ impl Kernel {
         let null_below_dev = NULL_PATH
             .strip_prefix(DEV_MOUNT.point)
             .expect("the null device lies in the dev mount");
-        for point in DOCKER_MASKED_PATHS {
+        for point in DOCKER_MASKED_PATHS
+            .into_iter()
+            .filter(|point| mounted(point))
+        {
             let directory = point.starts_with(SYS_MOUNT.point)
                 || self.files.proc_masked.iter().any(|(name, node)| {
                     point.as_bytes().ends_with(name) && node.borrow().is_directory()

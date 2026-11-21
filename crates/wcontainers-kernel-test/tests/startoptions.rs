@@ -1,8 +1,8 @@
 //! What a container's configuration sets at its start beyond its program (the user and group,
 //! the umask, resource limits, no_new_privs, the `oom_score_adj`, the domain name, capabilities,
-//! seccomp, scheduling, the I/O priority, the personality and the sysctls), compared with the
-//! reference given
-//! the same through Docker's options, or through the reference shell where Docker has none.
+//! seccomp, scheduling, the I/O priority, the personality, the sysctls and the default mounts),
+//! compared with the reference given the same through Docker's options, or through the reference
+//! shell where Docker has none.
 
 use core::mem::offset_of;
 use std::path::Path;
@@ -14,8 +14,10 @@ use wcontainers_kernel::linux::ptrace::{
     SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS, seccomp_data, sock_filter,
 };
 use wcontainers_kernel::{
-    ADDR_NO_RANDOMIZE, CapabilitySets, DOCKER_CAPABILITIES, DOCKER_LIMITS, DOCKER_UMASK, Errno,
-    IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, Seccomp, StartOptions, sched_attr,
+    ADDR_NO_RANDOMIZE, CGROUP_MOUNT, CapabilitySets, DEV_MOUNT, DEVPTS_MOUNT, DOCKER_CAPABILITIES,
+    DOCKER_LIMITS, DOCKER_MOUNTS, DOCKER_UMASK, DockerMount, Errno, IOPRIO_CLASS_BE,
+    IOPRIO_CLASS_SHIFT, MQUEUE_MOUNT, PROC_MOUNT, SHM_MOUNT, SYS_MOUNT, Seccomp, StartOptions,
+    sched_attr,
 };
 use wcontainers_kernel_test::assert_same_output_with;
 use wcontainers_kernel_test::busybox::{run_ours_with, try_ours_with};
@@ -360,6 +362,108 @@ fn a_sysctl_not_built_fails_the_start() {
         assert!(
             matches!(ours, Err(Failure::Start(given)) if given == error),
             "{key}"
+        );
+    }
+}
+
+/// Docker's mounts but those of `left_out`.
+fn mounts_without(left_out: &[DockerMount]) -> &'static [DockerMount] {
+    DOCKER_MOUNTS
+        .iter()
+        .copied()
+        .filter(|mount| !left_out.contains(mount))
+        .collect::<Vec<_>>()
+        .leak()
+}
+
+/// What shows the mounts in `/proc`, `/dev` and `/sys`, the names in `/dev` and what the cgroup
+/// mount's point holds, a section each.
+const MOUNTS_SHOWN: &str = "echo mounts; grep -E ' /(proc|dev|sys)' /proc/mounts; \
+    echo dev; ls -a /dev; echo cgroup; ls -A /sys/fs/cgroup";
+
+/// Docker cannot leave a default mount out, so ours with some left out is compared with ours
+/// with all of them (which procns and the cgroup tests compare with the reference) less theirs.
+#[test]
+fn default_mounts_left_out_are_not_made() {
+    let all = run_ours_with(&["sh", "-c", MOUNTS_SHOWN], StartOptions::default());
+    let all = String::from_utf8_lossy(&all.outcome.stdout).into_owned();
+    for left_out in [
+        &[SHM_MOUNT, MQUEUE_MOUNT][..],
+        &[DEVPTS_MOUNT, CGROUP_MOUNT],
+    ] {
+        let ours = run_ours_with(
+            &["sh", "-c", MOUNTS_SHOWN],
+            StartOptions {
+                mounts: mounts_without(left_out),
+                ..Default::default()
+            },
+        );
+        // The lines of all, less those of the mounts left out.
+        let mut section = "";
+        let expected: String = all
+            .lines()
+            .filter(|line| {
+                if ["mounts", "dev", "cgroup"].contains(line) {
+                    section = line;
+                    return true;
+                }
+                !left_out.iter().any(|mount| match section {
+                    "mounts" => line.split(' ').nth(1) == Some(mount.point),
+                    "dev" => DEV_MOUNT.point.to_string() + "/" + line == mount.point,
+                    _ => *mount == CGROUP_MOUNT,
+                })
+            })
+            .map(|line| line.to_string() + "\n")
+            .collect();
+        assert_eq!(
+            String::from_utf8_lossy(&ours.outcome.stdout),
+            expected,
+            "{left_out:?}"
+        );
+    }
+}
+
+#[test]
+fn proc_and_sys_left_out_leave_their_directories_empty() {
+    let ours = run_ours_with(
+        &[
+            "sh",
+            "-c",
+            "ls -A /proc | wc -l; ls -A /sys | wc -l; ls /dev/null",
+        ],
+        StartOptions {
+            mounts: mounts_without(&[PROC_MOUNT, SYS_MOUNT, CGROUP_MOUNT]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ours.outcome.stdout),
+        "0\n0\n/dev/null\n"
+    );
+    assert_eq!(ours.outcome.exit_code, 0);
+}
+
+#[test]
+fn mounts_this_kernel_cannot_leave_out_fail_the_start() {
+    let foreign = DockerMount {
+        options: "size=1k",
+        ..SHM_MOUNT
+    };
+    for mounts in [
+        mounts_without(&[DEV_MOUNT]),
+        mounts_without(&[SYS_MOUNT]),
+        vec![PROC_MOUNT, DEV_MOUNT, foreign].leak(),
+    ] {
+        let ours = try_ours_with(
+            &["true"],
+            StartOptions {
+                mounts,
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(ours, Err(Failure::Start(Errno::EINVAL))),
+            "{mounts:?}"
         );
     }
 }
