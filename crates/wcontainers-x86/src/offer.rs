@@ -135,6 +135,58 @@ impl Offer {
     }
 }
 
+impl Offer {
+    /// The offer `key` names, for runners that pass it as a number; `None` for a key no offer has.
+    pub fn from_key(key: u64) -> Option<Self> {
+        let told = key as u32;
+        let signature = key >> u32::BITS;
+        let byte = u64::from(u8::MAX);
+        let mut f = X86_64Features {
+            signature: ProcessorSignature::new(
+                (signature >> (2 * u8::BITS)) as u16,
+                (signature >> u8::BITS & byte) as u8,
+                (signature & byte) as u8,
+            )?,
+            cpuid_01_ecx: Cpuid01Ecx::empty(),
+            cpuid_07_ebx: Cpuid07Ebx::empty(),
+            cpuid_07_ecx: Cpuid07Ecx::empty(),
+            cpuid_07_edx: Cpuid07Edx::empty(),
+            cpuid_07_1_eax: Cpuid07Sub1Eax::empty(),
+            cpuid_07_1_edx: Cpuid07Sub1Edx::empty(),
+            cpuid_0d_1_eax: Cpuid0DSub1Eax::empty(),
+            cpuid_80000001_ecx: Cpuid80000001Ecx::empty(),
+            cpuid_80000001_edx: Cpuid80000001Edx::empty(),
+            avx10: None,
+        };
+        for (_, &name) in TOLD_FEATURES
+            .iter()
+            .enumerate()
+            .filter(|&(at, _)| told >> at & 1 != 0)
+        {
+            if let Some(x) = Cpuid01Ecx::from_name(name) {
+                f.cpuid_01_ecx |= x;
+            } else if let Some(x) = Cpuid07Ebx::from_name(name) {
+                f.cpuid_07_ebx |= x;
+            } else if let Some(x) = Cpuid07Ecx::from_name(name) {
+                f.cpuid_07_ecx |= x;
+            } else if let Some(x) = Cpuid07Edx::from_name(name) {
+                f.cpuid_07_edx |= x;
+            } else if let Some(x) = Cpuid07Sub1Eax::from_name(name) {
+                f.cpuid_07_1_eax |= x;
+            } else if let Some(x) = Cpuid07Sub1Edx::from_name(name) {
+                f.cpuid_07_1_edx |= x;
+            } else if let Some(x) = Cpuid0DSub1Eax::from_name(name) {
+                f.cpuid_0d_1_eax |= x;
+            } else if let Some(x) = Cpuid80000001Ecx::from_name(name) {
+                f.cpuid_80000001_ecx |= x;
+            } else {
+                f.cpuid_80000001_edx |= Cpuid80000001Edx::from_name(name)?;
+            }
+        }
+        Self::new(f).ok().filter(|offer| offer.key() == key)
+    }
+}
+
 impl Default for Offer {
     fn default() -> Self {
         Self::new(FULL_SPEED).expect("every family of the full-speed list has meanings")

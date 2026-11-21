@@ -82,6 +82,7 @@ fn counted(form: Form, turns: i32) -> Result<Blob, IcedError> {
         main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
+        offer: None,
     })
 }
 

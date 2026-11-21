@@ -97,6 +97,8 @@ pub struct Blob {
     pub program_headers: Option<(u64, u64)>,
     /// How much stack it gets, below [`STACK_TOP`].
     pub stack_bytes: u64,
+    /// The key (`Guest::offer_key`) of what its program is told of its processor, the default when `None`.
+    pub offer: Option<u64>,
 }
 
 impl Blob {
@@ -428,6 +430,7 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         program_headers: Some((at, headers.len() as u64)),
         name,
         stack_bytes: STACK_BYTES,
+        offer: None,
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
@@ -601,6 +604,9 @@ pub fn ready_with<G: GuestTest>(
     let place = placement::<G>(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
+    if let Some(key) = blob.offer {
+        machine.set_offer(G::offer_from_key(key).expect("an offer's key"));
+    }
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
     }

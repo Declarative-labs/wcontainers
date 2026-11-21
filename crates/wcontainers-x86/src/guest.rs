@@ -608,6 +608,10 @@ impl Guest for X86_64 {
         offer.key()
     }
 
+    fn offer_from_key(key: u64) -> Option<crate::Offer> {
+        crate::Offer::from_key(key)
+    }
+
     const STEPS: bool = true;
 
     /// The trap flag's single steps: an instruction that starts with TF set runs alone and stops the thread

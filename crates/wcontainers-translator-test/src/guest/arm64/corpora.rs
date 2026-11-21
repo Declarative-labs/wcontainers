@@ -110,6 +110,7 @@ fn blob(name: &str, ops: Ops) -> Blob {
         main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
+        offer: None,
     }
 }
 
@@ -516,6 +517,7 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
         main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
+        offer: None,
     }
 }
 

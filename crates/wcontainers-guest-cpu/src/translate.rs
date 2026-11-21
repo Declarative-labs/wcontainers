@@ -143,6 +143,11 @@ pub trait Guest: Personality {
     type Offer: Copy + Eq + Hash + Debug + Default + Send + Sync;
     /// The offer as a number, for the cache key and the description section (0 for `()`).
     fn offer_key(offer: Self::Offer) -> u64;
+    /// The offer a key names, for runners that pass it as a number; `None` for a key no offer has. A guest
+    /// with one offer has only its default's key.
+    fn offer_from_key(key: u64) -> Option<Self::Offer> {
+        (key == Self::offer_key(Self::Offer::default())).then(Self::Offer::default)
+    }
 
     // --- what a memory fault is on this CPU ---
     /// The memory fault hook reported `address` (the first byte not allowed) for the instruction at the

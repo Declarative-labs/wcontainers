@@ -82,6 +82,7 @@ fn program(
         main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
+        offer: None,
     };
     (blob, at)
 }

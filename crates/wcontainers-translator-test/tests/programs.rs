@@ -441,10 +441,20 @@ fn match_linux<G: GuestTest>(programs: &[(&str, Library)]) {
 
 /// The same at these look-aheads only, the first of which the others' registers and memory are compared with.
 fn match_linux_at<G: GuestTest>(programs: &[(&str, Library)], hows: &[(LookAhead, Optimise)]) {
+    match_linux_told::<G>(programs, hows, None);
+}
+
+/// [`match_linux_at`] for programs told the offer `offer` names (the default when `None`).
+fn match_linux_told<G: GuestTest>(
+    programs: &[(&str, Library)],
+    hows: &[(LookAhead, Optimise)],
+    offer: Option<u64>,
+) {
     for &(name, library) in programs {
         let mut built: Vec<(&str, Vec<u8>)> = Vec::new();
         for optimisation in LEVELS {
-            let blob = build::<G>(name, optimisation, library);
+            let mut blob = build::<G>(name, optimisation, library);
+            blob.offer = offer;
             if let Some((same, _)) = built.iter().find(|(_, bytes)| *bytes == blob.bytes) {
                 eprintln!("{name} {optimisation}: the same blob as {same}");
                 continue;
@@ -1026,6 +1036,17 @@ fn mmx_and_x87_state_match_linux_x86_64() {
     match_linux_at::<X86_64>(
         &[("mmx", Library::C), ("x87_state", Library::C)],
         &every_unit_look_ahead(),
+    );
+}
+
+/// `xsave` and `xrstor` of x87, SSE and AVX state, for a program told the x86-64-v3 list, at every look-ahead.
+#[test]
+fn xstate_matches_linux_x86_64() {
+    let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
+    match_linux_told::<X86_64>(
+        &[("xstate", Library::C)],
+        &every_unit_look_ahead(),
+        Some(v3.key()),
     );
 }
 

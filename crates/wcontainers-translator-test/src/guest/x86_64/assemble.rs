@@ -1561,6 +1561,7 @@ pub(super) fn assemble(program: &Program) -> Blob {
         main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
+        offer: None,
     }
 }
 

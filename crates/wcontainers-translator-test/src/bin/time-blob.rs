@@ -64,6 +64,7 @@ fn read(file: &str) -> Blob {
         main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
+        offer: None,
     }
 }
 
