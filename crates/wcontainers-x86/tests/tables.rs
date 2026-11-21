@@ -1,55 +1,66 @@
 //! The crate's own tables checked against iced-x86's `instr_info` answers, which the shipped decoder leaves
-//! out: each `Code`'s claim group, the integer memory sizes and the general registers' numbers and widths.
+//! out: each `Code`'s claim, the integer memory sizes and the general registers' numbers and widths.
 
 use iced_x86::{Code, MemorySize, Register};
 use wcontainers_x86::claims::*;
 
-/// Every `Code` is in the group its features and privilege give it.
+/// Every `Code` has the claim its features and privilege give it.
 #[test]
-fn every_code_is_in_its_claim_group() {
-    let mut counts = [0usize; 4];
+fn every_code_has_its_claim() {
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     for code in Code::values() {
         let features: Vec<String> = code
             .cpuid_features()
             .iter()
             .map(|f| format!("{f:?}"))
+            .filter(|f| !BASELINE_FEATURES.contains(&f.as_str()))
             .collect();
-        let all_in = |lists: &[&[&str]]| {
-            features
-                .iter()
-                .all(|f| lists.iter().any(|list| list.contains(&f.as_str())))
-        };
         let kernel = code.is_privileged() || code == Code::Rdpmc;
-        let expected = if kernel && all_in(&[DEFAULT_FEATURES, KERNEL_FEATURES]) {
-            GROUP_KERNEL
-        } else if !kernel && all_in(&[DEFAULT_FEATURES]) {
-            GROUP_DEFAULT
-        } else if all_in(&[DEFAULT_FEATURES, AVX_FEATURES]) {
-            GROUP_AVX
-        } else {
-            GROUP_NEVER
+        let told = |name: &str| {
+            let at = TOLD_FEATURES.iter().position(|&n| n == name).unwrap();
+            CLAIM_FIRST_TOLD + at as u8
         };
-        assert_eq!(wcontainers_x86::claim_group(code), expected, "{code:?}");
-        counts[usize::from(expected)] += 1;
+        let expected = if matches!(code, Code::Lahf | Code::Sahf) {
+            told(LAHF_SAHF_FAMILY)
+        } else if features
+            .iter()
+            .all(|f| KERNEL_FEATURES.contains(&f.as_str()))
+        {
+            if kernel { CLAIM_KERNEL } else { CLAIM_BASELINE }
+        } else if let [one] = &features[..]
+            && TOLD_FEATURES.contains(&one.as_str())
+        {
+            told(one)
+        } else {
+            CLAIM_NEVER
+        };
+        assert_eq!(wcontainers_x86::claim(code), expected, "{code:?}");
+        let name = match expected {
+            CLAIM_BASELINE => "baseline",
+            CLAIM_KERNEL => "kernel",
+            CLAIM_NEVER => "never",
+            c => TOLD_FEATURES[wcontainers_x86::told_feature(c).unwrap()],
+        };
+        *counts.entry(name).or_default() += 1;
     }
-    eprintln!("claim groups (default, AVX, never, kernel): {counts:?}");
+    eprintln!("claims: {counts:?}");
     // A few by hand.
+    let claim = wcontainers_x86::claim;
+    let told = |code| wcontainers_x86::told_feature(claim(code)).map(|at| TOLD_FEATURES[at]);
+    assert_eq!(claim(Code::Add_rm64_r64), CLAIM_BASELINE);
+    assert_eq!(told(Code::VEX_Vaddps_ymm_ymm_ymmm256), Some("AVX"));
+    assert_eq!(told(Code::VEX_Vpaddd_ymm_ymm_ymmm256), Some("AVX2"));
+    assert_eq!(told(Code::VEX_Pdep_r64_r64_rm64), Some("BMI2"));
+    assert_eq!(told(Code::Popcnt_r64_rm64), Some("POPCNT"));
+    assert_eq!(told(Code::Lahf), Some(LAHF_SAHF_FAMILY));
+    assert_eq!(told(Code::Xsetbv), Some("XSAVE"));
     assert_eq!(
-        wcontainers_x86::claim_group(Code::Add_rm64_r64),
-        GROUP_DEFAULT
+        claim(Code::EVEX_Vaddps_zmm_k1z_zmm_zmmm512b32_er),
+        CLAIM_NEVER
     );
-    assert_eq!(
-        wcontainers_x86::claim_group(Code::VEX_Vaddps_ymm_ymm_ymmm256),
-        GROUP_AVX
-    );
-    assert_eq!(
-        wcontainers_x86::claim_group(Code::EVEX_Vaddps_zmm_k1z_zmm_zmmm512b32_er),
-        GROUP_NEVER
-    );
-    assert_eq!(wcontainers_x86::claim_group(Code::Hlt), GROUP_KERNEL);
-    assert_eq!(wcontainers_x86::claim_group(Code::Rdmsr), GROUP_KERNEL);
-    assert_eq!(wcontainers_x86::claim_group(Code::Vmlaunch), GROUP_NEVER);
-    assert_eq!(wcontainers_x86::claim_group(Code::Xsetbv), GROUP_AVX);
+    assert_eq!(claim(Code::Hlt), CLAIM_KERNEL);
+    assert_eq!(claim(Code::Rdmsr), CLAIM_KERNEL);
+    assert_eq!(claim(Code::Vmlaunch), CLAIM_NEVER);
 }
 
 /// Every memory size the crate knows has iced's size.

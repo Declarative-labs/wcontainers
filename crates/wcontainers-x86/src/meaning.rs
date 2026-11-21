@@ -1,7 +1,7 @@
 //! The meaning of each instruction as WebAssembly, from Intel's manual and what the reference CPU does.
 
-use crate::claims::{GROUP_AVX, GROUP_KERNEL, GROUP_NEVER};
-use crate::decode::{Instruction, claim_group};
+use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
+use crate::decode::{Instruction, claim, told_feature};
 use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
 use crate::guest::{Control, Hook, Reason, Trap};
 use crate::operand::*;
@@ -20,10 +20,10 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
         e.trap(Trap::Undefined);
         return;
     }
-    match claim_group(ins.code()) {
+    match claim(ins.code()) {
         // At CPL 3 every kernel-only instruction is general protection, but rsm, which exists only in
         // system management mode and is #UD outside it.
-        GROUP_KERNEL => {
+        CLAIM_KERNEL => {
             e.trap(if ins.mnemonic() == Mnemonic::Rsm {
                 Trap::Undefined
             } else {
@@ -31,12 +31,13 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
             });
             return;
         }
-        GROUP_NEVER => {
+        CLAIM_NEVER => {
             e.trap(Trap::Unsupported);
             return;
         }
-        GROUP_AVX if !e.offer().avx => {
-            e.warn(Reason::AvxNotOffered);
+        // As on a CPU without the feature.
+        c if told_feature(c).is_some_and(|at| !e.offer().tells(at)) => {
+            e.warn(Reason::NotToldFeatureReached);
             e.trap(Trap::Unsupported);
             return;
         }
@@ -3173,7 +3174,7 @@ fn crc32<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 /// ecx, their upper halves cleared.
 fn cpuid<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
     use crate::cpuid::{EXTENDED, MAX_BASIC, MAX_EXTENDED};
-    let avx = e.offer().avx;
+    let offer = e.offer();
     let (leaf, sub_leaf) = (e.local(ValType::I32), e.local(ValType::I32));
     get_general(e, register(RCX, W32));
     e.sink().i32_wrap_i64().local_set(sub_leaf);
@@ -3196,7 +3197,7 @@ fn cpuid<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
         .i32_or()
         .select()
         .local_set(leaf);
-    if !avx {
+    if !offer.avx() {
         e.sink()
             .local_get(leaf)
             .i32_const(crate::cpuid::FEATURES_LEAF as i32)
@@ -3226,7 +3227,7 @@ fn cpuid<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
             .i32_eq()
             .if_(BlockType::Empty);
         let subs = crate::cpuid::sub_leaves(l);
-        set(e, crate::cpuid::answer(avx, l, subs));
+        set(e, crate::cpuid::answer(offer, l, subs));
         if crate::cpuid::echoes_sub_leaf(l) {
             e.sink()
                 .local_get(sub_leaf)
@@ -3240,7 +3241,7 @@ fn cpuid<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
                 .i32_const(sub as i32)
                 .i32_eq()
                 .if_(BlockType::Empty);
-            set(e, crate::cpuid::answer(avx, l, sub));
+            set(e, crate::cpuid::answer(offer, l, sub));
             e.sink().end();
         }
         e.sink().end();

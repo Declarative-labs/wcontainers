@@ -991,7 +991,14 @@ fn programs_match_linux_x86_64() {
 
 /// The bounds the programs of one unit of the CPU (x87, MMX, the vector extensions) run at beside none and full:
 /// one instruction a piece, a few, the comparison's, and past the largest function.
-const UNIT_BOUNDS: [u32; 6] = [1, 5, 17, 64, wcontainers_translator::BOUND, 4096];
+const UNIT_BOUNDS: [u32; 6] = [
+    1,
+    5,
+    17,
+    64,
+    wcontainers_translator::BOUND,
+    2 * FUNCTION_BLOCKS as u32,
+];
 
 /// None first, full, and every bound of [`UNIT_BOUNDS`], each for speed and size.
 fn every_unit_look_ahead() -> Vec<(LookAhead, Optimise)> {

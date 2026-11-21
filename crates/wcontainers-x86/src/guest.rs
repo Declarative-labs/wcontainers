@@ -79,7 +79,7 @@ const STEP_RUNNING: u32 = 2;
 /// x86's own slow paths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
-    AvxNotOffered,
+    NotToldFeatureReached,
     AvxAskedAndToldNo,
     ThirtyTwoBitSystemCall,
     StringCompared,
@@ -107,12 +107,6 @@ const X87_STATE: StateBytes = StateBytes {
     at: FXSAVE as u16,
     len: size_of::<crate::Fxsave>() as u16,
 };
-
-/// What the container offers beyond the default claims: the AVX setting (x86-64-v3).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Offer {
-    pub avx: bool,
-}
 
 const fn general_bit(n: u32) -> Bit {
     Bit {
@@ -509,8 +503,8 @@ impl Guest for X86_64 {
     type Reason = Reason;
     const REASONS: &'static [(Reason, &'static str)] = &[
         (
-            Reason::AvxNotOffered,
-            "an AVX instruction was reached while AVX is not offered",
+            Reason::NotToldFeatureReached,
+            "an instruction of a feature the program was not told of was reached",
         ),
         (
             Reason::AvxAskedAndToldNo,
@@ -578,10 +572,10 @@ impl Guest for X86_64 {
         host.answer() as u32
     }
 
-    type Offer = Offer;
+    type Offer = crate::Offer;
 
-    fn offer_key(offer: Offer) -> u32 {
-        offer.avx.into()
+    fn offer_key(offer: crate::Offer) -> u64 {
+        offer.key()
     }
 
     const STEPS: bool = true;
@@ -1127,7 +1121,7 @@ impl Guest for X86_64 {
     /// of the claimed features fault on every CPU under every kernel, but those a kernel can grant to user
     /// code; an instruction over 15 bytes faults on every CPU.
     fn may_vary(i: &Instruction) -> bool {
-        use crate::claims::{GROUP_DEFAULT, GROUP_KERNEL};
+        use crate::claims::{CLAIM_BASELINE, CLAIM_KERNEL};
         use Mnemonic::*;
         let ins = &i.iced;
         if i.too_long {
@@ -1136,16 +1130,20 @@ impl Guest for X86_64 {
         if ins.is_invalid() {
             return true;
         }
-        match crate::decode::claim_group(ins.code()) {
+        let claim = crate::decode::claim(ins.code());
+        let full_speed = claim == CLAIM_BASELINE
+            || crate::decode::told_feature(claim)
+                .is_some_and(|at| crate::Offer::default().tells(at));
+        match claim {
             // A kernel may let user code run these: rdpmc under CR4.PCE, port I/O and cli and sti after
             // iopl or ioperm.
-            GROUP_KERNEL => {
+            CLAIM_KERNEL => {
                 return matches!(
                     ins.mnemonic(),
                     Rdpmc | In | Out | Insb | Insw | Insd | Outsb | Outsw | Outsd | Cli | Sti
                 );
             }
-            GROUP_DEFAULT if crate::meaning::written(i) => {}
+            _ if full_speed && crate::meaning::written(i) => {}
             // Illegal instruction, where a CPU with the feature (or our own later meaning) runs it.
             _ => return true,
         }
@@ -1293,9 +1291,9 @@ impl Guest for X86_64 {
 
 /// Whether an instruction with no meaning written yet may run on some offer, so control may fall through it.
 fn may_be_offered(i: &Instruction) -> bool {
-    use crate::claims::{GROUP_KERNEL, GROUP_NEVER};
+    use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
     !matches!(
-        crate::decode::claim_group(i.iced.code()),
-        GROUP_KERNEL | GROUP_NEVER
+        crate::decode::claim(i.iced.code()),
+        CLAIM_KERNEL | CLAIM_NEVER
     )
 }

@@ -4929,6 +4929,7 @@ dependencies = [
 name = "wcontainers-translator-test"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.2",
  "blake3",
  "dynasmrt",
  "flate2",
@@ -4950,6 +4951,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-docker",
  "wcontainers-guest-cpu",
+ "wcontainers-kernel",
  "wcontainers-translator",
  "wcontainers-x86",
  "zerocopy",
@@ -5011,6 +5013,7 @@ dependencies = [
  "wasm-encoder 0.263.0",
  "wcontainers-abi",
  "wcontainers-guest-cpu",
+ "wcontainers-kernel",
  "zerocopy",
 ]
 

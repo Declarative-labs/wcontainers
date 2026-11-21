@@ -137,11 +137,12 @@ pub trait Guest: Personality {
     fn host_key(host: Self::Host) -> u32;
 
     // --- what the container offers beyond the default claims ---
-    /// A container setting that changes what the CPU claims, given with every translation (`()` when there
-    /// is none); its default is what the CPU claims when the container asks for nothing more.
+    /// What a program is told its processor has, chosen per process when its program starts and given with
+    /// every translation (`()` when the CPU has nothing to tell); its default is what a program is told when
+    /// nothing narrower is chosen.
     type Offer: Copy + Eq + Hash + Debug + Default + Send + Sync;
     /// The offer as a number, for the cache key and the description section (0 for `()`).
-    fn offer_key(offer: Self::Offer) -> u32;
+    fn offer_key(offer: Self::Offer) -> u64;
 
     // --- what a memory fault is on this CPU ---
     /// The memory fault hook reported `address` (the first byte not allowed) for the instruction at the

@@ -539,7 +539,7 @@ impl Guest for Arm64 {
 
     type Offer = ();
 
-    fn offer_key(_offer: ()) -> u32 {
+    fn offer_key(_offer: ()) -> u64 {
         0
     }
 

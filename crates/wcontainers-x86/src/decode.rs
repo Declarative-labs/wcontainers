@@ -35,9 +35,16 @@ const WAIT: u8 = 0x9b;
 const X87_ESCAPE: u8 = 0xd8;
 const X87_ESCAPE_MASK: u8 = 0xf8;
 
-/// The claim group of a `Code` (`claims::GROUP_*`), from iced's tables at build time.
-pub fn claim_group(code: Code) -> u8 {
+/// The claim of a `Code` (`claims::CLAIM_*`, or a told feature's), from iced's tables at build time.
+pub fn claim(code: Code) -> u8 {
     groups::GROUPS[code as usize]
+}
+
+/// The told feature a claim names, by its place in `claims::TOLD_FEATURES`.
+pub fn told_feature(claim: u8) -> Option<usize> {
+    use crate::claims::{CLAIM_FIRST_TOLD, TOLD_FEATURES};
+    let at = usize::from(claim.checked_sub(CLAIM_FIRST_TOLD)?);
+    (at < TOLD_FEATURES.len()).then_some(at)
 }
 
 fn options() -> u32 {
@@ -72,7 +79,7 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     // encoding, and its limit wins over every other rule. An instruction of a feature never presented is
     // counted as the reference CPU counts it too, which for other makers' instructions (3DNow, XOP, SSE4a) is
     // not their length.
-    if cut || iced.is_invalid() || claim_group(iced.code()) == crate::claims::GROUP_NEVER {
+    if cut || iced.is_invalid() || claim(iced.code()) == crate::claims::CLAIM_NEVER {
         let length = cpu_length(code, prefixes)?;
         too_long = length as u64 > X86_64::MAX_LENGTH;
         iced.set_len(length.min(u8::MAX.into()));

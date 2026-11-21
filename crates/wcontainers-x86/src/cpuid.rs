@@ -1,7 +1,7 @@
-//! What `cpuid` answers (plan 5.10): the default claims, or with the AVX setting the x86-64-v3 level, and
-//! designed answers that say nothing about the machine the guest runs on.
+//! What `cpuid` answers (plan 5.10): the features and identity of the program's list, and designed answers
+//! that say nothing about the machine the guest runs on.
 
-use crate::{Fxsave, VIRTUAL_ADDRESS_BITS, X86Block};
+use crate::{Fxsave, Offer, VIRTUAL_ADDRESS_BITS, X86Block};
 
 /// eax, ebx, ecx and edx.
 pub const OUTPUTS: usize = 4;
@@ -37,20 +37,31 @@ pub const VENDOR: &[u8; 12] = b"GenuineIntel";
 /// The brand string, our own.
 pub const BRAND: &str = "wcontainers x86-64";
 
-/// The reference CPU's family, model and stepping (the i7-8750H: family 6, model 0x9E, stepping 10).
-pub const FAMILY: u32 = 6;
-pub const MODEL: u32 = 0x9e;
-pub const STEPPING: u32 = 10;
-
-/// Leaf 1's signature fields (Intel SDM Vol. 2A, CPUID, figure 3-6): stepping, model, family, extended model.
+/// Leaf 1's signature fields (Intel SDM Vol. 2A, CPUID, figure 3-6): stepping, model, family, extended model
+/// and extended family. A family from 0xF up is 0xF and the rest in the extended family; the model's high four
+/// bits are the extended model.
 const MODEL_SHIFT: u32 = 4;
 const FAMILY_SHIFT: u32 = 8;
 const EXTENDED_MODEL_SHIFT: u32 = 16;
+const EXTENDED_FAMILY_SHIFT: u32 = 20;
 const MODEL_FIELD_BITS: u32 = 4;
-pub const SIGNATURE: u32 = STEPPING
-    | (MODEL & low_bits(MODEL_FIELD_BITS)) << MODEL_SHIFT
-    | FAMILY << FAMILY_SHIFT
-    | (MODEL >> MODEL_FIELD_BITS) << EXTENDED_MODEL_SHIFT;
+const FAMILY_FIELD_MAX: u32 = low_bits(4);
+
+/// Leaf 1 eax for a family, model and stepping.
+pub fn signature(offer: Offer) -> u32 {
+    let s = offer.features().signature;
+    let (family, model) = (u32::from(s.family()), u32::from(s.model()));
+    let (family_field, extended_family) = if family < FAMILY_FIELD_MAX {
+        (family, 0)
+    } else {
+        (FAMILY_FIELD_MAX, family - FAMILY_FIELD_MAX)
+    };
+    u32::from(s.stepping())
+        | (model & low_bits(MODEL_FIELD_BITS)) << MODEL_SHIFT
+        | family_field << FAMILY_SHIFT
+        | (model >> MODEL_FIELD_BITS) << EXTENDED_MODEL_SHIFT
+        | extended_family << EXTENDED_FAMILY_SHIFT
+}
 
 const fn low_bits(n: u32) -> u32 {
     (1 << n) - 1
@@ -67,20 +78,10 @@ const CLFLUSH_UNIT: u32 = u64::BITS / u8::BITS;
 const LEAF1_EBX: u32 =
     (LINE_BYTES / CLFLUSH_UNIT) << CLFLUSH_LINE_SHIFT | 1 << LOGICAL_PROCESSORS_SHIFT;
 
-/// Leaf 1 ecx and edx feature bits (Intel SDM Vol. 2A, CPUID, tables 3-10 and 3-11).
+/// Leaf 1 ecx's bit the kernel sets once it has enabled XSAVE, and leaf 1 edx's bits, which every x86-64
+/// processor has and the program's list has no field for (Intel SDM Vol. 2A, CPUID, tables 3-10 and 3-11).
 pub mod leaf1 {
-    pub const SSE3: u32 = 1 << 0;
-    pub const SSSE3: u32 = 1 << 9;
-    pub const FMA: u32 = 1 << 12;
-    pub const CX16: u32 = 1 << 13;
-    pub const SSE4_1: u32 = 1 << 19;
-    pub const SSE4_2: u32 = 1 << 20;
-    pub const MOVBE: u32 = 1 << 22;
-    pub const POPCNT: u32 = 1 << 23;
-    pub const XSAVE: u32 = 1 << 26;
     pub const OSXSAVE: u32 = 1 << 27;
-    pub const AVX: u32 = 1 << 28;
-    pub const F16C: u32 = 1 << 29;
 
     pub const FPU: u32 = 1 << 0;
     pub const TSC: u32 = 1 << 4;
@@ -94,35 +95,15 @@ pub mod leaf1 {
     pub const SSE2: u32 = 1 << 26;
 }
 
-/// Leaf 7 sub-leaf 0 ebx feature bits (table 3-8).
-pub mod leaf7 {
-    pub const FSGSBASE: u32 = 1 << 0;
-    pub const BMI1: u32 = 1 << 3;
-    pub const AVX2: u32 = 1 << 5;
-    pub const BMI2: u32 = 1 << 8;
-    pub const ADX: u32 = 1 << 19;
-}
-
-/// Leaf 0x8000_0001 ecx and edx feature bits.
+/// Leaf 0x8000_0001 edx's bits every x86-64 processor has, and leaf 0x8000_0007's.
 pub mod extended {
-    pub const LAHF_SAHF: u32 = 1 << 0;
-    pub const LZCNT: u32 = 1 << 5;
     pub const SYSCALL: u32 = 1 << 11;
     pub const NX: u32 = 1 << 20;
-    pub const RDTSCP: u32 = 1 << 27;
     pub const LM: u32 = 1 << 29;
     /// Leaf 0x8000_0007 edx: the time stamp counter runs at one rate.
     pub const INVARIANT_TSC: u32 = 1 << 8;
 }
 
-const LEAF1_ECX: u32 = leaf1::SSE3
-    | leaf1::SSSE3
-    | leaf1::CX16
-    | leaf1::SSE4_1
-    | leaf1::SSE4_2
-    | leaf1::MOVBE
-    | leaf1::POPCNT;
-const LEAF1_ECX_AVX: u32 = leaf1::FMA | leaf1::XSAVE | leaf1::OSXSAVE | leaf1::AVX | leaf1::F16C;
 const LEAF1_EDX: u32 = leaf1::FPU
     | leaf1::TSC
     | leaf1::CX8
@@ -133,8 +114,7 @@ const LEAF1_EDX: u32 = leaf1::FPU
     | leaf1::FXSR
     | leaf1::SSE
     | leaf1::SSE2;
-const LEAF7_EBX: u32 = leaf7::FSGSBASE | leaf7::BMI1 | leaf7::ADX;
-const LEAF7_EBX_AVX: u32 = leaf7::AVX2 | leaf7::BMI2;
+const EXTENDED_EDX: u32 = extended::SYSCALL | extended::NX | extended::LM;
 
 /// Leaf 2: one descriptor byte, 0xFF, "no descriptors here, read leaf 4", after the count of calls, 1.
 const NO_DESCRIPTORS: u32 = 0xff;
@@ -209,18 +189,34 @@ pub const TIME_STAMP_HZ: u32 = 1_000_000_000;
 const PHYSICAL_ADDRESS_BITS: u32 = 39;
 const LINEAR_ADDRESS_SHIFT: u32 = 8;
 
-/// The XSAVE state the AVX setting presents: x87, SSE and the upper halves of the ymm registers, after the
-/// legacy area and the 64-byte XSAVE header (Intel SDM Vol. 1 13.4).
-const XSAVE_HEADER_BYTES: u32 = 64;
-const XSAVE_X87: u32 = 1 << 0;
-const XSAVE_SSE: u32 = 1 << 1;
-const XSAVE_AVX: u32 = 1 << 2;
+/// The XSAVE state a list with XSAVE presents: x87 and SSE, and with AVX the upper halves of the ymm
+/// registers, after the legacy area and the 64-byte XSAVE header (Intel SDM Vol. 1 13.4).
+pub const XSAVE_HEADER_BYTES: u32 = 64;
+pub const XSAVE_X87: u32 = 1 << 0;
+pub const XSAVE_SSE: u32 = 1 << 1;
+pub const XSAVE_AVX: u32 = 1 << 2;
 const AVX_STATE_SUB_LEAF: u32 = XSAVE_AVX.trailing_zeros();
-const AVX_STATE_OFFSET: u32 = size_of::<Fxsave>() as u32 + XSAVE_HEADER_BYTES;
+/// Leaf 0xD sub-leaf 1: the XSAVE extensions (XSAVEOPT, XSAVEC, `xgetbv` with ecx 1).
+const XSAVE_EXTENSIONS_SUB_LEAF: u32 = 1;
+pub const AVX_STATE_OFFSET: u32 = size_of::<Fxsave>() as u32 + XSAVE_HEADER_BYTES;
 /// The upper halves of the ymm registers, the block's last field.
-const AVX_STATE_BYTES: u32 =
+pub const AVX_STATE_BYTES: u32 =
     (size_of::<X86Block>() - core::mem::offset_of!(X86Block, ymm_high)) as u32;
-const XSAVE_BYTES: u32 = AVX_STATE_OFFSET + AVX_STATE_BYTES;
+
+/// The state components `xgetbv` reports enabled in XCR0 for this offer, which the kernel enables for all it
+/// presents.
+pub fn enabled_state(offer: Offer) -> u32 {
+    XSAVE_X87 | XSAVE_SSE | if offer.avx() { XSAVE_AVX } else { 0 }
+}
+
+/// The bytes an XSAVE area of these state components takes.
+pub fn xsave_bytes(state: u32) -> u32 {
+    if state & XSAVE_AVX != 0 {
+        AVX_STATE_OFFSET + AVX_STATE_BYTES
+    } else {
+        AVX_STATE_OFFSET
+    }
+}
 
 /// Packs bytes into registers, four to each, little-endian, zero past the end.
 const fn packed<const N: usize>(bytes: &[u8]) -> [u32; N] {
@@ -247,20 +243,27 @@ pub const fn effective_leaf(leaf: u32) -> u32 {
     }
 }
 
-/// What `cpuid` gives for this leaf and sub-leaf, with the AVX setting or without.
-pub fn answer(avx: bool, leaf: u32, sub_leaf: u32) -> Registers {
-    let either = |without: u32, with: u32| if avx { without | with } else { without };
+/// What `cpuid` gives for this leaf and sub-leaf to a program told `offer`.
+pub fn answer(offer: Offer, leaf: u32, sub_leaf: u32) -> Registers {
+    let f = offer.features();
+    let xsave = offer.xsave();
+    let state = enabled_state(offer);
     match effective_leaf(leaf) {
         0 => [MAX_BASIC, VENDOR_WORDS[0], VENDOR_WORDS[2], VENDOR_WORDS[1]],
         FEATURES_LEAF => [
-            SIGNATURE,
+            signature(offer),
             LEAF1_EBX,
-            either(LEAF1_ECX, LEAF1_ECX_AVX),
+            f.cpuid_01_ecx.bits() | if xsave { leaf1::OSXSAVE } else { 0 },
             LEAF1_EDX,
         ],
         CACHE_DESCRIPTORS_LEAF => [LEAF2_EAX, 0, 0, 0],
         CACHES_LEAF if (sub_leaf as usize) < CACHES.len() => cache_leaf(&CACHES[sub_leaf as usize]),
-        EXTENDED_FEATURES_LEAF if sub_leaf == 0 => [0, either(LEAF7_EBX, LEAF7_EBX_AVX), 0, 0],
+        EXTENDED_FEATURES_LEAF if sub_leaf == 0 => [
+            0,
+            f.cpuid_07_ebx.bits(),
+            f.cpuid_07_ecx.bits(),
+            f.cpuid_07_edx.bits(),
+        ],
         TOPOLOGY_LEAF if (sub_leaf as usize) < TOPOLOGY_LEVELS.len() => [
             0,
             1,
@@ -269,13 +272,11 @@ pub fn answer(avx: bool, leaf: u32, sub_leaf: u32) -> Registers {
         ],
         // An invalid level gives its own number back in ecx's low byte.
         TOPOLOGY_LEAF => [0, 0, sub_leaf & u8::MAX as u32, 0],
-        XSAVE_LEAF if avx && sub_leaf == 0 => [
-            XSAVE_X87 | XSAVE_SSE | XSAVE_AVX,
-            XSAVE_BYTES,
-            XSAVE_BYTES,
-            0,
-        ],
-        XSAVE_LEAF if avx && sub_leaf == AVX_STATE_SUB_LEAF => {
+        XSAVE_LEAF if xsave && sub_leaf == 0 => [state, xsave_bytes(state), xsave_bytes(state), 0],
+        XSAVE_LEAF if xsave && sub_leaf == XSAVE_EXTENSIONS_SUB_LEAF => {
+            [f.cpuid_0d_1_eax.bits(), 0, 0, 0]
+        }
+        XSAVE_LEAF if offer.avx() && sub_leaf == AVX_STATE_SUB_LEAF => {
             [AVX_STATE_BYTES, AVX_STATE_OFFSET, 0, 0]
         }
         TIME_STAMP_LEAF => [1, 1, TIME_STAMP_HZ, 0],
@@ -283,8 +284,8 @@ pub fn answer(avx: bool, leaf: u32, sub_leaf: u32) -> Registers {
         EXTENDED_FEATURES => [
             0,
             0,
-            extended::LAHF_SAHF | extended::LZCNT,
-            extended::SYSCALL | extended::NX | extended::RDTSCP | extended::LM,
+            f.cpuid_80000001_ecx.bits(),
+            EXTENDED_EDX | f.cpuid_80000001_edx.bits(),
         ],
         l if (BRAND_LEAF..BRAND_LEAF + BRAND_LEAVES).contains(&l) => {
             let at = (l - BRAND_LEAF) as usize * OUTPUTS;
@@ -325,7 +326,7 @@ pub fn leaves() -> impl Iterator<Item = u32> {
 }
 
 /// Whether reading this leaf and sub-leaf is a program asking whether AVX is available (leaf 1, or leaf 7
-/// sub-leaf 0).
+/// sub-leaf 0), which the AVX and AVX2 bits answer.
 pub const fn asks_for_avx(leaf: u32, sub_leaf: u32) -> bool {
     leaf == FEATURES_LEAF || (leaf == EXTENDED_FEATURES_LEAF && sub_leaf == 0)
 }

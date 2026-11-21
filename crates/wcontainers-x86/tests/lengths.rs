@@ -58,8 +58,8 @@ fn the_table_counts_valid_instructions_as_iced_does() {
                         Decoder::with_ip(64, &plain, 0, DecoderOptions::FORCE_RESERVED_NOP)
                             .decode();
                     if instruction.is_invalid()
-                        || wcontainers_x86::claim_group(instruction.code())
-                            == wcontainers_x86::claims::GROUP_NEVER
+                        || wcontainers_x86::claim(instruction.code())
+                            == wcontainers_x86::claims::CLAIM_NEVER
                     {
                         continue;
                     }

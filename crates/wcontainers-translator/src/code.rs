@@ -1588,7 +1588,7 @@ pub(crate) fn description<'a, G: Guest>(
 ) -> CustomSection<'static> {
     let (kind, bound) = look_ahead.code();
     let mut data = vec![DESCRIPTION_VERSION, G::ID as u8];
-    u64::from(G::offer_key(offer)).encode(&mut data);
+    G::offer_key(offer).encode(&mut data);
     data.extend([kind, optimise as u8]);
     bound.encode(&mut data);
     data.extend_from_slice(blake3::hash(blob).as_bytes());

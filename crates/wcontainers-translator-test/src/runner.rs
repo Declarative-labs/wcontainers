@@ -181,6 +181,8 @@ type PauseFunction<G> = Box<dyn FnMut(Pause, &mut Paused<'_, '_, G>)>;
 pub struct Host<G: GuestTest> {
     /// What the engine does where WebAssembly leaves results open; translations are made for it.
     facts: G::Host,
+    /// What the program is told its processor has.
+    offer: G::Offer,
     /// When the machine was made, for the clock.
     started: Instant,
     syscalls: Syscalls,
@@ -405,6 +407,7 @@ impl<G: GuestTest> Machine<G> {
             &engine,
             Host {
                 facts: probe::<G>(),
+                offer: G::Offer::default(),
                 started: Instant::now(),
                 syscalls,
                 stopped: None,
@@ -635,7 +638,7 @@ impl<G: GuestTest> Machine<G> {
             host.optimise,
             host.progress,
             host.facts,
-            G::Offer::default(),
+            host.offer,
             module_bytes,
         )
         .expect("translate");
@@ -777,6 +780,11 @@ impl<G: GuestTest> Machine<G> {
     /// take. Only blobs loaded afterwards are affected.
     pub fn set_host(&mut self, facts: G::Host) {
         self.store.data_mut().facts = facts;
+    }
+
+    /// Translate for a program told `offer` of its processor. Only blobs loaded afterwards are affected.
+    pub fn set_offer(&mut self, offer: G::Offer) {
+        self.store.data_mut().offer = offer;
     }
 
     pub fn registers(&mut self) -> G::Block {
@@ -1641,7 +1649,7 @@ fn translate_load<G: GuestTest>(
         optimise,
         host.progress,
         host.facts,
-        G::Offer::default(),
+        host.offer,
         omit,
     )
     .expect("translate");

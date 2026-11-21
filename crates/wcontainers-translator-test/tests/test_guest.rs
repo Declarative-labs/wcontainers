@@ -632,7 +632,7 @@ impl<const F: bool> Guest for Test<F> {
 
     type Offer = bool;
 
-    fn offer_key(offer: bool) -> u32 {
+    fn offer_key(offer: bool) -> u64 {
         offer.into()
     }
 

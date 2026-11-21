@@ -119,54 +119,89 @@ impl GuestTest for X86_64 {
     // Not-a-number results follow x86's rules or not.
     const PROBE_ANSWERS: &'static [i32] = &[0, 1];
 
+    /// The baseline every x86-64 CPU has and the features of the default list, `lahf` and `sahf` in 64-bit
+    /// mode as iced files them (the 8086's).
     fn offered() -> Vec<&'static str> {
-        wcontainers_x86::claims::DEFAULT_FEATURES.to_vec()
+        use wcontainers_x86::claims::{BASELINE_FEATURES, LAHF_SAHF_FAMILY, TOLD_FEATURES};
+        let offer = wcontainers_x86::Offer::default();
+        let mut offered = BASELINE_FEATURES.to_vec();
+        offered.extend(
+            TOLD_FEATURES
+                .iter()
+                .enumerate()
+                .filter(|&(at, &name)| offer.tells(at) && name != LAHF_SAHF_FAMILY)
+                .map(|(_, &name)| name),
+        );
+        offered
     }
 
-    /// The features of the bits `cpuid` sets by default, and those every x86-64 CPU has with no bit.
+    /// The features of the bits `cpuid` sets by default, read through the kernel interface's list, and those
+    /// every x86-64 CPU has with no bit.
     fn told() -> Vec<&'static str> {
         use iced_x86::CpuidFeature::{self, *};
+        use wcontainers_kernel::x86_64_features::{
+            Cpuid01Ecx, Cpuid07Ebx, Cpuid07Ecx, Cpuid07Edx, Cpuid80000001Ecx, Cpuid80000001Edx,
+        };
+        use wcontainers_x86::claims::LAHF_SAHF_FAMILY;
         use wcontainers_x86::cpuid::{
             EBX, ECX, EDX, EXTENDED_FEATURES, EXTENDED_FEATURES_LEAF, FEATURES_LEAF, answer,
-            extended, leaf1, leaf7,
+            extended, leaf1,
         };
-        // Each feature bit, as iced's feature; `None` for a bit that names no instructions.
-        let bits: &[(u32, usize, u32, Option<CpuidFeature>)] = &[
-            (FEATURES_LEAF, ECX, leaf1::SSE3, Some(SSE3)),
-            (FEATURES_LEAF, ECX, leaf1::SSSE3, Some(SSSE3)),
-            (FEATURES_LEAF, ECX, leaf1::FMA, Some(FMA)),
-            (FEATURES_LEAF, ECX, leaf1::CX16, Some(CMPXCHG16B)),
-            (FEATURES_LEAF, ECX, leaf1::SSE4_1, Some(SSE4_1)),
-            (FEATURES_LEAF, ECX, leaf1::SSE4_2, Some(SSE4_2)),
-            (FEATURES_LEAF, ECX, leaf1::MOVBE, Some(MOVBE)),
-            (FEATURES_LEAF, ECX, leaf1::POPCNT, Some(POPCNT)),
-            (FEATURES_LEAF, ECX, leaf1::XSAVE, Some(XSAVE)),
-            (FEATURES_LEAF, ECX, leaf1::OSXSAVE, None),
-            (FEATURES_LEAF, ECX, leaf1::AVX, Some(AVX)),
-            (FEATURES_LEAF, ECX, leaf1::F16C, Some(F16C)),
-            (FEATURES_LEAF, EDX, leaf1::FPU, Some(FPU)),
-            (FEATURES_LEAF, EDX, leaf1::TSC, Some(TSC)),
-            (FEATURES_LEAF, EDX, leaf1::CX8, Some(CX8)),
-            (FEATURES_LEAF, EDX, leaf1::SEP, Some(SEP)),
-            (FEATURES_LEAF, EDX, leaf1::CMOV, Some(CMOV)),
-            (FEATURES_LEAF, EDX, leaf1::CLFSH, Some(CLFSH)),
-            (FEATURES_LEAF, EDX, leaf1::MMX, Some(MMX)),
-            (FEATURES_LEAF, EDX, leaf1::FXSR, Some(FXSR)),
-            (FEATURES_LEAF, EDX, leaf1::SSE, Some(SSE)),
-            (FEATURES_LEAF, EDX, leaf1::SSE2, Some(SSE2)),
-            (EXTENDED_FEATURES_LEAF, EBX, leaf7::FSGSBASE, Some(FSGSBASE)),
-            (EXTENDED_FEATURES_LEAF, EBX, leaf7::BMI1, Some(BMI1)),
-            (EXTENDED_FEATURES_LEAF, EBX, leaf7::AVX2, Some(AVX2)),
-            (EXTENDED_FEATURES_LEAF, EBX, leaf7::BMI2, Some(BMI2)),
-            (EXTENDED_FEATURES_LEAF, EBX, leaf7::ADX, Some(ADX)),
-            // lahf and sahf in 64-bit mode, which iced counts as the 8086's.
-            (EXTENDED_FEATURES, ECX, extended::LAHF_SAHF, None),
-            (EXTENDED_FEATURES, ECX, extended::LZCNT, Some(LZCNT)),
-            (EXTENDED_FEATURES, EDX, extended::SYSCALL, Some(SYSCALL)),
-            (EXTENDED_FEATURES, EDX, extended::NX, None),
-            (EXTENDED_FEATURES, EDX, extended::RDTSCP, Some(RDTSCP)),
-            (EXTENDED_FEATURES, EDX, extended::LM, Some(X64)),
+        let offer = wcontainers_x86::Offer::default();
+        let [leaf1, leaf7, extended_leaf] =
+            [FEATURES_LEAF, EXTENDED_FEATURES_LEAF, EXTENDED_FEATURES].map(|l| answer(offer, l, 0));
+        // The names of the list's bits that are set, and below the bits the list has no field for, as iced's
+        // feature (`None` for one that names no instructions).
+        fn named<F: bitflags::Flags>(word: u32) -> impl Iterator<Item = &'static str>
+        where
+            F::Bits: From<u32>,
+        {
+            F::from_bits_truncate(word.into())
+                .iter_names()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
+        let mut names: Vec<&'static str> = named::<Cpuid01Ecx>(leaf1[ECX]).collect();
+        names.extend(named::<Cpuid07Ebx>(leaf7[EBX]));
+        names.extend(named::<Cpuid07Ecx>(leaf7[ECX]));
+        names.extend(named::<Cpuid07Edx>(leaf7[EDX]));
+        names.extend(named::<Cpuid80000001Ecx>(extended_leaf[ECX]));
+        names.extend(named::<Cpuid80000001Edx>(extended_leaf[EDX]));
+        let unlisted: &[(u32, u32, Option<CpuidFeature>)] = &[
+            (leaf1[ECX], leaf1::OSXSAVE, None),
+            (leaf1[EDX], leaf1::FPU, Some(FPU)),
+            (leaf1[EDX], leaf1::TSC, Some(TSC)),
+            (leaf1[EDX], leaf1::CX8, Some(CX8)),
+            (leaf1[EDX], leaf1::SEP, Some(SEP)),
+            (leaf1[EDX], leaf1::CMOV, Some(CMOV)),
+            (leaf1[EDX], leaf1::CLFSH, Some(CLFSH)),
+            (leaf1[EDX], leaf1::MMX, Some(MMX)),
+            (leaf1[EDX], leaf1::FXSR, Some(FXSR)),
+            (leaf1[EDX], leaf1::SSE, Some(SSE)),
+            (leaf1[EDX], leaf1::SSE2, Some(SSE2)),
+            (extended_leaf[EDX], extended::SYSCALL, Some(SYSCALL)),
+            (extended_leaf[EDX], extended::NX, None),
+            (extended_leaf[EDX], extended::LM, Some(X64)),
         ];
+        // No bit is set that neither the list nor the table above names.
+        let covered = |word: u32, listed: u32| {
+            unlisted
+                .iter()
+                .filter(|&&(w, bit, _)| w == word && word & bit != 0)
+                .fold(listed, |all, &(_, bit, _)| all | bit)
+        };
+        assert_eq!(
+            leaf1[ECX] & !covered(leaf1[ECX], Cpuid01Ecx::all().bits()),
+            0
+        );
+        assert_eq!(leaf1[EDX] & !covered(leaf1[EDX], 0), 0);
+        assert_eq!(leaf7[EBX] & !Cpuid07Ebx::all().bits(), 0);
+        assert_eq!(extended_leaf[ECX] & !Cpuid80000001Ecx::all().bits(), 0);
+        assert_eq!(
+            extended_leaf[EDX] & !covered(extended_leaf[EDX], Cpuid80000001Edx::all().bits()),
+            0
+        );
         // Every x86-64 CPU has these, and no bit says so (FPU287 and FPU387 come with FPU).
         const WITHOUT_BITS: &[CpuidFeature] = &[
             INTEL8086,
@@ -180,31 +215,18 @@ impl GuestTest for X86_64 {
             FPU287,
             FPU387,
         ];
-        let mut told = WITHOUT_BITS.to_vec();
-        for leaf in [FEATURES_LEAF, EXTENDED_FEATURES_LEAF, EXTENDED_FEATURES] {
-            let words = answer(false, leaf, 0);
-            for (n, &word) in words.iter().enumerate() {
-                let named = bits
+        let mut told: Vec<&'static str> = WITHOUT_BITS
+            .iter()
+            .chain(
+                unlisted
                     .iter()
-                    .filter(|&&(l, r, _, _)| l == leaf && r == n)
-                    .fold(0, |all, &(_, _, bit, _)| all | bit);
-                let unnamed = if leaf == FEATURES_LEAF && n != ECX && n != EDX {
-                    0
-                } else {
-                    word & !named
-                };
-                assert_eq!(
-                    unnamed, 0,
-                    "leaf {leaf:#x} output {n}: bits with no feature named here"
-                );
-            }
-            told.extend(bits.iter().filter_map(|&(l, r, bit, name)| {
-                (l == leaf && words[r] & bit != 0).then_some(name).flatten()
-            }));
-        }
-        told.into_iter()
+                    .filter(|&&(w, bit, _)| w & bit != 0)
+                    .filter_map(|(_, _, f)| f.as_ref()),
+            )
             .map(|feature| &*Box::leak(format!("{feature:?}").into_boxed_str()))
-            .collect()
+            .collect();
+        told.extend(names.into_iter().filter(|&n| n != LAHF_SAHF_FAMILY));
+        told
     }
 
     type Form = Form;
@@ -236,10 +258,10 @@ impl GuestTest for X86_64 {
     }
 
     fn reference_has(form: &Form) -> bool {
-        use wcontainers_x86::claims::{AVX_FEATURES, DEFAULT_FEATURES};
+        use wcontainers_x86::claims::{BASELINE_FEATURES, TOLD_FEATURES};
         form.code.cpuid_features().iter().all(|feature| {
             let name = format!("{feature:?}");
-            [DEFAULT_FEATURES, AVX_FEATURES, REFERENCE_HAS]
+            [BASELINE_FEATURES, TOLD_FEATURES, REFERENCE_HAS]
                 .iter()
                 .any(|list| list.contains(&name.as_str()))
         })
@@ -690,8 +712,8 @@ pub fn unwritten_forms() -> Vec<String> {
                 .filter_map(|c| decoded_as(c.code.code(), form.code))
                 .all(|i| {
                     !wcontainers_x86::written(&i)
-                        && wcontainers_x86::claim_group(form.code)
-                            != wcontainers_x86::claims::GROUP_KERNEL
+                        && wcontainers_x86::claim(form.code)
+                            != wcontainers_x86::claims::CLAIM_KERNEL
                 })
         })
         .map(|form| form.name.clone())
@@ -739,7 +761,7 @@ fn decoded_as(bytes: &[u8], code: Code) -> Option<wcontainers_x86::Instruction> 
     (usize::from(length) == bytes.len() && i.iced.code() == code).then_some(i)
 }
 
-/// The features of unoffered forms the reference CPU has, besides the AVX setting's (plan 7.4): its runs of
+/// The features of unoffered forms the reference CPU has, besides the told features (plan 7.4): its runs of
 /// them are recorded, not compared. `invpcid` and `xsaves` are kernel only there (general protection), where
 /// a CPU without them, the one presented, has no such instruction.
 const REFERENCE_HAS: &[&str] = &[
@@ -754,10 +776,12 @@ const REFERENCE_HAS: &[&str] = &[
     "XSAVES",
 ];
 
-/// Whether the translator gives `code` the claim group of a feature not offered by default.
+/// Whether the translator gives `code` the claim of a feature the default list does not tell of.
 fn is_unoffered(code: Code) -> bool {
-    use wcontainers_x86::claims::{GROUP_AVX, GROUP_NEVER};
-    matches!(wcontainers_x86::claim_group(code), GROUP_AVX | GROUP_NEVER)
+    let claim = wcontainers_x86::claim(code);
+    claim == wcontainers_x86::claims::CLAIM_NEVER
+        || wcontainers_x86::told_feature(claim)
+            .is_some_and(|at| !wcontainers_x86::Offer::default().tells(at))
 }
 
 /// Every `Code` valid in 64-bit mode of every encoding but MVEX (plan 7.4) whose claim group is not offered.
@@ -2701,7 +2725,7 @@ fn cpuid_cases() -> Vec<Designed> {
             case.state.0[rdx] = HIGH;
             let mut fields: Vec<(usize, u128)> = [rax, rbx, rcx, rdx]
                 .into_iter()
-                .zip(answer(false, leaf, sub_leaf).map(u128::from))
+                .zip(answer(wcontainers_x86::Offer::default(), leaf, sub_leaf).map(u128::from))
                 .collect();
             fields.push((RIP, (CODE + CPUID.len() as u64).into()));
             Designed {

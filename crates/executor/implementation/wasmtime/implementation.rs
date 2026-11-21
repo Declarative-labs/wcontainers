@@ -143,7 +143,7 @@ struct Key {
     starts: Vec<u64>,
     look_ahead: LookAhead,
     optimise: Optimise,
-    offer: u32,
+    offer: u64,
 }
 
 /// A translation as wasmtime compiled it.

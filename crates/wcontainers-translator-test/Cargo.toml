@@ -12,6 +12,9 @@ wcontainers-abi.workspace = true
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
 wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu" }
 wcontainers-x86 = { path = "../wcontainers-x86" }
+# The processor features a program is told of: the kernel interface's list.
+wcontainers-kernel = { path = "../kernel" }
+bitflags.workspace = true
 # x86-64's forms, cases and disassembly, from iced's own tables, and layer 2's assembler (MIT).
 iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "encoder", "code_asm", "op_code_info", "instr_info", "intel"] }
 wcontainers-translator = { path = "../wcontainers-translator", features = ["measure"] }

@@ -1,22 +1,28 @@
 //! `cpuid`'s designed answers (plan 5.10), read back through raw-cpuid, a parser that knows nothing of ours.
 
 use raw_cpuid::{CacheType, CpuId, CpuIdResult, TopologyType};
-use wcontainers_x86::cpuid::{
-    BRAND, EXTENDED, FAMILY, L1_KIB, L2_KIB, L3_KIB, LINE_BYTES, MAX_BASIC, MAX_EXTENDED, MODEL,
-    STEPPING, TIME_STAMP_HZ, VENDOR, answer,
+use wcontainers_kernel::x86_64_features::{
+    Cpuid01Ecx, Cpuid07Ebx, Cpuid07Edx, Cpuid80000001Ecx, ProcessorSignature, X86_64Features,
 };
+use wcontainers_x86::cpuid::{
+    BRAND, EDX, EXTENDED, EXTENDED_FEATURES_LEAF, L1_KIB, L2_KIB, L3_KIB, LINE_BYTES, MAX_BASIC,
+    MAX_EXTENDED, TIME_STAMP_HZ, VENDOR, answer,
+};
+use wcontainers_x86::offer::{REFERENCE_FAMILY, REFERENCE_MODEL, REFERENCE_STEPPING};
+use wcontainers_x86::{FULL_SPEED, NotBuilt, Offer, V3};
 
-fn cpu(avx: bool) -> CpuId<impl raw_cpuid::CpuIdReader> {
+fn cpu(features: X86_64Features) -> CpuId<impl raw_cpuid::CpuIdReader> {
+    let offer = Offer::new(features).expect("a list of built features");
     CpuId::with_cpuid_reader(move |leaf, sub_leaf| {
-        let [eax, ebx, ecx, edx] = answer(avx, leaf, sub_leaf);
+        let [eax, ebx, ecx, edx] = answer(offer, leaf, sub_leaf);
         CpuIdResult { eax, ebx, ecx, edx }
     })
 }
 
-/// The default claims: x86-64-v2 and the rest of plan 5.10's list, nothing of the AVX setting or beyond.
+/// The full-speed list: x86-64-v2 and the rest of plan 5.10's list, nothing of x86-64-v3 or beyond.
 #[test]
-fn the_default_claims() {
-    let cpu = cpu(false);
+fn the_full_speed_list() {
+    let cpu = cpu(FULL_SPEED);
     assert_eq!(cpu.get_vendor_info().unwrap().as_str().as_bytes(), VENDOR);
     assert_eq!(cpu.get_processor_brand_string().unwrap().as_str(), BRAND);
     let f = cpu.get_feature_info().unwrap();
@@ -26,7 +32,11 @@ fn the_default_claims() {
             u32::from(f.model_id()),
             u32::from(f.stepping_id())
         ),
-        (FAMILY, MODEL, STEPPING)
+        (
+            u32::from(REFERENCE_FAMILY),
+            u32::from(REFERENCE_MODEL),
+            u32::from(REFERENCE_STEPPING)
+        )
     );
     for (name, has) in [
         ("fpu", f.has_fpu()),
@@ -86,10 +96,10 @@ fn the_default_claims() {
     assert!(!state.xcr0_supports_legacy_x87() && state.xsave_area_size_supported_features() == 0);
 }
 
-/// The AVX setting adds the x86-64-v3 level and its XSAVE state, x87, SSE and AVX.
+/// The x86-64-v3 list adds its level and its XSAVE state, x87, SSE and AVX.
 #[test]
-fn the_avx_setting() {
-    let cpu = cpu(true);
+fn the_v3_list() {
+    let cpu = cpu(V3);
     let f = cpu.get_feature_info().unwrap();
     assert!(f.has_avx() && f.has_fma() && f.has_f16c() && f.has_xsave() && f.has_oxsave());
     let x = cpu.get_extended_feature_info().unwrap();
@@ -114,7 +124,7 @@ fn the_avx_setting() {
 /// no count is fixed and any count the kernel reports agrees.
 #[test]
 fn caches_and_topology() {
-    let cpu = cpu(false);
+    let cpu = cpu(FULL_SPEED);
     let caches: Vec<_> = cpu
         .get_cache_parameters()
         .unwrap()
@@ -157,14 +167,17 @@ fn caches_and_topology() {
     );
     // An invalid level gives its number back.
     for sub_leaf in [2, 3, 0xff, 0x1_23] {
-        assert_eq!(answer(false, 0xb, sub_leaf), [0, 0, sub_leaf & 0xff, 0]);
+        assert_eq!(
+            answer(Offer::default(), 0xb, sub_leaf),
+            [0, 0, sub_leaf & 0xff, 0]
+        );
     }
 }
 
 /// A 1 GHz time stamp counter that runs at one rate, and 48-bit addresses.
 #[test]
 fn time_and_addresses() {
-    let cpu = cpu(false);
+    let cpu = cpu(FULL_SPEED);
     let tsc = cpu.get_tsc_info().unwrap();
     assert_eq!(tsc.tsc_frequency(), Some(TIME_STAMP_HZ.into()));
     assert!(
@@ -182,10 +195,100 @@ fn time_and_addresses() {
 /// Leaves above the highest basic or extended one answer as the highest basic one, as Intel's do.
 #[test]
 fn leaves_past_the_highest() {
-    let top = answer(false, MAX_BASIC, 0);
+    let offer = Offer::default();
+    let top = answer(offer, MAX_BASIC, 0);
     for leaf in [MAX_BASIC + 1, EXTENDED - 1, MAX_EXTENDED + 1, u32::MAX] {
-        assert_eq!(answer(false, leaf, 0), top, "{leaf:#x}");
+        assert_eq!(answer(offer, leaf, 0), top, "{leaf:#x}");
     }
-    assert_eq!(answer(false, 0, 0)[0], MAX_BASIC);
-    assert_eq!(answer(false, EXTENDED, 0)[0], MAX_EXTENDED);
+    assert_eq!(answer(offer, 0, 0)[0], MAX_BASIC);
+    assert_eq!(answer(offer, EXTENDED, 0)[0], MAX_EXTENDED);
+}
+
+/// Each process's list is what its program reads: a list narrower than full speed takes features away, one
+/// of another processor's identity changes leaf 1's signature, and the hints are answered as told.
+#[test]
+fn each_list_is_what_its_program_reads() {
+    let narrow = X86_64Features {
+        cpuid_01_ecx: FULL_SPEED.cpuid_01_ecx - Cpuid01Ecx::SSE4_2 - Cpuid01Ecx::POPCNT,
+        cpuid_07_ebx: Cpuid07Ebx::empty(),
+        cpuid_80000001_ecx: Cpuid80000001Ecx::empty(),
+        ..FULL_SPEED
+    };
+    let c = cpu(narrow);
+    let f = c.get_feature_info().unwrap();
+    assert!(f.has_sse41() && !f.has_sse42() && !f.has_popcnt());
+    let x = c.get_extended_feature_info().unwrap();
+    assert!(!x.has_bmi1() && !x.has_adx() && !x.has_fsgsbase());
+    let e = c.get_extended_processor_and_feature_identifiers().unwrap();
+    assert!(!e.has_lahf_sahf() && !e.has_lzcnt() && e.has_rdtscp());
+
+    // A Sapphire Rapids signature: family 6, model 0x8F, stepping 8; and a family past 0xF.
+    for (family, model, stepping) in [(6, 0x8f, 8), (0x19, 0x21, 2)] {
+        let signature = ProcessorSignature::new(family, model, stepping).unwrap();
+        let c = cpu(X86_64Features {
+            signature,
+            ..FULL_SPEED
+        });
+        let f = c.get_feature_info().unwrap();
+        assert_eq!(
+            (f.family_id(), f.model_id(), f.stepping_id()),
+            (family as u8, model, stepping)
+        );
+    }
+
+    let hinted = X86_64Features {
+        cpuid_07_ebx: FULL_SPEED.cpuid_07_ebx | Cpuid07Ebx::ENH_REP_MOVSB_STOSB,
+        cpuid_07_edx: Cpuid07Edx::FAST_SHORT_REP_MOVSB,
+        ..FULL_SPEED
+    };
+    let x = cpu(hinted).get_extended_feature_info().unwrap();
+    assert!(x.has_rep_movsb_stosb());
+    let edx = answer(Offer::new(hinted).unwrap(), EXTENDED_FEATURES_LEAF, 0)[EDX];
+    assert_eq!(edx, Cpuid07Edx::FAST_SHORT_REP_MOVSB.bits());
+}
+
+/// A list with a feature that has no meanings here is refused, by that feature's name.
+#[test]
+fn a_list_with_an_unbuilt_feature_is_refused() {
+    let with = |ecx| X86_64Features {
+        cpuid_01_ecx: FULL_SPEED.cpuid_01_ecx | ecx,
+        ..FULL_SPEED
+    };
+    assert_eq!(Offer::new(with(Cpuid01Ecx::AES)), Err(NotBuilt("AES")));
+    assert_eq!(
+        Offer::new(with(Cpuid01Ecx::RDRAND)),
+        Err(NotBuilt("RDRAND"))
+    );
+    let avx512 = X86_64Features {
+        cpuid_07_ebx: V3.cpuid_07_ebx | Cpuid07Ebx::AVX512F,
+        ..V3
+    };
+    assert_eq!(Offer::new(avx512), Err(NotBuilt("AVX512F")));
+    assert!(Offer::new(V3).is_ok());
+    assert_eq!(Offer::default().features(), FULL_SPEED);
+}
+
+/// The cache key tells apart lists that differ in one feature or in the signature.
+#[test]
+fn the_key_tells_lists_apart() {
+    let v2 = Offer::default().key();
+    let v3 = Offer::new(V3).unwrap().key();
+    let other = Offer::new(X86_64Features {
+        signature: ProcessorSignature::new(6, 0x8f, 8).unwrap(),
+        ..FULL_SPEED
+    })
+    .unwrap()
+    .key();
+    let fewer = Offer::new(X86_64Features {
+        cpuid_01_ecx: FULL_SPEED.cpuid_01_ecx - Cpuid01Ecx::POPCNT,
+        ..FULL_SPEED
+    })
+    .unwrap()
+    .key();
+    let keys = [v2, v3, other, fewer];
+    for (i, a) in keys.iter().enumerate() {
+        for b in &keys[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
 }

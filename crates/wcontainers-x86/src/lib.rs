@@ -45,9 +45,12 @@ pub mod x87;
 pub mod claims;
 pub mod cpuid;
 pub mod encoding;
+pub mod offer;
+
+pub use offer::{FULL_SPEED, NotBuilt, Offer, V3};
 
 #[cfg(feature = "translate")]
-pub use decode::{Instruction, claim_group, decode};
+pub use decode::{Instruction, claim, decode, told_feature};
 #[cfg(feature = "translate")]
 pub use descriptors::{
     CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
@@ -58,7 +61,7 @@ pub use flags::{Condition, Flag, Flags, Shape, Test};
 #[cfg(feature = "translate")]
 pub use float::reciprocal;
 #[cfg(feature = "translate")]
-pub use guest::{Control, Offer, Reason, Trap};
+pub use guest::{Control, Reason, Trap};
 #[cfg(feature = "translate")]
 pub use host::Host;
 #[cfg(feature = "translate")]

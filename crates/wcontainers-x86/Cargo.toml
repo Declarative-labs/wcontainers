@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = false }
 wcontainers-abi.workspace = true
+# The processor features a program is told of: the kernel interface's list.
+wcontainers-kernel = { path = "../kernel" }
 zerocopy.workspace = true
 iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder"], optional = true }
 wasm-encoder = { version = "0.263.0", optional = true }
