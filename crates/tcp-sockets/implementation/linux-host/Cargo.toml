@@ -25,6 +25,8 @@ wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet
 rustix = { version = "1.1.6", features = ["net"] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 libc = "0.2.191"
+# The attributes of a transmit report's statistics.
+netlink-packet-core = "0.9.0"
 
 [dev-dependencies]
 wcontainers-tcp-sockets-conformance = { path = "../../conformance" }

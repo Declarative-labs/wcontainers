@@ -39,7 +39,9 @@
   socket's own option flags (`OPT_ID`, `OPT_TSONLY`, `OPT_STATS`) kept on by the implementation.
 - receive: `recvmsg` with `MSG_PEEK` (and `SO_PEEK_OFF` for an offset), `MSG_OOB`; timestamps from the
   control messages; `unread_after` from `TCP_CM_INQ` when unread-byte reports are on.
-- take_error_queue_entry: `recvmsg(MSG_ERRQUEUE)`, `sock_extended_err` and the control messages it comes with.
+- take_error_queue_entry: `recvmsg(MSG_ERRQUEUE)`, `sock_extended_err` and the control messages it comes with;
+  an ICMP error written whole from its IP header by the shared crate's `write_icmp_error`; a report's packet
+  with `OPT_TSONLY` off, its statistics from `OPT_STATS`, wireless status from `SO_WIFI_STATUS`.
 - discard_error_queue_entries: `recvmsg(MSG_ERRQUEUE)` until `EAGAIN`.
 - shut_down: `shutdown`. close: `SO_LINGER` of zero for an abort, then the descriptor closes. stop_listening:
   the descriptor closes.
@@ -84,6 +86,8 @@
   data, peeking, more-to-come and cork holding data until a push, a refused connect, an error queue entry for a
   requested software transmit timestamp, and so on. Operations that answer `WouldBlock` are retried until a
   deadline, since nothing in the contract waits.
+- ICMP errors reach a TCP socket only in SYN-SENT: a check fills a listener of backlog 0, connects again, captures
+  that SYN with a raw socket and answers it with an ICMP error from a raw socket (root), all on loopback.
 - Each setting is set once and then twice on fresh pairs, and the observable outcome (what the peer sees, what
   later calls answer) is equal. A setting the implementation answers `NotSupported` must answer it twice.
 - `tests!` runs each function as its own test on a value made anew.

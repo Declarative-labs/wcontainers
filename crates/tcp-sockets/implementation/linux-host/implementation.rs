@@ -6,19 +6,24 @@ use std::ffi::c_int;
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use etherparse::IpNumber;
 use linux_raw_sys::net as uapi;
+use netlink_packet_core::{NlasIterator, parse_u8, parse_u16, parse_u32, parse_u64};
 use rustix::net::{RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, DropCount, InterfaceIndex, IpSocketSetting, IpVersion, LocalBinding, PacketMark,
-    PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps, ReceivedPacketFields, Report,
-    TransmitReport, TransmitReportKey, TransmitReportRequest,
+    ByteCount, BytesPerSecond, DropCount, HopLimit, InterfaceIndex, IpSocketSetting, IpVersion,
+    LocalBinding, PacketMark, PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps,
+    ReceivedPacketFields, Report, TransmitEvent, TransmitReport, TransmitReportKey,
+    TransmitReportRequest, WirelessAcknowledgement,
 };
+use wcontainers_internet_protocol_linux_socket_options::datagram::receive::Ancillary;
+use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
 use wcontainers_internet_protocol_linux_socket_options::{
     self as options, ControlBuffer, Shortfalls, bind, family_of, get_int, host_error, open_socket,
     peer_for, set_flag, set_int, set_option, socket_address,
@@ -30,10 +35,13 @@ use wcontainers_tcp_sockets::repair::{
     TcpRepair, TcpRepairQueue, TcpTimestampClock, TcpTimestampUnit,
 };
 use wcontainers_tcp_sockets::settings::{
-    BufferTuning, TcpFinWait2, TcpListenerSetting, TcpQuickAcknowledgement, TcpSavedSynchronize,
-    TcpSetting, TransmitRehash,
+    BufferTuning, RetryCount, SegmentCount, TcpFinWait2, TcpListenerSetting,
+    TcpQuickAcknowledgement, TcpSavedSynchronize, TcpSetting, TransmitRehash,
 };
-use wcontainers_tcp_sockets::state::{TcpErrorQueueEntry, TcpListenerQuery, TcpQuery, TcpReading};
+use wcontainers_tcp_sockets::state::{
+    ByteTotal, DeliveryRateLimit, EventCount, TcpCongestionAvoidanceState, TcpErrorQueueEntry,
+    TcpListenerQuery, TcpQuery, TcpReading, TcpTransmitStatistics,
+};
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpAccepted, TcpClose, TcpConnectStart, TcpConnected, TcpConnections,
     TcpContinuation, TcpFastOpen, TcpListeners, TcpListening, TcpProtocol, TcpPushOverride,
@@ -41,12 +49,18 @@ use wcontainers_tcp_sockets::{
     TcpUrgency,
 };
 
-/// The `SO_TIMESTAMPING` flags kept on a connection once it has asked for a transmit report: keys counted in bytes, reports without the packet, software and hardware times.
+/// The `SO_TIMESTAMPING` flags kept on a connection once it has asked for a transmit report: keys counted in bytes, software and hardware times.
 const REPORT_FLAGS: u32 = uapi::SOF_TIMESTAMPING_OPT_ID as u32
     | uapi::SOF_TIMESTAMPING_OPT_ID_TCP as u32
-    | uapi::SOF_TIMESTAMPING_OPT_TSONLY as u32
     | uapi::SOF_TIMESTAMPING_SOFTWARE as u32
     | uapi::SOF_TIMESTAMPING_RAW_HARDWARE as u32;
+
+/// Reports without the packet, which Linux needs for statistics.
+const WITHOUT_PACKET: u32 = uapi::SOF_TIMESTAMPING_OPT_TSONLY as u32;
+const WITH_STATISTICS: u32 = uapi::SOF_TIMESTAMPING_OPT_STATS as u32;
+
+/// One more than the largest `TCP_NLA_*` attribute of transmit statistics.
+const STATISTICS_ATTRIBUTES: usize = uapi::TCP_NLA_REHASH as usize + 1;
 
 /// The interface index Linux gives when a report names no interface.
 const NO_INTERFACE: InterfaceIndex = InterfaceIndex(0);
@@ -64,9 +78,14 @@ const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str =
     "the SYN's arrival interface is taken as the host interface holding the local address";
 const NO_LINK_HEADERS: &str = "saving the link headers of SYNs is not mapped to the host yet";
-const NO_REPORT_EXTRAS: &str = "transmit reports with the packet, wireless status or statistics are not mapped to the host yet";
-const NO_OTHER_ERROR_ENTRIES: &str =
-    "error queue entries other than transmit timestamps are not mapped to the host yet";
+const PACKET_OR_STATISTICS: &str =
+    "Linux gives a TCP socket's transmit reports either the packet or statistics, never both";
+const NO_OTHER_ERROR_ENTRIES: &str = "error queue entries other than ICMP errors, transmit timestamps and wireless status have no TCP counterpart";
+const NO_EXTENDED_ERROR: &str = "an error queue entry came without its extended error";
+const UNWRITABLE_ICMP_ERROR: &str = "an ICMP error's addresses or lengths fit no IP header";
+const CUT_REPORT_PACKET: &str = "a transmit report's packet was cut to the buffer";
+const NO_STATISTICS: &str = "a transmit report came without the statistics its send asked for";
+const CUT_CONTROL: &str = "the control messages of an error queue entry did not fit";
 const UNASKED_REPORT: &str = "a transmit report for no send that asked for it";
 const NO_CONNECTION_STATE: &str = "reading a TCP connection's state is not mapped to the host yet";
 const ABORT_CLOSED_IN_ORDER: &str = "an abort closed in order: the host refused a linger of zero";
@@ -92,18 +111,30 @@ impl LinuxHostTcpSockets {
 /// The transmit reports a connection asked for and the guest keys they are reported under.
 #[derive(Debug, Default)]
 struct TransmitReports {
-    armed: bool,
+    /// The `SO_TIMESTAMPING` report flags on the socket, none until a send asks for a report.
+    flags: u32,
+    wireless_status: bool,
     bound_clock: Option<PtpHardwareClockIndex>,
     /// Bytes taken by sends since the reports were armed, wrapping as the kernel's key does.
     sent: u32,
-    /// The guest key of each send that asked for reports, by the offset of its last byte, with the reports still to come.
-    keys: BTreeMap<u32, (TransmitReportKey, u32)>,
+    /// Each send that asked for reports, by the offset of its last byte.
+    keys: BTreeMap<u32, ReportedSend>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReportedSend {
+    key: TransmitReportKey,
+    remaining: u32,
+    packet: bool,
+    statistics: bool,
 }
 
 #[derive(Debug)]
 pub struct LinuxHostTcpConnection {
     socket: OwnedFd,
     family: IpVersion,
+    /// The local and peer addresses, kept for the ICMP errors that come after the connection is gone.
+    addresses: OnceLock<(SocketAddr, SocketAddr)>,
     receive_timestamping: AtomicU32,
     unread_reports: AtomicBool,
     reports: Mutex<TransmitReports>,
@@ -146,6 +177,7 @@ impl LinuxHostTcpConnection {
         Self {
             socket,
             family,
+            addresses: OnceLock::new(),
             receive_timestamping: AtomicU32::new(receive_timestamping),
             unread_reports: AtomicBool::new(false),
             reports: Mutex::default(),
@@ -285,6 +317,99 @@ fn send_with_record_flags(
     } else {
         Ok(sent as usize)
     }
+}
+
+/// The statistics of a transmit report from the `TCP_NLA_*` attributes of its `SCM_TIMESTAMPING_OPT_STATS`.
+fn transmit_statistics(data: &[u8]) -> Option<TcpTransmitStatistics> {
+    let mut values = [None; STATISTICS_ATTRIBUTES];
+    for attribute in NlasIterator::new(data) {
+        let attribute = attribute.ok()?;
+        let value = attribute.value();
+        // Each parser takes only a value of its own width.
+        let number = parse_u64(value)
+            .or_else(|_| parse_u32(value).map(u64::from))
+            .or_else(|_| parse_u16(value).map(u64::from))
+            .or_else(|_| parse_u8(value).map(u64::from));
+        if let (Ok(number), Some(slot)) = (number, values.get_mut(usize::from(attribute.kind()))) {
+            *slot = Some(number);
+        }
+    }
+    let at = |kind: usize| values[kind];
+    let microseconds = |kind: usize| at(kind).map(Duration::from_micros);
+    let segments = |kind: usize| at(kind).map(SegmentCount);
+    let events = |kind: usize| {
+        at(kind)
+            .and_then(|value| u32::try_from(value).ok())
+            .map(EventCount)
+    };
+    let bytes = |kind: usize| {
+        at(kind)
+            .and_then(|value| usize::try_from(value).ok())
+            .map(ByteCount)
+    };
+    let state = at(uapi::TCP_NLA_CA_STATE as usize)?;
+    Some(TcpTransmitStatistics {
+        busy: microseconds(uapi::TCP_NLA_BUSY as usize)?,
+        receive_window_limited: microseconds(uapi::TCP_NLA_RWND_LIMITED as usize)?,
+        send_buffer_limited: microseconds(uapi::TCP_NLA_SNDBUF_LIMITED as usize)?,
+        data_segments_out: segments(uapi::TCP_NLA_DATA_SEGS_OUT as usize)?,
+        total_retransmissions: segments(uapi::TCP_NLA_TOTAL_RETRANS as usize)?,
+        pacing_rate: BytesPerSecond(at(uapi::TCP_NLA_PACING_RATE as usize)?),
+        delivery_rate: BytesPerSecond(at(uapi::TCP_NLA_DELIVERY_RATE as usize)?),
+        send_congestion_window: segments(uapi::TCP_NLA_SND_CWND as usize)?,
+        reordering: segments(uapi::TCP_NLA_REORDERING as usize)?,
+        minimum_round_trip_time: microseconds(uapi::TCP_NLA_MIN_RTT as usize)?,
+        recurring_retransmissions: RetryCount(
+            u8::try_from(at(uapi::TCP_NLA_RECUR_RETRANS as usize)?).ok()?,
+        ),
+        delivery_rate_limit: if at(uapi::TCP_NLA_DELIVERY_RATE_APP_LMT as usize)? == 0 {
+            DeliveryRateLimit::Network
+        } else {
+            DeliveryRateLimit::Application
+        },
+        send_queue: bytes(uapi::TCP_NLA_SNDQ_SIZE as usize)?,
+        congestion_avoidance_state: [
+            (
+                uapi::tcp_ca_state::TCP_CA_Open,
+                TcpCongestionAvoidanceState::Open,
+            ),
+            (
+                uapi::tcp_ca_state::TCP_CA_Disorder,
+                TcpCongestionAvoidanceState::Disorder,
+            ),
+            (
+                uapi::tcp_ca_state::TCP_CA_CWR,
+                TcpCongestionAvoidanceState::CongestionWindowReduced,
+            ),
+            (
+                uapi::tcp_ca_state::TCP_CA_Recovery,
+                TcpCongestionAvoidanceState::Recovery,
+            ),
+            (
+                uapi::tcp_ca_state::TCP_CA_Loss,
+                TcpCongestionAvoidanceState::Loss,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(linux, ours)| (linux as u64 == state).then_some(ours))?,
+        send_slow_start_threshold: segments(uapi::TCP_NLA_SND_SSTHRESH as usize)?,
+        delivered: segments(uapi::TCP_NLA_DELIVERED as usize)?,
+        delivered_congestion_experienced: segments(uapi::TCP_NLA_DELIVERED_CE as usize)?,
+        bytes_sent: ByteTotal(at(uapi::TCP_NLA_BYTES_SENT as usize)?),
+        bytes_retransmitted: ByteTotal(at(uapi::TCP_NLA_BYTES_RETRANS as usize)?),
+        duplicate_selective_acknowledgements: segments(uapi::TCP_NLA_DSACK_DUPS as usize)?,
+        reordering_seen: events(uapi::TCP_NLA_REORD_SEEN as usize)?,
+        smoothed_round_trip_time: microseconds(uapi::TCP_NLA_SRTT as usize)?,
+        timeout_rehashes: events(uapi::TCP_NLA_TIMEOUT_REHASH as usize)?,
+        not_sent: bytes(uapi::TCP_NLA_BYTES_NOTSENT as usize)?,
+        earliest_departure: Duration::from_nanos(at(uapi::TCP_NLA_EDT as usize)?),
+        // Linux gives the hop limit only in a report that an acknowledgement brought.
+        received_hop_limit: HopLimit(
+            at(uapi::TCP_NLA_TTL as usize)
+                .map_or(Some(u8::MIN), |value| u8::try_from(value).ok())?,
+        ),
+        rehashes: events(uapi::TCP_NLA_REHASH as usize)?,
+    })
 }
 
 impl LinuxHostTcpSockets {
@@ -525,20 +650,37 @@ impl LinuxHostTcpSockets {
         })
     }
 
-    /// Arms a connection's transmit reports at its first send that asks for one.
+    /// Arms a connection's transmit reports with the packet or statistics a send asks for.
     fn arm_reports(
         &self,
         connection: &LinuxHostTcpConnection,
         reports: &mut TransmitReports,
+        packet: bool,
+        statistics: bool,
     ) -> Result<(), HostError> {
-        if !reports.armed {
+        let armed = reports.flags != 0;
+        let with_packet = armed && reports.flags & WITHOUT_PACKET == 0;
+        let with_statistics = reports.flags & WITH_STATISTICS != 0;
+        if (packet && with_statistics) || (statistics && with_packet) {
+            return Err(self.shortfalls.refuse(PACKET_OR_STATISTICS));
+        }
+        let mut flags = REPORT_FLAGS;
+        if !(packet || with_packet) {
+            flags |= WITHOUT_PACKET;
+        }
+        if statistics || with_statistics {
+            flags |= WITH_STATISTICS;
+        }
+        if flags != reports.flags {
             options::set_timestamping(
                 connection.socket.as_fd(),
-                connection.receive_timestamping.load(Ordering::Relaxed) | REPORT_FLAGS,
+                connection.receive_timestamping.load(Ordering::Relaxed) | flags,
                 reports.bound_clock,
             )?;
-            reports.armed = true;
-            reports.sent = 0;
+            if !armed {
+                reports.sent = 0;
+            }
+            reports.flags = flags;
         }
         Ok(())
     }
@@ -555,8 +697,11 @@ impl<'a> Configurable<LinuxHostTcpConnection, TcpSetting<'a>> for LinuxHostTcpSo
             TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {
                 let mut reports = connection.reports();
                 let receive = options::receive_timestamping_flags(&timestamping);
-                let kept = if reports.armed { REPORT_FLAGS } else { 0 };
-                options::set_timestamping(socket, receive | kept, timestamping.bound_clock)?;
+                options::set_timestamping(
+                    socket,
+                    receive | reports.flags,
+                    timestamping.bound_clock,
+                )?;
                 connection
                     .receive_timestamping
                     .store(receive, Ordering::Relaxed);
@@ -719,6 +864,7 @@ impl TcpConnections for LinuxHostTcpSockets {
             }
         };
         let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
+        let _ = connection.addresses.set((local, peer));
         Ok(TcpConnected {
             connection,
             local,
@@ -744,27 +890,35 @@ impl TcpConnections for LinuxHostTcpSockets {
             flags |= libc::MSG_EOR;
         }
         let asked = request.transmit_reports;
-        if asked.packet == Report::Requested
-            || asked.wireless_status == Report::Requested
-            || request.transmit_statistics == Report::Requested
-        {
-            return Err(self.shortfalls.refuse(NO_REPORT_EXTRAS));
-        }
+        let packet = asked.packet == Report::Requested;
+        let statistics = request.transmit_statistics == Report::Requested;
         let (record, expected) = record_flags(&asked);
         let mut reports = connection.reports();
+        if asked.wireless_status == Report::Requested && !reports.wireless_status {
+            set_flag(socket, uapi::SOL_SOCKET, uapi::SO_WIFI_STATUS, true)?;
+            reports.wireless_status = true;
+        }
         let taken = if record == 0 {
             rustix::net::send(socket, bytes, SendFlags::from_bits_retain(flags as u32))
                 .map_err(host_error)?
         } else {
-            self.arm_reports(connection, &mut reports)?;
+            self.arm_reports(connection, &mut reports, packet, statistics)?;
             let taken = send_with_record_flags(socket, bytes, flags, record)?;
             if taken > 0 {
                 let last = reports.sent.wrapping_add(taken as u32).wrapping_sub(1);
-                reports.keys.insert(last, (asked.key, expected));
+                reports.keys.insert(
+                    last,
+                    ReportedSend {
+                        key: asked.key,
+                        remaining: expected,
+                        packet,
+                        statistics,
+                    },
+                );
             }
             taken
         };
-        if reports.armed {
+        if reports.flags != 0 {
             reports.sent = reports.sent.wrapping_add(taken as u32);
         }
         Ok(ByteCount(taken))
@@ -851,35 +1005,119 @@ impl TcpConnections for LinuxHostTcpSockets {
         connection: &Self::Connection,
         into: &mut [u8],
     ) -> Result<TcpErrorQueueEntry, HostError> {
-        let entry = options::take_error_queue_message(connection.socket.as_fd(), into)?;
-        let Some(event) = options::transmit_event(&entry) else {
-            return Err(self.shortfalls.refuse(NO_OTHER_ERROR_ENTRIES));
+        let mut control = ControlBuffer::default();
+        let message = options::receive_message(
+            connection.socket.as_fd(),
+            into,
+            libc::MSG_ERRQUEUE | libc::MSG_DONTWAIT,
+            &mut control,
+        )?;
+        if message.flags & libc::MSG_CTRUNC != 0 {
+            self.shortfalls.count(CUT_CONTROL);
+        }
+        let ancillary = Ancillary::parse(message.control_bytes);
+        let Some((error, offender)) = ancillary.error else {
+            return Err(self.shortfalls.refuse(NO_EXTENDED_ERROR));
         };
-        let mut reports = connection.reports();
-        let offset = entry.error.ee_data;
-        let key = match reports.keys.get_mut(&offset) {
-            Some((key, remaining)) => {
-                let key = *key;
-                *remaining = remaining.saturating_sub(1);
-                if *remaining == 0 {
-                    reports.keys.remove(&offset);
+        let wireless = message.control.iter().find_map(|&(level, kind, data)| {
+            (level == libc::SOL_SOCKET && kind == uapi::SCM_WIFI_STATUS as c_int)
+                .then(|| <[u8; size_of::<c_int>()]>::try_from(data).ok())
+                .flatten()
+                .map(c_int::from_ne_bytes)
+        });
+        let cut = message.flags & libc::MSG_TRUNC != 0;
+        match error.ee_origin {
+            libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 => {
+                let (local, peer) = *connection
+                    .addresses
+                    .get()
+                    .ok_or_else(|| self.shortfalls.refuse(UNWRITABLE_ICMP_ERROR))?;
+                let length = write_icmp_error(
+                    into,
+                    message.length,
+                    &ancillary,
+                    &error,
+                    offender,
+                    local.ip(),
+                    peer.ip(),
+                    IpNumber::TCP,
+                    &[],
+                )
+                .ok_or_else(|| self.shortfalls.refuse(UNWRITABLE_ICMP_ERROR))?;
+                Ok(TcpErrorQueueEntry::IcmpError(
+                    ancillary.packet_fields(length, u32::MIN),
+                ))
+            }
+            libc::SO_EE_ORIGIN_TXSTATUS if wireless.is_some() => {
+                if cut {
+                    self.shortfalls.count(CUT_REPORT_PACKET);
                 }
-                key
+                let acknowledged = if wireless == Some(0) {
+                    WirelessAcknowledgement::NotAcknowledged
+                } else {
+                    WirelessAcknowledgement::Acknowledged
+                };
+                // Linux names no send in a wireless status report: its key is the zero it gives.
+                Ok(TcpErrorQueueEntry::TransmitReport {
+                    report: TransmitReport {
+                        key: TransmitReportKey(error.ee_data),
+                        interface: NO_INTERFACE,
+                        event: TransmitEvent::WirelessStatus(acknowledged),
+                        packet_length: Some(ByteCount(message.length)),
+                    },
+                    statistics: None,
+                })
             }
-            None => {
-                self.shortfalls.count(UNASKED_REPORT);
-                TransmitReportKey(offset)
+            libc::SO_EE_ORIGIN_TIMESTAMPING => {
+                let Some(mut report) = ancillary.transmit_report(&error, None) else {
+                    return Err(self.shortfalls.refuse(NO_OTHER_ERROR_ENTRIES));
+                };
+                let mut reports = connection.reports();
+                let offset = error.ee_data;
+                let send = match reports.keys.get_mut(&offset) {
+                    Some(send) => {
+                        let found = *send;
+                        send.remaining = send.remaining.saturating_sub(1);
+                        if send.remaining == 0 {
+                            reports.keys.remove(&offset);
+                        }
+                        found
+                    }
+                    None => {
+                        self.shortfalls.count(UNASKED_REPORT);
+                        ReportedSend {
+                            key: TransmitReportKey(offset),
+                            remaining: 0,
+                            packet: false,
+                            statistics: false,
+                        }
+                    }
+                };
+                report.key = send.key;
+                if send.packet {
+                    if cut {
+                        self.shortfalls.count(CUT_REPORT_PACKET);
+                    }
+                    report.packet_length = Some(ByteCount(message.length));
+                }
+                let statistics = if send.statistics {
+                    let found = message.control.iter().find_map(|&(level, kind, data)| {
+                        (level == libc::SOL_SOCKET
+                            && kind == uapi::SCM_TIMESTAMPING_OPT_STATS as c_int)
+                            .then(|| transmit_statistics(data))
+                            .flatten()
+                    });
+                    if found.is_none() {
+                        self.shortfalls.count(NO_STATISTICS);
+                    }
+                    found
+                } else {
+                    None
+                };
+                Ok(TcpErrorQueueEntry::TransmitReport { report, statistics })
             }
-        };
-        Ok(TcpErrorQueueEntry::TransmitReport {
-            report: TransmitReport {
-                key,
-                interface: NO_INTERFACE,
-                event,
-                packet_length: None,
-            },
-            statistics: None,
-        })
+            _ => Err(self.shortfalls.refuse(NO_OTHER_ERROR_ENTRIES)),
+        }
     }
 
     fn read_state<'a>(
@@ -1084,6 +1322,7 @@ impl TcpListeners for LinuxHostTcpSockets {
                 .ok_or(HostError::Errno(libc::ENOTCONN))?,
         )?;
         let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
+        let _ = connection.addresses.set((local, peer));
         let saved = match listener.protocol {
             TcpProtocol::Tcp => self.take_saved_synchronize(socket)?,
             TcpProtocol::Multipath => Vec::new(),

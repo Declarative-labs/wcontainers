@@ -2,11 +2,12 @@
 #![cfg(target_os = "linux")]
 
 pub mod datagram;
+pub mod icmp_error;
 
 use std::collections::BTreeMap;
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, size_of};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -19,8 +20,7 @@ use wcontainers_internet_protocol::{
     AddressSharing, BindAddress, FilterInstruction, FlowLabelChoice, IpPacketSetting,
     IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort, MobileAddressPreference,
     NonlocalAddresses, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing,
-    RouteScope, SocketFilter, TemporaryAddressPreference, TimestampSource, Timestamping,
-    TransmitEvent, TransmitStage,
+    RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
 };
 use wcontainers_kernel::UserId;
 
@@ -513,8 +513,9 @@ pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 /// The times of an `SCM_TIMESTAMPING` message, `struct scm_timestamping` of linux/errqueue.h: software, deprecated, hardware.
 pub const TIMESTAMPING_TIMES: usize = 3;
 
-/// The room for the control messages of one receive: timestamps, an extended error with its offender, packet information.
-const CONTROL_ROOM: usize = 512;
+/// The room for the control messages of one receive: timestamps, an extended error with its offender, packet
+/// information and the TCP statistics of a transmit report.
+const CONTROL_ROOM: usize = 1024;
 
 /// The control messages of one `recvmsg`, in words so that they are aligned as `cmsghdr` needs.
 pub struct ControlBuffer([usize; CONTROL_ROOM / size_of::<usize>()]);
@@ -525,11 +526,12 @@ impl Default for ControlBuffer {
     }
 }
 
-/// What one `recvmsg` gave: the bytes it wrote, its flags, and the control messages as level, type and data.
+/// What one `recvmsg` gave: the bytes it wrote, its flags, and the control messages as level, type and data and whole.
 pub struct ReceivedMessage<'a> {
     pub length: usize,
     pub flags: c_int,
     pub control: Vec<(c_int, c_int, &'a [u8])>,
+    pub control_bytes: &'a [u8],
 }
 
 /// One `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
@@ -570,10 +572,18 @@ pub fn receive_message<'a>(
             message = libc::CMSG_NXTHDR(&header, message);
         }
     }
+    // SAFETY: the kernel wrote `msg_controllen` bytes of control messages into the buffer.
+    let control_bytes = unsafe {
+        std::slice::from_raw_parts(
+            control.0.as_ptr().cast::<u8>(),
+            header.msg_controllen as usize,
+        )
+    };
     Ok(ReceivedMessage {
         length: length as usize,
         flags: header.msg_flags,
         control: messages,
+        control_bytes,
     })
 }
 
@@ -597,103 +607,6 @@ pub fn timestamps(data: &[u8]) -> (Option<Duration>, Option<Duration>) {
     };
     let [software, _, hardware] = times;
     (timespec(&software), timespec(&hardware))
-}
-
-/// One entry of a socket's error queue.
-pub struct ErrorQueueMessage {
-    pub error: libc::sock_extended_err,
-    pub offender: Option<SocketAddr>,
-    pub software: Option<Duration>,
-    pub hardware: Option<Duration>,
-    pub length: usize,
-}
-
-fn offender_address(address: *const libc::sockaddr) -> Option<SocketAddr> {
-    // SAFETY: the address is the offender right after a sock_extended_err in its control message; read by family.
-    unsafe {
-        match c_int::from((*address).sa_family) {
-            libc::AF_INET => {
-                let address = address.cast::<libc::sockaddr_in>().read_unaligned();
-                Some(SocketAddr::from((
-                    Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)),
-                    u16::from_be(address.sin_port),
-                )))
-            }
-            libc::AF_INET6 => {
-                let address = address.cast::<libc::sockaddr_in6>().read_unaligned();
-                Some(SocketAddr::from((
-                    Ipv6Addr::from(address.sin6_addr.s6_addr),
-                    u16::from_be(address.sin6_port),
-                )))
-            }
-            _ => None,
-        }
-    }
-}
-
-/// Takes the oldest entry of the socket's error queue, its payload written into the buffer.
-pub fn take_error_queue_message(
-    socket: BorrowedFd<'_>,
-    into: &mut [u8],
-) -> Result<ErrorQueueMessage, HostError> {
-    let mut control = ControlBuffer::default();
-    let message = receive_message(
-        socket,
-        into,
-        libc::MSG_ERRQUEUE | libc::MSG_DONTWAIT,
-        &mut control,
-    )?;
-    let mut entry = ErrorQueueMessage {
-        // SAFETY: sock_extended_err is plain data.
-        error: unsafe { std::mem::zeroed() },
-        offender: None,
-        software: None,
-        hardware: None,
-        length: message.length,
-    };
-    for &(level, kind, data) in &message.control {
-        let extended_error = (level == libc::SOL_IP && kind == libc::IP_RECVERR)
-            || (level == libc::SOL_IPV6 && kind == libc::IPV6_RECVERR);
-        if extended_error && data.len() >= size_of::<libc::sock_extended_err>() {
-            let error = data.as_ptr().cast::<libc::sock_extended_err>();
-            // SAFETY: the data holds a sock_extended_err, the offender's address after it.
-            unsafe {
-                entry.error = error.read_unaligned();
-                if data.len() > size_of::<libc::sock_extended_err>() {
-                    entry.offender = offender_address(libc::SO_EE_OFFENDER(error).cast_const());
-                }
-            }
-        } else if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
-            (entry.software, entry.hardware) = timestamps(data);
-        }
-    }
-    Ok(entry)
-}
-
-/// The transmit event an error queue entry reports, if it is one.
-pub fn transmit_event(entry: &ErrorQueueMessage) -> Option<TransmitEvent> {
-    match entry.error.ee_origin {
-        libc::SO_EE_ORIGIN_TIMESTAMPING => {
-            let stage = match entry.error.ee_info {
-                TIMESTAMP_STAGE_SENT => TransmitStage::Sent,
-                TIMESTAMP_STAGE_SCHEDULED => TransmitStage::Scheduled,
-                TIMESTAMP_STAGE_ACKNOWLEDGED => TransmitStage::Acknowledged,
-                TIMESTAMP_STAGE_COMPLETED => TransmitStage::Completed,
-                _ => return None,
-            };
-            let (source, time) = match (entry.hardware, entry.software) {
-                (Some(time), _) => (TimestampSource::Hardware, time),
-                (None, Some(time)) => (TimestampSource::Software, time),
-                (None, None) => return None,
-            };
-            Some(TransmitEvent::Timestamp {
-                stage,
-                source,
-                time,
-            })
-        }
-        _ => None,
-    }
 }
 
 pub fn family_of(address: &BindAddress) -> IpVersion {

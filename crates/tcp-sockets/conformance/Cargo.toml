@@ -18,3 +18,5 @@ wcontainers-negative-route-advice = { path = "../../negative-route-advice" }
 wcontainers-negative-route-advice-conformance = { path = "../../negative-route-advice/conformance" }
 # Reads the SYN headers an accept gives.
 etherparse = { workspace = true, features = ["std"] }
+# The raw sockets the ICMP checks capture SYNs and send errors with, as the network between the two ends.
+rustix = { version = "1.1.6", features = ["net"] }

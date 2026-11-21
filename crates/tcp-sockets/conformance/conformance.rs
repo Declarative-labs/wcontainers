@@ -8,7 +8,14 @@ use core::num::NonZeroU32;
 use core::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use etherparse::{IpNumber, Ipv4HeaderSlice, TcpHeaderSlice, TcpOptionElement};
+use std::os::fd::OwnedFd;
+
+use etherparse::{
+    Icmpv4Header, Icmpv4Slice, Icmpv4Type, Icmpv6Header, Icmpv6Slice, Icmpv6Type, IpNumber,
+    Ipv4HeaderSlice, Ipv6FlowLabel, Ipv6Header, Ipv6HeaderSlice, TcpHeaderSlice, TcpOptionElement,
+    icmpv4, icmpv6,
+};
+use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AddressSharing, BindAddress, ByteCount, BytesPerSecond, FilterInstruction, FilterJump,
@@ -70,6 +77,18 @@ const CUT_HEADER: usize = 3;
 
 /// Room for the packet of an error queue entry.
 const ENTRY_ROOM: usize = 64;
+
+/// Room for an ICMP error whole from its IP header, or a transmit report's packet from its link header.
+const PACKET_ROOM: usize = 512;
+
+/// How long loopback takes at most to deliver what was sent.
+const SETTLE: Duration = Duration::from_millis(50);
+
+/// A loopback address that connections to it do not leave from, so that their two ends differ.
+const OTHER_LOOPBACK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+
+/// The hop limit of the IPv6 header an ICMPv6 error quotes.
+const QUOTED_HOP_LIMIT: u8 = 64;
 
 /// The bytes the order check sends one way.
 const TRANSFER: usize = 1 << 20;
@@ -1104,6 +1123,344 @@ pub fn empty_error_queue_would_block<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
+fn take_entry_into<S: TcpSockets>(
+    sockets: &S,
+    connection: &S::Connection,
+    buffer: &mut [u8],
+) -> TcpErrorQueueEntry {
+    retry(|| sockets.take_error_queue_entry(connection, buffer)).expect("an error queue entry")
+}
+
+/// A raw socket of the host, which the ICMP checks use as the network between the connection and its peer.
+fn raw_socket(version: IpVersion, protocol: rustix::net::Protocol) -> OwnedFd {
+    let family = match version {
+        IpVersion::V4 => AddressFamily::INET,
+        IpVersion::V6 => AddressFamily::INET6,
+    };
+    let socket = rustix::net::socket(family, SocketType::RAW, Some(protocol))
+        .expect("a raw socket (the ICMP checks need root)");
+    sockopt::set_socket_timeout(&socket, sockopt::Timeout::Recv, Some(SETTLE))
+        .expect("a receive timeout");
+    socket
+}
+
+/// Waits on a raw TCP socket for the SYN from `local` to `peer`, giving what Linux delivered of it.
+fn capture_synchronize(
+    capture: &OwnedFd,
+    version: IpVersion,
+    local: SocketAddr,
+    peer: SocketAddr,
+) -> Vec<u8> {
+    let start = Instant::now();
+    let mut buffer = [0; PACKET_ROOM];
+    while start.elapsed() < DEADLINE {
+        let Ok((length, _)) = rustix::net::recv(capture, &mut buffer, RecvFlags::empty()) else {
+            continue;
+        };
+        let packet = &buffer[..length];
+        let segment = match version {
+            IpVersion::V4 => Ipv4HeaderSlice::from_slice(packet)
+                .ok()
+                .map(|header| &packet[header.slice().len()..]),
+            IpVersion::V6 => Some(packet),
+        };
+        if let Some(tcp) = segment.and_then(|segment| TcpHeaderSlice::from_slice(segment).ok())
+            && tcp.syn()
+            && !tcp.ack()
+            && tcp.source_port() == local.port()
+            && tcp.destination_port() == peer.port()
+        {
+            return packet.to_vec();
+        }
+    }
+    panic!("no SYN from {local} to {peer} arrived");
+}
+
+/// Connects to a listener whose accept queue is full, so that the connection stays in SYN-SENT, and has the
+/// network answer its SYN with a destination unreachable error; checks the error queue entry written whole.
+fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, version: IpVersion) {
+    let (address, listener_address, loopback) = match version {
+        IpVersion::V4 => (
+            ipv4_loopback(),
+            BindAddress::V4(OTHER_LOOPBACK),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ),
+        IpVersion::V6 => {
+            let address = BindAddress::V6 {
+                address: Ipv6Addr::LOCALHOST,
+                families: Ipv6Families::V6Only,
+            };
+            (address, address, IpAddr::V6(Ipv6Addr::LOCALHOST))
+        }
+    };
+    let listening = sockets
+        .listen(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(listener_address),
+            ListenBacklog(0),
+            &[],
+        )
+        .expect("listen on loopback");
+    let peer = listening.local;
+    let connect = |settings: &[TcpSetting<'_>]| {
+        sockets
+            .connect(
+                TcpProtocol::Tcp,
+                OWNER,
+                bind_any_port(address),
+                peer,
+                settings,
+                TcpFastOpen::Off,
+            )
+            .expect("connect to the listener")
+    };
+    let queued = connect(&[]).connection;
+    retry(|| sockets.send(&queued, plain(), URGENT)).expect("the first connection is established");
+    std::thread::sleep(SETTLE);
+    let capture = raw_socket(version, ipproto::TCP);
+    let waiting = connect(&[TcpSetting::IcmpErrorReports {
+        version,
+        reports: Report::Requested,
+    }]);
+    let local = waiting.local;
+    assert!(matches!(
+        waiting.start,
+        TcpConnectStart::SynchronizeSent { .. }
+    ));
+    let synchronize = capture_synchronize(&capture, version, local, peer);
+    let (quoted, icmp) = match version {
+        IpVersion::V4 => {
+            let header = Ipv4HeaderSlice::from_slice(&synchronize).expect("an IPv4 header");
+            let tcp = TcpHeaderSlice::from_slice(&synchronize[header.slice().len()..])
+                .expect("a TCP header");
+            let quoted = [header.slice(), tcp.slice()].concat();
+            let icmp = Icmpv4Header::with_checksum(
+                Icmpv4Type::DestinationUnreachable(icmpv4::DestUnreachableHeader::Host),
+                &quoted,
+            );
+            (quoted, icmp.to_bytes().to_vec())
+        }
+        IpVersion::V6 => {
+            let tcp = TcpHeaderSlice::from_slice(&synchronize).expect("a TCP header");
+            let header = Ipv6Header {
+                traffic_class: 0,
+                flow_label: Ipv6FlowLabel::ZERO,
+                payload_length: u16::try_from(synchronize.len()).expect("a short SYN"),
+                next_header: IpNumber::TCP,
+                hop_limit: QUOTED_HOP_LIMIT,
+                source: Ipv6Addr::LOCALHOST.octets(),
+                destination: Ipv6Addr::LOCALHOST.octets(),
+            };
+            let quoted = [&header.to_bytes()[..], tcp.slice()].concat();
+            let icmp = Icmpv6Header::with_checksum(
+                Icmpv6Type::DestinationUnreachable(icmpv6::DestUnreachableCode::Address),
+                Ipv6Addr::LOCALHOST.octets(),
+                Ipv6Addr::LOCALHOST.octets(),
+                &quoted,
+            )
+            .expect("a short ICMPv6 error");
+            (quoted, icmp.to_bytes().to_vec())
+        }
+    };
+    let sender = raw_socket(
+        version,
+        match version {
+            IpVersion::V4 => ipproto::ICMP,
+            IpVersion::V6 => ipproto::ICMPV6,
+        },
+    );
+    rustix::net::sendto(
+        &sender,
+        &[icmp, quoted].concat(),
+        SendFlags::empty(),
+        &SocketAddr::new(local.ip(), 0),
+    )
+    .expect("send the ICMP error");
+    let mut buffer = [0; PACKET_ROOM];
+    let TcpErrorQueueEntry::IcmpError(fields) =
+        take_entry_into(&sockets, &waiting.connection, &mut buffer)
+    else {
+        panic!("not an ICMP error");
+    };
+    let packet = &buffer[..fields.length];
+    let (icmp, inner) = match version {
+        IpVersion::V4 => {
+            let outer = Ipv4HeaderSlice::from_slice(packet).expect("an IPv4 header");
+            assert_eq!(usize::from(outer.total_len()), fields.length);
+            assert_eq!(outer.protocol(), IpNumber::ICMP);
+            assert_eq!(IpAddr::V4(outer.source_addr()), loopback);
+            assert_eq!(IpAddr::V4(outer.destination_addr()), local.ip());
+            let icmp = Icmpv4Slice::from_slice(&packet[outer.slice().len()..])
+                .expect("the ICMP error's header");
+            assert_eq!(
+                (icmp.type_u8(), icmp.code_u8()),
+                (icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST)
+            );
+            assert_eq!(
+                icmp.icmp_type().calc_checksum(icmp.payload()),
+                icmp.checksum()
+            );
+            let inner = Ipv4HeaderSlice::from_slice(icmp.payload()).expect("the quoted header");
+            assert_eq!(inner.protocol(), IpNumber::TCP);
+            assert_eq!(IpAddr::V4(inner.source_addr()), local.ip());
+            assert_eq!(IpAddr::V4(inner.destination_addr()), peer.ip());
+            (icmp.payload(), inner.slice().len())
+        }
+        IpVersion::V6 => {
+            let outer = Ipv6HeaderSlice::from_slice(packet).expect("an IPv6 header");
+            assert_eq!(
+                usize::from(outer.payload_length()) + Ipv6Header::LEN,
+                fields.length
+            );
+            assert_eq!(outer.next_header(), IpNumber::IPV6_ICMP);
+            assert_eq!(IpAddr::V6(outer.source_addr()), loopback);
+            assert_eq!(IpAddr::V6(outer.destination_addr()), local.ip());
+            let icmp = Icmpv6Slice::from_slice(&packet[Ipv6Header::LEN..])
+                .expect("the ICMPv6 error's header");
+            assert_eq!(
+                (icmp.type_u8(), icmp.code_u8()),
+                (icmpv6::TYPE_DST_UNREACH, icmpv6::CODE_DST_UNREACH_ADDR)
+            );
+            assert_eq!(
+                icmp.icmp_type()
+                    .calc_checksum(
+                        outer.source_addr().octets(),
+                        outer.destination_addr().octets(),
+                        icmp.payload()
+                    )
+                    .expect("a checksum"),
+                icmp.checksum()
+            );
+            let inner = Ipv6HeaderSlice::from_slice(icmp.payload()).expect("the quoted header");
+            assert_eq!(inner.next_header(), IpNumber::TCP);
+            assert_eq!(IpAddr::V6(inner.source_addr()), local.ip());
+            assert_eq!(IpAddr::V6(inner.destination_addr()), peer.ip());
+            (icmp.payload(), Ipv6Header::LEN)
+        }
+    };
+    let tcp = TcpHeaderSlice::from_slice(&icmp[inner..]).expect("the quoted TCP header");
+    let sent = TcpHeaderSlice::from_slice(match version {
+        IpVersion::V4 => {
+            &synchronize[Ipv4HeaderSlice::from_slice(&synchronize)
+                .expect("an IPv4 header")
+                .slice()
+                .len()..]
+        }
+        IpVersion::V6 => &synchronize,
+    })
+    .expect("a TCP header");
+    assert_eq!(
+        (
+            tcp.source_port(),
+            tcp.destination_port(),
+            tcp.sequence_number()
+        ),
+        (local.port(), peer.port(), sent.sequence_number())
+    );
+    sockets.close(waiting.connection, TcpClose::Abort);
+    sockets.close(queued, TcpClose::Abort);
+    sockets.stop_listening(listening.listener);
+}
+
+pub fn icmp_error_reaches_a_synchronizing_connection_over_ipv4<S: TcpSockets>(sockets: S) {
+    icmp_error_reaches_a_synchronizing_connection(sockets, IpVersion::V4);
+}
+
+pub fn icmp_error_reaches_a_synchronizing_connection_over_ipv6<S: TcpSockets>(sockets: S) {
+    icmp_error_reaches_a_synchronizing_connection(sockets, IpVersion::V6);
+}
+
+pub fn transmit_report_carries_the_packet_when_asked<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let reported = TcpSendRequest {
+        transmit_reports: TransmitReportRequest {
+            key: KEY,
+            software: Report::Requested,
+            packet: Report::Requested,
+            ..no_reports()
+        },
+        ..plain()
+    };
+    send_all(&sockets, &pair.client, reported, MESSAGE);
+    let mut buffer = [0; PACKET_ROOM];
+    let TcpErrorQueueEntry::TransmitReport { report, statistics } =
+        take_entry_into(&sockets, &pair.client, &mut buffer)
+    else {
+        panic!("not a transmit report");
+    };
+    assert_eq!(report.key, KEY);
+    assert_eq!(statistics, None);
+    let length = report.packet_length.expect("the packet").0;
+    assert!(length >= MESSAGE.len(), "a packet of {length} bytes");
+    assert!(buffer[..length].ends_with(MESSAGE));
+    close(&sockets, pair);
+}
+
+pub fn transmit_statistics_come_with_the_report_when_asked<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let reported = |statistics| TcpSendRequest {
+        transmit_reports: TransmitReportRequest {
+            key: KEY,
+            software: Report::Requested,
+            ..no_reports()
+        },
+        transmit_statistics: statistics,
+        ..plain()
+    };
+    send_all(
+        &sockets,
+        &pair.client,
+        reported(Report::NotRequested),
+        MESSAGE,
+    );
+    let TcpErrorQueueEntry::TransmitReport { statistics, .. } = take_entry(&sockets, &pair.client)
+    else {
+        panic!("not a transmit report");
+    };
+    assert_eq!(statistics, None);
+    assert_eq!(
+        receive_up_to(&sockets, &pair.server, MESSAGE.len()),
+        MESSAGE
+    );
+    send_all(&sockets, &pair.client, reported(Report::Requested), MESSAGE);
+    let TcpErrorQueueEntry::TransmitReport { report, statistics } =
+        take_entry(&sockets, &pair.client)
+    else {
+        panic!("not a transmit report");
+    };
+    assert_eq!(report.key, KEY);
+    let statistics = statistics.expect("the statistics asked for");
+    assert!(statistics.bytes_sent.0 >= MESSAGE.len() as u64);
+    assert!(statistics.data_segments_out.0 >= 1);
+    assert!(statistics.send_congestion_window.0 >= 1);
+    close(&sockets, pair);
+}
+
+pub fn wireless_status_request_still_sends<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let reported = TcpSendRequest {
+        transmit_reports: TransmitReportRequest {
+            key: KEY,
+            wireless_status: Report::Requested,
+            ..no_reports()
+        },
+        ..plain()
+    };
+    send_all(&sockets, &pair.client, reported, MESSAGE);
+    assert_eq!(
+        receive_up_to(&sockets, &pair.server, MESSAGE.len()),
+        MESSAGE
+    );
+    // Loopback is no wireless link, so no status comes.
+    let mut buffer = [0; ENTRY_ROOM];
+    assert_eq!(
+        sockets.take_error_queue_entry(&pair.client, &mut buffer),
+        Err(HostError::WouldBlock)
+    );
+    close(&sockets, pair);
+}
+
 pub fn fast_open_with_data_delivers_it<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(
         &sockets,
@@ -1471,6 +1828,11 @@ macro_rules! tests {
             acknowledgement_report_follows_the_peers_acknowledgement,
             discarding_empties_the_error_queue,
             empty_error_queue_would_block,
+            icmp_error_reaches_a_synchronizing_connection_over_ipv4,
+            icmp_error_reaches_a_synchronizing_connection_over_ipv6,
+            transmit_report_carries_the_packet_when_asked,
+            transmit_statistics_come_with_the_report_when_asked,
+            wireless_status_request_still_sends,
             fast_open_with_data_delivers_it,
             fast_open_until_first_send_connects_on_sending,
             delayed_acknowledgement_can_be_sent_in_either_mode,
