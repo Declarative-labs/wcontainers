@@ -120,7 +120,8 @@ tests; `/proc/<pid>/personality`; and Docker's default mounts, read-only paths a
 as public constants that the mount table is made from. The literal baseline is 8205 lines (8252
 before). Not done: sysctls, timeOffsets and leaving a default mount out (For the orchestrator),
 the rest of the literal fix list, and the lowest tier under the WebAssembly ceiling (a ruling).
-KF is not complete. See "KF, third run".
+The whole suite at 0fb7432a fails only the ARM list, and the Mac's part passes. KF is not
+complete. See "KF, third run".
 
 KF, second run: origin/phase-1 (the streams track's S3: tasks taken off the kernel, embedder
 signals, sharing notes) is merged, its tests pass here. Built: the record and replay test (the
@@ -347,6 +348,14 @@ on the ARM list and run in the Mac's part.
 The literal baseline: 8252 to 8244 (2c35120c: Linux's nice range named once as `MIN_NICE` and
 `MAX_NICE`; status's hexadecimal fields from a helper sized by the type, its labels a named
 table) and to 8205 (0fb7432a). The check passes (kf3/lit6.txt).
+
+The whole suite at 0fb7432a on the ARM64 machine (job kernel/20261121-031318-1807303, 03:13 to
+04:37 UTC, load 1 to 12; scratch kf3/suite-0fb7432a.log, kf3/fail-0fb7432a.txt): fmt and clippy
+with warnings denied clean; 319 passed, 36 failed, 7 ignored. The 36 are exactly the ARM list
+(k6c14/fail14.txt). The Mac's part at 0fb7432a (kf3/mac.sh, log kf3/mac.log; 19:13 to 19:17 PST,
+load 6 to 9, -j 4): layer 1 seeds 9191135 to 9191137 passed (300 sequences, 32 on the backend
+and 32 on the cached backend each); the Mac list (20 test files and 9 single tests, startoptions
+and procns's mount tables among them) passed, none failed.
 
 Verdicts changed on purpose in this run: none of the old tests; new are startoptions' three.
 
