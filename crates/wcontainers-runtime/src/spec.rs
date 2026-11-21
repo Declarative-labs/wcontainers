@@ -42,8 +42,15 @@ const NAMESPACES: &[&str] = &["pid", "network", "ipc", "uts", "mount", "cgroup"]
 /// The umask the kernel starts the first process with.
 const UMASK: u64 = 0o022;
 
-/// The paths the kernel mounts again read-only, as a default Docker container has the first of its.
-const READONLY_PATHS: &[&str] = &["/proc/sys"];
+// The paths the kernel mounts again read-only, and those it masks, as a default Docker container
+// has those of its lists that its file systems have.
+use wcontainers_kernel::{
+    DOCKER_MASKED_PATHS as MASKED_PATHS, DOCKER_READ_ONLY_PATHS as READONLY_PATHS,
+};
+
+/// The fields of the configuration's `linux` that list the kernel's read-only and masked paths.
+pub const READONLY_PATHS_FIELD: &str = "readonlyPaths";
+pub const MASKED_PATHS_FIELD: &str = "maskedPaths";
 
 /// The mounts the kernel always makes, as a default Docker container has them.
 fn mounts() -> Value {
@@ -92,7 +99,11 @@ pub fn base_spec() -> Spec {
             },
         },
         "mounts": mounts(),
-        "linux": {"namespaces": namespaces, "readonlyPaths": READONLY_PATHS},
+        "linux": {
+            "namespaces": namespaces,
+            READONLY_PATHS_FIELD: READONLY_PATHS,
+            MASKED_PATHS_FIELD: MASKED_PATHS,
+        },
     }))
     .expect("the base configuration is one oci-spec reads")
 }
@@ -171,6 +182,13 @@ const NEEDS_USER_NAMESPACES: &str = "user namespaces in the kernel";
 const NEEDS_WINDOWS: &str = "a Windows host";
 const NEEDS_VALUE_AT_START: &str = "the kernel taking the value at start";
 
+/// The refusal of a list of the kernel's read-only or masked paths that names others: what the
+/// kernel makes of its own and what others need.
+const MAKES_READ_ONLY: &str = "read-only; others need read-only mounts in the kernel";
+const MAKES_MASKED: &str = "masked; others need masking mounts in the kernel";
+/// What a propagation or a label of mounts needs.
+const NEEDS_LABELLED_MOUNTS: &str = "propagation and labelled mounts in the kernel";
+
 fn refused(field: impl Into<String>, reason: impl Into<String>) -> Error {
     Error::Refused {
         field: field.into(),
@@ -243,8 +261,12 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
         namespaces(&Value::Null)?;
     }
     let linux = fields.get("linux").and_then(Value::as_object);
-    if !linux.is_some_and(|linux| linux.contains_key("readonlyPaths")) {
-        readonly_paths(&Value::Null)?;
+    // The kernel's read-only and masked paths likewise, each list left out checked as one given
+    // empty would be.
+    for field in [READONLY_PATHS_FIELD, MASKED_PATHS_FIELD] {
+        if !linux.is_some_and(|linux| linux.contains_key(field)) {
+            self::linux(&json!({ field: Value::Null }))?;
+        }
     }
     let process = spec
         .process()
@@ -638,12 +660,9 @@ fn linux(value: &Value) -> Result<(), Error> {
                 field,
                 "the kernel installing the filter on the first process at start",
             )?,
-            "readonlyPaths" => readonly_paths(field)?,
-            "rootfsPropagation" | "mountLabel" | "maskedPaths" => absent(
-                &path,
-                field,
-                "read-only, masking and labelled mounts in the kernel",
-            )?,
+            READONLY_PATHS_FIELD => kernel_paths(&path, field, &READONLY_PATHS, MAKES_READ_ONLY)?,
+            MASKED_PATHS_FIELD => kernel_paths(&path, field, &MASKED_PATHS, MAKES_MASKED)?,
+            "rootfsPropagation" | "mountLabel" => absent(&path, field, NEEDS_LABELLED_MOUNTS)?,
             "intelRdt" | "memoryPolicy" | "personality" | "timeOffsets" | "netDevices" => {
                 absent(&path, field, NEEDS_VALUE_AT_START)?;
             }
@@ -653,9 +672,10 @@ fn linux(value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-/// The kernel mounts its read-only paths whatever the configuration says, so the list must name
-/// exactly those.
-fn readonly_paths(value: &Value) -> Result<(), Error> {
+/// A list of paths, at `path`, that the kernel `makes` read-only or masked whatever the
+/// configuration says (its read-only paths, its masked paths): it must name exactly those, in any
+/// order.
+fn kernel_paths(path: &str, value: &Value, made: &[&str], makes: &str) -> Result<(), Error> {
     let mut given: Vec<&str> = value
         .as_array()
         .into_iter()
@@ -663,18 +683,16 @@ fn readonly_paths(value: &Value) -> Result<(), Error> {
         .filter_map(Value::as_str)
         .collect();
     given.sort_unstable();
-    if given != READONLY_PATHS {
+    let mut made = made.to_vec();
+    made.sort_unstable();
+    if given != made {
         return Err(refused(
-            "linux.readonlyPaths",
-            format!(
-                "{}: the kernel makes {READONLY_PATHS:?} read-only; others need read-only mounts \
-                 in the kernel",
-                if value.is_null() {
-                    "absent".to_string()
-                } else {
-                    value.to_string()
-                }
-            ),
+            path,
+            if value.is_null() {
+                format!("absent: the kernel makes {made:?} {makes}")
+            } else {
+                format!("{value}: the kernel makes {made:?} {makes}")
+            },
         ));
     }
     Ok(())
@@ -759,8 +777,8 @@ mod tests {
                     "architectures": ["SCMP_ARCH_AARCH64"],
                     "syscalls": [{"names": ["getcwd"], "action": "SCMP_ACT_ALLOW"}]
                 },
-                "maskedPaths": ["/proc/acpi", "/proc/kcore"],
-                "readonlyPaths": ["/proc/bus", "/proc/sys"]
+                MASKED_PATHS_FIELD: ["/proc/acpi", "/proc/kcore"],
+                READONLY_PATHS_FIELD: ["/proc/bus", "/proc/sys"]
             }
         });
         let (_, ignored) = spec_from_json(&serde_json::to_vec(&given).unwrap()).unwrap();

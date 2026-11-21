@@ -21,7 +21,7 @@ mod system;
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeConfig};
 pub use image::Image;
 pub use oci_spec;
-pub use spec::{base_spec, bind_mount, spec_from_json};
+pub use spec::{MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, base_spec, bind_mount, spec_from_json};
 pub use system::{LocalSystem, Warned};
 
 /// A terminal's size in characters.

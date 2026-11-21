@@ -14,7 +14,8 @@ use serde_json::json;
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
-    Container, Ending, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Step, base_spec,
+    Container, Ending, GuestMachine, Image, LocalSystem, MASKED_PATHS_FIELD, READONLY_PATHS_FIELD,
+    Runtime, RuntimeConfig, Step, base_spec,
 };
 use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorConfig, cli};
 
@@ -548,7 +549,7 @@ fn the_guest_sees_the_honoured_values() {
             );
         }
     }
-    let readonly = value["linux"]["readonlyPaths"].as_array().unwrap();
+    let readonly = value["linux"][READONLY_PATHS_FIELD].as_array().unwrap();
     for path in readonly {
         let line = seen.iter().find(|line| line[1] == path).unwrap();
         assert!(
@@ -556,8 +557,19 @@ fn the_guest_sees_the_honoured_values() {
             "{line:?}"
         );
     }
+    let masked = value["linux"][MASKED_PATHS_FIELD].as_array().unwrap();
+    for path in masked {
+        assert!(
+            seen.iter().any(|line| line[1] == path),
+            "{path} in\n{mounts}"
+        );
+    }
     assert_eq!(seen[0][1], "/");
-    assert_eq!(seen.len(), 1 + given.len() + readonly.len(), "{mounts}");
+    assert_eq!(
+        seen.len(),
+        1 + given.len() + readonly.len() + masked.len(),
+        "{mounts}"
+    );
     // Made in the configuration's order.
     let destinations: Vec<&str> = seen[1..=given.len()].iter().map(|line| line[1]).collect();
     let listed: Vec<&str> = given

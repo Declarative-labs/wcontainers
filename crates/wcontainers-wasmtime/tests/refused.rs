@@ -8,8 +8,8 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, base_spec, bind_mount,
-    spec_from_json,
+    Error, GuestMachine, Image, LocalSystem, MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, Runtime,
+    RuntimeConfig, base_spec, bind_mount, spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorConfig};
 
@@ -241,11 +241,13 @@ refused! {
         json!("private");
     linux_mount_label: "linux.mountLabel", |v| v["linux"]["mountLabel"] =
         json!("system_u:object_r:container_file_t:s0");
-    linux_masked_paths: "linux.maskedPaths", |v| v["linux"]["maskedPaths"] = json!(["/proc/kcore"]);
-    linux_readonly_paths: "linux.readonlyPaths", |v| v["linux"]["readonlyPaths"] =
+    linux_masked_paths: "linux.maskedPaths", |v| v["linux"][MASKED_PATHS_FIELD] = json!(["/proc/kcore"]);
+    linux_masked_paths_absent: "linux.maskedPaths", |v| {
+        v["linux"].as_object_mut().unwrap().remove(MASKED_PATHS_FIELD); };
+    linux_readonly_paths: "linux.readonlyPaths", |v| v["linux"][READONLY_PATHS_FIELD] =
         json!(["/proc/sys", "/proc/bus"]);
     linux_readonly_paths_absent: "linux.readonlyPaths", |v| {
-        v["linux"].as_object_mut().unwrap().remove("readonlyPaths"); };
+        v["linux"].as_object_mut().unwrap().remove(READONLY_PATHS_FIELD); };
     linux_intel_rdt: "linux.intelRdt", |v| v["linux"]["intelRdt"] = json!({"closID": "one"});
     linux_memory_policy: "linux.memoryPolicy", |v| v["linux"]["memoryPolicy"] =
         json!({"mode": "MPOL_BIND", "nodes": "0"});

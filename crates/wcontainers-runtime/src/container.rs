@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use oci_spec::runtime::Spec;
-use wcontainers_kernel::{Errno, Kernel, Start};
+use wcontainers_kernel::{DOCKER_MOUNTS, DockerMount, Errno, Kernel, Start, StartOptions};
 
 use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 
@@ -146,6 +146,17 @@ impl<E: Executor> Runtime<E> {
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         let standard = system.standard(accepted.terminal);
         let memory_bytes = wcontainers_abi::Cpu::address_space(&cpu).end;
+        // Of Docker's default mounts, those the configuration lists (accepted only as Docker gives
+        // them); the kernel makes no other.
+        let mounts: Vec<DockerMount> = DOCKER_MOUNTS
+            .into_iter()
+            .filter(|docker| {
+                spec.mounts()
+                    .iter()
+                    .flatten()
+                    .any(|listed| listed.destination().as_os_str() == docker.point)
+            })
+            .collect();
         kernel
             .start(
                 &mut cpu,
@@ -163,7 +174,10 @@ impl<E: Executor> Runtime<E> {
                     memory_bytes,
                     ceiling: None,
                     execution: wcontainers_kernel::ExecutionConfig::default(),
-                    options: wcontainers_kernel::StartOptions::default(),
+                    options: StartOptions {
+                        mounts: &mounts,
+                        ..StartOptions::default()
+                    },
                 },
             )
             .expect("the kernel runs a process serially with exact replay");
