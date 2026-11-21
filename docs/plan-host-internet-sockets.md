@@ -97,14 +97,18 @@ error condition in that readiness until a receive takes them. The basic calls an
 (socket, bind, `SO_REUSEADDR`, `IP_RECVTOS`, `IPV6_RECVTCLASS`, `IPV6_RECVHOPLIMIT`, `IP_HDRINCL`,
 `IPV6_HDRINCL`) go through socket2 on the socket's descriptor; the rest through the shared crate's option calls.
 A send that asks for transmit time errors is noted in the shared `ErrorQueue`, so that a rejection comes with its
-send's key.
+send's key. A receive reads the error queue first only while reports a send asked for may wait there or entries a
+send took off the host are kept; otherwise it reads the packet queue, and the error queue when Linux answers it with
+the socket error that every ICMP error it queues sets (and an error queue read sets again while another ICMP error
+follows), so a packet costs one `recvmsg` (the shared `receive_in_order`). A send that fails with another error
+keeps the host's entries, since Linux may have answered it with that socket error.
 
 `crates/icmp-sockets/implementation/host`, package `wcontainers-icmp-sockets-host`: Linux ping
 sockets (`SOCK_DGRAM` with `IPPROTO_ICMP` or `IPPROTO_ICMPV6`), which need the caller's group inside
 `net.ipv4.ping_group_range`. open is the socket, owned by the given user (filesystem user while it is made);
 bind_identifier is `SO_REUSEADDR` as asked and a bind to the identifier as port; send_to writes the header and
 send fields as the UDP track does, then one `sendmsg` of the message (Linux puts the identifier in it and
-computes the checksum); receive gives an error queue entry first (an ICMP error whole from its IP header, written from all
+computes the checksum); receive gives an error queue entry (an ICMP error whole from its IP header, written from all
 of the entry so that a buffer that cuts it holds its start and the whole length, or a transmit report), else an echo reply with its IP header written in front (from the sender, `IP_PKTINFO`, the
 TTL, TOS and options messages; IPv6 with its extension headers), read with a tail buffer behind the caller's
 because Linux cuts a ping socket's packet to the buffers given and tells only what it copied, and its drop count
@@ -121,8 +125,8 @@ of the message, which Linux routes by.
 sockets of the given protocol (root or `CAP_NET_RAW`). A payload is sent with `IP_HDRINCL`/`IPV6_HDRINCL` off
 and the header fields as for ICMP; a packet with its own header with it on, its route selectors as options
 and `IP_PKTINFO`, the flow's protocol as `IP_PROTOCOL` (IPv4) or the address's port (IPv6), and reassembly as
-`IP_NODEFRAG`. Both are kept per socket and written only when a send wants the other value. receive gives the
-error queue first (ICMP errors whole; a socket that wrote its headers gets the quoted packet from its IP header
+`IP_NODEFRAG`. Both are kept per socket and written only when a send wants the other value. receive gives an
+error queue entry (ICMP errors whole; a socket that wrote its headers gets the quoted packet from its IP header
 on), else the packet: IPv4 as Linux gives it, IPv6 with its header and extension headers written in front.
 Settings: the IP ones as for ICMP; checksum `IPV6_CHECKSUM` (offset, or -1 for none); router alert
 `IP_ROUTER_ALERT`, or `IPV6_ROUTER_ALERT_ISOLATE` and `IPV6_ROUTER_ALERT`; multicast routing `MRT_INIT` and
@@ -143,7 +147,10 @@ the packet), and an etf schedule that misses every time (rejected transmit times
 come from a raw ICMP socket of the namespace, quoting what left the dummy link; their outer header must be the
 one on loopback's wire, and a buffer that cuts one in its outer header, ICMP header or quoted packet must hold
 its start (IPv4 and IPv6, both suites). A raw packet sent with a mark and priority arrives with them; a mobility
-header is sent by its type. Settings by their effect;
+header is sent by its type. Several ICMP errors queued before a receive each arrive, also after a ping send that
+Linux failed with the error. Settings by their effect; source filters by the namespace's lists of them
+(`/proc/net/mcfilter`, `mcfilter6`) and, for IPv4 raw sockets, by which senders' packets arrive; an IPv6 router alert
+turned off or changed by which sockets take a forwarded packet; drops over two floods;
 Configurable's own suite runs on a setting of each socket kind. Waits are polled by hand with a waker that
 counts its wakes: a wait for data is pending until the reply or packet arrives and is then woken once; a wait for
 writing finishes at its first poll; a dropped wait gives up its waker and is not woken; 35 waits on 32 sockets

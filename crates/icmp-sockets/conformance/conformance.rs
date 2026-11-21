@@ -2516,6 +2516,26 @@ pub fn icmp_errors_queued_together_each_arrive<S: IcmpSockets>(sockets: S) {
     }
 }
 
+/// An ICMP error still arrives after a send that met it, which Linux fails with the error the ICMP error left.
+pub fn an_icmp_error_a_send_met_still_arrives<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        provoke_icmp_error(&sockets, &socket, to, Quote::Least);
+        std::thread::sleep(QUIET);
+        let sent = ping(&sockets, &socket, to, PAYLOAD);
+        assert!(
+            matches!(sent, Ok(()) | Err(SendError::Host(HostError::Errno(_)))),
+            "{to}: {sent:?}"
+        );
+        let mut into = buffer();
+        let fields = receive_packet(&sockets, &socket, &mut into);
+        assert!(is_unreachable(version, &into[..fields.length]), "{to}");
+        assert!(nothing_arrives(&sockets, &socket), "{to}");
+    }
+}
+
 /// An ICMP error about a request ends a wait for data with the error condition, which poll always reports.
 pub fn an_icmp_error_ends_a_wait_for_data<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
@@ -2656,6 +2676,7 @@ macro_rules! tests {
             an_icmp_error_arrives_whole_over_ipv6,
             a_short_buffer_keeps_the_start_of_an_icmp_error,
             icmp_errors_queued_together_each_arrive,
+            an_icmp_error_a_send_met_still_arrives,
             pacing_holds_messages_in_the_send_buffer,
             a_full_send_buffer_would_block,
             a_small_receive_buffer_counts_its_drops,
