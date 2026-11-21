@@ -380,12 +380,11 @@ fn compile(build: &cc::Build, name: &str, hash: &str) {
     base().objects(objects).compile(name);
 }
 
-/// A submodule's git link or directory, which depends on where the checkout keeps its git data.
-const GIT_DATA: &str = ".git";
-
 /// Hashes the files under each `(path, recursive)` (a path may be one file) by name and contents,
-/// carriage returns and git's own data left out, so every checkout of the same sources gives the
-/// same hash.
+/// carriage returns left out, so every checkout of the same sources gives the same hash. A
+/// directory listed without its subdirectories (a submodule's top) gives only its files with an
+/// extension, as its sources all have one: git's files there have none, among them the submodule's
+/// `.git` link, which depends on where the checkout keeps git's data.
 fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
     let mut files = Vec::new();
     for (path, recursive) in paths {
@@ -400,14 +399,11 @@ fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
             };
             for entry in entries {
                 let path = entry.unwrap().path();
-                if path.file_name().is_some_and(|n| n == GIT_DATA) {
-                    continue;
-                }
                 if path.is_dir() {
                     if *recursive {
                         stack.push(path);
                     }
-                } else {
+                } else if *recursive || path.extension().is_some() {
                     files.push(path);
                 }
             }
