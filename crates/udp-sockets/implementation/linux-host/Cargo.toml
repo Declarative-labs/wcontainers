@@ -1,0 +1,41 @@
+[package]
+name = "wcontainers-udp-sockets-linux-host"
+description = "UdpSockets on the UDP and UDP-Lite sockets of the Linux machine it runs on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-configurable = { path = "../../../configurable" }
+wcontainers-internet-protocol = { path = "../../../internet-protocol" }
+wcontainers-kernel = { path = "../../../kernel" }
+wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
+wcontainers-udp-sockets = { path = "../.." }
+wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+etherparse.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Socket calls and socket addresses.
+rustix = { version = "1.1.6", features = ["net"] }
+# The Linux uapi constants and structures of sockets.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+# setsockopt, getsockopt, sendmsg, recvmsg and their control messages, and what linux-raw-sys lacks.
+libc = "0.2.191"
+
+[dev-dependencies]
+wcontainers-udp-sockets-conformance = { path = "../../conformance" }
+wcontainers-kernel = { path = "../../../kernel" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The network namespace and loopback interface of each test.
+libc = "0.2.191"
+
+[lints]
+workspace = true

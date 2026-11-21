@@ -46,7 +46,6 @@ const RECEIVE_CONTROL: usize = space(size_of::<uapi::in_pktinfo>())
     + space(size_of::<uapi::scm_ts_pktinfo>())
     + space(size_of::<libc::sock_extended_err>() + size_of::<uapi::sockaddr_in6>());
 
-
 /// `SO_EE_ORIGIN_TXTIME` of `linux/errqueue.h`, which neither libc nor linux-raw-sys carries.
 pub const SO_EE_ORIGIN_TXTIME: u8 = 6;
 

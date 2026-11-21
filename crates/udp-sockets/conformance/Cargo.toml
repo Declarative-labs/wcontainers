@@ -12,3 +12,6 @@ wcontainers-udp-sockets = { path = ".." }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true
+wcontainers-abi.workspace = true
+# The errno values and group addresses of Linux, which the contract's errors and checks use, on every platform.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "net", "no_std"] }
