@@ -3948,6 +3948,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-clock-host"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "wcontainers-clock",
+ "wcontainers-clock-conformance",
+]
+
+[[package]]
+name = "wcontainers-clock-seeded"
+version = "0.1.0"
+dependencies = [
+ "rand 0.9.5",
+ "rand_chacha",
+ "wcontainers-clock",
+ "wcontainers-clock-conformance",
+]
+
+[[package]]
 name = "wcontainers-configurable"
 version = "0.1.0"
 dependencies = [
@@ -4412,6 +4431,25 @@ name = "wcontainers-random-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-random-source",
+]
+
+[[package]]
+name = "wcontainers-random-source-host"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "wcontainers-random-source",
+ "wcontainers-random-source-conformance",
+]
+
+[[package]]
+name = "wcontainers-random-source-seeded"
+version = "0.1.0"
+dependencies = [
+ "rand 0.9.5",
+ "rand_chacha",
+ "wcontainers-random-source",
+ "wcontainers-random-source-conformance",
 ]
 
 [[package]]
