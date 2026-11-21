@@ -3,7 +3,8 @@
 //! wall time and the heap allocations of the whole test process per wait. Not a check: run it
 //! by name, `cargo test --release -p wcontainers-executor-unicorn --test waitcost -- --ignored
 //! --nocapture`, with `WAITCOST_COUNT` waits in the smaller run (twice as many in the larger) and
-//! `WAITCOST_ROUNDS` runs of each, whose median is printed.
+//! `WAITCOST_ROUNDS` runs of each, whose median is printed; `WAITCOST_KIND` keeps only the kinds
+//! whose name holds it.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};
@@ -144,7 +145,8 @@ fn wait_costs() {
             false,
         ),
     ];
-    for (what, arguments, backend) in kinds {
+    let only: String = knob("WAITCOST_KIND", String::new());
+    for (what, arguments, backend) in kinds.into_iter().filter(|(what, ..)| what.contains(&only)) {
         let (mut times, mut allocations) = (Vec::new(), Vec::new());
         for _ in 0..rounds {
             let at = |n: u64| {
