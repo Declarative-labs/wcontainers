@@ -4738,7 +4738,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-route-resolver-linux-netlink"
+name = "wcontainers-route-resolver-host"
 version = "0.1.0"
 dependencies = [
  "etherparse",
@@ -4748,6 +4748,7 @@ dependencies = [
  "netlink-packet-route",
  "netlink-sys",
  "rustix",
+ "socket2",
  "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",

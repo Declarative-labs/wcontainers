@@ -3,7 +3,7 @@
 use core::mem::offset_of;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::sync::Mutex;
 
 use etherparse::{IpDscp, IpEcn, Ipv4Options, Ipv6RawExtHeaderSlice};
@@ -20,7 +20,7 @@ use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
 use netlink_sys::protocols::NETLINK_ROUTE;
 use netlink_sys::{Socket, SocketAddr as NetlinkAddress};
 use rustix::io::Errno;
-use rustix::net::{SendFlags, SocketType};
+use socket2::{Domain, SockAddr, Socket as DatagramSocket, Type};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, InterfaceIndex, IpPacketSetting, IpVersion, Ipv4RouteSelectors,
@@ -35,10 +35,10 @@ use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
 
 /// A route resolver for the network namespace it was opened in, through the kernel's routing socket.
-pub struct LinuxNetlinkRouteResolver {
+pub struct HostRouteResolver {
     routing: Mutex<RoutingSocket>,
     /// A socket whose `IP_TTL` was never set, so that reading it gives the namespace's default.
-    unset_hop_limit: OwnedFd,
+    unset_hop_limit: DatagramSocket,
     shortfalls: Shortfalls,
 }
 
@@ -65,6 +65,9 @@ const ANY_PORT: u16 = 0;
 /// The destination port of a neighbour confirmation, which sends nothing but needs a port.
 const CONFIRMATION_PORT: u16 = u16::MAX;
 
+/// The send flags that confirm the neighbour and send nothing.
+const CONFIRMING_PROBE: libc::c_int = libc::MSG_CONFIRM | MSG_PROBE as libc::c_int;
+
 /// The netlink port number and multicast groups of the kernel.
 const KERNEL: (u32, u32) = (0, 0);
 
@@ -76,7 +79,7 @@ const MINIMUM_REASSEMBLY: u32 = 576;
 /// ([RFC 6275](https://www.rfc-editor.org/rfc/rfc6275#section-6.4), [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754#section-2)).
 const ROUTING_ADDRESSES: usize = offset_of!(rt0_hdr, addr);
 
-impl LinuxNetlinkRouteResolver {
+impl HostRouteResolver {
     /// Opens a resolver for the calling thread's network namespace.
     pub fn open() -> Result<Self, HostError> {
         let mut socket = Socket::new(NETLINK_ROUTE).map_err(io_error)?;
@@ -145,7 +148,7 @@ impl LinuxNetlinkRouteResolver {
         let link = self.link(found.interface)?;
         let default_hop_limit = match found.hop_limit {
             Some(limit) => limit,
-            None => rustix::net::sockopt::ip_ttl(&self.unset_hop_limit).map_err(host_error)?,
+            None => self.unset_hop_limit.ttl_v4().map_err(io_error)?,
         };
         let path_mtu = match found.mtu {
             Some(mtu) => mtu,
@@ -309,8 +312,9 @@ impl LinuxNetlinkRouteResolver {
             &IpPacketSetting::UnicastInterface(Some(interface)),
             &self.shortfalls,
         )?;
-        let probe = SendFlags::CONFIRM | SendFlags::from_bits_retain(MSG_PROBE);
-        rustix::net::sendto(&socket, &[], probe, &peer).map_err(host_error)?;
+        socket
+            .send_to_with_flags(&[], &SockAddr::from(peer), CONFIRMING_PROBE)
+            .map_err(io_error)?;
         Ok(())
     }
 
@@ -453,7 +457,7 @@ impl LinuxNetlinkRouteResolver {
     }
 }
 
-impl RouteResolver for LinuxNetlinkRouteResolver {
+impl RouteResolver for HostRouteResolver {
     fn resolve_route(
         &self,
         route: RouteSelectors<'_>,
@@ -570,7 +574,7 @@ fn source_route_first_hop(options: &Ipv4Options) -> Result<Option<SourceRoute>, 
 fn has_address_v6(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> Result<(), HostError> {
     let socket = datagram_socket(IpVersion::V6)?;
     let address = SocketAddrV6::new(address, ANY_PORT, u32::MIN, scope_of(address, interface));
-    rustix::net::bind(&socket, &address).map_err(host_error)
+    socket.bind(&SockAddr::from(address)).map_err(io_error)
 }
 
 /// The scope a link-local address needs, the interface's; none for any other.
@@ -581,12 +585,12 @@ fn scope_of(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> u32 {
     }
 }
 
-fn datagram_socket(version: IpVersion) -> Result<OwnedFd, HostError> {
-    let family = match version {
-        IpVersion::V4 => rustix::net::AddressFamily::INET,
-        IpVersion::V6 => rustix::net::AddressFamily::INET6,
+fn datagram_socket(version: IpVersion) -> Result<DatagramSocket, HostError> {
+    let domain = match version {
+        IpVersion::V4 => Domain::IPV4,
+        IpVersion::V6 => Domain::IPV6,
     };
-    rustix::net::socket(family, SocketType::DGRAM, None).map_err(host_error)
+    DatagramSocket::new(domain, Type::DGRAM, None).map_err(io_error)
 }
 
 fn address_of(address: &RouteAddress) -> Option<IpAddr> {
