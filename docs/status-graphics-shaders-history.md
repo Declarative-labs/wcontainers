@@ -1,8 +1,107 @@
-# Shaders track (G6): the record of runs 1 to 69
+# Shaders track (G6): the record of runs 1 to 70
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
 superseded by the status file's.
+
+## G6a again, run 1 (run 70): the carried findings at the tip of main
+
+Every figure here comes from runs of this crate as at 47ed2fce, its last code commit (later
+commits on `main` are other tracks' and this file). Each run built the committed tip, not the shared
+working tree (How to run, first item). Logs in scratch `graphics-shaders/g6a-r70`. Merged nothing:
+every track is on `main`.
+
+What this run changed besides this file: the paused combine commit (1efc1d61) had left the literal
+check failing at the tip on 45 findings (41 in src/variant/targets.rs, 4 in the interface's
+`TargetCombineValue`); they are named (fc05e11a, 71b8810f; interface f8962501). It had also broken
+the Windows build of the drawn tests (`write_texture` returns nothing; 47ed2fce).
+
+Runs at the tip:
+- Laptop (i7-8750H, load 0.2 at the start, nothing else running; 5 cargo jobs), the whole suite
+  with every corpus and glslang 8.13 (laptop-suite-tip.log): 115 passed, 1 failed, the failing
+  one `damaged_records_decode_without_a_panic`, gap A16's known failure (run by
+  `--include-ignored`). The corpus test: 11 passed, all nine records among them.
+- x86 machine (96 processors, load 6 to 11 from others' jobs, -j 64; x86-checks4.log): rustfmt of
+  every file of this crate clean; `cargo clippy -p wcontainers-shaders -p wcontainers-gpu
+  --all-targets -- -D warnings` clean. The literal check (literals4.txt) prints no line of this
+  crate or of the interface crate; it fails at the tip on other tracks' lines (kernel,
+  internet-protocol, opengl, nir). This crate's baseline lines: 4,826 naming its paths, 395 under
+  src, unchanged.
+- Desktop (RTX 3080, through the queue in the hazard group, 3 cargo jobs; gpu.log, gpu-err.log):
+  Windows clippy with warnings denied clean; every test binary at its default seeds: 160 passed, 0
+  failed, 6 ignored (the three corpora, which need their folders and ran on the laptop; the fuzz
+  test; A16's known failure; `print_geometry_programs`, which only prints).
+- Chrome on the RTX 3080 (`web/check` on the laptop run's written files, one GPU job; chrome.log):
+  every WGSL file compiles (corpus 185, games 527, games DXIL 441, own 144, own DXIL 135, rig 79,
+  rig DXIL 72, runner 1438, runner DXIL 1418: 4,439). WebGL 2 compiles 3,585 GLSL files and
+  refuses 40 (corpus 1, games 6, games DXIL 1, own 5, own DXIL 3, rig 2, rig DXIL 2, runner 11,
+  runner DXIL 9), each a shader whose record names the need its error is about: multisampled
+  reads 23 (`sampler2DMS`, `MULTISAMPLE_READ`), the primitive index 8 (`gl_PrimitiveID`,
+  `PRIMITIVE_INDEX`), cull distances 9 (vertex programs, `CULL_DISTANCE`; the writer's array size,
+  Known gaps). The WebGL 2 back end declares all three absent.
+- Clean-up: the build folders of this run deleted (laptop `target/shaders-tip`, 5.0 GB, and its
+  source copy; x86 `/work/target/shaders-tip`, 1.3 GB, and its clone; desktop
+  `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`, and the old
+  branch's `C:\wc\target\phase-2-graphics-shaders`); scratch keeps the logs and `out` (50 MB, the
+  files Chrome compiled). By mistake this run started the rig's `queue-check` once (sleeping test
+  jobs, stopped after a minute); it sent the shared tree to the desktop's `main` copy.
+- Not run: WebAssembly (A8's figures are from G6a run 4), the fuzz test (A11's from the checks),
+  the Direct3D 12 scenes (A6's from run 69).
+
+The first check's findings, each against the tip:
+1. Corpus records (blocking): the four record tests pass (laptop above). The check's examples now
+   read `020_ps_ld_code.dxbc ok ; glsl compiles`, `ps_levels.dxbc ok ; glsl compiles`,
+   `5c32b4c746957b52.dxbc ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.`
+   and the same for `hlsl+getdimensions-3-ps.dxbc`. The games test checks its DXIL corpus before
+   it fails on either.
+2. Run 46's stale results (blocking): this section's figures all come from the runs above.
+3. Gap A3's cause (blocking): closed (gap list). The corpus test writes GLSL ES with the WebGL 2
+   back end's own `wcontainers_gpu_webgl::glsl::write` (tests/corpus.rs, `glsl_verdict`) on a
+   module converted under the WebGL 2 key, so the bit functions, gathers and loads at a level are
+   that back end's.
+4. GLSL refusals by reason (blocking): each record holds the whole GLSL ES outcome (the needs the
+   back end's `glsl::needs` names, then `compiles`, `compile` with glslang's first error, `write`
+   with naga's own reason, or `absent`), and `is_named` accepts a failure only where a need is
+   named that WebGL 2 lacks (not true of glslang failures, which it accepted with any need named;
+   the second check's finding, settled in run 71). At the tip, over the nine corpora: 309 GLSL failures (glslang 98,
+   write 211), every one naming a need: `FRAGMENT_STORAGE_WRITE` 160, `SAMPLE_SHADING` 63,
+   `VERTEX_STORAGE_READ` 37, `CLIP_DISTANCE` 31 (glslang 8.13 lacks the extension), `SUBGROUPS` 23,
+   `MULTISAMPLE_READ` 23, `CULL_DISTANCE` 9, `PRIMITIVE_INDEX` 8, `FINE_DERIVATIVES` 7, a cube
+   array view 5 (a record may name several). The check's shaders: `ps_shade.dxbc` (noperspective) compiles,
+   and `ps_shadow` and `ps_shadow_wide` (depth loads) on both routes; `106_ps_code_ddy_fine`,
+   `ps_deriv`, `ps_helper` and ddxddy-4 name `FINE_DERIVATIVES` (shader model 5's derivative
+   control, past WebGL 2's feature level 10_0).
+5. Unbuilt parts (blocking): each is on the gap list with its cause, the front that waits and
+   what it takes: `PROVOKING_LAST`, `storage_packed`, the root signature layout, `combine` and a
+   case of `swizzled` (A4; `combine` corrected this run: partly built, untested), `NORM_AS_INTEGER`
+   (built since run 54 as `decoded`, item 3), the stage helper on WebGL 2 (A5), DXIL geometry,
+   hull and domain shaders (A6: converted since G6b; the line-drawn scene cells remain), streams
+   and the other routes (A7), the runner's distance-4 DXIL file (A1, `KNOWN_UNNAMED`), native and
+   WebAssembly bytes (A8).
+6. `VertexStorageAsCompute` (blocking): gap A9. At the tip the records hold `VertexStorageWrite`
+   8 times (runner and runner DXIL 1 each, `hlsl+depth-bounds-1-vs`; own 3 and 3).
+7. Clip edges at other seeds (minor): gap A10. At the tip, `geometry_shaders_draw_as_direct3d_does`
+   at the check's seed 4747, 12 cases: 576 comparisons, 6 failed, the check's four cases with the
+   check's figures (4749 `vs_cull` TriangleList indexed 1 texel, largest 159; 4753 `gs_clip`
+   TriangleStrip 4, largest 88; 4756 `gs_clip` TriangleStrip 20, largest 100; 4756 `vs_cull`
+   TriangleList indexed 6, largest 75) and dxc's builds of the two `gs_clip` cases, alike.
+8. The tessellator's notice (minor): src/stage/tessellator.wgsl lines 1 to 16 carry Microsoft's
+   copyright line and the MIT permission notice.
+9. A header cut short (minor): `Cache::load` loads any prefix of an empty cache's header as an
+   empty cache; `a_cut_file_keeps_every_whole_entry_before_the_cut` cuts at every header length
+   (passes on the laptop and the desktop above).
+10. Literals (minor): `StorageImageAtomics`, `ProvokingRewrite`, `StoragePacked`,
+    `RootSignatureLayout` and `VertexStorageWrite` are defined once, in src/refusal.rs; the cache's
+    field offsets come from `#[repr(C)]` layouts. The literal check prints no line of this crate.
+11. Filter known failures (minor): `anisotropic_footprint` (tests/filter_draw.rs) counts a failure
+    as known only with anisotropy above 1 in a mode taking its footprint from derivatives. At the
+    tip, seed 4747, 12 cases: 2,044 comparisons, 0 failed, 288 known, all in the modes implicit,
+    bias, gradients and offset of cases 4748, 4749 and 4751; none in level, gather or load.
+
+The NIR track's ask (brief, 2026-11-19 night): the public entry point for the 15.4 rewrites is
+`wcontainers_shaders::rewrite` (since run 57; "New for the owner"), which that track calls
+(crates/wcontainers-nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point,
+its G9 run 12) is new work, after this milestone's check.
 
 ## G6a run 5 (run 63): the fifth check's findings at the pushed tip
 
