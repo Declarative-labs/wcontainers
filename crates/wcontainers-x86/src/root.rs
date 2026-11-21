@@ -2,17 +2,20 @@
 //! guess from astro-float's correctly rounded root, then the exact square of its top bits decides them.
 
 use crate::x87::{BIAS, Extended, Wide};
-use astro_float_num::{BigFloat, Exponent, RoundingMode, Word};
+use astro_float_num::{BigFloat, Exponent, RoundingMode, Sign, Word};
 use rustc_apfloat::Float;
 
 /// Bits of the first guess, well past the wide semantics' 66, and of an exact product of two guesses.
-const GUESS_BITS: usize = u128::BITS as usize;
+pub(crate) const GUESS_BITS: usize = u128::BITS as usize;
 const SQUARE_BITS: usize = 2 * GUESS_BITS;
 /// The wide semantics' precision.
-const WIDE_BITS: u32 = <crate::x87::WideS as rustc_apfloat::ieee::Semantics>::PRECISION as u32;
+pub(crate) const WIDE_BITS: u32 =
+    <crate::x87::WideS as rustc_apfloat::ieee::Semantics>::PRECISION as u32;
+/// The bits of a significand below its explicit integer bit.
+const FRACTION_BITS: i32 = u64::BITS as i32 - 1;
 
 /// `m * 2^e` exactly.
-fn big(m: u128, e: i32) -> BigFloat {
+pub(crate) fn big(m: u128, e: i32) -> BigFloat {
     let mut b = BigFloat::from_u128(m, GUESS_BITS);
     if let Some(at) = b.exponent() {
         b.set_exponent(at + e as Exponent);
@@ -20,10 +23,22 @@ fn big(m: u128, e: i32) -> BigFloat {
     b
 }
 
+/// A finite 80-bit value exactly (a denormal's exponent is the smallest normal one).
+pub(crate) fn of_extended(x: Extended) -> BigFloat {
+    let mut b = big(
+        x.significand.into(),
+        i32::from(x.exponent.max(1)) - BIAS - FRACTION_BITS,
+    );
+    if x.sign {
+        b.set_sign(Sign::Neg);
+    }
+    b
+}
+
 /// The integer `n` with `0.n * 2^exponent` the value, its top bit at bit 127; the rest of the digits are
 /// folded into whether any lower bit is set.
-fn top_bits(b: &BigFloat) -> (u128, i32, bool) {
-    let digits = b.mantissa_digits().expect("a finite root");
+pub(crate) fn top_bits(b: &BigFloat) -> (u128, i32, bool) {
+    let digits = b.mantissa_digits().expect("a finite value");
     let mut top = 0u128;
     let mut taken = 0;
     let mut lower = false;
@@ -35,16 +50,14 @@ fn top_bits(b: &BigFloat) -> (u128, i32, bool) {
             lower |= d != 0;
         }
     }
-    let exponent = b.exponent().expect("a finite root");
+    let exponent = b.exponent().expect("a finite value");
     (top, exponent, lower)
 }
 
 /// The square root of `x`, positive and finite, truncated to the wide semantics' precision with its lowest
 /// bit set when it is not exact.
 pub(crate) fn odd_root(x: Extended) -> Wide {
-    let integer_shift = u64::BITS as i32 - 1;
-    let e = i32::from(x.exponent.max(1)) - BIAS - integer_shift;
-    let value = big(x.significand.into(), e);
+    let value = of_extended(x);
     let guess = value.sqrt(GUESS_BITS, RoundingMode::ToEven);
     let (top, exponent, _) = top_bits(&guess);
     let drop = u128::BITS - WIDE_BITS;

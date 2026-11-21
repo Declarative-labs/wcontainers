@@ -4,6 +4,7 @@
 //! reference CPU.
 
 use crate::Fxsave;
+use crate::transcendental;
 use rustc_apfloat::ieee::{
     Double, IeeeFloat, Semantics, Single, X87DoubleExtended, X87DoubleExtendedS,
 };
@@ -39,7 +40,7 @@ const CLEARED: u16 = EXCEPTIONS | STACK_FAULT | SUMMARY | BUSY;
 /// and does nothing.
 pub const PRECISION_SHIFT: u16 = 8;
 pub const ROUNDING_SHIFT: u16 = 10;
-const FIELD: u16 = 3;
+pub const FIELD: u16 = 3;
 pub const CONTROL_ALWAYS: u16 = 1 << 6;
 const INFINITY_CONTROL: u16 = 1 << 12;
 pub const CONTROL_KEPT: u16 = INFINITY_CONTROL
@@ -93,6 +94,11 @@ impl Extended {
     pub const INFINITY: Self = Self {
         sign: false,
         exponent: EXPONENT_ALL,
+        significand: INTEGER_BIT,
+    };
+    pub const ONE: Self = Self {
+        sign: false,
+        exponent: BIAS as u16,
         significand: INTEGER_BIT,
     };
 
@@ -501,6 +507,17 @@ pub enum Operation {
     Register,
     /// ST(`register`)'s 80 bits from the two arguments, its tag as it is.
     SetRegister,
+    /// `fsin`, `fcos`, `fsincos` (sine in ST(0), then cosine pushed) and `fptan` (tangent, then 1 pushed).
+    Sine,
+    Cosine,
+    SineCosine,
+    Tangent,
+    /// `f2xm1`: 2^ST(0) - 1.
+    ExponentMinusOne,
+    /// `fpatan`, `fyl2x` and `fyl2xp1` into ST(1), then `pops` pops.
+    ArcTangent,
+    Logarithm,
+    LogarithmPlusOne,
 }
 
 impl Operation {
@@ -532,6 +549,14 @@ impl Operation {
         Operation::Register,
         Operation::SetRegister,
         Operation::PartialRemainder,
+        Operation::Sine,
+        Operation::Cosine,
+        Operation::SineCosine,
+        Operation::Tangent,
+        Operation::ExponentMinusOne,
+        Operation::ArcTangent,
+        Operation::Logarithm,
+        Operation::LogarithmPlusOne,
     ];
 }
 
@@ -809,21 +834,22 @@ impl<'a> Unit<'a> {
 
     /// Write `value` to ST(i) when it was delivered, and pop. An unmasked invalid operation, denormal operand
     /// or division by zero, met before the result, keeps the destination and the stack as they were.
-    fn deliver(&mut self, i: u8, rounded: Rounded<Extended>) {
+    fn deliver(&mut self, i: u8, rounded: Rounded<Extended>) -> bool {
         let before = rounded.exceptions & BEFORE_RESULT;
         if !self.masked(before) {
             self.set_c1(false);
             self.raise(before);
-            return;
+            return false;
         }
         if !self.raise(rounded.exceptions) && rounded.value.is_none() {
-            return;
+            return false;
         }
         self.set_c1(rounded.up);
         if let Some(value) = rounded.value {
             self.set(i, value);
         }
         self.pops();
+        true
     }
 
     /// Run the code with the hook's arguments.
@@ -949,6 +975,15 @@ impl<'a> Unit<'a> {
                 },
             ),
             Operation::Scale => self.scale(),
+            Operation::Sine | Operation::Cosine | Operation::SineCosine | Operation::Tangent => {
+                self.trigonometric()
+            }
+            Operation::ExponentMinusOne => {
+                self.unary(|_| false, |unit, x| exponent_minus_one(x, unit.area.fcw))
+            }
+            Operation::ArcTangent | Operation::Logarithm | Operation::LogarithmPlusOne => {
+                self.of_two()
+            }
             Operation::PartialRemainder => self.partial_remainder(),
             Operation::Extract => self.extract(),
             Operation::SquareRoot => self.unary(
@@ -1407,6 +1442,203 @@ impl<'a> Unit<'a> {
         self.set_c1(false);
         self.set(0, exponent);
         self.push(significand);
+    }
+
+    /// `fsin`, `fcos`, `fsincos` and `fptan`: ST(0) reduced by Intel's π, or, from 2^63 on, C2 set and
+    /// nothing else changed.
+    fn trigonometric(&mut self) {
+        let operation = self.code.operation;
+        let pushes = matches!(operation, Operation::SineCosine | Operation::Tangent);
+        self.area.fsw &= !C2;
+        let (empty, full) = (self.empty(0), pushes && self.full_below());
+        if empty || full {
+            if self.stack_fault(!empty) {
+                self.set(0, Extended::INDEFINITE);
+                if pushes {
+                    self.push_indefinite();
+                }
+            }
+            return;
+        }
+        let x = self.get(0);
+        let fcw = self.area.fcw;
+        let both = |r: Rounded<Extended>| (r, r);
+        let (first, second) = match x.class() {
+            Class::Unsupported | Class::Infinity => both(invalid()),
+            Class::Signaling => both(Rounded {
+                value: Some(x.quieted()),
+                exceptions: INVALID,
+                up: false,
+            }),
+            Class::Quiet => both(exact_value(x)),
+            Class::Zero if operation == Operation::Cosine => both(exact_value(Extended::ONE)),
+            Class::Zero => (exact_value(x), exact_value(Extended::ONE)),
+            _ if i32::from(x.exponent) >= BIAS + REDUCED_BELOW => {
+                self.set_c1(false);
+                self.area.fsw |= C2;
+                return;
+            }
+            class => {
+                if class == Class::Denormal && !self.raise(DENORMAL) {
+                    return;
+                }
+                let round = |w| round_register(w, fcw, Precision::Extended);
+                match operation {
+                    Operation::Cosine => both(round(transcendental::cosine(x))),
+                    Operation::Tangent => (
+                        round(transcendental::tangent(x)),
+                        exact_value(Extended::ONE),
+                    ),
+                    _ => (
+                        round(transcendental::sine(x)),
+                        round(transcendental::cosine(x)),
+                    ),
+                }
+            }
+        };
+        if !pushes {
+            self.deliver(0, first);
+            return;
+        }
+        // `fptan`'s C1 is the tangent's; `fsincos`'s the cosine's.
+        let up = if operation == Operation::Tangent {
+            first.up
+        } else {
+            second.up
+        };
+        let together = Rounded {
+            exceptions: first.exceptions | second.exceptions,
+            up,
+            ..first
+        };
+        if self.deliver(0, together)
+            && let Some(value) = second.value
+        {
+            self.push(value);
+        }
+    }
+
+    /// `fpatan`, `fyl2x` and `fyl2xp1`, of ST(0) and ST(1), into ST(1).
+    fn of_two(&mut self) {
+        if self.empty(0) || self.empty(1) {
+            if self.stack_fault(false) {
+                self.set(1, Extended::INDEFINITE);
+                self.pops();
+            }
+            return;
+        }
+        let (x, y) = (self.get(0), self.get(1));
+        let fcw = self.area.fcw;
+        let rounded = if let Some(r) = special_pair(x, y) {
+            r
+        } else {
+            let denormal = x.class() == Class::Denormal || y.class() == Class::Denormal;
+            if !self.raise(if denormal { DENORMAL } else { 0 }) {
+                return;
+            }
+            match self.code.operation {
+                Operation::ArcTangent => angle(y, x, fcw),
+                Operation::Logarithm => logarithm(y, x, fcw),
+                _ => logarithm_plus_one(y, x, fcw),
+            }
+        };
+        self.deliver(1, rounded);
+    }
+}
+
+/// The trigonometric instructions take operands below 2^63.
+const REDUCED_BELOW: i32 = u64::BITS as i32 - 1;
+
+fn rounded_wide(w: Wide, fcw: u16) -> Rounded<Extended> {
+    round_register(w, fcw, Precision::Extended)
+}
+
+fn signed_zero(negative: bool) -> Rounded<Extended> {
+    exact_value(Extended::ZERO.with_sign(negative))
+}
+
+fn signed_infinity(negative: bool) -> Rounded<Extended> {
+    exact_value(Extended::INFINITY.with_sign(negative))
+}
+
+/// `f2xm1` of a number: outside -1 to 1 the reference leaves the operand, inexact.
+fn exponent_minus_one(x: Extended, fcw: u16) -> Rounded<Extended> {
+    match x.class() {
+        Class::Zero => exact_value(x),
+        Class::Infinity if x.sign => exact_value(Extended::ONE.negate()),
+        Class::Infinity => exact_value(x),
+        _ if i32::from(x.exponent) >= BIAS && x.with_sign(false) != Extended::ONE => Rounded {
+            value: Some(x),
+            exceptions: PRECISION,
+            up: false,
+        },
+        _ => rounded_wide(transcendental::exponent_minus_one(x), fcw),
+    }
+}
+
+/// The angle `fpatan` gives (Intel SDM Vol. 2A, FPATAN's table), as a multiple of π/4 where an operand is
+/// zero or infinite.
+fn angle(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
+    let (yc, xc) = (y.class(), x.class());
+    let quarters: i32 = match (yc, xc) {
+        (Class::Zero, _) if !x.sign => return exact_value(y),
+        (Class::Zero, _) => QUARTERS_IN_PI,
+        (Class::Infinity, Class::Infinity) if x.sign => QUARTERS_IN_PI - 1,
+        (Class::Infinity, Class::Infinity) => 1,
+        (Class::Infinity, _) | (_, Class::Zero) => QUARTERS_IN_PI / 2,
+        (_, Class::Infinity) if x.sign => QUARTERS_IN_PI,
+        (_, Class::Infinity) => return signed_zero(y.sign),
+        _ => return rounded_wide(transcendental::arc_tangent(y, x), fcw),
+    };
+    rounded_wide(
+        transcendental::quarter_pi(if y.sign { -quarters } else { quarters }),
+        fcw,
+    )
+}
+
+const QUARTERS_IN_PI: i32 = 4;
+
+/// `fyl2x` (Intel SDM Vol. 2A, FYL2X's table).
+fn logarithm(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
+    let (yc, xc) = (y.class(), x.class());
+    if x.sign && xc != Class::Zero {
+        return invalid();
+    }
+    // The sign of log2(x): below one negative.
+    let below_one =
+        xc == Class::Zero || (xc != Class::Infinity && x.float() < Extended::ONE.float());
+    let one = x == Extended::ONE;
+    match (yc, xc) {
+        (Class::Zero, Class::Zero | Class::Infinity) => invalid(),
+        (Class::Infinity, _) if one => invalid(),
+        (Class::Infinity, _) => signed_infinity(y.sign != below_one),
+        (_, Class::Zero) => Rounded {
+            exceptions: DIVIDE_BY_ZERO,
+            ..signed_infinity(!y.sign)
+        },
+        (Class::Zero, _) => signed_zero(y.sign != below_one),
+        (_, Class::Infinity) => signed_infinity(y.sign),
+        _ if one => signed_zero(y.sign),
+        _ => rounded_wide(transcendental::logarithm(y, x), fcw),
+    }
+}
+
+/// `fyl2xp1` (Intel SDM Vol. 2A, FYL2XP1's table); at -1 and below, which the manual leaves undefined, the
+/// reference leaves ST(0), inexact.
+fn logarithm_plus_one(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
+    let (yc, xc) = (y.class(), x.class());
+    match (yc, xc) {
+        (_, Class::Infinity) if x.sign => invalid(),
+        (Class::Zero, Class::Infinity) | (Class::Infinity, Class::Zero) => invalid(),
+        (_, Class::Infinity) => signed_infinity(y.sign),
+        _ if x.sign && i32::from(x.exponent) >= BIAS => Rounded {
+            value: Some(x),
+            exceptions: PRECISION,
+            up: false,
+        },
+        (_, Class::Zero) | (Class::Zero, _) => signed_zero(y.sign != x.sign),
+        (Class::Infinity, _) => signed_infinity(y.sign != x.sign),
+        _ => rounded_wide(transcendental::logarithm_plus_one(y, x), fcw),
     }
 }
 

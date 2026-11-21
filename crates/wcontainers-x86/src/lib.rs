@@ -38,6 +38,8 @@ mod simd;
 #[cfg(feature = "translate")]
 mod text;
 #[cfg(feature = "translate")]
+mod transcendental;
+#[cfg(feature = "translate")]
 pub mod x87;
 
 pub mod claims;

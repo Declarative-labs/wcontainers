@@ -104,6 +104,14 @@ pub fn written(m: Mnemonic) -> bool {
             | Frstor
             | Fprem
             | Fprem1
+            | Fsin
+            | Fcos
+            | Fsincos
+            | Fptan
+            | Fpatan
+            | F2xm1
+            | Fyl2x
+            | Fyl2xp1
             | Fxsave
             | Fxsave64
             | Fxrstor
@@ -501,6 +509,20 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                 Fxtract => Operation::Extract,
                 _ => Operation::SquareRoot,
             };
+            call(e, c, None, None, None);
+        }
+        Fsin | Fcos | Fsincos | Fptan | F2xm1 | Fpatan | Fyl2x | Fyl2xp1 => {
+            c.operation = match m {
+                Fsin => Operation::Sine,
+                Fcos => Operation::Cosine,
+                Fsincos => Operation::SineCosine,
+                Fptan => Operation::Tangent,
+                F2xm1 => Operation::ExponentMinusOne,
+                Fpatan => Operation::ArcTangent,
+                Fyl2x => Operation::Logarithm,
+                _ => Operation::LogarithmPlusOne,
+            };
+            c.pops = u8::from(matches!(m, Fpatan | Fyl2x | Fyl2xp1));
             call(e, c, None, None, None);
         }
         Fprem | Fprem1 => {
