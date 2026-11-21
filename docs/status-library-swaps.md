@@ -26,6 +26,9 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
     image Docker saves (its gzip layer decompressed and compressed again by libzstd), then lists
     every file's name, kind, mode, owner, size, time and link target and every regular file's md5
     in both, and runs the pipeline in the twin against Docker.
+  - Ran on the ARM machine (job library-swaps/20261121-193133-1589450, load 6 to 12): the whole
+    surface suite, 20 passed and 1 ignored (as before, run by another test), the new test among them;
+    and the runtime crate's 13 tests.
 
 ## Measurements
 
