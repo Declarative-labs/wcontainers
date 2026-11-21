@@ -122,10 +122,10 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 - X7 (x87 and MMX): run 1 (2026-11-21) fixed the two findings of the X6f check and built the x87 unit in
   software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
   `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
-  ones passes layer 1 at 1,000 cases a form on the rented x86-64 machine, and the long double C program matches
-  Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Not done: `fsin`, `fcos`, `fsincos`,
-  `fptan`, `fpatan`, `f2xm1`, `fyl2x` and `fyl2xp1` (still illegal instruction, counted, and left out of layer
-  1 as X7's), and the laptop's layer 1 verdict for the final code.
+  ones (494 forms) passes layer 1 at 1,000 cases a form on the i7-8750H with 0 failing, and the long double C
+  program matches Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Not done: `fsin`, `fcos`,
+  `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x` and `fyl2xp1` (still illegal instruction, counted, and left
+  out of layer 1 as X7's).
 
 ## X7, run 1 (2026-11-21)
 
@@ -175,17 +175,28 @@ Measured:
   bits, canonical under 57). Then after later changes: `fprem` and `fprem1` 1,000 cases at seeds 9736 to 9739,
   0 failing; MMX's conversions, `fscale` and `maskmovq` at seed 9744, 0 failing; the state instructions at seed
   9735, 0 failing but `fxsave`/`fxrstor` as above.
-- The laptop (i7-8750H, load 3.5 to 4.1, 4 at once): x87 and MMX forms at 1,000 a form, seed 9731, from commit
-  bbfa0c40 (before `fprem`, the conversions and the later fixes), running when this was written; its failures
-  so far: `fldenv` and `fnstenv` at an address 4 bytes below 2^47 (fixed in 8a4e58a1), and `fscale`'s C1 on
-  an out-of-range infinity (fixed in fd3a55f9).
+- The verdict, the i7-8750H (load 3.5 to 4.4, 4 at once, the tree at a99645a8): every x87 and MMX form, 494
+  forms (all but the eight transcendental ones), 1,000 cases a form, seed 9755: 0 failing (1,345 s). On the way
+  there (each fixed, then rerun): seed 9731 from bbfa0c40, stopped part way, found `fldenv` and `fnstenv` 4
+  bytes below 2^47 and `fscale`'s C1 on an out-of-range infinity; seed 9751 from fd3a55f9 found `wait` and
+  `emms` stops read from MXCSR by the harness, `maskmovq`'s access missing from the access list, the 80-bit
+  loads checked whole, and `fxsave`'s fault order (probe `fxsave_order.c`); seeds 9753 and 9754 passed the
+  forms they were for.
 - `long_double_matches_linux_x86_64` (programs/x86_64/long_double.c with musl, every optimisation level, at
   none, full for speed and for size, registers and memory against none): pass, rented machine. In Chrome,
   `long_double_matches_linux_in_chrome_x86_64` at none, full and bounded 256, for speed and size: pass.
 - Layer 2 x86, seed 9742, 10,000 programs, 48 at once: 0 failing (112 s; 3,392 faulted, 1,144 left to an
   address at full, 24,021 stacks lost, 23,611 pieces forgotten). Seeds 9712 and 9726 at 2,000: 0 failing.
-- x86's program tests (`--test programs --test checks --test smoke -- x86_64`), rented machine, at fea660b2's
-  parent: 23 + 2 + 6 passed, 0 failed (453 s).
+- x86's program tests (`--test programs --test checks --test smoke -- x86_64`), rented machine, at 8a4e58a1:
+  24 + 2 + 6 passed, 0 failed (420 s).
+- The suite in pieces (scratch `x6f/suite.sh`, logs `x7/suite-x86m/`), rented x86-64 machine, the pieces taking
+  the tree from edb94a8f to a99645a8 as they started (load 4 to 40): every piece passes but 30 tests, the same
+  30 as at X6f and for the same reasons: 25 ARM64 tests (no ARM64 reference there) and the five x86 tests
+  whose verdict is the laptop's (hand cases, the Chrome sample, every form, the unoffered forms, the refusal
+  test). Lint, `cargo fmt --check` and the browser crate's wasm32 lint for both guests pass.
+- ARM64's tests (`--test programs --test output --test browser --test layer2 --test valid --test checks --
+  arm64`), rented ARM64 machine, at 8a4e58a1: all pass (451 s). ARM64's output byte for byte was not compared
+  this run: the guest interface's change is the trap kinds' names, which the translation never reads.
 - The literal check (the Mac): exits 0; 49 baseline lines went this run (41 for the findings, 8 in `BITS`),
   none added.
 
@@ -194,8 +205,9 @@ Not done, for the next run:
   `fyl2xp1`): plan 5.8's astro-float design is not built; they stop with illegal instruction, counted
   "unsupported instruction reached", and layer 1 leaves them out as X7's. musl's `sinl`, `atanl`, `expl` and
   `logl` use them, so the long double program uses none of them yet.
-- The laptop's layer 1 verdict for the final code (every x87 and MMX form at 1,000 a form), which also settles
-  the `fxsave`/`fxrstor` cases the rented machine answers by 5-level paging; the ARM64 tests at the final code.
+- (Done this run, at a99645a8 on the i7-8750H, load 3.5 to 3.9: the hand cases, the bytes in no form and the
+  Chrome sample at seed 9761 and the refusal test pass; every default form, 1,321 forms at 100 a form, seed
+  9762, 0 failing (357 s); the unoffered forms, 2,991 at 20 a form, seed 9763, 0 failing (158 s).)
 
 ## X6f, run 1 (2026-11-20)
 
@@ -3521,7 +3533,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 ## Cases actually run
 
 - X7 run 1: layer 1 of the x87 and MMX forms at 1,000 a form, seeds 9721 to 9744 while building (rented
-  x86-64 machine; see "X7, run 1" for which), 9731 on the i7-8750H; layer 2 x86 at 10,000, seed 9742, and
+  x86-64 machine; see "X7, run 1" for which), 9731, 9751, 9753 to 9755 on the i7-8750H; every default form at
+  100 a form, seed 9762, the unoffered at 20, seed 9763, the hand cases, no-form bytes and Chrome sample at
+  9761 (i7-8750H); layer 2 x86 at 10,000, seed 9742, and
   2,000 at 9712 and 9726; `valid` at 2,000, 1,000 and 3,000 cases, seeds 9711, 9725 and 9741.
 
 - X6f run 1: layer 2 x86 at 10,000 programs, seed 9701; layer 3 Csmith x86 at 1,000, seed 9702 (rented x86-64
