@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-udp-sockets-linux-host"
+name = "wcontainers-udp-sockets-host"
 description = "UdpSockets on the UDP and UDP-Lite sockets of the Linux machine it runs on."
 version.workspace = true
 edition.workspace = true

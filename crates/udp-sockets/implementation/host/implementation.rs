@@ -4,7 +4,7 @@ use core::cell::RefCell;
 use core::cmp::Ordering;
 use core::mem::MaybeUninit;
 use std::net::{IpAddr, SocketAddr};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
 use etherparse::{IpNumber, UdpHeader};
 use libc::c_int;
@@ -19,6 +19,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpChecksum, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived,
@@ -34,17 +35,19 @@ use shared::datagram::receive::{
 use shared::datagram::send::{self as datagram_send, Control, Refusal, SendState};
 use shared::datagram::sticky::{Slot, UDP_LITE_RECEIVE_COVERAGE};
 use shared::icmp_error::write_icmp_error;
+use shared::readiness::{NO_EVENTS, Readiness, Watched};
 use shared::{
     Shortfalls, get_option, host_error as from_errno, last_host_error, set_flag, set_int,
 };
 
 /// UDP and UDP-Lite sockets of the Linux machine this runs on, with a count of each refusal by its reason.
-pub struct LinuxHostUdpSockets {
+pub struct HostUdpSockets {
     shortfalls: Shortfalls,
+    readiness: Readiness,
 }
 
-pub struct LinuxHostUdpSocket {
-    fd: OwnedFd,
+pub struct HostUdpSocket {
+    watched: Watched,
     ipv6: bool,
     protocol: UdpProtocol,
     state: RefCell<SocketState>,
@@ -60,25 +63,27 @@ struct SocketState {
     errors: ErrorQueue,
     /// Whether the error queue may hold reports a send asked for or entries a send read, which come first.
     errors_first: bool,
+    /// Whether the socket's readiness holds an error for the entries kept off the host's error queue.
+    held_errors: bool,
 }
 
-impl PartialEq for LinuxHostUdpSocket {
+impl PartialEq for HostUdpSocket {
     fn eq(&self, other: &Self) -> bool {
-        self.fd.as_raw_fd() == other.fd.as_raw_fd()
+        self.fd().as_raw_fd() == other.fd().as_raw_fd()
     }
 }
 
-impl Eq for LinuxHostUdpSocket {}
+impl Eq for HostUdpSocket {}
 
-impl PartialOrd for LinuxHostUdpSocket {
+impl PartialOrd for HostUdpSocket {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for LinuxHostUdpSocket {
+impl Ord for HostUdpSocket {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.fd.as_raw_fd().cmp(&other.fd.as_raw_fd())
+        self.fd().as_raw_fd().cmp(&other.fd().as_raw_fd())
     }
 }
 
@@ -120,11 +125,12 @@ const IPV6_RECEIVE_OPTIONS: [u32; 10] = [
 const SOCKET_RECEIVE_OPTIONS: [u32; 3] =
     [uapi::SO_RXQ_OVFL, uapi::SO_RCVMARK, uapi::SO_RCVPRIORITY];
 
-impl LinuxHostUdpSockets {
-    pub fn new() -> Self {
-        Self {
+impl HostUdpSockets {
+    pub fn new() -> Result<Self, HostError> {
+        Ok(Self {
             shortfalls: Shortfalls::default(),
-        }
+            readiness: Readiness::new()?,
+        })
     }
 
     /// How many times each named reason has made this value refuse or drop something.
@@ -141,15 +147,21 @@ impl LinuxHostUdpSockets {
     }
 }
 
-impl Default for LinuxHostUdpSockets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LinuxHostUdpSocket {
+impl HostUdpSocket {
     fn fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.watched.fd()
+    }
+
+    /// Holds an error in the socket's readiness while entries taken off the host's error queue wait for receives.
+    fn note_kept_entries(&self, state: &mut SocketState) {
+        let holds = state.errors.holds_entries();
+        if holds != state.held_errors {
+            state.held_errors = holds;
+            self.watched.hold(PollEvents {
+                error_condition: holds,
+                ..NO_EVENTS
+            });
+        }
     }
 
     fn version(&self) -> IpVersion {
@@ -193,7 +205,7 @@ impl LinuxHostUdpSocket {
     /// Binds an unbound socket to a datagram's source port, and refuses one bound to another port.
     fn take_source_port(
         &self,
-        sockets: &LinuxHostUdpSockets,
+        sockets: &HostUdpSockets,
         state: &mut SocketState,
         source: Option<IpAddr>,
         port: u16,
@@ -215,7 +227,7 @@ impl LinuxHostUdpSocket {
     /// The next packet or report of the error queue, skipping entries that have none.
     fn take_error_entry(
         &self,
-        sockets: &LinuxHostUdpSockets,
+        sockets: &HostUdpSockets,
         state: &mut SocketState,
         into: &mut [u8],
     ) -> Result<UdpReceived, HostError> {
@@ -361,8 +373,8 @@ fn apply_nonlocal(
         .ensure_flag(fd, transparent, nonlocal == NonlocalAddresses::Transparent)
 }
 
-impl UdpSockets for LinuxHostUdpSockets {
-    type Socket = LinuxHostUdpSocket;
+impl UdpSockets for HostUdpSockets {
+    type Socket = HostUdpSocket;
 
     fn open(
         &self,
@@ -389,8 +401,8 @@ impl UdpSockets for LinuxHostUdpSockets {
             set_flag(borrowed, uapi::SOL_SOCKET, option, true)?;
         }
         let send = SendState::open(borrowed, ipv6)?;
-        Ok(LinuxHostUdpSocket {
-            fd,
+        Ok(HostUdpSocket {
+            watched: self.readiness.watch(fd)?,
             ipv6,
             protocol,
             state: RefCell::new(SocketState {
@@ -402,6 +414,7 @@ impl UdpSockets for LinuxHostUdpSockets {
                 drops: u32::MIN,
                 errors: ErrorQueue::default(),
                 errors_first: false,
+                held_errors: false,
             }),
         })
     }
@@ -499,9 +512,60 @@ impl UdpSockets for LinuxHostUdpSockets {
         fields: IpSendFields,
         datagram: UdpDatagram<'_>,
     ) -> Result<(), SendError> {
-        let fd = socket.fd();
         let mut state = socket.state.borrow_mut();
-        let state = &mut *state;
+        let sent = self.send_now(socket, &mut state, header, fields, datagram);
+        socket.note_kept_entries(&mut state);
+        sent
+    }
+
+    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError> {
+        let mut state = socket.state.borrow_mut();
+        let received = self.receive_now(socket, &mut state, into);
+        socket.note_kept_entries(&mut state);
+        received
+    }
+
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
+        let mut unsent: c_int = c_int::default();
+        // SAFETY: SIOCOUTQ (TIOCOUTQ) writes one int through the pointer.
+        let result = unsafe { libc::ioctl(socket.fd().as_raw_fd(), libc::TIOCOUTQ, &mut unsent) };
+        if result < 0 {
+            return Err(last_host_error());
+        }
+        Ok(ByteCount(unsent as usize))
+    }
+
+    fn read_incoming_processor(
+        &self,
+        socket: &Self::Socket,
+    ) -> Result<Option<ProcessorIndex>, HostError> {
+        let processor = get_option::<c_int>(socket.fd(), uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU)?;
+        Ok(u32::try_from(processor).ok().map(ProcessorIndex))
+    }
+
+    async fn wait_for_events(
+        &self,
+        socket: &Self::Socket,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError> {
+        socket.watched.wait_for_events(interest).await
+    }
+
+    fn close(&self, socket: Self::Socket) {
+        drop(socket);
+    }
+}
+
+impl HostUdpSockets {
+    fn send_now(
+        &self,
+        socket: &HostUdpSocket,
+        state: &mut SocketState,
+        header: IpHeaderFields<'_>,
+        fields: IpSendFields,
+        datagram: UdpDatagram<'_>,
+    ) -> Result<(), SendError> {
+        let fd = socket.fd();
         let (upper_layer, ipv4) = match &header {
             IpHeaderFields::V4(header) => (header.route.upper_layer, true),
             IpHeaderFields::V6(header) => (header.route.upper_layer, false),
@@ -592,10 +656,13 @@ impl UdpSockets for LinuxHostUdpSockets {
         }
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError> {
+    fn receive_now(
+        &self,
+        socket: &HostUdpSocket,
+        state: &mut SocketState,
+        into: &mut [u8],
+    ) -> Result<UdpReceived, HostError> {
         let fd = socket.fd();
-        let mut state = socket.state.borrow_mut();
-        let state = &mut *state;
         // Reports a send asked for come before the datagrams that arrive after them.
         if state.errors_first {
             let settled = state.errors.settle(fd, &self.shortfalls)?;
@@ -625,34 +692,12 @@ impl UdpSockets for LinuxHostUdpSockets {
             },
         }
     }
-
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
-        let mut unsent: c_int = c_int::default();
-        // SAFETY: SIOCOUTQ (TIOCOUTQ) writes one int through the pointer.
-        let result = unsafe { libc::ioctl(socket.fd.as_raw_fd(), libc::TIOCOUTQ, &mut unsent) };
-        if result < 0 {
-            return Err(last_host_error());
-        }
-        Ok(ByteCount(unsent as usize))
-    }
-
-    fn read_incoming_processor(
-        &self,
-        socket: &Self::Socket,
-    ) -> Result<Option<ProcessorIndex>, HostError> {
-        let processor = get_option::<c_int>(socket.fd(), uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU)?;
-        Ok(u32::try_from(processor).ok().map(ProcessorIndex))
-    }
-
-    fn close(&self, socket: Self::Socket) {
-        drop(socket);
-    }
 }
 
-impl<'a> Configurable<LinuxHostUdpSocket, UdpSocketSetting<'a>> for LinuxHostUdpSockets {
+impl<'a> Configurable<HostUdpSocket, UdpSocketSetting<'a>> for HostUdpSockets {
     fn configure(
         &self,
-        socket: &LinuxHostUdpSocket,
+        socket: &HostUdpSocket,
         setting: UdpSocketSetting<'a>,
     ) -> Result<(), HostError> {
         let fd = socket.fd();
@@ -753,8 +798,8 @@ impl<'a> Configurable<LinuxHostUdpSocket, UdpSocketSetting<'a>> for LinuxHostUdp
     }
 }
 
-impl NegativeRouteAdvice<LinuxHostUdpSocket> for LinuxHostUdpSockets {
-    fn give_negative_route_advice(&self, socket: &LinuxHostUdpSocket) -> Result<(), HostError> {
+impl NegativeRouteAdvice<HostUdpSocket> for HostUdpSockets {
+    fn give_negative_route_advice(&self, socket: &HostUdpSocket) -> Result<(), HostError> {
         // Linux has no call for it: connecting again drops the cached route and takes a new flow hash.
         let peer = socket.state.borrow().peer;
         match peer {

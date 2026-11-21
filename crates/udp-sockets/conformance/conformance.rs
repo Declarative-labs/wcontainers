@@ -21,6 +21,9 @@
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU16;
+use std::pin::{Pin, pin};
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use etherparse::checksum::Sum16BitWords;
@@ -41,6 +44,7 @@ use wcontainers_internet_protocol::{
     TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_udp_sockets::{
     ChecksumCoverage, ReceiveCoalescing, SegmentSize, UdpChecksum, UdpDatagram, UdpLocalEnd,
     UdpProtocol, UdpReceived, UdpReceivedPacket, UdpSocketSetting, UdpSockets, ZeroChecksumReceipt,
@@ -2284,6 +2288,222 @@ pub fn close_frees_the_port<S: UdpSockets>(sockets: S) {
     );
 }
 
+/// No poll event at all, from which a check asks for the ones it waits for.
+const NO_EVENTS: PollEvents = PollEvents {
+    data_to_read: false,
+    exceptional_condition: false,
+    writing_possible: false,
+    error_condition: false,
+    hang_up: false,
+    descriptor_not_open: false,
+    normal_data_to_read: false,
+    priority_band_data_to_read: false,
+    normal_data_writable: false,
+    priority_data_writable: false,
+    message_available: false,
+    peer_shut_down_writing: false,
+};
+
+const READABLE: PollEvents = PollEvents {
+    data_to_read: true,
+    ..NO_EVENTS
+};
+
+const WRITABLE: PollEvents = PollEvents {
+    writing_possible: true,
+    ..NO_EVENTS
+};
+
+/// How many sockets a check waits on at once, and how many more waits it makes on the first of them.
+const WAITED_SOCKETS: usize = 32;
+const WAITS_ON_ONE: usize = 3;
+
+/// The wakes a waiting call has given, counted, for a check that polls the call by hand.
+#[derive(Default)]
+struct Wakes {
+    count: Mutex<usize>,
+    changed: Condvar,
+}
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        *self.count.lock().expect("the wakes") += 1;
+        self.changed.notify_all();
+    }
+}
+
+impl Wakes {
+    fn count(&self) -> usize {
+        *self.count.lock().expect("the wakes")
+    }
+
+    /// Whether the call has been woken `count` times before the patience of a check ends.
+    fn reach(&self, count: usize) -> bool {
+        let wakes = self.count.lock().expect("the wakes");
+        let (wakes, _) = self
+            .changed
+            .wait_timeout_while(wakes, PATIENCE, |wakes| *wakes < count)
+            .expect("the wakes");
+        *wakes >= count
+    }
+}
+
+/// Polls a waiting call once with a waker that counts into `wakes`.
+fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output> {
+    let waker = Waker::from(Arc::clone(wakes));
+    call.poll(&mut Context::from_waker(&waker))
+}
+
+/// The events a finished wait gave.
+fn finished(poll: Poll<Result<PollEvents, HostError>>) -> PollEvents {
+    match poll {
+        Poll::Ready(events) => events.expect("wait for events"),
+        Poll::Pending => panic!("the wait did not finish"),
+    }
+}
+
+/// Whether events hold none that was not asked for, but for those poll always reports.
+fn only_asked_for(events: PollEvents, interest: PollEvents) -> bool {
+    let asked = |got: bool, wanted: bool| !got || wanted;
+    asked(events.data_to_read, interest.data_to_read)
+        && asked(events.exceptional_condition, interest.exceptional_condition)
+        && asked(events.writing_possible, interest.writing_possible)
+        && asked(events.normal_data_to_read, interest.normal_data_to_read)
+        && asked(
+            events.priority_band_data_to_read,
+            interest.priority_band_data_to_read,
+        )
+        && asked(events.normal_data_writable, interest.normal_data_writable)
+        && asked(
+            events.priority_data_writable,
+            interest.priority_data_writable,
+        )
+        && asked(events.message_available, interest.message_available)
+        && asked(
+            events.peer_shut_down_writing,
+            interest.peer_shut_down_writing,
+        )
+}
+
+/// A wait for data does not finish before a datagram arrives, and finishes, woken once, when one does.
+pub fn a_wait_for_data_finishes_when_a_datagram_arrives<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let (receiver, to) = bound(&sockets, version, UdpProtocol::Udp);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        let wakes = Arc::new(Wakes::default());
+        let mut wait = pin!(sockets.wait_for_events(&receiver, READABLE));
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        std::thread::sleep(SILENCE);
+        assert_eq!(wakes.count(), 0, "woken with nothing to read");
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+        assert!(wakes.reach(1), "woken when the datagram arrives");
+        let events = finished(poll_with(wait.as_mut(), &wakes));
+        assert!(events.data_to_read, "{events:?}");
+        assert!(only_asked_for(events, READABLE), "{events:?}");
+        assert_eq!(wakes.count(), 1);
+        let mut into = buffer();
+        assert!(
+            sockets.receive(&receiver, &mut into).is_ok(),
+            "the datagram the wait saw"
+        );
+    }
+}
+
+/// A wait for what the socket already has finishes at its first poll, with only the events asked for.
+pub fn a_wait_for_writing_finishes_at_once<S: UdpSockets>(sockets: S) {
+    let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
+    let wakes = Arc::new(Wakes::default());
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&socket, WRITABLE)),
+        &wakes,
+    ));
+    assert!(events.writing_possible, "{events:?}");
+    assert!(only_asked_for(events, WRITABLE), "{events:?}");
+    assert_eq!(wakes.count(), 0);
+}
+
+/// A dropped wait gives up its waker and is not woken by the event it waited for; a new wait then sees it.
+pub fn a_dropped_wait_is_withdrawn<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let wakes = Arc::new(Wakes::default());
+    {
+        let wait = pin!(sockets.wait_for_events(&receiver, READABLE));
+        assert!(poll_with(wait, &wakes).is_pending());
+    }
+    assert_eq!(
+        Arc::strong_count(&wakes),
+        1,
+        "the dropped wait kept its waker"
+    );
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    std::thread::sleep(SILENCE);
+    assert_eq!(wakes.count(), 0, "a dropped wait was woken");
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&receiver, READABLE)),
+        &wakes,
+    ));
+    assert!(events.data_to_read, "{events:?}");
+}
+
+/// Many waits at once, on many sockets and several on one, each finish woken once when their datagram arrives.
+pub fn many_waits_each_wake_once<S: UdpSockets>(sockets: S) {
+    let receivers: Vec<_> = (0..WAITED_SOCKETS)
+        .map(|_| bound(&sockets, IpVersion::V4, UdpProtocol::Udp))
+        .collect();
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let watched = receivers
+        .iter()
+        .chain(core::iter::repeat_n(&receivers[0], WAITS_ON_ONE));
+    let mut waits: Vec<_> = watched
+        .map(|(receiver, _)| {
+            (
+                Box::pin(sockets.wait_for_events(receiver, READABLE)),
+                Arc::new(Wakes::default()),
+            )
+        })
+        .collect();
+    for (wait, wakes) in &mut waits {
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    for (_, to) in &receivers {
+        send(&sockets, &sender, UdpProtocol::Udp, from, *to, PAYLOAD);
+    }
+    for (wait, wakes) in &mut waits {
+        assert!(wakes.reach(1), "a wait woken when its datagram arrives");
+        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
+    }
+    std::thread::sleep(SILENCE);
+    for (_, wakes) in &waits {
+        assert_eq!(wakes.count(), 1, "a wait woken more than once");
+    }
+}
+
+/// An ICMP error about a datagram sent ends a wait for data with the error condition, which poll always reports.
+pub fn an_icmp_error_ends_a_wait_for_data<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let closed = closed_port(&sockets, version);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        let wakes = Arc::new(Wakes::default());
+        let mut wait = pin!(sockets.wait_for_events(&sender, READABLE));
+        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+        send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+        assert!(wakes.reach(1), "woken by the ICMP error");
+        let events = finished(poll_with(wait.as_mut(), &wakes));
+        assert!(events.error_condition, "{events:?}");
+        let mut into = buffer();
+        assert!(matches!(
+            sockets.receive(&sender, &mut into),
+            Ok(UdpReceived::Packet(_))
+        ));
+    }
+}
+
 /// A datagram whose route must stay on its link is not sent through a gateway; one of universe scope is.
 pub fn link_scope_keeps_a_datagram_on_its_link<S: UdpSockets>(sockets: S) {
     let to = SocketAddr::new(IpAddr::V4(BEYOND_A_GATEWAY), u16::MAX);
@@ -2774,6 +2994,11 @@ macro_rules! tests {
             configurable_contract_holds_for_a_setting_taken
             configurable_contract_holds_for_a_setting_refused
             negative_route_advice_contract_holds
+            a_wait_for_data_finishes_when_a_datagram_arrives
+            a_wait_for_writing_finishes_at_once
+            a_dropped_wait_is_withdrawn
+            many_waits_each_wake_once
+            an_icmp_error_ends_a_wait_for_data
         );
     };
     (@each $value:expr; $($name:ident)*) => {

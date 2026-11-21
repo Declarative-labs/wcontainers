@@ -12,8 +12,8 @@ use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{ByteCount, IpSocketSetting, IpVersion};
 use wcontainers_kernel::UserId;
 use wcontainers_udp_sockets::{UdpProtocol, UdpSocketSetting, UdpSockets};
-use wcontainers_udp_sockets_linux_host::{
-    LinuxHostUdpSockets, RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST,
+use wcontainers_udp_sockets_host::{
+    HostUdpSockets, RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST,
 };
 
 /// How many networks the tests of one run can take, all made before any test opens a socket.
@@ -150,7 +150,7 @@ static NETWORKS_LEFT: LazyLock<Mutex<Vec<OwnedFd>>> = LazyLock::new(|| {
 });
 
 /// Moves this thread into a network of its own, made as the suite asks.
-fn isolated() -> LinuxHostUdpSockets {
+fn isolated() -> HostUdpSockets {
     let network = NETWORKS_LEFT
         .lock()
         .expect("the networks left")
@@ -162,7 +162,7 @@ fn isolated() -> LinuxHostUdpSockets {
         0,
         "enter the network"
     );
-    LinuxHostUdpSockets::new()
+    HostUdpSockets::new().expect("make the host's UDP sockets")
 }
 
 wcontainers_udp_sockets_conformance::tests!(isolated());
