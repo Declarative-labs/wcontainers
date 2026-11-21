@@ -1,6 +1,6 @@
 //! Processes and threads.
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -92,11 +92,14 @@ pub(crate) struct Process {
     pub thp_disable: u64,
     /// Signals sent to the whole process and not yet taken by one of its threads.
     pub pending: Pending,
+    /// Its tasks taken off this kernel and not put back; the process lives while one is.
+    pub away: BTreeMap<Tid, Away>,
     /// The signal the parent is sent when this process ends (clone's low byte); 0 for none.
     pub exit_signal: u32,
     /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
     pub ended: Option<i32>,
-    /// What a zombie's first thread keeps until it is reaped.
+    /// What the first thread keeps while it is not on this kernel: ended (a zombie's, until it is
+    /// reaped) or taken off.
     pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.
     pub pidfd: Option<Node>,
@@ -207,6 +210,48 @@ impl Clone for Charge {
 impl Drop for Charge {
     fn drop(&mut self) {
         self.count.set(self.count.get() - self.amount);
+    }
+}
+
+/// What the kernel keeps of a task taken off it: the signals it blocked, those sent to it since
+/// (which it takes when it is put back), what `/proc` shows of it, and what its end does if its
+/// process ends while it is away.
+#[derive(Clone)]
+pub(crate) struct Away {
+    pub signal_mask: u64,
+    pub pending: Pending,
+    pub shown: Leader,
+    /// Its file system context while the task lives, for `/proc`'s links.
+    pub fs: alloc::rc::Weak<RefCell<FsContext>>,
+    /// What its end stores into the memory; none for a task that goes on running elsewhere.
+    pub last_stores: Option<LastStores>,
+    /// The `vfork` parent it keeps waiting.
+    pub vfork_parent: Option<Tid>,
+}
+
+/// `set_robust_list`'s head and `set_tid_address`'s word, for a thread's last stores at its end.
+#[derive(Clone, Copy)]
+pub(crate) struct LastStores {
+    pub robust_list: u64,
+    pub clear_child_tid: u64,
+}
+
+impl Away {
+    pub fn of(thread: &Thread) -> Self {
+        Self {
+            signal_mask: thread.signal_mask,
+            pending: Pending::default(),
+            shown: Leader {
+                schedule: thread.schedule,
+                ..Leader::of(thread)
+            },
+            fs: Rc::downgrade(&thread.fs),
+            last_stores: Some(LastStores {
+                robust_list: thread.robust_list.0,
+                clear_child_tid: thread.clear_child_tid,
+            }),
+            vfork_parent: thread.vfork_parent,
+        }
     }
 }
 
@@ -348,6 +393,11 @@ pub(crate) struct Thread {
     pub filling: bool,
     /// Waits on a watch with a signal's frame to write: acts on its signals before it runs.
     pub delivering: bool,
+    /// A signal taken and announced to act on, kept while the thread waits on a watch first.
+    pub signal_taken: Option<Queued>,
+    /// Taken off its kernel in a call: the call's next run answers as if a signal with no
+    /// handler had come (Linux's freezer, `fake_signal_wake_up`).
+    pub suspended_in_call: bool,
     /// Taken off the CPU in its own code since it last went back to it, so its restartable
     /// sequence is checked first (`rseq_event_mask`).
     pub rseq_event: bool,
@@ -652,6 +702,8 @@ impl Thread {
             woken_at: None,
             filling: false,
             delivering: false,
+            signal_taken: None,
+            suspended_in_call: false,
             rseq_event: false,
             fault: (0, 0),
             forced: 0,

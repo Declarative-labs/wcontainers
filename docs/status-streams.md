@@ -14,23 +14,378 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   the ninth run (see "S2 sixth check findings"); its seventh check's findings settled in the
   tenth run (see "S2 seventh check findings"); its eighth check's findings settled in the
   eleventh run (see "S2 eighth check findings").
-- What comes next: S2's ninth independent check. After S2 passes, the next milestone (to be
-  specified) builds the interface crates of origin/phase-1-interfaces; not started here. Not built and left open on purpose: export of
-  a process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
-  docs/embedder-interface.md), the watch put on shared pages when one sharer leaves (it comes with
-  `suspend`), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made by connect,
-  accept, export or import; `/dev/console` under `-t`. Ruled on 2026-11-19 but not part of S2 (in
-  the document's "Not built"): `type ProcessState` (to wait for the reviewable-rust layout, as
-  ruled), signals as an input (`on_signal_delivering`, `Process::send_signal`), the shared-memory
-  hooks `on_shared_memory_mapping` and `on_shared_memory_unmapped` with `MemoryObject` and its
-  branded ids, and a getter for a process's memory id (for `WorkloadPlacement`).
+- S2 passed its ninth check and is merged (origin/phase-1 at cefb66ab); its four carried findings
+  are settled in S3's first run (see "S3").
+- S3 (the orchestrator's 2026-11-20 section of the brief): all three parts are built and tested
+  (signals as an input, shared memory announced per process with the memory id, and suspend and
+  resume by task with a process context, the last in run 2); run 3 made a task taken in its call
+  answer as Linux's stop makes it answer (the brief's 03:00 and 04:00 rules) and measured the
+  speed with no hook implemented unchanged (+0.05 % user CPU, 12 alternating rounds). The first
+  independent check of S3 found four blocking and three minor problems; run 4 settled them (see
+  "S3 first check findings"). The second check found three blocking and five minor problems;
+  run 5 settled them (see "S3 second check findings"). Run 6 changed no code: on the ARM
+  machine the new tests equal the reference, the whole suite's verdicts are unchanged, and the
+  speed with no hook implemented is unchanged (see "Measurements", S3 run 6). Run 8 changed no
+  code: Docker Desktop on the Mac started containers again at 08:08 Pacific, and the 20 binaries
+  holding the manual's 25 Mac-only tests passed there (94 tests, `splice_holds_the_pipe` among
+  them), so with the ARM machine's verdicts no test fails by our side (see "Measurements", S3
+  run 8). The third check found two blocking and six minor problems; run 9 settled them (see
+  "S3 third check findings"), with a new test program (guest/edges.c, tests/edges.rs), the whole
+  suite and the Mac-only binaries (no test fails by our side) and the speed with no hook
+  implemented (see "Measurements", S3 run 9). The fourth check found two blocking and three
+  minor problems; run 10 settled them (see "S3 fourth check findings"), with a new test program
+  (guest/taskend.c, tests/taskend.rs). The fifth check found one blocking and four minor
+  problems; run 11 settled them (see "S3 fifth check findings"). Next: S3's sixth independent
+  check.
+- Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
+  `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
+  scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
+  Also still open: any wire form (export, import), `set_thread_ordering`, the inspection hooks,
+  `StopReason`; ends made by connect, accept, export or import; `/dev/console` under `-t`.
+
+## S3
+
+Run 1 (this run) did:
+- The carried findings: the interface document says only `/proc/<pid>/cmdline` is open to anyone
+  and `environ` needs Linux's `PTRACE_MODE_READ`; a new test,
+  `an_environment_read_through_proc_meets_the_watches_of_the_process_it_names` (embedder.c
+  `environ`, which runs itself again with a 3-page variable and reads its environment through
+  /proc, from itself and from a child), passes beside the command line's; the eleventh run's
+  wall times are stated in "Measurements"; the generic kernel is recorded as waiting; the ARM
+  machine's full disk is under "For the orchestrator".
+- Part 1, signals as an input: `SignalInformation` (the generated `siginfo`),
+  `System::on_signal_delivering`, `Process::send_signal`, the counter `signal from the embedder
+  not sent`. Firing point and guarantees: docs/embedder-interface.md. A thread now keeps the
+  signal it took while it waits on a watch over the signal's frame (`Thread::signal_taken`), so
+  the hook fires once per signal. Tests: `every_signal_a_thread_takes_to_act_on_is_announced_first_with_its_record`
+  (embedder.c `signals`: queued, blocked then let through, sent by another thread during a read
+  with `SA_RESTART`, a fault; one taken by sigwaitinfo and one ignored are not announced; the
+  hook's records equal what the handlers saw, and the output equals the reference's) and
+  `a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends` (embedder.c
+  `interrupted`: the reference's child is interrupted by its parent's sigqueue; ours by the
+  embedder at the read's request, while the read waits on a watch the hook left unmet, and
+  between steps; same output, one announcement, and a signal to another process's thread and
+  one with number 0 counted as not sent).
+- Part 2: `MemoryObject` and its four ids, `on_shared_memory_mapping`,
+  `on_shared_memory_unmapped`, `Process::memory_id` (sharing.rs; address maps note shared
+  mappings going in or out through `MapNotes`, which replaced the shared `outgrown` cell; the
+  kernel compares what live processes map with what it announced). Tests:
+  `shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_shows_it`
+  (embedder.c `sharing`: a file mapped read-only by a process and by its forked child, then
+  writable by the parent, which announces both earlier mappings then; shared anonymous memory
+  cut in two; a System V segment attached and detached; a memory file split by mprotect and
+  moved by mremap; a shared mapping replaced by a private one; a child running a program; at
+  each step the announced pages and offsets of the process equal its /proc/self/maps in the
+  reference, step by step, each end names what was announced, and all end),
+  `processes_in_one_memory_have_one_memory_id_and_a_new_program_a_new_one`, and a unit test of
+  the piece arithmetic.
+- Every hook test's recorder also runs every handle operation inside `on_signal_delivering`.
+
+Run 2 did part 3, suspend and resume by task with a process context (suspend.rs):
+- On `Kernel`: `suspend_tasks(cpu, &[TaskId])`, `suspend_process(cpu, TaskId)`,
+  `copy_process_context(TaskId)`, `resume_process(ProcessContext, ExecutionConfig)`,
+  `resume_tasks(cpu, tasks)`; on the hook's `Process` handle: `suspend_tasks`,
+  `suspend_process(self)`, `copy_process_context`. `SuspendedTask` (the `Thread` record, its
+  registers, where it was in line) and `ProcessContext` (the `process::Process` record and what
+  the embedder was told it maps of shared memory) are the kernel's own types. Firing points,
+  guarantees and what the batch means while one thread runs at a time: docs/embedder-interface.md
+  "Suspending and resuming tasks".
+- A parked call keeps its call slot and runs again when put back; a call waiting in a futex's,
+  semaphore set's or message queue's line leaves it and is made again (restart_syscall for a
+  timed futex wait), so a wake while away is not lost. Inside a hook, the thread the kernel is in
+  the middle of a step for, a task being started by an exec, and the tasks of a process being
+  ended are not taken (counted, `task in the middle of a kernel step not suspended`), except the
+  thread at `intercept_system_call_request`, which is taken before its call and makes it again.
+- New kernel fields: `stepping`, `call_not_begun`, `starting_task`, `ending_process`. `wake_thread`
+  and the sharing announcements now pass over a task or process that is not on the kernel; a
+  thread ending while its siblings are away hands its children to none.
+- Test: `tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs` (embedder.c
+  `suspend`: a reader of an empty pipe, a waiter on a mutex the main thread holds, a timed futex
+  waiter, a taker from a System V semaphore; the main thread sleeps twice, then writes the pipe,
+  wakes the futex, lets the mutex go and gives to the semaphore, joins, prints). Two plans, each
+  in all 24 orders of putting the four tasks back: from hooks (the
+  four waiting threads at the second sleep's request, kept away while the main thread wakes
+  them; the main thread itself at its write's request, before the call; asking for it again at
+  the write's response is refused and counted once), and between steps (one thread at a time and
+  a task not on the kernel; every thread; the whole process, its tasks first without the context
+  (all handed back), the context, a copy of it again (handed back), then the tasks; the whole
+  process moved to a second `Kernel` value, checked there by memory id and size, and brought
+  back). The output equals the reference's in every case. With the futex line leaving disabled,
+  the hooks plan hangs (the mutex waiter's wake is lost): checked once on the ARM machine.
+- Not covered by a test: a message queue waiter taken (it leaves its line as the futex waiter does);
+  running a moved process on the second kernel (only its state is checked there). The semaphore
+  waiter would also go on correctly on the same kernel without leaving its line (its result is
+  kept by its number), so only the futex case is shown to need it.
+
+Run 3 did the brief's rules of 2026-11-20 03:00 and 04:00 (written after run 2 ended):
+- A task taken in its call (parked, or woken and not yet run) is treated as Linux treats a signal
+  with no handler arriving in that call: the thread's `suspended_in_call` makes `signal_pending`
+  true for the call's next run (Linux's freezer wake), cleared once that run has been made, and
+  each call answers by its own code; the restart codes then run it again. Waiters in lines a wake
+  chooses from leave them when taken: a futex wait (its deadline dropped, so it answers as
+  interrupted and `restart_syscall` keeps its time), a semaphore operation (told EINTR, Linux's
+  answer after a stop), a message queue send or receive. This replaced run 2's restart from the
+  instruction for those three and its "keeps its call and goes on waiting" for the rest.
+- The per-call list (restart, go on with the time left, answer what was done, EINTR) is in
+  docs/embedder-interface.md, "Suspending and resuming tasks".
+- Test: `a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer`
+  (guest/stopped.c, its own program: a child's seven threads wait in a futex wait, a futex wait
+  already woken, a 600 ms sleep, a write of twice the pipe's size, a semaphore operation,
+  `epoll_wait` and a pipe read; the parent stops the child, changes and wakes the futex and reads
+  the semaphore's waiter count while it is stopped, continues it, writes the byte and empties the
+  pipe). The reference is stopped and continued with SIGSTOP and SIGCONT; ours is taken off the
+  kernel between steps and put back, the parent's `kill` answered 0 and its wait for the stop
+  answered with the child (the parent is taken at that wait so the kernel goes idle). Two plans
+  (`suspend_process` then `resume_process` and `resume_tasks`; `suspend_tasks` of every thread put
+  back in reverse), 3 seeds each. Every answer equals the reference: EAGAIN, 0, 0 having slept the
+  whole 600 ms, 65536, EINTR, EINTR, 1; the wake while stopped finds nobody (0), no semaphore
+  waiter. With `suspended_in_call` left out of `signal_pending` it fails (the epoll wait never
+  ends).
+- embedder.c `suspend`'s semaphore taker takes again after EINTR (the reference never sees one).
+- stopped.c is its own program because adding it to embedder.c made Nix's zig 0.16.0 on the ARM
+  machine emit an object with undefined section symbols (`ld.lld: undefined symbol:` with no
+  name), as the manual says it does for fdinfo.c; the Mac's zig was not tried.
+
+Open points for the check and the owner (also in "Departures"):
+- A process resumed on a kernel without its parent has no reaper there: its end on that kernel
+  is not built (the test does not let it end there).
+
+How S3's tests were run: see "Measurements" (S3 run 1).
+
+## S3 first check findings, settled in run 4
+
+The check (scratch streams/s3check, its own program s3check.c and test s3check.rs) found:
+- Blocking, a thread exiting while its siblings are away ended the process. Now a process's
+  record keeps its tasks taken off the kernel (`Process::away`: the number, the signals each
+  blocks, the signals sent to it since); `exit` and seccomp's KILL_THREAD end the process only
+  when no task is on the kernel or away; any end of the process ends its tasks away. Test
+  `a_process_whose_main_thread_is_away_goes_on_when_its_other_thread_ends`.
+- Blocking, a signal to a process whose tasks are all away was dropped. Now it is kept in the
+  process's pending set, as Linux keeps it for a stopped process; a task put back acts on it
+  (a task with nothing to do in a call is put among those with a signal to act on). SIGKILL
+  ends the process at once, as it ends a stopped one. Test
+  `a_signal_to_a_process_whose_tasks_are_away_waits_for_them_and_sigkill_does_not` (SIGTERM and
+  SIGKILL while the child's read is away, the pipe closed before it comes back).
+- Blocking, a thread's own POSIX timer firing while it is away was lost. Now `tgkill` and its kin
+  and a timer aimed at the thread find a task away and keep the signal with its record; it goes to
+  the task when it is put back. Test
+  `a_threads_timer_firing_while_it_is_away_interrupts_its_read_when_it_is_back`. The check's own
+  order (the byte written to the pipe before the task comes back) still answers the byte where
+  Linux answers EINTR: the call runs again when the task is put back and finds the byte first.
+  Left as a known failure, `a_threads_timer_firing_while_it_is_away_interrupts_its_read_though_the_byte_came`
+  (ignored, with the reason; it fails when run: "read 1" against the reference's "read -1
+  Interrupted system call").
+- Blocking, a copy of a context resumed on a second kernel redirected the original's address map.
+  Now the copy has its own map and handler table, no pending signal, and every task of the process
+  counted as away from it; an address map notes to every kernel a process using it is on (taking
+  a process stops its map noting to the kernel it left unless a process there still uses it). Test
+  `shared_memory_is_announced_on_the_first_kernel_after_a_copy_goes_on_a_second`.
+- Minor, a parent's wait for a child whose context is away answered ECHILD. The kernel now keeps
+  the parent, group and exit signal of a process whose context it gave up (`processes_away`);
+  `wait4` and `waitid` wait for it (`WNOHANG` answers 0), reparenting reaches it, and the context
+  takes its parent from there when it comes back. Test
+  `a_parent_waits_for_a_child_whose_process_is_away`. `kill` of a process away still answers
+  ESRCH (written in the document; see "Departures").
+- Minor, the handle's `suspend_process` answered a copy that looked like a take. `ProcessContext`
+  now says how it was made, `origin()` (`ContextOrigin::{Suspended, Copied}`), an addition to the
+  ruled interface listed for the owner. `Kernel::suspend_process` answers none for a process being
+  ended. Test `a_hooks_process_whose_thread_is_in_its_step_stays_and_says_its_context_is_a_copy`.
+- Minor, the check could not read its whole-suite result: this run's suite is in "Measurements".
+The new tests are tests/away.rs with guest/away.c, compared with the reference where nothing is
+taken.
+
+## S3 second check findings, settled in run 5
+
+The check (scratch streams/s3check2, its own program s3chk.c and test s3chk.rs) found:
+- Blocking, the memory and file blocks of a context away were dropped when the last process on
+  the kernel sharing them ended (a forked child's end dropped the parent's program file block; a
+  `CLONE_VM` child's end dropped the memory). Now the kernel keeps a weak reference to the map
+  of each context taken or copied off it, with its memory, until it is put back here
+  (`Kernel::maps_away`, `live_maps_away`): `memory_in_use_elsewhere`, the release of file
+  blocks, a file's block moved or cut, `writably_mapped` (memfd seals) and System V
+  attachments count those maps. Also found while fixing it: a child that ended while its
+  parent's context was away was reaped at once, as if it had no parent; now it stays a zombie for
+  the parent, its SIGCHLD is kept (`ProcessAway::signals`) and sent when the parent is back,
+  and a parent that does not want its children's zombies reaps them on its return. Tests
+  `a_parent_away_while_its_forked_child_ends_goes_on_when_it_is_back` and
+  `a_parent_away_while_a_child_in_its_memory_ends_goes_on_when_it_is_back` (away.c `leave`,
+  with a memory file shared with the child).
+- Blocking, a process taken inside its own `on_shared_memory_mapping` was announced its next
+  piece, with a handle that panicked. Now `announce_sharing` keeps what each process was told in
+  step piece by piece (updated before each hook), skips a process that left, and stops when a
+  hook started a new round; `announce` and `announce_start` fire no hook for a process taken in
+  an earlier hook of the same moment (sharing or kernel-write hooks); a watch touch on a process
+  that left finds no watch. `resume_process` makes the kernel compare what the process maps with
+  what it was told at its next hook, so it is told the rest then. Test
+  `a_process_taken_in_its_own_sharing_hook_is_told_the_rest_when_it_is_back` (away.c `pieces`:
+  every hook reads `info()`, each end names what was told, all end, the second piece told after
+  the process is back).
+- Blocking, the test host did not run S3's operations or hooks. The recorder now implements both
+  sharing hooks and runs `memory_id`, `copy_process_context`, `suspend_tasks` of none and
+  `send_signal` of number 0 in every hook; it accepts `SharedNotWritable` when writing back a
+  page of a read-only shared mapping (as documented). New test
+  `every_operation_of_the_handle_is_legal_in_the_shared_memory_hooks` (embedder.c `sharing`).
+  Taking a process inside a hook is in the suspend tests, as the document now says.
+- Minor, `send_signal` to a task away was dropped. Now it is kept as tgkill's is. Test
+  `a_signal_the_embedder_sends_to_a_task_away_waits_for_it` (away.c `sent`).
+- Minor, a socket wait with `SO_RCVTIMEO` or `SO_SNDTIMEO` restarted after a stop or a handler.
+  Now `wait_room` answers EINTR when the socket has a timeout (`sock_intr_errno`). Tests
+  `a_socket_wait_with_a_receive_timeout_taken_off_answers_as_a_stop_makes_it_answer` and
+  `a_socket_wait_with_a_receive_timeout_is_not_restarted_after_a_handler` (away.c `socket`);
+  the table in the interface document says so.
+- Minor, the context could carry pieces not yet told: settled with the second finding.
+- Minor, no task runs on a second kernel: unchanged, as the ruling asks for one kernel (see
+  "Departures"). The first finding's fix also covers a context resumed on a second kernel
+  sharing the executor, as far as the first kernel goes: the first keeps the memory while the
+  map lives.
+- Minor, the reference's verdicts were owed: given in run 6 on the ARM machine, but for the
+  Mac-only list (see "Measurements", S3 run 6).
+Each new test fails without its fix (checked on this Mac with the expected output written from
+the program in place of the reference's: SIGSEGV, "the kernel is idle with nothing to wake it",
+the panic at system.rs:341, "read 1" and "recv -1 Resource temporarily unavailable"; scratch
+streams/negative.sh and negative.log).
+
+## S3 third check findings, settled in run 9
+
+The check (scratch streams/s3check3, its own program chk3.c and test chk3.rs) found:
+- Blocking, a signal sent while a thread waited on a watch outside a call (its own load or store
+  met a watch) was acted on only at its next system call; a thread alone that made none never
+  acted on it. Now `wake_thread` puts such a thread, when the watches change and a signal is
+  pending for it, among those that act on their signals, so it does before it runs the
+  instruction again or makes any call, as the document says. Test
+  `a_thread_alone_acts_on_a_signal_sent_during_its_watch_wait_once_the_watches_change`
+  (tests/edges.rs, guest/edges.c `alone`: the hook log must read watched, accessed, sent,
+  unwatched, then at once the delivery, and the output equals the reference's, where the main
+  thread sends the signal itself).
+- Blocking, an end could cover two announced starts. What the kernel counts as told now stays
+  the starts it announced less the ends (the merged picture of what is mapped is no longer put in
+  its place), so an end is always the whole or a part of one start: two mappings side by side, a
+  mapping and what `mremap` grew it by, end as two hooks. The document says so and no longer
+  says "exactly a range". Test
+  `every_end_of_shared_memory_lies_in_one_start_and_each_step_matches_proc_maps` (edges.c `ends`:
+  side by side, grown, covered in the middle by shared anonymous memory, a hole; for a file and a
+  memory file; each end must lie inside one start, and each step's pages equal the reference's
+  /proc/self/maps).
+- Minor, a read-only mapper was not announced while the only writer's context was away. Now
+  `shared_mapped` also counts writable mappings in the maps of contexts off the kernel that still
+  live (`live_maps_away`). Test `a_read_only_mapper_is_announced_while_the_only_writer_is_away`
+  (edges.c `writer`: the parent is taken off between steps while its child maps the file
+  read-only, and put back after the child ends).
+- Minor, our /proc/<pid>/maps joins two shared mappings of consecutive pages of a /tmp file made
+  side by side; the reference shows two lines. Not changed (the kernel track's map merging, not
+  the interface): the reference keeps them apart because /tmp there is on overlayfs, whose mmap
+  puts the real file in the mapping after the merge check; for a memory file the reference joins
+  them too (edges.c `ends`, steps file-adjacent and memfd-adjacent). The new test compares each
+  step page by page and the other lines exactly. Listed for the kernel track below.
+- Minor, nanosleep interrupted at once answers the whole request left. Not changed: the time left
+  is computed from the embedder's clock (`Host::monotonic_nanoseconds`), read when the call
+  checks; the test host's clock is virtual and moves only with instructions run, so no time
+  passes between the call's start and its check. An embedder on a real clock answers less, as
+  Linux does. Adding time the clock did not show would be faking it.
+- Minor, the memory id test could not fail for a forked child given its parent's id, and did not
+  cover `CLONE_VM`. New test `a_child_shares_its_parents_memory_id_only_while_it_shares_the_memory`
+  (edges.c `memory`: a fork child must differ from its parent, a vfork child and a `CLONE_VM`
+  child must equal it, the vfork child's program must be new). The old test stays.
+- Minor, no task runs on a second kernel: the document now says what is tested (a second kernel
+  value accepts a context and tasks, its state is checked there, they come back) and that no test
+  runs a task there; the ruling is one kernel. No test added.
+- Minor, the speed comparison's pitfall: recorded under "Measurements" (S3 run 9), and this run's
+  comparison builds both binaries alone.
+Each of the three new tests of the fixed findings fails without its fix (ARM machine, the kernel
+crate's changes stashed, scratch streams/run9/negative1.log): "end 0x0 36000000..36002000 lies in
+no one start", "step reader ... left: {} right: {905986048: 0}", and "worker handled 0 capped
+1" with the delivery after the worker's next call.
+
+## S3 fourth check findings, settled in run 10
+
+The check (scratch streams/s3check4, its own program chk4task.c and test chk4.rs) found:
+- Blocking, `execve` left the process's tasks away alive: a worker away put back after the main
+  thread ran a new program was placed in the new memory with the old registers, and with the first
+  thread away a new program's `SYS_exit` did not end the process. Now `only_thread` (Linux's
+  `de_thread`) ends the tasks away too (`end_tasks_away`), and `resume_tasks` hands back any task
+  its process no longer counts as away (`place_task` asks `process.away`), so one ended this way,
+  or whose number names a new task, is never placed. Tests
+  `a_task_away_when_its_main_thread_runs_a_new_program_ends_and_is_handed_back` and
+  `a_main_thread_away_when_another_thread_runs_a_new_program_ends_and_the_program_ends_with_its_thread`
+  (taskend.c `exec-main`, `exec-worker`, the latter running /proc/self/exe with the first thread
+  away).
+- Blocking, the number of a task away whose process ended was never freed, and `carried` ignored
+  tasks away. Now each task away that ends goes to `ids_let_go`; `carried` counts tasks away, the
+  processes whose context is away and their groups; the container's end also frees the numbers of
+  contexts away. Test `the_number_of_a_task_away_is_freed_when_its_process_ends` (taskend.c
+  `exit`: the number must be freed before the parent goes on).
+- Minor, /proc did not show a task away. Now `Away` keeps what /proc shows (`shown`, a `Leader`)
+  and a weak reference to its file system context: the thread count, the `task` directory,
+  `/proc/<tid>`, the state `T (stopped)`, the credentials, and the `exe`, `cwd` and `root` links
+  (also the process's when the first thread is away) show it. Its `fd` and `fdinfo` directories
+  are empty while it is away (the descriptor table is not held, as holding it would change who
+  closes the files). Test `proc_shows_a_task_away_as_a_task_of_its_process` (taskend.c `proc`,
+  `leader-proc`). The state is not compared (the reference's thread is in its read, not stopped).
+- Minor, the speed against S2 as merged: measured again with 20 rounds (see "Measurements", S3
+  run 10).
+- Minor, the last stores of a task away at its process's end were not made. Now a task away ends
+  as a thread does: `futex::task_end` (split from `thread_end`, working from the process's memory
+  and the task's number, so it needs no thread on the kernel) marks its robust locks and clears
+  and wakes its `set_tid_address` word, its semaphore adjustments are made (`exit_sem` now takes
+  the process), and a `vfork` parent it kept waiting is woken. Test
+  `a_robust_lock_held_by_a_task_away_is_marked_as_its_owners_death_when_its_process_ends`
+  (taskend.c `robust`: the parent's lock answers EOWNERDEAD).
+Found while fixing them, and fixed: a `vfork` parent whose child was taken (or whose child's
+context was) was let go at its next look (`vfork_wait` found no thread); now `Away` and
+`ProcessAway` keep the `vfork` parent and it waits. Test
+`a_vfork_parent_goes_on_when_its_child_away_is_killed` (taskend.c `vfork`: another child kills the
+taken child). Tasks away also count against `RLIMIT_NPROC` now (not tested).
+All six new tests fail without the kernel changes (ARM machine, scratch streams/run10/negative.log:
+"the kernel is idle with nothing to wake it" for exec-main, robust and vfork, "exec failed No such
+file or directory" for exec-worker, "threads 1 task-dirs 1 worker: exe 0 cwd 0 status 0 found 0"
+for proc, and the freed-number assertion for exit) and pass with them.
+Not done: a `pidfd` for a thread away is not woken when its process ends with it away; a task away
+dropped by the embedder instead of put back lets go of its descriptor table outside the kernel.
+
+## S3 fifth check findings, settled in run 11
+
+The check (scratch streams/s3check5, its own program chk5.c and test chk5.rs) found:
+- Blocking, a task taken while it waits outside any call (its own load or store met a watch, or
+  its signal's frame did, or pages of a backend file not here) was marked as taken in a call
+  (`suspended_in_call`), which only a call run again clears; so once put back its next unrelated
+  calls answered EINTR (`epoll_wait`, and `nanosleep` with no handler at all). Now `take_task`
+  marks only a task that is in a call (`filling` is false); one waiting outside a call touches the
+  memory again when put back (announced again while the watch stays) and goes on waiting, and a
+  signal it was acting on is acted on as before. Tests (edges.c `taken`, its region named in the
+  mark's arguments): `a_task_taken_while_its_store_waits_on_a_watch_is_not_interrupted_later`
+  (the checker's case) and its signal-frame twin
+  `a_task_taken_while_its_signal_frame_waits_on_a_watch_is_not_interrupted_later` (the frame on a
+  watched alternate stack). Both ask for the access again after the put back, and output equal
+  to the reference's. ARM machine, 8 seeds: both fail without the change ("epoll -1 Interrupted
+  system call", "sleep -1 Interrupted system call") and pass with it (scratch
+  streams/s3run11/taken.log).
+- Minor, signals that dump core (SIGQUIT, SIGSEGV, SIGABRT and the others, sent by `kill`) ended
+  the process from the sender's side, so `on_signal_delivering` never fired for them. Linux's
+  `complete_signal` takes that shortcut only for fatal signals that do not dump core. Now
+  `complete` does the same, and a thread takes the signal in `deliver`, where the hook fires
+  and the default action ends the process. Test
+  `a_signal_that_dumps_core_is_announced_and_one_that_only_ends_is_not` (edges.c `fatal`: five
+  children kill themselves with SIGQUIT, SIGSEGV, SIGTERM, SIGABRT and SIGUSR2; output equal to
+  the reference's, announced exactly 3, 11, 6). ARM machine, 8 seeds: without the change nothing
+  is announced; with it, it passes (s3run11/fatal.log). Document and "Departures" corrected.
+- Minor, no test showed run 10's "a copy's end makes no last stores for the tasks going on with
+  the original". Test `a_copys_end_makes_no_last_stores_for_the_tasks_going_on_with_the_original`
+  (taskend.c `robust-copy`): at the child's mark the test copies its context and takes the whole
+  process (the original, held as if it went on elsewhere), puts the copy on the kernel and only
+  the marking thread back; the child exits, and its worker's robust lock must stay held ("lock
+  held"; the reference, where the worker ends, says "lock owner died"). With `last_stores` kept
+  for a copy's tasks it fails with "lock owner died" (ARM machine, 8 seeds, s3run11/copyend.log).
+- Minor, the speed's slow mode: see "Measurements", S3 run 11.
+- Minor, `splice_holds_the_pipe` (S1) gives no stable verdict on the ARM machine: see
+  "Departures" (S1, the splice test's verdict) and "For the orchestrator".
 
 ## How to run
 
 - The embedder's tests: `RUST_TEST_THREADS=3 nix develop -c cargo test -j 4 -p
   wcontainers-kernel-test --test embedder` (Docker must be running for the lazy memory test).
   Our side runs under `SCHEDULE_SEEDS` seeds (3 if unset) from `SCHEDULE_SEED` (1 if unset).
-- The stream tests: the same with `--test streams`.
+- The stream tests: the same with `--test streams`; S3's tests: `--test embedder --test away
+  --test edges --test taskend`.
 - The literal check: `RAYON_NUM_THREADS=3 nix develop -c cargo run -q -p wcontainers-literals --
   check` (exit 0).
 - Everything: `RUST_TEST_THREADS=3 nix develop -c cargo test --no-fail-fast -j 4 -p wcontainers-abi
@@ -652,6 +1007,250 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 10, speed with no hook implemented, against S2 as merged (ARM machine; scratch
+  streams/run10/speed.sh, speed.log, then speed2.sh, speed2.log on the same binaries): the memory
+  test binary of cefb66ab and of 6e50fe49, each built alone under its own name with a 2 MB guest
+  folder, 3 test threads, run alternately; two batches of 21 rounds, round 0 of each a warm-up,
+  20:03 to 20:25 UTC, load 5.7 to 26.9. User CPU, batch 1: base 12.061 11.809 11.793 11.832 11.846
+  11.904 11.772 11.923 11.899 11.830 11.928 11.816 11.937 11.840 11.881 11.822 11.938 11.804
+  11.842 11.799 (mean 11.864, median 11.841); head 12.814 11.799 11.915 11.795 11.806 11.795
+  11.926 11.913 11.794 12.810 11.777 11.797 11.925 11.791 11.808 11.933 11.943 13.096 11.798
+  11.789 (mean 12.001, median 11.807), faster in 13 of 20. Batch 2: base 11.853 11.794 11.795
+  11.830 11.844 11.792 11.809 11.938 11.791 11.790 11.875 11.794 11.865 11.869 11.946 11.864
+  11.808 11.847 11.816 11.800 (mean 11.836, median 11.823); head 11.786 11.766 13.100 11.770
+  11.783 11.922 11.798 13.084 11.893 11.811 11.796 11.925 11.865 11.785 11.777 11.899 11.784
+  11.860 11.883 13.095 (mean 12.019, median 11.835), faster in 9 of 20. Medians -0.3 % and +0.1 %:
+  the typical round is unchanged. But the head binary ran in a slow mode (about 1.0 to 1.3 s more)
+  in 6 of 40 rounds and the base in none (its highest 12.061), which puts the means +1.2 % and
+  +1.6 %. Not explained. The slow rounds came at loads 13.8 to 23.6, not the highest of the batch.
+  The code this test runs changed only in `guest` (one map lookup fewer) and in futex keys
+  (`key_in`); the kernel crate's size changed, which moves everything linked after it. Earlier
+  comparisons had such rounds on both sides (the fourth check's 12.267 and 12.245 on the base,
+  run 6's 12.794 before and 13.027 after). Not shown to be caused by this run's code, and not
+  ruled out: a question for the next check.
+- S3 run 11, what the slow rounds are (ARM machine, 7.0.0-1018-aws, 96 cores; scratch
+  streams/s3run11/speed.sh, speed.log, speed-summary.txt; 21:35 to 21:48 UTC, load 3.6 to 19.5):
+  the memory test binary of cefb66ab (S2 as merged) and of 84cc7716 (this run's head), each built
+  alone under its own name, 3 test threads, run alternately under `perf stat` (task clock, cycles,
+  instructions, branch misses, page faults, context switches, migrations, cache misses), 24 rounds
+  after a warm-up. Task clock in ms, base: 12078 12093 12097 12065 12135 12094 12107 12107 12110
+  12126 12109 12062 12108 12162 12093 12159 12096 12114 12163 12103 12101 12051 12106 12115 (mean
+  12106, never slow). Head: 12107 13584 12071 12037 12074 12057 12123 12044 12163 13592 12118
+  12162 12075 12153 12119 12103 13591 12033 12037 12118 12065 13577 12123 12103 (mean 12343; the
+  20 fast rounds' mean 12094, 0.1 % under the base's; slow in 4 of 24: rounds 2, 10, 17, 22).
+  What the slow rounds are: the same work run slower by the memory system. A slow round runs the
+  same instructions as a fast one (head slow 6.2937e10, 6.2927e10, 6.2957e10, 6.2930e10 against
+  the head's mean 6.2919e10 and the base's 6.2915e10, within 0.1 %; branch misses, page faults
+  and context switches the same), but about 37.95e9 cycles against 33.7e9 (+12.6 %) and about
+  3.58e9 cache misses against 2.73e9 to 2.84e9 in fast rounds (+29 % on 2.78e9); every slow round costs the same 13.58 to
+  13.59 s, a second mode, not noise. So the slow mode is not a different code path (no extra
+  instruction runs in it) and not S3's code: the instruction counts of base and head differ by
+  0.007 %. With address randomization off (`setarch -R`, speed-norandom.sh, speed-norandom.log,
+  21:49 to 21:54 UTC, load 11.5 to 17.5) no round of either binary was slow in 10 (head 12140
+  to 12364, base 12141 to 12172), which points to where things are placed in memory (the head's
+  layout meets a cache conflict under some placements); 0 of 10 alone is weak (it would happen
+  16 % of the time if the slow rate stayed 1 in 6). Expected, not measured: a layout change in
+  any later commit can move this mode onto either binary.
+- S3 run 11, tests. The new tests on the ARM machine at 8 seeds, each failing without its change
+  (s3run11/taken.log, fatal.log, copyend.log); edges (7) and taskend (7) pass at 8 seeds
+  (edges-taskend.log). Whole suite of 84cc7716 from a clean build directory on the ARM machine
+  in four pieces (s3run11/suite.sh, suite-1..4.log, 21:54 to 22:34 UTC, load 14 to 44): fmt,
+  clippy with warnings denied over the three crates and the literal check pass; 646 tests: 612
+  passed, 27 failed, 7 ignored (failed.txt). The 27 are the fifth check's list less
+  `file_mappings_match_reference` (passed here) and with `fdinfo_matches_reference` (its program
+  does not build on that machine's zig, as its manual says), `splice_holds_the_pipe` among them
+  (see "Departures"). Every one passed on this Mac in the 20 Mac-only binaries (s3run11/
+  mac-only.log, ending 13:56 Pacific, load about 5): 93 passed, 1 failed,
+  `priority_inheriting_futexes_match_reference` (two of the reference's lines in the other order;
+  it passed on the ARM machine and three times again here by 14:01, pi-again.log). So no test fails by
+  our side.
+- S3 run 10, tests. ARM machine (scratch streams/run10): fmt and clippy with warnings denied over
+  the three crates passed; the six new tests pass at 3 seeds and all six fail with the kernel
+  changes stashed (negative.log); away (12, the known failure ignored), edges (4), embedder (35),
+  the kernel's unit tests (5) and the binaries the changed code reaches (processes, procsignals,
+  procstatus but `fdinfo_matches_reference`, userlimits, zombie, taskend) pass (affected-2.log,
+  affected-3.log, affected-4.log; 19:18 to 20:00 UTC, load 13 to 30). Whole suite on tree
+  f5317e13, in four pieces (suite.sh, suite-1.log to suite-4.log, 19:20 to about 20:25 UTC, load
+  about 20 to 30): 608 passed, 27 failed, 7 ignored (642 tests: run 9's 636 and the 6 new). The 27
+  (failed-arm.txt) are run 9's 26 and `the_workspace_keeps_to_its_baseline`, which failed on that
+  tree because the futex lines moved (fixed in ac7203c9; the literal crate's tests pass on the
+  ARM machine at 6e50fe49). The later commits change a named constant and a copy's end only;
+  away, taskend, embedder and edges were run again after them. The 20 binaries kept on the Mac
+  (this Mac, tree ac7203c9, 11:21 to 11:23 Pacific, load 2.2 rising to 7.3; run10/mac-only.log):
+  94 passed, 0 failed, `proc_task_matches_reference` and both proclist tests among them. So no
+  test fails by our side.
+- S3 run 9, tests (tree a98582a9). ARM machine: fmt and clippy with warnings denied over the
+  three crates passed; embedder (35), away (12, the known failure ignored), edges (4) and the
+  kernel's unit tests (5) passed at 3 seeds (scratch streams/run9/affected.log, 17:23 UTC, load
+  26 to 36). The literal check exits 0 with no marks (x86 machine, with a `git init` of the copy
+  for its file list; run9/literals.log). Whole suite, in four pieces each its own job and log
+  (run9/suite.sh, suite-1.log to suite-4.log, 17:25 to about 17:55 UTC, load about 25 to 40):
+  603 passed, 26 failed, 7 ignored (636 tests: run 6's 632 and the 4 new). The 26 by name
+  (run9/failed-arm.txt) are run 6's, less `the_workspace_keeps_to_its_baseline` (it passes now that
+  the copy has a git index) and with `fdinfo_matches_reference` (its program does not build on the
+  ARM machine's zig, as its manual says; it passed there in run 6). Every one is on the manual's
+  list kept on the Mac. The 20 binaries holding them on this Mac (run9/mac-only.log, about 09:27
+  to 09:30 Pacific, load 3 to 9): 93 passed, 1 failed: `splice_holds_the_pipe`, whose reference
+  echoed twice ("abc\r\nabc\r\n" against ours "abc\r\n"), the reference-side flake seen in runs 3
+  and 4; run again three times it passed each time (run9/splice-again.log). So no test fails by
+  our side.
+- S3 run 9, speed with no hook implemented (ARM machine, about 18:05 to 18:15 UTC, load 18 to
+  34; run9/speed.sh, speed.log): the memory test binary of 01290816 (the run's base) and of this
+  run's tree, each built ALONE under its own name (`--test memory --no-run`), guest folders
+  emptied before the build so each holds only that binary's programs (2 MB), run alternately,
+  13 rounds, round 0 a warm-up. User CPU, rounds 1 to 12: base 11.799 11.902 12.066 11.912 11.823
+  11.928 11.874 12.057 11.821 11.884 11.782 11.826 (mean 11.890, median 11.879); this tree
+  11.895 11.938 11.921 11.957 11.932 11.777 11.971 11.928 11.887 11.861 11.943 11.906 (mean
+  11.910, median 11.925), faster in 4 of 12. +0.2 % mean, +0.4 % median, inside each side's
+  own spread (11.78 to 12.07); no slowdown shown beyond noise. The changed code runs only when a
+  thread waiting on a watch outside a call is woken and when shared mappings change.
+- Pitfall found by S3's third check: a test binary built inside the whole-suite build (four
+  packages at once) ran bimodally (about 1 s more user CPU in 9 of 16 rounds) against the same
+  tree built alone. Compare binaries built the same way, alone, as above; it sits beside S2's
+  fourth run's pitfall of unequal guest folders. Run 6's comparison was against run 4's tree,
+  not S2's; the check's own comparison against S2 (cefb66ab), both built alone, gave -0.1 %.
+- S3 run 8, the Mac-only verdicts (this Mac, tree 24f2b127, code as in run 6): Docker Desktop
+  started no container at 07:59, 08:02 and 08:05 Pacific and started one at 08:08 (scratch
+  streams/s3g/docker-probe.log). The 20 binaries of s3c/mac-tests.txt (built in run 7, nothing
+  rebuilt) ran with 3 test threads, 08:09 to 08:11 Pacific, load 3.8 rising to 13.4 (scratch
+  streams/s3h/mac-only.log): 94 passed, 0 failed, `splice_holds_the_pipe` among them, as in run
+  4. The literal check exits 0 here (7577 baseline lines, 0 marks) and its crate's tests pass,
+  the workspace test among them (s3h/literals-mac.log). With run 6's ARM verdicts (599 passed,
+  the 26 failures being these 25 tests and the literal workspace test, 7 ignored): 632 tests,
+  none failing by our side, 7 ignored (the known failure among them).
+- S3 run 6, tests (ARM machine, tree 8ea3508e, nothing changed since): fmt and clippy with
+  warnings denied over the three crates passed; away (12 passed, the known failure ignored) and
+  embedder (35 passed) at 3 seeds equal the reference (scratch streams/s3f-arm-away.log,
+  s3f/s3f-away-embedder.log, 14:21 to 14:25 UTC, load 16 to 30); the known failure still fails
+  when run ("read 1" against "read -1 Interrupted system call"). Whole suite (the command in "How
+  to run" with `-j $ARM_JOBS` and 12 test threads; scratch streams/s3f-arm-suite.log,
+  s3f/s3f-suite.log, 14:25 to 15:03 UTC, load 39 falling to 17): 599 passed, 26 failed, 7
+  ignored. The 26 are the manual's 25 kept on the Mac and the literal workspace test (no .git
+  there), s3f/failed-arm.txt; against run 4 (s3d) `fdinfo_matches_reference` and
+  `splice_holds_the_pipe` pass now and the seven new tests pass, every other name has its
+  verdict. Each of the 26 failures prints the same differences as in run 4, line for line
+  (thread numbers and the backtrace note aside), `socket_edges_match_reference` among them, so
+  the socket timeout change altered none of them. Their verdicts on the Mac are owed: Docker
+  Desktop there still created containers that never started (07:07 and about 07:17 Pacific, `docker
+  run alpine:3 echo hi`, removed after).
+- S3 run 6, speed with no hook implemented (ARM machine, load 12.4 to 21.9, about 15:19 to 15:26
+  UTC; scratch streams/s3f/speed.sh, speed.log): the memory test binary of c22154df (run 4's
+  tree, as streams-base) and of 8ea3508e, alternately, 13 rounds, round 0 a warm-up, each with a
+  2 MB guest folder holding only that binary's programs. User CPU, rounds 1 to 12: before
+  12.051 12.060 11.800 11.840 11.807 12.067 12.794 12.089 11.810 12.140 11.883 11.776 (mean
+  12.010, median 11.967); after 12.120 11.836 12.097 11.878 11.806 11.887 12.005 13.027 12.279
+  11.811 11.815 12.076 (mean 12.053, median 11.946), faster in 6 of 12. Wall means 15.594 and
+  15.648 s. No difference beyond noise. A first try (s3f/speed-unequal-guest.log, 15:06 to
+  15:13 UTC) showed +4.5 % user and three times the system time: this tree's guest folder held
+  the whole suite's programs (257 MB against 1.7 MB), the pitfall noted under S2's fourth run.
+- S3 run 5, tests (this Mac, 05:45 to 06:20 Pacific, load 2 to 3): Docker Desktop started no
+  container (58 in "Created", `docker run ... alpine echo hi` never returned, from at least 05:45
+  to 06:20; the check saw the same from 04:30), the ARM machine could not be reached
+  (`arm-run --status`), and the x86 machine cannot run ARM64 containers (exec format error). So
+  no verdict against the reference was produced this run. Instead the away tests were run on our
+  side against the output written from the program (scratch streams/positive.sh, positive.log,
+  8 seeds): the 11 tests of away.rs that do not need two outputs passed (the kill test was not
+  run this way); the sharing-hook operations test ran its 3 seeds without a panic, output not
+  compared. Unit tests of abi, kernel and literals, fmt and clippy with warnings denied over the
+  three crates passed on the x86 machine (scratch streams/s3e/units.log; the literal workspace
+  test fails there for want of .git, as its manual says); the literal check passes on this Mac.
+- S3 run 5, speed with no hook implemented (x86 machine, load 70 to 96 on 192 threads, other
+  tracks' jobs running, 06:25 Pacific; scratch streams/s3e/speed.log): tests/shell.rs
+  `runs_repeat_for_a_seed` (ours only) at c22154df and at 6ac2d63b, alternately, 13 rounds,
+  round 0 a warm-up, pinned to cores 0 to 9. User CPU, rounds 1 to 12: before mean 4.685 s
+  (median 4.70), after mean 4.480 s (median 4.60), after faster in 6 of 12. Noise at this load is
+  about 15 % between rounds, so this says only that no slowdown shows; the memory binary used
+  before needs the reference and could not run.
+- S3 run 4, tests (tree 814edab1 with its tests and docs): on the ARM machine fmt and clippy with
+  warnings denied over the three crates passed, the new tests/away.rs passed with 8 seeds (6
+  tests, 48 runs; the known failure ignored, and failing when run with 3 seeds: "read 1" against
+  "read -1 Interrupted system call"), the embedder tests (34, 3 seeds) and the kernel's unit
+  tests (5) passed; the literal check passes on this Mac. Whole suite on the ARM machine (the
+  command in "How to run" with `-j $ARM_JOBS` and 12 test threads; scratch streams/s3d/
+  suite-arm.log, s3d/fetched/s3d-suite.log, 11:28 to 12:04 UTC, load 6 rising to 22): 590
+  passed, 28 failed, 7 ignored; the 28 are by name run 3's 27 (s3d/failed-arm.txt against
+  s3c/failed-arm.txt) and `splice_holds_the_pipe`, whose reference echoed twice (the
+  reference-side flake run 3 saw on the Mac; it passed in run 3 on this machine and passes on the
+  Mac). The new ignored test is the known failure; the six new tests are the five more passes
+  with the one flake fewer. The 20 binaries kept on the Mac (s3d/mac-only.log, this Mac, 03:28 to
+  03:30 Pacific, load 4.3 to 7.9): 94 passed, 0 failed, `splice_holds_the_pipe` among them.
+  Combined: 625 tests, none failing by our side.
+- S3 run 4, speed with no hook implemented (ARM machine, scratch streams/s3d/speed.log, load 8.4
+  to 16.7, 12:05 to 12:18 UTC): the memory test binary of cefb66ab (S2 as merged, rebuilt this run
+  as streams-base, since the earlier build was gone) and of this run's tree, run alternately, 13
+  rounds, round 0 a warm-up. User CPU, rounds 1 to 12: before 11.922 11.942 11.915 11.955 11.971
+  11.906 11.917 11.927 11.930 11.905 11.906 11.890 (mean 11.924); after 11.792 11.803 11.844
+  11.895 11.807 11.798 11.804 11.807 11.801 11.839 11.794 11.794 (mean 11.815, -0.9 %), faster in
+  12 of 12. Wall: mean 15.337 before, 15.188 after (-1.0 %). No slowdown; why the tree is
+  faster was not measured (run 3's tree, against the same base, was +0.05 %).
+- S3 run 3, tests (tree c626d480 with its docs): the suspend test and the new stop test passed
+  on the ARM machine (3 seeds; 48 and 6 runs). Clippy with warnings denied over the three crates
+  and fmt passed there; the literal check passes on this Mac. Whole suite on the ARM machine
+  (the command in "How to run" with `-j $ARM_JOBS` and 12 test threads; scratch
+  streams/s3c/suite-arm.log, s3c/fetched/s3c-suite.log, 09:56 to 10:32 UTC, load 32 falling to
+  7): 585 passed, 27 failed, 6 ignored; the 27 failures are by name run 2's 27
+  (s3c/failed-arm.txt against s3b/failed-arm.txt), the new test the one more pass. The 20
+  binaries kept on the Mac (s3c/mac-tests.txt, s3c/mac-only.log, this Mac, 01:59 to 02:00
+  Pacific, load 4): 92 passed, 2 failed, `partial_copies_match_reference` and
+  `splice_holds_the_pipe`; run again 4 and 10 times, each failed once more, both on the
+  reference's side (the reference's urandom read once came up short, 15 bytes for 16; the
+  reference's terminal once echoed twice), and passed otherwise. Combined: 618 tests, none
+  failing by our side.
+- S3 run 3, speed with no hook implemented (ARM machine, scratch streams/s3c/speed.log, load 6.9
+  falling to 4.4, 10:33 to 10:40 UTC): the memory test binary of cefb66ab (S2 as merged,
+  streams-base, built in run 2) and of this run's tree (built alone), run alternately, 13
+  rounds, round 0 a warm-up. User CPU, rounds 1 to 12: before 11.876 11.868 12.083 12.114 11.866
+  11.915 11.914 12.077 12.065 12.112 12.067 12.097 (mean 12.005); after 12.062 11.964 11.967
+  12.042 12.053 12.036 12.056 12.044 11.942 11.936 12.047 11.977 (mean 12.011, +0.05 %), slower
+  in 5 of 12. Wall: mean 15.309 before, 15.288 after (-0.1 %). No difference beyond noise on a
+  quieter machine than run 1's and run 2's (load 10 to 31), whose +0.3 % and +0.5 % were inside
+  the base's own swing (11.87 to 12.11 here).
+- S3 run 2, tests: the suspend test passed on the ARM machine (3 seeds, then 6; with four
+  threads and 24 orders, 3 seeds, 48 runs, at cab6b0bf). Clippy with warnings denied over the
+  three crates and fmt passed on the x86 machine; the literal check passes on this Mac (exit 0,
+  scratch streams/literals-s3r2.log). Whole suite on the ARM machine at 4d2fb664's tree (the
+  suspend test then with three threads; the command in "How to run" with `-j $ARM_JOBS` and 12
+  test threads; s3b/suite-arm.log, s3b/fetched/s3b-suite.log, 09:00 to 09:36 UTC, load 10 to
+  16): 584 passed, 27 failed, 6 ignored; the 27 are by name run 1's 28 less
+  `splice_holds_the_pipe`, which passed there this time (s3b/failed-arm.txt against
+  s3a/failed-arm.txt). The 20 binaries kept on the Mac (s3b/mac-only.log, this Mac, 01:00 to
+  01:02 Pacific, load 5 to 10): 94 passed, none failed. Combined: 617 tests, 611 passed, 6
+  ignored, none failed.
+- S3 run 2, speed with no hook implemented (ARM machine, scratch streams/s3b/speed.log, load 9.5
+  to 12.7, about 08:54 to 09:00 UTC): the memory test binary of cefb66ab (S2 as merged, an
+  archive of it at scratch streams/base-s2) and of this run's tree (8a745148 with its docs),
+  each built alone, run alternately 9 rounds, round 0 a warm-up (the base's round 0 took 30.8 s
+  wall and 42.2 s user while it was still settling, and is not used). User CPU, rounds 1 to 8:
+  11.880 12.082 12.105 11.857 12.083 11.935 11.911 11.861 s before (mean 11.964), 12.042 12.035
+  12.058 12.032 11.991 11.978 12.025 12.041 s after (mean 12.025, +0.5 %); the new tree was
+  slower in 5 of 8 rounds. Wall: 15.167 15.397 15.374 15.185 15.364 15.269 15.294 15.219 s
+  before (mean 15.284), 15.337 15.288 15.280 15.320 15.274 15.212 15.362 15.324 s after (mean
+  15.300, +0.1 %), slower in 4 of 8. The base swings between about 11.86 and 12.10 from round
+  to round; the new tree sits near 12.03. Not shown to be unchanged: a difference of this size
+  is within the base's own swing, but the means moved the same way as in run 1. What part 3
+  adds on the no-hook path: two stores around each step and each call's request, one test
+  after the request, a store around each process's end.
+- S3 run 1, tests: the embedder tests (32, seeds 1 to 3) and the kernel's unit tests (5) passed
+  on the ARM machine (scratch streams/s3-sharing-5.log, s3-affected-1.log; there `sigframe`
+  fails as the manual lists, and passes on this Mac below). Clippy with warnings denied over
+  the kernel passed on the x86 machine and over the kernel test crate on the ARM machine; fmt
+  clean; the literal check passes on this Mac. Whole suite on the ARM machine at e713b19b's tree
+  with the status edits (the command in "How to run" with `-j $ARM_JOBS` and 12 test threads;
+  s3a/suite-arm.log and s3a/fetched/s3a-suite.log, 07:45 to 08:21 UTC, load 14 to 17): 582
+  passed, 28 failed, 6 ignored; the 28 are by name exactly the eleventh run's
+  (s3a/failed-arm.txt against s2k/failed-arm.txt), and the 6 new tests pass. The 20 binaries
+  kept on the Mac (s3a/mac-only.log, this Mac, 23:45 to 23:47 Pacific, load 6 to 12): 94
+  passed, none failed. Combined: 616 tests, 610 passed, 6 ignored, none failed.
+- S3 run 1, speed with no hook implemented (ARM machine, s3a/speed.log, load 15 to 16, about
+  08:25 UTC): the memory test binary at cefb66ab (S2 as merged) and at this run's tree, each
+  built alone, run alternately 7 rounds, round 0 a warm-up. User CPU 11.874 11.860 11.983
+  11.848 11.769 11.872 s before, 11.913 11.903 11.914 11.880 11.912 11.920 s after (means
+  11.868 and 11.907, +0.3 %); wall 15.08 15.13 15.28 15.15 15.02 15.08 s before, 15.24 15.21
+  15.31 15.19 15.20 15.16 s after (+0.6 %). The new tree was slower in 5 of 6 rounds by user
+  CPU and in all 6 by wall time: small, but in one direction, so not shown to be unchanged. What
+  the no-hook path gained: a flag test at every announcement (the proxy's two per call) and when
+  the kernel settles, a queue test when it settles, a test per signal taken, and a test of the
+  mappings an unmap removes. Not yet looked into further.
 - Eleventh run, tests: the embedder tests (27, seeds 1 to 3) passed on the ARM machine at
   93d65247's tree with the `processes` tests (scratch streams/s2k/embedder-4.log, load 12 to 23),
   and the kernel's unit tests (4) at 48c90e4c (embedder-3.log); clippy with warnings denied over
@@ -668,7 +1267,10 @@ Found on the way, fixed:
   binary of 1bacb2d4 (S2 before this run) and of 93d65247, each built alone with `cargo test -p
   wcontainers-kernel-test --test memory`, run alternately 7 rounds, round 0 a warm-up: user CPU
   12.224 12.207 12.181 12.225 12.218 11.981 s before, 11.984 11.952 11.959 11.992 11.980 11.983
-  s after. No slowdown. A first try (s2k/speed.log) timed the whole suite's build of the binary
+  s after. No slowdown in user CPU. Wall time was not steady: in rounds 5 and 6 the new
+  binary took 37.6 s and 47.9 s against 19.8 s and 21.2 s for the old one, while the machine's
+  load rose; user CPU in those rounds was the same (11.98 s both ways), so the wall time is most
+  likely the load, not the code, but it was not measured apart from it. A first try (s2k/speed.log) timed the whole suite's build of the binary
   against one built alone: 12.3 s user and 0.88 s system against 11.9 and 0.30, every round; the
   difference is the build (the suite's packages build it differently), not the code, and that
   comparison is not used.
@@ -725,6 +1327,22 @@ Found on the way, fixed:
 - After the eleventh run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
   streams/s2k/literals-2.log; the new test's argument length is `3 * PAGE_SIZE`, since 10000 was
   taken for a restatement of another constant).
+- After S3's first run: unchanged, 7577 lines (wcontainers-kernel 2247, wcontainers-kernel-test
+  2422, wcontainers-abi 3); the check passes on this Mac (exit 0). The new code's sizes and
+  offsets are derived (`size_of::<SignalInformation>()`, the word size of `c_int`); the signal
+  numbers in the tests are the generated constants.
+- After S3's third run: unchanged, 7577 lines (same per crate); the check passes on this Mac
+  (exit 0, scratch streams/literals-s3r3.log). The literal check does not read the C guests.
+- After S3's fourth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
+- After S3's sixth run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
+  streams/s3f/literals.log).
+- After S3's fifth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
+- After S3's tenth run: 7570 lines (seven fewer: the futex word's size is one named constant,
+  `FUTEX_WORD`, and the robust list's offsets are `offset_of!` on `robust_list_head`); the check
+  exits 0 with no marks (x86 and ARM machines, scratch streams/run10/literals.log,
+  affected-4.log), and its crate's tests pass there, the workspace test among them.
+- After S3's eleventh run: unchanged, 7570 lines (the new tests' region is named in the mark's
+  arguments, not as a number); the check exits 0 with no marks on this Mac.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -736,6 +1354,60 @@ fnv and rayon (all MIT OR Apache-2.0), a test-time tool of the workspace, not a 
 anything shipped.
 
 ## Departures from the plan
+
+- S3, suspend and resume (choices where the ruling is silent, for the owner): the kernel's calls
+  take the executor (`cpu`) as `Kernel::process` does, and return the concrete `vec::IntoIter`
+  (an iterator that borrows nothing of the kernel). A task taken in its call answers as Linux's
+  stop makes it answer (the brief's 04:00 rule). The interruption is seen by the call when the
+  task is put back, not when it is taken: running a call inside a hook would announce hooks
+  inside a hook, and the kernel's calls do not take the `System`. Nothing of the task runs in
+  between, so this is Linux's stop arriving at the moment of resumption; waiters in a line a
+  wake chooses from (futex, semaphore, message queue) leave it when taken, so a wake while away
+  never chooses them. One consequence: a write half done whose pipe is emptied while it is away
+  writes more before it answers, where a stop on Linux at the moment of taking would have
+  answered the count then (both are answers Linux can give). The orchestrator's 04:00 note lists
+  `epoll_wait` among calls that start again; Linux answers EINTR there after a stop (signal(7),
+  and the reference agrees), so the kernel follows Linux. Inside a hook, a task the kernel is in the middle of a step for cannot be
+  taken; it is left out and counted, except at `intercept_system_call_request` (taken before its
+  call). `suspend_process(self)` on the handle, when such a task is its own, leaves the process
+  and answers a copy of the context with the tasks taken. `copy_process_context` shares the
+  records reached by reference (address map, handler table) with the original. `resume_process`
+  also hands back a context whose configuration the kernel cannot run.
+- S3, known gaps left open: a process on a kernel without its parent has no reaper there (no
+  test lets it happen); a wait met while its task was away is found before a signal sent
+  meanwhile (the ignored known-failure test in tests/away.rs); `kill` of a process whose context
+  is away answers ESRCH (a signal to a process on no kernel of the embedder's knowing is the
+  embedder's to carry), while a wait for it waits as for a stopped child.
+- S3 run 5: a context the embedder drops instead of putting back lets go of its file blocks at
+  the kernel's next release, but its executor memory is left to the executor: once its map is
+  gone the kernel cannot tell whether another kernel still runs in that memory. A dropped context
+  also leaves its parent waiting for it. Linux has no such case; the ruling has no call to end a
+  context.
+- S3 run 5: a SIGCHLD for a parent whose context is away is kept on the kernel it left and sent
+  when the context comes back to that kernel; a parent resumed on another kernel is not told.
+- S3 run 4: `ProcessContext::origin()` and `ContextOrigin` are additions to the ruled interface:
+  the handle's `suspend_process` has no room for none, so a process that cannot leave from inside
+  a hook answers a copy, and the embedder has to be able to tell.
+
+- S3, signals (choices where the ruling is silent, for the owner): `on_signal_delivering` fires
+  where ptrace's signal-delivery-stop is, for every signal a thread takes off its pending sets to
+  act on (handler, default action, an ignoring handler); not for signals a call takes
+  (`sigwaitinfo`, `signalfd`), ones dropped at sending as ignored, or a fatal signal that does not
+  dump core, which ends a process from the sender's side (as Linux's `complete_signal`, untraced);
+  one that dumps core is taken by a thread and announced, as Linux leaves it to `get_signal`. `send_signal` is sent when the kernel
+  next settles (after the hook, before any thread runs), since the handle cannot reach the
+  embedder for the hooks a signal can cause (a process's end).
+- S3, `SignalInformation` is the generated C union `siginfo`, as ruled. Safe Rust can build one
+  whose bytes are partly unwritten (a union member smaller than the record); the kernel reads
+  the record whole (`_si_pad`, one `unsafe` read with its reason), so the handle's document asks
+  for a record built from zero, as Linux's `clear_siginfo`. For the owner: a record that cannot
+  be built partly unwritten (bytes, or an enum by layout) would make this sound by type.
+- S3, shared memory (choices, for the owner): the hooks describe what a process maps, compared
+  with what was announced, not each call; a source announced once stays announced while any
+  process maps it, so every announced mapping is announced ended; a private file mapping is not
+  announced (the ruling names `MAP_SHARED`), though it shows other processes' writes to the file
+  until it writes a page itself; a fork's child is announced its mappings just after
+  `on_process_starting`.
 
 - The literal check is taken as its crate's files from 7668c010, not merged (see above). When
   phase-1 or main carries the check with the runtime adapted to the stream ends, a merge brings
@@ -812,7 +1484,62 @@ anything shipped.
   dropped uncounted; output after the embedder closed its end is compared with a pipe whose reader
   the reference program closed itself.
 
+- S3 run 10, tasks away that end with their process: a task away is ended where it stays held
+  by the embedder (its `SuspendedTask`), so what the kernel cannot reach is not done: a `pidfd`
+  opened for that thread is not woken at its end, and a descriptor table only that task used
+  (after `unshare(CLONE_FILES)`) is let go when the embedder drops the handed-back task, outside
+  the kernel's closing of files. A `vfork` parent whose child's context ends on another kernel
+  is not let go here. `/proc` shows an away task's state as `T (stopped)` (not compared: the
+  reference cannot stop one thread alone) and its `fd` directory empty. A copy's end makes no last
+  stores for the tasks still running on the original.
+
+- S1, the splice test's verdict (fifth S3 check, run 11): `terminal::splice_holds_the_pipe`
+  compares its first command, `cat /dev/tty | cat`, with a reference that answers two ways on one
+  kernel: "abc\r\n" (the reader at the pipe waits for the next line) or "abc\r\nabc\r\n" (it gets
+  the line). On the ARM machine in run 11 it passed 4 of 6 runs (s3run11/splice.log; the checker
+  1 of 4); on the Mac it failed once in run 9 and passed in runs 8 and 9's reruns. Ours always
+  answers the first way. My reading, not measured: the first `cat` splices in a loop and takes the
+  pipe's lock again as soon as it lets it go, and whether the waiting reader gets the lock first
+  is a race of Linux's lock hand-off. The test is kept as it is (deleting or loosening the case
+  would weaken it); its verdict counts only where it passes, and a failure whose theirs is
+  "abc\r\nabc\r\n" for that command is the reference's race, not ours. A stable form would need a
+  program whose reference takes one way only; not found in this run.
+
 ## For the orchestrator
+
+- Run 11: `terminal::splice_holds_the_pipe` gives no stable verdict on either machine (the
+  reference races; see "Departures", S1, the splice test's verdict). Please treat a failure of it
+  whose reference printed the line twice as the reference's, or list it with the Mac-only tests.
+
+- Run 6: Docker Desktop on this Mac still starts no container (created, never started, at 07:07
+  and about 07:17 Pacific; the daemon answers and one container of another project runs). The ARM
+  machine gave every other verdict. Owed on the Mac once Docker starts containers: the 20 test
+  binaries holding the manual's 25 Mac-only tests and `splice_holds_the_pipe` (the list in
+  scratch streams/s3d/mac-only.log).
+- Run 7 (07:22 to 07:58 Pacific, Mac load about 2.5): still none. `docker run`, `docker run -d`
+  and `docker start` never return; the container stays "Created" and the VM's log shows the
+  attach and wait requests but no start answered. A probe tried every 3 minutes, 9 times from
+  07:33 to 07:57 (scratch streams/s3g/docker-probe.sh, docker-probe.log), each "created",
+  each removed after. I did not restart Docker Desktop (shared; another project's container
+  runs). The 20 binaries are built in this checkout's target (s3g/build.log); once containers
+  start: `RUST_TEST_THREADS=3 CARGO_INCREMENTAL=0 nix develop -c cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel-test $(cat <scratch>/streams/s3c/mac-tests.txt)`.
+- Run 8: Docker Desktop started containers again at 08:08 Pacific (nobody in this track
+  restarted it); the Mac-only verdicts are given (all 94 passed). Containers of other tracks
+  were still in "Created" at 07:58 (wc-x86-reference-63762-0 and -1, wc-guard-probe and three
+  unnamed ones); they are not this track's and were left alone.
+
+- For the owner (S3 run 4): `ProcessContext::origin() -> ContextOrigin { Suspended, Copied }` is
+  new (names suggested): through a hook's handle, a process whose own thread is in the middle of
+  its step cannot leave, and the ruled `suspend_process(self)` has no `Option` to say so.
+
+- For the owner (S3 run 3, the 04:00 rule): with Linux's stop as the model, a suspension is
+  visible to a program in the calls Linux answers EINTR after a stop (`epoll_wait`, `semop`,
+  `rt_sigtimedwait`) and in a write half done that answers its count; the 04:00 note listed
+  `epoll_wait` among calls that start again, but Linux and the reference answer EINTR. The
+  interruption is seen when the task is put back, not when it is taken (see "Departures").
+- For the orchestrator: Nix's zig 0.16.0 on the ARM machine also mislinks embedder.c once it
+  grows (undefined section symbols, as with fdinfo.c); the new test's program is its own file.
 
 - For the owner (design, found by S2's fourth check): the walk in syscall/touch.rs is a second,
   hand-kept description of what each call touches, beside the call's own copies; a difference is
@@ -823,6 +1550,10 @@ anything shipped.
   rules.
 - For the runtime track: the abi's `Host` methods now take `&self` and `System` requires `Sync`.
 
+- For the kernel track (found by S3's third check): /proc/<pid>/maps shows two `MAP_SHARED`
+  mappings of consecutive pages of one file, made side by side, as one line; the reference shows
+  two for a file under /tmp (overlayfs there keeps them apart) and one for a memory file. Seen
+  in tests/edges.rs `ends`, which compares those steps page by page.
 - For the kernel track (found by S2's third check): in a forked child `getrusage(RUSAGE_SELF)`
   reports `ru_maxrss` above 0; the reference reports 0.
 - For the owner: a watch resolved between steps through `Kernel::process` wakes its thread only
@@ -843,8 +1574,11 @@ anything shipped.
   every call two calls of empty methods through `&dyn System`, and every copy into program memory
   notes its range for `on_memory_written_by_kernel`. The ninth run measured about 0.5 % user CPU
   on the memory test binary; S2's seventh and eighth checks measured no difference beyond noise
-  (+0.3 %). The kernel becomes generic over its `System` when it implements the interface
-  crates.
+  (+0.3 %). The kernel becomes generic over its `System` in a later milestone, after the kernel
+  track has merged (the orchestrator's S3 section moved it out of S3); still carried in S3.
+- For the orchestrator (S2's ninth check): the rented ARM64 machine's root disk was full (580 of
+  581 GB; /work/target held 555 GB of every track's build folders), so builds there failed with
+  "No space left on device" at that time; other tracks' failures then may have been the disk.
 - For the owner: a thread waiting on a watch the embedder never resolves cannot be killed (see
   "Departures"); Linux's userfaultfd wait can be, skipping the kernel's store.
 - For the owner: a container whose first program does not fit below `Start::ceiling` fails its

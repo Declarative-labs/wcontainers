@@ -377,8 +377,17 @@ pub(crate) struct AddressMap {
     pub dumpable: bool,
     /// The embedder's watches on these pages and its record of the pages written.
     pub watches: Watches,
-    /// Where a placement that found no room below the end notes the length it asked for.
-    outgrown: Rc<Cell<Option<u64>>>,
+    /// What the map notes for the kernels its processes are on.
+    notes: Vec<Rc<MapNotes>>,
+}
+
+/// What address maps note for a kernel, one value shared by every map on it.
+#[derive(Debug, Default)]
+pub(crate) struct MapNotes {
+    /// The length a placement asked for that found no room below the ceiling.
+    pub outgrown: Cell<Option<u64>>,
+    /// A shared mapping was put in or taken out of some map.
+    pub sharing_changed: Cell<bool>,
 }
 
 /// How much of a page's access a watch brings back: none, writes, everything.
@@ -545,7 +554,7 @@ impl Watches {
 
 impl AddressMap {
     /// A map of `end`'s width whose stack's top is at the ceiling.
-    pub fn new(end: u64, ceiling: u64, outgrown: Rc<Cell<Option<u64>>>) -> Self {
+    pub fn new(end: u64, ceiling: u64, notes: Rc<MapNotes>) -> Self {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
@@ -561,7 +570,13 @@ impl AddressMap {
             protection_keys: 1,
             dumpable: true,
             watches: Watches::default(),
-            outgrown,
+            notes: alloc::vec![notes],
+        }
+    }
+
+    fn note(&self, change: impl Fn(&MapNotes)) {
+        for notes in &self.notes {
+            change(notes);
         }
     }
 
@@ -587,6 +602,23 @@ impl AddressMap {
             at = to;
         }
         Ok(())
+    }
+
+    /// Notes what changes for a kernel it is put on, too.
+    pub fn note_to(&mut self, notes: Rc<MapNotes>) {
+        if !self.notes.iter().any(|known| Rc::ptr_eq(known, &notes)) {
+            self.notes.push(notes);
+        }
+    }
+
+    /// Stops noting for a kernel no process of which runs in it any more.
+    pub fn stop_noting_to(&mut self, notes: &Rc<MapNotes>) {
+        self.notes.retain(|known| !Rc::ptr_eq(known, notes));
+    }
+
+    /// Notes for no kernel, as a copy not yet put on one.
+    pub fn notes_to_none(&mut self) {
+        self.notes.clear();
     }
 
     /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
@@ -667,6 +699,7 @@ impl AddressMap {
     /// A fork's child's copy: no record of written pages, and nothing of its parent's running
     /// call.
     pub fn start_child(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
+        self.note_sharers_changed();
         self.watches.touched = None;
         self.watches.described = None;
         self.watches.undescribed = None;
@@ -1007,7 +1040,7 @@ impl AddressMap {
         if end <= self.ceiling {
             return false;
         }
-        self.outgrown.set(Some(length));
+        self.note(|notes| notes.outgrown.set(Some(length)));
         true
     }
 
@@ -1041,7 +1074,7 @@ impl AddressMap {
             }
         }
         if self.ceiling < self.end {
-            self.outgrown.set(Some(length));
+            self.note(|notes| notes.outgrown.set(Some(length)));
         }
         None
     }
@@ -1085,7 +1118,23 @@ impl AddressMap {
     /// its pages' watches and record go with them.
     pub fn remove(&mut self, start: u64, end: u64) -> Vec<Mapping> {
         self.watches.forget(start, end);
-        self.split_out(start, end)
+        let removed = self.split_out(start, end);
+        if removed.iter().any(|mapping| mapping.shared) {
+            self.note(|notes| notes.sharing_changed.set(true));
+        }
+        removed
+    }
+
+    /// Whether any mapping shows shared memory.
+    pub fn has_shared(&self) -> bool {
+        self.mappings.values().any(|mapping| mapping.shared)
+    }
+
+    /// Notes that the processes using this map changed, if it shows shared memory.
+    pub fn note_sharers_changed(&self) {
+        if self.has_shared() {
+            self.note(|notes| notes.sharing_changed.set(true));
+        }
     }
 
     /// Takes the mappings of a range out of the table to be put back changed, splitting them at
@@ -1132,6 +1181,9 @@ impl AddressMap {
         self.apply(cpu, memory, &mapping)?;
         if had_code && !mapping.permissions.contains(Permissions::EXECUTE) {
             cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+        }
+        if mapping.shared {
+            self.note(|notes| notes.sharing_changed.set(true));
         }
         self.mappings.insert(mapping.start, mapping);
         self.merge_around();
@@ -1772,8 +1824,8 @@ mod tests {
         for width in [1 << 36, 1 << 40, crate::user::ADDRESS_LIMIT] {
             let mut first = None;
             for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1], width] {
-                let outgrown = Rc::new(Cell::new(None));
-                let mut map = AddressMap::new(width, ceiling, outgrown.clone());
+                let notes = Rc::new(MapNotes::default());
+                let mut map = AddressMap::new(width, ceiling, notes.clone());
                 let placed = fill(&mut map, length, count);
                 assert!(
                     placed
@@ -1797,7 +1849,7 @@ mod tests {
                         .all(|pair| tier_of(pair[0]) <= tier_of(pair[1]))
                 );
                 let ended = placed.len() < count;
-                assert_eq!(outgrown.get().is_some(), ended && ceiling < width);
+                assert_eq!(notes.outgrown.get().is_some(), ended && ceiling < width);
                 assert_eq!(
                     ended,
                     ceiling < width,

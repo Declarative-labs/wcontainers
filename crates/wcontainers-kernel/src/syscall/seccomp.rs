@@ -240,7 +240,9 @@ pub(super) fn filter_call(
         // handler, unless only this thread is to go and others remain.
         action => {
             let pid = kernel.threads[&tid].process;
-            if action == SECCOMP_RET_KILL_THREAD && kernel.processes[&pid].threads.len() > 1 {
+            let process = &kernel.processes[&pid];
+            let others = process.threads.len() > 1 || !process.away.is_empty();
+            if action == SECCOMP_RET_KILL_THREAD && others {
                 kernel.end_thread(cx, tid);
             } else {
                 // The core shows the call as made (`force_sig_seccomp` dumps core).

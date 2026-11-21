@@ -30,7 +30,9 @@ mod process;
 mod schedule;
 mod seccomp;
 mod shared;
+mod sharing;
 mod signal;
+mod suspend;
 mod syscall;
 mod system;
 mod task;
@@ -55,10 +57,13 @@ pub use ends::Standard;
 pub use errno::Errno;
 pub use memory::PLACEMENT_TIERS;
 pub use process::DOCKER_LIMITS;
+pub use suspend::{ContextOrigin, ProcessContext, SuspendedTask};
 pub use syscall::tty::PTMX_PATH;
 pub use system::{
-    AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism, System,
-    SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor, task_id_after,
+    AccessKind, AnonymousMemoryId, DeviceId, ExecutionConfig, InodeNumber, MemoryError,
+    MemoryObject, Process, ProcessInfo, ReplayDeterminism, SignalInformation, System,
+    SystemCallResponse, SystemVSegmentId, TaskId, ThreadOrdering, Unsupported, WatchesFor,
+    task_id_after,
 };
 pub use user::ADDRESS_LIMIT as ARM64_ADDRESS_SPACE_BYTES;
 
@@ -172,6 +177,15 @@ pub struct Kernel {
     resched: bool,
     /// The thread the driver is running, between [`Kernel::next`] and [`Kernel::exit`].
     running: Option<Tid>,
+    /// The thread whose call, signal or fault the kernel is in the middle of, which a hook cannot
+    /// take unless its call has not begun.
+    stepping: Option<Tid>,
+    /// The stepping thread's call has not begun: a hook may take it, to make the call again.
+    call_not_begun: bool,
+    /// A task the kernel is starting, which a hook cannot take.
+    starting_task: Option<Tid>,
+    /// A process the kernel is ending, whose tasks a hook cannot take.
+    ending_process: Option<Pid>,
     /// Parked threads by channel and deadline.
     parked: schedule::Parked,
     /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
@@ -191,6 +205,12 @@ pub struct Kernel {
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
+    /// Signals the embedder sent to a thread of a process, with their information, sent when the
+    /// kernel settles.
+    signals_sent: VecDeque<(Pid, Tid, [u8; core::mem::size_of::<SignalInformation>()])>,
+    /// Signals the kernel sent a process while its context was away, sent to it when the kernel
+    /// settles after it is back.
+    signals_to_returning: VecDeque<(Pid, u32, [u8; core::mem::size_of::<SignalInformation>()])>,
     /// Processes sent a fatal signal while their memory is watched, with the signal: their
     /// threads end of it on their way back to the program, once the kernel's stores at the end
     /// have met the watches (`SIGNAL_GROUP_EXIT`).
@@ -225,9 +245,26 @@ pub struct Kernel {
     unsettled: bool,
     /// Numbers that may no longer be carried, given back to the embedder when the kernel settles.
     ids_let_go: Vec<i32>,
-    /// The length a placement asked for that found no room below the ceiling, shared with every
-    /// address map.
-    outgrown: Rc<core::cell::Cell<Option<u64>>>,
+    /// What every address map notes for the kernel: a placement that found no room below the
+    /// ceiling, a shared mapping put in or taken out.
+    map_notes: Rc<memory::MapNotes>,
+    /// What the embedder has been told each process maps of shared memory.
+    shared_announced: sharing::Announced,
+    /// Counts the kernel's rounds of shared memory announcements, so a round sees one begun
+    /// inside its hooks.
+    sharing_round: u32,
+    /// Processes whose context was taken off this kernel and not put back on it.
+    processes_away: BTreeMap<Pid, suspend::ProcessAway>,
+    /// The address maps of contexts taken or copied off this kernel, with their memory: what
+    /// they map stays in use while they live, until one is put back here.
+    maps_away: core::cell::RefCell<
+        Vec<(
+            wcontainers_abi::MemoryId,
+            alloc::rc::Weak<core::cell::RefCell<memory::AddressMap>>,
+        )>,
+    >,
+    /// Processes on their way out whose shared memory has been announced ended.
+    sharing_left: alloc::collections::BTreeSet<Pid>,
     /// The container's first process; when it ends the container ends.
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
@@ -305,6 +342,10 @@ impl Kernel {
             current: None,
             resched: false,
             running: None,
+            stepping: None,
+            call_not_begun: false,
+            starting_task: None,
+            ending_process: None,
             parked: schedule::Parked::default(),
             released: Vec::new(),
             notices: Vec::new(),
@@ -325,8 +366,15 @@ impl Kernel {
             watching: false,
             watches_raised: 0,
             unsettled: false,
+            signals_sent: VecDeque::new(),
+            signals_to_returning: VecDeque::new(),
             ids_let_go: Vec::new(),
-            outgrown: Rc::default(),
+            map_notes: Rc::default(),
+            shared_announced: sharing::Announced::new(),
+            sharing_round: 0,
+            processes_away: BTreeMap::new(),
+            maps_away: core::cell::RefCell::default(),
+            sharing_left: alloc::collections::BTreeSet::new(),
             init: None,
             finished: None,
             starting: None,
@@ -437,8 +485,10 @@ impl Kernel {
             syscall::timer::cpu_check(self, &mut cx, tid);
         }
         if self.threads.contains_key(&tid) {
+            self.stepping = Some(tid);
             self.tell_continued(&mut cx, tid);
             self.came_back(&mut cx, tid, exit);
+            self.stepping = None;
         }
         self.settle(&mut cx);
         self.account_system(tid, entered);
@@ -661,14 +711,16 @@ impl Kernel {
         Err(Errno::EAGAIN)
     }
 
-    /// Whether a process, thread, process group or session carries a number.
+    /// Whether a process, thread, process group or session carries a number: a task or process
+    /// taken off the kernel counts.
     fn carried(&self, id: i32) -> bool {
         self.processes.contains_key(&id)
             || self.threads.contains_key(&id)
-            || self
-                .processes
-                .values()
-                .any(|process| process.group == id || process.session == id)
+            || self.processes_away.contains_key(&id)
+            || self.processes.values().any(|process| {
+                process.group == id || process.session == id || process.away.contains_key(&id)
+            })
+            || self.processes_away.values().any(|away| away.group == id)
     }
 
     /// Gives back to the embedder the numbers let go of that nothing carries any more.

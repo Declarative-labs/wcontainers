@@ -33,6 +33,23 @@
 //     itself, and in another reads it with process_vm_readv; prints what each saw.
 //   cmdline WHOSE LONG: reads the command line of itself (self) or, from a child, of its parent
 //     (parent) through /proc, without touching its strings, and counts the letters a.
+//   signals: takes signals of several kinds (queued, blocked then let through, sent by another
+//     thread during a read, a fault), one taken by sigwaitinfo and one ignored, and prints each
+//     its handlers saw, in order.
+//   interrupted SENDER: a child reads an empty pipe into the buffer until a SIGUSR1 interrupts
+//     it; the parent sends it with sigqueue (SENDER parent) or leaves it to the embedder (none).
+//   sharing: maps shared memory in every way it can start and end (a file read-only, then
+//     writable; shared anonymous memory cut in two; a System V segment; a memory file split by
+//     mprotect and moved by mremap; a mapping replaced), with a child that inherits a mapping and
+//     one that runs a program; at each step yields and prints its shared mappings from
+//     /proc/self/maps.
+//   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
+//     environment through /proc as cmdline reads the command line.
+//   suspend: four threads block, one reading an empty pipe, one on a mutex the main thread
+//     holds, one in a futex wait with a timeout and one taking from a System V semaphore (again after
+//     EINTR); the main
+//     thread sleeps twice, then writes the pipe, changes and wakes the futex, lets the mutex go,
+//     gives to the semaphore, joins them and prints what each saw.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -50,6 +67,8 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 #include <sys/mman.h>
 #include <sys/msg.h>
 #include <sys/prctl.h>
@@ -68,6 +87,7 @@
 #include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <setjmp.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -982,7 +1002,7 @@ static int vm(void) {
     return 0;
 }
 
-static int command_line(const char *whose) {
+static int proc_strings(const char *file, const char *whose) {
     int parent = !strcmp(whose, "parent");
     pid_t reader = parent ? fork() : 0;
     if (reader > 0) {
@@ -991,13 +1011,192 @@ static int command_line(const char *whose) {
     }
     static char line[1 << 16];
     char path[PATH_MAX];
-    snprintf(path, sizeof path, "/proc/%d/cmdline", parent ? getppid() : getpid());
-    int file = open(path, O_RDONLY);
-    long length = read(file, line, sizeof line), letters = 0;
+    snprintf(path, sizeof path, "/proc/%d/%s", parent ? getppid() : getpid(), file);
+    int opened = open(path, O_RDONLY);
+    long length = read(opened, line, sizeof line), letters = 0;
     for (long at = 0; at < length; at++) letters += line[at] == 'a';
-    printf("cmdline %ld letters %ld\n", length, letters);
+    printf("%s %ld letters %ld\n", file, length, letters);
     fflush(stdout);
     if (parent) _exit(0);
+    return 0;
+}
+
+static int environment(char **argv, char *whose, const char *value) {
+    static char variable[1 << 16];
+    snprintf(variable, sizeof variable, "LONG=%s", value);
+    char *arguments[] = {argv[0], "environread", argv[2], argv[3], whose, NULL};
+    char *environment[] = {variable, NULL};
+    execve(argv[0], arguments, environment);
+    printf("exec %s\n", strerror(errno));
+    return 0;
+}
+
+enum { SIGNALS_KEPT = 16 };
+static int signals_seen, signals_kept[SIGNALS_KEPT][3];
+static sigjmp_buf fault_return;
+static int main_thread, signal_pipe[2];
+
+static void keep_signal(int signal, siginfo_t *info, void *context) {
+    (void)context;
+    int at = __atomic_fetch_add(&signals_seen, 1, __ATOMIC_SEQ_CST);
+    if (at >= SIGNALS_KEPT) return;
+    signals_kept[at][0] = signal;
+    signals_kept[at][1] = info->si_code;
+    signals_kept[at][2] = info->si_value.sival_int;
+}
+
+static void keep_fault(int signal, siginfo_t *info, void *context) {
+    keep_signal(signal, info, context);
+    siglongjmp(fault_return, 1);
+}
+
+static void *interrupt_main(void *unused) {
+    (void)unused;
+    struct timespec wait = {0, 50 * 1000 * 1000};
+    nanosleep(&wait, NULL);
+    syscall(SYS_tgkill, getpid(), main_thread, SIGUSR1);
+    nanosleep(&wait, NULL);
+    write(signal_pipe[1], "x", 1);
+    return NULL;
+}
+
+static void handle(int signal, void (*handler)(int, siginfo_t *, void *), int flags) {
+    struct sigaction action = {0};
+    action.sa_sigaction = handler;
+    action.sa_flags = SA_SIGINFO | flags;
+    sigaction(signal, &action, NULL);
+}
+
+static void mask(int how, int signal) {
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, signal);
+    sigprocmask(how, &set, NULL);
+}
+
+static int signals(void) {
+    handle(SIGUSR1, keep_signal, SA_RESTART);
+    handle(SIGUSR2, keep_signal, SA_RESTART);
+    handle(SIGRTMIN, keep_signal, SA_RESTART);
+    handle(SIGSEGV, keep_fault, SA_NODEFER);
+    signal(SIGTERM, SIG_IGN);
+    mask(SIG_BLOCK, SIGUSR2);
+    kill(getpid(), SIGUSR2);
+    sigqueue(getpid(), SIGRTMIN, (union sigval){.sival_int = 7});
+    kill(getpid(), SIGTERM);
+    mask(SIG_UNBLOCK, SIGUSR2);
+    mask(SIG_BLOCK, SIGUSR1);
+    sigqueue(getpid(), SIGUSR1, (union sigval){.sival_int = 9});
+    sigset_t waited;
+    sigemptyset(&waited);
+    sigaddset(&waited, SIGUSR1);
+    siginfo_t info;
+    int signal = sigwaitinfo(&waited, &info);
+    printf("waited %d value %d\n", signal, info.si_value.sival_int);
+    mask(SIG_UNBLOCK, SIGUSR1);
+    main_thread = gettid();
+    pipe(signal_pipe);
+    pthread_t interrupter;
+    pthread_create(&interrupter, NULL, interrupt_main, NULL);
+    char byte;
+    long got = read(signal_pipe[0], &byte, 1);
+    pthread_join(interrupter, NULL);
+    printf("read %ld\n", got);
+    if (!sigsetjmp(fault_return, 1)) *(volatile char *)(buffer + pages * page) = 0;
+    for (int at = 0; at < signals_seen && at < SIGNALS_KEPT; at++)
+        printf("signal %d code %d value %d\n", signals_kept[at][0], signals_kept[at][1],
+               signals_kept[at][2]);
+    return 0;
+}
+
+static int interrupted(const char *sender) {
+    pid_t child = fork();
+    if (child == 0) {
+        handle(SIGUSR1, keep_signal, 0);
+        pipe(signal_pipe);
+        long got = read(signal_pipe[0], buffer, 1);
+        printf("read %ld %s\n", got, strerror(errno));
+        for (int at = 0; at < signals_seen; at++)
+            printf("signal %d code %d value %d\n", signals_kept[at][0], signals_kept[at][1],
+                   signals_kept[at][2]);
+        fflush(stdout);
+        _exit(0);
+    }
+    if (!strcmp(sender, "parent")) {
+        struct timespec wait = {0, 100 * 1000 * 1000};
+        nanosleep(&wait, NULL);
+        sigqueue(child, SIGUSR1, (union sigval){.sival_int = 42});
+    }
+    waitpid(child, NULL, 0);
+    return 0;
+}
+
+static void shared_step(const char *name) {
+    printf("step %s\n", name);
+    fflush(stdout);
+    syscall(SYS_sched_yield);
+    FILE *maps = fopen("/proc/self/maps", "r");
+    char line[512];
+    unsigned long start, end, offset;
+    char permissions[8];
+    while (fgets(line, sizeof line, maps))
+        if (sscanf(line, "%lx-%lx %7s %lx", &start, &end, permissions, &offset) == 4 &&
+            permissions[3] == 's')
+            printf("%lx-%lx %s %lx\n", start, end, permissions, offset);
+    fclose(maps);
+    fflush(stdout);
+}
+
+static int sharing(void) {
+    char *base = buffer + 2 * pages * page;
+    char *file_read = base, *file_write = base + 4 * page, *anonymous = base + 8 * page;
+    char *segment_at = base + 16 * page, *memory_file = base + 24 * page;
+    char *moved_to = base + 32 * page;
+    int fixed = MAP_SHARED | MAP_FIXED;
+    int file = open("/tmp/sharing", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    ftruncate(file, 4 * page);
+    int reading = open("/tmp/sharing", O_RDONLY);
+    mmap(file_read, 2 * page, PROT_READ, fixed, reading, page);
+    int to_child[2], from_child[2];
+    pipe(to_child);
+    pipe(from_child);
+    pid_t keeper = fork();
+    if (keeper == 0) {
+        char byte;
+        read(to_child[0], &byte, 1);
+        shared_step("child");
+        _exit(0);
+    }
+    shared_step("readonly");
+    mmap(file_write, page, PROT_READ | PROT_WRITE, fixed, file, 0);
+    shared_step("writable");
+    mmap(anonymous, 3 * page, PROT_READ | PROT_WRITE, fixed | MAP_ANONYMOUS, -1, 0);
+    munmap(anonymous + page, page);
+    shared_step("anonymous");
+    pid_t runner = fork();
+    if (runner == 0) {
+        char *arguments[] = {"/bin/true", NULL};
+        execve(arguments[0], arguments, NULL);
+        _exit(1);
+    }
+    waitpid(runner, NULL, 0);
+    int segment = shmget(IPC_PRIVATE, 2 * page, IPC_CREAT | 0600);
+    shmat(segment, segment_at, 0);
+    printf("segment %d\n", segment);
+    shared_step("segment");
+    shmdt(segment_at);
+    shmctl(segment, IPC_RMID, NULL);
+    int memory = memfd_create("sharing", 0);
+    ftruncate(memory, 4 * page);
+    mmap(memory_file, 4 * page, PROT_READ | PROT_WRITE, fixed, memory, 0);
+    mprotect(memory_file, page, PROT_READ);
+    shared_step("memfd");
+    mremap(memory_file + 2 * page, 2 * page, 2 * page, MREMAP_MAYMOVE | MREMAP_FIXED, moved_to);
+    shared_step("moved");
+    mmap(file_write, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    shared_step("replaced");
+    write(to_child[1], "x", 1);
+    waitpid(keeper, NULL, 0);
     return 0;
 }
 
@@ -1005,6 +1204,63 @@ static int exec_program(char *path) {
     char *arguments[] = {path, NULL};
     execve(path, arguments, NULL);
     printf("exec %s\n", strerror(errno));
+    return 0;
+}
+
+static int suspend_pipe[2], suspend_word, suspend_locked, suspend_semaphore, suspend_taken;
+static pthread_mutex_t suspend_lock = PTHREAD_MUTEX_INITIALIZER;
+static char suspend_read[8];
+static long suspend_got;
+
+static void *suspend_reader(void *argument) {
+    suspend_got = read(suspend_pipe[0], suspend_read, sizeof suspend_read);
+    return argument;
+}
+
+static void *suspend_locker(void *argument) {
+    pthread_mutex_lock(&suspend_lock);
+    suspend_locked++;
+    pthread_mutex_unlock(&suspend_lock);
+    return argument;
+}
+
+static void *suspend_timed(void *argument) {
+    struct timespec limit = {10, 0};
+    while (!__atomic_load_n(&suspend_word, __ATOMIC_SEQ_CST))
+        syscall(SYS_futex, &suspend_word, FUTEX_WAIT_PRIVATE, 0, &limit, NULL, 0);
+    return argument;
+}
+
+static void *suspend_semaphore_taker(void *argument) {
+    struct sembuf take = {0, -1, 0};
+    // A stop, as a suspension, answers EINTR (signal(7)): take again.
+    while ((suspend_taken = semop(suspend_semaphore, &take, 1)) == -1 && errno == EINTR) {
+    }
+    return argument;
+}
+
+static int suspend_threads(void) {
+    void *(*mains[])(void *) = {suspend_reader, suspend_locker, suspend_timed,
+                                suspend_semaphore_taker};
+    suspend_semaphore = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);
+    enum { COUNT = sizeof mains / sizeof *mains };
+    pthread_t threads[COUNT];
+    pipe(suspend_pipe);
+    pthread_mutex_lock(&suspend_lock);
+    for (int at = 0; at < COUNT; at++) pthread_create(&threads[at], NULL, mains[at], NULL);
+    struct timespec wait = {0, 200 * 1000 * 1000}, moment = {0, 1000 * 1000};
+    syscall(SYS_nanosleep, &wait, NULL);
+    syscall(SYS_nanosleep, &moment, NULL);
+    write(suspend_pipe[1], "data", strlen("data"));
+    __atomic_store_n(&suspend_word, 1, __ATOMIC_SEQ_CST);
+    syscall(SYS_futex, &suspend_word, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    pthread_mutex_unlock(&suspend_lock);
+    struct sembuf give = {0, 1, 0};
+    semop(suspend_semaphore, &give, 1);
+    for (int at = 0; at < COUNT; at++) pthread_join(threads[at], NULL);
+    semctl(suspend_semaphore, 0, IPC_RMID);
+    printf("read %ld %.*s\nlocked %d\nword %d\nsemaphore %d\n", suspend_got, (int)suspend_got,
+           suspend_read, suspend_locked, suspend_word, suspend_taken);
     return 0;
 }
 
@@ -1036,6 +1292,12 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "proxy")) return proxy();
     if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
     if (!strcmp(mode, "vm")) return vm();
-    if (!strcmp(mode, "cmdline") && argc > 4) return command_line(argv[4]);
+    if (!strcmp(mode, "signals")) return signals();
+    if (!strcmp(mode, "sharing")) return sharing();
+    if (!strcmp(mode, "suspend")) return suspend_threads();
+    if (!strcmp(mode, "interrupted") && argc > 4) return interrupted(argv[4]);
+    if (!strcmp(mode, "cmdline") && argc > 4) return proc_strings("cmdline", argv[4]);
+    if (!strcmp(mode, "environ") && argc > 5) return environment(argv, argv[4], argv[5]);
+    if (!strcmp(mode, "environread") && argc > 4) return proc_strings("environ", argv[4]);
     return 2;
 }

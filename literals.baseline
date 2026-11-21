@@ -4619,16 +4619,9 @@ code	crates/wcontainers-kernel/src/syscall/futex.rs	int	atomic_op	4
 code	crates/wcontainers-kernel/src/syscall/futex.rs	int	futex_wait	32
 code	crates/wcontainers-kernel/src/syscall/futex.rs	int	futex_wait	32
 code	crates/wcontainers-kernel/src/syscall/futex.rs	int	futex_wake	32
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	key_of	4
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	key_of	4
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	owner_died	4
 code	crates/wcontainers-kernel/src/syscall/futex.rs	int	parse_waitv	32
 code	crates/wcontainers-kernel/src/syscall/futex.rs	int	read_timespec	1_000_000_000
 code	crates/wcontainers-kernel/src/syscall/futex.rs	int	read_timespec	1_000_000_000
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	robust_list	16
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	robust_list	8
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	write_word	4
-code	crates/wcontainers-kernel/src/syscall/futex.rs	int	write_word	4
 code	crates/wcontainers-kernel/src/syscall/handle.rs	int	encode	0x81
 code	crates/wcontainers-kernel/src/syscall/handle.rs	int	encode	0xf8
 code	crates/wcontainers-kernel/src/syscall/handle.rs	int	encode	0xfb

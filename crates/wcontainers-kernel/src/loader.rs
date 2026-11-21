@@ -515,7 +515,7 @@ fn place(
     let mut map = AddressMap::new(
         kernel.machine.address_space_bytes,
         kernel.ceiling,
-        kernel.outgrown.clone(),
+        kernel.map_notes.clone(),
     );
     // The stack, the mmap base and a program placed anywhere go in the lowest tier.
     let end = kernel.machine.lowest_tier_top;

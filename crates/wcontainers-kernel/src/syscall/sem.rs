@@ -310,6 +310,12 @@ fn waited(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Result<(), Err
     Err(error)
 }
 
+/// Whether a thread waits in a set's queue with its operation not yet done.
+pub(crate) fn queued(kernel: &Kernel, tid: Tid) -> bool {
+    let sems = &kernel.ipc.sem;
+    !sems.told.contains_key(&tid) && sems.array_of(tid).is_some()
+}
+
 /// A thread that ends leaves the queue it waits in.
 pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     let sems = &mut kernel.ipc.sem;
@@ -319,6 +325,15 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
         unlink(array, tid);
         unmerge(array);
     }
+}
+
+/// A waiter taken off its kernel leaves the queue and is told EINTR, as a stop tells it.
+pub(crate) fn leave(kernel: &mut Kernel, tid: Tid) {
+    if !queued(kernel, tid) {
+        return;
+    }
+    forget(kernel, tid);
+    kernel.ipc.sem.told.insert(tid, Err(Errno::EINTR));
 }
 
 /// `copy_semundo`: a thread or process made with `CLONE_SYSVSEM` shares its maker's undo list.
@@ -341,8 +356,7 @@ pub(crate) fn renumber(kernel: &mut Kernel, from: Tid, to: Tid) {
 
 /// `exit_sem`: when the last thread using an undo list ends, each set's adjustments are added
 /// (the values held between 0 and `SEMVMX`) and waiting operations looked at again.
-pub(crate) fn exit_sem(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
-    let pid = kernel.threads[&tid].process;
+pub(crate) fn exit_sem(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid, tid: Tid) {
     let sems = &mut kernel.ipc.sem;
     let Some(list) = sems.list_of.remove(&tid) else {
         return;

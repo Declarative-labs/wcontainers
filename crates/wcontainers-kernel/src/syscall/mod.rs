@@ -460,17 +460,28 @@ pub(crate) fn dispatch(
 
 /// The calling thread's process memory, for copying to and from it.
 pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Tid) -> Guest<'a> {
-    let may_lock_any = kernel
-        .credentials(tid)
-        .has(crate::linux::general::CAP_IPC_LOCK);
-    let process = kernel.process_of(tid);
+    let thread = &kernel.threads[&tid];
+    let may_lock_any = thread.credentials.has(crate::linux::general::CAP_IPC_LOCK);
+    let pid = thread.process;
+    process_guest(kernel, cx, pid, tid, may_lock_any)
+}
+
+/// Process `pid`'s memory, for copies made for its task `tid`, which need not be on the kernel.
+pub(crate) fn process_guest<'a>(
+    kernel: &'a mut Kernel,
+    cx: &'a mut Context<'_>,
+    pid: crate::process::Pid,
+    tid: Tid,
+    may_lock_any: bool,
+) -> Guest<'a> {
+    let process = &kernel.processes[&pid];
     Guest {
         cpu: cx.cpu,
         memory: process.memory,
         map: &process.map,
         limits: &process.limits,
         may_lock_any,
-        pid: process.pid,
+        pid,
         tid,
         written: &kernel.kernel_writes,
     }

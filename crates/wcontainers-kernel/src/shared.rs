@@ -602,10 +602,15 @@ fn moved(
 ) -> Result<(), Errno> {
     match old {
         Some(old) => {
-            for process in kernel.processes.values() {
-                for mapping in process.map.borrow().iter() {
+            let away = kernel.live_maps_away();
+            let here = kernel
+                .processes
+                .values()
+                .map(|process| (process.memory, &process.map));
+            for (memory, map) in here.chain(away.iter().map(|(memory, map)| (*memory, map))) {
+                for mapping in map.borrow().iter() {
                     if let Some(offset) = mapped_offset(&mapping.backing, node) {
-                        map_shown(cx, new, process.memory, mapping, offset)?;
+                        map_shown(cx, new, memory, mapping, offset)?;
                     }
                 }
             }
@@ -619,13 +624,18 @@ fn moved(
 /// Whether a shared mapping of the file may write it, now or after `mprotect` (Linux's
 /// `mapping_writably_mapped`).
 pub(crate) fn writably_mapped(kernel: &Kernel, node: &Node) -> bool {
-    kernel.processes.values().any(|process| {
-        process.map.borrow().iter().any(|mapping| {
+    let writable = |map: &crate::process::Map| {
+        map.borrow().iter().any(|mapping| {
             mapping.allowed.contains(Permissions::WRITE)
                 && mapping.shared
                 && mapped_offset(&mapping.backing, node).is_some()
         })
-    })
+    };
+    kernel
+        .processes
+        .values()
+        .any(|process| writable(&process.map))
+        || kernel.live_maps_away().iter().any(|(_, map)| writable(map))
 }
 
 /// The file offset a mapping starts at, if it maps `node`.
@@ -648,40 +658,40 @@ pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) ->
         Content::Backend(remote) if remote.pages.is_some() => remote.size.get(),
         _ => return Ok(()),
     };
-    for process in kernel.processes.values_mut() {
-        process
-            .map
-            .borrow_mut()
-            .set_file_end(cx.cpu, process.memory, node, page_up(size))?;
-        for mapping in process.map.borrow().iter() {
+    let away = kernel.live_maps_away();
+    let here = kernel
+        .processes
+        .values()
+        .map(|process| (process.memory, &process.map));
+    for (memory, map) in here.chain(away.iter().map(|(memory, map)| (*memory, map))) {
+        map.borrow_mut()
+            .set_file_end(cx.cpu, memory, node, page_up(size))?;
+        for mapping in map.borrow().iter() {
             if mapping.permissions.contains(Permissions::EXECUTE)
                 && mapped_offset(&mapping.backing, node).is_some()
             {
-                cx.cpu.code_changed(
-                    process.memory,
-                    mapping.start,
-                    mapping.end - mapping.start,
-                    &[],
-                );
+                cx.cpu
+                    .code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
             }
         }
     }
     Ok(())
 }
 
-/// Ends the blocks of files no mapping shows any more, moving their bytes back to the files: a
+/// Ends the blocks of files no mapping shows any more, here or in a context away, moving their bytes back to the files: a
 /// backend file's are written back, with nothing waiting, if a shared mapping may have written them.
 pub(crate) fn release(kernel: &mut Kernel, cx: &mut Context<'_>) {
     let processes = &kernel.processes;
+    let away = kernel.live_maps_away();
     let mut unmapped = Vec::new();
     kernel.files.shared.retain(|node| {
-        let mapped = processes.values().any(|process| {
-            process
-                .map
-                .borrow_mut()
+        let shows = |map: &crate::process::Map| {
+            map.borrow()
                 .iter()
                 .any(|mapping| mapped_offset(&mapping.backing, node).is_some())
-        });
+        };
+        let mapped = processes.values().any(|process| shows(&process.map))
+            || away.iter().any(|(_, map)| shows(map));
         if !mapped {
             unmapped.push(node.clone());
         }

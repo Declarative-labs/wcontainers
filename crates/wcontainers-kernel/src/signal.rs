@@ -11,6 +11,7 @@ use crate::linux_extra::{SIG_DFL, SIG_IGN};
 use crate::memory::Backing;
 use crate::process::{Channel, Pid, Queued, Report, Tid};
 use crate::syscall::Outcome;
+use crate::system::{SignalInformation, TaskId};
 use crate::{Context, Errno, Kernel};
 
 /// The bit for a signal in a signal set.
@@ -105,6 +106,38 @@ pub(crate) fn fault_info(signal: u32, code: i32, address: u64) -> [u8; 128] {
     info
 }
 
+/// The bytes the kernel keeps for a signal's information.
+type InformationBytes = [u8; core::mem::size_of::<SignalInformation>()];
+
+/// One word of a signal's information.
+type Word = super::linux::ctypes::c_int;
+const WORD_BYTES: usize = core::mem::size_of::<Word>();
+
+/// The words of a signal's information (its `_si_pad` member).
+type InformationWords = [Word; core::mem::size_of::<SignalInformation>() / WORD_BYTES];
+
+/// Linux's record of a signal from the bytes the kernel keeps.
+pub(crate) fn information(bytes: &InformationBytes) -> SignalInformation {
+    let (chunks, _) = bytes.as_chunks::<WORD_BYTES>();
+    let words: InformationWords = core::array::from_fn(|at| Word::from_le_bytes(chunks[at]));
+    SignalInformation {
+        __bindgen_anon_1: siginfo__bindgen_ty_1 { _si_pad: words },
+    }
+}
+
+/// The bytes the kernel keeps for a record of a signal built from zero.
+pub(crate) fn information_bytes(information: &SignalInformation) -> InformationBytes {
+    // SAFETY: every member of the record is made of integers, any bytes are valid for them, and
+    // a record built from zero (Linux's `clear_siginfo`) has every byte set.
+    let words: InformationWords = unsafe { information.__bindgen_anon_1._si_pad };
+    let mut bytes: InformationBytes = [0; core::mem::size_of::<SignalInformation>()];
+    let (chunks, _) = bytes.as_chunks_mut::<WORD_BYTES>();
+    for (chunk, word) in chunks.iter_mut().zip(words) {
+        *chunk = word.to_le_bytes();
+    }
+    bytes
+}
+
 /// The signal number a `siginfo` carries.
 fn signal_of(info: &[u8; 128]) -> u32 {
     u32::from_le_bytes(info[0..4].try_into().expect("four bytes"))
@@ -129,11 +162,13 @@ impl Kernel {
         action_ignores(handler, signal) || (self.init == Some(pid) && handler == SIG_DFL)
     }
 
-    /// Whether a thread has a signal it does not block waiting for it (Linux's `signal_pending`).
+    /// Whether a thread has a signal it does not block waiting for it, or was taken off its kernel
+    /// in its call (Linux's `signal_pending`).
     pub(crate) fn signal_pending(&self, tid: Tid) -> bool {
         let thread = &self.threads[&tid];
         let process = &self.processes[&thread.process];
         (thread.pending.set | process.pending.set) & !thread.signal_mask != 0
+            || thread.suspended_in_call
     }
 
     /// Sends a signal to one thread (`tkill`, a fault, a timer); one that does not fit the user's
@@ -158,6 +193,33 @@ impl Kernel {
         info: [u8; 128],
     ) -> Result<(), crate::Errno> {
         self.send(cx, Target::Thread(tid), signal, info)
+    }
+
+    /// A signal the embedder sent to thread `tid` of process `pid` through its handle, sent as
+    /// `rt_tgsigqueueinfo` sends one; counted and not sent when it cannot be.
+    pub(crate) fn send_from_embedder(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        tid: Tid,
+        info: InformationBytes,
+    ) {
+        let signal = signal_of(&info);
+        // A task of the process taken off the kernel is still one of its tasks.
+        let ours = match self.threads.get(&tid) {
+            Some(thread) => thread.process == pid,
+            None => self
+                .processes
+                .get(&pid)
+                .is_some_and(|process| process.away.contains_key(&tid)),
+        };
+        if !ours
+            || !(1..=_NSIG).contains(&signal)
+            || self.queue_to_thread(cx, tid, signal, info).is_err()
+        {
+            self.counters
+                .count(cx.host, reason::SIGNAL_NOT_SENT, u64::from(signal));
+        }
     }
 
     /// SIGXFSZ for a write past the file size limit, as `send_sig` sends it.
@@ -200,10 +262,27 @@ impl Kernel {
     /// Whether a timer's signal to one thread or (with none) the process would be dropped as
     /// ignored (`prepare_signal` failing in `posixtimer_send_sigqueue`).
     pub(crate) fn timer_signal_ignored(&self, thread: Option<Tid>, pid: Pid, signal: u32) -> bool {
-        let Some(tid) = thread.or_else(|| self.processes[&pid].threads.first().copied()) else {
-            return false;
+        let process = &self.processes[&pid];
+        let mask = match thread.or_else(|| process.threads.first().copied()) {
+            Some(tid) => match self.threads.get(&tid) {
+                Some(thread) => thread.signal_mask,
+                None => process.away[&tid].signal_mask,
+            },
+            None => match process.away.values().next() {
+                Some(away) => away.signal_mask,
+                None => return false,
+            },
         };
-        self.threads[&tid].signal_mask & bit(signal) == 0 && self.dropped(pid, signal)
+        mask & bit(signal) == 0 && self.dropped(pid, signal)
+    }
+
+    /// Whether `tid` is a task of process `pid`, on this kernel or taken off it.
+    pub(crate) fn task_of(&self, pid: Pid, tid: Tid) -> bool {
+        self.threads.contains_key(&tid)
+            || self
+                .processes
+                .get(&pid)
+                .is_some_and(|process| process.away.contains_key(&tid))
     }
 
     /// The caller's count of pipe pages (by its real user id), and whether it is free of the limits
@@ -397,12 +476,26 @@ impl Kernel {
         if signal == 0 {
             return Ok(());
         }
-        let (pid, leader) = match target {
-            Target::Thread(tid) => (self.threads[&tid].process, tid),
-            Target::Process(pid) => match self.processes[&pid].threads.first() {
-                Some(tid) => (pid, *tid),
-                None => return Ok(()),
+        // What the task named blocks; a task taken off the kernel keeps what it is sent, as a
+        // stopped one does.
+        let (pid, mask) = match target {
+            Target::Thread(tid) => match self.threads.get(&tid) {
+                Some(thread) => (thread.process, thread.signal_mask),
+                None => {
+                    let pid = self.away_process_of(tid).expect("a task of a process");
+                    (pid, self.processes[&pid].away[&tid].signal_mask)
+                }
             },
+            Target::Process(pid) => {
+                let process = &self.processes[&pid];
+                match process.threads.first() {
+                    Some(tid) => (pid, self.threads[tid].signal_mask),
+                    None => match process.away.get(&pid).or(process.away.values().next()) {
+                        Some(away) => (pid, away.signal_mask),
+                        None => return Ok(()),
+                    },
+                }
+            }
         };
         // `prepare_signal`: a process dumping core takes only SIGKILL, which ends the dump.
         if crate::syscall::coredump::writer(self, pid).is_some() && signal != SIGKILL {
@@ -414,17 +507,13 @@ impl Kernel {
             self.drop_pending(pid, STOPPING);
             self.continue_process(cx, pid);
         }
-        let blocked = self.threads[&leader].signal_mask & bit(signal) != 0;
+        let blocked = mask & bit(signal) != 0;
         if !blocked && self.dropped(pid, signal) {
             // A wait for this signal still sees it (`sigtimedwait` blocks what it waits for).
             return Ok(());
         }
         // A standard signal already pending is not queued again (`legacy_queue`).
-        let pending = match target {
-            Target::Thread(tid) => &self.threads[&tid].pending,
-            Target::Process(pid) => &self.processes[&pid].pending,
-        };
-        if signal < SIGRTMIN && pending.set & bit(signal) != 0 {
+        if signal < SIGRTMIN && self.pending_of(target).set & bit(signal) != 0 {
             return Ok(());
         }
         let (queued, charge) = if timer {
@@ -433,10 +522,7 @@ impl Kernel {
             let charge = self.charge_signal(pid, signal, &info)?;
             (charge.is_some(), charge)
         };
-        let pending = match target {
-            Target::Thread(tid) => &mut self.thread_mut(tid).pending,
-            Target::Process(pid) => &mut self.processes.get_mut(&pid).expect("process").pending,
-        };
+        let pending = self.pending_of_mut(target);
         pending.set |= bit(signal);
         if queued {
             pending.queue.push_back(Queued {
@@ -447,8 +533,41 @@ impl Kernel {
             });
         }
         self.wake_readiness_of(pid);
-        self.complete(pid, target, signal);
+        self.complete(cx, pid, target, signal);
         Ok(())
+    }
+
+    /// The process a task taken off this kernel belongs to.
+    pub(crate) fn away_process_of(&self, tid: Tid) -> Option<Pid> {
+        self.processes
+            .values()
+            .find(|process| process.away.contains_key(&tid))
+            .map(|process| process.pid)
+    }
+
+    fn pending_of(&self, target: Target) -> &crate::process::Pending {
+        match target {
+            Target::Thread(tid) => match self.threads.get(&tid) {
+                Some(thread) => &thread.pending,
+                None => {
+                    let pid = self.away_process_of(tid).expect("a task of a process");
+                    &self.processes[&pid].away[&tid].pending
+                }
+            },
+            Target::Process(pid) => &self.processes[&pid].pending,
+        }
+    }
+
+    fn pending_of_mut(&mut self, target: Target) -> &mut crate::process::Pending {
+        match target {
+            Target::Thread(tid) if !self.threads.contains_key(&tid) => {
+                let pid = self.away_process_of(tid).expect("a task of a process");
+                let process = self.processes.get_mut(&pid).expect("process");
+                &mut process.away.get_mut(&tid).expect("a task away").pending
+            }
+            Target::Thread(tid) => &mut self.thread_mut(tid).pending,
+            Target::Process(pid) => &mut self.processes.get_mut(&pid).expect("process").pending,
+        }
     }
 
     /// Linux's `__sigqueue_alloc` against the receiving user's RLIMIT_SIGPENDING: a place in the
@@ -478,13 +597,24 @@ impl Kernel {
         Ok(None)
     }
 
-    /// Linux's `complete_signal`: a fatal signal that a thread does not block ends the process when
-    /// one of its threads next runs; otherwise a thread that does not block it is woken to act on it.
-    fn complete(&mut self, pid: Pid, target: Target, signal: u32) {
+    /// Linux's `complete_signal`: a fatal signal that does not dump core and that a thread does not
+    /// block ends the process when one of its threads next runs; otherwise a thread that does not
+    /// block it is woken to act on it.
+    fn complete(&mut self, cx: &mut Context<'_>, pid: Pid, target: Target, signal: u32) {
         let candidates: alloc::vec::Vec<Tid> = match target {
-            Target::Thread(tid) => alloc::vec![tid],
+            Target::Thread(tid) if self.threads.contains_key(&tid) => alloc::vec![tid],
+            Target::Thread(_) => alloc::vec::Vec::new(),
             Target::Process(_) => self.processes[&pid].threads.clone(),
         };
+        // SIGKILL ends a process whose tasks are taken off the kernel, as it ends a stopped one;
+        // any other signal waits for a task to come back (`wants_signal`).
+        if candidates.is_empty() {
+            if signal == SIGKILL {
+                self.drop_pending(pid, bit(signal));
+                self.die_of(cx, pid, signal);
+            }
+            return;
+        }
         let wanting = candidates
             .iter()
             .copied()
@@ -498,9 +628,9 @@ impl Kernel {
         let Some(tid) = wanting else {
             return;
         };
+        // One that dumps core is left to the thread that takes it, as Linux leaves it to
+        // `get_signal`.
         let handler = self.handler(pid, signal);
-        // A signal that would dump core is left to the thread that takes it, which dumps
-        // (`complete_signal` does not kill the group at once for it).
         let fatal = handler == SIG_DFL
             && default_action(signal) == Default::Terminate
             && !self.dropped(pid, signal);
@@ -549,11 +679,11 @@ impl Kernel {
 
     /// Drops the signals in `set` from every pending set of a process.
     fn drop_pending(&mut self, pid: Pid, set: u64) {
-        self.processes
-            .get_mut(&pid)
-            .expect("process")
-            .pending
-            .drop_set(set);
+        let process = self.processes.get_mut(&pid).expect("process");
+        process.pending.drop_set(set);
+        for away in process.away.values_mut() {
+            away.pending.drop_set(set);
+        }
         for tid in self.processes[&pid].threads.clone() {
             self.thread_mut(tid).pending.drop_set(set);
         }
@@ -630,18 +760,29 @@ impl Kernel {
         }
         let mut handled = false;
         loop {
-            let mask = self.threads[&tid].signal_mask;
+            let pid = self.threads[&tid].process;
+            let queued = match self.thread_mut(tid).signal_taken.take() {
+                Some(queued) => queued,
+                None => {
+                    let mask = self.threads[&tid].signal_mask;
+                    let Some(queued) = self.dequeue_signal(tid, !mask) else {
+                        break;
+                    };
+                    let signal = information(&queued.info);
+                    self.announce(cx, pid, |system, process| {
+                        system.on_signal_delivering(process, TaskId::of(tid), &signal)
+                    });
+                    queued
+                }
+            };
+            let signal = queued.signal;
             if self.watched(tid)
-                && !self.walk_watched(cx, |kernel, cx| kernel.frame_touched(cx, tid, !mask))
+                && !self.walk_watched(cx, |kernel, cx| kernel.frame_touched(cx, tid, signal))
             {
+                self.thread_mut(tid).signal_taken = Some(queued);
                 self.wait_on_watch(tid, Some(resume), true);
                 return None;
             }
-            let Some(queued) = self.dequeue_signal(tid, !mask) else {
-                break;
-            };
-            let signal = queued.signal;
-            let pid = self.threads[&tid].process;
             let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
             let handler = action.sa_handler_kernel;
             if handler == SIG_IGN {
@@ -1188,17 +1329,12 @@ impl Kernel {
         self.force_signal(tid, fault_info(SIGSEGV, code as i32, address), (0, 0));
     }
 
-    /// Meets the embedder's watches on what acting on the next signal of those `allowed` touches:
-    /// the frame and restartable sequence of a handler, or the thread ends of a fatal one; false
-    /// if the thread must wait.
-    fn frame_touched(&mut self, cx: &mut Context<'_>, tid: Tid, allowed: u64) -> bool {
+    /// Meets the embedder's watches on what acting on the signal taken touches: the frame and
+    /// restartable sequence of a handler, or the thread ends of a fatal one; false if the thread
+    /// must wait.
+    fn frame_touched(&mut self, cx: &mut Context<'_>, tid: Tid, signal: u32) -> bool {
         let thread = &self.threads[&tid];
         let pid = thread.process;
-        let signal = first_ready(thread.pending.set, allowed)
-            .or_else(|| first_ready(self.processes[&pid].pending.set, allowed));
-        let Some(signal) = signal else {
-            return true;
-        };
         let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
         if action.sa_handler_kernel == SIG_IGN {
             return true;

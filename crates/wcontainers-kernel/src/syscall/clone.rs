@@ -54,7 +54,7 @@ pub(super) fn clone(
                     system.on_thread_starting(process, thread)
                 });
             } else {
-                kernel.announce(cx, process, |system, process| {
+                kernel.announce_start(cx, process, |system, process| {
                     system.on_process_starting(process)
                 });
             }
@@ -90,10 +90,17 @@ fn reset_on_fork(schedule: &mut crate::process::Schedule) {
 
 /// A `vfork` parent waits, not to be interrupted, until its child starts a program or ends.
 fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
-    let borrowing = kernel
-        .threads
-        .get(&child)
-        .is_some_and(|thread| thread.vfork_parent == Some(tid));
+    // A child taken off the kernel, or whose context is, still borrows the memory.
+    let borrowing = match kernel.threads.get(&child) {
+        Some(thread) => thread.vfork_parent,
+        None => match kernel.processes.get(&child) {
+            Some(process) => process.away.get(&child).and_then(|away| away.vfork_parent),
+            None => kernel
+                .processes_away
+                .get(&child)
+                .and_then(|away| away.vfork_parent),
+        },
+    } == Some(tid);
     if borrowing {
         kernel.park(tid, Channel::Vfork(child));
         return Outcome::Parked;
@@ -205,8 +212,10 @@ fn make_child(
     process.pid = child;
     process.memory = memory;
     process.map = map;
+    process.map.borrow().note_sharers_changed();
     process.threads = alloc::vec![child];
     process.pending = Default::default();
+    process.away = Default::default();
     process.ended = None;
     process.stopped = false;
     process.report = None;
@@ -447,25 +456,44 @@ enum Found {
 fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Result<Found, Errno> {
     let pid = kernel.threads[&tid].process;
     let own_group = kernel.processes[&pid].group;
+    let eligible = |child: Pid, parent: Pid, parent_thread: Tid, group: Pid, exit_signal: u32| {
+        parent == pid
+            && (options & __WNOTHREAD == 0 || parent_thread == tid)
+            && match which {
+                Which::Any => true,
+                Which::Process(target) => child == target,
+                Which::Group(0) => group == own_group,
+                Which::Group(group_wanted) => group == group_wanted,
+            }
+            // `eligible_child`: a child whose end does not raise SIGCHLD is waited for only with
+            // __WCLONE, and only it, unless __WALL.
+            && (options & __WALL != 0 || ((exit_signal != SIGCHLD) == (options & __WCLONE != 0)))
+    };
     let mut children: alloc::vec::Vec<Pid> = kernel
         .processes
         .values()
-        .filter(|process| process.parent == pid)
-        .filter(|process| options & __WNOTHREAD == 0 || process.parent_thread == tid)
-        .filter(|process| match which {
-            Which::Any => true,
-            Which::Process(target) => process.pid == target,
-            Which::Group(0) => process.group == own_group,
-            Which::Group(group) => process.group == group,
-        })
-        // `eligible_child`: a child whose end does not raise SIGCHLD is waited for only with
-        // __WCLONE, and only it, unless __WALL.
         .filter(|process| {
-            options & __WALL != 0 || ((process.exit_signal != SIGCHLD) == (options & __WCLONE != 0))
+            eligible(
+                process.pid,
+                process.parent,
+                process.parent_thread,
+                process.group,
+                process.exit_signal,
+            )
         })
         .map(|process| process.pid)
         .collect();
-    if children.is_empty() {
+    // A child whose context is taken off the kernel lives, and has nothing to report here.
+    let away = kernel.processes_away.iter().any(|(&child, away)| {
+        eligible(
+            child,
+            away.parent,
+            away.parent_thread,
+            away.group,
+            away.exit_signal,
+        )
+    });
+    if children.is_empty() && !away {
         return Err(Errno::ECHILD);
     }
     // `do_wait` looks at the caller's own children first, then each other thread's in turn.
@@ -484,7 +512,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
     });
     let keep = options & WNOWAIT != 0;
     // `notask_error`: a child that has ended counts only for a wait that takes ends.
-    let mut waitable = false;
+    let mut waitable = away;
     for child in children {
         let process = &kernel.processes[&child];
         if let Some(status) = process.ended {

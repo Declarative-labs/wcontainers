@@ -17,7 +17,7 @@ use crate::linux_extra::{
     MSGMNI, SEMMNI, SEMMNS, SEMMSL, SEMOPM, SHMALL, SHMMAX, SHMMNI,
 };
 use crate::memory::Backing;
-use crate::process::{Channel, Pid, Process, Thread, Tid};
+use crate::process::{Channel, Fs, Pid, Process, Thread, Tid};
 
 /// What a walk through `/proc` needs to know about the kernel.
 pub(crate) struct View<'a> {
@@ -936,7 +936,13 @@ pub(crate) fn task_credentials<'a>(
 ) -> &'a crate::credentials::Credentials {
     match threads.get(&tid) {
         Some(thread) => &thread.credentials,
-        None => &processes[&tid].ended_leader.credentials,
+        None => processes
+            .values()
+            .find_map(|process| process.away.get(&tid))
+            .map_or_else(
+                || &processes[&tid].ended_leader.credentials,
+                |away| &away.shown.credentials,
+            ),
     }
 }
 
@@ -1023,13 +1029,15 @@ pub(crate) fn fdinfo_allowed(view: &View<'_>, entry: &Entry, caller: Tid) -> Res
 }
 
 /// A thread's state (`get_task_state`): ended and not reaped (a process's first thread stays so
-/// while others go on), stopped, parked (unkillably only for a `vfork` parent's wait), or running.
+/// while others go on), stopped (or taken off the kernel), parked (unkillably only for a `vfork`
+/// parent's wait), or running.
 fn state(view: &View<'_>, process: &Process, tid: Tid) -> (char, &'static str) {
     let thread = view.threads.get(&tid);
     let wait = thread.and_then(|thread| thread.call.wait);
-    if process.ended.is_some() || thread.is_none() {
+    let away = process.away.contains_key(&tid);
+    if process.ended.is_some() || (thread.is_none() && !away) {
         ('Z', "zombie")
-    } else if process.stopped {
+    } else if process.stopped || away {
         ('T', "stopped")
     } else if matches!(wait, Some(Channel::Vfork(_))) {
         ('D', "disk sleep")
@@ -1167,7 +1175,19 @@ pub(crate) fn lookup(
     let found = found.or_else(|| match entry {
         Entry::Root => parse_number(name)
             .and_then(|tid| i32::try_from(tid).ok())
-            .and_then(|tid| view.threads.get(&tid).map(|thread| (thread.process, tid)))
+            .and_then(|tid| {
+                let pid = view
+                    .threads
+                    .get(&tid)
+                    .map(|thread| thread.process)
+                    .or_else(|| {
+                        view.processes
+                            .values()
+                            .find(|process| process.away.contains_key(&tid))
+                            .map(|process| process.pid)
+                    })?;
+                Some((pid, tid))
+            })
             .map(|(pid, tid)| {
                 Entry::Process(Task {
                     pid,
@@ -1430,23 +1450,32 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
 }
 
 /// A process's threads as its `task` directory lists them: the first, which stays until the process
-/// is reaped, then the others in the order they were made.
+/// is reaped, then the others on the kernel in the order they were made, then those taken off it.
 pub(crate) fn tasks(process: &Process) -> impl Iterator<Item = Tid> + '_ {
     core::iter::once(process.pid).chain(
         process
             .threads
             .iter()
+            .chain(process.away.keys())
             .copied()
             .filter(move |tid| *tid != process.pid),
     )
 }
 
-/// The process and thread a process link names: a thread that has ended has no program, working
-/// directory or root (its memory and file system context are gone), so the link leads nowhere.
-fn linked<'a>(view: &'a View<'_>, task: &Task) -> Result<(&'a Process, &'a Thread), Errno> {
-    let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
+/// The process and file system context a process link names: a thread that has ended has no
+/// program, working directory or root (its memory and file system context are gone), so the link
+/// leads nowhere; one taken off the kernel keeps them, as a stopped one does.
+fn linked<'a>(view: &'a View<'_>, task: &Task) -> Result<(&'a Process, Fs), Errno> {
     let process = view.processes.get(&task.pid).ok_or(Errno::ENOENT)?;
-    Ok((process, thread))
+    let fs = match view.threads.get(&task.tid) {
+        Some(thread) => thread.fs.clone(),
+        None => process
+            .away
+            .get(&task.tid)
+            .and_then(|away| away.fs.upgrade())
+            .ok_or(Errno::ENOENT)?,
+    };
+    Ok((process, fs))
 }
 
 /// The namespace a process's link names, if the caller may see it (`proc_ns_get_link` and
@@ -1510,8 +1539,8 @@ pub(crate) fn link_target(
             _ => Err(Errno::EINVAL),
         },
         Entry::ProcessLink(task, link) => {
-            let (process, thread) = linked(view, task)?;
-            let fs = thread.fs.borrow();
+            let (process, fs) = linked(view, task)?;
+            let fs = fs.borrow();
             match link {
                 ProcessLink::Exe => {
                     let mut path = process.executable.1.clone();
@@ -1584,11 +1613,11 @@ pub(crate) fn follow(
 ) -> Result<Node, Errno> {
     match entry {
         Entry::ProcessLink(task, link) => {
-            let (process, thread) = linked(view, task)?;
+            let (process, fs) = linked(view, task)?;
             Ok(match link {
                 ProcessLink::Exe => process.executable.0.clone(),
-                ProcessLink::Cwd => thread.fs.borrow().cwd.clone(),
-                ProcessLink::Root => thread.fs.borrow().root.clone(),
+                ProcessLink::Cwd => fs.borrow().cwd.clone(),
+                ProcessLink::Root => fs.borrow().root.clone(),
             })
         }
         Entry::Namespace(task, namespace) => {
@@ -2346,7 +2375,10 @@ fn shown(view: &View<'_>, process: &Process, tid: Tid) -> crate::process::Leader
             schedule: thread.schedule,
             ..crate::process::Leader::of(thread)
         },
-        None => process.ended_leader.clone(),
+        None => process
+            .away
+            .get(&tid)
+            .map_or_else(|| process.ended_leader.clone(), |away| away.shown.clone()),
     }
 }
 

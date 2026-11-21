@@ -721,16 +721,22 @@ fn settle_segments(kernel: &mut Kernel) {
 }
 
 /// How many mappings show each segment, by slot, over every memory once (a `vfork` child shows its
-/// parent's).
+/// parent's), a context's off this kernel among them.
 fn attachments(kernel: &Kernel) -> BTreeMap<u32, u64> {
     let mut counts = BTreeMap::new();
     let mut memories = Vec::new();
-    for process in kernel.processes.values() {
-        if process.ended.is_some() || memories.contains(&process.memory) {
+    let away = kernel.live_maps_away();
+    let here = kernel
+        .processes
+        .values()
+        .filter(|process| process.ended.is_none())
+        .map(|process| (process.memory, &process.map));
+    for (memory, map) in here.chain(away.iter().map(|(memory, map)| (*memory, map))) {
+        if memories.contains(&memory) {
             continue;
         }
-        memories.push(process.memory);
-        for mapping in process.map.borrow().iter() {
+        memories.push(memory);
+        for mapping in map.borrow().iter() {
             if let crate::memory::Backing::File { node, .. } = &mapping.backing
                 && node.borrow().is_segment()
                 && let Some((index, _)) = kernel

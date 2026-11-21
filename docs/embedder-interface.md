@@ -32,7 +32,23 @@ pub trait System: Host + Sync {
     fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {}
     fn on_watched_memory_accessing(&self, process: Process<'_>, thread: TaskId, address: u64, kind: AccessKind) {}
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {}
+    fn on_signal_delivering(&self, process: Process<'_>, thread: TaskId, signal: &SignalInformation) {}
+    fn on_shared_memory_mapping(&self, process: Process<'_>, source: MemoryObject, offset: u64, range: Range<u64>) {}
+    fn on_shared_memory_unmapped(&self, process: Process<'_>, source: MemoryObject, offset: u64, range: Range<u64>) {}
 }
+
+pub struct DeviceId(pub u64);
+pub struct InodeNumber(pub u64);
+pub struct SystemVSegmentId(pub i32);
+pub struct AnonymousMemoryId(pub u64);
+pub enum MemoryObject {
+    File { device: DeviceId, inode: InodeNumber },
+    SystemVSegment(SystemVSegmentId),
+    Anonymous(AnonymousMemoryId),
+}
+
+/// Linux's own record of a signal (the generated binding of `struct siginfo`).
+pub type SignalInformation = wcontainers_kernel::linux::general::siginfo;
 
 /// A process or thread id: one space for both, as Linux's `pid_t`.
 pub struct TaskId(pub u32);
@@ -61,10 +77,13 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   do when every number is taken. A number outside 1 to `pid_max` fails the fork or clone with
   EAGAIN at once, counted (`task id out of range`).
 - `free_task_id` is called when no process, thread, process group or session carries a number any
-  more: a thread that ended, a process reaped (or one whose parent did not want it), the numbers a
+  more: a thread that ended (a task taken off the kernel too, when its process ends or runs a new
+  program while it is away), a process reaped (or one whose parent did not want it), the numbers a
   process leaves behind by `setpgid` or `setsid`, the old number of a thread that took its
   process's number by `execve`, and every number still carried once the container has ended. It
-  is called when the kernel settles, after the call that let go.
+  is called when the kernel settles, after the call that let go. A task or a process context taken
+  off the kernel still carries its numbers there (its process group's too), so the kernel takes
+  none of them for a new thread or process while it is away.
 - Because the embedder hands out the numbers and hears when each is free, a number it keeps never
   names another process without its knowing; no generation is carried.
 
@@ -111,8 +130,9 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 - `on_watched_memory_accessing`: a thread, or the kernel for it, is about to access a page the
   embedder watches (below), as `kind` (an instruction fetch is `Execute`). `process` is the
   process whose memory it is and `thread` the thread whose access it is: a thread of that
-  process, or, when a call reads another process's memory through `/proc/<pid>/cmdline` or
-  `environ` (published to anyone, as Linux's `access_remote_vm` reads them), the reading
+  process, or, when a call reads another process's memory through `/proc/<pid>/cmdline` (open
+  to anyone) or `/proc/<pid>/environ` (open to whoever may inspect the process, Linux's
+  `PTRACE_MODE_READ` check), both copied as Linux's `access_remote_vm` copies them, the reading
   thread of another process. If the watch is gone when the hook returns the access goes on;
   otherwise the thread waits until that process's watches change, or it ends or runs a program,
   then touches again (and the hook fires again if it is still watched).
@@ -132,6 +152,80 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   embedder's to read; pages of a mapped backend file filled from the backend, which are written
   into the file every process mapping it shares, as another process's `write` to a shared file
   is. The embedder's own `write_memory` fires neither this hook nor a watch.
+
+- `on_signal_delivering`: a thread has taken a signal off its pending sets (its own, then its
+  process's) to act on it, before anything of the action: before a handler's frame is written,
+  before a default action ends, stops or ignores, and before an ignoring handler drops it. This
+  is the point of Linux's signal-delivery-stop under ptrace (`get_signal` right after
+  `dequeue_signal`). It is on the thread's way back to its program: after the call it was in has
+  answered (after `intercept_system_call_response`, and before a call interrupted by a handler is
+  set to restart or answer EINTR), or after the CPU side stopped it between instructions (a
+  fault, the end of its time), or when a change of the watches lets go a thread whose own load or
+  store met a watch outside a call and a signal came for it while it waited: it acts on the
+  signal then, before it runs that instruction again and before any call (the test
+  `a_thread_alone_acts_on_a_signal_sent_during_its_watch_wait_once_the_watches_change`). Linux
+  interrupts a thread waiting in a fault at once; here the wait ends only when the watches
+  change, since the embedder decides when the access may go on. So for a signal taken at a system
+  call, the call is the position.
+  `signal` is the record the handler will be given. Signals that are not acted on by a thread are
+  not announced: one taken by `sigwaitinfo`, `sigtimedwait` or a read of a `signalfd` (the call's
+  result), one dropped when sent because it is ignored, and one that ends its process from the
+  sender's side (`SIGKILL`, or a default action that ends the process without dumping core, with
+  no handler: Linux's `complete_signal`; the end is announced by `on_process_exiting`). A signal
+  whose default action dumps core (`SIGQUIT`, `SIGSEGV`, `SIGABRT` and the others) is taken by a
+  thread and announced, however it was sent, as Linux leaves it to `get_signal` (test
+  `a_signal_that_dumps_core_is_announced_and_one_that_only_ends_is_not`, edges.c `fatal`). If the
+  embedder watches what acting on the signal touches (the frame,
+  the restartable sequence, the stores of the threads' ends), the hook fires first and the walk
+  over those watches after it; a thread that then waits on a watch keeps the signal it took and
+  acts on it, with no second announcement, once the watches change.
+
+- `on_shared_memory_mapping` and `on_shared_memory_unmapped`: what each process maps of shared
+  memory, per process (a mapping belongs to a process's whole memory): `range` is where it sits
+  in the process's memory and `offset` where in `source` that range starts. `source` is a file
+  by its device and inode (also a memory file and POSIX shared memory), a System V segment by its
+  id (`shmget`'s answer, the inode `/proc/<pid>/maps` shows for it), or shared anonymous memory
+  (`MAP_SHARED | MAP_ANONYMOUS`, and a shared mapping of `/dev/zero`) by the kernel's own number
+  for it. They describe a change of what a process maps, not a call: a mapping starts with mmap
+  (`MAP_SHARED`), shmat, `mremap` (at its new place, or a mapping grown), and fork (in the
+  child, every shared mapping it inherits but those `MADV_DONTFORK` keeps out) or a clone with
+  `CLONE_VM` (in the new process, the memory it shares); one ends with munmap (only the part
+  taken away), `mremap` (at the old place), a mapping put over it (`MAP_FIXED`, shmat with
+  `SHM_REMAP`), shmdt, a new program (every one, in the process that runs it), and the process's
+  end. Pieces of one mapping that `mprotect`, `mlock` or `madvise` split are still one piece of
+  the source, and nothing is announced for them; a call that maps the same part of the same
+  source at the same place again announces nothing either. Every end lies inside one range
+  announced before, with the same source and the same offsets: the whole of that range, or the
+  part taken away (one start is never ended together with another; two mappings made side by
+  side, or a mapping and the part `mremap` grew it by, end as two). Ends come first: a change that
+  ends one mapping and starts another announces the ending first. The test
+  `every_end_of_shared_memory_lies_in_one_start_and_each_step_matches_proc_maps` cuts and joins
+  file and memory file mappings in each of these ways. What the kernel counts as told is kept piece by
+  piece, as each hook fires: a process a hook takes off the kernel (from any hook, its own sharing
+  hook included) carries in its context exactly the pieces it was told, is announced nothing
+  more while it is away, and is told the rest (starts and ends) at the kernel's next hook after
+  `resume_process`.
+- Only sources some process may write through a mapping are announced: a shared mapping whose
+  file was opened for writing (Linux's `VM_MAYWRITE`, whatever `mprotect` allows now), by a
+  process on the kernel or one whose context is off it and still held (a writer taken off the
+  kernel may write there; the test
+  `a_read_only_mapper_is_announced_while_the_only_writer_is_away`). When a
+  source that no mapping could write through gets one that can, every process already mapping
+  it is announced then, before the new mapping, in each process's own hook. A source once
+  announced stays announced while any process maps it, even if the last mapping that could
+  write it ends; each mapping announced is announced ended.
+- When: a change made by a call is announced before the call's answer reaches the proxy
+  (`intercept_system_call_response`), and before any other hook; a fork's or clone's child is
+  announced its mappings just after `on_process_starting`; a new program's ends come before
+  `on_program_starting`; a process's end, just after `on_process_exiting`, while it is whole.
+- What it costs: an address map notes that a shared mapping went in or out, and a process
+  being made, running a new program or ending notes it when its memory has one; only then does
+  the kernel, before its next hook or before any thread runs, walk every live process's
+  mappings and compare what they map with what it announced. With no shared mapping anywhere
+  nothing is walked.
+- Not announced (for the owner): a private file mapping, which shows the file's bytes as other
+  processes write them until it writes a page itself. The ruling names `MAP_SHARED` mappings
+  only.
 
 ### The system call proxy
 
@@ -159,12 +253,19 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 
 ### The kernel's guarantees
 
-- A hook fires only when every operation on its process is legal: the process is whole, and nothing
-  the hook can do on it conflicts with what the kernel is doing.
+- A hook fires only when every operation on its process is legal: the process is whole and on
+  the kernel, and nothing the hook can do on it conflicts with what the kernel is doing. A hook
+  about a process that an earlier hook of the same moment took off the kernel does not fire (the
+  rest of its shared memory is announced when it is back, a call it was about to make is asked
+  again when it makes the call again).
 - Hooks never nest. A hook is handed only a `Process`, which holds no way back to the embedder, so
   nothing done through it can announce another hook; the test host checks this by running every
-  operation of the handle inside every hook, and reports a hook called while another runs rather
-  than waiting on its own lock.
+  operation of the handle inside every hook it implements (in the life-cycle, task id and shared
+  memory tests: `info`, `execution_config`, the memory reads, writes and watches, `memory_id`,
+  `copy_process_context`, `suspend_tasks` of none, and `send_signal` of number 0, which is
+  counted and not sent), and reports a hook called while another runs rather than waiting on its
+  own lock. Taking a process or tasks from inside hooks is run by the suspend tests (from
+  `intercept_system_call_request`, `on_signal_delivering` and `on_shared_memory_mapping`).
 - The kernel touches a program's memory before a system call has any effect, so a watch fires while
   the call can still be repeated (see "Watches and system calls").
 - A hook is synchronous; an embedder that works asynchronously returns and finishes later through
@@ -179,11 +280,16 @@ impl Process<'_> {
     pub fn id(&self) -> TaskId;
     pub fn info(&self) -> ProcessInfo<'_>;
     pub fn execution_config(&self) -> ExecutionConfig;
+    pub fn memory_id(&self) -> MemoryId;
     pub fn read_memory(&mut self, range: Range<u64>) -> Result<Vec<u8>, MemoryError>;
     pub fn write_memory(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError>;
     pub fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
     pub fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor) -> Result<(), Unsupported>;
     pub fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
+    pub fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
+    pub fn suspend_tasks(&mut self, tasks: &[TaskId]) -> vec::IntoIter<(TaskId, SuspendedTask)>;
+    pub fn suspend_process(self) -> (ProcessContext, vec::IntoIter<(TaskId, SuspendedTask)>);
+    pub fn copy_process_context(&self) -> ProcessContext;
 }
 
 impl Kernel {
@@ -205,8 +311,8 @@ pub enum AccessKind { Read, Write, Execute }
 pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }
 ```
 
-- Hooks receive the handle by value (the owner's agreement of the night of 2026-11-18), so a later
-  `suspend(self)` can consume it.
+- Hooks receive the handle by value (the owner's agreement of the night of 2026-11-18), so
+  `suspend_process(self)` consumes it.
 - `info` reads only: `memory_mapped` sums the mapped ranges; `ceiling_distance` is what new mappings
   can still take below the ceiling (the gaps between the heap's end and the mmap base);
   `compute_used` is the CPU time of the live threads plus the ended ones; `parent` is the
@@ -239,6 +345,24 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
 - `watch_thread_memory` is declared for executors that can watch one thread and not its siblings
   (the abi's `PerThreadWatch` subtrait of `Cpu`); no executor implements it today, and the kernel
   reaches the executor as `dyn Cpu`, so the call is refused by name (`Unsupported::PerThreadWatch`).
+
+- `memory_id` is the executor's `MemoryId` of the memory the process runs in: the same for
+  processes that run in one memory (a vfork child until it lets go, a clone with `CLONE_VM`),
+  and a new one when the process runs a new program, which replaces its memory; a forked child
+  has its own (the test `a_child_shares_its_parents_memory_id_only_while_it_shares_the_memory`).
+- `send_signal` sends a signal to one thread of the process, as `rt_tgsigqueueinfo` would with
+  `signal` as its record (the number is the record's `si_signo`; the sender is whoever the
+  record names, for example none with `SI_QUEUE` for a signal from outside the container). It
+  is sent when the kernel next settles: after the hook it was called in returns, before any
+  thread runs again; between steps, `Kernel::next` then answers `Next::Idle` with a time of 0, as
+  for a watch changed between steps. From there it is any other signal: a thread blocked in an
+  interruptible call is woken and the call answers EINTR or restarts by its handler's
+  `SA_RESTART`; a thread waiting on a watch acts on it once the watches change; a task of the
+  process taken off the kernel keeps it, as it keeps one from `tgkill`, and acts on it when it is
+  put back. A signal that names no thread of the process (on the kernel or taken off it), has a number outside 1 to 64, or does not fit the receiving
+  user's queue is not sent, counted (`signal from the embedder not sent`, with its number) and
+  warned. The record must be built from zero, as Linux's `clear_siginfo` builds one: the kernel
+  reads it whole, and in Rust the bytes of a union member never written are not readable.
 
 ### Watches and system calls
 
@@ -368,24 +492,199 @@ pub enum Unsupported {
 - `translator: E::TranslatorConfig` is not a field: the kernel reaches its executor as `dyn Cpu`,
   with no executor type to name it from.
 
+## Suspending and resuming tasks
+
+```rust
+impl Kernel {
+    pub fn suspend_tasks(&mut self, cpu: &mut dyn Cpu, tasks: &[TaskId]) -> vec::IntoIter<(TaskId, SuspendedTask)>;
+    pub fn suspend_process(&mut self, cpu: &mut dyn Cpu, process: TaskId) -> Option<(ProcessContext, vec::IntoIter<(TaskId, SuspendedTask)>)>;
+    pub fn copy_process_context(&self, process: TaskId) -> Option<ProcessContext>;
+    pub fn resume_process(&mut self, context: ProcessContext, config: ExecutionConfig) -> Option<ProcessContext>;
+    pub fn resume_tasks(&mut self, cpu: &mut dyn Cpu, tasks: impl IntoIterator<Item = SuspendedTask>) -> vec::IntoIter<SuspendedTask>;
+}
+
+pub struct SuspendedTask { /* the kernel's records */ }  // id(), process()
+pub struct ProcessContext { /* the kernel's records */ } // id(), origin()
+pub enum ContextOrigin { Suspended, Copied }
+```
+
+- The kernel's calls take the executor (`cpu`), as `Kernel::process` does: a task's registers live
+  there, and a task put back gets a new executor thread in its process's memory. They are made
+  between steps (no thread running); the handle's three are the same calls limited to its process.
+  Resuming is outside hooks only. The iterators are the concrete `vec::IntoIter`, which borrows
+  nothing of the kernel.
+- A `SuspendedTask` holds the task's whole record (its id, its registers, its signal mask and
+  pending signals, its call slot with what it waits on, its credentials, and its references to the
+  descriptor table and the filesystem information, which Linux's tasks also reach by reference)
+  and where it was in line. A `ProcessContext` holds the process's record: the memory (the
+  executor's `MemoryId`) and its address map with the embedder's watches, the signal handlers, the
+  limits, the process group and session, and what the embedder has been told the process maps of
+  shared memory, which moves with it so nothing is announced again or ended by the move.
+- `suspend_tasks` takes, as of one moment, every task named that is on the kernel; one not here (it
+  ended, it is on no process of this kernel, or it is already taken) is absent from the answer.
+  Today the kernel runs one thread at a time, so between steps every task is stopped at a point it
+  can be taken from, and the batch is simply the tasks taken in turn with nothing running between
+  them. When threads run at once, a batch naming a running task will have to wait for it to stop;
+  inside a hook that wait could not end, and that batch is not built.
+- Where a task goes on from: a task waiting for its turn (or holding it) goes back in line as it
+  was, and a task with a signal to act on still acts on it first. A task taken in a call, parked in
+  it or woken and not yet run, is treated exactly as Linux treats a signal with no handler arriving
+  during that call (a stop, or the freezer's wake, `fake_signal_wake_up`): the call's next run, when
+  the task is put back, finds a signal pending (`signal_pending`), and the call answers as Linux's
+  code for it answers; with no handler, the restart codes then run the call again. A waiter in a
+  line a wake chooses from leaves it when it is taken, so no wake chooses it while it is away: a
+  futex wait (it answers as interrupted, not timed out), a System V semaphore operation (told EINTR
+  at once) and a POSIX message queue send or receive. Every other call sees the interruption when
+  the task is put back: nothing of the task runs in between, so this is Linux's stop arriving then.
+  A task taken at `intercept_system_call_request` has not begun its call and makes it again (the
+  request is announced again). A task taken while it waits outside any call (its own load or store,
+  or the frame of a signal it acts on, met a watch or pages not here) has no call to interrupt: it
+  is not marked, so no later call of it looks interrupted; put back, it touches the memory again
+  (the access is announced again if the watch is still there) and goes on waiting, and a signal it
+  was acting on is acted on as before. Tests:
+  `a_task_taken_while_its_store_waits_on_a_watch_is_not_interrupted_later` and
+  `a_task_taken_while_its_signal_frame_waits_on_a_watch_is_not_interrupted_later` (edges.c
+  `taken`). Per call, from the restart codes in Linux's source and signal(7),
+  "Interruption of system calls by signal handlers" and "by stop signals":
+  - Run again from the start, having had no effect (`ERESTARTSYS`, `ERESTARTNOINTR`,
+    `ERESTARTNOHAND` with no handler): a read or write that has moved nothing (pipes, sockets with
+    no timeout, terminals, eventfd, signalfd, inotify, splice), the open of a named pipe, `wait4`
+    and `waitid`, `accept`, `connect`, `flock` and `F_SETLKW`, a futex wait with no timeout (it checks
+    the number again, and answers EAGAIN if it changed) and the priority-inheritance lock, a message
+    queue send or receive (their times are absolute), `pause`, `rt_sigsuspend`,
+    `clock_nanosleep` with `TIMER_ABSTIME`.
+  - Go on with the time that was left: `nanosleep` and a relative `clock_nanosleep`, and a futex
+    wait with a timeout, through `restart_syscall` (`ERESTART_RESTARTBLOCK`, to the same deadline);
+    `ppoll` and `pselect6` write the time left into their timeout and run again (`ERESTARTNOHAND`).
+  - Answer what they already did: a read or write that has moved bytes answers the count, and
+    `sendmmsg` and `recvmmsg` the messages done; a futex waiter a wake had already chosen answers
+    0; a semaphore operation already done and a message already handed over answer as done.
+  - Answer EINTR, as Linux does after a stop even with no handler: `epoll_wait` and
+    `epoll_pwait`, `semop` and `semtimedop`, `rt_sigtimedwait`, and a socket wait for data, room
+    or a connection on a socket with `SO_RCVTIMEO` or `SO_SNDTIMEO` set (Linux's
+    `sock_intr_errno`; with a handler too, whatever its `SA_RESTART`). Tests:
+    `a_socket_wait_with_a_receive_timeout_taken_off_answers_as_a_stop_makes_it_answer` and
+    `a_socket_wait_with_a_receive_timeout_is_not_restarted_after_a_handler` (away.c `socket`).
+  The test `a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer`
+  (stopped.c) takes a process's threads in a futex wait, a futex wait already woken, a sleep, a
+  write half done, a semaphore operation, `epoll_wait` and a pipe read, changes and wakes the futex
+  while they are away, and compares every answer with the reference, where the same program is
+  stopped and continued with SIGSTOP and SIGCONT.
+  The call's next run is when the task is put back, so a wait met while it was away (a byte
+  written to the pipe it reads) is found before the signal: a read then answers the byte where
+  Linux, whose call was interrupted when the stop came, answers EINTR to a handler without
+  `SA_RESTART` that a signal sent meanwhile runs. That one case is a known failure
+  (`a_threads_timer_firing_while_it_is_away_interrupts_its_read_though_the_byte_came`, ignored with
+  its reason); running each call's interruption when the task is taken would mean running a call,
+  with its hooks, inside the hook that takes it.
+- A task taken off the kernel is still a task of its process there, as a stopped one is in Linux
+  (the process's record keeps its number, the signals it blocks, what Linux reads from it:
+  credentials, name, scheduling, and what its end does: its robust list, its `set_tid_address`
+  word, the `vfork` parent it keeps waiting):
+  - The process ends only when its last task ends: a thread that exits while others are away
+    ends alone, and the process's exit status is the last thread's, wherever it comes back.
+  - A signal sent to the process or to the task while it is away is kept, as Linux keeps it for a
+    stopped task (`wants_signal` is false): `kill`, `tgkill` and its kin, a POSIX timer aimed at
+    the thread (`SIGEV_THREAD_ID`), a child's SIGCHLD to its parent. A signal to the
+    task goes with it when it is put back, after what it already had (a standard signal once); one
+    to the process stays with the process. The task acts on them when it is put back, a task taken
+    in a call after its call answers as above. SIGKILL ends the process at once, as it ends a
+    stopped one; the tasks away are then handed back by `resume_tasks`. Every other end of the
+    process (`exit_group`, a fatal signal acted on, the container's end) also ends its tasks away,
+    and so does `execve` by any of its threads, as Linux's `de_thread` ends stopped threads (a
+    thread that runs a new program while the first thread is away takes the process's number).
+    A task away ends as any thread ends, before the embedder hears of the process's end: the locks
+    on its robust list are marked as their owner's death and a waiter woken, its `set_tid_address`
+    word is cleared and woken while others use the memory, its semaphore adjustments are made, a
+    `vfork` parent it kept waiting goes on, and its number is freed. `resume_tasks` then hands it
+    back (it is no longer a task of its process, even if the number names one again).
+  - `/proc` shows it as a stopped thread: in the process's thread count and `task` directory, at
+    `/proc/<tid>`, with state `T (stopped)`, its name, credentials and blocked signals, and its
+    `exe`, `cwd` and `root` links (also the process's, when the first thread is away). Its
+    descriptor directory (`fd`, `fdinfo`) is empty while it is away.
+  - It counts against `RLIMIT_NPROC`, and a `vfork` parent whose child is taken, or whose child's
+    context is, goes on waiting until the child runs a program or ends on this kernel.
+  - The `ProcessContext` carries these records, so a process moved to another kernel keeps them
+    there.
+  The tests in tests/away.rs (guest/away.c) take a child's main thread while it joins a worker that
+  then ends, a child's thread in a read while its parent sends SIGTERM or SIGKILL and closes the
+  pipe, a thread in a read while its own timer fires, and one while the embedder sends it a
+  signal (`send_signal`), and compare the output with the reference, where nothing is taken (and
+  the program sends the signal itself). The tests in tests/taskend.rs (guest/taskend.c) take a
+  worker while the main thread runs a new program, the first thread while a worker runs one (then
+  ending with `SYS_exit`), a child's worker while the child exits (its number must be freed before
+  the parent goes on), a worker and the first thread while `/proc` is read, a worker holding a
+  robust lock shared with the parent while its process exits, and a `vfork` child that another
+  process kills; each compares the output with the reference and checks what `resume_tasks` hands
+  back.
+- What a context away maps stays in use on the kernel it left, as a stopped process's memory does
+  in Linux: its executor memory is not dropped when the last process on the kernel that shares it
+  ends (a `CLONE_VM` child), the blocks of the files it maps are kept and follow the file (moved
+  to a larger block, cut at a new end), a System V segment it attaches stays attached
+  (`shm_nattch`), and a memory file it maps writable cannot be sealed against writes. The kernel
+  keeps a weak reference to each map that left it, taken or copied, until the context is put back
+  on it; so a context the embedder drops instead of putting back lets go of its file blocks, but
+  its executor memory is left to the executor (the kernel no longer knows whether another kernel
+  runs in it). Tests: `a_parent_away_while_its_forked_child_ends_goes_on_when_it_is_back` and
+  `a_parent_away_while_a_child_in_its_memory_ends_goes_on_when_it_is_back` (away.c `leave`: the
+  parent's program file and a memory file it shares with the child, then a child in its memory).
+- A process whose context is taken off the kernel is still its parent's child there: `wait4` and
+  `waitid` for it wait (with `WNOHANG` they answer 0), as for a stopped child with nothing to
+  report, and when the parent ends it goes to the reaper, which the context takes when it comes
+  back. `kill` of a process away answers ESRCH, as for any process not on this kernel: a signal to
+  it is the embedder's to carry, as the owner ruled for copies on several kernels.
+- Inside a hook the kernel is in the middle of a step for one thread (the system call, signal or
+  fault it is handling), or of starting a program or ending a process. That thread, the process
+  being started by an exec and every task of a process being ended cannot be taken there: they are
+  left out of the answer and counted (`task in the middle of a kernel step not suspended`, detail
+  the task). The one exception is `intercept_system_call_request`: nothing of the call has
+  happened, so its thread is taken and makes the call again (the request is announced again) where
+  it is put back. A new thread or process announced by `on_thread_starting` or
+  `on_process_starting` after a clone can be taken: it has not run.
+- `suspend_process` takes the context and every task of the process; the process is then gone from
+  the kernel (`process` and `copy_process_context` answer none) and the context's `origin()` is
+  `Suspended`. A process being ended (a fatal signal on its way, or inside `on_process_exiting`)
+  cannot leave: `Kernel::suspend_process` answers none for it. Through the handle, whose return
+  has no room for none, when the process is being ended or one of its tasks cannot be taken in that
+  hook (its own thread in the middle of its step, for one), the process stays: the answer is a copy
+  of its context, with `origin()` `Copied`, and the tasks that could be taken, and the rest are
+  counted as above. The test
+  `a_hooks_process_whose_thread_is_in_its_step_stays_and_says_its_context_is_a_copy` asks for the
+  process at `on_signal_delivering`.
+- `copy_process_context` stops nothing, and the copy (`origin()` `Copied`) changes nothing of the
+  original: it has its own address map (the same mappings over the same executor memory) and its
+  own signal handler table, no pending signal (they stay with the process), and every task of the
+  process counted as away from it (an end of the copy makes no last stores into the shared memory
+  for the tasks that went on running on the original; test
+  `a_copys_end_makes_no_last_stores_for_the_tasks_going_on_with_the_original`, taskend.c
+  `robust-copy`: a robust lock held by such a task stays held). Keeping copies in step on several kernels
+  is the embedder's business. It holds no tasks. An address map tells each kernel a process using
+  it is on what changes in its shared mappings, so a process moved to a second kernel is announced
+  there, and one left on the first (two processes in one memory, one moved) still is there. The
+  test `shared_memory_is_announced_on_the_first_kernel_after_a_copy_goes_on_a_second` maps and
+  unmaps a memory file after a copy of its process is put on a second kernel.
+- `resume_process` puts the context on the kernel with `config` (given here, never kept in the
+  value: a fork's child takes its parent's as before). A context for a process already on the
+  kernel changes nothing and is handed back; so is one with a configuration the kernel cannot run
+  (see `ExecutionConfig::supported`).
+- `resume_tasks` puts each task on its process: tasks whose process context is not on the kernel,
+  whose number is already carried, or for which the executor refused a thread (counted as `host
+  cannot do this` when it cannot at all) are handed back. Putting a task back ends nothing and
+  announces nothing.
+- What a task leaves on the kernel it came from while away: results already given to it (a
+  semaphore operation done or told EINTR, a message handed over) stay there keyed by its number
+  and are found when it comes back to the same kernel; a wake that reaches nobody there is not
+  passed on. Locks across kernels (`wake_waiters`, `move_waiters`) are not built.
+- A second kernel value in the same embedder, on the same executor (the memory ids are the
+  executor's), accepts a context and tasks from another; its clock and its tables (ends, futexes,
+  System V objects, file systems) are its own. The ruled milestone is one kernel: no test runs a
+  task on the second kernel, only checks its state there (memory id, size, what `resume_tasks`
+  hands back) and brings it back. A process brought to a kernel whose parent is not on it is not
+  yet given a reaper.
+
 ## Not built, and where it attaches
 
-- `suspend(self) -> SuspendedProcess<E>`, `resume`, `export` and `import`: `suspend` will be a
-  method of `Process` consuming the handle (hooks already receive it by value); `resume` a method
-  of `Kernel` taking the `SuspendedProcess` and an `ExecutionConfig`. The process's records are the
-  kernel's `Process` and `Thread` entries and its `AddressMap` (watches included); its memory is the
-  executor's `MemoryId`.
-- Which processes share memory (ruled on the evening of 2026-11-19, replacing the pairwise report
-  and `memory_sharers()`): two hooks on `System`, `on_shared_memory_mapping` and
-  `on_shared_memory_unmapped(process, source: MemoryObject, offset, range)`, with
-  `MemoryObject::{File { device: DeviceId, inode: InodeNumber }, SystemVSegment(SystemVSegmentId),
-  Anonymous(AnonymousMemoryId)}` and the four branded ids in the kernel's interface. They will fire
-  per process where the `AddressMap` gains or loses a shared mapping (`Mapping::shared` and the
-  node it maps): mmap, shmat, the maps a fork's child inherits, and munmap, exit and exec. The
-  `WorkloadPlacement` ruling of the same evening also needs a getter for a process's memory id on
-  `Process` (the executor's `MemoryId`, which holds across vfork and exec). Shared pages marked
-  watched when one sharer leaves come with `suspend`: the marking will set `WatchesFor::All` on
-  those pages in every process still sharing them.
-- `type ProcessState` (ruled; to wait for the reviewable-rust layout), signals as an input
-  (`on_signal_delivering`, `Process::send_signal`, ruled at 17:10 on 2026-11-19).
+- `export` and `import` (a wire form for a task and for a context), and anything for a second
+  machine.
+- `type ProcessState` (ruled; to wait for the reviewable-rust layout).
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.

@@ -7,6 +7,7 @@
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
+use core::mem::offset_of;
 
 use smallvec::SmallVec;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
@@ -14,12 +15,15 @@ use wcontainers_abi::{PAGE_SIZE, Permissions};
 use super::{Args, Outcome, guest};
 use crate::linux::general::*;
 use crate::memory::Backing;
-use crate::process::{Channel, Restart, Tid};
+use crate::process::{Channel, Pid, Restart, Tid};
 use crate::{Context, Errno, Kernel};
 
 /// What a futex is known by (`union futex_key`): a private one, or a shared one in a private
 /// mapping, by its memory and address; a shared one in a shared mapping by the file's inode and
 /// the offset in it, so every process that maps it finds the same futex.
+/// The size of a futex word.
+const FUTEX_WORD: u64 = size_of::<u32>() as u64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Private(u32, u64),
@@ -149,6 +153,13 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     finish(kernel, tid);
 }
 
+/// A waiter taken off its kernel leaves its queues, so no wake chooses it while it is away; its
+/// call's next run answers as interrupted then, not timed out (`restart_syscall` keeps the time).
+pub(crate) fn leave(kernel: &mut Kernel, tid: Tid) {
+    finish(kernel, tid);
+    kernel.thread_mut(tid).call.deadline = None;
+}
+
 /// `get_futex_key`: the address must be aligned and in user space; a shared futex's page must be
 /// mapped and readable, or writable for the calls that change the word (`FUTEX_WRITE`). A page of
 /// a file is known by the file: one in a shared mapping, or a private one read-only and not yet
@@ -161,13 +172,22 @@ fn key_of(
     shared: bool,
     write: bool,
 ) -> Result<Key, Errno> {
-    if !address.is_multiple_of(4) {
+    key_in(kernel.process_of(tid), address, shared, write)
+}
+
+/// As [`key_of`], for an address in `process`'s memory.
+fn key_in(
+    process: &crate::process::Process,
+    address: u64,
+    shared: bool,
+    write: bool,
+) -> Result<Key, Errno> {
+    if !address.is_multiple_of(FUTEX_WORD) {
         return Err(Errno::EINVAL);
     }
-    if !crate::user::access_ok(address, 4) {
+    if !crate::user::access_ok(address, FUTEX_WORD) {
         return Err(Errno::EFAULT);
     }
-    let process = kernel.process_of(tid);
     if !shared {
         return Ok(Key::Private(process.memory.0, address));
     }
@@ -215,9 +235,12 @@ fn write_word(
     address: u64,
     value: u32,
 ) -> Result<(), Errno> {
-    let mut guest = guest(kernel, cx, tid);
+    store_word(&mut guest(kernel, cx, tid), address, value)
+}
+
+fn store_word(guest: &mut crate::user::Guest<'_>, address: u64, value: u32) -> Result<(), Errno> {
     // An atomic change needs the page writable, as the CPU's exclusive store does.
-    if guest.accessible(address, 4, wcontainers_abi::Permissions::WRITE) < 4 {
+    if guest.accessible(address, FUTEX_WORD, wcontainers_abi::Permissions::WRITE) < FUTEX_WORD {
         return Err(Errno::EFAULT);
     }
     guest.write_value(address, &value)
@@ -572,6 +595,14 @@ pub(crate) fn wake(
         return Ok(0);
     }
     wake_key(kernel, key, count, bitset)
+}
+
+/// Wakes one waiter of the futex at `address` in process `pid`'s memory, shared, as a thread's end
+/// does.
+fn wake_one_in(kernel: &mut Kernel, pid: crate::process::Pid, address: u64) {
+    if let Ok(key) = key_in(&kernel.processes[&pid], address, true, false) {
+        let _ = wake_key(kernel, key, 1, FUTEX_BITSET_MATCH_ANY);
+    }
 }
 
 fn wake_key(kernel: &mut Kernel, key: Key, count: i32, bitset: u32) -> Result<u64, Errno> {
@@ -1113,10 +1144,44 @@ fn requeue_pi(
     Ok(count as u64)
 }
 
-/// A thread's end as `futex_exit_release` and `mm_release` see it: the locks on its robust list
-/// marked as their owner's death and a waiter woken, the priority inheriting locks it holds handed
-/// on marked the same, and its thread id address cleared and woken while others still use the
-/// memory.
+/// A task's end as the futexes see it: the process whose memory it leaves, its number, and what it
+/// set for its end, for a task on the kernel or taken off it.
+#[derive(Clone, Copy)]
+pub(crate) struct TaskEnd {
+    pub pid: Pid,
+    pub tid: Tid,
+    /// `set_robust_list`'s head.
+    pub robust_list: u64,
+    /// `set_tid_address`'s word.
+    pub clear_child_tid: u64,
+    /// Whether it may lock memory past its limit (`CAP_IPC_LOCK`), for a stack the stores grow.
+    pub may_lock_any: bool,
+}
+
+impl TaskEnd {
+    /// The end of task `tid`, taken off the kernel from process `pid`; none if it makes no stores
+    /// here.
+    pub fn of_away(pid: Pid, tid: Tid, away: &crate::process::Away) -> Option<Self> {
+        let stores = away.last_stores?;
+        Some(Self {
+            pid,
+            tid,
+            robust_list: stores.robust_list,
+            clear_child_tid: stores.clear_child_tid,
+            may_lock_any: away.shown.credentials.has(CAP_IPC_LOCK),
+        })
+    }
+
+    fn memory<'a>(
+        &self,
+        kernel: &'a mut Kernel,
+        cx: &'a mut Context<'_>,
+    ) -> crate::user::Guest<'a> {
+        super::process_guest(kernel, cx, self.pid, self.tid, self.may_lock_any)
+    }
+}
+
+/// A thread's end as `futex_exit_release` and `mm_release` see it, as [`task_end`] does it.
 pub(crate) fn thread_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1124,18 +1189,35 @@ pub(crate) fn thread_end(
     others_use_memory: bool,
 ) {
     forget(kernel, tid);
-    let (head, clear) = {
-        let thread = &kernel.threads[&tid];
-        (thread.robust_list.0, thread.clear_child_tid)
+    let thread = &kernel.threads[&tid];
+    let end = TaskEnd {
+        pid: thread.process,
+        tid,
+        robust_list: thread.robust_list.0,
+        clear_child_tid: thread.clear_child_tid,
+        may_lock_any: thread.credentials.has(CAP_IPC_LOCK),
     };
-    if head != 0 {
-        robust_list(kernel, cx, tid, head);
+    task_end(kernel, cx, &end, others_use_memory);
+}
+
+/// A task's end as `futex_exit_release` and `mm_release` see it: the locks on its robust list
+/// marked as their owner's death and a waiter woken, the priority inheriting locks it holds handed
+/// on marked the same, and its thread id address cleared and woken while others still use the
+/// memory.
+pub(crate) fn task_end(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    end: &TaskEnd,
+    others_use_memory: bool,
+) {
+    if end.robust_list != 0 {
+        robust_list(kernel, cx, end);
     }
     let held: Vec<Key> = kernel
         .futexes
         .pi_owners
         .iter()
-        .filter(|(_, owner)| **owner == tid)
+        .filter(|(_, owner)| **owner == end.tid)
         .map(|(key, _)| *key)
         .collect();
     for key in held {
@@ -1143,27 +1225,37 @@ pub(crate) fn thread_end(
         // The next owner finds no owner to take over from (`__fixup_pi_state_owner`).
         let _ = hand_over(kernel, cx, key, FUTEX_OWNER_DIED);
     }
-    if clear != 0 && others_use_memory && guest(kernel, cx, tid).write_value(clear, &0u32).is_ok() {
-        let _ = wake(kernel, tid, clear, true, 1, FUTEX_BITSET_MATCH_ANY, false);
+    let clear = end.clear_child_tid;
+    if clear != 0 && others_use_memory && end.memory(kernel, cx).write_value(clear, &0u32).is_ok() {
+        wake_one_in(kernel, end.pid, clear);
     }
 }
 
 /// The most entries `exit_robust_list` follows (`ROBUST_LIST_LIMIT`).
 pub(crate) const ROBUST_LIST_LIMIT: usize = 2048;
 
-/// `exit_robust_list`: each lock on the list (and the one being taken or let go) that the thread
+/// `exit_robust_list`: each lock on the list (and the one being taken or let go) that the task
 /// holds is marked as its owner's death, and a plain one with waiters wakes one.
-fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, head: u64) {
+fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, end: &TaskEnd) {
+    let head = end.robust_list;
     let read = |kernel: &mut Kernel, cx: &mut Context<'_>, at: u64| {
-        guest(kernel, cx, tid).read_value::<u64>(at).ok()
+        end.memory(kernel, cx).read_value::<u64>(at).ok()
     };
     let Some(first) = read(kernel, cx, head) else {
         return;
     };
-    let Some(offset) = read(kernel, cx, head + 8) else {
+    let Some(offset) = read(
+        kernel,
+        cx,
+        head + offset_of!(robust_list_head, futex_offset) as u64,
+    ) else {
         return;
     };
-    let Some(pending) = read(kernel, cx, head + 16) else {
+    let Some(pending) = read(
+        kernel,
+        cx,
+        head + offset_of!(robust_list_head, list_op_pending) as u64,
+    ) else {
         return;
     };
     let (pending, pending_pi) = (pending & !1, pending & 1 != 0);
@@ -1171,7 +1263,7 @@ fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, head: u64) {
     let mut limit = ROBUST_LIST_LIMIT;
     while entry != head {
         let next = read(kernel, cx, entry);
-        if entry != pending && !owner_died(kernel, cx, tid, entry.wrapping_add(offset), pi, false) {
+        if entry != pending && !owner_died(kernel, cx, end, entry.wrapping_add(offset), pi, false) {
             return;
         }
         let Some(next) = next else {
@@ -1187,7 +1279,7 @@ fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, head: u64) {
         owner_died(
             kernel,
             cx,
-            tid,
+            end,
             pending.wrapping_add(offset),
             pending_pi,
             true,
@@ -1199,31 +1291,31 @@ fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, head: u64) {
 fn owner_died(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    tid: Tid,
+    end: &TaskEnd,
     address: u64,
     pi: bool,
     pending: bool,
 ) -> bool {
-    if !address.is_multiple_of(4) {
+    if !address.is_multiple_of(FUTEX_WORD) {
         return false;
     }
-    let Ok(value) = read_word(kernel, cx, tid, address) else {
+    let Ok(value) = end.memory(kernel, cx).read_value::<u32>(address) else {
         return false;
     };
     // A plain lock let go just before the end may have a waiter that missed its wake.
     if pending && !pi && value == 0 {
-        let _ = wake(kernel, tid, address, true, 1, FUTEX_BITSET_MATCH_ANY, false);
+        wake_one_in(kernel, end.pid, address);
         return true;
     }
-    if value & FUTEX_TID_MASK != tid as u32 {
+    if value & FUTEX_TID_MASK != end.tid as u32 {
         return true;
     }
     let marked = (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
-    if write_word(kernel, cx, tid, address, marked).is_err() {
+    if store_word(&mut end.memory(kernel, cx), address, marked).is_err() {
         return false;
     }
     if !pi && value & FUTEX_WAITERS != 0 {
-        let _ = wake(kernel, tid, address, true, 1, FUTEX_BITSET_MATCH_ANY, false);
+        wake_one_in(kernel, end.pid, address);
     }
     true
 }

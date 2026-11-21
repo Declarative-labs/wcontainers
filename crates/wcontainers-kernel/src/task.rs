@@ -195,9 +195,15 @@ impl Kernel {
             let pid = self.threads[&tid].process;
             let thread = crate::TaskId::of(tid);
             let mut decision = core::ops::ControlFlow::Continue(call);
+            self.call_not_begun = true;
             self.announce(cx, pid, |system, process| {
                 decision = system.intercept_system_call_request(process, thread, call);
             });
+            self.call_not_begun = false;
+            // The embedder took the thread, which makes the call again where it is put back.
+            if self.stepping.is_none() {
+                return;
+            }
             match decision {
                 core::ops::ControlFlow::Break(response) => {
                     let value = crate::system::return_of(response);
@@ -248,6 +254,9 @@ impl Kernel {
         self.threads[&tid].taken.borrow_mut().rewind();
         self.begin_asking(tid);
         let mut outcome = syscall::dispatch(self, cx, tid, call, again);
+        if again && let Some(thread) = self.threads.get_mut(&tid) {
+            thread.suspended_in_call = false;
+        }
         // A copy that reached pages of a mapped backend file not read yet found them not there:
         // a call that failed for it runs again once they have come, as Linux's copy waits for
         // the fault. One that did part of its work first keeps its short result (counted).
@@ -317,7 +326,7 @@ impl Kernel {
         }
         // A request outgrew the executor's ceiling. It failed before it had any effect, and its
         // result reaches the thread only once the hook has returned.
-        if let Some(bytes) = self.outgrown.take()
+        if let Some(bytes) = self.map_notes.outgrown.take()
             && let Some(thread) = self.threads.get(&tid)
         {
             let pid = thread.process;
@@ -576,7 +585,9 @@ impl Kernel {
                     number: x[SYSTEM_CALL_NUMBER_REGISTER],
                     arguments,
                 };
+                self.stepping = Some(tid);
                 self.system_call(cx, tid, call, true);
+                self.stepping = None;
                 // A call that went back to its program has its thread's turn.
                 if self.run_queue.contains(tid) {
                     self.take_out_of_line(tid);
@@ -612,6 +623,20 @@ impl Kernel {
                 self.announce_kernel_writes(cx);
                 continue;
             }
+            if self.map_notes.sharing_changed.get() {
+                self.announce_sharing(cx);
+                continue;
+            }
+            if let Some((pid, tid, info)) = self.signals_sent.pop_front() {
+                self.send_from_embedder(cx, pid, tid, info);
+                continue;
+            }
+            if let Some((pid, signal, info)) = self.signals_to_returning.pop_front() {
+                if self.processes.contains_key(&pid) {
+                    self.send_to_process(cx, pid, signal, info);
+                }
+                continue;
+            }
             // A thread of a process a fatal signal is ending ends it when its turn comes.
             if !self.dying.is_empty()
                 && let Some(tid) = self.next_to_run()
@@ -642,7 +667,9 @@ impl Kernel {
                 // after a stop acts on its signals and goes back in line.
                 let resume = thread.resume;
                 self.take_out_of_line(tid);
+                self.stepping = Some(tid);
                 self.return_to_user(cx, tid, resume);
+                self.stepping = None;
                 continue;
             }
             break;
@@ -770,7 +797,10 @@ impl Kernel {
     /// Ends a thread's wait; it goes in line and its call runs again when its turn comes.
     pub(crate) fn wake_thread(&mut self, tid: Tid) {
         let entry_now = self.entry_now;
-        let thread = self.thread_mut(tid);
+        // A task suspended off the kernel runs its call again when it is put back.
+        let Some(thread) = self.threads.get_mut(&tid) else {
+            return;
+        };
         if let Some(channel) = thread.call.wait.take() {
             thread.woken_at = Some(entry_now);
             let deadline = thread.call.deadline;
@@ -792,7 +822,10 @@ impl Kernel {
             } else {
                 self.make_runnable(tid, Resume::FromRegisters);
             }
-            if (delivering || dying) && !self.signalled.contains(&tid) {
+            // A thread that touched watched memory outside a call acts on a signal sent while it
+            // waited before it touches the memory again.
+            let signal_waits = filling && self.signal_pending(tid);
+            if (delivering || dying || signal_waits) && !self.signalled.contains(&tid) {
                 self.signalled.push_back(tid);
             }
         }
@@ -880,7 +913,7 @@ impl Kernel {
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);
-        syscall::sem::exit_sem(self, cx, tid);
+        syscall::sem::exit_sem(self, cx, self.threads[&tid].process, tid);
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         self.ids_let_go.push(tid);
@@ -901,8 +934,10 @@ impl Kernel {
         if let Some(leader) = leader {
             process.ended_leader = leader;
         }
-        let heir = process.threads[0];
-        self.hand_children_to(cx, tid, heir);
+        // With its other tasks suspended, its children wait for one to come back.
+        if let Some(&heir) = process.threads.first() {
+            self.hand_children_to(cx, tid, heir);
+        }
         if !self.released.is_empty() {
             self.files_released(cx);
         }
@@ -916,6 +951,9 @@ impl Kernel {
                 self.end_thread(cx, other);
             }
         }
+        // Its tasks taken off the kernel end too, as stopped threads do in Linux; the caller still
+        // uses the memory.
+        self.end_tasks_away(cx, pid, |_| true);
         if tid == pid {
             return tid;
         }
@@ -935,6 +973,11 @@ impl Kernel {
                 process.parent_thread = pid;
             }
         }
+        for away in self.processes_away.values_mut() {
+            if away.parent_thread == tid {
+                away.parent_thread = pid;
+            }
+        }
         self.processes
             .get_mut(&pid)
             .expect("process exists")
@@ -943,6 +986,32 @@ impl Kernel {
             self.current = Some(pid);
         }
         pid
+    }
+
+    /// Ends the tasks of process `pid` taken off the kernel, as Linux ends stopped threads: their
+    /// last stores into the memory (`others_use_memory` of each in turn), the semaphore
+    /// adjustments and waits they leave, the `vfork` parent they kept waiting; their numbers are
+    /// let go of, and putting one back hands it back.
+    fn end_tasks_away(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        others_use_memory: impl Fn(usize) -> bool,
+    ) {
+        let away = core::mem::take(&mut self.processes.get_mut(&pid).expect("process exists").away);
+        for (index, (tid, task)) in away.into_iter().enumerate() {
+            if let Some(end) = syscall::futex::TaskEnd::of_away(pid, tid, &task) {
+                syscall::futex::task_end(self, cx, &end, others_use_memory(index));
+            }
+            syscall::timer::thread_end(self, tid);
+            if task.vfork_parent.is_some() {
+                self.wake(Channel::Vfork(tid));
+            }
+            syscall::sem::forget(self, tid);
+            syscall::sem::exit_sem(self, cx, pid, tid);
+            syscall::mqueue::forget(self, tid);
+            self.ids_let_go.push(tid);
+        }
     }
 
     /// Ends a whole process with a wait status, as `exit_group` and fatal signals do: its threads
@@ -958,13 +1027,21 @@ impl Kernel {
         let shared = self.memory_in_use_elsewhere(pid, memory);
         // The kernel's last stores into the process's memory, as Linux's `mm_release`, come
         // before the embedder hears of the end, so a watch it sets then has nothing left to meet.
+        // Its tasks taken off the kernel end first, as stopped threads do; each end sees the
+        // memory still used by those yet to end.
+        let away = self.processes[&pid].away.len();
+        self.end_tasks_away(cx, pid, |index| {
+            shared || index + 1 < away || !threads.is_empty()
+        });
         for (index, &tid) in threads.iter().enumerate() {
-            // Each thread's end sees the memory still used by those yet to end.
             syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
         }
+        let ending = self.ending_process.replace(pid);
         self.announce(cx, pid, |system, process| {
             system.on_process_exiting(process)
         });
+        self.withdraw_sharing(cx, pid);
+        self.ending_process = ending;
         // The container ends with its first process, and the rest are killed then, as Linux's
         // first process of a namespace kills them on its way out (`zap_pid_ns_processes`).
         if self.init == Some(pid) {
@@ -991,7 +1068,7 @@ impl Kernel {
             self.unschedule(tid);
             self.release_vfork(tid);
             syscall::sem::forget(self, tid);
-            syscall::sem::exit_sem(self, cx, tid);
+            syscall::sem::exit_sem(self, cx, pid, tid);
             syscall::mqueue::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
@@ -1007,6 +1084,8 @@ impl Kernel {
             tables.push(thread.files);
         }
         syscall::timer::process_end(self, pid, false);
+        // No hook comes before the process is marked ended.
+        self.sharing_left.remove(&pid);
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();
         process.ended = Some(wait_status);
@@ -1018,7 +1097,7 @@ impl Kernel {
         let empty = crate::memory::AddressMap::new(
             self.machine.address_space_bytes,
             self.ceiling,
-            self.outgrown.clone(),
+            self.map_notes.clone(),
         );
         let map = core::mem::replace(
             &mut process.map,
@@ -1052,6 +1131,11 @@ impl Kernel {
                 .processes
                 .values()
                 .flat_map(|process| [process.pid, process.group, process.session])
+                .chain(
+                    self.processes_away
+                        .iter()
+                        .flat_map(|(pid, away)| [*pid, away.group]),
+                )
                 .collect();
             self.ids_let_go.extend(carried);
             return;
@@ -1085,11 +1169,25 @@ impl Kernel {
                     && process.ended_leader.credentials.uid == uid
             })
             .count();
-        let tasks = (live + ended) as i64;
+        // A task taken off the kernel counts, as a stopped one does; a first thread among them is
+        // counted above.
+        let away = self
+            .processes
+            .values()
+            .flat_map(|process| {
+                process
+                    .away
+                    .iter()
+                    .filter(move |(tid, _)| **tid != process.pid)
+            })
+            .filter(|(_, away)| away.shown.credentials.uid == uid)
+            .count();
+        let tasks = (live + ended + away) as i64;
         i128::from(tasks + more) > i128::from(limit.min(i64::MAX as u64))
     }
 
-    /// Whether another live process shows the same memory (made with CLONE_VM).
+    /// Whether another live process shows the same memory (made with CLONE_VM), or a context
+    /// off this kernel does.
     pub(crate) fn memory_in_use_elsewhere(
         &self,
         pid: Pid,
@@ -1098,6 +1196,11 @@ impl Kernel {
         self.processes
             .values()
             .any(|other| other.pid != pid && other.ended.is_none() && other.memory == memory)
+            || self
+                .maps_away
+                .borrow()
+                .iter()
+                .any(|(away, map)| *away == memory && map.strong_count() > 0)
     }
 
     /// A `vfork` child thread starts a program or ends (`mm_release`): the parent thread's wait
@@ -1147,7 +1250,8 @@ impl Kernel {
             .filter(|process| process.parent == pid)
             .map(|process| process.pid)
             .collect();
-        if children.is_empty() {
+        let away = self.processes_away.values().any(|away| away.parent == pid);
+        if children.is_empty() && !away {
             return;
         }
         let mut reaper = self.processes[&pid].parent;
@@ -1168,6 +1272,13 @@ impl Kernel {
             .first()
             .copied()
             .unwrap_or(0);
+        for away in self.processes_away.values_mut() {
+            if away.parent == pid {
+                away.parent = reaper;
+                away.parent_thread = heir;
+                away.exit_signal = SIGCHLD;
+            }
+        }
         for child in children {
             let process = self.processes.get_mut(&child).expect("child");
             process.parent = reaper;
@@ -1235,24 +1346,36 @@ impl Kernel {
         let parent = process.parent;
         let exit_signal = process.exit_signal;
         let status = process.ended.expect("the process has ended");
-        let Some(parent_process) = self.processes.get(&parent) else {
+        // A parent whose context is away reaps it when it is back, and is told then.
+        let away = self.processes_away.contains_key(&parent);
+        if !away && !self.processes.contains_key(&parent) {
             if let Some(process) = self.processes.remove(&pid) {
                 self.let_go_of_ids(&process);
             }
             return;
-        };
-        let action = parent_process.actions.borrow()[SIGCHLD as usize - 1];
-        let unwanted = exit_signal == SIGCHLD
-            && (action.sa_handler_kernel == crate::linux_extra::SIG_IGN
-                || action.sa_flags & u64::from(SA_NOCLDWAIT) != 0);
+        }
         if exit_signal != 0 {
             let info = self.child_info(pid, status);
-            self.send_to_process(cx, parent, exit_signal, info);
+            match self.processes_away.get_mut(&parent) {
+                Some(away) => away.signals.push((exit_signal, info)),
+                None => self.send_to_process(cx, parent, exit_signal, info),
+            }
         }
+        if away {
+            return;
+        }
+        let unwanted = exit_signal == SIGCHLD && Self::children_unwanted(&self.processes[&parent]);
         self.wake_waiters_of(parent);
         if unwanted {
             self.reap(pid);
         }
+    }
+
+    /// Whether a process takes no zombies of its children that end with SIGCHLD.
+    pub(crate) fn children_unwanted(process: &crate::process::Process) -> bool {
+        let action = process.actions.borrow()[SIGCHLD as usize - 1];
+        action.sa_handler_kernel == crate::linux_extra::SIG_IGN
+            || action.sa_flags & u64::from(SA_NOCLDWAIT) != 0
     }
 
     /// A zombie handed to a new parent: reaped at once if that parent does not want it, else the

@@ -12,7 +12,8 @@ use std::ops::ControlFlow;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
-    AccessKind, Errno, Kernel, MemoryError, Process, System, SystemCallResponse, TaskId,
+    AccessKind, ContextOrigin, Errno, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
+    SignalInformation, SuspendedTask, System, SystemCallResponse, SystemVSegmentId, TaskId,
     WatchesFor, reason, task_id_after,
 };
 use wcontainers_kernel_test::driver::{self, Run};
@@ -61,16 +62,29 @@ fn try_embedder_below(
     ceiling: Option<u64>,
     buffer: u64,
 ) -> Result<Run, driver::Failure> {
-    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (buffer, pages) = (format!("{buffer:#x}"), PAGES.to_string());
+    let mut arguments = vec![mode[0], buffer.as_str(), pages.as_str()];
+    arguments.extend(&mode[1..]);
+    try_guest("embedder", &arguments, hooks, seed, ceiling)
+}
+
+/// Runs guest program `name` with `arguments` on our kernel, with `hooks` if given.
+fn try_guest(
+    name: &str,
+    arguments: &[&str],
+    hooks: Option<Box<dyn Hooks>>,
+    seed: u64,
+    ceiling: Option<u64>,
+) -> Result<Run, driver::Failure> {
+    let program = wcontainers_kernel_test::guest::build(name, &[], &out());
     let mut files = wcontainers_kernel_test::image::reference_image().to_vec();
     files.extend(wcontainers_kernel_test::image::host_directory(
         program.parent().expect("a directory"),
         guest_directory_entry(),
     ));
-    let path = in_guest_directory("embedder");
-    let (buffer, pages) = (format!("{buffer:#x}"), PAGES.to_string());
-    let mut command = vec![path.as_str(), mode[0], buffer.as_str(), pages.as_str()];
-    command.extend(&mode[1..]);
+    let path = in_guest_directory(name);
+    let mut command = vec![path.as_str()];
+    command.extend(arguments);
     let container = driver::Container {
         files: &files,
         path: &path,
@@ -148,7 +162,12 @@ impl Recorder {
             let bytes = process
                 .read_memory(first.start..first.start + 1)
                 .expect("readable");
-            process.write_memory(first.start, &bytes).expect("writable");
+            // A page of a shared mapping its process cannot write is refused, not written.
+            let written = process.write_memory(first.start, &bytes);
+            assert!(
+                matches!(written, Ok(()) | Err(MemoryError::SharedNotWritable)),
+                "{seen}: {written:?}"
+            );
             process.watch_memory(first.clone(), WatchesFor::None);
         }
         assert!(
@@ -171,6 +190,17 @@ impl Recorder {
         );
         process.watch_memory(reversed, WatchesFor::All);
         process.watch_memory(u64::MAX - 1..u64::MAX, WatchesFor::All);
+        let _ = process.memory_id();
+        let copy = process.copy_process_context();
+        assert_eq!(
+            (copy.id(), copy.origin()),
+            (process.id(), ContextOrigin::Copied),
+            "{seen}"
+        );
+        // No task asked for: none taken. Taking the process itself is the suspend tests' part.
+        assert_eq!(process.suspend_tasks(&[]).count(), 0, "{seen}");
+        // A signal of number 0 is counted and not sent.
+        process.send_signal(process.id(), queued_signal(0, 0));
         *self.depth.lock().unwrap() -= 1;
     }
 }
@@ -229,6 +259,42 @@ impl Hooks for Recorder {
         range: std::ops::Range<u64>,
     ) {
         self.operate(&mut process, &format!("written {range:?}"));
+    }
+
+    fn on_signal_delivering(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        let (number, ..) = signal_fields(signal);
+        self.operate(&mut process, &format!("signal {number} to {thread:?}"));
+    }
+
+    fn on_shared_memory_mapping(
+        &mut self,
+        mut process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        self.operate(
+            &mut process,
+            &format!("mapping {source:?} {offset} {range:?}"),
+        );
+    }
+
+    fn on_shared_memory_unmapped(
+        &mut self,
+        mut process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        self.operate(
+            &mut process,
+            &format!("unmapped {source:?} {offset} {range:?}"),
+        );
     }
 
     fn on_process_starting(&mut self, mut process: Process<'_>) {
@@ -1193,22 +1259,33 @@ fn a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches() {
 /// A command line long enough to fill pages the program never touches itself.
 const LONG_ARGUMENT: u64 = 3 * PAGE_SIZE;
 
-#[test]
-fn a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names() {
+/// Reads a long command line or environment (`file`) through /proc as the reference does, in the
+/// process itself and from a child, each run under lazy memory.
+fn proc_strings_meet_the_watches_of_the_process_they_name(file: &str) {
     let long = "a".repeat(LONG_ARGUMENT as usize);
-    for named in lazy_as_the_reference(&["cmdline", "self", &long]) {
+    for named in lazy_as_the_reference(&[file, "self", &long]) {
         assert!(
             named.iter().all(|(process, thread)| process == thread),
             "{named:?}"
         );
     }
     // The child's read meets its parent's watches, named with the child's thread.
-    for named in lazy_as_the_reference(&["cmdline", "parent", &long]) {
+    for named in lazy_as_the_reference(&[file, "parent", &long]) {
         assert!(
             named.iter().any(|(process, thread)| process != thread),
             "{named:?}"
         );
     }
+}
+
+#[test]
+fn a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names() {
+    proc_strings_meet_the_watches_of_the_process_they_name("cmdline");
+}
+
+#[test]
+fn an_environment_read_through_proc_meets_the_watches_of_the_process_it_names() {
+    proc_strings_meet_the_watches_of_the_process_they_name("environ");
 }
 
 /// How many of the buffer's pages embedder.c's `remap` moves, and where to.
@@ -1875,5 +1952,1052 @@ fn a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop() {
         let asked = asked.lock().unwrap();
         let (requests, responses) = asked_about(&asked, general::__NR_rt_sigreturn);
         assert!(requests > 0 && requests == responses, "{asked:?}");
+    }
+}
+
+/// What `on_signal_delivering` was given: the thread, and the record's number, code and value.
+type Delivered = Arc<Mutex<Vec<(TaskId, i32, i32, i32)>>>;
+
+/// A record's number, code and value (`si_value.sival_int`, the bytes a handler reads as it).
+fn signal_fields(signal: &SignalInformation) -> (i32, i32, i32) {
+    // SAFETY: the kernel builds every record it hands over from all of its bytes.
+    let header = unsafe { signal.__bindgen_anon_1.__bindgen_anon_1 };
+    // SAFETY: as above.
+    let value = unsafe { header._sifields._rt._sigval.sival_int };
+    (header.si_signo, header.si_code, value)
+}
+
+/// A record of `signal` queued with `value` from outside the container (no sender process).
+fn queued_signal(signal: u32, value: i32) -> SignalInformation {
+    // SAFETY: every member of the record is made of integers, for which zero is valid.
+    let mut record: SignalInformation = unsafe { std::mem::zeroed() };
+    // SAFETY: a record built from zero has every member's bytes set.
+    let header = unsafe { &mut record.__bindgen_anon_1.__bindgen_anon_1 };
+    header.si_signo = signal as i32;
+    header.si_code = general::SI_QUEUE;
+    header._sifields._rt._sigval.sival_int = value;
+    record
+}
+
+/// Lines `signal S code C value V` of embedder.c's output, as the hook's fields.
+fn handled_signals(output: &str) -> Vec<(i32, i32, i32)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split(' ').collect();
+            match words.as_slice() {
+                ["signal", signal, "code", code, "value", value] => Some((
+                    signal.parse().unwrap(),
+                    code.parse().unwrap(),
+                    value.parse().unwrap(),
+                )),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Records every signal the kernel announces, after running every operation of the handle.
+#[derive(Default)]
+struct SignalRecorder {
+    delivered: Delivered,
+}
+
+impl Hooks for SignalRecorder {
+    fn on_signal_delivering(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        assert!(process.info().memory_mapped() > 0);
+        let _ = process.take_dirty_memory();
+        let (number, code, value) = signal_fields(signal);
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((thread, number, code, value));
+    }
+}
+
+#[test]
+fn every_signal_a_thread_takes_to_act_on_is_announced_first_with_its_record() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["signals", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let handled = handled_signals(&theirs);
+    // Queued, let through, sent by another thread during a read, and a fault; not the one
+    // sigwaitinfo took nor the ignored one.
+    assert_eq!(handled.len(), 4, "{theirs}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let recorder = SignalRecorder::default();
+        let delivered = recorder.delivered.clone();
+        let run = run_embedder("signals", Box::new(recorder), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}");
+        let delivered = delivered.lock().unwrap();
+        let fields: Vec<(i32, i32, i32)> = delivered
+            .iter()
+            .map(|&(_, number, code, value)| (number, code, value))
+            .collect();
+        assert_eq!(fields, handled, "seed {seed}");
+        // The one sent by another thread is announced in the thread it was sent to.
+        let first = delivered[0].0;
+        assert!(delivered.iter().all(|(thread, ..)| *thread == first));
+    }
+}
+
+/// When the embedder sends embedder.c's `interrupted` child its signal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sending {
+    /// Inside the proxy's request hook of the read, before the read runs.
+    AtRequest,
+    /// Inside the watch hook of the read, which then waits on the watch until between steps.
+    DuringWatchWait,
+    /// Between steps, while the read waits for data.
+    BetweenSteps,
+}
+
+struct SignalSender {
+    sending: Sending,
+    delivered: Delivered,
+    reader: Option<(TaskId, TaskId)>,
+    sent: bool,
+    watch_lifted: bool,
+}
+
+impl SignalSender {
+    /// Sends the reader SIGUSR1 with 42, and two that are not sent: one to a thread of another
+    /// process and one with no number.
+    fn send(&mut self, process: &mut Process<'_>, thread: TaskId) {
+        process.send_signal(thread, queued_signal(general::SIGUSR1, SENT_VALUE));
+        let parent = process.info().parent().expect("a parent");
+        process.send_signal(parent, queued_signal(general::SIGUSR1, SENT_VALUE));
+        process.send_signal(thread, queued_signal(0, SENT_VALUE));
+        self.sent = true;
+    }
+}
+
+/// The value embedder.c's parent queues with its signal.
+const SENT_VALUE: i32 = 42;
+
+impl Hooks for SignalSender {
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        let read =
+            request.number == u64::from(general::__NR_read) && request.arguments[1] == BUFFER;
+        if read && self.reader.is_none() {
+            self.reader = Some((process.id(), thread));
+            match self.sending {
+                Sending::AtRequest => self.send(&mut process, thread),
+                Sending::DuringWatchWait => process.watch_memory(page_of(BUFFER), WatchesFor::All),
+                Sending::BetweenSteps => {}
+            }
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn on_watched_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        _: u64,
+        _: AccessKind,
+    ) {
+        if !self.sent {
+            self.send(&mut process, thread);
+        }
+    }
+
+    fn on_signal_delivering(&mut self, _: Process<'_>, thread: TaskId, signal: &SignalInformation) {
+        let (number, code, value) = signal_fields(signal);
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((thread, number, code, value));
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let Some((id, thread)) = self.reader else {
+            return false;
+        };
+        let Some(mut process) = kernel.process(cpu, id) else {
+            return false;
+        };
+        match self.sending {
+            Sending::BetweenSteps if !self.sent => {
+                self.send(&mut process, thread);
+                true
+            }
+            Sending::DuringWatchWait if self.sent && !self.watch_lifted => {
+                process.watch_memory(page_of(BUFFER), WatchesFor::None);
+                self.watch_lifted = true;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[test]
+fn a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["interrupted", &address, &pages, "parent"]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let sent = (general::SIGUSR1 as i32, general::SI_QUEUE, SENT_VALUE);
+    assert_eq!(handled_signals(&theirs), [sent], "{theirs}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let ours = run_embedder_below(&["interrupted", "parent"], None, seed, None);
+        assert_eq!(stdout(&ours), theirs, "seed {seed}");
+        for sending in [
+            Sending::AtRequest,
+            Sending::DuringWatchWait,
+            Sending::BetweenSteps,
+        ] {
+            let sender = SignalSender {
+                sending,
+                delivered: Delivered::default(),
+                reader: None,
+                sent: false,
+                watch_lifted: false,
+            };
+            let delivered = sender.delivered.clone();
+            let run =
+                run_embedder_below(&["interrupted", "none"], Some(Box::new(sender)), seed, None);
+            let label = format!("{sending:?}, seed {seed}");
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            let delivered = delivered.lock().unwrap();
+            assert_eq!(delivered.len(), 1, "{label}: {delivered:?}");
+            assert_eq!(
+                (delivered[0].1, delivered[0].2, delivered[0].3),
+                sent,
+                "{label}"
+            );
+            // The one to another process's thread and the one with no number.
+            assert_eq!(
+                counted(&run, reason::SIGNAL_NOT_SENT),
+                2,
+                "{label}: {:?}",
+                run.counters
+            );
+        }
+    }
+}
+
+/// The shared pages announced, by process and page: the source and where in it the page is.
+type SharedPages = BTreeMap<(TaskId, u64), (MemoryObject, u64)>;
+
+/// Keeps the shared memory each process is announced to map, page by page, checking that every
+/// end names what was announced; at each `sched_yield` keeps a copy, with the process yielding.
+#[derive(Default)]
+struct SharingRecorder {
+    pages: Arc<Mutex<SharedPages>>,
+    steps: Arc<Mutex<Vec<(TaskId, SharedPages)>>>,
+    /// Processes announced to map anything, and to end mapping anything.
+    mapped_in: Arc<Mutex<BTreeSet<TaskId>>>,
+    unmapped_in: Arc<Mutex<BTreeSet<TaskId>>>,
+}
+
+impl Hooks for SharingRecorder {
+    fn intercept_system_call_request(
+        &mut self,
+        process: Process<'_>,
+        _: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if request.number == u64::from(general::__NR_sched_yield) {
+            let pages = self.pages.lock().unwrap().clone();
+            self.steps.lock().unwrap().push((process.id(), pages));
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn on_shared_memory_mapping(
+        &mut self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        assert!(process.info().memory_mapped() > 0);
+        self.mapped_in.lock().unwrap().insert(process.id());
+        let mut pages = self.pages.lock().unwrap();
+        for page in range.clone().step_by(PAGE_SIZE as usize) {
+            let place = (source, offset + (page - range.start));
+            let before = pages.insert((process.id(), page), place);
+            assert_eq!(before, None, "{:?} {page:#x} announced twice", process.id());
+        }
+    }
+
+    fn on_shared_memory_unmapped(
+        &mut self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        self.unmapped_in.lock().unwrap().insert(process.id());
+        let mut pages = self.pages.lock().unwrap();
+        for page in range.clone().step_by(PAGE_SIZE as usize) {
+            let place = (source, offset + (page - range.start));
+            let before = pages.remove(&(process.id(), page));
+            assert_eq!(before, Some(place), "{:?} {page:#x} ended", process.id());
+        }
+    }
+}
+
+/// embedder.c's `sharing` steps: each name, and the shared pages /proc/self/maps showed then
+/// (page, offset in the source).
+fn sharing_steps(output: &str) -> Vec<(String, BTreeMap<u64, u64>)> {
+    let mut steps: Vec<(String, BTreeMap<u64, u64>)> = Vec::new();
+    for line in output.lines() {
+        if let Some(name) = line.strip_prefix("step ") {
+            steps.push((name.to_owned(), BTreeMap::new()));
+            continue;
+        }
+        let words: Vec<&str> = line.split(' ').collect();
+        let [range, _, offset] = words.as_slice() else {
+            continue;
+        };
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let hex = |text: &str| u64::from_str_radix(text, 16).unwrap();
+        let (start, end, offset) = (hex(start), hex(end), hex(offset));
+        let (_, pages) = steps.last_mut().expect("a step");
+        for page in (start..end).step_by(PAGE_SIZE as usize) {
+            pages.insert(page, offset + (page - start));
+        }
+    }
+    steps
+}
+
+#[test]
+fn shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_shows_it() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["sharing", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let steps = sharing_steps(&theirs);
+    let names: Vec<&str> = steps.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "readonly",
+            "writable",
+            "anonymous",
+            "segment",
+            "memfd",
+            "moved",
+            "replaced",
+            "child"
+        ],
+        "{theirs}"
+    );
+    let segment: i32 = theirs
+        .lines()
+        .find_map(|line| line.strip_prefix("segment "))
+        .expect("a segment")
+        .parse()
+        .unwrap();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let recorder = SharingRecorder::default();
+        let (announced, taken) = (recorder.pages.clone(), recorder.steps.clone());
+        let (mapped_in, unmapped_in) = (recorder.mapped_in.clone(), recorder.unmapped_in.clone());
+        let run = run_embedder("sharing", Box::new(recorder), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}");
+        let taken = taken.lock().unwrap();
+        assert_eq!(taken.len(), steps.len(), "seed {seed}");
+        let keeper = taken.last().expect("the child's step").0;
+        let mut previous = BTreeSet::new();
+        for ((name, shown), (process, all)) in steps.iter().zip(taken.iter()) {
+            let mine: BTreeMap<u64, u64> = all
+                .iter()
+                .filter(|((owner, _), _)| owner == process)
+                .map(|((_, page), (_, offset))| (*page, *offset))
+                .collect();
+            // Nobody could write the file through a mapping yet.
+            let expected = if name == "readonly" {
+                BTreeMap::new()
+            } else {
+                shown.clone()
+            };
+            assert_eq!(mine, expected, "seed {seed}, step {name}");
+            let sources: BTreeSet<MemoryObject> = all
+                .iter()
+                .filter(|((owner, _), _)| owner == process)
+                .map(|(_, (source, _))| *source)
+                .collect();
+            // What each step adds to the sources of the step before it.
+            let added: Vec<MemoryObject> = sources.difference(&previous).copied().collect();
+            let removed: Vec<MemoryObject> = previous.difference(&sources).copied().collect();
+            let label = format!("seed {seed}, step {name}: added {added:?}, removed {removed:?}");
+            match name.as_str() {
+                "readonly" | "moved" | "replaced" => {
+                    assert!(added.is_empty() && removed.is_empty(), "{label}")
+                }
+                "writable" => assert!(
+                    matches!(added[..], [MemoryObject::File { .. }]) && removed.is_empty(),
+                    "{label}"
+                ),
+                "anonymous" => assert!(
+                    matches!(added[..], [MemoryObject::Anonymous(_)]) && removed.is_empty(),
+                    "{label}"
+                ),
+                "segment" => assert!(
+                    added == [MemoryObject::SystemVSegment(SystemVSegmentId(segment))]
+                        && removed.is_empty(),
+                    "{label}"
+                ),
+                "memfd" => assert!(
+                    matches!(added[..], [MemoryObject::File { .. }])
+                        && removed == [MemoryObject::SystemVSegment(SystemVSegmentId(segment))],
+                    "{label}"
+                ),
+                _ => assert!(added.is_empty() && sources.len() == 1, "{label}"),
+            }
+            previous = sources;
+            // The child that kept the read-only mapping is announced when the file becomes
+            // writable through the parent's.
+            if name == "writable" {
+                let kept = &steps.last().expect("the child's step").1;
+                let its: BTreeMap<u64, u64> = all
+                    .iter()
+                    .filter(|((owner, _), _)| *owner == keeper)
+                    .map(|((_, page), (_, offset))| (*page, *offset))
+                    .collect();
+                assert_eq!(&its, kept, "seed {seed}: the child at the parent's step");
+            }
+        }
+        // Every start ended, in the parent, the child that kept a mapping and the one that ran
+        // a program.
+        assert!(announced.lock().unwrap().is_empty(), "seed {seed}");
+        let (mapped_in, unmapped_in) = (mapped_in.lock().unwrap(), unmapped_in.lock().unwrap());
+        assert_eq!(mapped_in.len(), 3, "seed {seed}: {mapped_in:?}");
+        assert_eq!(*mapped_in, *unmapped_in, "seed {seed}");
+    }
+}
+
+#[test]
+fn every_operation_of_the_handle_is_legal_in_the_shared_memory_hooks() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["sharing", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let run = run_embedder("sharing", Box::new(Recorder::default()), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}: {:?}", run.counters);
+    }
+}
+
+/// The hook, the process and its memory id.
+type MemoryIdSeen = (&'static str, TaskId, wcontainers_abi::MemoryId);
+
+/// Keeps the memory id each process is announced with at each of its hooks.
+#[derive(Default)]
+struct MemoryIds {
+    seen: Arc<Mutex<Vec<MemoryIdSeen>>>,
+}
+
+impl Hooks for MemoryIds {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        let id = process.memory_id();
+        self.seen
+            .lock()
+            .unwrap()
+            .push(("process", process.id(), id));
+    }
+    fn on_program_starting(&mut self, process: Process<'_>) {
+        let id = process.memory_id();
+        self.seen
+            .lock()
+            .unwrap()
+            .push(("program", process.id(), id));
+    }
+}
+
+#[test]
+fn processes_in_one_memory_have_one_memory_id_and_a_new_program_a_new_one() {
+    // The paths mode makes forked children, one that runs a program from a second thread, and a
+    // vfork child that runs a program.
+    let ids = MemoryIds::default();
+    let seen = ids.seen.clone();
+    run_embedder(
+        "paths",
+        Box::new(ids),
+        wcontainers_kernel_test::schedule_seeds().next().unwrap(),
+    );
+    let seen = seen.lock().unwrap();
+    let first = seen[0].2;
+    let (mut shared, mut fresh) = (0, 0);
+    for (index, (hook, process, memory)) in seen.iter().enumerate() {
+        let earlier: Vec<_> = seen[..index].iter().map(|(_, _, memory)| *memory).collect();
+        match *hook {
+            // A new program always runs in memory no process had before.
+            "program" if index > 1 => {
+                assert!(!earlier.contains(memory), "{process:?}: {seen:?}");
+                fresh += 1;
+            }
+            "process" if earlier.contains(memory) => shared += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(seen[1].2, first);
+    assert!(shared > 0 && fresh > 0, "{seen:?}");
+}
+
+thread_local! {
+    /// Tasks a hook suspended, for the test to put back between steps (they are the kernel's
+    /// records, which stay on the thread that drives it).
+    static SUSPENDED: std::cell::RefCell<Vec<SuspendedTask>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A process context taken between steps, kept as [`SUSPENDED`] is.
+    static CONTEXT: std::cell::RefCell<Option<wcontainers_kernel::ProcessContext>> = const { std::cell::RefCell::new(None) };
+}
+
+/// How the suspending test takes tasks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SuspendPlan {
+    /// From hooks: the other threads, waiting in their calls, at the main thread's second sleep, kept away while the main thread
+    /// wakes the futex and lets the mutex go; the main thread itself at its write, before the
+    /// call, and again once the call has begun (refused).
+    Hooks,
+    /// Between steps, while every thread waits: one at a time, every thread, the whole process,
+    /// and the process through a second kernel.
+    Kernel,
+}
+
+/// Where the suspending test is in its plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SuspendStage {
+    /// Waiting for the main thread's sleep.
+    Start,
+    /// The main thread slept once; the others wait in their calls.
+    SleptOnce,
+    /// The other threads are away.
+    Away,
+    /// The main thread is away too, taken at its write.
+    MainAway,
+    /// The main thread is back.
+    MainBack,
+    /// The main thread waits to join the others, still away.
+    Joining,
+    /// Every thread waits in its call.
+    Waiting,
+    Done,
+}
+
+/// Suspends and resumes embedder.c's `suspend` threads as `plan` says, putting them back in
+/// `order`.
+struct Suspender {
+    plan: SuspendPlan,
+    order: [usize; SUSPENDED_THREADS],
+    stage: SuspendStage,
+    process: Option<TaskId>,
+    threads: Vec<TaskId>,
+    /// What went otherwise than the test expects.
+    wrong: Arc<Mutex<Vec<String>>>,
+    /// How many tasks a hook got asking for its own thread once its call had begun.
+    refused_in_step: Arc<Mutex<Option<usize>>>,
+    /// Every step of the plan ran.
+    done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The threads embedder.c's `suspend` starts besides its main thread.
+const SUSPENDED_THREADS: usize = 4;
+
+impl Suspender {
+    fn check(&self, what: &str, holds: bool) {
+        if !holds {
+            self.wrong.lock().unwrap().push(what.to_owned());
+        }
+    }
+
+    /// Every thread, the main one first.
+    fn every_thread(&self) -> Vec<TaskId> {
+        self.process
+            .into_iter()
+            .chain(self.threads.clone())
+            .collect()
+    }
+
+    /// Takes `tasks` and puts them back in this test's order, checking each step.
+    fn one_by_one(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        let mut taken = Vec::new();
+        for &at in &self.order {
+            let thread = self.threads[at];
+            let got: Vec<_> = kernel.suspend_tasks(cpu, &[thread]).collect();
+            self.check("one thread taken", got.len() == 1 && got[0].0 == thread);
+            taken.extend(got.into_iter().map(|(_, task)| task));
+        }
+        let absent = TaskId(u32::MAX);
+        self.check(
+            "a task not on the kernel is absent",
+            kernel.suspend_tasks(cpu, &[absent]).next().is_none(),
+        );
+        for task in taken {
+            self.check(
+                "a thread put back",
+                kernel.resume_tasks(cpu, [task]).next().is_none(),
+            );
+        }
+    }
+
+    /// Takes the whole process and puts it back, its tasks first without the context.
+    fn whole_process(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        let process = self.process.expect("the process");
+        let config = ExecutionConfig::default();
+        let copy = kernel.copy_process_context(process).expect("a copy");
+        let every = self.every_thread();
+        let got: Vec<_> = kernel.suspend_tasks(cpu, &every).collect();
+        self.check("every thread taken", got.len() == every.len());
+        let tasks = got.into_iter().map(|(_, task)| task).collect::<Vec<_>>();
+        self.check(
+            "every thread put back",
+            kernel.resume_tasks(cpu, tasks).next().is_none(),
+        );
+        let (context, tasks) = kernel.suspend_process(cpu, process).expect("the process");
+        let tasks: Vec<_> = tasks.map(|(_, task)| task).collect();
+        self.check("the process's every task", tasks.len() == every.len());
+        self.check(
+            "the process is gone",
+            kernel.process(cpu, process).is_none()
+                && kernel.copy_process_context(process).is_none(),
+        );
+        let back: Vec<_> = kernel.resume_tasks(cpu, tasks).collect();
+        self.check(
+            "tasks without their context handed back",
+            back.len() == every.len(),
+        );
+        self.check(
+            "the context put back",
+            kernel.resume_process(context, config).is_none(),
+        );
+        let twice = kernel.resume_process(copy, config);
+        self.check(
+            "a context already there handed back",
+            twice.as_ref().map(|context| context.id()) == Some(process),
+        );
+        self.check(
+            "the tasks put back with their context",
+            kernel.resume_tasks(cpu, back).next().is_none(),
+        );
+    }
+
+    /// Moves the process to a second kernel, checks it is there as it was, and brings it back.
+    fn second_kernel(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        let process = self.process.expect("the process");
+        let config = ExecutionConfig::default();
+        let memory = kernel.process(cpu, process).expect("here").memory_id();
+        let mapped = kernel
+            .process(cpu, process)
+            .expect("here")
+            .info()
+            .memory_mapped();
+        let (context, tasks) = kernel.suspend_process(cpu, process).expect("the process");
+        let tasks: Vec<_> = tasks.map(|(_, task)| task).collect();
+        let mut other = Kernel::new();
+        let tasks: Vec<_> = other.resume_tasks(cpu, tasks).collect();
+        self.check(
+            "no context on the second kernel yet",
+            tasks.len() == self.every_thread().len(),
+        );
+        self.check(
+            "the context on the second kernel",
+            other.resume_process(context, config).is_none(),
+        );
+        self.check(
+            "the tasks on the second kernel",
+            other.resume_tasks(cpu, tasks).next().is_none(),
+        );
+        let there = other.process(cpu, process).expect("on the second kernel");
+        self.check(
+            "the same memory on the second kernel",
+            there.memory_id() == memory && there.info().memory_mapped() == mapped,
+        );
+        let (context, tasks) = other.suspend_process(cpu, process).expect("the process");
+        let tasks: Vec<_> = tasks.map(|(_, task)| task).collect();
+        self.check(
+            "every task from the second kernel",
+            tasks.len() == self.every_thread().len(),
+        );
+        self.check(
+            "the context back on the first kernel",
+            kernel.resume_process(context, config).is_none(),
+        );
+        let ordered: Vec<_> = self
+            .order
+            .iter()
+            .map(|&at| self.threads[at])
+            .chain(self.process)
+            .collect();
+        let mut tasks = tasks;
+        tasks.sort_by_key(|task| ordered.iter().position(|id| *id == task.id()));
+        self.check(
+            "the tasks back on the first kernel",
+            kernel.resume_tasks(cpu, tasks).next().is_none(),
+        );
+    }
+}
+
+impl Suspender {
+    /// The other threads, in this test's order.
+    fn others(&self) -> Vec<TaskId> {
+        self.order.iter().map(|&at| self.threads[at]).collect()
+    }
+
+    /// Puts back what the hooks took of the main thread (`main`) or of the others.
+    fn put_back(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, main: bool) {
+        let tasks: Vec<SuspendedTask> = SUSPENDED.with_borrow_mut(|stash| {
+            let (chosen, kept) = std::mem::take(stash)
+                .into_iter()
+                .partition(|task| (Some(task.id()) == self.process) == main);
+            *stash = kept;
+            chosen
+        });
+        self.check("the tasks a hook took put back", !tasks.is_empty());
+        self.check(
+            "the tasks a hook took put back",
+            kernel.resume_tasks(cpu, tasks).next().is_none(),
+        );
+    }
+
+    fn take_in_hook(&self, process: &mut Process<'_>, tasks: &[TaskId]) {
+        let taken: Vec<_> = process.suspend_tasks(tasks).collect();
+        self.check("a hook takes what it names", taken.len() == tasks.len());
+        SUSPENDED.with_borrow_mut(|stash| stash.extend(taken.into_iter().map(|(_, task)| task)));
+    }
+}
+
+impl Hooks for Suspender {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        self.process.get_or_insert(process.id());
+    }
+
+    fn on_thread_starting(&mut self, _: Process<'_>, thread: TaskId) {
+        self.threads.push(thread);
+    }
+
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if Some(thread) != self.process {
+            return ControlFlow::Continue(request);
+        }
+        let number = request.number;
+        let sleep = number == u64::from(general::__NR_nanosleep);
+        match (self.plan, self.stage) {
+            (SuspendPlan::Hooks, SuspendStage::Start) if sleep => {
+                self.stage = SuspendStage::SleptOnce;
+            }
+            (SuspendPlan::Hooks, SuspendStage::SleptOnce) if sleep => {
+                self.take_in_hook(&mut process, &self.others());
+                self.stage = SuspendStage::Away;
+            }
+            (SuspendPlan::Hooks, SuspendStage::Away)
+                if number == u64::from(general::__NR_write) =>
+            {
+                self.take_in_hook(&mut process, &[thread]);
+                self.stage = SuspendStage::MainAway;
+            }
+            (SuspendPlan::Hooks, SuspendStage::MainBack)
+                if number == u64::from(general::__NR_futex)
+                    && [general::FUTEX_WAIT, general::FUTEX_WAIT_BITSET]
+                        .map(|wait| wait as i32)
+                        .contains(&(request.arguments[1] as i32 & general::FUTEX_CMD_MASK)) =>
+            {
+                self.stage = SuspendStage::Joining;
+            }
+            (SuspendPlan::Kernel, SuspendStage::Start) if sleep => {
+                self.stage = SuspendStage::Waiting;
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn intercept_system_call_response(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        let write = request.number == u64::from(general::__NR_write);
+        if write && self.stage == SuspendStage::MainBack && Some(thread) == self.process {
+            let mut refused = self.refused_in_step.lock().unwrap();
+            if refused.is_none() {
+                *refused = Some(process.suspend_tasks(&[thread]).count());
+            }
+        }
+        response
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        match self.stage {
+            SuspendStage::MainAway => {
+                self.put_back(kernel, cpu, true);
+                self.stage = SuspendStage::MainBack;
+                true
+            }
+            SuspendStage::Joining => {
+                self.put_back(kernel, cpu, false);
+                self.stage = SuspendStage::Done;
+                self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            SuspendStage::Waiting => {
+                self.one_by_one(kernel, cpu);
+                self.whole_process(kernel, cpu);
+                self.second_kernel(kernel, cpu);
+                self.stage = SuspendStage::Done;
+                self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            SuspendStage::Start
+            | SuspendStage::SleptOnce
+            | SuspendStage::Away
+            | SuspendStage::MainBack
+            | SuspendStage::Done => false,
+        }
+    }
+}
+
+/// Every order of `N` places: each array of `N` places that names every place once.
+fn orders_of<const N: usize>() -> Vec<[usize; N]> {
+    let place = |code: usize, at: usize| code / N.pow(at as u32) % N;
+    (0..N.pow(N as u32))
+        .map(|code| std::array::from_fn(|at| place(code, at)))
+        .filter(|order: &[usize; N]| order.iter().collect::<BTreeSet<_>>().len() == N)
+        .collect()
+}
+
+#[test]
+fn tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["suspend", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let seeds: Vec<u64> = wcontainers_kernel_test::schedule_seeds().collect();
+    let orders = orders_of::<SUSPENDED_THREADS>();
+    assert_eq!(orders.len(), (1..=SUSPENDED_THREADS).product::<usize>());
+    for plan in [SuspendPlan::Hooks, SuspendPlan::Kernel] {
+        for (index, &order) in orders.iter().enumerate() {
+            let seed = seeds[index % seeds.len()];
+            let wrong = Arc::new(Mutex::new(Vec::new()));
+            let refused_in_step = Arc::new(Mutex::new(None));
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let suspender = Suspender {
+                plan,
+                order,
+                stage: SuspendStage::Start,
+                process: None,
+                threads: Vec::new(),
+                wrong: wrong.clone(),
+                refused_in_step: refused_in_step.clone(),
+                done: done.clone(),
+            };
+            let run = run_embedder("suspend", Box::new(suspender), seed);
+            let label = format!("{plan:?}, order {order:?}, seed {seed}");
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            assert_eq!(*wrong.lock().unwrap(), Vec::<String>::new(), "{label}");
+            assert!(done.load(std::sync::atomic::Ordering::Relaxed), "{label}");
+            let refused = (plan == SuspendPlan::Hooks).then_some(0);
+            assert_eq!(*refused_in_step.lock().unwrap(), refused, "{label}");
+            assert_eq!(
+                counted(&run, reason::TASK_IN_A_STEP_NOT_SUSPENDED),
+                u64::from(plan == SuspendPlan::Hooks),
+                "{label}: {:?}",
+                run.counters
+            );
+        }
+    }
+}
+
+/// How [`Stopper`] takes stopped.c's child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopPlan {
+    /// `suspend_process`, then `resume_process` and `resume_tasks`.
+    Process,
+    /// `suspend_tasks` naming every thread of the child, put back in the reverse order.
+    Tasks,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopStage {
+    Running,
+    /// The parent asked to stop the child.
+    StopAsked,
+    /// The parent, taken at its wait for the stop, is away until the child is taken.
+    ParentAway,
+    /// The child is away.
+    Stopped,
+    /// The parent asked to continue the child.
+    ContinueAsked,
+    Continued,
+}
+
+/// Stands in for stopped.c's stop and continue by taking the child off the kernel and
+/// putting it back: the parent's `kill` is answered 0, and its wait for the stop is answered with
+/// the child once the child is taken (the parent itself is taken at that wait, so the kernel goes
+/// idle with the child still waiting in its calls).
+struct Stopper {
+    plan: StopPlan,
+    stage: StopStage,
+    parent: Option<TaskId>,
+    child: Option<TaskId>,
+    threads: Vec<(TaskId, TaskId)>,
+    wrong: Arc<Mutex<Vec<String>>>,
+}
+
+impl Stopper {
+    fn check(&self, what: &str, holds: bool) {
+        if !holds {
+            self.wrong.lock().unwrap().push(what.to_owned());
+        }
+    }
+}
+
+impl Hooks for Stopper {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        self.parent.get_or_insert(process.id());
+    }
+
+    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {
+        self.threads.push((process.id(), thread));
+    }
+
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if Some(thread) != self.parent {
+            return ControlFlow::Continue(request);
+        }
+        let [first, second, third, ..] = request.arguments;
+        let number = request.number;
+        let kill = number == u64::from(general::__NR_kill);
+        let wait =
+            number == u64::from(general::__NR_wait4) && third & u64::from(general::WUNTRACED) != 0;
+        match self.stage {
+            StopStage::Running if kill && second == u64::from(general::SIGSTOP) => {
+                self.child = Some(TaskId(first as u32));
+                self.stage = StopStage::StopAsked;
+                ControlFlow::Break(Ok(0))
+            }
+            StopStage::StopAsked if wait => {
+                let taken: Vec<_> = process.suspend_tasks(&[thread]).collect();
+                self.check("the parent taken at its wait", taken.len() == 1);
+                SUSPENDED
+                    .with_borrow_mut(|stash| stash.extend(taken.into_iter().map(|(_, task)| task)));
+                self.stage = StopStage::ParentAway;
+                ControlFlow::Continue(request)
+            }
+            StopStage::Stopped if wait => {
+                ControlFlow::Break(Ok(self.child.expect("the child").0.into()))
+            }
+            StopStage::Stopped if kill && second == u64::from(general::SIGCONT) => {
+                self.stage = StopStage::ContinueAsked;
+                ControlFlow::Break(Ok(0))
+            }
+            _ => ControlFlow::Continue(request),
+        }
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        match self.stage {
+            StopStage::ParentAway => {
+                let parent = SUSPENDED.take();
+                let child = self.child.expect("the child");
+                let every: Vec<TaskId> = std::iter::once(child)
+                    .chain(
+                        self.threads
+                            .iter()
+                            .filter(|(process, _)| *process == child)
+                            .map(|&(_, thread)| thread),
+                    )
+                    .collect();
+                let taken: Vec<_> = match self.plan {
+                    StopPlan::Process => {
+                        let (context, tasks) =
+                            kernel.suspend_process(cpu, child).expect("the child");
+                        CONTEXT.set(Some(context));
+                        tasks.collect()
+                    }
+                    StopPlan::Tasks => kernel.suspend_tasks(cpu, &every).collect(),
+                };
+                // A thread that already ended is absent.
+                self.check(
+                    "the child's threads taken",
+                    taken.first().map(|(id, _)| *id) == Some(child)
+                        && taken.iter().all(|(id, _)| every.contains(id)),
+                );
+                SUSPENDED.set(taken.into_iter().map(|(_, task)| task).collect());
+                self.check(
+                    "the parent put back",
+                    kernel.resume_tasks(cpu, parent).next().is_none(),
+                );
+                self.stage = StopStage::Stopped;
+                true
+            }
+            StopStage::ContinueAsked => {
+                if let Some(context) = CONTEXT.take() {
+                    self.check(
+                        "the child's context put back",
+                        kernel
+                            .resume_process(context, ExecutionConfig::default())
+                            .is_none(),
+                    );
+                }
+                let mut tasks = SUSPENDED.take();
+                if self.plan == StopPlan::Tasks {
+                    tasks.reverse();
+                }
+                self.check(
+                    "the child's threads put back",
+                    kernel.resume_tasks(cpu, tasks).next().is_none(),
+                );
+                self.stage = StopStage::Continued;
+                true
+            }
+            StopStage::Running
+            | StopStage::StopAsked
+            | StopStage::Stopped
+            | StopStage::Continued => false,
+        }
+    }
+}
+
+#[test]
+fn a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer() {
+    let program = wcontainers_kernel_test::guest::build("stopped", &[], &out());
+    let theirs = reference::run(&program, &[]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    for plan in [StopPlan::Process, StopPlan::Tasks] {
+        for seed in wcontainers_kernel_test::schedule_seeds() {
+            let wrong = Arc::new(Mutex::new(Vec::new()));
+            let stopper = Stopper {
+                plan,
+                stage: StopStage::Running,
+                parent: None,
+                child: None,
+                threads: Vec::new(),
+                wrong: wrong.clone(),
+            };
+            let run = try_guest("stopped", &[], Some(Box::new(stopper)), seed, None)
+                .expect("an outcome on our kernel");
+            let label = format!("{plan:?}, seed {seed}");
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            assert_eq!(*wrong.lock().unwrap(), Vec::<String>::new(), "{label}");
+        }
     }
 }
