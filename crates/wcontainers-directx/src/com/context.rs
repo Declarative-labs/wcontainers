@@ -1500,8 +1500,8 @@ impl Context {
 
     pub(super) fn discard_view1(&self, _view: Ref<ID3D11View>, _rects: *const RECT, _n: u32) {}
 
-    /// `ClearView` of a render target view, whole or its rectangles, and of a whole storage view;
-    /// rectangles of a storage view and video views are not served.
+    /// `ClearView` of a render target or storage view, whole or its rectangles; video views are
+    /// not served.
     pub(super) fn clear_view(
         &self,
         view: Ref<ID3D11View>,
@@ -1522,10 +1522,7 @@ impl Context {
                 .collect()
         };
         if let Some(v) = front_of(&view, |v: &UnorderedAccessView| &*v.front) {
-            if !rects.is_empty() {
-                return self.unserved(CLEAR_VIEW_STORAGE_RECTS);
-            }
-            self.run(CLEAR_VIEW, move |f| f.clear_view_uav(&v, c));
+            self.run(CLEAR_VIEW, move |f| f.clear_view_uav(&v, c, &rects));
             return;
         }
         let Some(v) = front_of(&view, |v: &RenderTargetView| &*v.front) else {
@@ -2695,6 +2692,4 @@ fn box3(b: &D3D11_BOX) -> Box3 {
 }
 
 const CLEAR_VIEW: &str = "ClearView";
-const CLEAR_VIEW_STORAGE_RECTS: &str =
-    "ID3D11DeviceContext1::ClearView of a storage view's rectangles";
 const CLEAR_VIEW_VIDEO: &str = "ID3D11DeviceContext1::ClearView of a video view";

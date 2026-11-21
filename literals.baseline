@@ -1560,23 +1560,10 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	split_depth_stencil	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	split_depth_stencil	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	split_depth_stencil	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	split_depth_stencil	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	10
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	10
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	10
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	10
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	11
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	11
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	16
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	8
-code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	8
 code	crates/wcontainers-direct3d-11/src/context.rs	int	window_of	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	window_of	16
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::bias_step	"a depth bias clamp on float depth without the back end's"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::clear_uav	"a clear of an unordered access view of a format no pass draws into"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::clear_uav	"a float clear of a typed buffer view"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::clear_uav	"a float clear of an unordered access view of an integer format"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_early_per_primitive	"early depth-stencil tests per primitive of indirect draws"
@@ -1601,8 +1588,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::set_constant_r
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an empty slot read as a depth texture, a multisampled array or a comparison sampler"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an empty unordered access slot a shader uses"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::write_helpers	"minimum level-of-detail clamps on textures both draw stages sample"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of a typed buffer view of a packed or BGR format"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of a typed buffer view of this format"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3

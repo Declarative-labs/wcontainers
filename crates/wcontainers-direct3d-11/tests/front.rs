@@ -3555,6 +3555,8 @@ fn creation_refuses_what_direct3d_refuses() {
         dxgi::R8G8B8A8_UNORM_SRGB,
         dxgi::A8_UNORM,
         dxgi::B5G6R5_UNORM,
+        dxgi::R8G8B8A8_TYPELESS,
+        dxgi::R32_TYPELESS,
     ] {
         assert!(
             matches!(
@@ -3566,6 +3568,34 @@ fn creation_refuses_what_direct3d_refuses() {
     }
     assert!(
         dev.create_buffer_srv(&buffer, dxgi::R8G8B8A8_UNORM, 0, 1, false)
+            .is_ok()
+    );
+    // Typed storage of buffers takes the formats typed storage views of textures take.
+    let stored = dev
+        .create_buffer(
+            &BufferDesc {
+                bind_flags: bind::UNORDERED_ACCESS,
+                ..typed
+            },
+            None,
+        )
+        .unwrap();
+    for format in [
+        dxgi::R32G32B32_FLOAT,
+        dxgi::R32G32B32_UINT,
+        dxgi::R32G32B32_SINT,
+        dxgi::R16G16_TYPELESS,
+    ] {
+        assert!(
+            matches!(
+                dev.create_buffer_uav(&stored, format, 0, 1, 0),
+                Err(Error::InvalidArg(_))
+            ),
+            "format {format}"
+        );
+    }
+    assert!(
+        dev.create_buffer_uav(&stored, dxgi::R32_FLOAT, 0, 1, 0)
             .is_ok()
     );
     let l10 = Device::new(Recorder::new(None), &[level::L10_0]).unwrap();

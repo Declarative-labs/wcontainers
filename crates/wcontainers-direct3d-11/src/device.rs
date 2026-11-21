@@ -87,6 +87,9 @@ pub struct Device<B: Backend> {
     /// pixel shader's id and variant; and the pixel counter's, by the vertex shader's id and variant
     /// and a number no pixel shader has.
     pub(crate) counting: HashMap<CountingKey, Kept<B, B::Program>>,
+    /// The storage clear programs (`ClearView` of storage views' rectangles), by format and view
+    /// dimension.
+    pub(crate) storage_clears: HashMap<(Format, ViewDimension), Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
     pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
@@ -370,6 +373,7 @@ impl<B: Backend> Device<B> {
             interpolated: HashMap::new(),
             variants: HashMap::new(),
             counting: HashMap::new(),
+            storage_clears: HashMap::new(),
             counter: Default::default(),
             pixel_counter: Default::default(),
             tests_off: None,
@@ -1983,15 +1987,30 @@ impl<B: Backend> Device<B> {
             }
             (d.structure_byte_stride, None)
         } else {
-            if format == format::UNKNOWN {
-                return Err(Error::InvalidArg("a typed buffer view without a format"));
+            if format == format::UNKNOWN || format::is_typeless(format) {
+                return Err(Error::InvalidArg(
+                    "a typed buffer view without a whole format",
+                ));
+            }
+            // Direct3D stores through typed views only of the formats its storage views take.
+            if needs == bind::UNORDERED_ACCESS && !format::storage_viewed(format) {
+                return Err(Error::InvalidArg(
+                    "a typed unordered access view of a format Direct3D does not store",
+                ));
             }
             let f = format::texture_format_of(format)?;
             match f.block() {
                 (1, 1, bytes) if !f.is_depth_stencil() && format::buffer_viewed(format) => {
-                    // Served exactly where `CheckFormatSupport` claims typed buffers.
-                    if self.format_support(format).support1 & support::BUFFER == 0 {
+                    // Served exactly where `CheckFormatSupport` claims typed buffers, and typed
+                    // storage where it claims typed storage views.
+                    let claims = self.format_support(format).support1;
+                    if claims & support::BUFFER == 0 {
                         return not_implemented(TYPED_BUFFER_UNCLAIMED);
+                    }
+                    if needs == bind::UNORDERED_ACCESS
+                        && claims & support::TYPED_UNORDERED_ACCESS_VIEW == 0
+                    {
+                        return not_implemented(STORAGE_UNCLAIMED);
                     }
                     (bytes, Some(f))
                 }
