@@ -14,9 +14,10 @@ and hardware-virtualization-inside.
   The Mac's suite passes with the changes (below, "Results"). Not complete: both wait on the owner's ruling.
 - Run 3 built nothing new: no ruling had come. It ran the whole suite again on both hosts after another track's
   commit 88d924b3 (the translation kept through tempfile's persist, in translate.rs), with the same results.
-- Runs 4, 5 and 6 built and ran nothing: no ruling in the orchestrator's open-with-owner.md (it names neither
-  item), and the only commit since run 3 that is not this file (1e37c4ab, the icmp and raw sockets) changes nothing
-  this track builds (origin/main was 191c6d09 at run 6, 13:05 Pacific), so run 3's results stand.
+- Runs 4 to 7 built and ran nothing: no ruling in the orchestrator's open-with-owner.md (it names neither item),
+  and the only commits since run 3 that are not this file (1e37c4ab, the icmp and raw sockets; 16b0ab70, the
+  container readers plan) change nothing this track builds (checked at run 7, 13:06 Pacific), so run 3's results
+  stand.
 
 ## Results (run 3)
 
