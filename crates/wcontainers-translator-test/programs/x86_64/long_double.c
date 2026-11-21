@@ -1,6 +1,6 @@
 // C's long double, which x86-64 keeps in the x87 unit: sums, products and quotients at 64 bits of
 // precision, square roots, conversions to and from integers and doubles, comparisons with infinities and
-// not-a-numbers, every rounding mode, the exception flags, and printing.
+// not-a-numbers, every rounding mode, the exception flags, printing, and the transcendental functions.
 
 #include <fenv.h>
 #include <float.h>
@@ -10,6 +10,13 @@
 static volatile long double zero = 0.0L;
 
 static void show(const char *what, long double x) { printf("%s %La %.21Lg\n", what, x, x); }
+
+static long double sine(long double x) { __asm__("fsin" : "+t"(x)); return x; }
+static long double cosine(long double x) { __asm__("fcos" : "+t"(x)); return x; }
+static long double tangent(long double x) { __asm__("fptan\n\tfstp %%st(0)" : "+t"(x)); return x; }
+static void sine_cosine(long double x, long double *s, long double *c) {
+    __asm__("fsincos" : "=t"(*c), "=u"(*s) : "0"(x));
+}
 
 int main(void) {
     long double sum = 0, product = 1, quotient = 1;
@@ -66,5 +73,19 @@ int main(void) {
             counts[2] += isgreaterequal(values[i], values[j]);
         }
     printf("%d %d %d %Lg %Lg\n", counts[0], counts[1], counts[2], fabsl(-product), copysignl(3, -zero));
+
+    // musl's expl, exp2l, logl, log2l, log1pl, atanl and atan2l run f2xm1, fyl2x, fyl2xp1 and fpatan, its sinl
+    // and cosl the x87 arithmetic, and fsin, fcos, fptan and fsincos run inline. Intel's transcendental results
+    // are within one unit in the last place, not correctly rounded as the translator's are, so these are
+    // printed to 16 digits, which one unit of 64 bits does not reach.
+    const long double args[] = {0.5L, 1.0L, 2.75L, 10.0L, 1e-5L, 123.456L, -0.3L, 1e10L};
+    for (int i = 0; i < 8; i++) {
+        long double a = args[i], s, c;
+        sine_cosine(a, &s, &c);
+        printf("%.16Lg %.16Lg %.16Lg %.16Lg %.16Lg %.16Lg %.16Lg\n", expl(a), exp2l(-a), logl(fabsl(a)),
+               log2l(fabsl(a)), log1pl(fabsl(a)), atanl(a), atan2l(-a, 3));
+        printf("%.16Lg %.16Lg %.16Lg %.16Lg %.16Lg %.16Lg %.16Lg\n", sinl(a), cosl(a), sine(a), cosine(a),
+               tangent(a), s, c);
+    }
     return 0;
 }
