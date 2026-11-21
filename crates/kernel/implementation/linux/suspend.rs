@@ -70,6 +70,11 @@ impl ProcessContext {
     pub fn origin(&self) -> ContextOrigin {
         self.origin
     }
+
+    /// What the embedder keeps of the process through the kernel interface.
+    pub(crate) fn embedder_mut(&mut self) -> Option<&mut crate::executing::EmbedderData> {
+        self.process.embedder.as_mut()
+    }
 }
 
 /// What a kernel keeps of a process whose context was taken off it, so that its parent's wait

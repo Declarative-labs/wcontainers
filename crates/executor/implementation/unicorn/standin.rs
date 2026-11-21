@@ -676,6 +676,11 @@ impl Default for StandIn {
     }
 }
 
+/// The stand-in runs guest code as it is, with no translator to configure.
+impl wcontainers_executor::Executor for StandIn {
+    type TranslatorConfig = ();
+}
+
 impl Cpu for StandIn {
     fn address_space(&self) -> AddressSpace {
         AddressSpace { end: self.end }

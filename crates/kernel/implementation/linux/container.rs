@@ -1072,6 +1072,7 @@ impl Kernel {
             started: cx.monotonic(),
             vdso: 0,
             execution: start.execution,
+            embedder: None,
             execed: false,
             self_exec_id: 0,
             // What Docker's first process inherits (measured).

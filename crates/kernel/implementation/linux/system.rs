@@ -216,6 +216,16 @@ pub struct ProcessInfo<'a> {
     process: &'a crate::process::Process,
 }
 
+impl<'a> ProcessInfo<'a> {
+    /// What the kernel keeps for process `pid`.
+    pub(crate) fn of(kernel: &'a Kernel, pid: Pid) -> Self {
+        ProcessInfo {
+            kernel,
+            process: &kernel.processes[&pid],
+        }
+    }
+}
+
 impl ProcessInfo<'_> {
     /// Bytes of address space the process has mapped.
     pub fn memory_mapped(&self) -> u64 {

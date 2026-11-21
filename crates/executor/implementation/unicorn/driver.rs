@@ -1218,6 +1218,62 @@ pub fn run_prepared(
     }
 }
 
+/// A kernel with the container started on the stand-in, as the kernel interface sees it: its first
+/// process, with `state`, is loaded and has not run.
+pub fn started_with_executor<State: Clone + 'static>(
+    prepared: Prepared,
+    container: &Container<'_>,
+    state: State,
+) -> (
+    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State>,
+    Arc<TestHost>,
+) {
+    let host = TestHost::repeatable(0, None);
+    *host.streams() = Streams::new(prepared.client);
+    let arguments: Vec<&[u8]> = container
+        .arguments
+        .iter()
+        .map(|argument| argument.as_bytes())
+        .collect();
+    let environment: Vec<&[u8]> = container
+        .environment
+        .iter()
+        .map(|variable| variable.as_bytes())
+        .collect();
+    let cpu = crate::standin::StandIn::with_space(container.address_space);
+    let start = Start {
+        path: container.path.as_bytes(),
+        arguments: &arguments,
+        environment: &environment,
+        working_directory: container.working_directory.as_bytes(),
+        hostname: reference::HOSTNAME.as_bytes(),
+        groups: &prepared.groups,
+        backend: None,
+        standard: host.standard(),
+        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
+        memory_bytes: cpu.address_space().end,
+        ceiling: prepared.ceiling,
+        execution: ExecutionConfig::default(),
+        options: prepared.options,
+    };
+    let config = wcontainers_kernel::ExecutionConfig {
+        thread_ordering: wcontainers_kernel::ThreadOrdering::Serial,
+        replay_determinism: wcontainers_kernel::ReplayDeterminism::Exact,
+        translator: (),
+    };
+    let host = Arc::new(host);
+    let kernel = wcontainers_kernel_linux::KernelWithExecutor::start(
+        prepared.kernel,
+        cpu,
+        &host,
+        &start,
+        config,
+        state,
+    )
+    .expect("the kernel runs a process serially with exact replay");
+    (kernel, host)
+}
+
 fn run_hosted<H: BetweenSteps + Send>(
     prepared: Prepared,
     mut host: TestHost<H>,

@@ -132,6 +132,8 @@ pub(crate) struct Process {
     pub vdso: u64,
     /// How the embedder asked for it to be run.
     pub execution: crate::ExecutionConfig,
+    /// What the embedder keeps of it through the kernel interface, if anything.
+    pub embedder: Option<crate::executing::EmbedderData>,
     /// A change of user left the new user over RLIMIT_NPROC (`PF_NPROC_EXCEEDED`), which the next
     /// `execve` refuses if it still is.
     pub nproc_exceeded: bool,
