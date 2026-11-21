@@ -2177,42 +2177,42 @@ pub const SIGSTKSZ: u32 = 16384;
 pub const _NSIG: u32 = 64;
 pub const _NSIG_BPW: u32 = 64;
 pub const _NSIG_WORDS: u32 = 1;
-pub const SIGHUP: u32 = 1;
-pub const SIGINT: u32 = 2;
-pub const SIGQUIT: u32 = 3;
-pub const SIGILL: u32 = 4;
-pub const SIGTRAP: u32 = 5;
-pub const SIGABRT: u32 = 6;
-pub const SIGIOT: u32 = 6;
-pub const SIGBUS: u32 = 7;
-pub const SIGFPE: u32 = 8;
-pub const SIGKILL: u32 = 9;
-pub const SIGUSR1: u32 = 10;
-pub const SIGSEGV: u32 = 11;
-pub const SIGUSR2: u32 = 12;
-pub const SIGPIPE: u32 = 13;
-pub const SIGALRM: u32 = 14;
-pub const SIGTERM: u32 = 15;
-pub const SIGSTKFLT: u32 = 16;
-pub const SIGCHLD: u32 = 17;
-pub const SIGCONT: u32 = 18;
-pub const SIGSTOP: u32 = 19;
-pub const SIGTSTP: u32 = 20;
-pub const SIGTTIN: u32 = 21;
-pub const SIGTTOU: u32 = 22;
-pub const SIGURG: u32 = 23;
-pub const SIGXCPU: u32 = 24;
-pub const SIGXFSZ: u32 = 25;
-pub const SIGVTALRM: u32 = 26;
-pub const SIGPROF: u32 = 27;
-pub const SIGWINCH: u32 = 28;
-pub const SIGIO: u32 = 29;
-pub const SIGPOLL: u32 = 29;
-pub const SIGPWR: u32 = 30;
-pub const SIGSYS: u32 = 31;
-pub const SIGUNUSED: u32 = 31;
-pub const SIGRTMIN: u32 = 32;
-pub const SIGRTMAX: u32 = 64;
+pub const SIGHUP: u32 = wcontainers_kernel::signal::Signal::SIGHUP as u32;
+pub const SIGINT: u32 = wcontainers_kernel::signal::Signal::SIGINT as u32;
+pub const SIGQUIT: u32 = wcontainers_kernel::signal::Signal::SIGQUIT as u32;
+pub const SIGILL: u32 = wcontainers_kernel::signal::Signal::SIGILL as u32;
+pub const SIGTRAP: u32 = wcontainers_kernel::signal::Signal::SIGTRAP as u32;
+pub const SIGABRT: u32 = wcontainers_kernel::signal::Signal::SIGABRT as u32;
+pub const SIGIOT: u32 = wcontainers_kernel::signal::Signal::SIGIOT as u32;
+pub const SIGBUS: u32 = wcontainers_kernel::signal::Signal::SIGBUS as u32;
+pub const SIGFPE: u32 = wcontainers_kernel::signal::Signal::SIGFPE as u32;
+pub const SIGKILL: u32 = wcontainers_kernel::signal::Signal::SIGKILL as u32;
+pub const SIGUSR1: u32 = wcontainers_kernel::signal::Signal::SIGUSR1 as u32;
+pub const SIGSEGV: u32 = wcontainers_kernel::signal::Signal::SIGSEGV as u32;
+pub const SIGUSR2: u32 = wcontainers_kernel::signal::Signal::SIGUSR2 as u32;
+pub const SIGPIPE: u32 = wcontainers_kernel::signal::Signal::SIGPIPE as u32;
+pub const SIGALRM: u32 = wcontainers_kernel::signal::Signal::SIGALRM as u32;
+pub const SIGTERM: u32 = wcontainers_kernel::signal::Signal::SIGTERM as u32;
+pub const SIGSTKFLT: u32 = wcontainers_kernel::signal::Signal::SIGSTKFLT as u32;
+pub const SIGCHLD: u32 = wcontainers_kernel::signal::Signal::SIGCHLD as u32;
+pub const SIGCONT: u32 = wcontainers_kernel::signal::Signal::SIGCONT as u32;
+pub const SIGSTOP: u32 = wcontainers_kernel::signal::Signal::SIGSTOP as u32;
+pub const SIGTSTP: u32 = wcontainers_kernel::signal::Signal::SIGTSTP as u32;
+pub const SIGTTIN: u32 = wcontainers_kernel::signal::Signal::SIGTTIN as u32;
+pub const SIGTTOU: u32 = wcontainers_kernel::signal::Signal::SIGTTOU as u32;
+pub const SIGURG: u32 = wcontainers_kernel::signal::Signal::SIGURG as u32;
+pub const SIGXCPU: u32 = wcontainers_kernel::signal::Signal::SIGXCPU as u32;
+pub const SIGXFSZ: u32 = wcontainers_kernel::signal::Signal::SIGXFSZ as u32;
+pub const SIGVTALRM: u32 = wcontainers_kernel::signal::Signal::SIGVTALRM as u32;
+pub const SIGPROF: u32 = wcontainers_kernel::signal::Signal::SIGPROF as u32;
+pub const SIGWINCH: u32 = wcontainers_kernel::signal::Signal::SIGWINCH as u32;
+pub const SIGIO: u32 = wcontainers_kernel::signal::Signal::SIGIO as u32;
+pub const SIGPOLL: u32 = wcontainers_kernel::signal::Signal::SIGPOLL as u32;
+pub const SIGPWR: u32 = wcontainers_kernel::signal::Signal::SIGPWR as u32;
+pub const SIGSYS: u32 = wcontainers_kernel::signal::Signal::SIGSYS as u32;
+pub const SIGUNUSED: u32 = wcontainers_kernel::signal::Signal::SIGUNUSED as u32;
+pub const SIGRTMIN: u32 = wcontainers_kernel::signal::Signal::SIGRTMIN as u32;
+pub const SIGRTMAX: u32 = wcontainers_kernel::signal::Signal::SIGRTMAX as u32;
 pub const SA_NOCLDSTOP: u32 = 1;
 pub const SA_NOCLDWAIT: u32 = 2;
 pub const SA_SIGINFO: u32 = 4;
@@ -2227,86 +2227,112 @@ pub const SA_ONESHOT: u32 = 2147483648;
 pub const SIG_BLOCK: u32 = 0;
 pub const SIG_UNBLOCK: u32 = 1;
 pub const SIG_SETMASK: u32 = 2;
-pub const SI_MAX_SIZE: u32 = 128;
-pub const SI_USER: u32 = 0;
+pub const SI_MAX_SIZE: u32 = wcontainers_kernel::signal_information::SI_MAX_SIZE as u32;
+pub const SI_USER: u32 = wcontainers_kernel::signal_information::SendCode::SI_USER as u32;
 pub const SI_KERNEL: u32 = 128;
-pub const SI_QUEUE: i32 = -1;
+pub const SI_QUEUE: i32 = wcontainers_kernel::signal_information::QueueCode::SI_QUEUE as i32;
 pub const SI_TIMER: i32 = -2;
-pub const SI_MESGQ: i32 = -3;
-pub const SI_ASYNCIO: i32 = -4;
-pub const SI_SIGIO: i32 = -5;
-pub const SI_TKILL: i32 = -6;
+pub const SI_MESGQ: i32 = wcontainers_kernel::signal_information::QueueCode::SI_MESGQ as i32;
+pub const SI_ASYNCIO: i32 = wcontainers_kernel::signal_information::QueueCode::SI_ASYNCIO as i32;
+pub const SI_SIGIO: i32 = wcontainers_kernel::signal_information::PollCode::SI_SIGIO as i32;
+pub const SI_TKILL: i32 = wcontainers_kernel::signal_information::SendCode::SI_TKILL as i32;
 pub const SI_DETHREAD: i32 = -7;
-pub const SI_ASYNCNL: i32 = -60;
-pub const ILL_ILLOPC: u32 = 1;
-pub const ILL_ILLOPN: u32 = 2;
-pub const ILL_ILLADR: u32 = 3;
-pub const ILL_ILLTRP: u32 = 4;
-pub const ILL_PRVOPC: u32 = 5;
-pub const ILL_PRVREG: u32 = 6;
-pub const ILL_COPROC: u32 = 7;
-pub const ILL_BADSTK: u32 = 8;
-pub const ILL_BADIADDR: u32 = 9;
-pub const __ILL_BREAK: u32 = 10;
-pub const __ILL_BNDMOD: u32 = 11;
+pub const SI_ASYNCNL: i32 = wcontainers_kernel::signal_information::QueueCode::SI_ASYNCNL as i32;
+pub const ILL_ILLOPC: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_ILLOPC as u32;
+pub const ILL_ILLOPN: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_ILLOPN as u32;
+pub const ILL_ILLADR: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_ILLADR as u32;
+pub const ILL_ILLTRP: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_ILLTRP as u32;
+pub const ILL_PRVOPC: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_PRVOPC as u32;
+pub const ILL_PRVREG: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_PRVREG as u32;
+pub const ILL_COPROC: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_COPROC as u32;
+pub const ILL_BADSTK: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_BADSTK as u32;
+pub const ILL_BADIADDR: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::ILL_BADIADDR as u32;
+pub const __ILL_BREAK: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::__ILL_BREAK as u32;
+pub const __ILL_BNDMOD: u32 =
+    wcontainers_kernel::signal_information::IllegalInstructionCode::__ILL_BNDMOD as u32;
 pub const NSIGILL: u32 = 11;
-pub const FPE_INTDIV: u32 = 1;
-pub const FPE_INTOVF: u32 = 2;
-pub const FPE_FLTDIV: u32 = 3;
-pub const FPE_FLTOVF: u32 = 4;
-pub const FPE_FLTUND: u32 = 5;
-pub const FPE_FLTRES: u32 = 6;
-pub const FPE_FLTINV: u32 = 7;
-pub const FPE_FLTSUB: u32 = 8;
-pub const __FPE_DECOVF: u32 = 9;
-pub const __FPE_DECDIV: u32 = 10;
-pub const __FPE_DECERR: u32 = 11;
-pub const __FPE_INVASC: u32 = 12;
-pub const __FPE_INVDEC: u32 = 13;
-pub const FPE_FLTUNK: u32 = 14;
-pub const FPE_CONDTRAP: u32 = 15;
+pub const FPE_INTDIV: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_INTDIV as u32;
+pub const FPE_INTOVF: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_INTOVF as u32;
+pub const FPE_FLTDIV: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTDIV as u32;
+pub const FPE_FLTOVF: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTOVF as u32;
+pub const FPE_FLTUND: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTUND as u32;
+pub const FPE_FLTRES: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTRES as u32;
+pub const FPE_FLTINV: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTINV as u32;
+pub const FPE_FLTSUB: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTSUB as u32;
+pub const __FPE_DECOVF: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::__FPE_DECOVF as u32;
+pub const __FPE_DECDIV: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::__FPE_DECDIV as u32;
+pub const __FPE_DECERR: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::__FPE_DECERR as u32;
+pub const __FPE_INVASC: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::__FPE_INVASC as u32;
+pub const __FPE_INVDEC: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::__FPE_INVDEC as u32;
+pub const FPE_FLTUNK: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_FLTUNK as u32;
+pub const FPE_CONDTRAP: u32 =
+    wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_CONDTRAP as u32;
 pub const NSIGFPE: u32 = 15;
-pub const SEGV_MAPERR: u32 = 1;
-pub const SEGV_ACCERR: u32 = 2;
-pub const SEGV_BNDERR: u32 = 3;
-pub const SEGV_PKUERR: u32 = 4;
-pub const SEGV_ACCADI: u32 = 5;
-pub const SEGV_ADIDERR: u32 = 6;
-pub const SEGV_ADIPERR: u32 = 7;
-pub const SEGV_MTEAERR: u32 = 8;
-pub const SEGV_MTESERR: u32 = 9;
-pub const SEGV_CPERR: u32 = 10;
+pub const SEGV_MAPERR: u32 = crate::siginfo::codes::SEGV_MAPERR as u32;
+pub const SEGV_ACCERR: u32 = crate::siginfo::codes::SEGV_ACCERR as u32;
+pub const SEGV_BNDERR: u32 = crate::siginfo::codes::SEGV_BNDERR as u32;
+pub const SEGV_PKUERR: u32 = crate::siginfo::codes::SEGV_PKUERR as u32;
+pub const SEGV_ACCADI: u32 = crate::siginfo::codes::SEGV_ACCADI as u32;
+pub const SEGV_ADIDERR: u32 = crate::siginfo::codes::SEGV_ADIDERR as u32;
+pub const SEGV_ADIPERR: u32 = crate::siginfo::codes::SEGV_ADIPERR as u32;
+pub const SEGV_MTEAERR: u32 = crate::siginfo::codes::SEGV_MTEAERR as u32;
+pub const SEGV_MTESERR: u32 = crate::siginfo::codes::SEGV_MTESERR as u32;
+pub const SEGV_CPERR: u32 = crate::siginfo::codes::SEGV_CPERR as u32;
 pub const NSIGSEGV: u32 = 10;
-pub const BUS_ADRALN: u32 = 1;
-pub const BUS_ADRERR: u32 = 2;
-pub const BUS_OBJERR: u32 = 3;
-pub const BUS_MCEERR_AR: u32 = 4;
-pub const BUS_MCEERR_AO: u32 = 5;
+pub const BUS_ADRALN: u32 = crate::siginfo::codes::BUS_ADRALN as u32;
+pub const BUS_ADRERR: u32 = crate::siginfo::codes::BUS_ADRERR as u32;
+pub const BUS_OBJERR: u32 = crate::siginfo::codes::BUS_OBJERR as u32;
+pub const BUS_MCEERR_AR: u32 = crate::siginfo::codes::BUS_MCEERR_AR as u32;
+pub const BUS_MCEERR_AO: u32 = crate::siginfo::codes::BUS_MCEERR_AO as u32;
 pub const NSIGBUS: u32 = 5;
-pub const TRAP_BRKPT: u32 = 1;
-pub const TRAP_TRACE: u32 = 2;
-pub const TRAP_BRANCH: u32 = 3;
-pub const TRAP_HWBKPT: u32 = 4;
-pub const TRAP_UNK: u32 = 5;
-pub const TRAP_PERF: u32 = 6;
+pub const TRAP_BRKPT: u32 = crate::siginfo::codes::TRAP_BRKPT as u32;
+pub const TRAP_TRACE: u32 = crate::siginfo::codes::TRAP_TRACE as u32;
+pub const TRAP_BRANCH: u32 = crate::siginfo::codes::TRAP_BRANCH as u32;
+pub const TRAP_HWBKPT: u32 = crate::siginfo::codes::TRAP_HWBKPT as u32;
+pub const TRAP_UNK: u32 = crate::siginfo::codes::TRAP_UNK as u32;
+pub const TRAP_PERF: u32 = crate::siginfo::codes::TRAP_PERF as u32;
 pub const NSIGTRAP: u32 = 6;
 pub const TRAP_PERF_FLAG_ASYNC: u32 = 1;
-pub const CLD_EXITED: u32 = 1;
-pub const CLD_KILLED: u32 = 2;
-pub const CLD_DUMPED: u32 = 3;
-pub const CLD_TRAPPED: u32 = 4;
-pub const CLD_STOPPED: u32 = 5;
-pub const CLD_CONTINUED: u32 = 6;
+pub const CLD_EXITED: u32 = crate::siginfo::codes::CLD_EXITED as u32;
+pub const CLD_KILLED: u32 = crate::siginfo::codes::CLD_KILLED as u32;
+pub const CLD_DUMPED: u32 = crate::siginfo::codes::CLD_DUMPED as u32;
+pub const CLD_TRAPPED: u32 = crate::siginfo::codes::CLD_TRAPPED as u32;
+pub const CLD_STOPPED: u32 = crate::siginfo::codes::CLD_STOPPED as u32;
+pub const CLD_CONTINUED: u32 = crate::siginfo::codes::CLD_CONTINUED as u32;
 pub const NSIGCHLD: u32 = 6;
-pub const POLL_IN: u32 = 1;
-pub const POLL_OUT: u32 = 2;
-pub const POLL_MSG: u32 = 3;
-pub const POLL_ERR: u32 = 4;
-pub const POLL_PRI: u32 = 5;
-pub const POLL_HUP: u32 = 6;
+pub const POLL_IN: u32 = wcontainers_kernel::signal_information::PollCode::POLL_IN as u32;
+pub const POLL_OUT: u32 = wcontainers_kernel::signal_information::PollCode::POLL_OUT as u32;
+pub const POLL_MSG: u32 = wcontainers_kernel::signal_information::PollCode::POLL_MSG as u32;
+pub const POLL_ERR: u32 = wcontainers_kernel::signal_information::PollCode::POLL_ERR as u32;
+pub const POLL_PRI: u32 = wcontainers_kernel::signal_information::PollCode::POLL_PRI as u32;
+pub const POLL_HUP: u32 = wcontainers_kernel::signal_information::PollCode::POLL_HUP as u32;
 pub const NSIGPOLL: u32 = 6;
-pub const SYS_SECCOMP: u32 = 1;
-pub const SYS_USER_DISPATCH: u32 = 2;
+pub const SYS_SECCOMP: u32 = crate::siginfo::codes::SYS_SECCOMP as u32;
+pub const SYS_USER_DISPATCH: u32 = crate::siginfo::codes::SYS_USER_DISPATCH as u32;
 pub const NSIGSYS: u32 = 2;
 pub const EMT_TAGOVF: u32 = 1;
 pub const NSIGEMT: u32 = 1;

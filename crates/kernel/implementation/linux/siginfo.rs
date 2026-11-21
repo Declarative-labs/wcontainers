@@ -73,8 +73,67 @@ signals!(
     SIGRT_28, SIGRT_29, SIGRT_30, SIGRT_31, SIGRTMAX,
 );
 
+/// The numbers of the codes whose enums carry fields, which `as` cannot give, as the generated
+/// bindings name them.
+#[allow(
+    dead_code,
+    reason = "every code Linux names, whether the kernel gives it or not"
+)]
+pub(crate) mod codes {
+    use super::*;
+
+    const BOUNDS: AddressBounds = AddressBounds { lower: 0, upper: 0 };
+    const LSB: AddressLeastSignificantBit = match AddressLeastSignificantBit::new(0) {
+        Some(lsb) => lsb,
+        None => panic!("bit 0 is a bit of an address"),
+    };
+    const PERF: TrapCode = TrapCode::TRAP_PERF {
+        data: PerfEventSignalData(0),
+        event_type: PerfEventType(0),
+        delivery: PerfEventDelivery::Synchronous,
+    };
+
+    macro_rules! codes {
+        ($($name:ident = $value:expr),* $(,)?) => {
+            $(pub(crate) const $name: u32 = number(&$value) as u32;)*
+        };
+    }
+
+    codes!(
+        SEGV_MAPERR = SegmentationFaultCode::SEGV_MAPERR,
+        SEGV_ACCERR = SegmentationFaultCode::SEGV_ACCERR,
+        SEGV_BNDERR = SegmentationFaultCode::SEGV_BNDERR(BOUNDS),
+        SEGV_PKUERR = SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
+        SEGV_ACCADI = SegmentationFaultCode::SEGV_ACCADI,
+        SEGV_ADIDERR = SegmentationFaultCode::SEGV_ADIDERR,
+        SEGV_ADIPERR = SegmentationFaultCode::SEGV_ADIPERR,
+        SEGV_MTEAERR = SegmentationFaultCode::SEGV_MTEAERR,
+        SEGV_MTESERR = SegmentationFaultCode::SEGV_MTESERR,
+        SEGV_CPERR = SegmentationFaultCode::SEGV_CPERR,
+        BUS_ADRALN = BusErrorCode::BUS_ADRALN,
+        BUS_ADRERR = BusErrorCode::BUS_ADRERR,
+        BUS_OBJERR = BusErrorCode::BUS_OBJERR,
+        BUS_MCEERR_AR = BusErrorCode::BUS_MCEERR_AR(LSB),
+        BUS_MCEERR_AO = BusErrorCode::BUS_MCEERR_AO(LSB),
+        TRAP_BRKPT = TrapCode::TRAP_BRKPT,
+        TRAP_TRACE = TrapCode::TRAP_TRACE,
+        TRAP_BRANCH = TrapCode::TRAP_BRANCH,
+        TRAP_HWBKPT = TrapCode::TRAP_HWBKPT,
+        TRAP_UNK = TrapCode::TRAP_UNK,
+        TRAP_PERF = PERF,
+        CLD_EXITED = ChildTerminationCode::CLD_EXITED(ExitStatus(u8::MIN)),
+        CLD_KILLED = ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
+        CLD_DUMPED = ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
+        CLD_TRAPPED = ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
+        CLD_STOPPED = ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
+        CLD_CONTINUED = ChildStateCode::CLD_CONTINUED,
+        SYS_SECCOMP = BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
+        SYS_USER_DISPATCH = BadSystemCallCode::SYS_USER_DISPATCH,
+    );
+}
+
 /// The number Linux gives a code: the discriminant of the interface's `repr(i32)` enum.
-fn number<T: Copy>(code: &T) -> i32 {
+pub(crate) const fn number<T: Copy>(code: &T) -> i32 {
     // SAFETY: called only with the interface's code enums, each `repr(i32)`, whose values start
     // with their discriminant as an `i32` (a primitive representation).
     unsafe { core::ptr::from_ref(code).cast::<i32>().read() }
@@ -179,8 +238,8 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
             descriptor: FileDescriptor(u32_at(bytes, DESCRIPTOR)),
         })
     };
-    // A code a signal gives itself (`sig_specific_sicodes`); Linux's own codes are positive.
-    if code > 0 && code != SI_KERNEL as i32 {
+    // A code a signal gives itself (`sig_specific_sicodes`); Linux's own codes are above SI_USER.
+    if code > SendCode::SI_USER as i32 && code != SI_KERNEL as i32 {
         let specific = match signal {
             Signal::SIGILL => code_of(
                 [
@@ -649,7 +708,7 @@ mod tests {
     #[test]
     fn the_kernels_own_records_take_their_layouts() {
         let kill =
-            crate::signal::sender_info(Signal::SIGTERM as u32, SendCode::SI_USER as i32, 7, 1000);
+            crate::signal::sender_info(Signal::SIGTERM as u32, SendCode::SI_USER as i32, 7, 99);
         assert_eq!(
             decode(&kill),
             SignalInformation::SentByProcess {
@@ -657,20 +716,20 @@ mod tests {
                 code: SendCode::SI_USER,
                 sender: ProcessIdentity {
                     process: TaskId(7),
-                    real_user: UserId(1000)
+                    real_user: UserId(99)
                 },
             }
         );
         let fault = crate::signal::fault_info(
             Signal::SIGSEGV as u32,
             number(&SegmentationFaultCode::SEGV_MAPERR),
-            0x1000,
+            wcontainers_abi::PAGE_SIZE,
         );
         assert_eq!(
             decode(&fault),
             SignalInformation::SegmentationFault {
                 code: SegmentationFaultCode::SEGV_MAPERR,
-                address: 0x1000
+                address: wcontainers_abi::PAGE_SIZE
             }
         );
         assert_eq!(

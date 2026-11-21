@@ -612,7 +612,8 @@ pub const __AUDIT_ARCH_CONVENTION_MASK: u32 = 805306368;
 pub const __AUDIT_ARCH_CONVENTION_MIPS64_N32: u32 = 536870912;
 pub const __AUDIT_ARCH_64BIT: u32 = 2147483648;
 pub const __AUDIT_ARCH_LE: u32 = 1073741824;
-pub const AUDIT_ARCH_AARCH64: u32 = 3221225655;
+pub const AUDIT_ARCH_AARCH64: u32 =
+    wcontainers_kernel::signal_information::SystemCallArchitecture::AUDIT_ARCH_AARCH64 as u32;
 pub const AUDIT_ARCH_ALPHA: u32 = 3221262374;
 pub const AUDIT_ARCH_ARCOMPACT: u32 = 1073741917;
 pub const AUDIT_ARCH_ARCOMPACTBE: u32 = 93;
@@ -627,7 +628,8 @@ pub const AUDIT_ARCH_CSKY: u32 = 1073742076;
 pub const AUDIT_ARCH_FRV: u32 = 21569;
 pub const AUDIT_ARCH_H8300: u32 = 46;
 pub const AUDIT_ARCH_HEXAGON: u32 = 164;
-pub const AUDIT_ARCH_I386: u32 = 1073741827;
+pub const AUDIT_ARCH_I386: u32 =
+    wcontainers_kernel::signal_information::SystemCallArchitecture::AUDIT_ARCH_I386 as u32;
 pub const AUDIT_ARCH_IA64: u32 = 3221225522;
 pub const AUDIT_ARCH_M32R: u32 = 88;
 pub const AUDIT_ARCH_M68K: u32 = 4;
@@ -661,7 +663,8 @@ pub const AUDIT_ARCH_TILEGX: u32 = 3221225663;
 pub const AUDIT_ARCH_TILEGX32: u32 = 1073742015;
 pub const AUDIT_ARCH_TILEPRO: u32 = 1073742012;
 pub const AUDIT_ARCH_UNICORE: u32 = 1073741934;
-pub const AUDIT_ARCH_X86_64: u32 = 3221225534;
+pub const AUDIT_ARCH_X86_64: u32 =
+    wcontainers_kernel::signal_information::SystemCallArchitecture::AUDIT_ARCH_X86_64 as u32;
 pub const AUDIT_ARCH_XTENSA: u32 = 94;
 pub const AUDIT_ARCH_LOONGARCH32: u32 = 1073742082;
 pub const AUDIT_ARCH_LOONGARCH64: u32 = 3221225730;
@@ -777,14 +780,22 @@ pub const PTRACE_GET_SYSCALL_USER_DISPATCH_CONFIG: u32 = 16913;
 pub const PTRACE_EVENTMSG_SYSCALL_ENTRY: u32 = 1;
 pub const PTRACE_EVENTMSG_SYSCALL_EXIT: u32 = 2;
 pub const PTRACE_PEEKSIGINFO_SHARED: u32 = 1;
-pub const PTRACE_EVENT_FORK: u32 = 1;
-pub const PTRACE_EVENT_VFORK: u32 = 2;
-pub const PTRACE_EVENT_CLONE: u32 = 3;
-pub const PTRACE_EVENT_EXEC: u32 = 4;
-pub const PTRACE_EVENT_VFORK_DONE: u32 = 5;
-pub const PTRACE_EVENT_EXIT: u32 = 6;
-pub const PTRACE_EVENT_SECCOMP: u32 = 7;
-pub const PTRACE_EVENT_STOP: u32 = 128;
+pub const PTRACE_EVENT_FORK: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_FORK as u32;
+pub const PTRACE_EVENT_VFORK: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_VFORK as u32;
+pub const PTRACE_EVENT_CLONE: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_CLONE as u32;
+pub const PTRACE_EVENT_EXEC: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_EXEC as u32;
+pub const PTRACE_EVENT_VFORK_DONE: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_VFORK_DONE as u32;
+pub const PTRACE_EVENT_EXIT: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_EXIT as u32;
+pub const PTRACE_EVENT_SECCOMP: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_SECCOMP as u32;
+pub const PTRACE_EVENT_STOP: u32 =
+    wcontainers_kernel::signal_information::PtraceEvent::PTRACE_EVENT_STOP as u32;
 pub const PTRACE_O_TRACESYSGOOD: u32 = 1;
 pub const PTRACE_O_TRACEFORK: u32 = 2;
 pub const PTRACE_O_TRACEVFORK: u32 = 4;
