@@ -29,7 +29,7 @@ pub enum Entry {
     /// An event the outside handed in.
     Event(OwnedEvent),
     /// A signal the outside sent to the first process.
-    Kill(u32),
+    Kill(wcontainers_kernel::signal::Signal),
     /// The ends of what the outside did at a point of the driver loop, with what it answered.
     Begun,
     Arrived(bool),

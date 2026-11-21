@@ -12,6 +12,7 @@ use wcontainers_abi::{
     SystemCallRequest, Warning,
 };
 use wcontainers_kernel::errno::Errno;
+use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel_linux::{
     AccessKind, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process, SignalInformation,
     Standard, Start, System, SystemCallResponse, TaskId,
@@ -275,7 +276,7 @@ struct Injecting {
     injections: Injections,
     /// Turn counts at which it is saved.
     at: Vec<u64>,
-    signal: u32,
+    signal: Signal,
     signal_at: Vec<u64>,
     notice_at: Vec<u64>,
     notices: StdRng,
@@ -287,7 +288,7 @@ struct Injecting {
 
 impl Injecting {
     fn new(seed: u64, injections: Injections) -> Self {
-        let (signal, signals) = injections.signal.unwrap_or((0, 0));
+        let (signal, signals) = injections.signal.unwrap_or((Signal::SIGKILL, 0));
         Self {
             seed,
             injections,
@@ -644,7 +645,7 @@ where
     }
 
     /// Sends a signal from the outside to the first process, kept in the record.
-    fn kill(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, signal: u32) {
+    fn kill(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, signal: Signal) {
         self.kept_in_step(Entry::Kill(signal));
         let was = self.set_outside(false);
         kernel.kill(cpu, self, signal);
@@ -966,7 +967,7 @@ pub struct Injections {
     /// How much more the host's wall clock moves on than its monotonic clock at each save.
     pub wall_step: u64,
     /// A signal sent to the first process from outside, and how many times.
-    pub signal: Option<(u32, usize)>,
+    pub signal: Option<(Signal, usize)>,
     /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
     /// seed, as a backend whose files changed underneath would.
     pub notices: usize,

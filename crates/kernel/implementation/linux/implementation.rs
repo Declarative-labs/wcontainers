@@ -593,7 +593,13 @@ impl Kernel {
     /// Sends a signal to the container's first process from outside the container, as `docker
     /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
     /// other signals with no handler from that process.
-    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &dyn System, signal: u32) {
+    pub fn kill(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        host: &dyn System,
+        signal: wcontainers_kernel::signal::Signal,
+    ) {
+        let signal = signal as u32;
         assert!(self.running.is_none(), "a signal sent while a thread runs");
         let mut cx = Context {
             cpu,
