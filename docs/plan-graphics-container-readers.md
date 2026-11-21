@@ -49,3 +49,19 @@ where they differ.
 
 Pass bar: one reader and one checksum in the tree; every shader, Direct3D 11 and Direct3D 12 test
 that ran before passes; the fuzz test passes with the shared checksum.
+
+## C2: one DXIL resource-list reader
+
+Today crates/wcontainers-direct3d-12/src/dxil.rs reads the DXIL module's resource list itself, on the
+llvm-bitcode crate, two or three times per pipeline stage (typed views and multisampled arrays for
+the stage's key, typed views again for a pixel or compute stage). The shaders crate reads the same
+list through dxil-spirv's module reader (cpp/dxil.cpp, `each_resource`).
+
+Planned: one function on the shaders side (`container::dxil_views`, through one new C function
+beside `each_resource`) giving each shader resource and unordered access view's shape, space,
+register range and element value kind in one call; the Direct3D 12 front reads it once per stage
+and keeps only its own numbering of slots; its bitcode reader and the llvm-bitcode dependency go.
+
+Pass bar: the Direct3D 12 tests pass; pipeline creation on the same shaders is not slower, measured
+before and after. If dxil-spirv's reader cannot meet it, the item stops, our reader stays and the
+status file gives the measurement.
