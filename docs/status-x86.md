@@ -118,8 +118,84 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   also built position independent), and two smaller ones (see "X6, run 3").
 - X6f (the link address of a fixed-address program; the X6 check's open findings): run 1 (2026-11-20) fixed the
   five findings and built the owner's ruling: the translator takes the program's link address and follows
-  absolute immediates through it, with the address in the cache key (see "X6f, run 1"). What comes next: X6f's
-  independent check.
+  absolute immediates through it, with the address in the cache key (see "X6f, run 1"). X6f's check passed.
+- X7 (x87 and MMX): run 1 (2026-11-21) fixed the two findings of the X6f check and built the x87 unit in
+  software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
+  `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
+  ones passes layer 1 at 1,000 cases a form on the rented x86-64 machine, and the long double C program matches
+  Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Not done: `fsin`, `fcos`, `fsincos`,
+  `fptan`, `fpatan`, `f2xm1`, `fyl2x` and `fyl2xp1` (still illegal instruction, counted, and left out of layer
+  1 as X7's), and the laptop's layer 1 verdict for the final code.
+
+## X7, run 1 (2026-11-21)
+
+Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws, load 1 to 65 with my jobs) for lint, the
+x86 tests and layer 1 while building; the i7-8750H for probes and layer 1's verdicts; the rented ARM64 machine
+for ARM64's tests; the Mac for git, formatting and the literal check. Logs in scratch `x7/`.
+
+The X6f check's findings:
+- The stop kinds are named once: `TrapKind::NAMES` in the guest interface (the browser crate's contract and
+  the test crate use `TrapKind::name` and `from_name`), and the test crate's `browser.rs` names the page's own
+  stops (`FINISHED`, `SYSCALL`, now "system call", `SINGLE_STEP`, `MEMORY_FAULT`, `STACK_FAULT`, `NO_CODE`) and
+  hands every one to `runner.js` in `runner.stopKinds` (camel-case keys made from the names), with
+  `memoryFaultStops` for the memory fault hook's answers; `runner.js` types no stop word. `layer1.rs` and
+  `run_in_chrome` match on the constants. `check_ordinary_programs` uses `SIGSEGV` and `SIGALRM`; `ran` takes
+  `size_of::<u64>()`, `flatten` the program headers' alignment. The `128`s stay where they were (they wait for
+  the abi crate's constant). 41 baseline lines went.
+- Absolute immediates are now drawn: layer 2's x86 emitter makes one in four of the model's constant moves an
+  address in the code (`mov r32, imm32`, or `push imm32; pop`), patched once the code is placed, at any byte
+  (layer 2 runs them against the CPU at every look-ahead); and `absolute_entries_are_valid_x86_64` puts `mov`,
+  `push` and `movabs` naming a random byte of the code, the one below or the one past it, before random bytes
+  with a link address: valid at full and bounded, and at full a piece at each named whole instruction (2,000
+  cases at seed 9711, then 1,000 and 3,000 at 9725 and 9741: pass).
+
+What X7 built (plan 5.8, "How the x87 hook is built", has the design):
+- `crate::x87`, the unit: 80-bit values and their classes, precision control by rounding to odd in a wide
+  semantics (66 bits, 18-bit exponent), x86's tininess after rounding, the unmasked overflow and underflow
+  results kept with their exponent adjusted, NaN propagation, stack faults, compares, the integer, packed
+  decimal and narrower stores, constants rounded by the rounding control, `frndint`, `fscale`, `fxtract`,
+  `fsqrt` (`crate::root`), `fprem` and `fprem1`, the environment's words; `crate::fpu`, the meanings; the hook
+  `x87`, counted "x87 floating point in software". MMX: mm0 to mm7 as register bits 48 to 55, the SSE integer
+  meanings on them, `maskmovq`, `movq2dq`, `movdq2q`, `emms`, and MMX's conversions in the float meanings.
+- The decoder splits `wait` from the x87 instruction iced reads with it, as the CPU runs two (so iced's
+  `fstsw`, `fclex`, `finit`, `fstenv`, `fsave` and `fstcw` codes are "decoded as another code" in layer 1).
+- Layer 1 now draws the x87 state (control word mostly Linux's, flags in a third of cases with the summary as
+  they make it, TOP, codes and tags, every register an edge of the 80-bit format) and edge values for each x87
+  memory format, x87 and MMX register operands, and `maskmovq`. A float exception's expected detail is FSW's
+  unmasked flags for an x87 instruction or one naming an MMX register when one is pending, else MXCSR's.
+- What the reference showed, probed on the i7-8750H (scratch `x7/probes`: `fpenv.c`, `faults.c`, `fscale.c`,
+  `fprem.c`) or found by layer 1, is listed in plan 5.8; each rule has a comment where it is built.
+
+Measured:
+- Layer 1 on the rented x86-64 machine, with a diagnostic copy that counts its 5-level paging answers (a
+  page fault above bit 47, or crossing it, where the laptop gives general protection) as the laptop's (scratch
+  `x7/scratch/diag-5level.py`, never in the repository): every x87 and MMX form, 485 forms (with every other
+  form whose name holds "mm"), 1,000 cases a form at seeds 9728 and 9729 (126 s and 152 s, 96 at once): 0
+  failing but `fxsave` and `fxrstor` in both forms, whose failures are all the paging kind (non-canonical under 48
+  bits, canonical under 57). Then after later changes: `fprem` and `fprem1` 1,000 cases at seeds 9736 to 9739,
+  0 failing; MMX's conversions, `fscale` and `maskmovq` at seed 9744, 0 failing; the state instructions at seed
+  9735, 0 failing but `fxsave`/`fxrstor` as above.
+- The laptop (i7-8750H, load 3.5 to 4.1, 4 at once): x87 and MMX forms at 1,000 a form, seed 9731, from commit
+  bbfa0c40 (before `fprem`, the conversions and the later fixes), running when this was written; its failures
+  so far: `fldenv` and `fnstenv` at an address 4 bytes below 2^47 (fixed in 8a4e58a1), and `fscale`'s C1 on
+  an out-of-range infinity (fixed in fd3a55f9).
+- `long_double_matches_linux_x86_64` (programs/x86_64/long_double.c with musl, every optimisation level, at
+  none, full for speed and for size, registers and memory against none): pass, rented machine. In Chrome,
+  `long_double_matches_linux_in_chrome_x86_64` at none, full and bounded 256, for speed and size: pass.
+- Layer 2 x86, seed 9742, 10,000 programs, 48 at once: 0 failing (112 s; 3,392 faulted, 1,144 left to an
+  address at full, 24,021 stacks lost, 23,611 pieces forgotten). Seeds 9712 and 9726 at 2,000: 0 failing.
+- x86's program tests (`--test programs --test checks --test smoke -- x86_64`), rented machine, at fea660b2's
+  parent: 23 + 2 + 6 passed, 0 failed (453 s).
+- The literal check (the Mac): exits 0; 49 baseline lines went this run (41 for the findings, 8 in `BITS`),
+  none added.
+
+Not done, for the next run:
+- The eight transcendental instructions (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`,
+  `fyl2xp1`): plan 5.8's astro-float design is not built; they stop with illegal instruction, counted
+  "unsupported instruction reached", and layer 1 leaves them out as X7's. musl's `sinl`, `atanl`, `expl` and
+  `logl` use them, so the long double program uses none of them yet.
+- The laptop's layer 1 verdict for the final code (every x87 and MMX form at 1,000 a form), which also settles
+  the `fxsave`/`fxrstor` cases the rented machine answers by 5-level paging; the ARM64 tests at the final code.
 
 ## X6f, run 1 (2026-11-20)
 
@@ -3184,6 +3260,18 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X7: layer 1 of the x87 and MMX forms, `WC_LAYER1_FORMS=<names> WC_LAYER1_CASES=1000 WC_LAYER1_SEED=<n>
+  WC_LAYER1_JOBS=<jobs> cargo test --release -p wcontainers-translator-test --test layer1
+  every_form_matches_the_cpu_x86_64 -- --nocapture`; scratch `x7/scratch/l1-x87.sh <cases> <seed> [regex]`
+  does it in one command from a copy with scratch `x7/scratch/scratch_x87.rs` in the test crate's `tests/`
+  (it lists every form, keeps the names the regex matches, default the x87 and MMX ones, and prints the codes
+  still left out as X7's). On the rented x86-64 machine first run `python3 x7/scratch/diag-5level.py .` in the
+  copy (a diagnostic, never committed) or read the 5-level paging answers by hand; the verdict is the
+  laptop's, through `x5/run5/laptop-bg.sh <name> 'ARM_JOBS=4 ~/wcontainers-x86/x7/l1-x87.sh 1000 <seed>'`.
+  The long double program: `--test programs long_double_matches_linux_x86_64` and `--test browser
+  long_double_matches_linux_in_chrome_x86_64`. The reference probes: scratch `x7/probes/*.c`, built with gcc on
+  the laptop.
+
 - X6f (on the rented x86-64 machine): `cargo test -p wcontainers-translator-test --test programs --
   main_is_in_the_full_translation` (both guests; translation only, no reference), and the X6 programs below,
   which now run every fixed C program with its link address. ARM64's output against a commit from before the
@@ -3432,6 +3520,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X7 run 1: layer 1 of the x87 and MMX forms at 1,000 a form, seeds 9721 to 9744 while building (rented
+  x86-64 machine; see "X7, run 1" for which), 9731 on the i7-8750H; layer 2 x86 at 10,000, seed 9742, and
+  2,000 at 9712 and 9726; `valid` at 2,000, 1,000 and 3,000 cases, seeds 9711, 9725 and 9741.
+
 - X6f run 1: layer 2 x86 at 10,000 programs, seed 9701; layer 3 Csmith x86 at 1,000, seed 9702 (rented x86-64
   machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9703, every form at 100 a form, seed
   9705, the unoffered forms at 20 a form, seed 9706 (i7-8750H); ARM64's every form at 64 a form, seed 9704,
@@ -3588,6 +3680,10 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Licences of what this track uses
 
+- Added at X7: `astro-float-num` 0.3.7 (MIT), without its default features, for `fsqrt`'s root (and the
+  transcendental instructions to come). It is the library astro-float 0.9.6 re-exports; taking it directly
+  leaves out astro-float's procedural macro crate.
+
 - Added at X6f: `linux-raw-sys` 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), already in the
   workspace (the kernel's tests), now a dependency of the test crate for Linux's signal numbers.
 - Added at X5 run 3: `rustc_apfloat` 0.2.3 (Apache-2.0 WITH LLVM-exception), already a dependency of the
@@ -3636,6 +3732,14 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
+
+- X7 run 1: `fsqrt`'s root takes astro-float's square root to the nearest at 128 bits as a guess and settles
+  the truncated 66 bits by exact squares, where plan 5.8 said "rounded toward zero": astro-float has no
+  directed rounding (every mode it has rounds to the nearest). The dependency is `astro-float-num`, the crate
+  astro-float re-exports. MMX registers are register bits 48 to 55 (the plan's numbering in 3.5 was written
+  before the xmm registers took 32 to 47; corrected there). iced's `wait`-prefixed x87 codes are split into
+  `wait` and the instruction, which the plan did not foresee. FDP and FOP are kept only with an unmasked
+  exception and FCS and FDS are zero, as on the reference (plan 5.9 said only "last-instruction pointers").
 
 - X6f run 1: the runtime passes no link address (the ruling asked for the smallest change to its call that
   compiles; the ELF's type does not reach it). The description section does not record the link address, so
