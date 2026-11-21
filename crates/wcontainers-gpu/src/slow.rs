@@ -311,8 +311,8 @@ pub enum SlowPath {
     /// A resource shared between devices that hold no common GPU memory, kept as one copy per
     /// device and copied through a read back at the API's synchronisation points.
     SharedThroughHost,
-    /// A pass whose query set had no index left for the next stretch ended, and the next opened
-    /// with a fresh set.
+    /// A pass whose query set had no index left for the next stretch, or that began without a set,
+    /// ended, and the next opened with a fresh set.
     QuerySetSplitPass,
 }
 
