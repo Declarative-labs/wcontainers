@@ -26,6 +26,8 @@ gs_line_adjacent.dxbc	ok ; glsl absent compute
 gs_lines.dxbc	ok ; glsl absent compute
 gs_points.dxbc	ok ; glsl absent compute
 gs_quads.dxbc	ok ; glsl absent compute
+gs_rows_lines.dxbc	ok ; glsl absent compute
+gs_rows_streams.dxbc	ok ; glsl absent compute
 gs_streams.dxbc	ok ; glsl absent compute
 gs_tess_line.dxbc	ok ; glsl absent compute
 gs_tess_point.dxbc	ok ; glsl absent compute
@@ -140,6 +142,7 @@ vs_line.dxbc	ok ; glsl compiles
 vs_pack.dxbc	ok ; glsl compiles
 vs_patch.dxbc	ok ; glsl compiles
 vs_pull.dxbc	ok ; glsl compiles
+vs_rows.dxbc	ok ; glsl compiles
 vs_rows_io.dxbc	ok ; glsl compiles
 vs_shade.dxbc	ok ; glsl compiles
 vs_store_raw.dxbc	unsupported VertexStorageWrite
