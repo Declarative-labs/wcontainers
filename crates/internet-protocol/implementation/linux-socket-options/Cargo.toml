@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-internet-protocol-linux-socket-options"
+description = "The shared settings of crates/internet-protocol as Linux socket options, for the host implementations of the socket interfaces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-internet-protocol = { path = "../.." }
+etherparse.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Socket calls and the socket options it wraps.
+rustix = { version = "1.1.6", features = ["net"] }
+# The Linux uapi constants and structures that rustix does not wrap.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+# setsockopt and getsockopt for the options rustix does not wrap, and the control messages of sendmsg and recvmsg.
+libc = "0.2.191"
+
+[lints]
+workspace = true
