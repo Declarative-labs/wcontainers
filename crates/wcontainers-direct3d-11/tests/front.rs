@@ -1832,7 +1832,12 @@ fn format_support_reports_the_uses_the_front_serves_by_its_own_routes_at_their_l
     let gathered = |d: &Dev| d.format_support(dxgi::R32_FLOAT).support1 & support::SHADER_GATHER;
     assert_eq!(gathered(&l10), 0);
     assert_ne!(gathered(&l10_1), 0);
-    assert_eq!(l9.format_support(dxgi::R8G8B8A8_UNORM).support2, 0);
+    // 10Level9 devices report sharing alone in the second word, of the formats the RTX 3080 does.
+    assert_eq!(
+        l9.format_support(dxgi::R8G8B8A8_UNORM).support2,
+        SUPPORT2_SHAREABLE
+    );
+    assert_eq!(l9.format_support(dxgi::R8G8B8A8_UINT).support2, 0);
     for f in 0..=dxgi::B4G4R4A4_UNORM {
         let s = l9.format_support(f).support1;
         let off = support::BUFFER | support::SO_BUFFER | support::SHADER_SAMPLE_COMPARISON;
@@ -1881,7 +1886,7 @@ fn format_support_follows_the_feature_level_for_display_and_signed_normalised_bl
 }
 
 #[test]
-fn texture_sharing_is_from_10_0_and_of_exactly_one_kind() {
+fn texture_sharing_is_of_exactly_one_kind_and_below_10_0_of_the_formats_10level9_shares() {
     let made = |l: u32, misc: u32| {
         let mut dev = Device::new(Recorder::new(None), &[l]).unwrap();
         let mut d = tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE);
@@ -1890,6 +1895,15 @@ fn texture_sharing_is_from_10_0_and_of_exactly_one_kind() {
     };
     let invalid = |r: Result<(), Error>| matches!(r, Err(Error::InvalidArg(_)));
     assert!(invalid(made(level::L9_3, MISC_SHARED)));
+    let mut l9 = Device::new(Recorder::new(None), &[level::L9_3]).unwrap();
+    let mut bgra = tex2d(
+        4,
+        4,
+        wcontainers_directx_graphics_infrastructure::dxgi::B8G8R8A8_UNORM,
+        bind::SHADER_RESOURCE,
+    );
+    bgra.misc_flags = MISC_SHARED;
+    assert!(l9.create_texture(&bgra, &[]).is_ok());
     assert!(made(level::L10_0, MISC_SHARED).is_ok());
     assert!(invalid(made(level::L11_0, MISC_SHARED_NTHANDLE)));
     assert!(invalid(made(
@@ -1897,6 +1911,59 @@ fn texture_sharing_is_from_10_0_and_of_exactly_one_kind() {
         MISC_SHARED | MISC_SHARED_KEYEDMUTEX
     )));
     assert!(made(level::L11_0, 0).is_ok());
+}
+
+#[test]
+fn devices_below_10_0_refuse_what_the_10level9_tables_do_not_give() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    let at = |l: u32| Device::new(Recorder::new(None), &[l]).unwrap();
+    let invalid = |r: Result<(), Error>| matches!(r, Err(Error::InvalidArg(_)));
+    for level in [level::L9_1, level::L9_3] {
+        let mut dev = at(level);
+        let mut made = |d: &TextureDesc| dev.create_texture(d, &[]).map(|_| ());
+        let target = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+        assert!(invalid(made(&tex2d(4, 4, dxgi::R8G8B8A8_UINT, target))));
+        assert!(invalid(made(&tex2d(
+            4,
+            4,
+            dxgi::BC4_UNORM,
+            bind::SHADER_RESOURCE
+        ))));
+        assert!(invalid(made(&tex2d(
+            4,
+            4,
+            dxgi::R8G8B8A8_TYPELESS,
+            bind::SHADER_RESOURCE
+        ))));
+        assert!(invalid(made(&TextureDesc {
+            dimension: TexDim::D1,
+            height: 1,
+            ..tex2d(4, 1, RGBA8, bind::SHADER_RESOURCE)
+        })));
+        assert!(invalid(made(&TextureDesc {
+            sample_count: 4,
+            ..tex2d(4, 4, RGBA8, target)
+        })));
+        assert!(made(&tex2d(4, 4, dxgi::BC1_UNORM, bind::SHADER_RESOURCE)).is_ok());
+        let viewed = BufferDesc {
+            byte_width: 64,
+            usage: usage::DEFAULT,
+            bind_flags: bind::SHADER_RESOURCE,
+            ..Default::default()
+        };
+        assert!(matches!(
+            dev.create_buffer(&viewed, None),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    // R32_FLOAT is drawn into from 9_2.
+    let float_target = tex2d(4, 4, dxgi::R32_FLOAT, bind::RENDER_TARGET);
+    assert!(invalid(
+        at(level::L9_1)
+            .create_texture(&float_target, &[])
+            .map(|_| ())
+    ));
+    assert!(at(level::L9_2).create_texture(&float_target, &[]).is_ok());
 }
 
 #[test]

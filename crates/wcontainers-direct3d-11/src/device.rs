@@ -415,9 +415,24 @@ impl<B: Backend> Device<B> {
     }
 
     /// What `CheckFormatSupport` and `D3D11_FEATURE_FORMAT_SUPPORT2` answer for DXGI format
-    /// `dxgi`: the infrastructure crate's answer from the back end's uses, with what this front
-    /// serves by its own routes and what its feature level allows.
+    /// `dxgi`: what is served at the feature level, and below 10_0 only what the 10Level9 tables
+    /// give.
     pub fn format_support(&self, dxgi: u32) -> FormatSupport {
+        let mut s = self.served_format_support(dxgi);
+        if self.level < level::L10_0 {
+            s.support1 &= format::level9_support(dxgi, self.level);
+            s.support2 = if format::level9_shareable(dxgi) {
+                crate::desc::SUPPORT2_SHAREABLE
+            } else {
+                0
+            };
+        }
+        s
+    }
+
+    /// The infrastructure crate's answer from the back end's uses, with what this front serves
+    /// by its own routes and what its feature level allows.
+    fn served_format_support(&self, dxgi: u32) -> FormatSupport {
         use crate::desc::support::*;
         use crate::desc::support2::*;
         let caps = self.backend.caps();
@@ -557,8 +572,6 @@ impl<B: Backend> Device<B> {
                 s.support1 &= !bit;
             }
         };
-        remove(!format::level_vertex_buffer(dxgi, level), IA_VERTEX_BUFFER);
-        remove(!format::level_index_buffer(dxgi, level), IA_INDEX_BUFFER);
         remove(
             level < level::L10_0,
             BUFFER | SO_BUFFER | SHADER_SAMPLE_COMPARISON,
@@ -582,8 +595,7 @@ impl<B: Backend> Device<B> {
             TYPED_UNORDERED_ACCESS_VIEW | SHADER_GATHER_COMPARISON,
         );
         remove(
-            level < level::L10_1 && texture.is_some_and(format::signed_normalized)
-                || !format::level_blended(dxgi, level),
+            level < level::L10_1 && texture.is_some_and(format::signed_normalized),
             BLENDABLE,
         );
         remove(!format::displayed(dxgi, level), DISPLAY);
@@ -986,6 +998,13 @@ impl<B: Backend> Device<B> {
 
     pub fn create_buffer(&mut self, d: &BufferDesc, init: Option<&[u8]>) -> Result<Rc<Buffer<B>>> {
         check_buffer(d, init.is_some())?;
+        // 10Level9 buffers are vertex, index and constant buffers alone.
+        let viewed = bind::SHADER_RESOURCE | bind::UNORDERED_ACCESS | bind::STREAM_OUTPUT;
+        if self.level < level::L10_0 && d.bind_flags & viewed != 0 {
+            return Err(Error::InvalidArg(
+                "a buffer viewed or streamed into below feature level 10_0",
+            ));
+        }
         if d.misc_flags & (MISC_GENERATE_MIPS | MISC_TEXTURECUBE | MISC_GDI_COMPATIBLE) != 0 {
             return Err(Error::InvalidArg("a texture's misc flags on a buffer"));
         }
@@ -1054,6 +1073,50 @@ impl<B: Backend> Device<B> {
             texels: RefCell::new(Vec::new()),
             filled: RefCell::new(None),
         }))
+    }
+
+    /// What a device below 10_0 refuses of a texture's description: each dimension, binding,
+    /// mip and sample count needs its ability in the 10Level9 tables, and multisampled textures
+    /// are never read by shaders there.
+    fn check_level9_texture(&self, d: &TextureDesc, mips: u32, cube: bool) -> Result<()> {
+        use crate::desc::support::*;
+        let mut needs = match d.dimension {
+            TexDim::D1 => TEXTURE1D,
+            TexDim::D2 if cube => TEXTURECUBE,
+            TexDim::D2 => TEXTURE2D,
+            TexDim::D3 => TEXTURE3D,
+        };
+        for (flag, ability) in [
+            (bind::SHADER_RESOURCE, SHADER_LOAD),
+            (bind::RENDER_TARGET, RENDER_TARGET),
+            (bind::DEPTH_STENCIL, DEPTH_STENCIL),
+            (bind::UNORDERED_ACCESS, TYPED_UNORDERED_ACCESS_VIEW),
+        ] {
+            if d.bind_flags & flag != 0 {
+                needs |= ability;
+            }
+        }
+        if d.misc_flags & MISC_GENERATE_MIPS != 0 {
+            needs |= MIP_AUTOGEN;
+        }
+        if mips > 1 {
+            needs |= MIP;
+        }
+        if d.sample_count > 1 {
+            needs |= MULTISAMPLE_RENDERTARGET;
+            if d.bind_flags & bind::SHADER_RESOURCE != 0 {
+                needs |= MULTISAMPLE_LOAD;
+            }
+        }
+        if matches!(d.usage, usage::STAGING | usage::DYNAMIC) {
+            needs |= CPU_LOCKABLE;
+        }
+        if needs & !format::level9_support(d.format, self.level) != 0 {
+            return Err(Error::InvalidArg(
+                "a use of the format the 10Level9 tables do not give the feature level",
+            ));
+        }
+        Ok(())
     }
 
     /// The checks of `CreateTexture1D`, `2D` and `3D` before their initial data is read: the format
@@ -1143,16 +1206,20 @@ impl<B: Backend> Device<B> {
                 "the format does not support the bind flags",
             ));
         }
-        // Sharing is from 10_0, of exactly one kind: shared or with a keyed mutex, either through an
-        // NT handle or not.
+        // Sharing is of exactly one kind: shared or with a keyed mutex, either through an NT handle
+        // or not; below 10_0 of the formats the 10Level9 runtime shares.
         let sharing = d.misc_flags & (MISC_SHARED | MISC_SHARED_KEYEDMUTEX);
         if (sharing != 0 || d.misc_flags & MISC_SHARED_NTHANDLE != 0)
-            && (self.level < level::L10_0 || !sharing.is_power_of_two())
+            && (self.level < level::L10_0 && !format::level9_shared(d.format)
+                || !sharing.is_power_of_two())
         {
             return Err(Error::InvalidArg(SHARING_INVALID));
         }
         if self.level < level::L11_0 && format::from_11_0(d.format) {
             return Err(Error::InvalidArg("a format of a later feature level"));
+        }
+        if self.level < level::L10_0 {
+            self.check_level9_texture(d, mips, cube)?;
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         let format = self.held_as_integer(format).unwrap_or(format);
@@ -1839,6 +1906,7 @@ impl<B: Backend> Device<B> {
             window,
             buffer: None,
             stencil_aspect: RefCell::new(None),
+            compared: RefCell::new(None),
             layers: RefCell::new(Vec::new()),
         }))
     }
@@ -2258,6 +2326,7 @@ impl<B: Backend> Device<B> {
             shader::convert(bytecode, stage, &mut typed, layered, texture_info)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
+        let depth_textures = shader::depth_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let mut module = converted.modules.pop().expect("one module");
@@ -2365,6 +2434,7 @@ impl<B: Backend> Device<B> {
             bytecode: bytecode.to_vec(),
             samplers,
             textures,
+            depth_textures,
             mirror_filtered,
             reads_samples,
             helpers,
@@ -2474,6 +2544,7 @@ impl<B: Backend> Device<B> {
             bytecode: bytecode.to_vec(),
             samplers: shader::sampler_slots(converted),
             textures: shader::texture_slots(converted),
+            depth_textures: shader::depth_slots(converted),
             mirror_filtered: shader::mirror_filtered_slots(converted),
             reads_samples: false,
             helpers: Rc::new(shader::Helpers::of(converted)),

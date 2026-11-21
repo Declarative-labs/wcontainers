@@ -36,6 +36,9 @@ fn main() -> windows::core::Result<()> {
     let level = match std::env::args().nth(2).as_deref() {
         Some("10_1") => D3D_FEATURE_LEVEL_10_1,
         Some("10_0") => D3D_FEATURE_LEVEL_10_0,
+        Some("9_3") => D3D_FEATURE_LEVEL_9_3,
+        Some("9_2") => D3D_FEATURE_LEVEL_9_2,
+        Some("9_1") => D3D_FEATURE_LEVEL_9_1,
         _ => D3D_FEATURE_LEVEL_11_0,
     };
     let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
@@ -1362,6 +1365,552 @@ fn main() -> windows::core::Result<()> {
             print("depth", &depth, 4);
             // Filtering rounds within Direct3D's tolerance: compared within one unit.
             print("filtered", &target, 4);
+        }
+        "level9_make" => {
+            // Creations a device of the level takes or refuses, by the 10Level9 tables.
+            let rt = D3D11_BIND_FLAG(D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0);
+            let srv = D3D11_BIND_SHADER_RESOURCE;
+            let depth_read =
+                D3D11_BIND_FLAG(D3D11_BIND_DEPTH_STENCIL.0 | D3D11_BIND_SHADER_RESOURCE.0);
+            let two_d = |format, bind: D3D11_BIND_FLAG, samples, misc: u32, layers, levels| {
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: 4,
+                    Height: 4,
+                    MipLevels: levels,
+                    ArraySize: layers,
+                    Format: format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: samples,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: bind.0 as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: misc,
+                };
+                let mut out = None;
+                code(unsafe { device.CreateTexture2D(&desc, None, Some(&mut out)) })
+            };
+            let shared = D3D11_RESOURCE_MISC_SHARED.0 as u32;
+            let keyed = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32;
+            let nt = D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 as u32;
+            let cube = D3D11_RESOURCE_MISC_TEXTURECUBE.0 as u32;
+            let mips = D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32;
+            for (what, format, bind, samples, misc, layers, levels) in [
+                (
+                    "rgba32 uint target",
+                    DXGI_FORMAT_R32G32B32A32_UINT,
+                    rt,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 uint target",
+                    DXGI_FORMAT_R8G8B8A8_UINT,
+                    rt,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                ("r32 uint target", DXGI_FORMAT_R32_UINT, rt, 1, 0, 1, 1),
+                ("bc4 sampled", DXGI_FORMAT_BC4_UNORM, srv, 1, 0, 1, 1),
+                ("bc5 sampled", DXGI_FORMAT_BC5_UNORM, srv, 1, 0, 1, 1),
+                ("bc1 sampled", DXGI_FORMAT_BC1_UNORM, srv, 1, 0, 1, 1),
+                (
+                    "rgba8 typeless sampled",
+                    DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                    srv,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "rg16 unorm target",
+                    DXGI_FORMAT_R16G16_UNORM,
+                    rt,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                ("r32 float target", DXGI_FORMAT_R32_FLOAT, rt, 1, 0, 1, 1),
+                (
+                    "rgba16 float target",
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    rt,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                ("r32 float sampled", DXGI_FORMAT_R32_FLOAT, srv, 1, 0, 1, 1),
+                ("a8 target", DXGI_FORMAT_A8_UNORM, rt, 1, 0, 1, 1),
+                (
+                    "b5g5r5a1 sampled",
+                    DXGI_FORMAT_B5G5R5A1_UNORM,
+                    srv,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "xr held",
+                    DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
+                    D3D11_BIND_FLAG(0),
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "rgb10a2 sampled",
+                    DXGI_FORMAT_R10G10B10A2_UNORM,
+                    srv,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 four samples read",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    rt,
+                    4,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 four samples",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_RENDER_TARGET,
+                    4,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "d24s8 read",
+                    DXGI_FORMAT_D24_UNORM_S8_UINT,
+                    depth_read,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    "d24s8",
+                    DXGI_FORMAT_D24_UNORM_S8_UINT,
+                    D3D11_BIND_DEPTH_STENCIL,
+                    1,
+                    0,
+                    1,
+                    1,
+                ),
+                ("rgba8 cube", DXGI_FORMAT_R8G8B8A8_UNORM, srv, 1, cube, 6, 1),
+                ("rgba8 array", DXGI_FORMAT_R8G8B8A8_UNORM, srv, 1, 0, 2, 1),
+                (
+                    "rgba8 mips generated",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    rt,
+                    1,
+                    mips,
+                    1,
+                    0,
+                ),
+                (
+                    "rgba8 shared",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    rt,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 keyed",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    rt,
+                    1,
+                    keyed,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 nt keyed",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    rt,
+                    1,
+                    keyed | nt,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba16 float shared",
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    srv,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 shared sampled",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    srv,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 shared drawn",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_RENDER_TARGET,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba8 shared unbound",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_FLAG(0),
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "bgra8 shared",
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    rt,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "bgra8 shared sampled",
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    srv,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "bgra8 keyed sampled",
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    srv,
+                    1,
+                    keyed,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba16 float shared target",
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    rt,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                (
+                    "rgba16 float keyed",
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    srv,
+                    1,
+                    keyed,
+                    1,
+                    1,
+                ),
+                (
+                    "r32 float shared",
+                    DXGI_FORMAT_R32_FLOAT,
+                    srv,
+                    1,
+                    shared,
+                    1,
+                    1,
+                ),
+                ("bc1 shared", DXGI_FORMAT_BC1_UNORM, srv, 1, shared, 1, 1),
+                (
+                    "rgba8 shared mips",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    srv,
+                    1,
+                    shared,
+                    1,
+                    0,
+                ),
+            ] {
+                println!(
+                    "{what}: {:#010x}",
+                    two_d(format, bind, samples, misc, layers, levels)
+                );
+            }
+            let mut out = None;
+            let one_d = D3D11_TEXTURE1D_DESC {
+                Width: 4,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: srv.0 as u32,
+                ..Default::default()
+            };
+            println!(
+                "rgba8 1d: {:#010x}",
+                code(unsafe { device.CreateTexture1D(&one_d, None, Some(&mut out)) })
+            );
+            let mut out = None;
+            let three_d = D3D11_TEXTURE3D_DESC {
+                Width: 4,
+                Height: 4,
+                Depth: 4,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: srv.0 as u32,
+                ..Default::default()
+            };
+            println!(
+                "rgba8 3d: {:#010x}",
+                code(unsafe { device.CreateTexture3D(&three_d, None, Some(&mut out)) })
+            );
+            for (what, bind) in [("sampled", srv), ("vertex", D3D11_BIND_VERTEX_BUFFER)] {
+                let desc = D3D11_BUFFER_DESC {
+                    ByteWidth: 64,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: bind.0 as u32,
+                    ..Default::default()
+                };
+                let mut out = None;
+                println!(
+                    "{what} buffer: {:#010x}",
+                    code(unsafe { device.CreateBuffer(&desc, None, Some(&mut out)) })
+                );
+            }
+        }
+        "depth_clears" => {
+            // ClearDepthStencilView and ClearView of depth views with values outside 0 to 1:
+            // the first drops such calls whole; the second limits normalised depth to 0 to 1.
+            let context1: ID3D11DeviceContext1 = windows::core::Interface::cast(&context)?;
+            let values = [1.5f32, -0.25, f32::NAN, f32::INFINITY, -0.0, 0.3];
+            let formats = [
+                ("d16", DXGI_FORMAT_D16_UNORM, 2),
+                ("d24s8", DXGI_FORMAT_D24_UNORM_S8_UINT, 4),
+                ("d32", DXGI_FORMAT_D32_FLOAT, 4),
+                ("d32s8", DXGI_FORMAT_D32_FLOAT_S8X24_UINT, 8),
+            ];
+            let rects = [windows::Win32::Foundation::RECT {
+                left: 1,
+                top: 1,
+                right: 3,
+                bottom: 2,
+            }];
+            for (name, format, bytes) in formats {
+                for (i, &value) in values.iter().enumerate() {
+                    for how in ["cleared", "viewed", "viewed rects"] {
+                        // ClearView of float depth outside 0 to 1 is refused by ours (the gap list).
+                        let float = matches!(name, "d32" | "d32s8");
+                        if how != "cleared" && float && !(0.0..=1.0).contains(&value) {
+                            continue;
+                        }
+                        let t = make(
+                            &Tex {
+                                w: 4,
+                                h: 2,
+                                format,
+                                samples: 1,
+                                bind: D3D11_BIND_DEPTH_STENCIL,
+                            },
+                            None,
+                        )?;
+                        let mut dsv = None;
+                        unsafe {
+                            device.CreateDepthStencilView(&t, None, Some(&mut dsv))?;
+                            let dsv = dsv.unwrap();
+                            let both = D3D11_CLEAR_DEPTH.0 | D3D11_CLEAR_STENCIL.0;
+                            context.ClearDepthStencilView(&dsv, both, 0.5, 0x5a);
+                            let view: ID3D11View = windows::core::Interface::cast(&dsv)?;
+                            match how {
+                                "cleared" => context.ClearDepthStencilView(&dsv, both, value, 0x33),
+                                "viewed" => {
+                                    context1.ClearView(&view, &[value, 0.0, 0.0, 0.0], None)
+                                }
+                                _ => {
+                                    context1.ClearView(&view, &[value, 0.0, 0.0, 0.0], Some(&rects))
+                                }
+                            }
+                        }
+                        print(&format!("{name} value {i} {how}"), &t, bytes);
+                    }
+                }
+            }
+            println!(
+                "removed {:#010x}",
+                code(unsafe { device.GetDeviceRemovedReason() })
+            );
+        }
+        "compare_colour" => {
+            // Comparisons and gathers with comparison through views of colour textures of the two
+            // colour formats Direct3D compares, in a compute and a pixel shader, before and after
+            // the texels change.
+            let shader = cs("Texture2D<float> t : register(t0);
+                SamplerComparisonState point_cmp : register(s0);
+                SamplerComparisonState linear_cmp : register(s1);
+                RWTexture2D<uint4> exact : register(u0);
+                RWTexture2D<uint4> gathered : register(u1);
+                RWTexture2D<uint4> filtered : register(u2);
+                [numthreads(4, 4, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float2 centre = (float2(id.xy) + 0.5) / 4.0;
+                    float v = t.Load(int3(id.xy, 0));
+                    float step = ((id.x + id.y) % 2 == 0) ? 1.0 / 128.0 : -1.0 / 128.0;
+                    float r = v + step;
+                    exact[id.xy] = asuint(float4(t.SampleCmpLevelZero(point_cmp, centre, r),
+                        t.SampleCmpLevelZero(point_cmp, centre, r, int2(1, 0)),
+                        t.SampleCmpLevelZero(point_cmp, centre, v), r));
+                    gathered[id.xy] = asuint(t.GatherCmp(point_cmp, float2(id.xy) / 4.0, r));
+                    float lin = t.SampleCmpLevelZero(linear_cmp, centre + 0.07, 0.5);
+                    filtered[id.xy] = uint4(lin * 255.0 + 0.5, 0, 0, 0);
+                }");
+            let lit = ps("Texture2D<float> t : register(t0);
+                SamplerComparisonState point_cmp : register(s0);
+                float4 main(float4 pos : SV_Position) : SV_Target {
+                    float2 uv = pos.xy / 4.0;
+                    float v = t.Load(int3(pos.xy, 0));
+                    return float4(t.SampleCmpLevelZero(point_cmp, uv, v - 1.0 / 128.0),
+                        t.SampleCmpLevelZero(point_cmp, uv, v + 1.0 / 128.0),
+                        t.SampleCmp(point_cmp, uv, 0.5), 1);
+                }");
+            let sampler = |filter| {
+                let desc = D3D11_SAMPLER_DESC {
+                    Filter: filter,
+                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    ComparisonFunc: D3D11_COMPARISON_LESS_EQUAL,
+                    MaxLOD: f32::MAX,
+                    ..Default::default()
+                };
+                let mut s = None;
+                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
+                s
+            };
+            let samplers = [
+                sampler(D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT),
+                sampler(D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT),
+            ];
+            let out = |format| {
+                make(
+                    &Tex {
+                        w: 4,
+                        h: 4,
+                        format,
+                        samples: 1,
+                        bind: D3D11_BIND_UNORDERED_ACCESS,
+                    },
+                    None,
+                )
+            };
+            // Texel i holds (i + 1) / 17 in R32_FLOAT, and code 4000 * (i + 1) in R16_UNORM.
+            let floats: Vec<u8> = (0..16u32)
+                .flat_map(|i| ((i + 1) as f32 / 17.0).to_le_bytes())
+                .collect();
+            let codes: Vec<u8> = (0..16u16)
+                .flat_map(|i| (4000 * (i + 1)).to_le_bytes())
+                .collect();
+            for (name, format, texels, bytes) in [
+                ("r32_float", DXGI_FORMAT_R32_FLOAT, &floats, 4),
+                ("r16_unorm", DXGI_FORMAT_R16_UNORM, &codes, 2),
+            ] {
+                let t = make(
+                    &Tex {
+                        w: 4,
+                        h: 4,
+                        format,
+                        samples: 1,
+                        bind: D3D11_BIND_SHADER_RESOURCE,
+                    },
+                    Some((texels, 4 * bytes)),
+                )?;
+                let view = srv(&t, DXGI_FORMAT_UNKNOWN);
+                let (exact, gathered, filtered) = (
+                    out(DXGI_FORMAT_R32G32B32A32_UINT)?,
+                    out(DXGI_FORMAT_R32G32B32A32_UINT)?,
+                    out(DXGI_FORMAT_R32G32B32A32_UINT)?,
+                );
+                let target = make(
+                    &Tex {
+                        w: 4,
+                        h: 4,
+                        format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                        samples: 1,
+                        bind: D3D11_BIND_RENDER_TARGET,
+                    },
+                    None,
+                )?;
+                let rt = rtv(&target);
+                for round in 0..2 {
+                    if round == 1 {
+                        // The texels reversed: each use reads the texture as it is now.
+                        let reversed: Vec<u8> = texels
+                            .chunks(bytes as usize)
+                            .rev()
+                            .flatten()
+                            .copied()
+                            .collect();
+                        unsafe {
+                            context.UpdateSubresource(
+                                &t,
+                                0,
+                                None,
+                                reversed.as_ptr().cast(),
+                                4 * bytes,
+                                0,
+                            )
+                        };
+                    }
+                    unsafe {
+                        context.CSSetShader(shader.as_ref(), None);
+                        context.CSSetShaderResources(0, Some(std::slice::from_ref(&view)));
+                        context.CSSetSamplers(0, Some(&samplers));
+                        let views = [uav(&exact), uav(&gathered), uav(&filtered)];
+                        context.CSSetUnorderedAccessViews(0, 3, Some(views.as_ptr()), None);
+                        context.Dispatch(1, 1, 1);
+                        context.CSSetUnorderedAccessViews(
+                            0,
+                            3,
+                            Some([None, None, None].as_ptr()),
+                            None,
+                        );
+                        context.VSSetShader(vs(FULL).as_ref(), None);
+                        context.PSSetShader(lit.as_ref(), None);
+                        context.PSSetShaderResources(0, Some(std::slice::from_ref(&view)));
+                        context.PSSetSamplers(0, Some(&samplers));
+                        context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                        viewport(4, 4);
+                        context.Draw(3, 0);
+                    }
+                    print(&format!("{name} {round} compared"), &exact, 16);
+                    print(&format!("{name} {round} gathered"), &gathered, 16);
+                    print(&format!("filtered {name} {round}"), &filtered, 16);
+                    print(&format!("{name} {round} drawn"), &target, 4);
+                }
+                println!(
+                    "{name} removed {:#010x}",
+                    code(unsafe { device.GetDeviceRemovedReason() })
+                );
+            }
         }
         "deep" => {
             let target = make(

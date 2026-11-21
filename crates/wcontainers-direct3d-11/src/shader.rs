@@ -839,6 +839,36 @@ pub fn mirror_filtered_slots(c: &Converted) -> u16 {
     slots
 }
 
+/// The texture slots a converted program reads as single-sampled depth textures (those it compares
+/// through), one bit each.
+pub fn depth_slots(c: &Converted) -> u128 {
+    let mut slots = 0;
+    for m in &c.modules {
+        for (_, g) in m.module.global_variables.iter() {
+            let naga::TypeInner::Image {
+                class: naga::ImageClass::Depth { multi: false },
+                ..
+            } = m.module.types[g.ty].inner
+            else {
+                continue;
+            };
+            let Some(b) = &g.binding else {
+                continue;
+            };
+            if let Some(r) = c.reflection.bindings.iter().find(|r| {
+                r.kind == SlotKind::Texture
+                    && r.added.is_none()
+                    && r.set == b.group
+                    && r.binding == b.binding
+            }) && r.register < u128::BITS
+            {
+                slots |= 1 << r.register;
+            }
+        }
+    }
+    slots
+}
+
 /// The texture slots a converted program reads, one bit each.
 pub fn texture_slots(c: &Converted) -> u128 {
     c.reflection

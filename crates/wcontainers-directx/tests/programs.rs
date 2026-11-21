@@ -349,7 +349,7 @@ const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
 };
 
 /// Formats whose support differs from the RTX 3080's at feature level `level` (`"11_0"`,
-/// `"10_1"` or `"10_0"`) outside the absent abilities: each with the bits of both words that
+/// `"10_1"`, `"10_0"` or one of 9_x) outside the absent abilities: each with the bits of both words that
 /// differ and why (the status file's Gap list names each). Below 11_0 no format claims storage
 /// views, and only formats of a red channel alone claim gathers (at 10_1), so those differences
 /// are 11_0's alone.
@@ -359,6 +359,15 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
         | D3D11_FORMAT_SUPPORT_BLENDABLE.0
         | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN.0;
     let at_11_0 = level == "11_0";
+    // Below 10_0 the 10Level9 tables give none of the other formats' named abilities.
+    if level.starts_with("9_") {
+        return vec![(
+            DXGI_FORMAT_B5G6R5_UNORM,
+            TARGET,
+            0,
+            "B5G6R5 targets: the back end has no such target",
+        )];
+    }
     let gather = if at_11_0 {
         D3D11_FORMAT_SUPPORT_SHADER_GATHER.0
     } else {
@@ -432,6 +441,17 @@ fn format_support_at_level_10_1_as_direct3d_reports_it_but_the_named_shortfalls(
 #[test]
 fn format_support_at_level_10_0_as_direct3d_reports_it_but_the_named_shortfalls() {
     format_support_compared("10_0", "ours", &[], &[]);
+}
+
+/// The same on devices of feature levels 9_1, 9_2 and 9_3, which report only what the 10Level9
+/// tables give; and what such devices make and refuse, line by line.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn format_support_and_creations_below_10_0_as_direct3d_reports_them() {
+    for level in ["9_1", "9_2", "9_3"] {
+        format_support_compared(level, "ours", &[], &[]);
+        case_args(&["level9_make", level], "ours", &[]);
+    }
 }
 
 /// The same where the back end lacks the 16-bit normalised formats (a browser without
@@ -538,6 +558,27 @@ fn format_support_compared(
 #[test]
 fn clear_view_of_rectangles_and_storage_as_direct3d_does() {
     case("clear_view");
+}
+
+/// `ClearDepthStencilView` with a depth outside 0 to 1 (NaN and the infinities among them) is
+/// dropped whole, as Direct3D drops it; `ClearView` of normalised depth limits the value to 0 to 1.
+#[test]
+fn depth_clears_outside_the_range_as_direct3d_does() {
+    case("depth_clears");
+}
+
+/// Comparisons and gathers with comparison through views of `R32_FLOAT` and `R16_UNORM` colour
+/// textures (Microsoft's 11_0 table requires both), read through depth copies of their texels,
+/// as real Direct3D reads them; and the same with 16-bit normalised formats held as their integer
+/// twins.
+#[test]
+fn comparisons_through_colour_views_as_direct3d_does() {
+    case("compare_colour");
+    case_env(
+        "compare_colour",
+        "no16",
+        &[(FEATURES_OFF, "wgpu-texture-format-16-bit-norm")],
+    );
 }
 
 /// The same without `texture-formats-tier1` (natively, the adapter's own format features): a
