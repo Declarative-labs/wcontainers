@@ -1,15 +1,24 @@
 # Plan: the host implementation of crates/udp-sockets
 
 ## What it is
-- Crate `crates/udp-sockets/implementation/linux-host`, package `wcontainers-udp-sockets-linux-host`, type
-  `LinuxHostUdpSockets`. It implements `UdpSockets` (with `Configurable<_, UdpSocketSetting>` and
+- Crate `crates/udp-sockets/implementation/host`, package `wcontainers-udp-sockets-host`, type
+  `HostUdpSockets`, socket `HostUdpSocket`. It implements `UdpSockets` (with `Configurable<_, UdpSocketSetting>` and
   `NegativeRouteAdvice`) with real UDP and UDP-Lite sockets of the Linux machine it runs on. Its body is
   `cfg(target_os = "linux")`, so the workspace still builds on the Mac.
 - A socket is its own type: the non-blocking `OwnedFd`, its family and protocol, and the host state the
   implementation keeps for it (the per-send options last written, the peer, the drop counter last read),
   ordered by descriptor. Nothing waits: what would wait answers `HostError::WouldBlock`.
-- Built on rustix, linux-raw-sys and libc (MIT or Apache-2.0), as the TCP track's plan and the shared crate's
-  manifest chose; etherparse (MIT or Apache-2.0, already the interface's) writes the headers receive owes.
+- Built on socket2 for the calls and settings it covers (create, bind, connect, local address, sendmsg, buffer
+  sizes, sharing, multicast loopback and all-groups, TOS, traffic class, mark, priority, broadcast, freebind,
+  transparency, IPv6 only), and on rustix, linux-raw-sys and libc on the same descriptor for the rest (MIT or
+  Apache-2.0); polling (Apache-2.0 or MIT) for the host's readiness; etherparse (MIT or Apache-2.0, already the
+  interface's) writes the headers receive owes.
+- Waiting: the value owns a `Readiness` of the shared crate, one epoll set and one thread that waits on it. Each
+  socket is registered at open, edge-triggered for every event, and owns its descriptor through the `Watched`
+  it gets back, which deletes the registration before the descriptor closes. A waiting call registers itself in
+  its socket's waiter list (whose room is kept, so a wait allocates nothing once it has grown), then asks the
+  socket with a `poll` of no timeout; the thread, on an event, asks the socket the same way and wakes each waiter
+  whose events have come, taking its waker so each poll is woken once. Dropping a call removes it from the list.
 - Work on the shared types of crates/internet-protocol goes into the one shared crate
   `crates/internet-protocol/implementation/linux-socket-options`, which the TCP track created: its errno
   mapping, raw option call, `IpSocketSetting` and `PortSetting` onto options, owner and bind. This track adds
@@ -22,8 +31,8 @@
   `StandaloneUdpSockets` trait.
 
 ## Methods on the host
-- open: `socket(AF_INET or AF_INET6, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_UDP or
-  IPPROTO_UDPLITE)` under the owner as the thread's filesystem user; then every receive control message on
+- open: socket2's `Socket::new(AF_INET or AF_INET6, SOCK_DGRAM | SOCK_NONBLOCK, IPPROTO_UDP or
+  IPPROTO_UDPLITE)` (socket2 adds `SOCK_CLOEXEC`) under the owner as the thread's filesystem user; then every receive control message on
   (packet information, original destination, TTL or hop limit, TOS or traffic class, IP options, IPv6
   extension headers and flow information, fragment size, mark, priority, drop counter), `IP_RECVERR` or
   `IPV6_RECVERR`, `SO_TIMESTAMPING` with `OPT_ID`, `OPT_CMSG`, `OPT_TX_SWHW` and `OPT_RX_FILTER`, and IPv6
@@ -42,7 +51,7 @@
   broadcast, transparency, flow label, source preferences, checksum omission and UDP-Lite coverage, transmit
   time mode and errors) written as socket options only when they differ from what the socket last had.
   `EMSGSIZE` with a local error queued is `MessageTooLong` with that error's MTU.
-- receive: `recvmsg(MSG_ERRQUEUE)` first while a send's reports may wait, else after a normal receive that fails
+- receive (libc's `recvmsg`, as socket2's gives no `MSG_CTRUNC`): `recvmsg(MSG_ERRQUEUE)` first while a send's reports may wait, else after a normal receive that fails
   (an ICMP error becomes the ICMP packet, IP header first, quoting the
   datagram's headers; a timestamp becomes a `TransmitReport`; a local error was already the send's answer),
   else `recvmsg(MSG_TRUNC)`; the payload is moved up and the IP and UDP headers written before it from the
@@ -50,7 +59,9 @@
 - count_unsent_bytes: `ioctl(SIOCOUTQ)`. read_incoming_processor: `SO_INCOMING_CPU`, -1 is none.
 - give_negative_route_advice: Linux has no call for it; a connected socket is connected again to its peer,
   which drops its cached route and takes a new flow hash; an unconnected socket caches no route.
-- close: the descriptor closes.
+- wait_for_events: `Watched::wait_for_events`, the events of `poll` (asked for and always reported), with an
+  error held while entries a send read off the error queue wait for receives.
+- close: the registration is deleted, then the descriptor closes.
 - Settings: `Ip` and `Port` through the shared crate; `ReceiveCoalescing` is `UDP_GRO`,
   `ZeroChecksumReceipt` is `UDP_NO_CHECK6_RX`, `MinimumChecksumCoverage` is `UDPLITE_RECV_CSCOV`
   (none is 8, the UDP header, which takes every valid coverage).
@@ -71,5 +82,9 @@
   drops after a small receive buffer, address and port sharing, nonlocal binding, multicast and anycast
   membership, the incoming processor, the unsent byte count, negative route advice and close.
 - Each setting is also set twice and must answer and behave as set once.
+- Waits are polled by hand with a waker that counts its wakes (no executor): a wait for data is pending and not
+  woken until a datagram arrives, then woken once and finished; a wait for writing finishes at its first poll;
+  a dropped wait gives back its waker and is not woken; 35 waits at once on 32 sockets each wake once; an ICMP
+  error ends a wait for data with the error condition, also when a too-long send read it off the host first.
 - The implementation's own test runs `tests!` with each test in a network namespace of its own, all made before
   any test opens a socket, as root on the ARM64 machine: one command, `conformance.sh` in the crate.
