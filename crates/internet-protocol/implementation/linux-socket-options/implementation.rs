@@ -1,6 +1,7 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 #![cfg(target_os = "linux")]
 
+pub mod datagram;
 
 use std::collections::BTreeMap;
 use std::ffi::{c_int, c_void};
