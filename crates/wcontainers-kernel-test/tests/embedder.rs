@@ -383,7 +383,8 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         assert_eq!(bytes, PIECE);
         assert!(distance < PIECE, "{distance}");
         assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
-        // With no ceiling below the address space's end, nothing is announced.
+        // With no ceiling given, the stand-in's own end is the ceiling below the container's
+        // address space: it is reached later, and announced the same way.
         let seen_without = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder_below(
             &["outgrow", &piece],
@@ -391,7 +392,9 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
             seed,
             None,
         );
-        assert!(seen_without.lock().unwrap().is_empty());
+        let seen_without = seen_without.lock().unwrap();
+        assert_eq!(seen_without.len(), 1, "{seen_without:?}");
+        assert_eq!(seen_without[0].0, PIECE);
         let more: u64 = stdout(&run)
             .split_whitespace()
             .nth(1)
