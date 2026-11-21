@@ -50,6 +50,8 @@ pub fn end_if_lost<B: Backend>(backend: &mut B) {
 pub struct Framebuffer<B: Backend> {
     pub state: pipe_framebuffer_state,
     pub views: Vec<B::TextureView>,
+    /// The samples of each pixel its targets have.
+    pub samples: u32,
 }
 
 /// One context: Gallium's struct first, so that a `pipe_context` pointer is one to it.
@@ -108,6 +110,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         framebuffer: Framebuffer {
             state: pipe_framebuffer_state::default(),
             views: Vec::new(),
+            samples: 1,
         },
         stages: Stages::default(),
         programs: Programs::default(),
@@ -515,6 +518,7 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
     let mut guard = screen.backend();
     let backend = &mut *guard;
     let mut views = Vec::new();
+    let mut samples = u32::from(state.samples).max(1);
     let colors = usize::from(state.nr_cbufs);
     for (slot, surface) in targets.colors.iter_mut().zip(&state.cbufs[..colors]) {
         if surface.texture.is_null() {
@@ -524,6 +528,7 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
             continue;
         };
         views.push(made.view.clone());
+        samples = made.samples;
         *slot = Some(ColorTarget {
             target: made,
             resolve: None,
@@ -533,15 +538,17 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
         && let Some(made) = target(backend, &state.zsbuf)
     {
         views.push(made.view.clone());
+        samples = made.samples;
         targets.depth = Some(made);
     }
     if views.is_empty() && state.width > 0 && state.height > 0 {
         targets.empty = Some(EmptyPass {
             width: state.width,
             height: state.height,
-            samples: u32::from(state.samples).max(1),
+            samples,
         });
     }
+    context.framebuffer.samples = samples;
     if let Err(error) = context.tracker.set_targets(backend, targets) {
         eprintln!("{}: framebuffer: {error:?}", DRIVER_NAME.to_string_lossy());
     }

@@ -212,6 +212,8 @@ pub struct DepthStencil<B: Backend> {
 
 pub struct Raster<B: Backend> {
     pub block: B::Raster,
+    /// What `block` was made from, for the blocks of other sample masks.
+    pub desc: RasterDesc,
     pub cull: CullMode,
     /// Where nothing is culled and the back end has one stencil reference and mask per draw: the
     /// block drawing front faces only, then back faces only, for a draw split by face.
@@ -232,8 +234,13 @@ pub struct Raster<B: Backend> {
 pub struct Sampler<B: Backend> {
     pub sampler: B::Sampler,
     /// How it samples an integer texture, by the nearest texel's load: none for wraps such loads
-    /// do not make (the border and the mirrored clamp).
+    /// do not make (the mirrored clamp).
     pub nearest: Option<NearestSampler>,
+    /// The state asked for, where the program applies its border colour (`BorderInShader`): the
+    /// back end lacks border colours, and `sampler` clamps to the edge there.
+    pub border_in_program: Option<SamplerDesc>,
+    /// The border colour's bits, f32 or integer as the texture's texels.
+    pub border_color: [u32; COLOR_CHANNELS],
 }
 
 pub struct Elements<B: Backend> {
@@ -669,6 +676,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
     });
     object(Raster::<B> {
         block,
+        desc,
         cull: desc.cull,
         faces,
         cull_both: cull_face == PIPE_FACE_FRONT_AND_BACK,
@@ -722,6 +730,7 @@ fn nearest_wrap(wrap: pipe_tex_wrap) -> Option<Wrap> {
         PIPE_TEX_WRAP_REPEAT => Wrap::Repeat,
         PIPE_TEX_WRAP_CLAMP_TO_EDGE => Wrap::ClampToEdge,
         PIPE_TEX_WRAP_MIRROR_REPEAT => Wrap::MirroredRepeat,
+        PIPE_TEX_WRAP_CLAMP_TO_BORDER => Wrap::ClampToBorder,
         _ => return None,
     })
 }
@@ -779,9 +788,11 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
         anisotropy: state.max_anisotropy().max(1) as u16,
         compare: (state.compare_mode() != 0)
             .then(|| compare(state.compare_func() as pipe_compare_func)),
-        // SAFETY: a float border colour, which is all the screen takes.
+        // SAFETY: the colour's bits, float or integer.
         border: border(unsafe { state.border_color.f }),
     };
+    // SAFETY: as above.
+    let border_bits = unsafe { state.border_color.ui };
     let wraps = [state.wrap_s(), state.wrap_t(), state.wrap_r()];
     let nearest = wraps
         .iter()
@@ -794,9 +805,30 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
             mipmapped: mip != PIPE_TEX_MIPFILTER_NONE as c_uint,
             min_lod: state.min_lod.to_bits(),
             max_lod: state.max_lod.to_bits(),
+            border: border_bits,
         });
-    match context.screen().backend().create_sampler(&desc) {
-        Ok(sampler) => object(Sampler::<B> { sampler, nearest }),
+    let mut backend = context.screen().backend();
+    let border_in_program = (desc.address.contains(&AddressMode::Border)
+        && !backend.caps().has(Features::BORDER_COLOR))
+    .then_some(desc);
+    let host = match border_in_program {
+        Some(asked) => SamplerDesc {
+            address: asked.address.map(|a| match a {
+                AddressMode::Border => AddressMode::Clamp,
+                other => other,
+            }),
+            border: BorderColor::TransparentBlack,
+            ..asked
+        },
+        None => desc,
+    };
+    match backend.create_sampler(&host) {
+        Ok(sampler) => object(Sampler::<B> {
+            sampler,
+            nearest,
+            border_in_program,
+            border_color: border_bits,
+        }),
         Err(error) => refuse(format!("a sampler: {error:?}")),
     }
 }
@@ -1287,6 +1319,8 @@ pub fn fill<B: Backend>(c: &mut pipe_context) {
     c.set_blend_color = Some(set_blend_color::<B>);
     c.set_stencil_ref = Some(set_stencil_ref::<B>);
     c.set_sample_mask = Some(set_sample_mask::<B>);
+    // The host's samples sit at the standard positions (WebGPU's, Vulkan's and Direct3D's).
+    c.get_sample_position = Some(u_default_get_sample_position);
     c.set_clip_state = Some(set_clip_state);
     c.set_constant_buffer = Some(set_constant_buffer::<B>);
     c.set_scissor_states = Some(set_scissor_states::<B>);

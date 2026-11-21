@@ -9,10 +9,10 @@ use wcontainers_gpu::{
     AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange,
     CullMode, DrawCall, DrawRange, FanOrLoop, Features, FormatKind, FormatUse, HELPER_SET,
     HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS, Object,
-    PassTracker, Program, ProvokingVertex, ReadSource, ReflectedBinding, Reflection, RingKind,
-    STORAGE_WORD, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage,
-    StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding, VertexFormat, Viewport,
-    cut_scissors, helper_binding,
+    PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
+    RingKind, STORAGE_WORD, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
+    SourceStage, StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding,
+    VertexFormat, Viewport, cut_scissors, helper_binding,
 };
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
@@ -41,6 +41,9 @@ pub(crate) struct Built<B: Backend> {
     helper_size: u32,
     /// The storage binding of each stream the program fetches itself, by its input's location.
     pulled: Vec<(u32, u32)>,
+    /// The bindings of the textures the program reads as 2D arrays (an integer cube map it
+    /// samples is one of its faces).
+    layered: Vec<u32>,
     /// A vertex program converted for the stage helper: its module, with its outputs.
     converted: Option<Converted>,
 }
@@ -64,6 +67,8 @@ pub(crate) struct Variant {
     targets: outputs::Targets,
     /// The samplers of the integer textures bound where it samples.
     nearest: Vec<NearestSampler>,
+    /// The units whose border colour the program applies, a bit each (`BorderInShader`).
+    border: u16,
     /// The blend constant's alpha given as the blend's second source (fragment programs).
     second_source: Option<u32>,
 }
@@ -75,6 +80,7 @@ impl Variant {
         let variant = Variant {
             swizzles: swizzles(bound),
             nearest: nearest_samplers(bound),
+            border: border_in_program(bound),
             ..Variant::default()
         };
         let swizzled = !variant.swizzles.is_empty();
@@ -106,6 +112,8 @@ pub struct Programs<B: Backend> {
     built: HashMap<(ShaderId, Variant), Built<B>>,
     programs: HashMap<(ShaderId, Variant, ShaderId, Variant), B::Program>,
     blends: HashMap<BlendDesc, B::Blend>,
+    /// Rasterizer blocks of a bound state with a sample mask of fewer than all samples.
+    masked: HashMap<RasterDesc, B::Raster>,
     pub(crate) compute: HashMap<(ShaderId, Variant), B::Program>,
     /// The stage helpers of vertex programs streamed, by program and variant.
     streamed: HashMap<(ShaderId, Variant), Stages<B>>,
@@ -117,6 +125,7 @@ impl<B: Backend> Default for Programs<B> {
             built: HashMap::new(),
             programs: HashMap::new(),
             blends: HashMap::new(),
+            masked: HashMap::new(),
             compute: HashMap::new(),
             streamed: HashMap::new(),
         }
@@ -176,6 +185,9 @@ impl<B: Backend> Programs<B> {
         }
         for (_, b) in self.blends.drain() {
             screen.retire(Object::Blend(b));
+        }
+        for (_, r) in self.masked.drain() {
+            screen.retire(Object::Raster(r));
         }
         for (_, stages) in self.streamed.drain() {
             stages.destroy(&mut screen.backend());
@@ -286,6 +298,52 @@ fn meet_inputs(module: &mut naga::Module, inputs: &[Interpolated]) {
     }
 }
 
+/// The units of `units` (a bit each) as the slots of `kind` the program binds them at, a bit each,
+/// as the variant names them.
+fn slots_of(bindings: &[ReflectedBinding], kind: SlotKind, units: u16) -> Result<u16, String> {
+    let mut slots = 0;
+    for b in bindings
+        .iter()
+        .filter(|b| b.kind == kind && b.added.is_none())
+    {
+        for i in 0..b.count {
+            let unit = b.register + i;
+            if unit >= u16::BITS || units & (1 << unit) == 0 {
+                continue;
+            }
+            let slot = b.slot() + i;
+            if slot >= u16::BITS {
+                return refused(format_args!("a border colour at a slot past the variant's"));
+            }
+            slots |= 1 << slot;
+        }
+    }
+    Ok(slots)
+}
+
+/// The unit bound at a slot of `kind` the program binds.
+fn unit_of(bindings: &[ReflectedBinding], kind: SlotKind, slot: u32) -> Option<u32> {
+    bindings
+        .iter()
+        .filter(|b| b.kind == kind && b.added.is_none())
+        .find(|b| (b.slot()..b.slot() + b.count).contains(&slot))
+        .map(|b| b.register + slot - b.slot())
+}
+
+/// A program's outputs and inputs fitted to the stages and targets it meets.
+fn fit_stages(module: &mut naga::Module, variant: &Variant) -> Result<(), String> {
+    if !variant.interpolation.is_empty() {
+        meet_inputs(module, &variant.interpolation);
+    }
+    if !variant.targets.is_empty() {
+        outputs::fit(module, &variant.targets);
+    }
+    if let Some(alpha) = variant.second_source {
+        outputs::second_source(module, alpha)?;
+    }
+    Ok(())
+}
+
 /// One stage's program through the NIR route, for `variant`.
 fn convert<B: Backend>(
     backend: &mut B,
@@ -305,17 +363,14 @@ fn convert<B: Backend>(
     let key = nir.key().map_err(|e| e.to_string())?;
     let stage = shader.stage.nir();
     let bindings = nir.to_common_form(stage).map_err(|e| e.to_string())?;
-    let (module, bindings, helpers, helper_size) = if variant.pulled.is_empty() {
+    let rewrites = VariantKey {
+        pulled: variant.pulled.clone(),
+        border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        ..VariantKey::default()
+    };
+    let (module, bindings, helpers, helper_size) = if rewrites == VariantKey::default() {
         let mut module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
-        if !variant.interpolation.is_empty() {
-            meet_inputs(&mut module, &variant.interpolation);
-        }
-        if !variant.targets.is_empty() {
-            outputs::fit(&mut module, &variant.targets);
-        }
-        if let Some(alpha) = variant.second_source {
-            outputs::second_source(&mut module, alpha)?;
-        }
+        fit_stages(&mut module, variant)?;
         let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
         let entry_point = module
             .entry_points
@@ -336,13 +391,7 @@ fn convert<B: Backend>(
         )
     } else {
         let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
-        if !variant.interpolation.is_empty() {
-            meet_inputs(&mut routed.module, &variant.interpolation);
-        }
-        let rewrites = VariantKey {
-            pulled: variant.pulled.clone(),
-            ..VariantKey::default()
-        };
+        fit_stages(&mut routed.module, variant)?;
         let (module, reflection) =
             wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
                 .map_err(|e| e.to_string())?;
@@ -368,6 +417,7 @@ fn convert<B: Backend>(
         },
     });
     let uniform_sizes = uniform_sizes(&module.module);
+    let layered = layered_textures(&module.module);
     let flat_inputs = flat_inputs(&module.module);
     let inputs = input_interpolation(&module.module);
     let pulled = bindings
@@ -389,8 +439,28 @@ fn convert<B: Backend>(
         helpers,
         helper_size,
         pulled,
+        layered,
         converted,
     })
+}
+
+/// The bindings of a program's sampled 2D array textures.
+fn layered_textures(module: &naga::Module) -> Vec<u32> {
+    module
+        .global_variables
+        .iter()
+        .filter(|(_, g)| {
+            matches!(
+                module.types[g.ty].inner,
+                naga::TypeInner::Image {
+                    dim: naga::ImageDimension::D2,
+                    arrayed: true,
+                    class: naga::ImageClass::Sampled { .. },
+                }
+            )
+        })
+        .filter_map(|(_, g)| Some(g.binding.as_ref()?.binding))
+        .collect()
 }
 
 /// The interface's topology of a Gallium primitive, and whether it is a fan or loop.
@@ -609,16 +679,28 @@ pub(crate) struct Pulled<'a, B: Backend> {
     divisor: u32,
 }
 
-/// The helper constants of `built` for a draw from `first_instance`.
+/// The helper constants of `built` for a draw from `first_instance`, of the stage `bound`.
 fn helper_block<B: Backend>(
     built: &Built<B>,
+    bound: &state::StageState<B>,
     pulled: &[Pulled<'_, B>],
     storage_align: u64,
     first_instance: u32,
 ) -> Result<Vec<u8>, String> {
     let mut block = vec![0; built.helper_size as usize];
+    let sampler = |slot: u32| -> Result<&state::Sampler<B>, String> {
+        let unit =
+            unit_of(&built.bindings, SlotKind::Sampler, slot).ok_or("a sampler slot unbound")?;
+        let sampler = bound
+            .samplers
+            .get(unit as usize)
+            .filter(|s| !s.is_null())
+            .ok_or("a border colour without its sampler")?;
+        // SAFETY: a bound sampler lives until Mesa unbinds and deletes it.
+        Ok(unsafe { &**sampler })
+    };
     for slot in &built.helpers {
-        let words = match slot.value {
+        let words: Vec<u32> = match slot.value {
             HelperValue::PulledStream { input } => {
                 let p = pulled
                     .iter()
@@ -626,7 +708,31 @@ fn helper_block<B: Backend>(
                     .ok_or("a fetched input without its stream")?;
                 let offset = (p.stream_offset % storage_align) as u32 + p.attribute_offset;
                 let bias = p.divisor.saturating_sub(1).wrapping_mul(first_instance);
-                [offset, p.stride, p.divisor, bias]
+                vec![offset, p.stride, p.divisor, bias]
+            }
+            HelperValue::BorderColor { sampler: slot } => sampler(slot)?.border_color.to_vec(),
+            HelperValue::SamplerState { sampler: slot } => {
+                let d = sampler(slot)?
+                    .border_in_program
+                    .ok_or("a sampler's state for a sampler the host addresses")?;
+                [d.min, d.mag, d.mip]
+                    .map(|f| f as u32)
+                    .into_iter()
+                    .chain(d.address.map(|a| a as u32))
+                    .chain([u32::from(d.anisotropy)])
+                    .chain(d.lod_range)
+                    .collect()
+            }
+            HelperValue::TextureComponents { texture: slot } => {
+                let unit = unit_of(&built.bindings, SlotKind::Texture, slot)
+                    .ok_or("a texture slot unbound")?;
+                let view = bound
+                    .views
+                    .get(unit as usize)
+                    .filter(|v| !v.is_null())
+                    .ok_or("a border colour without its texture")?;
+                // SAFETY: the slot holds a reference on a live view of this driver.
+                vec![unsafe { View::<B>::of(*view) }.components]
             }
             other => return Err(format!("the helper constant {other:?}")),
         };
@@ -657,25 +763,45 @@ pub(crate) fn binding_sets<B: Backend>(
     let align = limits.min_uniform_offset_alignment;
     let storage_align = u64::from(limits.min_storage_offset_alignment);
     let largest_storage = limits.max_storage_buffer_size;
-    let mut helpers = None;
-    for &(stage, b) in built {
-        match (stage, b.helper_size) {
-            (_, 0) => {}
-            (Stage::Vertex, _) => {
-                helpers = Some(helper_block(b, pulled, storage_align, first_instance)?);
-            }
-            (Stage::Fragment | Stage::Compute, _) => {
-                return refused(format_args!("helper constants in a {stage:?} program"));
-            }
-        }
+    let visibility = |stage| match stage {
+        Stage::Vertex => vertex_visible,
+        Stage::Fragment => StageSet::FRAGMENT,
+        Stage::Compute => StageSet::COMPUTE,
+    };
+    // Every stage's helper constants, in the one helper set.
+    let mut blocks = Vec::new();
+    for &(stage, b) in built.iter().filter(|(_, b)| b.helper_size != 0) {
+        let bytes = helper_block(b, stages.get(stage), pulled, storage_align, first_instance)?;
+        blocks.push((stage, bytes));
+    }
+    if !blocks.is_empty() {
+        let parts: Vec<&[u8]> = blocks.iter().map(|(_, bytes)| bytes.as_slice()).collect();
+        let mut offsets = vec![0; parts.len()];
+        let ring = backend
+            .write_buffer_ring(RingKind::Data, &parts, align, &mut offsets)
+            .map_err(|e| format!("{e:?}"))?;
+        let entries: Vec<_> = blocks
+            .iter()
+            .zip(offsets)
+            .map(|((stage, bytes), offset)| BindingEntry {
+                binding: helper_binding(stage.nir().shader_stage()),
+                stages: visibility(*stage),
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &ring,
+                    offset,
+                    size: bytes.len() as u64,
+                }),
+            })
+            .collect();
+        sets[HELPER_SET as usize] = Some(
+            backend
+                .create_binding_set(&entries)
+                .map_err(|e| format!("{e:?}"))?,
+        );
     }
     for &(stage, built) in built {
         let bound = stages.get(stage);
-        let visible = match stage {
-            Stage::Vertex => vertex_visible,
-            Stage::Fragment => StageSet::FRAGMENT,
-            Stage::Compute => StageSet::COMPUTE,
-        };
+        let visible = visibility(stage);
         let images = image_views(backend, bound, built, made)?;
         // Uniform blocks the program reads that the frontend handed as bytes go through the
         // ring first, each grown to the block's declared size.
@@ -714,9 +840,7 @@ pub(crate) fn binding_sets<B: Backend>(
                 Uniform::Range(buffer, u64::from(slot.offset), size),
             ));
         }
-        let mut parts: Vec<&[u8]> = copies.iter().map(Vec::as_slice).collect();
-        let helpers = helpers.as_deref().filter(|_| stage == Stage::Vertex);
-        parts.extend(helpers);
+        let parts: Vec<&[u8]> = copies.iter().map(Vec::as_slice).collect();
         let mut offsets = vec![0; parts.len()];
         let ring = if parts.is_empty() {
             None
@@ -729,19 +853,6 @@ pub(crate) fn binding_sets<B: Backend>(
         };
         let mut copied = offsets.iter().zip(&copies);
         let mut entries = Vec::new();
-        let mut helper_entry = None;
-        if let Some(bytes) = helpers {
-            let ring = ring.as_ref().ok_or("the ring")?;
-            helper_entry = Some(BindingEntry {
-                binding: helper_binding(ShaderStage::Vertex),
-                stages: visible,
-                resource: BindingResource::UniformBuffer(BufferRange {
-                    buffer: ring,
-                    offset: offsets[copies.len()],
-                    size: bytes.len() as u64,
-                }),
-            });
-        }
         for &(binding, location) in &built.pulled {
             let p = pulled
                 .iter()
@@ -789,7 +900,6 @@ pub(crate) fn binding_sets<B: Backend>(
                 resource: BindingResource::UniformBuffer(range),
             });
         }
-        let nearest: Vec<u32> = nearest_samplers(bound).iter().map(|n| n.unit).collect();
         for b in built.bindings.iter().filter(|b| b.added.is_none()) {
             let resource = match b.kind {
                 SlotKind::Uniform => continue,
@@ -802,7 +912,7 @@ pub(crate) fn binding_sets<B: Backend>(
                     let view = unsafe { View::<B>::of(view) };
                     // An integer cube map the program samples is loaded from its faces.
                     match view.faces() {
-                        Some(faces) if nearest.contains(&b.register) => {
+                        Some(faces) if built.layered.contains(&b.binding) => {
                             BindingResource::Texture(faces?)
                         }
                         _ => BindingResource::Texture(view.view()?),
@@ -838,13 +948,6 @@ pub(crate) fn binding_sets<B: Backend>(
                 stages: visible,
                 resource,
             });
-        }
-        if let Some(entry) = helper_entry {
-            sets[HELPER_SET as usize] = Some(
-                backend
-                    .create_binding_set(std::slice::from_ref(&entry))
-                    .map_err(|e| format!("{e:?}"))?,
-            );
         }
         if !entries.is_empty() {
             let set = wcontainers_nir::bind::stage_set(stage.nir().shader_stage()) as usize;
@@ -1088,6 +1191,7 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::Fragment)),
         targets: target_kinds(&context.framebuffer.state),
         nearest: nearest_samplers(context.stages.get(Stage::Fragment)),
+        border: border_in_program(context.stages.get(Stage::Fragment)),
         second_source: second_source_alpha(
             backend,
             &blend.desc,
@@ -1114,6 +1218,7 @@ fn draw<B: Backend>(
         transform,
         swizzles: swizzles(context.stages.get(Stage::Vertex)),
         nearest: nearest_samplers(context.stages.get(Stage::Vertex)),
+        border: border_in_program(context.stages.get(Stage::Vertex)),
         interpolation: inputs,
         pulled: pulled
             .iter()
@@ -1127,6 +1232,9 @@ fn draw<B: Backend>(
     programs.built_for(backend, unsafe { &*vs }, &vertex)?;
     if !vertex.swizzles.is_empty() || !fragment.swizzles.is_empty() {
         backend.slow_paths().hit(SlowPath::SwizzleInShader);
+    }
+    if vertex.border != 0 || fragment.border != 0 {
+        backend.slow_paths().hit(SlowPath::BorderInShader);
     }
     if context.streams.active() {
         // SAFETY: as above.
@@ -1259,7 +1367,19 @@ fn draw<B: Backend>(
             "primitive restart at an index that is not the largest"
         ));
     }
-    let passes = face_passes(backend, depth_stencil, raster, triangles, bound.stencil_ref)?;
+    let samples = context.framebuffer.samples.clamp(1, u32::BITS);
+    let all = u32::MAX >> (u32::BITS - samples);
+    let mask = Some(bound.sample_mask & all).filter(|&m| samples > 1 && m != all);
+    let blocks = masked_blocks(&mut context.programs, backend, raster, mask)?;
+    let bound = &context.bound;
+    let passes = face_passes(
+        backend,
+        depth_stencil,
+        &blocks,
+        raster.cull,
+        triangles,
+        bound.stencil_ref,
+    )?;
     let base = DrawCall {
         program: &program,
         blend: &blend,
@@ -1492,13 +1612,65 @@ type FacePass<'a, B> = (
     [u8; 2],
 );
 
+/// The rasterizer blocks a draw takes: the one drawing both faces, and one a face for a draw split
+/// by face.
+struct RasterBlocks<R> {
+    block: R,
+    faces: Option<[R; 2]>,
+}
+
+/// The bound rasterizer's blocks, or with `mask` (fewer than all of the targets' samples) blocks of
+/// it with that sample mask.
+fn masked_blocks<B: Backend>(
+    programs: &mut Programs<B>,
+    backend: &mut B,
+    raster: &state::Raster<B>,
+    mask: Option<u32>,
+) -> Result<RasterBlocks<B::Raster>, String> {
+    let Some(mask) = mask else {
+        return Ok(RasterBlocks {
+            block: raster.block.clone(),
+            faces: raster.faces.clone(),
+        });
+    };
+    if !backend.caps().has(Features::SAMPLE_MASK) {
+        return refused(format_args!("a sample mask on a back end without one"));
+    }
+    let mut made = |desc: RasterDesc| -> Result<B::Raster, String> {
+        if let Some(block) = programs.masked.get(&desc) {
+            return Ok(block.clone());
+        }
+        let block = backend
+            .create_raster(&desc)
+            .map_err(|e| format!("a rasterizer state: {e:?}"))?;
+        programs.masked.insert(desc, block.clone());
+        Ok(block)
+    };
+    let desc = RasterDesc {
+        sample_mask: mask,
+        ..raster.desc
+    };
+    let faces = if raster.faces.is_some() {
+        let [back, front] =
+            [CullMode::Back, CullMode::Front].map(|cull| RasterDesc { cull, ..desc });
+        Some([made(back)?, made(front)?])
+    } else {
+        None
+    };
+    Ok(RasterBlocks {
+        block: made(desc)?,
+        faces,
+    })
+}
+
 /// The blocks a draw is made with: its own, or, where the stencil test's faces differ in masks or
 /// reference and the back end has one of each per draw, each face alone with its own
 /// (`StencilFacesSplit`). Points and lines are front faces, as OpenGL draws them.
 fn face_passes<'a, B: Backend>(
     backend: &mut B,
     depth_stencil: &'a state::DepthStencil<B>,
-    raster: &'a state::Raster<B>,
+    raster: &'a RasterBlocks<B::Raster>,
+    cull: CullMode,
     triangles: bool,
     reference: [u8; 2],
 ) -> Result<Vec<FacePass<'a, B>>, String> {
@@ -1524,7 +1696,7 @@ fn face_passes<'a, B: Backend>(
     };
     const FRONT: usize = 0;
     const BACK: usize = 1;
-    Ok(match (triangles, raster.cull) {
+    Ok(match (triangles, cull) {
         (false, _) | (true, CullMode::Back) => vec![face(FRONT, &raster.block)],
         (true, CullMode::Front) => vec![face(BACK, &raster.block)],
         (true, CullMode::None) => {
@@ -1856,6 +2028,29 @@ fn nearest_samplers<B: Backend>(stage: &state::StageState<B>) -> Vec<NearestSamp
             })
         })
         .collect()
+}
+
+/// The units of a stage whose sampler's border colour the program applies, a bit each: those
+/// whose texture is not integer (an integer texture's nearest load applies it, `NearestSampler`).
+fn border_in_program<B: Backend>(stage: &state::StageState<B>) -> u16 {
+    let mut mask = 0;
+    for (unit, (&v, &s)) in stage.views.iter().zip(&stage.samplers).enumerate() {
+        if v.is_null() || s.is_null() {
+            continue;
+        }
+        // SAFETY: as in `nearest_samplers`.
+        let (view, sampler) = unsafe { (View::<B>::of(v), &*s) };
+        if sampler.border_in_program.is_none() || view.integer {
+            continue;
+        }
+        if unit >= u16::BITS as usize {
+            refuse(format_args!(
+                "a border colour at a texture unit past the variant's"
+            ));
+        }
+        mask |= 1 << unit;
+    }
+    mask
 }
 
 /// The kind of each bound colour target, by location.
