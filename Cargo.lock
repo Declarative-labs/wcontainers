@@ -1996,6 +1996,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2117,6 +2126,19 @@ dependencies = [
  "bytes",
  "libc",
  "log",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -4725,9 +4747,37 @@ dependencies = [
 name = "wcontainers-tcp-sockets-conformance"
 version = "0.1.0"
 dependencies = [
+ "etherparse",
+ "libc",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advice-conformance",
  "wcontainers-tcp-sockets",
+]
+
+[[package]]
+name = "wcontainers-tcp-sockets-linux-host"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "netlink-packet-core",
+ "nix",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-internet-protocol-linux-socket-options",
+ "wcontainers-kernel",
+ "wcontainers-negative-route-advice",
+ "wcontainers-tcp-sockets",
+ "wcontainers-tcp-sockets-conformance",
 ]
 
 [[package]]
