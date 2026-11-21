@@ -209,6 +209,30 @@ Built this run:
   the unoffered test for the 17 forms (BMI2 and `xsetbv`) under the default list, 64 a form, seed 8104, 0
   failing; the hand cases: pass.
 
+The bar so far (a whole-suite run before pushing):
+- Rented x86-64 machine, the suite in pieces (`x8r1/suite.sh`, logs `x8r1/suite/`), main at 1b204981 to 68ec9c94
+  with other tracks' edits in the copy: the unit tests of guest-cpu (2), arm64 (7), x86 (22 tests, the new
+  ones among them) and the translator, the test crate's library, binaries, changes, decoding, lookaheads,
+  no_std, omit, and of browser, checks, layer2, layer3 and programs every x86 test: pass. What failed there
+  is what fails there every run: ARM64 tests (no ARM64 reference; four of the translator track's without the
+  suffix among them, and `csmith_programs_count_the_same_everywhere`, which builds ARM64 programs), and the
+  x86 layer 1 tests whose verdict is the laptop's (5-level paging), with `the_x86_64_reference_refuses_what_
+  linux_refuses`. The pieces progress_count, reciprocals, reference_x86_64, seeded, smoke, test_guest and valid
+  could not build in the shared tree (another track's uncommitted `crates/wcontainers-arm64/build.rs` imports
+  `build_rs`, not a dependency), so they ran from a clone of main at 31080b61 (`x8r1/clone`, `x8r1/rerun.sh`):
+  all pass but `csmith_programs_count_the_same_everywhere` and the refusal test, as above.
+- The i7-8750H, from that clone (`x8r1/laptop-verdict.log`, `laptop-chrome2.log`): the 111 hand cases, 64
+  cases in no form, seed 8105: pass; the unoffered forms, 2,990 at 20 a form, seed 8106, under the default list:
+  0 failing; every form, 1,346 (BMI2's and `xsetbv` among them) at 100 a form, seed 8107: 0 failing, 3 known
+  failures (Fptan 1, Fyl2xp1 2); the refusal test: pass; the Chrome sample, seed 8105, 1,329 cases: 0 failing.
+  The Chrome sample now leaves out the 17 forms beyond the default list and prints them: the browser runner
+  translates with the default list only (`browser/src/lib.rs`, `translate_for`), which is next to build (a
+  case's and a blob's offer key passed through runner.js, and `Guest::offer_from_key`). Before this run those
+  forms were not in the sample at all.
+- The rented ARM64 machine (`x8r1/arm2.log`): ARM64's programs, output, browser, layer2, valid and checks tests:
+  all pass (474 s). ARM64's layer 1 there fails as it does on that machine (its verdict is the Mac's; this run
+  changed nothing ARM64's layer 1 runs but giving its machine the default offer, `()`).
+
 Left of X8, most important first (667 codes beyond the default list have no meaning yet, laptop's
 `every_default_code_is_drawn_and_written_x86_64`, `x8r1/x8-left-codes.txt`: 562 AVX and AVX2, 96 FMA, 5 XSAVE,
 4 F16C):
@@ -218,8 +242,14 @@ Left of X8, most important first (667 codes beyond the default list have no mean
   The simd and float meanings have a mnemonic-to-operation table (`simd::binary`) the VEX forms can share.
 - FMA: fused on a host whose probe fuses, else software with "software fused multiply-add" counted (plan 2).
 - F16C: `vcvtph2ps`, `vcvtps2ph`.
-- XSAVE: `xsave`, `xsave64`, `xrstor`, `xrstor64` over x87, SSE and AVX state with the header's XSTATE_BV
-  (what the reference writes there for state in its initial configuration is to be probed first).
+- XSAVE: `xsave`, `xsave64`, `xrstor`, `xrstor64` over x87, SSE and AVX state with the header's XSTATE_BV.
+  Probed on the i7-8750H (scratch `x8r1/probes/xstate.c`, `xstate-laptop.out`): XCR0 there is 0x1F (MPX's two
+  components too), `xgetbv` with ecx 1 runs (XGETBV1); XSTATE_BV's x87 bit is set even right after `fninit`;
+  the SSE bit is clear after `vzeroall` with MXCSR at its default and set once an xmm register or MXCSR is
+  written, and stays set after MXCSR is written back to its default (the CPU tracks "written since the initial
+  configuration", not the value); the AVX bit is set by a write of an upper half and cleared by `vzeroupper`
+  and `vzeroall`. Intel lets a CPU report a component in use conservatively, so XSTATE_BV is to be a designed
+  answer here (or modelled with the AVX bit tracked by `vzeroupper` and the rest set), marked as varying.
 - The browser runner takes the default offer only (`browser/src/lib.rs`); it needs the offer passed in for
   Chrome runs of v3 code. The benchmark set built for x86-64-v3 with the v3 list, and with the default list
   stopping with illegal instruction and the counter. Three programs of my own using what X8 adds, at every
