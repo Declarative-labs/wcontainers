@@ -1,6 +1,6 @@
 //! The runner and look-ahead none on a few hand-encoded programs.
 
-use wcontainers_abi::{Permissions, RegisterBlock};
+use wcontainers_abi::{PAGE_SIZE, Permissions, RegisterBlock};
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
@@ -16,7 +16,7 @@ fn run_with(words: &[u32], prepare: impl FnOnce(&Machine)) -> (Stopped, Register
     let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let mut machine = Machine::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
     machine.set_permissions(
-        LOAD..LOAD + 0x1000,
+        LOAD..LOAD + PAGE_SIZE,
         Permissions::READ | Permissions::EXECUTE,
     );
     machine.load(&blob, 0..blob.len() as u64, LOAD, &[0], LookAhead::None);
@@ -110,7 +110,7 @@ fn stop_flag_raised_while_running() {
     for look_ahead in [LookAhead::None, LookAhead::Full] {
         let mut machine = Machine::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
         machine.set_permissions(
-            LOAD..LOAD + 0x1000,
+            LOAD..LOAD + PAGE_SIZE,
             Permissions::READ | Permissions::EXECUTE,
         );
         machine.load(&blob, 0..blob.len() as u64, LOAD, &[0], look_ahead);

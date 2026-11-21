@@ -109,16 +109,24 @@ const KEY_BUCKETS: u32 = 1 << (32 - KEY_LOW);
 fn candidates(word: u32) -> &'static [u16] {
     static INDEX: OnceLock<Vec<Vec<u16>>> = OnceLock::new();
     let index = INDEX.get_or_init(|| {
-        (0..KEY_BUCKETS)
-            .map(|key| {
-                let word = key << KEY_LOW;
-                let key_mask = u32::MAX << KEY_LOW;
-                (0..all().len())
-                    .filter(|&i| (word ^ all()[i].value) & all()[i].mask & key_mask == 0)
-                    .map(|i| u16::try_from(i).expect("fewer than 65536 forms"))
-                    .collect()
-            })
-            .collect()
+        let key_mask = u32::MAX << KEY_LOW;
+        let mut index = vec![Vec::new(); KEY_BUCKETS as usize];
+        for (i, form) in all().iter().enumerate() {
+            let fixed = (form.mask & key_mask) >> KEY_LOW;
+            let value = (form.value & form.mask & key_mask) >> KEY_LOW;
+            let free = !fixed & (KEY_BUCKETS - 1);
+            // Every key that agrees with the form's fixed bits: its value with each subset of the free ones.
+            let mut sub = 0u32;
+            loop {
+                index[(value | sub) as usize]
+                    .push(u16::try_from(i).expect("fewer than 65536 forms"));
+                if sub == free {
+                    break;
+                }
+                sub = sub.wrapping_sub(free) & free;
+            }
+        }
+        index
     });
     &index[(word >> KEY_LOW) as usize]
 }

@@ -64,13 +64,7 @@ fn variants() -> [(&'static str, Omit); 6] {
     ]
 }
 
-fn load() -> String {
-    let output = std::process::Command::new("sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .expect("sysctl");
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
+use wcontainers_translator_test::jobs::load;
 
 fn gzip(bytes: &[u8]) -> usize {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -97,6 +91,7 @@ fn size(blob: &Blob) {
             &[0],
             LookAhead::Full,
             optimise(),
+            wcontainers_translator::ProgressCount::Absent,
             wcontainers_translator_test::runner::probe(),
             (),
         )

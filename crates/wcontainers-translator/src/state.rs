@@ -4,7 +4,7 @@
 
 use crate::code::{Fixed, MEMORY_STATE};
 use crate::layout::Layout;
-use crate::thread::memarg;
+use crate::thread::{memarg, natural_align};
 use wasm_encoder::{InstructionSink, ValType};
 use wcontainers_guest_cpu::{Emitter, Guest, Ty};
 
@@ -70,9 +70,9 @@ impl Slot {
     pub(crate) fn load_from(self, s: &mut InstructionSink<'_>, memory: u32) {
         let at = self.offset;
         match self.ty {
-            ValType::I32 => s.i32_load(memarg(memory, at, 2)),
-            ValType::V128 => s.v128_load(memarg(memory, at, 4)),
-            _ => s.i64_load(memarg(memory, at, 3)),
+            ValType::I32 => s.i32_load(memarg(memory, at, natural_align::<u32>())),
+            ValType::V128 => s.v128_load(memarg(memory, at, natural_align::<u128>())),
+            _ => s.i64_load(memarg(memory, at, natural_align::<u64>())),
         };
     }
 
@@ -80,9 +80,9 @@ impl Slot {
     pub(crate) fn store_to(self, s: &mut InstructionSink<'_>, memory: u32) {
         let at = self.offset;
         match self.ty {
-            ValType::I32 => s.i32_store(memarg(memory, at, 2)),
-            ValType::V128 => s.v128_store(memarg(memory, at, 4)),
-            _ => s.i64_store(memarg(memory, at, 3)),
+            ValType::I32 => s.i32_store(memarg(memory, at, natural_align::<u32>())),
+            ValType::V128 => s.v128_store(memarg(memory, at, natural_align::<u128>())),
+            _ => s.i64_store(memarg(memory, at, natural_align::<u64>())),
         };
     }
 
@@ -107,7 +107,7 @@ pub(crate) fn load_flag<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, fla
     block.push(s);
     Slot::flags::<G>().load(s);
     s.i32_const(bit as i32).i32_shr_u();
-    if bit != 31 {
+    if bit != u32::BITS - 1 {
         s.i32_const(1).i32_and();
     }
 }

@@ -52,6 +52,7 @@ pub(crate) fn plan<'a, G: Guest>(
         code,
         decoded: Decodes::default(),
         means: FxHashMap::default(),
+        wholes: FxHashMap::default(),
     };
     let functions = match bound {
         None => finder.functions(starts),
@@ -162,9 +163,14 @@ impl<G: Guest> Planned<'_, G> {
             .zip(&loop_index)
             .map(|(i, loops)| {
                 let function = &self.functions[i];
+                let whole = match self.finder.wholes.get(&function.entry) {
+                    Some(whole) => whole.clone(),
+                    None => Whole::stretch(function, code),
+                };
                 let emit = |function, plan, own| {
                     let how = (self.omit, self.optimise, code);
-                    FullEmitter::piece(function, plan, decoded, &index, loops, own, how)
+                    let pieces = (&index, loops, own);
+                    FullEmitter::piece(function, &whole, plan, decoded, pieces, how)
                 };
                 let (piece, mut locals, mut sites) =
                     emit(function, &self.plans[i], index[&function.entry]);
@@ -225,11 +231,51 @@ impl Function {
     }
 }
 
+/// The function a piece's code belongs to, as found before it was cut in parts.
+#[derive(Clone)]
+struct Whole {
+    entry: u64,
+    /// From its lowest instruction's offset to past its highest's, or to the next function's entry where that
+    /// is further: code there that exploring did not reach (cases of a table not followed, labels of a computed
+    /// goto) is taken as its own.
+    span: std::ops::Range<u64>,
+}
+
+impl Whole {
+    fn of(function: &Function) -> Whole {
+        let offsets = || function.offsets.iter().copied();
+        let low = offsets().min().expect("a function has an instruction");
+        let high = offsets().max().expect("a function has an instruction");
+        Whole {
+            entry: function.entry,
+            span: low..high + 1,
+        }
+    }
+
+    /// A stretch knows no function's bounds, so all of its code may be its own.
+    fn stretch<G: Guest>(stretch: &Function, code: &Code<'_, G>) -> Whole {
+        Whole {
+            entry: stretch.entry,
+            span: code.range.clone(),
+        }
+    }
+
+    /// The same, reaching up to `next`, the next function's entry.
+    fn up_to(self, next: u64) -> Whole {
+        Whole {
+            span: self.span.start..self.span.end.max(next),
+            ..self
+        }
+    }
+}
+
 struct Finder<'a, G: Guest> {
     code: &'a Code<'a, G>,
     decoded: Decodes<G>,
     /// What made each function's entry one, where it is not a start given.
     means: FxHashMap<u64, Means>,
+    /// The function each part of a function cut in parts comes from, by the part's entry.
+    wholes: FxHashMap<u64, Whole>,
 }
 
 /// Entries a function shows, with what shows each.
@@ -378,16 +424,48 @@ impl<G: Guest> Finder<'_, G> {
                 })
                 .collect();
             let mut more = false;
-            for (offset, means) in more_entries.into_iter().flatten() {
-                if entries.insert(offset) {
-                    self.means.insert(offset, means);
-                    more = true;
+            for (function, found) in functions.iter().zip(more_entries) {
+                for (offset, means) in found {
+                    if entries.insert(offset) {
+                        self.means.insert(offset, means);
+                        let whole = self
+                            .wholes
+                            .entry(function.entry)
+                            .or_insert_with(|| Whole::of(function))
+                            .clone();
+                        self.wholes.insert(offset, whole);
+                        more = true;
+                    }
                 }
             }
             if !more {
                 self.keep(&functions);
+                self.reach_next_functions(&functions, &entries);
                 return functions;
             }
+        }
+    }
+
+    /// Give every function's whole, and each of its parts', the code up to the next start of a function.
+    fn reach_next_functions(&mut self, functions: &[Function], entries: &BTreeSet<u64>) {
+        let means = &self.means;
+        let starts: BTreeSet<u64> = entries
+            .iter()
+            .copied()
+            .filter(|e| means.get(e).is_none_or(|m| m.starts_function()))
+            .collect();
+        let end = self.code.range.end;
+        for function in functions {
+            let whole = match self.wholes.get(&function.entry) {
+                Some(whole) => whole.clone(),
+                None => Whole::of(function),
+            };
+            let next = starts
+                .range(whole.entry + 1..)
+                .next()
+                .copied()
+                .unwrap_or(end);
+            self.wholes.insert(function.entry, whole.up_to(next));
         }
     }
 
@@ -713,6 +791,10 @@ fn state_ids(mut states: FlagStates) -> Vec<u32> {
 const FLAGS_IN_LOCALS: u32 = 0;
 /// The flags are in the thread block, which is up to date.
 const FLAGS_IN_BLOCK: u32 = 1;
+/// The flags are as the function's first shape keeps them; the other shapes' states follow in order.
+const FIRST_SHAPE_STATE: u32 = FLAGS_IN_BLOCK + 1;
+/// The most flags a guest may keep in locals of their own.
+const MAX_TRACKED_FLAGS: usize = 8;
 
 /// What a check before a memory access does.
 #[derive(Clone, Copy, Debug)]
@@ -947,7 +1029,7 @@ impl<G: Guest> Plan<G> {
         // Flag setting shapes, numbered after the two fixed states.
         const {
             assert!(
-                G::SHAPES.len() + 2 <= FlagStates::BITS as usize,
+                G::SHAPES.len() + FIRST_SHAPE_STATE as usize <= FlagStates::BITS as usize,
                 "too many shapes"
             )
         };
@@ -963,7 +1045,7 @@ impl<G: Guest> Plan<G> {
             if d.effects.calls {
                 1 << FLAGS_IN_BLOCK
             } else if let Some(shape) = d.effects.flags.and_then(G::shape) {
-                1 << (2 + shapes.iter().position(|s| *s == shape).unwrap())
+                1 << (FIRST_SHAPE_STATE as usize + shapes.iter().position(|s| *s == shape).unwrap())
             } else if !d.effects.defs.intersect(G::FLAG_BITS).is_empty() {
                 1 << FLAGS_IN_LOCALS
             } else {
@@ -1401,7 +1483,8 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                         let key = (segment, register, access.kind != AccessKind::Read);
                         match open.get(&key).map(|&g| (g, groups[g])) {
                             Some((g, (first, first_start, lo, hi, count)))
-                                if hi.max(end) - lo.min(start) <= 4096 =>
+                                if hi.max(end) - lo.min(start)
+                                    <= wcontainers_abi::PAGE_SIZE as i64 =>
                             {
                                 groups[g] =
                                     (first, first_start, lo.min(start), hi.max(end), count + 1);
@@ -1519,6 +1602,7 @@ enum Pc {
 
 struct FullEmitter<'a, G: Guest> {
     function: &'a Function,
+    whole: &'a Whole,
     plan: &'a Plan<G>,
     decoded: &'a Decodes<G>,
     index: &'a BTreeMap<u64, u32>,
@@ -1536,7 +1620,7 @@ struct FullEmitter<'a, G: Guest> {
     taken: Vec<(ValType, u32)>,
     registers: FxHashMap<u32, u32>,
     /// One i32 local for each tracked flag, in `Guest::FLAGS` order.
-    flag_locals: [u32; 8],
+    flag_locals: [u32; MAX_TRACKED_FLAGS],
     /// Which flag state holds, when that is only known at run time.
     flag_state: u32,
     /// The locals each lazily kept flag shape shares.
@@ -1561,22 +1645,25 @@ struct FullEmitter<'a, G: Guest> {
     raised_stop: bool,
     /// i64 local: the depth the piece passes to what it calls, its callers' and its own.
     depth: u32,
+    /// i64 local: the progress count, when it is kept.
+    count: Option<u32>,
+    /// The instruction being emitted is an event of the progress count not yet counted.
+    event: bool,
 }
 
 impl<'a, G: Guest> FullEmitter<'a, G> {
-    #[allow(clippy::too_many_arguments)]
     fn piece(
         function: &'a Function,
+        whole: &'a Whole,
         plan: &'a Plan<G>,
         decoded: &'a Decodes<G>,
-        index: &'a BTreeMap<u64, u32>,
-        loops: &'a FxHashMap<u64, u32>,
-        own: u32,
+        (index, loops, own): (&'a BTreeMap<u64, u32>, &'a FxHashMap<u64, u32>, u32),
         (omit, optimise, code): (Omit, Optimise, &'a Code<'a, G>),
     ) -> (wasm_encoder::Function, usize, Sites) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
+            whole,
             plan,
             decoded,
             index,
@@ -1591,7 +1678,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             free: Vec::new(),
             taken: Vec::new(),
             registers: FxHashMap::default(),
-            flag_locals: [0; 8],
+            flag_locals: [0; MAX_TRACKED_FLAGS],
             flag_state: 0,
             canonical: Vec::new(),
             labels: Vec::new(),
@@ -1611,14 +1698,24 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             written: false,
             raised_stop: false,
             depth: 0,
+            count: None,
+            event: false,
         };
         e.depth = e.new_local(ValType::I64);
+        if kept(code.progress) {
+            e.count = Some(G::L_COUNT);
+        }
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
             let room = e.new_local(ValType::I64);
             e.kept_pages.push((low, room));
         }
-        const { assert!(G::FLAGS.len() <= 8, "at most 8 tracked flags") };
+        const {
+            assert!(
+                G::FLAGS.len() <= MAX_TRACKED_FLAGS,
+                "too many tracked flags"
+            )
+        };
         for i in 0..G::FLAGS.len() {
             e.flag_locals[i] = e.new_local(ValType::I32);
         }
@@ -1658,7 +1755,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .local_set(e.depth);
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
-            depth_check::<G>(&mut s, G::L_DEPTH, function.entry);
+            depth_check::<G>(&mut s, G::L_DEPTH, function.entry, code.progress);
             e.sites[Reason::StackNearlyFull as usize] += 1;
         }
         let locals = e.locals.len();
@@ -1670,7 +1767,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
 
     fn new_local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        G::PARAMETERS + self.locals.len() as u32 - 1
+        parameters::<G>(self.code.progress) + self.locals.len() as u32 - 1
     }
 
     /// The locals a shape keeps, fresh ones: what else it needs can be worked out from them.
@@ -1777,7 +1874,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                                 float_mode: false,
                             };
                             self.write_back();
-                            self.arguments();
+                            self.rare_arguments();
                             self.sink().return_call(f);
                         }
                         _ => {
@@ -1877,6 +1974,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 self.frame_check(from, len);
             }
             let decoded = self.decoded();
+            self.event = self.count.is_some() && progress_event::<G>(&decoded.instruction);
             G::emit(self, &decoded.instruction);
             self.at.aligned = aligned_after(&decoded, self.at.aligned);
             let released: Vec<_> = self.taken.drain(mark..).collect();
@@ -1956,13 +2054,36 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
     }
 
     /// Push the parameters of a tail call: the passed registers, the expected return address and the depth,
-    /// all as this piece was given them.
+    /// all as this piece was given them, and the progress count.
     fn arguments(&mut self) {
+        let count = self.count;
         let mut s = self.sink();
         for i in 0..G::PASSED {
             s.local_get(i);
         }
         s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
+        if let Some(count) = count {
+            s.local_get(count);
+        }
+    }
+
+    /// [`Self::arguments`] for a tail call off the hot path (to a stop, to a loop's checked copy, to exact
+    /// code): the count goes through the thread block, so its local ends before the call and does not
+    /// crowd the registers of the loop it leaves from.
+    fn rare_arguments(&mut self) {
+        let block = self.fixed(G_THREAD_BLOCK);
+        let count = self.count;
+        let mut s = self.sink();
+        if let Some(count) = count {
+            store_count::<G>(&mut s, block, count);
+        }
+        for i in 0..G::PASSED {
+            s.local_get(i);
+        }
+        s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
+        if count.is_some() {
+            push_count::<G>(&mut s, block);
+        }
     }
 
     /// Copy every register whose place in the thread block may be stale there, and the flags too.
@@ -1977,6 +2098,15 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
+        }
+    }
+
+    /// Count the instruction's event, at its first way out, before anything is passed on.
+    fn count_event(&mut self) {
+        if std::mem::take(&mut self.event)
+            && let Some(count) = self.count
+        {
+            add_event(&mut self.sink(), count);
         }
     }
 
@@ -2035,7 +2165,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 });
             }
             id if out_of_line => {
-                let id = id as usize - 2;
+                let id = (id - FIRST_SHAPE_STATE) as usize;
                 let function = flags_word_function::<G>(self.plan.shapes[id]);
                 let locals = G::locals_of(self.canonical[id]);
                 let mut s = self.sink();
@@ -2045,7 +2175,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 s.call(function);
             }
             id => {
-                let flags = self.shape_flags(id as usize - 2);
+                let flags = self.shape_flags((id - FIRST_SHAPE_STATE) as usize);
                 push_word::<G>(&mut self.sink(), |s, flag| G::flag_value(s, flags, flag));
             }
         }
@@ -2083,10 +2213,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.write_back_registers();
         self.write_back_flags(out_of_line);
         let load = self.fixed(G_LOAD_ADDRESS);
+        let progress = self.code.progress;
         if !out_of_line {
             let block = self.fixed(G_THREAD_BLOCK);
             let mut s = self.sink();
-            save_passed::<G>(&mut s, block);
+            save_passed::<G>(&mut s, block, progress);
             set_pc::<G>(&mut s, block, |s| match pc {
                 Pc::Offset(offset) => {
                     load.push(s);
@@ -2098,7 +2229,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             });
             return;
         }
-        save::<G>(&mut self.sink(), |s| match pc {
+        save::<G>(&mut self.sink(), progress, |s| match pc {
             Pc::Offset(offset) => {
                 s.i64_const(offset as i64);
             }
@@ -2125,9 +2256,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
+        let (count, progress) = (self.count, self.code.progress);
         let mut s = self.sink();
-        block.push(&mut s);
-        s.i32_load(memarg(MEMORY_STATE, G::STOP_FLAG_OFFSET as u64, 2));
+        push_stop_wanted::<G>(&mut s, block, count);
         if let Some(entry) = deep {
             // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
             // runs, however large its frame.
@@ -2136,13 +2267,13 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 .i64_gt_u()
                 .i32_or()
                 .if_(BlockType::Empty);
-            depth_check::<G>(&mut s, G::L_DEPTH, entry);
+            depth_check::<G>(&mut s, G::L_DEPTH, entry, progress);
         } else {
             s.if_(BlockType::Empty);
         }
         if let AfterStop::Hand(f) = after {
             self.write_back();
-            self.arguments();
+            self.rare_arguments();
             self.sink().return_call(f).end();
             return;
         }
@@ -2156,7 +2287,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .end();
         match after {
             AfterStop::Enter(f) => {
-                self.arguments();
+                self.rare_arguments();
                 self.sink().return_call(f);
             }
             AfterStop::Reload(live) => {
@@ -2180,19 +2311,23 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.sink().end();
     }
 
-    /// Load registers from the thread block: the tracked ones in `live`, and the passed ones but the
-    /// parameter `skip`.
+    /// Load registers from the thread block: the tracked ones in `live`, the passed ones but the parameter
+    /// `skip`, and the progress count, so none of them is live across the call that left.
     fn reload(&mut self, live: Registers, skip: Option<u32>) {
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in live.intersect(tracked::<G>()).bits() {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
+        let count = self.count;
         let mut s = self.sink();
         for (i, slot) in passed_slots::<G>().enumerate() {
             if skip != Some(i as u32) {
                 slot.load_into(&mut s, block, i as u32);
             }
+        }
+        if let Some(count) = count {
+            load_count::<G>(&mut s, block, count);
         }
     }
 
@@ -2213,8 +2348,8 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
         let exact = self.exact(table, page);
-        for chunk in (0..len).step_by(4096) {
-            let piece = (len - chunk).min(4096);
+        for chunk in (0..len).step_by(wcontainers_abi::PAGE_SIZE as usize) {
+            let piece = (len - chunk).min(wcontainers_abi::PAGE_SIZE as _);
             self.sink()
                 .local_get(G::L_SP)
                 .i64_const(from + i64::from(chunk))
@@ -2313,7 +2448,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 load_flag::<G>(&mut self.sink(), block, flag);
             }
             shape => {
-                let flags = self.shape_flags(shape as usize - 2);
+                let flags = self.shape_flags((shape - FIRST_SHAPE_STATE) as usize);
                 G::flag_value(&mut self.sink(), flags, flag);
             }
         }
@@ -2332,12 +2467,17 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .iter()
             .filter_map(|c| self.function.at.get(c).map(|&b| (*c, b)))
             .collect();
-        if present.is_empty() {
+        // Cases that start pieces of their own (a function cut in parts): a jump to one is a tail call.
+        let elsewhere: Vec<u64> = cases
+            .iter()
+            .copied()
+            .filter(|c| !self.function.at.contains_key(c) && self.index.contains_key(c))
+            .collect();
+        let known = || present.iter().map(|c| c.0).chain(elsewhere.iter().copied());
+        let (Some(lo), Some(hi)) = (known().min(), known().max()) else {
             self.unrecognised_jump(target);
             return;
-        }
-        let lo = present.iter().map(|c| c.0).min().unwrap();
-        let hi = present.iter().map(|c| c.0).max().unwrap();
+        };
         let slots = (hi - lo) / G::ALIGN + 1;
         // The engines take at most this many targets in one `br_table`.
         if slots > BR_TABLE_TARGETS {
@@ -2355,12 +2495,20 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             self.stop_check(Pc::Local(target), AfterStop::Reload(live));
         }
         let index = self.temporary(ValType::I64);
+        let at = self.at;
+        if !elsewhere.is_empty() {
+            self.sink().block(BlockType::Empty);
+            self.labels.push(Label::Other);
+        }
         self.sink().block(BlockType::Empty);
         self.labels.push(Label::Other);
         let mut labels = Vec::new();
         for k in 0..slots {
-            let label = match present.iter().find(|c| c.0 == lo + G::ALIGN * k) {
+            let case = lo + G::ALIGN * k;
+            let label = match present.iter().find(|c| c.0 == case) {
                 Some(&(_, b)) => self.depth(self.label_for(b).unwrap()),
+                // The block around this one.
+                None if elsewhere.contains(&case) => 1,
                 None => 0,
             };
             labels.push(label);
@@ -2392,21 +2540,52 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .br_table(labels, 0)
             .end();
         self.labels.pop();
-        // Made the target again here, so that the engine works it out only when no case is taken.
+        // Made the target again on each way out, so that the engine works it out only when no case is taken.
         let register = self.register(G::reg_bit(rn).expect("a general register"));
         G::branch_target(self, register);
         self.sink().local_set(target);
         self.unrecognised_jump(target);
+        if !elsewhere.is_empty() {
+            self.sink().end();
+            self.labels.pop();
+            self.at = at;
+            G::branch_target(self, register);
+            self.sink().local_set(target);
+            self.write_back();
+            self.leave_through_lookup(target);
+        }
     }
 
-    /// Leave the piece through the lookup, counted.
+    /// Leave the piece through the lookup. A jump to outside its function, or to its function's entry, is a
+    /// tail call, which costs what a call through a register costs; one to inside it (up to the next
+    /// function's entry), in this part or in another of a function cut in parts, is a table or computed goto
+    /// left unrecognised, the slow path, counted.
     fn unrecognised_jump(&mut self, target: u32) {
         self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
         self.write_back();
-        self.sink()
+        let (entry, span) = (self.whole.entry, self.whole.span.clone());
+        let load = self.fixed(G_LOAD_ADDRESS);
+        let mut s = self.sink();
+        s.local_get(target);
+        load.push(&mut s);
+        s.i64_sub()
+            .i64_const(span.start as i64)
+            .i64_sub()
+            .i64_const((span.end - span.start) as i64)
+            .i64_lt_u();
+        s.local_get(target);
+        load.push(&mut s);
+        s.i64_sub().i64_const(entry as i64).i64_ne().i32_and();
+        s.if_(BlockType::Empty)
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
-            .call(F_WARN);
+            .call(F_WARN)
+            .end();
+        self.leave_through_lookup(target);
+    }
+
+    /// Call the piece for the guest address in `target` as a tail call, the registers written back.
+    fn leave_through_lookup(&mut self, target: u32) {
         let piece = self.look_up(target);
         self.arguments();
         self.call_looked_up(piece, target, true);
@@ -2439,9 +2618,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         s.else_().local_get(piece).ref_as_non_null();
         if tail {
-            s.return_call_ref(0).end().unreachable();
+            s.return_call_ref(crate::thread::T_PIECE)
+                .end()
+                .unreachable();
         } else {
-            s.call_ref(0).end();
+            s.call_ref(crate::thread::T_PIECE).end();
         }
     }
 }
@@ -2501,7 +2682,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 for (&from, &to) in from.as_slice().iter().zip(to.as_slice()) {
                     s.local_get(from).local_set(to);
                 }
-                self.set_flag_state(2 + id as u32);
+                self.set_flag_state(FIRST_SHAPE_STATE + id as u32);
             }
             None => {
                 for (i, &(flag, _, _)) in G::FLAGS.iter().enumerate() {
@@ -2521,8 +2702,8 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
 
     fn condition(&mut self, cond: G::Cond) {
         let states = self.at.flags;
-        if states.count_ones() == 1 && states.trailing_zeros() >= 2 {
-            let flags = self.shape_flags(states.trailing_zeros() as usize - 2);
+        if states.count_ones() == 1 && states.trailing_zeros() >= FIRST_SHAPE_STATE {
+            let flags = self.shape_flags((states.trailing_zeros() - FIRST_SHAPE_STATE) as usize);
             if G::condition_direct(&mut self.sink(), flags, cond) {
                 return;
             }
@@ -2598,7 +2779,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         }
         self.sink().local_get(local).if_(BlockType::Empty);
         self.write_back();
-        self.arguments();
+        self.rare_arguments();
         self.this_address(0);
         self.sink().return_call(G::F_EXACT).end();
         false
@@ -2746,10 +2927,12 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     fn raise_stop(&mut self) {
         self.raised_stop = true;
         let block = self.fixed(G_THREAD_BLOCK);
-        raise_stop::<G>(&mut self.sink(), block);
+        let progress = self.code.progress;
+        raise_stop::<G>(&mut self.sink(), block, progress);
     }
 
     fn jump(&mut self, target: Target) {
+        self.count_event();
         match target {
             Target::Relative(by) => {
                 let to = self.at.offset.wrapping_add_signed(by);
@@ -2766,6 +2949,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn jump_if(&mut self, target: Target) {
+        self.count_event();
         self.sink().if_(BlockType::Empty);
         self.labels.push(Label::Other);
         let saved = self.at;
@@ -2776,6 +2960,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn call(&mut self, target: Target) {
+        self.count_event();
         // The callee may change the floating point controls.
         self.at.float_mode = false;
         let offset = self.at.offset;
@@ -2796,8 +2981,11 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             0
         };
         self.address(next + wanted);
-        let depth = self.depth;
+        let (depth, count) = (self.depth, self.count);
         self.sink().local_get(depth);
+        if let Some(count) = count {
+            self.sink().local_get(count);
+        }
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -2817,6 +3005,9 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             }
         }
         let returned_sp = self.temporary(ValType::I64);
+        if let Some(count) = count {
+            self.sink().local_set(count);
+        }
         let mut reload = self.plan.live_after[&offset];
         for &bit in G::PASSED_OUT.iter().rev() {
             let local = if bit == G::SP_BIT {
@@ -2860,6 +3051,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn ret(&mut self, target: u32) {
+        self.count_event();
         pop_return_address::<G>(&mut self.sink());
         self.write_back_registers();
         // The flags go back only when the caller asks for them.
@@ -2878,9 +3070,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             }
         };
         let block = self.fixed(G_THREAD_BLOCK);
+        let progress = self.code.progress;
         if self.omit.returns {
             wanted(self);
-            push_results::<G>(&mut self.sink(), block);
+            push_results::<G>(&mut self.sink(), block, progress);
             self.sink().return_();
             return;
         }
@@ -2890,7 +3083,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         s.i64_eq().if_(BlockType::Empty);
         wanted(self);
         let mut s = self.sink();
-        push_results::<G>(&mut s, block);
+        push_results::<G>(&mut s, block, progress);
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
         self.write_back_flags(false);
@@ -2898,8 +3091,8 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         set_pc::<G>(&mut s, block, |s| {
             s.local_get(target);
         });
-        bottom_return::<G>(&mut s, block);
-        save_passed::<G>(&mut s, block);
+        bottom_return::<G>(&mut s, block, progress);
+        save_passed::<G>(&mut s, block, progress);
         s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
     }
 

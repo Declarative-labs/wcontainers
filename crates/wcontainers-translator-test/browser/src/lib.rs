@@ -38,8 +38,8 @@ fn answer(bytes: Vec<u8>) -> i32 {
 }
 
 /// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
-/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
-/// stop, 2: permissions, 4: returns, 8: depth; only to measure them), for speed (0) or size (1), split into
+/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (as
+/// `Omit::bits` gives them; only to measure them), for speed (0) or size (1), split into
 /// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules). Returns the
 /// length of the first code module, or -1 if the start, the code range or the bound is not valid;
 /// [`more_modules`] gives the rest.
@@ -55,17 +55,8 @@ pub extern "C" fn translate(
     optimise: u32,
     module_bytes: u32,
 ) -> i32 {
-    let look_ahead = match look_ahead {
-        0 => LookAhead::None,
-        1 => LookAhead::Full,
-        _ => LookAhead::Bounded(bound),
-    };
-    let omit = Omit {
-        stop: omit & 1 != 0,
-        permissions: omit & 2 != 0,
-        returns: omit & 4 != 0,
-        depth: omit & 8 != 0,
-    };
+    let look_ahead = LookAhead::from_code(look_ahead, bound);
+    let omit = Omit::from_bits(omit);
     let optimise = if optimise == 1 {
         Optimise::Size
     } else {
@@ -75,7 +66,7 @@ pub extern "C" fn translate(
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| match module_bytes {
         0 => {
-            translate_omitting::<Arm64>(blob, code, &[start], look_ahead, optimise, host, (), omit)
+            translate_omitting::<Arm64>(blob, code, &[start], look_ahead, optimise, wcontainers_translator::ProgressCount::Absent, host, (), omit)
         }
         _ => {
             let module_bytes = module_bytes as usize;
@@ -85,6 +76,7 @@ pub extern "C" fn translate(
                 &[start],
                 look_ahead,
                 optimise,
+                wcontainers_translator::ProgressCount::Absent,
                 host,
                 (),
                 module_bytes,
@@ -193,8 +185,11 @@ pub extern "C" fn cpu_hook_reason() -> i32 {
 /// The thread module. Returns its length.
 #[unsafe(no_mangle)]
 pub extern "C" fn thread_module() -> i32 {
-    answer(wcontainers_translator::thread_module::<Arm64>())
+    answer(wcontainers_translator::thread_module::<Arm64>(wcontainers_translator::ProgressCount::Absent))
 }
+
+/// The contract's name for where the word that keeps FPSR's flags exact is (runner.js reads it).
+const FLOAT_TRACKING_KEY: &str = "floatTracking";
 
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
 /// length.
@@ -288,5 +283,10 @@ pub extern "C" fn contract() -> i32 {
         "registerSp": offset_of!(RegisterBlock, sp),
         "registerPc": offset_of!(RegisterBlock, pc),
     });
+    let mut description = description;
+    description.as_object_mut().expect("an object").insert(
+        FLOAT_TRACKING_KEY.into(),
+        wcontainers_arm64::FLOAT_TRACKING.into(),
+    );
     answer(description.to_string().into_bytes())
 }

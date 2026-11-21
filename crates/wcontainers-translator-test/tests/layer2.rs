@@ -6,12 +6,12 @@
 //! Knobs: `WC_LAYER2_CASES` (default 64), `WC_LAYER2_SEED` (default 1), `WC_LAYER2_FROM` (the first case,
 //! default 0; case `i` is generated from the seed and `i` alone, so a failure replays with `WC_LAYER2_FROM=i`
 //! and `WC_LAYER2_CASES=1`), `WC_LAYER2_JOBS` (cases run at once, default 1), `WC_LAYER2_NATIVE` (how many
-//! of the cases, the first, also run on the real CPU, default 8; each starts a container) and
+//! of the cases, the first, also run on the real CPU, default all; each job keeps one reference container) and
 //! `WC_LAYER2_CHROME` (how many, the first, also run in Chrome at none and at full in both settings, default
 //! 1; each starts Chrome three times).
 
 use proptest::prelude::*;
-use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+use proptest::test_runner::{Config, TestRunner};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_arm64::forms;
@@ -26,6 +26,7 @@ use wcontainers_translator_test::programs::{
     native, ran as outcome, reachable_memory, ready, translated, translated_for,
     translated_stopping_everywhere,
 };
+use wcontainers_translator_test::seeded;
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -33,15 +34,12 @@ fn knob(name: &str, default: u64) -> u64 {
 
 /// The random generator of case `case` of a run from `seed`, so that any case replays by itself.
 fn generator(seed: u64, case: u64) -> TestRunner {
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    key[8..16].copy_from_slice(&case.to_le_bytes());
     let config = Config {
         cases: 1,
         failure_persistence: None,
         ..Config::default()
     };
-    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+    TestRunner::new_with_rng(config, seeded::generator(seed, &case.to_le_bytes(), ""))
 }
 
 #[test]
@@ -49,7 +47,7 @@ fn full_matches_none_and_the_cpu() {
     let cases = knob("WC_LAYER2_CASES", 64);
     let seed = knob("WC_LAYER2_SEED", 1);
     let from = knob("WC_LAYER2_FROM", 0);
-    let natives = knob("WC_LAYER2_NATIVE", 8);
+    let natives = knob("WC_LAYER2_NATIVE", cases);
     let chrome = knob("WC_LAYER2_CHROME", 1);
     let jobs = knob("WC_LAYER2_JOBS", 1).max(1);
     let [ran, faulted, left, lost, forgotten] = std::array::from_fn(|_| AtomicU64::new(0));

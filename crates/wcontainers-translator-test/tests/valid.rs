@@ -37,7 +37,9 @@ fn check(wasm: &[u8]) -> Result<(), String> {
 
 #[test]
 fn thread_module_is_valid() {
-    validate(&thread_module::<Arm64>());
+    validate(&thread_module::<Arm64>(
+        wcontainers_translator::ProgressCount::Absent,
+    ));
 }
 
 /// The environment's settings, with a fixed seed when none is given.
@@ -60,6 +62,7 @@ fn target_below_zero() {
         &[0],
         LookAhead::None,
         Optimise::Speed,
+        wcontainers_translator::ProgressCount::Absent,
         HOST,
         (),
     )
@@ -88,6 +91,7 @@ fn long_chains_translate_on_a_small_stack() {
                 &[0],
                 LookAhead::Full,
                 Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 HOST,
                 (),
             )
@@ -108,7 +112,7 @@ proptest! {
     fn code_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64)) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..words.len() as u64).map(|i| 4 * i).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::None, Optimise::Speed, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
@@ -118,7 +122,7 @@ proptest! {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::Full, Optimise::Speed, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
@@ -127,7 +131,7 @@ proptest! {
     fn bounded_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts: Vec<u64> = picks.iter().map(|p| 4 * p.index(words.len()) as u64).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::Bounded(bound), Optimise::Speed, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &starts);
@@ -161,6 +165,7 @@ fn every_form_is_valid() {
                 &[0],
                 LookAhead::None,
                 Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 HOST,
                 (),
             )
@@ -204,6 +209,7 @@ fn every_form_is_valid() {
                 &starts,
                 look_ahead,
                 Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 HOST,
                 (),
             )

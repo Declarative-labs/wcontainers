@@ -15,9 +15,12 @@ const fn position(list: &[u32], bit: u32) -> u32 {
     panic!("the stack pointer is passed")
 }
 
+/// How many bits a register set has.
+const REGISTER_BITS: usize = size_of::<Registers>() * u8::BITS as usize;
+
 /// Each bit's index in `bits`, 255 for a bit not used.
-const fn bit_index(bits: &[Bit]) -> [u8; 128] {
-    let mut at = [u8::MAX; 128];
+const fn bit_index(bits: &[Bit]) -> [u8; REGISTER_BITS] {
+    let mut at = [u8::MAX; REGISTER_BITS];
     let mut i = 0;
     while i < bits.len() {
         at[bits[i].bit as usize] = i as u8;
@@ -45,12 +48,15 @@ pub(crate) trait Layout: Guest {
     const L_RETURN: u32 = Self::PASSED;
     /// i64 parameter: the bytes of the engine's stack the piece's callers use, as estimated.
     const L_DEPTH: u32 = Self::PASSED + 1;
-    /// How many parameters a piece has: the passed registers, the expected return address and the depth.
+    /// How many parameters a piece has: the passed registers, the expected return address and the depth;
+    /// with the progress count kept, one more follows (see [`crate::code::parameters`]).
     const PARAMETERS: u32 = Self::PASSED + 2;
+    /// i64 parameter, with the progress count kept: the count, also the piece's last result.
+    const L_COUNT: u32 = Self::PARAMETERS;
 
     // Function indices: the translator's six hooks, the guest's hooks, then the dispatcher and the module's
     // own functions, then the pieces.
-    const F_HOOKS: u32 = 6;
+    const F_HOOKS: u32 = crate::code::TRANSLATOR_HOOKS.len() as u32;
     const F_DISPATCH: u32 = Self::F_HOOKS + Self::HOOKS.len() as u32;
     const F_UNWIND: u32 = Self::F_DISPATCH + 1;
     const F_EXACT: u32 = Self::F_DISPATCH + 2;
@@ -67,7 +73,7 @@ pub(crate) trait Layout: Guest {
     const F_FIRST_PIECE: u32 = Self::F_FLAGS_WORD + Self::FLAGS_WORDS;
 
     // Type indices: those of the translator's own hooks and functions, the guest's hooks, then the rest.
-    const T_HOOKS: u32 = 8;
+    const T_HOOKS: u32 = crate::code::T_UNWIND + 1;
     const T_SAVE: u32 = Self::T_HOOKS + Self::HOOKS.len() as u32;
     const T_PERMISSION: u32 = Self::T_SAVE + 1;
     const T_FLAGS_WORD: u32 = Self::T_SAVE + 2;
@@ -83,7 +89,7 @@ pub(crate) trait Layout: Guest {
     const TRACKED: Registers = Self::ALL
         .minus(Self::FLAG_BITS)
         .minus(Registers::of_bits(Self::PASSED_IN));
-    const BIT_INDEX: [u8; 128] = bit_index(Self::BITS);
+    const BIT_INDEX: [u8; REGISTER_BITS] = bit_index(Self::BITS);
 
     /// What the guest says of a register bit.
     fn bit(bit: u32) -> Bit {

@@ -4,9 +4,10 @@
 //! `WC_DECODE_CASES` words per form (default 64), seeded from `WC_DECODE_SEED` (default 1).
 
 use proptest::prelude::*;
-use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
+use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use wcontainers_abi::{HWCAP, HWCAP2, hwcap};
 use wcontainers_arm64::{Instruction, decode, forms};
+use wcontainers_translator_test::seeded::generator;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -34,15 +35,9 @@ fn words_of_forms_not_offered_are_undefined_or_unsupported() {
     let seed = setting("WC_DECODE_SEED", 1);
     let mut failures = Vec::new();
     for form in forms::all() {
-        let mut key = [0u8; 32];
-        key[..8].copy_from_slice(&seed.to_le_bytes());
-        for (i, byte) in form.name.bytes().enumerate() {
-            key[8 + i % 24] ^= byte;
-        }
         let mut config = Config::with_cases(count);
         config.failure_persistence = None;
-        let mut runner =
-            TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+        let mut runner = TestRunner::new_with_rng(config, generator(seed, &[], &form.name));
         let result = runner.run(&any::<u32>(), |free| {
             let word = form.word(free);
             if forms::presented(word) {
@@ -142,13 +137,9 @@ fn translated_words_are_of_forms_layer_1_covers() {
     use wcontainers_translator_test::layer1::covered;
     let count = setting("WC_DECODE_WORDS", 200_000) as u32;
     let seed = setting("WC_DECODE_SEED", 1);
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    key[8..16].copy_from_slice(b"any word");
     let mut config = Config::with_cases(count);
     config.failure_persistence = None;
-    let mut runner =
-        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+    let mut runner = TestRunner::new_with_rng(config, generator(seed, b"any word", ""));
     let result = runner.run(&any::<u32>(), |word| match decode(word) {
         Instruction::Undefined | Instruction::Unsupported => Ok(()),
         // A word of a form taken from a hint space runs as that hint, which does nothing.
@@ -186,13 +177,7 @@ fn every_offered_form_is_translated() {
     let mut offered = 0;
     for form in forms::all().iter().filter(|f| covered(f)) {
         offered += 1;
-        let mut key = [0u8; 32];
-        key[..8].copy_from_slice(&seed.to_le_bytes());
-        key[8..16].copy_from_slice(b"all form");
-        for (i, byte) in form.name.bytes().enumerate() {
-            key[16 + i % 16] ^= byte;
-        }
-        let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &key);
+        let mut rng = generator(seed, b"all form", &form.name);
         for _ in 0..count {
             let word = form.word(rng.random());
             let feature = of_feature_not_offered(form, word).is_some();

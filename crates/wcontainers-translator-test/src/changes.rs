@@ -12,8 +12,9 @@
 
 use crate::programs::{Blob, Ran, STACK_TOP, placement, ran, ready, ready_for};
 use crate::runner::{Machine, Pause, Paused, Stopped};
+use crate::seeded::generator;
 use proptest::prelude::RngExt;
-use proptest::test_runner::{RngAlgorithm, TestRng};
+use proptest::test_runner::TestRng;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hasher};
@@ -57,6 +58,11 @@ struct Change {
 
 /// Faults handled in one run; the next one ends it.
 const HANDLED: usize = 64;
+
+/// The most pages one change touches.
+const MOST_PAGES_CHANGED: u32 = 3;
+/// How likely a page changed is to be near where a register points.
+const NEAR_POINTER_ODDS: f64 = 0.6;
 
 /// How one run went, for comparing: each time the thread came back, and the output.
 struct Ended {
@@ -109,7 +115,7 @@ fn frames(registers: &RegisterBlock) -> Range<u64> {
     registers.sp / PAGE_SIZE..STACK_TOP / PAGE_SIZE
 }
 
-/// Up to three pages and what each will allow: often near where a register points (a loop's base, the page
+/// Up to [`MOST_PAGES_CHANGED`] pages and what each will allow: often near where a register points (a loop's base, the page
 /// it is on, the one after), otherwise anywhere a change may touch.
 fn choose(
     rng: &mut TestRng,
@@ -136,8 +142,8 @@ fn choose(
         .filter(|page| within(page) && !frames.contains(page))
         .collect();
     let mut pages = Vec::new();
-    for _ in 0..rng.random_range(1..=3) {
-        let page = if !pointers.is_empty() && rng.random_bool(0.6) {
+    for _ in 0..rng.random_range(1..=MOST_PAGES_CHANGED) {
+        let page = if !pointers.is_empty() && rng.random_bool(NEAR_POINTER_ODDS) {
             // Its own page half the time, otherwise the one before or one of the two after.
             const NEAR: [i64; 6] = [0, 0, 0, -1, 1, 2];
             let page = pointers[rng.random_range(0..pointers.len())];
@@ -243,9 +249,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
         let runnable = runnable.clone();
         let came_back = full_came_back.clone();
         let universe = universe.clone();
-        let mut seed = [0u8; 32];
-        seed[..8].copy_from_slice(&plan.seed.to_le_bytes());
-        let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &seed);
+        let mut rng = generator(plan.seed, &[], "");
         let mut syscalls = 0;
         full.on_pause(move |at, paused| {
             if at == Pause::Syscall {

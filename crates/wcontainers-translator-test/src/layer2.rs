@@ -29,7 +29,7 @@ const AREA_BYTES: usize = OUTPUT.next_multiple_of(16) as usize;
 
 /// Where a program's area starts in its blob: no access reaches below it, into the code and tables.
 pub fn area_offset(blob: &Blob) -> usize {
-    blob.bytes.len() - 4096 - AREA_BYTES
+    blob.bytes.len() - wcontainers_abi::PAGE_SIZE as usize - AREA_BYTES
 }
 /// Bytes of the stack every function frame keeps below what random accesses through sp reach: x30, x28, x16
 /// and x18, which every function saves and restores, so a caller's loop or group across a call keeps them.
@@ -2099,10 +2099,11 @@ pub fn assemble(program: &Program) -> Blob {
     }
     // Zeros up to where the area ends on a page boundary, then a page of zeros, so accesses near the edge reach
     // no code, table or area.
-    let align = (4096 - (ops.offset().0 + AREA_BYTES) % 4096) % 4096;
+    let page = wcontainers_abi::PAGE_SIZE as usize;
+    let align = (page - (ops.offset().0 + AREA_BYTES) % page) % page;
     ops.extend(std::iter::repeat_n(0u8, align));
     dynasm!(ops ; .arch aarch64 ; =>area_label);
-    ops.extend(std::iter::repeat_n(0u8, AREA_BYTES + 4096));
+    ops.extend(std::iter::repeat_n(0u8, AREA_BYTES + page));
     let edge = layout.edge;
     dynasm!(ops ; .arch aarch64 ; =>edge);
     let bytes = ops.finalize().expect("labels resolve");

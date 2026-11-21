@@ -152,10 +152,10 @@ pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
 #[derive(Clone, Debug)]
 pub struct Case {
     pub word: u32,
-    pub registers: [u64; 34],
-    pub vectors: [u128; 32],
+    pub registers: [u64; REQUEST_REGISTERS],
+    pub vectors: [u128; VECTOR_REGISTERS],
     /// FPSR and FPCR.
-    pub float: [u32; 2],
+    pub float: [u32; FLOAT_REGISTERS],
     /// The flags are kept exact, as after a program wrote FPSR.
     pub tracking: bool,
     pub seed: u64,
@@ -323,7 +323,7 @@ fn float_control() -> impl Strategy<Value = (u32, bool)> {
 /// Cases for one form.
 pub fn cases(form: Form) -> impl Strategy<Value = Case> {
     let kept = form.clone();
-    let registers = prop::collection::vec(value(), 31);
+    let registers = prop::collection::vec(value(), GENERAL_REGISTERS);
     // The stack pointer is mostly a multiple of 16, as the ABI keeps it, and sometimes not, which faults
     // when it is a load or store's base.
     let stack = (
@@ -342,7 +342,7 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
         any::<u64>(),
         data_pointer(),
         small,
-        prop::collection::vec(vector_value(), 32),
+        prop::collection::vec(vector_value(), VECTOR_REGISTERS),
         (0u8..8, float_control(), any::<u32>()),
     )
         .prop_map(
@@ -360,11 +360,11 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
                 (pick, (fpcr, tracking), fpsr),
             )| {
                 let word = restrict(&form, form.word(free), pick);
-                let mut registers = [0u64; 34];
-                registers[..31].copy_from_slice(&x);
-                registers[31] = sp;
-                registers[32] = flags << 28;
-                registers[33] = thread_pointer;
+                let mut registers = [0u64; REQUEST_REGISTERS];
+                registers[..GENERAL_REGISTERS].copy_from_slice(&x);
+                registers[CASE_SP] = sp;
+                registers[REQUEST_FLAGS] = flags << wcontainers_abi::pstate::V.trailing_zeros();
+                registers[REQUEST_THREAD_POINTER] = thread_pointer;
                 // Loads and stores mostly reach the data area: the base points into it and an index is small.
                 // Elsewhere Rn and Rm may name general or vector registers.
                 if form.group.starts_with("ldst/") {
@@ -420,10 +420,10 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
 pub struct Outcome {
     /// Where control went or why the thread stopped, as the reference reports it.
     pub stop: Stop,
-    pub registers: [u64; 35],
-    pub vectors: [u128; 32],
+    pub registers: [u64; LANDED_REGISTERS],
+    pub vectors: [u128; VECTOR_REGISTERS],
     /// FPSR and FPCR.
-    pub float: [u32; 2],
+    pub float: [u32; FLOAT_REGISTERS],
     pub changed: Vec<(u32, u8)>,
 }
 
@@ -443,13 +443,8 @@ pub enum Stop {
 
 /// The reference's result as an [`Outcome`].
 pub fn reference_outcome(landed: &Landed) -> Outcome {
-    const SIGILL: u32 = 4;
-    const SIGBUS: u32 = 7;
-    const SIGTRAP: u32 = 5;
-    const SIGSEGV: u32 = 11;
-    const SIGSYS: u32 = 31;
-    const BUS_ADRALN: u32 = 1;
-    let pc = landed.registers[32];
+    use linux_raw_sys::general::{BUS_ADRALN, SIGBUS, SIGILL, SIGSEGV, SIGSYS, SIGTRAP};
+    let pc = landed.registers[LANDED_PC];
     let stop = match landed.signal {
         SIGILL if pc == CODE => Stop::Illegal,
         SIGILL => Stop::Landed(pc),
@@ -499,11 +494,13 @@ fn start_data(case: &Case) -> Vec<u8> {
 /// The registers at the start of a case.
 fn start_registers(case: &Case) -> RegisterBlock {
     let mut registers = RegisterBlock::ZERO;
-    registers.x.copy_from_slice(&case.registers[..31]);
-    registers.sp = case.registers[31];
+    registers
+        .x
+        .copy_from_slice(&case.registers[..GENERAL_REGISTERS]);
+    registers.sp = case.registers[CASE_SP];
     registers.pc = CODE;
-    registers.pstate = case.registers[32];
-    registers.tpidr_el0 = case.registers[33];
+    registers.pstate = case.registers[REQUEST_FLAGS];
+    registers.tpidr_el0 = case.registers[REQUEST_THREAD_POINTER];
     for (to, from) in registers.v.iter_mut().zip(case.vectors) {
         *to = [from as u64, (from >> 64) as u64];
     }
@@ -514,12 +511,12 @@ fn start_registers(case: &Case) -> RegisterBlock {
 
 /// An outcome from how the translated case stopped, its registers after and the data bytes it changed.
 fn outcome(stop: Stop, after: &RegisterBlock, changed: Vec<(u32, u8)>) -> Outcome {
-    let mut out = [0u64; 35];
-    out[..31].copy_from_slice(&after.x);
-    out[31] = after.sp;
-    out[32] = after.pc;
-    out[33] = after.pstate;
-    out[34] = after.tpidr_el0;
+    let mut out = [0u64; LANDED_REGISTERS];
+    out[..GENERAL_REGISTERS].copy_from_slice(&after.x);
+    out[CASE_SP] = after.sp;
+    out[LANDED_PC] = after.pc;
+    out[LANDED_FLAGS] = after.pstate;
+    out[LANDED_THREAD_POINTER] = after.tpidr_el0;
     Outcome {
         stop,
         registers: out,

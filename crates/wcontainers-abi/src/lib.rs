@@ -32,5 +32,5 @@ pub use host::{
     NANOSECONDS_PER_SECOND, Warning,
 };
 pub use machine::{HWCAP, HWCAP2, hwcap};
-pub use memory::{AddressSpace, LOWEST_ADDRESS, PAGE_SIZE, Permissions};
+pub use memory::{AddressSpace, LOWEST_ADDRESS, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, Permissions};
 pub use registers::{RegisterBlock, STOP_FLAG_OFFSET, THREAD_BLOCK_SIZE, pstate};

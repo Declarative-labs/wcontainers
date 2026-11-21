@@ -1,8 +1,23 @@
 // Layer 1's memory layout and wire format, and the starting stack of a flat blob. The native reference
 // runner includes this file too, so both sides always agree.
 
+/// The exit status of a process that a signal ended is this plus the signal, as the shell and Docker give it.
+pub const SIGNALLED: i32 = 128;
+
+/// The reference runner's mode that runs blobs one after another, each in a child of its own, for requests on
+/// stdin: a blob's file, load address, stack top, stack bytes and optional program headers and
+/// count. Each answer is the status as a shell reports it (`i32`), then stdout and stderr, each as a `u32`
+/// length and its bytes.
+pub const SERVE_BLOBS: &str = "blobs";
+/// What separates a request's arguments, and what ends a request.
+pub const REQUEST_SEPARATOR: u8 = b' ';
+pub const REQUEST_END: u8 = b'\n';
+
 /// `AT_HWCAP` as the guest is told it; a test checks it against `wcontainers_abi::HWCAP`.
 pub const BLOB_HWCAP: u64 = 0x183;
+
+/// How long a program may run on Linux, in seconds, before the reference stops it.
+pub const BLOB_SECONDS: u32 = 20;
 
 /// The name a flat blob is started under, its `argv[0]`.
 pub const BLOB_NAME: &[u8] = b"blob\0";
@@ -61,14 +76,43 @@ pub const DATA_BYTES: u64 = DATA_WRITABLE + DATA_READ_ONLY;
 pub const CODE: u64 = 0x5000_0000;
 pub const CODE_SPAN: u64 = 128 << 20;
 
-/// A case: the instruction word, the data seed, then x0 to x30, sp, the flags (at their `pstate` bits) and
-/// the thread pointer, then v0 to v31, then FPSR and FPCR (4 bytes each), all little endian.
-pub const REQUEST_BYTES: usize = 4 + 8 + 34 * 8 + 32 * 16 + 8;
+/// x0 to x30, then sp, in a case's registers; the harness checks both counts against `RegisterBlock`.
+pub const GENERAL_REGISTERS: usize = 31;
+pub const CASE_SP: usize = GENERAL_REGISTERS;
+/// A request's registers after sp: the flags (at their `pstate` bits) and the thread pointer.
+pub const REQUEST_FLAGS: usize = CASE_SP + 1;
+pub const REQUEST_THREAD_POINTER: usize = REQUEST_FLAGS + 1;
+pub const REQUEST_REGISTERS: usize = REQUEST_THREAD_POINTER + 1;
+/// A result's registers after sp: pc, the flags and the thread pointer.
+pub const LANDED_PC: usize = CASE_SP + 1;
+pub const LANDED_FLAGS: usize = LANDED_PC + 1;
+pub const LANDED_THREAD_POINTER: usize = LANDED_FLAGS + 1;
+pub const LANDED_REGISTERS: usize = LANDED_THREAD_POINTER + 1;
+/// v0 to v31.
+pub const VECTOR_REGISTERS: usize = 32;
+/// FPSR and FPCR.
+pub const FLOAT_REGISTERS: usize = 2;
 
-/// A result: signal, `si_code`, `si_addr`, then x0 to x30, sp, pc, the flags and the thread pointer, then v0
-/// to v31, then FPSR and FPCR, then the number of changed data bytes and each one as a 4 byte offset from
-/// `DATA` and its new value.
-pub const RESULT_HEADER_BYTES: usize = 4 + 4 + 8 + 35 * 8 + 32 * 16 + 8 + 4;
+/// A case: the instruction word, the data seed, then the request's registers, then v0 to v31, then FPSR and
+/// FPCR, all little endian; the request's fields start at these offsets.
+pub const REQUEST_SEED_AT: usize = size_of::<u32>();
+pub const REQUEST_REGISTERS_AT: usize = REQUEST_SEED_AT + size_of::<u64>();
+pub const REQUEST_VECTORS_AT: usize = REQUEST_REGISTERS_AT + REQUEST_REGISTERS * size_of::<u64>();
+pub const REQUEST_FLOAT_AT: usize = REQUEST_VECTORS_AT + VECTOR_REGISTERS * size_of::<u128>();
+pub const REQUEST_BYTES: usize = REQUEST_FLOAT_AT + FLOAT_REGISTERS * size_of::<u32>();
+
+/// A result: signal, `si_code`, `si_addr`, then the landed registers, then v0 to v31, then FPSR and FPCR,
+/// then the number of changed data bytes and each one as an offset from `DATA` and its new value; the header's
+/// fields start at these offsets.
+pub const RESULT_CODE_AT: usize = size_of::<u32>();
+pub const RESULT_ADDRESS_AT: usize = RESULT_CODE_AT + size_of::<u32>();
+pub const RESULT_REGISTERS_AT: usize = RESULT_ADDRESS_AT + size_of::<u64>();
+pub const RESULT_VECTORS_AT: usize = RESULT_REGISTERS_AT + LANDED_REGISTERS * size_of::<u64>();
+pub const RESULT_FLOAT_AT: usize = RESULT_VECTORS_AT + VECTOR_REGISTERS * size_of::<u128>();
+pub const RESULT_CHANGES_AT: usize = RESULT_FLOAT_AT + FLOAT_REGISTERS * size_of::<u32>();
+pub const RESULT_HEADER_BYTES: usize = RESULT_CHANGES_AT + size_of::<u32>();
+/// One changed data byte: its offset as a `u32`, then its value.
+pub const CHANGE_BYTES: usize = size_of::<u32>() + size_of::<u8>();
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

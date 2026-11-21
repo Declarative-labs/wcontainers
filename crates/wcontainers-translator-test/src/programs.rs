@@ -1,16 +1,22 @@
 //! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
 
-use crate::layout::initial_stack;
-use crate::reference::{build as build_reference, container_name};
+use crate::layout::{REQUEST_END, REQUEST_SEPARATOR, SERVE_BLOBS, initial_stack};
+use crate::reference::{
+    DOCKER, GUEST_TRIPLE, IMAGE, PROGRAMS_FOLDER, REFERENCE_CONTAINER, RUNNER_FOLDER, RUNNER_NAME,
+    build as build_reference, container_name, mount, serving, target_folder,
+};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
+use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
+use std::cell::RefCell;
+use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, ChildStdin, ChildStdout, Command};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
 use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::Personality;
+use wcontainers_guest_cpu::{Guest, Personality};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
@@ -37,6 +43,11 @@ pub struct Blob {
 }
 
 impl Blob {
+    /// Whether the program's code reads FPSR, so that its flags are kept exact from its start.
+    pub fn reads_float_status(&self) -> bool {
+        wcontainers_arm64::reads_float_status(&self.bytes[..self.code_bytes as usize])
+    }
+
     /// Where the program headers are in guest memory, and how many.
     pub fn headers_in_memory(&self) -> Option<(u64, u64)> {
         self.program_headers
@@ -44,8 +55,14 @@ impl Blob {
     }
 }
 
+/// The link script that places a program as a flat blob, in the programs' source folder.
+pub(crate) const FLAT_SCRIPT: &str = "flat.ld";
+
+/// The folder of the test programs' sources beside this crate's manifest, also their folder under `target`.
+const PROGRAMS: &str = "programs";
+
 pub(crate) fn out_directory() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/programs")
+    target_folder(PROGRAMS)
 }
 
 /// A file name no other build or run, in this process or another, uses.
@@ -55,8 +72,8 @@ pub(crate) fn unique(stem: &str) -> String {
     format!("{stem}.{}.{n}", std::process::id())
 }
 
-pub(crate) fn source_directory() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs")
+pub fn source_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PROGRAMS)
 }
 
 pub(crate) fn zig(arguments: &[&str]) {
@@ -76,6 +93,45 @@ pub enum Library {
     C,
 }
 
+/// The linker option that links only what the program reaches, as from an archive: zig otherwise keeps C
+/// library code nothing calls, such as `fmal`, which reads FPSR and so would keep every program's flags exact.
+pub(crate) const LINK_ONLY_WHAT_IS_REACHED: &str = "-Wl,--gc-sections";
+
+/// zig's flags that build C for the guest: ARM64 Linux with musl.
+pub(crate) const ZIG_GUEST_TARGET: [&str; 2] = ["-target", "aarch64-linux-musl"];
+/// zig's commands for C and for C++.
+pub(crate) const C_DRIVER: &str = "cc";
+const CPP_DRIVER: &str = "c++";
+/// The compiler's flags for a static executable at a fixed position.
+pub(crate) const FIXED_POSITION: [&str; 3] = ["-static", "-fno-pic", "-no-pie"];
+/// The compiler's flag that leaves out every sanitizer (zig turns some on by default).
+pub(crate) const NO_SANITIZERS: &str = "-fno-sanitize=all";
+/// The linker option, given through the compiler, that leaves out the build id.
+pub(crate) const NO_BUILD_ID: &str = "-Wl,--build-id=none";
+/// The linker option, given through the compiler, that names the link script, joined to its path.
+pub(crate) const LINK_SCRIPT: &str = "-Wl,-T,";
+/// The compiler's flag that names the file it writes.
+pub(crate) const OUTPUT_FLAG: &str = "-o";
+/// The extension of a linked program.
+pub(crate) const ELF_EXTENSION: &str = "elf";
+
+/// What a test program's source is written in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Language {
+    C,
+    Cpp,
+    Rust,
+    Assembly,
+}
+
+/// The extension of each language's source, in the order they are looked for.
+const SOURCES: [(&str, Language); 4] = [
+    ("c", Language::C),
+    ("cpp", Language::Cpp),
+    ("rs", Language::Rust),
+    ("S", Language::Assembly),
+];
+
 /// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
 /// assembly) at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
@@ -94,36 +150,37 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     let defines: Vec<String> = defines.iter().map(|d| format!("-D{d}")).collect();
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
-    let elf = out.join(format!("{own}.elf"));
-    let source = ["c", "cpp", "rs", "S"]
+    let elf = out.join(&own).with_added_extension(ELF_EXTENSION);
+    let (source, language) = SOURCES
         .iter()
-        .map(|extension| source_directory().join(format!("{name}.{extension}")))
-        .find(|source| source.exists())
+        .map(|(extension, language)| {
+            let source = source_directory()
+                .join(name)
+                .with_added_extension(extension);
+            (source, *language)
+        })
+        .find(|(source, _)| source.exists())
         .expect("a program of that name");
-    let script = source_directory().join("flat.ld");
+    let script = source_directory().join(FLAT_SCRIPT);
     let text = |p: &Path| p.to_str().unwrap().to_string();
-    if source.extension().unwrap() == "rs" {
+    if language == Language::Rust {
         rust(&source, &elf, &script, optimisation);
         return flatten(&elf, &own, stem);
     }
-    let script = format!("-Wl,-T,{}", text(&script));
-    let driver = if source.extension().unwrap() == "cpp" {
-        "c++"
+    let script = [LINK_SCRIPT, &text(&script)].concat();
+    let driver = if language == Language::Cpp {
+        CPP_DRIVER
     } else {
-        "cc"
+        C_DRIVER
     };
-    let mut arguments = vec![
-        driver,
-        "-target",
-        "aarch64-linux-musl",
-        optimisation,
-        "-static",
-        "-fno-pic",
-        "-no-pie",
-        "-fno-sanitize=all",
-        &script,
-        "-Wl,--build-id=none",
-    ];
+    let mut arguments = vec![driver];
+    arguments.extend(ZIG_GUEST_TARGET);
+    arguments.push(optimisation);
+    arguments.extend(FIXED_POSITION);
+    arguments.extend([NO_SANITIZERS, &script, NO_BUILD_ID]);
+    if library == Library::C {
+        arguments.push(LINK_ONLY_WHAT_IS_REACHED);
+    }
     if library == Library::None {
         arguments.extend([
             "-ffreestanding",
@@ -136,7 +193,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     }
     arguments.extend(defines.iter().map(String::as_str));
     let (elf_text, source_text) = (text(&elf), text(&source));
-    arguments.extend(["-o", &elf_text, &source_text]);
+    arguments.extend([OUTPUT_FLAG, &elf_text, &source_text]);
     zig(&arguments);
     flatten(&elf, &own, stem)
 }
@@ -145,12 +202,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
 fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
     let level = optimisation.trim_start_matches("-O");
     let status = Command::new("rustc")
-        .args([
-            "--edition",
-            "2024",
-            "--target",
-            "aarch64-unknown-linux-musl",
-        ])
+        .args(["--edition", "2024", "--target", GUEST_TRIPLE])
         .args(["-C", &format!("opt-level={level}")])
         .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
         .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
@@ -162,7 +214,7 @@ fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
         ])
         .arg("-C")
         .arg(format!("link-arg=-T{}", script.display()))
-        .arg("-o")
+        .arg(OUTPUT_FLAG)
         .arg(elf)
         .arg(source)
         .status()
@@ -192,7 +244,8 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         object::read::elf::ElfFile64::<object::Endianness>::parse(&*file).expect("an ELF file");
     let headers = parsed.elf_program_headers();
     let mut bytes = std::fs::read(&built).unwrap();
-    bytes.resize(bytes.len().next_multiple_of(8), 0);
+    // An ELF64 program header's fields are 64 bit words.
+    bytes.resize(bytes.len().next_multiple_of(size_of::<u64>()), 0);
     let at = bytes.len() as u64;
     bytes.extend_from_slice(object::pod::bytes_of_slice(headers));
     let blob = Blob {
@@ -205,8 +258,15 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
-    std::fs::rename(elf, out.join(format!("{}.elf", blob.name))).unwrap();
+    std::fs::rename(elf, elf_path(&blob.name)).unwrap();
     blob
+}
+
+/// Where a built blob's linked program is kept, by the blob's name.
+pub fn elf_path(name: &str) -> PathBuf {
+    out_directory()
+        .join(name)
+        .with_added_extension(ELF_EXTENSION)
 }
 
 /// What a program did: its output and exit status.
@@ -216,6 +276,8 @@ pub struct Ran {
     pub stderr: Vec<u8>,
     pub status: i32,
 }
+
+pub use crate::layout::SIGNALLED;
 
 /// Where a flat blob and its stack go in guest memory, the same for every runner.
 pub struct Placement {
@@ -229,7 +291,7 @@ pub struct Placement {
 }
 
 pub fn placement(blob: &Blob) -> Placement {
-    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(4096);
+    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(wcontainers_abi::PAGE_SIZE);
     let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory());
     Placement {
         memory_bytes: STACK_TOP,
@@ -334,7 +396,7 @@ pub fn ready_with(
     load: impl FnOnce(&mut Machine),
 ) -> Machine {
     // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
-    let slots = (blob.bytes.len() as u64).div_ceil(4) as u32;
+    let slots = (blob.bytes.len() as u64).div_ceil(Arm64::ALIGN) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
@@ -344,22 +406,24 @@ pub fn ready_with(
     load(&mut machine);
     machine.write(place.sp, &place.stack);
     machine.set_registers(&Arm64::initial_block(blob.load, place.sp));
+    if blob.reads_float_status() {
+        machine.track_float_flags();
+    }
     machine
 }
 
 /// What a program did, from why its thread stopped. Panics if it stopped without exiting or faulting.
 pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &RegisterBlock) -> Ran {
-    // Docker reports a process killed by a signal as 128 plus the signal's number.
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
         Stopped::Finished(status) => status & 0xff,
-        Stopped::Exit(Exit::MemoryFault { .. }) => 128 + 11,
-        Stopped::Exit(Exit::AlignmentFault { .. }) => 128 + 7,
-        Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
-        Stopped::Exit(Exit::Breakpoint { .. }) => 128 + 5,
-        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => 128 + 8,
-        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => 128 + 11,
-        Stopped::Fault(Fault::Stack) => 128 + 7,
+        Stopped::Exit(Exit::MemoryFault { .. }) => SIGNALLED + SIGSEGV as i32,
+        Stopped::Exit(Exit::AlignmentFault { .. }) => SIGNALLED + SIGBUS as i32,
+        Stopped::Exit(Exit::IllegalInstruction) => SIGNALLED + SIGILL as i32,
+        Stopped::Exit(Exit::Breakpoint { .. }) => SIGNALLED + SIGTRAP as i32,
+        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => SIGNALLED + SIGFPE as i32,
+        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => SIGNALLED + SIGSEGV as i32,
+        Stopped::Fault(Fault::Stack) => SIGNALLED + SIGBUS as i32,
         other => {
             let at = registers.pc.wrapping_sub(blob.load) as usize;
             let word = blob
@@ -396,8 +460,7 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
 /// is counted).
 pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let reference = build_reference();
-    let directory = out_directory().join("native");
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = native_directory();
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let script = format!(
@@ -406,16 +469,11 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
         blob.stack_bytes,
         headers_arguments(blob).join(" ")
     );
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(container_name("timing"))
-        .arg("-v")
-        .arg(format!("{}:/r:ro", reference.display()))
-        .arg("-v")
-        .arg(format!("{}:/p:ro", directory.display()))
-        .args(["alpine:latest", "sh", "-c", &script])
-        .output()
-        .expect("run docker");
+    let output = run_container("timing", |command| {
+        mount(command, &reference, RUNNER_FOLDER);
+        mount(command, &directory, PROGRAMS_FOLDER);
+        command.args([IMAGE, "sh", "-c", &script]);
+    });
     std::fs::remove_file(directory.join(&file)).unwrap();
     let times: Vec<f64> = String::from_utf8_lossy(&output.stderr)
         .lines()
@@ -432,48 +490,146 @@ fn headers_arguments(blob: &Blob) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Run a blob natively on ARM64 Linux in Docker.
-pub fn native(blob: &Blob) -> Ran {
-    let reference = build_reference();
-    // Every run reads a file of its own that nothing replaces while Docker reads it.
-    let directory = out_directory().join("native");
+/// Run a Linux container for `purpose` to its end, with the further `docker run` arguments `add` gives.
+/// Fails when Docker itself failed (it made no container, or the container did not start), so that
+/// Docker's own failure is never taken for the program's ending.
+pub fn run_container(purpose: &str, add: impl FnOnce(&mut Command)) -> std::process::Output {
+    let name = container_name(purpose);
+    let directory = out_directory().join("containers");
     std::fs::create_dir_all(&directory).unwrap();
-    let file = format!("{}.bin", unique(&blob.name));
-    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(container_name("program"))
-        .arg("-v")
-        .arg(format!("{}:/r:ro", reference.display()))
-        .arg("-v")
-        .arg(format!("{}:/p:ro", directory.display()))
-        .args(["alpine:latest", "/r/wcontainers-reference", "blob"])
-        .arg(format!("/p/{file}"))
-        .arg(format!("{:#x}", blob.load))
-        .arg(format!("{STACK_TOP:#x}"))
-        .arg(format!("{:#x}", blob.stack_bytes))
-        .args(headers_arguments(blob))
-        .output()
-        .expect("run docker");
-    std::fs::remove_file(directory.join(&file)).unwrap();
+    // Docker writes the container's id here once it has made the container.
+    let made = directory.join(&name);
+    let mut command = Command::new(DOCKER);
+    command
+        .args(REFERENCE_CONTAINER)
+        .arg(&name)
+        .arg("--cidfile")
+        .arg(&made);
+    add(&mut command);
+    let output = command.output().expect("run docker");
+    let was_made = std::fs::remove_file(&made).is_ok();
     let status = output.status.code().expect("an exit status");
-    // The runner's own failure is no result of the guest's: it fails the case, never compares.
+    let did_not_start =
+        DOCKER_FAILED.contains(&status) && output.stderr.starts_with(DOCKER_FAILED_SAYS);
     assert!(
-        !(status == RUNNER_FAILED
-            && output
-                .stderr
-                .windows(RUNNER_FAILED_SAYS.len())
-                .any(|w| w == RUNNER_FAILED_SAYS)),
-        "the reference runner failed: {}",
+        was_made && !did_not_start,
+        "Docker failed to run {name} (status {status}): {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    Ran {
-        stdout: output.stdout,
-        stderr: output.stderr,
-        status,
+    output
+}
+
+/// Docker's own exit statuses for a container it could not run (its daemon's error, a command that cannot
+/// be invoked, a command not found), and what it writes on stderr with them.
+const DOCKER_FAILED: std::ops::RangeInclusive<i32> = 125..=127;
+const DOCKER_FAILED_SAYS: &[u8] = b"docker: Error response from daemon: ";
+
+/// Run a blob natively on ARM64 Linux in Docker, through this thread's blob server.
+pub fn native(blob: &Blob) -> Ran {
+    // Every run reads a file of its own that nothing replaces while the server reads it.
+    let directory = native_directory();
+    let file = format!("{}.bin", unique(&blob.name));
+    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
+    let request: Vec<String> = [
+        format!("/p/{file}"),
+        format!("{:#x}", blob.load),
+        format!("{STACK_TOP:#x}"),
+        format!("{:#x}", blob.stack_bytes),
+    ]
+    .into_iter()
+    .chain(headers_arguments(blob))
+    .collect();
+    // Taken out while in use: a server that failed mid-answer is dropped, never used again.
+    let mut server = BLOB_SERVER
+        .with_borrow_mut(Option::take)
+        .unwrap_or_else(BlobServer::start);
+    let ran = server.run(&request);
+    BLOB_SERVER.with_borrow_mut(|kept| *kept = Some(server));
+    std::fs::remove_file(directory.join(&file)).unwrap();
+    // The runner's own failure is no result of the guest's: it fails the case, never compares.
+    assert!(
+        !(ran.status == RUNNER_FAILED
+            && ran
+                .stderr
+                .windows(RUNNER_NAME.len())
+                .any(|w| w == RUNNER_NAME.as_bytes())),
+        "the reference runner failed: {}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    ran
+}
+
+/// Where blobs are written for the reference to read, mounted at `PROGRAMS_FOLDER`.
+fn native_directory() -> PathBuf {
+    let directory = out_directory().join(NATIVE_FOLDER);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+/// The folder of `out_directory` that holds blobs for the reference.
+const NATIVE_FOLDER: &str = "native";
+
+thread_local! {
+    static BLOB_SERVER: RefCell<Option<BlobServer>> = const { RefCell::new(None) };
+}
+
+/// A reference runner serving blobs (`SERVE_BLOBS`) in a container of its own, which ends when its input does.
+struct BlobServer {
+    client: Child,
+    requests: Option<ChildStdin>,
+    answers: ChildStdout,
+}
+
+impl BlobServer {
+    fn start() -> Self {
+        let mut client = serving(SERVE_BLOBS, SERVE_BLOBS, |command| {
+            mount(command, &native_directory(), PROGRAMS_FOLDER);
+        });
+        let requests = client.stdin.take();
+        let answers = client.stdout.take().unwrap();
+        BlobServer {
+            client,
+            requests,
+            answers,
+        }
+    }
+
+    fn run(&mut self, request: &[String]) -> Ran {
+        let requests = self.requests.as_mut().unwrap();
+        let mut line = request.join(&char::from(REQUEST_SEPARATOR).to_string());
+        line.push(char::from(REQUEST_END));
+        requests
+            .write_all(line.as_bytes())
+            .expect("send a blob to the reference");
+        requests.flush().unwrap();
+        let mut status = [0u8; size_of::<i32>()];
+        self.answers.read_exact(&mut status).expect(
+            "an answer from the blob server (Docker or the server failed; its stderr says why)",
+        );
+        let [stdout, stderr] = [(); 2].map(|()| {
+            let mut length = [0u8; size_of::<u32>()];
+            self.answers
+                .read_exact(&mut length)
+                .expect("an output's length");
+            let mut bytes = vec![0u8; u32::from_le_bytes(length) as usize];
+            self.answers.read_exact(&mut bytes).expect("an output");
+            bytes
+        });
+        Ran {
+            stdout,
+            stderr,
+            status: i32::from_le_bytes(status),
+        }
     }
 }
 
-/// How the reference runner ends when it fails itself, and what it writes on stderr before.
+impl Drop for BlobServer {
+    fn drop(&mut self) {
+        // The server ends at the end of its input, and Docker then removes its container.
+        self.requests = None;
+        let _ = self.client.wait();
+    }
+}
+
+/// How the reference runner ends when it fails itself, after writing its name (`RUNNER_NAME`) on stderr.
 const RUNNER_FAILED: i32 = 101;
-const RUNNER_FAILED_SAYS: &[u8] = b"wcontainers-reference: ";

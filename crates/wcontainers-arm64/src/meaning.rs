@@ -6,6 +6,7 @@
 use crate::Arm64;
 use crate::instruction::*;
 use wasm_encoder::{BlockType, InstructionSink, MemArg, MemArgTarget, ValType};
+use wcontainers_abi::pstate;
 
 pub use wcontainers_guest_cpu::{Access, Emitter, Target};
 
@@ -87,12 +88,12 @@ impl Flag {
     pub const ALL: [Flag; 4] = [Flag::N, Flag::Z, Flag::C, Flag::V];
 
     /// Bit position in the packed `NZCV` value (and in Linux's saved `pstate`).
-    pub fn bit(self) -> u32 {
+    pub const fn bit(self) -> u32 {
         match self {
-            Flag::N => 31,
-            Flag::Z => 30,
-            Flag::C => 29,
-            Flag::V => 28,
+            Flag::N => pstate::N.trailing_zeros(),
+            Flag::Z => pstate::Z.trailing_zeros(),
+            Flag::C => pstate::C.trailing_zeros(),
+            Flag::V => pstate::V.trailing_zeros(),
         }
     }
 }
@@ -987,7 +988,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
         I::PcRelative { rd, page, offset } => {
             if page {
                 e.this_address(0);
-                e.sink().i64_const(!0xfff).i64_and();
+                e.sink().i64_const(!crate::ADRP_PAGE_MASK as i64).i64_and();
                 e.sink().i64_const(offset).i64_add();
             } else {
                 e.this_address(offset);
@@ -1542,7 +1543,7 @@ fn crc32<E: Emitter<Arm64> + ?Sized>(
 
 /// x30 = the address of the next instruction.
 pub(crate) fn link_register<E: Emitter<Arm64> + ?Sized>(e: &mut E) {
-    e.this_address(4);
+    e.this_address(crate::INSTRUCTION_BYTES as i64);
     e.set(Reg::X(30));
 }
 

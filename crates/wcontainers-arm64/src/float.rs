@@ -8,11 +8,17 @@
 //! multiply-add on hosts without a fused one.
 
 use crate::Arm64;
-use crate::exact::Operation;
+use crate::exact::{DOUBLE, HALF, Operation, SINGLE, format_parts};
 use crate::instruction::*;
-use crate::meaning::{Emitter, Flags, Hook};
+use crate::meaning::{Emitter, Flag, Flags, Hook};
 use crate::simd::{extract, replace};
+use rustc_apfloat::ieee::{Double, Half, Single};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
+
+/// The width of a 64 bit integer, as instructions give integer widths.
+const LONG_BITS: u8 = u64::BITS as u8;
+/// Bits in a byte, for sizes given in bytes.
+const BYTE_BITS: u8 = u8::BITS as u8;
 
 /// Push a value of `ty` from `slow` when the slow path must be taken, else from `fast`. Where the emitter
 /// carries on elsewhere in that case, only `fast` is written here.
@@ -35,21 +41,21 @@ pub(crate) fn paths<E: Emitter<Arm64> + ?Sized>(
 
 /// A v128 whose `element` byte elements all hold `bits`.
 pub(crate) fn splat_bits(element: u8, bits: u64) -> i128 {
-    let lane = if element == 8 { 2 } else { 4 };
+    let lanes = size_of::<u128>() as u8 / element;
     let mut v = 0u128;
-    for i in 0..lane {
-        v |= u128::from(bits) << (i * 8 * u32::from(element));
+    for i in 0..lanes {
+        v |= u128::from(bits) << (u32::from(i) * u8::BITS * u32::from(element));
     }
     v as i128
 }
 
 /// The quiet bit, sign bit and default not-a-number of a size.
 fn quiet_bit(size: u8) -> u64 {
-    if size == 8 { 1 << 51 } else { 1 << 22 }
+    if size == DOUBLE { 1 << 51 } else { 1 << 22 }
 }
 
 fn default_nan(size: u8) -> u64 {
-    if size == 8 {
+    if size == DOUBLE {
         0x7ff8_0000_0000_0000
     } else {
         0x7fc0_0000
@@ -82,7 +88,7 @@ pub(crate) enum Op {
 }
 
 pub(crate) fn op(s: &mut InstructionSink<'_>, op: Op, size: u8) {
-    let double = size == 8;
+    let double = size == DOUBLE;
     match (op, double) {
         (Op::Add, false) => s.f32x4_add(),
         (Op::Add, true) => s.f64x2_add(),
@@ -135,7 +141,7 @@ fn is_nan<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, local: u32) {
 
 /// Push the integer equality mask of two v128s at a size.
 fn int_eq(s: &mut InstructionSink<'_>, size: u8) {
-    if size == 8 {
+    if size == DOUBLE {
         s.i64x2_eq()
     } else {
         s.i32x4_eq()
@@ -210,7 +216,7 @@ pub(crate) fn by_hook<E: Emitter<Arm64> + ?Sized>(
             e.sink().local_get(operand.local);
             extract(&mut e.sink(), operand.element, operand.first + lane, false);
         }
-        for _ in operands.len()..3 {
+        for _ in operands.len()..crate::exact::OPERANDS {
             e.sink().i64_const(0);
         }
         e.hook(Hook::Float);
@@ -254,7 +260,7 @@ pub(crate) fn lanes<E: Emitter<Arm64> + ?Sized>(
 
 /// Push a v128 of `size` elements all `value`.
 pub(crate) fn constant(s: &mut InstructionSink<'_>, size: u8, value: f64) {
-    let bits = if size == 8 {
+    let bits = if size == DOUBLE {
         value.to_bits()
     } else {
         u64::from((value as f32).to_bits())
@@ -266,7 +272,7 @@ pub(crate) fn constant(s: &mut InstructionSink<'_>, size: u8, value: f64) {
 fn fused<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, addend: u32, a: u32, b: u32) {
     let mut s = e.sink();
     s.local_get(a).local_get(b).local_get(addend);
-    if size == 8 {
+    if size == DOUBLE {
         s.f64x2_relaxed_madd();
     } else {
         s.f32x4_relaxed_madd();
@@ -291,7 +297,7 @@ fn infinity_times_zero<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, 
 
 /// Push a v128 of the signs of `a * b` (the sign bits of `a` xor `b`).
 fn product_sign<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
-    let sign = splat_bits(size, 1 << (8 * size - 1));
+    let sign = splat_bits(size, 1 << (BYTE_BITS * size - 1));
     e.sink()
         .local_get(a)
         .local_get(b)
@@ -304,7 +310,7 @@ fn product_sign<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32)
 /// what is left is at least a half.
 fn round_away<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, x: u32) {
     let t = e.local(ValType::V128);
-    let sign = splat_bits(size, 1 << (8 * size - 1));
+    let sign = splat_bits(size, 1 << (BYTE_BITS * size - 1));
     let mut s = e.sink();
     s.local_get(x);
     op(&mut s, Op::Trunc, size);
@@ -597,7 +603,10 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             e.condition(cond);
             e.sink().if_(BlockType::Result(ValType::I64));
             compare(e, signaling, size, a, b);
-            e.sink().else_().i64_const(i64::from(nzcv) << 28).end();
+            e.sink()
+                .else_()
+                .i64_const(i64::from(nzcv) << Flag::V.bit())
+                .end();
             let packed = e.local(ValType::I64);
             e.sink().local_set(packed);
             e.set_flags(Flags::Packed(packed));
@@ -677,11 +686,11 @@ pub(crate) fn vector<E: Emitter<Arm64> + ?Sized>(e: &mut E, n: u8) -> u32 {
 
 /// Keep only the low `bytes` of the v128 on the stack.
 pub(crate) fn low<E: Emitter<Arm64> + ?Sized>(e: &mut E, bytes: u8) {
-    if bytes < 16 {
-        let mask = if bytes == 8 {
+    if usize::from(bytes) < size_of::<u128>() {
+        let mask = if bytes == DOUBLE {
             u64::MAX as i128
         } else {
-            ((1u128 << (8 * bytes)) - 1) as i128
+            ((1u128 << (BYTE_BITS * bytes)) - 1) as i128
         };
         e.sink().v128_const(mask).v128_and();
     }
@@ -707,7 +716,7 @@ fn compare_fast<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32)
     // N: less; Z: equal; C: greater, equal or unordered; V: unordered.
     let scalar = |s: &mut InstructionSink<'_>, x: u32| {
         s.local_get(x);
-        if size == 8 {
+        if size == DOUBLE {
             s.f64x2_extract_lane(0);
         } else {
             s.f32x4_extract_lane(0);
@@ -717,25 +726,32 @@ fn compare_fast<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32)
         scalar(s, a);
         scalar(s, b);
         match (o, size) {
-            (Op::Lt, 8) => s.f64_lt(),
+            (Op::Lt, DOUBLE) => s.f64_lt(),
             (Op::Lt, _) => s.f32_lt(),
-            (Op::Eq, 8) => s.f64_eq(),
+            (Op::Eq, DOUBLE) => s.f64_eq(),
             (Op::Eq, _) => s.f32_eq(),
-            (_, 8) => s.f64_ge(),
+            (_, DOUBLE) => s.f64_ge(),
             (_, _) => s.f32_ge(),
         };
     };
     cmp(&mut s, Op::Lt);
-    s.i32_const(31).i32_shl();
+    s.i32_const(Flag::N.bit() as i32).i32_shl();
     cmp(&mut s, Op::Eq);
-    s.i32_const(30).i32_shl().i32_or();
+    s.i32_const(Flag::Z.bit() as i32).i32_shl().i32_or();
     // C is clear only when less.
     cmp(&mut s, Op::Lt);
-    s.i32_eqz().i32_const(29).i32_shl().i32_or();
+    s.i32_eqz()
+        .i32_const(Flag::C.bit() as i32)
+        .i32_shl()
+        .i32_or();
     // V: neither less nor greater or equal.
     cmp(&mut s, Op::Lt);
     cmp(&mut s, Op::Ge);
-    s.i32_or().i32_eqz().i32_const(28).i32_shl().i32_or();
+    s.i32_or()
+        .i32_eqz()
+        .i32_const(Flag::V.bit() as i32)
+        .i32_shl()
+        .i32_or();
     s.i64_extend_i32_u();
 }
 
@@ -762,12 +778,12 @@ pub(crate) fn to_integer_fast<E: Emitter<Arm64> + ?Sized>(
     s.local_set(scaled);
     round(e, size, scaled, rounding);
     let mut s = e.sink();
-    if size == 8 {
+    if size == DOUBLE {
         s.f64x2_extract_lane(lane);
     } else {
         s.f32x4_extract_lane(lane);
     }
-    match (size == 8, bits == 64, signed) {
+    match (size == DOUBLE, bits == LONG_BITS, signed) {
         (true, true, true) => s.i64_trunc_sat_f64_s(),
         (true, true, false) => s.i64_trunc_sat_f64_u(),
         (true, false, true) => s.i32_trunc_sat_f64_s().i64_extend_i32_u(),
@@ -802,7 +818,7 @@ pub(crate) fn from_integer<E: Emitter<Arm64> + ?Sized>(
             size,
             size,
             lanes_count,
-            &[Source::of(x, bits / 8)],
+            &[Source::of(x, bits / BYTE_BITS)],
             &|_| {},
         )
     };
@@ -824,12 +840,12 @@ fn from_integer_fast<E: Emitter<Arm64> + ?Sized>(
     for lane in 0..lanes_count {
         let mut s = e.sink();
         s.local_get(x);
-        if bits == 64 {
+        if bits == LONG_BITS {
             s.i64x2_extract_lane(lane);
         } else {
             s.i32x4_extract_lane(lane);
         }
-        match (size == 8, bits == 64, signed) {
+        match (size == DOUBLE, bits == LONG_BITS, signed) {
             (true, true, true) => s.f64_convert_i64_s(),
             (true, true, false) => s.f64_convert_i64_u(),
             (true, false, true) => s.f64_convert_i32_s(),
@@ -841,13 +857,13 @@ fn from_integer_fast<E: Emitter<Arm64> + ?Sized>(
         };
         if fraction_bits > 0 {
             let scale = (-f64::from(fraction_bits)).exp2();
-            if size == 8 {
+            if size == DOUBLE {
                 s.f64_const(scale.into()).f64_mul();
             } else {
                 s.f32_const((scale as f32).into()).f32_mul();
             }
         }
-        if size == 8 {
+        if size == DOUBLE {
             s.f64x2_replace_lane(lane);
         } else {
             s.f32x4_replace_lane(lane);
@@ -916,8 +932,8 @@ fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: 
     s.i64_or().local_set(nan);
     // Numbers.
     match (from, to) {
-        (8, 4) if odd => to_single_odd(e, bits),
-        (4, 8) => {
+        (DOUBLE, SINGLE) if odd => to_single_odd(e, bits),
+        (SINGLE, DOUBLE) => {
             let mut s = e.sink();
             s.local_get(bits)
                 .i32_wrap_i64()
@@ -925,7 +941,7 @@ fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: 
                 .f64_promote_f32()
                 .i64_reinterpret_f64();
         }
-        (8, 4) => {
+        (DOUBLE, SINGLE) => {
             let mut s = e.sink();
             s.local_get(bits)
                 .f64_reinterpret_i64()
@@ -933,7 +949,7 @@ fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: 
                 .i32_reinterpret_f32()
                 .i64_extend_i32_u();
         }
-        (2, _) => half_to(e, bits, to),
+        (HALF, _) => half_to(e, bits, to),
         (_, _) => to_half(e, bits, from),
     }
     // Is it a not-a-number?
@@ -957,11 +973,11 @@ fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: 
 }
 
 /// Fraction and exponent bits of a size.
-fn parts(size: u8) -> (u32, u32) {
+pub(crate) fn parts(size: u8) -> (u32, u32) {
     match size {
-        2 => (10, 5),
-        4 => (23, 8),
-        _ => (52, 11),
+        HALF => format_parts::<Half>(),
+        SINGLE => format_parts::<Single>(),
+        _ => format_parts::<Double>(),
     }
 }
 
@@ -1010,7 +1026,7 @@ fn half_to<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, to: u8) {
         .i64_const(0)
         .i64_ne()
         .select();
-    if to == 4 {
+    if to == SINGLE {
         s.i32_reinterpret_f32().i64_extend_i32_u();
     } else {
         s.f64_promote_f32().i64_reinterpret_f64();
@@ -1023,7 +1039,7 @@ fn to_half<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8) {
     let [double, biased, shift, q] = [(); 4].map(|_| e.local(ValType::I64));
     let mut s = e.sink();
     s.local_get(bits);
-    if from == 4 {
+    if from == SINGLE {
         // Exact in double precision.
         s.i32_wrap_i64()
             .f32_reinterpret_i32()

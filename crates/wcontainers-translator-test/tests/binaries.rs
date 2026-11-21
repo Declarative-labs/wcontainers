@@ -61,6 +61,7 @@ fn translated(binary: &Binary, optimise: Optimise) -> Translation {
         &binary.starts.all(),
         LookAhead::Full,
         optimise,
+        wcontainers_translator::ProgressCount::Absent,
         probe(),
         (),
     )

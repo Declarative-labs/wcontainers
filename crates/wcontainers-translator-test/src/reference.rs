@@ -2,16 +2,110 @@
 
 use crate::layout::*;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+use wcontainers_abi::RegisterBlock;
+use wcontainers_docker::{READ_ONLY, START_CONTAINER};
+use zerocopy::FromBytes;
 
 /// The Docker image the reference runs in.
-const IMAGE: &str = "alpine:latest";
+pub const IMAGE: &str = "alpine:latest";
+/// Docker's command line program, and `docker run`'s arguments for every container here: removed at its end,
+/// with no network, and named by the argument that follows.
+pub const DOCKER: &str = "docker";
+pub const REFERENCE_CONTAINER: [&str; 5] = [START_CONTAINER, "--rm", "--network", "none", "--name"];
+/// `docker run`'s flag that keeps the container's stdin open, for a runner that takes requests.
+const DOCKER_INPUT: &str = "-i";
+/// `docker run`'s flag that mounts a host folder, as `host:inside:ro`, and the parts of its value.
+pub const DOCKER_MOUNT: &str = "-v";
+const MOUNT_SEPARATOR: &str = ":";
+/// Where a container sees the reference runner's folder and the programs' folder.
+pub const RUNNER_FOLDER: &str = "/r";
+pub const PROGRAMS_FOLDER: &str = "/p";
+/// The reference runner's program, its package's name.
+pub const RUNNER_NAME: &str = "wcontainers-reference";
+/// The reference runner's package folder beside this crate's manifest, also its folder under `target`.
+const RUNNER_PACKAGE: &str = "reference";
+/// Where each process keeps its own copy of the reference runner, under the runner's target folder.
+const OWN_COPIES: &str = "run";
+/// Rust's name for the guest's target, the one the reference runner and Rust test programs are built for.
+pub const GUEST_TRIPLE: &str = "aarch64-unknown-linux-musl";
+/// The workspace's folder of build output, from this crate's manifest folder.
+const WORKSPACE_TARGET: &str = "../../target";
+/// The environment variable in which Cargo gives a test the path of the Cargo that runs it, and the program
+/// to run when a test binary is run without Cargo.
+const CARGO_VARIABLE: &str = "CARGO";
+const CARGO_PROGRAM: &str = "cargo";
+/// Cargo's command for a quiet release build, its flags naming the target and the folder for its output, and
+/// the folder of a target's output that a release build writes.
+const QUIET_RELEASE_COMMAND: [&str; 3] = ["build", "--release", "--quiet"];
+pub const TARGET_FLAG: &str = "--target";
+pub const TARGET_FOLDER_FLAG: &str = "--target-dir";
+const RELEASE: &str = "release";
 
-fn workspace() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+/// Mount the host folder `host` read only at `inside` in a container.
+pub fn mount(command: &mut Command, host: &Path, inside: &str) {
+    mount_as(command, host, &[inside, READ_ONLY]);
+}
+
+/// Mount the host folder `host` at `inside` in a container, writable.
+pub fn mount_writable(command: &mut Command, host: &Path, inside: &str) {
+    mount_as(command, host, &[inside]);
+}
+
+fn mount_as(command: &mut Command, host: &Path, inside: &[&str]) {
+    let host = host.to_str().expect("a folder named in UTF-8");
+    command
+        .arg(DOCKER_MOUNT)
+        .arg([&[host], inside].concat().join(MOUNT_SEPARATOR));
+}
+
+/// A container of the reference runner in `mode`, for `purpose`, taking requests on stdin and answering on
+/// stdout, with the further folders `add` mounts.
+pub fn serving(purpose: &str, mode: &str, add: impl FnOnce(&mut Command)) -> Child {
+    let mut command = Command::new(DOCKER);
+    command
+        .args(REFERENCE_CONTAINER)
+        .arg(container_name(purpose))
+        .arg(DOCKER_INPUT);
+    mount(&mut command, &build(), RUNNER_FOLDER);
+    add(&mut command);
+    command
+        .arg(IMAGE)
+        .arg(Path::new(RUNNER_FOLDER).join(RUNNER_NAME))
+        .arg(mode)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run docker")
+}
+
+/// The folder `name` of the workspace's build output.
+pub fn target_folder(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(WORKSPACE_TARGET)
+        .join(name)
+}
+
+/// The Cargo that runs this test, or the one on the path.
+pub fn cargo() -> Command {
+    Command::new(std::env::var_os(CARGO_VARIABLE).unwrap_or_else(|| CARGO_PROGRAM.into()))
+}
+
+/// Build the package in the folder `package` quietly for release, for the target `triple`, with its output
+/// in `target`, and return the folder that holds what it built.
+pub fn release_build(package: &Path, triple: &str, target: &Path) -> PathBuf {
+    let status = cargo()
+        .args(QUIET_RELEASE_COMMAND)
+        .args([TARGET_FLAG, triple, TARGET_FOLDER_FLAG])
+        .arg(target)
+        .current_dir(package)
+        .status()
+        .expect("run cargo");
+    assert!(status.success(), "{} did not build", package.display());
+    target.join(triple).join(RELEASE)
 }
 
 /// Build the reference runner for aarch64 Linux, once per process, and return a directory holding this
@@ -21,25 +115,15 @@ pub fn build() -> PathBuf {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("reference/Cargo.toml");
-            let target = workspace().join("target/reference");
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-            let status = Command::new(cargo)
-                .args(["build", "--release", "--quiet", "--manifest-path"])
-                .arg(&manifest)
-                .arg("--target-dir")
-                .arg(&target)
-                .current_dir(manifest.parent().unwrap())
-                .status()
-                .expect("run cargo for the reference");
-            assert!(status.success(), "the reference runner did not build");
-            let own = target.join("run").join(std::process::id().to_string());
+            let target = target_folder(RUNNER_PACKAGE);
+            let built = release_build(
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RUNNER_PACKAGE),
+                GUEST_TRIPLE,
+                &target,
+            );
+            let own = target.join(OWN_COPIES).join(std::process::id().to_string());
             std::fs::create_dir_all(&own).unwrap();
-            std::fs::copy(
-                target.join("aarch64-unknown-linux-musl/release/wcontainers-reference"),
-                own.join("wcontainers-reference"),
-            )
-            .unwrap();
+            std::fs::copy(built.join(RUNNER_NAME), own.join(RUNNER_NAME)).unwrap();
             own
         })
         .clone()
@@ -59,12 +143,22 @@ pub struct Landed {
     pub code: u32,
     pub address: u64,
     /// x0 to x30, sp, pc, flags, thread pointer.
-    pub registers: [u64; 35],
-    pub vectors: [u128; 32],
+    pub registers: [u64; LANDED_REGISTERS],
+    pub vectors: [u128; VECTOR_REGISTERS],
     /// FPSR and FPCR.
-    pub float: [u32; 2],
+    pub float: [u32; FLOAT_REGISTERS],
     /// Changed data bytes: offset from `DATA`, new value.
     pub changed: Vec<(u32, u8)>,
+}
+
+const _: () = assert!(
+    GENERAL_REGISTERS == RegisterBlock::ZERO.x.len()
+        && VECTOR_REGISTERS == RegisterBlock::ZERO.v.len()
+);
+
+/// The value at byte `at` of `bytes`, little endian as on every host here.
+fn value_at<T: FromBytes>(bytes: &[u8], at: usize) -> T {
+    T::read_from_prefix(&bytes[at..]).expect("a whole value").0
 }
 
 /// A running reference that takes layer 1 cases one at a time.
@@ -76,17 +170,7 @@ pub struct Cases {
 
 impl Cases {
     pub fn start() -> Self {
-        let directory = build();
-        let mut child = Command::new("docker")
-            .args(["run", "--rm", "-i", "--network", "none", "--name"])
-            .arg(container_name("layer1"))
-            .arg("-v")
-            .arg(format!("{}:/r:ro", directory.display()))
-            .args([IMAGE, "/r/wcontainers-reference", "cases"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("start docker");
+        let mut child = serving("layer1", "cases", |_| {});
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         Cases {
@@ -102,9 +186,9 @@ impl Cases {
         &mut self,
         word: u32,
         seed: u64,
-        registers: &[u64; 34],
-        vectors: &[u128; 32],
-        float: [u32; 2],
+        registers: &[u64; REQUEST_REGISTERS],
+        vectors: &[u128; VECTOR_REGISTERS],
+        float: [u32; FLOAT_REGISTERS],
     ) -> Landed {
         let mut request = Vec::with_capacity(REQUEST_BYTES);
         request.extend_from_slice(&word.to_le_bytes());
@@ -124,34 +208,23 @@ impl Cases {
         self.output
             .read_exact(&mut header)
             .expect("the reference answers");
-        let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let u64_at = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-        let mut landed = Landed {
-            signal: u32_at(0),
-            code: u32_at(4),
-            address: u64_at(8),
-            registers: [0; 35],
-            vectors: [0; 32],
-            float: [0; 2],
+        let landed = Landed {
+            signal: value_at(&header, 0),
+            code: value_at(&header, RESULT_CODE_AT),
+            address: value_at(&header, RESULT_ADDRESS_AT),
+            registers: value_at(&header, RESULT_REGISTERS_AT),
+            vectors: value_at(&header, RESULT_VECTORS_AT),
+            float: value_at(&header, RESULT_FLOAT_AT),
             changed: Vec::new(),
         };
-        for (i, value) in landed.registers.iter_mut().enumerate() {
-            *value = u64_at(16 + 8 * i);
-        }
-        for (i, value) in landed.vectors.iter_mut().enumerate() {
-            let at = 16 + 35 * 8 + 16 * i;
-            *value = u128::from_le_bytes(header[at..at + 16].try_into().unwrap());
-        }
-        let float_at = 16 + 35 * 8 + 32 * 16;
-        landed.float = [u32_at(float_at), u32_at(float_at + 4)];
-        let count = u32_at(float_at + 8) as usize;
-        let mut changes = vec![0u8; 5 * count];
+        let count: u32 = value_at(&header, RESULT_CHANGES_AT);
+        let mut changes = vec![0u8; CHANGE_BYTES * count as usize];
         self.output.read_exact(&mut changes).unwrap();
-        landed.changed = changes
-            .chunks(5)
-            .map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), c[4]))
+        let changed = changes
+            .chunks(CHANGE_BYTES)
+            .map(|c| (value_at(c, 0), c[size_of::<u32>()]))
             .collect();
-        landed
+        Landed { changed, ..landed }
     }
 }
 

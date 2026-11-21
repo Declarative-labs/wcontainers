@@ -6,7 +6,11 @@
 const BLOCK_AT = 0;
 const PERMISSIONS_AT = 4096;
 
+// Whether FPSR's flags are kept exact from the thread's start, from the setup.
+let keepFloatFlags = false;
+
 onmessage = ({ data }) => {
+  keepFloatFlags = data.keepFloatFlags;
   try {
     postMessage(run(data));
   } catch (error) {
@@ -526,6 +530,7 @@ function run({
     for (let i = 0; i < contract.threadStateSize; i++) block.setUint8(i, 0);
     block.setBigUint64(contract.registerPc, BigInt(load), true);
     block.setBigUint64(contract.registerSp, BigInt(sp), true);
+    if (keepFloatFlags) block.setUint32(contract.floatTracking, 1, true);
 
     const started = performance.now();
     try {

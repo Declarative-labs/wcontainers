@@ -26,15 +26,16 @@ use wcontainers_abi::{
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_runtime::{
-    Answer, BackEnd, Carry, Execution, Leaving, RuntimeSettings, StopFlag, Turn,
+    Answer, Carry, Execution, Executor, Leaving, RuntimeSettings, StopFlag, Turn,
 };
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
 use zerocopy::{FromBytes, IntoBytes};
 
 pub use memory::Layout;
+use memory::SLOT_BYTES;
 pub use starts::Sources;
-pub use wcontainers_translator::{LookAhead, Optimise};
+pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
 /// The back end's own slow paths, besides the translator's [`Reason`]s.
 pub mod reason {
@@ -60,7 +61,7 @@ pub mod reason {
     pub const LEFT_ANOTHER_THREAD: &str = "left run: another thread runs";
     pub const LEFT_NEW_REGISTERS: &str = "left run: new registers";
     pub const LEFT_FINISHED: &str = "left run: the container finished";
-    pub const LEFT_OUTSIDE_ASKED: &str = "left run: the outside asked";
+    pub const LEFT_SYSTEM_ASKED: &str = "left run: the system asked";
     /// A translation could not be written to the cache's directory; the detail is the host's error
     /// number (`u64::MAX` when it gave none).
     pub const TRANSLATION_NOT_KEPT: &str = "translation not kept in the cache's directory";
@@ -68,7 +69,7 @@ pub mod reason {
     /// translation is made again; the detail is the host's error number (`u64::MAX` when it gave none).
     pub const TRANSLATION_REFUSED: &str = "translation in the cache's directory refused";
     /// The guest read the counter on a back end brought back from a save, whose clock hook answers the
-    /// outside's monotonic clock without the kernel's offset until the kernel makes its clock public.
+    /// system's monotonic clock without the kernel's offset until the kernel makes its clock public.
     pub const COUNTER_WITHOUT_KERNEL_OFFSET: &str = "counter read without the kernel's offset";
     /// The detail of a leave after an exit that is not a system call.
     pub const NOT_A_CALL: u64 = u64::MAX;
@@ -103,13 +104,16 @@ pub enum Origin {
 /// Names the build of the translator and its guests, made from their sources by the build script.
 const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
 
+/// The back end and its output's memory widths, as the cache key names them.
+const OUTPUT_FORM: &str = "wasmtime guest-memory-64 state-memory-32";
+
 /// The first bytes of a cache file.
 const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
 
 /// What a compiled translation is kept under.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
-    hash: [u8; 32],
+    hash: [u8; blake3::OUT_LEN],
     starts: Vec<u64>,
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -148,7 +152,14 @@ impl<G: Guest> Compiler<G> {
             .build()
             .expect("the back end's pool");
         let thread_module = pool
-            .install(|| Module::new(&engine, wcontainers_translator::thread_module::<G>()))
+            .install(|| {
+                Module::new(
+                    &engine,
+                    wcontainers_translator::thread_module::<G>(
+                        wcontainers_translator::ProgressCount::Absent,
+                    ),
+                )
+            })
             .expect("the thread module");
         let probe = pool
             .install(|| Module::new(&engine, G::probe_module()))
@@ -176,7 +187,7 @@ impl<G: Guest> Compiler<G> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(TRANSLATOR_BUILD.as_bytes());
         // The back end, the guest, the host's answer, and the output's memory widths.
-        hasher.update(b"wasmtime guest-memory-64 state-memory-32");
+        hasher.update(OUTPUT_FORM.as_bytes());
         hasher.update(&(G::ID as u32).to_le_bytes());
         hasher.update(&G::host_key(self.host).to_le_bytes());
         hasher.update(&key.offer.to_le_bytes());
@@ -211,18 +222,19 @@ impl<G: Guest> Compiler<G> {
             rest = after;
             Some(taken)
         };
-        let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("eight bytes"));
-        let count = word(take(8)?);
+        const WORD: usize = size_of::<u64>();
+        let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word"));
+        let count = word(take(WORD)?);
         let (mut modules, mut pieces) = (Vec::new(), Vec::new());
         for _ in 0..count {
-            let length = usize::try_from(word(take(8)?)).ok()?;
-            let list: Vec<u64> = take(length.checked_mul(8)?)?
-                .as_chunks::<8>()
+            let length = usize::try_from(word(take(WORD)?)).ok()?;
+            let list: Vec<u64> = take(length.checked_mul(WORD)?)?
+                .as_chunks::<WORD>()
                 .0
                 .iter()
                 .map(|bytes| u64::from_le_bytes(*bytes))
                 .collect();
-            let length = usize::try_from(word(take(8)?)).ok()?;
+            let length = usize::try_from(word(take(WORD)?)).ok()?;
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
             let module = unsafe { Module::deserialize(engine, take(length)?) }.ok()?;
@@ -265,7 +277,7 @@ impl<G: Guest> Compiler<G> {
     fn compiled(
         &self,
         bytes: &[u8],
-        hash: [u8; 32],
+        hash: [u8; blake3::OUT_LEN],
         mut starts: Vec<u64>,
         look_ahead: LookAhead,
         optimise: Optimise,
@@ -314,6 +326,7 @@ impl<G: Guest> Compiler<G> {
                     &key.starts,
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     self.host,
                     offer,
                 )
@@ -420,7 +433,7 @@ pub struct CpuSide<G: Guest> {
     counters: BTreeMap<&'static str, (u64, u64)>,
     /// The (reason, detail) pairs already warned of.
     warned: HashSet<(&'static str, u64)>,
-    /// Warnings made while no thread ran, given to the outside at the next run.
+    /// Warnings made while no thread ran, given to the system at the next run.
     unsent: Vec<Warning<'static>>,
     translated: Vec<Translated>,
     /// Brought back from a save: the clock hook's answers lack the kernel's offset.
@@ -462,8 +475,19 @@ struct Process<G: Guest> {
     loads: Vec<Load>,
     next_slot: u32,
     free_blocks: Vec<u32>,
+    /// By block, the instances of the dropped thread that ran there, for the next thread given it.
+    kept: HashMap<u32, Kept>,
     next_block: u32,
     dropped: bool,
+}
+
+/// A dropped thread's instances: they import its block's address, so they serve the next thread given
+/// that block, and a process that starts and ends many threads does not grow its store.
+struct Kept {
+    instance: ThreadInstance,
+    exact: HashMap<u64, Func>,
+    /// How many of the process's loads it holds; the ones added since are instantiated at its next run.
+    loads: usize,
 }
 
 /// Write lock: the page shows a block of shared pages.
@@ -577,7 +601,7 @@ struct Shown {
 struct Code {
     start: u64,
     bytes: Vec<u8>,
-    hash: [u8; 32],
+    hash: [u8; blake3::OUT_LEN],
 }
 
 /// A range the kernel announced as code.
@@ -592,7 +616,7 @@ struct CodeRange {
     changed: bool,
     /// The first run translated whole and the hash of its bytes then, kept across notices of the same
     /// range.
-    hash: Option<(Range<u64>, [u8; 32])>,
+    hash: Option<(Range<u64>, [u8; blake3::OUT_LEN])>,
 }
 
 /// A compiled translation placed in a process's lookup tables.
@@ -633,7 +657,7 @@ struct Data<G: Guest> {
     state_base: *mut u8,
     /// Progress in this turn, which a counted turn's limit is compared with.
     progress: u64,
-    /// The part of `progress` the outside was already told by a clock read.
+    /// The part of `progress` the system was already told by a clock read.
     reported: u64,
     turn: Turn,
     leaving: bool,
@@ -648,14 +672,14 @@ struct Data<G: Guest> {
 }
 
 impl<G: Guest> Data<G> {
-    /// Progress the outside has not been told of, for a clock read; the turn's count goes on.
+    /// Progress the system has not been told of, for a clock read; the turn's count goes on.
     fn report(&mut self) -> u64 {
         let progress = self.progress - self.reported;
         self.reported = self.progress;
         progress
     }
 
-    /// Progress the outside has not been told of, at an exit, which ends the turn's count.
+    /// Progress the system has not been told of, at an exit, which ends the turn's count.
     fn end_turn(&mut self) -> u64 {
         let progress = self.progress - self.reported;
         (self.progress, self.reported) = (0, 0);
@@ -803,7 +827,7 @@ where
 
     fn slot_entry(&self, address: u64) -> Option<usize> {
         (address < self.layout.ceiling && address.is_multiple_of(G::ALIGN))
-            .then(|| self.layout.slots_at as usize + 4 * (address / G::ALIGN) as usize)
+            .then(|| self.layout.slots_at as usize + (SLOT_BYTES * (address / G::ALIGN)) as usize)
     }
 
     fn slot(&self, memory: MemoryId, address: u64) -> u32 {
@@ -841,6 +865,11 @@ where
         }
         for thread in self.threads.values_mut().filter(|t| t.memory == memory) {
             thread.exact.retain(|address, _| !range.contains(address));
+        }
+        if let Some(process) = self.processes.get_mut(&memory) {
+            for kept in process.kept.values_mut() {
+                kept.exact.retain(|address, _| !range.contains(address));
+            }
         }
         dropped
     }
@@ -1079,13 +1108,36 @@ where
         values
     }
 
-    /// The thread's instances, made at its first run with every live translation of its process.
+    /// The thread's instances, at its first run those its block kept, given the translations added
+    /// since, or else made with every live translation of its process.
     fn thread_instance(&mut self, thread: ThreadId, store: &mut Store<Data<G>>) -> ThreadInstance {
         let record = self.threads.get(&thread).expect("a thread that exists");
         if let Some(instance) = &record.instance {
             return instance.clone();
         }
-        let process = self.process(record.memory);
+        let (memory, block_at) = (record.memory, record.block_at);
+        let process = self.processes.get_mut(&memory).expect("a memory");
+        if let Some(kept) = process.kept.remove(&block_at) {
+            let process = self.process(memory);
+            grow(&mut *store, &kept.instance, process.next_slot);
+            for load in process.loads[kept.loads..].iter().filter(|load| load.live) {
+                let record = &self.threads[&thread];
+                self.instantiate_load(
+                    &mut *store,
+                    process,
+                    record,
+                    &kept.instance,
+                    load,
+                    load.slot_base,
+                );
+            }
+            let record = self.threads.get_mut(&thread).expect("a thread");
+            record.instance = Some(kept.instance.clone());
+            record.exact = kept.exact;
+            return kept.instance;
+        }
+        let record = &self.threads[&thread];
+        let process = self.process(memory);
         let values = self.values(record.block_at, None);
         let instance = instantiate(
             &mut *store,
@@ -1111,6 +1163,23 @@ where
         }
         self.threads.get_mut(&thread).expect("a thread").instance = Some(made.clone());
         made
+    }
+
+    /// Removes a thread, giving its block and instances back to its process.
+    fn free(&mut self, thread: ThreadId) {
+        let record = self.threads.remove(&thread).expect("a thread that exists");
+        let Some(process) = self.processes.get_mut(&record.memory) else {
+            return;
+        };
+        process.free_blocks.push(record.block_at);
+        if let Some(instance) = record.instance {
+            let kept = Kept {
+                instance,
+                exact: record.exact,
+                loads: process.loads.len(),
+            };
+            process.kept.insert(record.block_at, kept);
+        }
     }
 
     /// Writes the registers the kernel set while the thread was running into its block.
@@ -1174,7 +1243,7 @@ where
         );
         store.limiter(|data| &mut data.limits);
         let layout = self.layout;
-        let pages = layout.ceiling / 65536;
+        let pages = layout.ceiling / memory::wasm_page();
         let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages)))
             .map_err(|_| CpuError::OutOfMemory)?;
         let base = memory.data_ptr(&store);
@@ -1201,6 +1270,7 @@ where
             loads: Vec::new(),
             next_slot: contract::EXACT_SLOT as u32 + 1,
             free_blocks: Vec::new(),
+            kept: HashMap::new(),
             next_block: 0,
             dropped: false,
         })
@@ -1251,7 +1321,8 @@ where
                 .chunks()
                 .map(|pages| at + pages.start.saturating_sub(1)..at + pages.end);
             let slots = source.ranges.iter().map(|code| {
-                let entry = |address: u64| u64::from(layout.slots_at) + 4 * (address / G::ALIGN);
+                let entry =
+                    |address: u64| u64::from(layout.slots_at) + SLOT_BYTES * (address / G::ALIGN);
                 entry(code.range.start)..entry(code.range.end.min(layout.ceiling))
             });
             let mut runs: Vec<Range<u64>> = table.chain(slots).collect();
@@ -1687,19 +1758,16 @@ where
         Leaving::AnotherThread => reason::LEFT_ANOTHER_THREAD,
         Leaving::NewRegisters => reason::LEFT_NEW_REGISTERS,
         Leaving::Finished => reason::LEFT_FINISHED,
-        Leaving::OutsideAsked => reason::LEFT_OUTSIDE_ASKED,
+        Leaving::SystemAsked => reason::LEFT_SYSTEM_ASKED,
     };
     side(caller).slow_path(name, call, 0);
 }
 
-fn syscall<G>(caller: &mut Caller<'_, Data<G>>, number: i64, arguments: [i64; 6]) -> i64
+/// The system call hook, with the call as the hook's parameters give it.
+fn syscall<G>(caller: &mut Caller<'_, Data<G>>, call: SystemCallRequest) -> i64
 where
     G: Guest<Block = RegisterBlock>,
 {
-    let call = SystemCallRequest {
-        number: number as u64,
-        arguments: arguments.map(|a| a as u64),
-    };
     match hand(caller, Exit::Syscall(call)) {
         Carry::On {
             resume: Resume::Return(value),
@@ -1712,7 +1780,7 @@ where
         Carry::Leave(why) => {
             leave_for(caller, why, call.number);
             // x0 stays as it was at the call, as it is for a thread that leaves.
-            arguments[0]
+            call.arguments[0] as i64
         }
     }
 }
@@ -1781,19 +1849,19 @@ where
     side.slow_path(Reason::MemoryFault.name(), address, 0);
     let thread = &side.threads[&caller.data().thread];
     let registers = side.read_block(thread);
-    let mut code = [0u8; 16];
-    let length = side.layout.ceiling.saturating_sub(registers.pc).min(16) as usize;
-    side.copy_out(
-        memory,
-        registers.pc.min(side.layout.ceiling),
-        &mut code[..length],
-    );
+    let length = side
+        .layout
+        .ceiling
+        .saturating_sub(registers.pc)
+        .min(G::MAX_LENGTH) as usize;
+    let mut code = vec![0u8; length];
+    side.copy_out(memory, registers.pc.min(side.layout.ceiling), &mut code);
     let access = if access == 1 {
         Access::Write
     } else {
         Access::Read
     };
-    let exit = match G::memory_fault(address, &code[..length], &registers) {
+    let exit = match G::memory_fault(address, &code, &registers) {
         MemoryFault::Page => Exit::MemoryFault { address, access },
         other => panic!("a {other:?} fault, which the abi has no exit for yet"),
     };
@@ -2006,7 +2074,13 @@ where
                  a3: i64,
                  a4: i64,
                  a5: i64|
-                 -> i64 { syscall(&mut caller, number, [a0, a1, a2, a3, a4, a5]) },
+                 -> i64 {
+                    let call = SystemCallRequest {
+                        number: number as u64,
+                        arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
+                    };
+                    syscall(&mut caller, call)
+                },
             ),
         ),
         (
@@ -2277,10 +2351,7 @@ where
             process.store = Some(store);
         }
         if self.threads[&thread].dropped {
-            let record = self.threads.remove(&thread).expect("a thread");
-            if let Some(process) = self.processes.get_mut(&memory) {
-                process.free_blocks.push(record.block_at);
-            }
+            self.free(thread);
         }
         Ok(())
     }
@@ -2622,10 +2693,7 @@ where
             self.threads.get_mut(&thread).expect("a thread").dropped = true;
             return;
         }
-        let record = self.threads.remove(&thread).expect("a thread that exists");
-        if let Some(process) = self.processes.get_mut(&record.memory) {
-            process.free_blocks.push(record.block_at);
-        }
+        self.free(thread);
     }
 
     fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
@@ -2644,7 +2712,105 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK, Compiler, Page, Pages, Permissions};
+    use super::{
+        CHUNK, Carry, Compiler, Cpu, CpuSide, Execution, Exit, Leaving, LookAhead, MemoryId,
+        Optimise, Page, Pages, Permissions, RegisterBlock, Resume, ThreadId, Turn,
+    };
+    use wcontainers_arm64::Arm64;
+    use zerocopy::FromZeros;
+
+    /// Leaves at the thread's first exit, keeping it and the pc then.
+    struct First {
+        thread: ThreadId,
+        exits: Vec<(Exit, u64)>,
+    }
+
+    impl super::Answer for First {
+        fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
+            let mut registers = RegisterBlock::new_zeroed();
+            cpu.registers(self.thread, &mut registers);
+            self.exits.push((exit, registers.pc));
+            Carry::Leave(Leaving::AnotherThread)
+        }
+
+        fn clock(&mut self, _: u64) -> u64 {
+            0
+        }
+
+        fn warn(&mut self, _: wcontainers_abi::Warning<'_>) {}
+    }
+
+    /// Announces `svc #0; b .-4` at `at`.
+    fn code(cpu: &mut CpuSide<Arm64>, memory: MemoryId, at: u64) {
+        let code: Vec<u8> = [0xd400_0001u32, 0x17ff_ffff]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        cpu.write(memory, at, &code).unwrap();
+        let page = wcontainers_abi::PAGE_SIZE;
+        cpu.set_permissions(memory, at, page, Permissions::READ | Permissions::EXECUTE)
+            .unwrap();
+        cpu.code_changed(memory, at, page, &[at]);
+    }
+
+    /// Runs a thread from `at` to its first exit, which must be the system call there.
+    fn run_from(cpu: &mut CpuSide<Arm64>, thread: ThreadId, at: u64) {
+        let mut registers = RegisterBlock::new_zeroed();
+        cpu.registers(thread, &mut registers);
+        registers.pc = at;
+        cpu.set_registers(thread, &registers);
+        let mut first = First {
+            thread,
+            exits: Vec::new(),
+        };
+        let Ok(()) = cpu.run(thread, Resume::FromRegisters, Turn::Free, &mut first);
+        assert!(
+            matches!(first.exits.as_slice(), [(Exit::Syscall(_), pc)] if *pc == at + 4),
+            "{:?}",
+            first.exits
+        );
+    }
+
+    fn start(cpu: &mut CpuSide<Arm64>, memory: MemoryId, at: u64) -> ThreadId {
+        let thread = cpu.thread_new(memory).unwrap();
+        run_from(cpu, thread, at);
+        thread
+    }
+
+    /// A new thread given a dropped thread's block runs on that thread's instances, with the code
+    /// another thread translated while the block was free.
+    #[test]
+    fn a_dropped_threads_instances_serve_the_next_thread() {
+        for look_ahead in [LookAhead::Full, LookAhead::None] {
+            let mut cpu =
+                CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
+            let memory = cpu.memory_new().unwrap();
+            code(&mut cpu, memory, 0x10000);
+            let first = start(&mut cpu, memory, 0x10000);
+            let other = start(&mut cpu, memory, 0x10000);
+            let (block_at, made) = {
+                let record = &cpu.threads[&first];
+                let instance = record.instance.as_ref().expect("instances made at its run");
+                (record.block_at, format!("{:?}", instance.instance))
+            };
+            cpu.thread_drop(first);
+            code(&mut cpu, memory, 0x20000);
+            run_from(&mut cpu, other, 0x20000);
+            let loads = cpu.process(memory).loads.len();
+            assert!(cpu.process(memory).kept[&block_at].loads < loads);
+            let next = start(&mut cpu, memory, 0x20000);
+            let record = &cpu.threads[&next];
+            assert_eq!(record.block_at, block_at);
+            let instance = record.instance.as_ref().expect("instances");
+            assert_eq!(format!("{:?}", instance.instance), made);
+            assert!(cpu.process(memory).kept.is_empty());
+            assert_eq!(
+                cpu.process(memory).loads.len(),
+                loads,
+                "nothing translated again"
+            );
+        }
+    }
 
     /// A compiler copied into a fork of this process, where its pool's threads are not, is dropped
     /// there whatever those threads were doing at the fork, as a save's copy drops the back end it
@@ -2722,20 +2888,20 @@ mod tests {
     }
 }
 
-/// How the WebAssembly back end runs a container: it changes speed, never behaviour, and is part of
+/// How the translator works for a container: it changes speed, never behaviour, and is part of
 /// every cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Tuning {
+pub struct TranslatorSettings {
     pub look_ahead: LookAhead,
     pub optimise: Optimise,
 }
 
-impl<G> BackEnd for CpuSide<G>
+impl<G> Executor for CpuSide<G>
 where
     G: Guest<Block = RegisterBlock>,
 {
     type Shared = Arc<Compiler<G>>;
-    type Tuning = Tuning;
+    type TranslatorSettings = TranslatorSettings;
     type Offer = G::Offer;
     const ARCHITECTURE: &'static str = match G::ID {
         GuestId::Arm64 => "arm64",
@@ -2747,8 +2913,17 @@ where
         Compiler::new(settings.cache.clone())
     }
 
-    fn new(shared: &Arc<Compiler<G>>, tuning: &Tuning, offer: &G::Offer) -> Self {
-        CpuSide::new(shared.clone(), tuning.look_ahead, tuning.optimise, *offer)
+    fn new(
+        shared: &Arc<Compiler<G>>,
+        translator_settings: &TranslatorSettings,
+        offer: &G::Offer,
+    ) -> Self {
+        CpuSide::new(
+            shared.clone(),
+            translator_settings.look_ahead,
+            translator_settings.optimise,
+            *offer,
+        )
     }
 
     fn stop_flag(&self) -> StopFlag {

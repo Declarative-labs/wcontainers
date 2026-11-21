@@ -13,7 +13,7 @@ SECTIONS {
   .text : {
     *crt1.o(.text .text.*) *(.text._start) *(.text .text.*) *(.init) *(.fini)
     PROVIDE_HIDDEN(__start___lcxx_override = .);
-    *(__lcxx_override)
+    KEEP(*(__lcxx_override))
     PROVIDE_HIDDEN(__stop___lcxx_override = .);
   }
   . = ALIGN(16);

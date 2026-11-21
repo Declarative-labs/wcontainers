@@ -1,7 +1,7 @@
 //! A demonstration of the library: runs one container to its end and exits with its status.
 //!
-//! wcontainers (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
-//!             [--look-ahead full|none|N] [--size] [-- ARGUMENTS...]
+//! wcon (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
+//!      [--look-ahead full|none|N] [--size] [-- ARGUMENTS...]
 //!
 //! What runs is the OCI image's configuration converted, or the runtime's base configuration for a
 //! plain tar, or `--config`'s; the arguments, when given, replace `process.args`.
@@ -11,18 +11,35 @@ use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    BackEnd, Ending, Image, Machine, Runtime, RuntimeSettings, System, Warned, spec_from_json,
+    Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Warned,
+    spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
 type Back = CpuSide<Arm64>;
+
+/// The warning for a property of the configuration that is ignored, with its path and count.
+const IGNORED: &str = "a property the specification does not define, or an annotation, ignored";
+
+/// Docker's exit statuses for a program not found and for its own failures.
+const NOT_FOUND: u8 = 127;
+const RUNTIME_FAILED: u8 = 125;
+
+/// A Linux wait status: the signal that ended the process in its low bits, else the exit status
+/// above them; a shell reports a signal as this base plus its number.
+const SIGNAL_BITS: i32 = 0x7f;
+const EXIT_SHIFT: u32 = 8;
+const SIGNAL_BASE: u8 = 128;
 
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("wcontainers: {error}");
-            ExitCode::from(125)
+            eprintln!("wcon: {error}");
+            match error.downcast_ref::<wcontainers_runtime::Error>() {
+                Some(wcontainers_runtime::Error::NotFound(_)) => ExitCode::from(NOT_FOUND),
+                _ => ExitCode::from(RUNTIME_FAILED),
+            }
         }
     }
 }
@@ -63,10 +80,16 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         _ => return Err("give one of --oci and --tar".into()),
     };
     let mut spec = match config {
-        Some(path) => spec_from_json(
-            &std::fs::read(&path)
-                .map_err(|error| wcontainers_runtime::Error::Io { path, error })?,
-        )?,
+        Some(path) => {
+            let (spec, ignored) = spec_from_json(
+                &std::fs::read(&path)
+                    .map_err(|error| wcontainers_runtime::Error::Io { path, error })?,
+            )?;
+            for (count, path) in (1..).zip(&ignored) {
+                eprintln!("wcon: configuration: {IGNORED}: {path}: {count}");
+            }
+            spec
+        }
         None => image.spec()?,
     };
     if !command.is_empty() {
@@ -76,28 +99,33 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     let runtime = Runtime::<Back>::new(&RuntimeSettings { cache });
-    let system = System::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
-    let tuning = Tuning {
+    let system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
+    let translator_settings = TranslatorSettings {
         look_ahead,
         optimise,
     };
-    let mut container =
-        runtime.container(&spec, &image, &tuning, &Machine { offer: () }, system)?;
+    let mut container = runtime.container(
+        &spec,
+        &image,
+        &translator_settings,
+        &GuestMachine { offer: () },
+        system,
+    )?;
     let Ok(Ending::Finished { status }) = container.run();
     if let Some(error) = container.start_failure() {
-        eprintln!("wcontainers: the program could not be started: {error:?}");
+        eprintln!("wcon: the program could not be started: {error:?}");
     }
     for Warned {
         reason, count, cpu, ..
-    } in container.outside().warnings().iter()
+    } in container.system().warnings().iter()
     {
         let side = if *cpu { "back end" } else { "kernel" };
-        eprintln!("wcontainers: {side}: {reason}: {count}");
+        eprintln!("wcon: {side}: {reason}: {count}");
     }
-    // As a shell reports it: the exit status, or 128 and the signal.
-    Ok(if status & 0x7f == 0 {
-        (status >> 8) as u8
+    // As a shell reports it.
+    Ok(if status & SIGNAL_BITS == 0 {
+        (status >> EXIT_SHIFT) as u8
     } else {
-        128 + (status & 0x7f) as u8
+        SIGNAL_BASE + (status & SIGNAL_BITS) as u8
     })
 }

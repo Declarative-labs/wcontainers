@@ -6,11 +6,13 @@
 //!
 //! `WC_LAYER3_CASES` Csmith programs (default 4), seeded from `WC_LAYER3_SEED` (default 1): case `i` is
 //! Csmith seed `seed * 1_000_003 + i`, with the compiler, level and position picked from the same number,
-//! so a failure replays from the two values: `WC_LAYER3_FROM=i` (default 0) starts at case `i`. The first
-//! `WC_LAYER3_CHROME` of them that end in time (default one) also run in Chrome, at none and full in both
-//! settings.
+//! so a failure replays from the two values: `WC_LAYER3_FROM=i` (default 0) starts at case `i`. Of every
+//! `WC_LAYER3_CASES / WC_LAYER3_CHROME` cases the first (default one in all) also runs in Chrome, at none and
+//! full in both settings, when it ends in time. Which programs end in time depends on the reference's speed
+//! (Linux's 20 s alarm); everything else replays exactly.
 //! `WC_LAYER3_JOBS` cases run at once (default one). A line every thousand cases shows progress.
 
+use linux_raw_sys::general::{SIGABRT, SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_translator::contract::Reason;
@@ -18,16 +20,46 @@ use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer3::{
-    Compiler, LEVELS, Position, build, csmith, native_in_time, ordinary,
+    Compiler, LAYER3_CASE_STRIDE, LEVELS, Position, build, csmith_case, native_in_time, ordinary,
 };
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Ran, native, ran as outcome, reachable_memory, ready, translated_for,
-    translated_stopping_everywhere,
+    Blob, Ran, SIGNALLED, native, ran as outcome, reachable_memory, ready, source_directory,
+    translated_for, translated_stopping_everywhere,
 };
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
+}
+
+/// The signals a program whose access or jump went astray ends by, depending on what lies where it went.
+/// A stray access raises SIGSEGV or SIGBUS (no page, or a file's page past the file's end, which an
+/// ordinary executable has and a blob does not). A stray jump into data faults in an ordinary executable,
+/// whose data cannot be run, but runs the data in a blob, which is all one region that can be (see
+/// `placement`), and ends by whatever the data decodes to: an undefined instruction, a breakpoint or a
+/// stray access.
+const ASTRAY: [u32; 4] = [SIGSEGV, SIGBUS, SIGILL, SIGTRAP];
+
+/// Whether two exit statuses end the same way, every signal of a program gone astray being one.
+fn same_ending(one: i32, other: i32) -> bool {
+    let astray = |status: i32| {
+        u32::try_from(status - SIGNALLED).is_ok_and(|signal| ASTRAY.contains(&signal))
+    };
+    one == other || (astray(one) && astray(other))
+}
+
+#[test]
+fn a_program_gone_astray_ends_the_same_by_any_of_its_signals() {
+    let status = |signal: u32| SIGNALLED + signal as i32;
+    for one in ASTRAY {
+        for other in ASTRAY {
+            assert!(same_ending(status(one), status(other)));
+        }
+        assert!(!same_ending(status(one), 0));
+        assert!(!same_ending(status(one), status(SIGKILL)));
+        assert!(!same_ending(status(one), status(SIGABRT)));
+    }
+    assert!(!same_ending(SIGBUS as i32, SIGSEGV as i32));
 }
 
 /// Run a blob at none and full in both settings; compare with Linux, and full with none in registers and
@@ -38,11 +70,12 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
         return Ok(None);
     };
     // A blob that Linux ends by a signal is compared only when the program, built as an ordinary
-    // executable, ends the same way: otherwise both sides could agree on a blob that is broken (a moved blob
-    // that did not relocate itself, say).
-    if theirs.status >= 128 {
+    // executable, ends the same way (`same_ending`): otherwise both sides could agree on a blob that is broken (a
+    // moved blob that did not relocate itself, say). What it wrote before may differ, as a program that
+    // faults may have read through a wild pointer, whose target depends on where things are.
+    if theirs.status >= SIGNALLED {
         let program = ordinary();
-        if (program.status, &program.stdout) != (theirs.status, &theirs.stdout) {
+        if !same_ending(program.status, theirs.status) {
             // Whether Linux does it again tells a fault of the blob from one of the reference.
             let again: Vec<i32> = (0..3).map(|_| native(blob).status).collect();
             return Err(format!(
@@ -85,9 +118,9 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
     }
     // Bounded of an N and pieces mixed with events injected, both from the blob's own hash.
     let seed = {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        blob.bytes.hash(&mut hasher);
+        use std::hash::Hasher;
+        let mut hasher = rustc_hash::FxHasher::default();
+        hasher.write(&blob.bytes);
         hasher.finish()
     };
     let bound = 2 + (seed % 63) as u32;
@@ -134,22 +167,6 @@ fn compare_in_chrome(blob: &Blob, theirs: &Ran) -> Result<(), String> {
     Ok(())
 }
 
-/// The source, compiler, level and position of Csmith case `number`.
-fn csmith_case(number: u64) -> (std::path::PathBuf, Compiler, &'static str, Position) {
-    let compiler = if number.is_multiple_of(2) {
-        Compiler::Clang
-    } else {
-        Compiler::Gcc
-    };
-    let level = LEVELS[(number / 2 % LEVELS.len() as u64) as usize];
-    let position = if (number / 12).is_multiple_of(2) {
-        Position::Fixed
-    } else {
-        Position::Independent
-    };
-    (csmith(number), compiler, level, position)
-}
-
 #[test]
 fn csmith_programs_match_linux() {
     let cases = setting("WC_LAYER3_CASES", 4);
@@ -157,16 +174,23 @@ fn csmith_programs_match_linux() {
     let from = setting("WC_LAYER3_FROM", 0);
     let chrome = setting("WC_LAYER3_CHROME", 1);
     let jobs = setting("WC_LAYER3_JOBS", 1).max(1);
+    let chrome_every = cases.div_ceil(chrome.max(1));
     let in_chrome = AtomicU64::new(0);
     let (ran, too_long, done) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    // Programs whose floating point runs on the exact path: they read FPSR.
+    let exact = AtomicU64::new(0);
     let failures = Mutex::new(Vec::new());
     at_once(jobs, cases, |i| {
-        let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
+        let number = seed.wrapping_mul(LAYER3_CASE_STRIDE).wrapping_add(from + i);
         let (source, compiler, level, position) = csmith_case(number);
         let blob = build(&source, compiler, level, position);
+        if blob.reads_float_status() {
+            exact.fetch_add(1, Ordering::Relaxed);
+        }
         let own = || ordinary(&source, compiler, level, position);
         let checked = compare(&blob, own).and_then(|theirs| match theirs {
-            Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
+            Some(theirs) if chrome > 0 && i.is_multiple_of(chrome_every) => {
+                in_chrome.fetch_add(1, Ordering::Relaxed);
                 compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
             }
             other => Ok(other),
@@ -189,10 +213,11 @@ fn csmith_programs_match_linux() {
     let mut failures = failures.into_inner().unwrap();
     failures.sort();
     eprintln!(
-        "layer 3: {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} failing: {failures:?}",
+        "layer 3: {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} read FPSR, {} failing: {failures:?}",
         ran.into_inner(),
-        in_chrome.into_inner().min(chrome),
+        in_chrome.into_inner(),
         too_long.into_inner(),
+        exact.into_inner(),
         failures.len()
     );
     assert!(failures.is_empty());
@@ -202,7 +227,7 @@ fn csmith_programs_match_linux() {
 /// 8), with both compilers, every level and both positions.
 #[test]
 fn hand_picked_programs_match_linux() {
-    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs");
+    let directory = source_directory();
     let mut failures = Vec::new();
     for name in ["hello", "differences"] {
         for compiler in [Compiler::Clang, Compiler::Gcc] {

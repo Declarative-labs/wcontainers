@@ -764,8 +764,6 @@ code	crates/wcontainers-arm64/src/decode_simd.rs	str	permute	"UZP2"
 code	crates/wcontainers-arm64/src/decode_simd.rs	str	permute	"ZIP1"
 code	crates/wcontainers-arm64/src/decode_simd.rs	str	permute	"ZIP2"
 code	crates/wcontainers-arm64/src/decode_simd.rs	str	permute	"size"
-code	crates/wcontainers-arm64/src/exact.rs	int	Bits::mask	128
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert	4
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	0x1f
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	0x1f
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	0x1f
@@ -776,132 +774,24 @@ code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	112
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	13
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	131072
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	16
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	23
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	30
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	65504
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::convert_to	8
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::flushes	16
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	-1024
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	-128
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	1022
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	126
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	22
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	3
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::reciprocal_estimate	32
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::round	22
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::round	3
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	-2
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	0b0011
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	0b0110
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	0b1000
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	0xffff_ffff
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	0xffff_ffff
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	28
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	3
 code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	3
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	32
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	64
-code	crates/wcontainers-arm64/src/exact.rs	int	Context::run	64
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	0xff
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	0xff
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	10
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	11
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	12
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	13
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	14
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	15
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	17
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	18
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	19
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	20
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	24
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	3
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	32
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	4
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	5
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	6
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	64
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	7
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	7
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	8
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	8
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	8
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::decode	9
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	10
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	11
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	12
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	13
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	14
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	15
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	16
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	17
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	18
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	19
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	20
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	21
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	24
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	3
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	3
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	3
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	4
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	4
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	4
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	5
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	6
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	64
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	64
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	7
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	8
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	8
-code	crates/wcontainers-arm64/src/exact.rs	int	Operation::encode	9
 code	crates/wcontainers-arm64/src/exact.rs	int	recip_estimate	19
 code	crates/wcontainers-arm64/src/exact.rs	int	recip_sqrt_estimate	256
 code	crates/wcontainers-arm64/src/exact.rs	int	recip_sqrt_estimate	28
 code	crates/wcontainers-arm64/src/exact.rs	int	recip_sqrt_estimate	512u64
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	0xff
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	11
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	2045
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	23
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	253
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	32
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	32
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	44
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	44
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	50
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	50
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	51
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	51
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	51
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	8
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_estimate_bits	8
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	0xff
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	11
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	23
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	3068
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	32
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	32
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	380
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	44
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	45
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	51
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	52
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	7
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	8
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	8
-code	crates/wcontainers-arm64/src/exact.rs	int	reciprocal_sqrt_estimate_bits	8
-code	crates/wcontainers-arm64/src/exact.rs	int	run	4
 code	crates/wcontainers-arm64/src/exact.rs	int	sqrt	-2
 code	crates/wcontainers-arm64/src/float.rs	float	round_away	0.5
 code	crates/wcontainers-arm64/src/float.rs	float	step_fast	0.5
@@ -909,33 +799,8 @@ code	crates/wcontainers-arm64/src/float.rs	float	step_fast	0.5
 code	crates/wcontainers-arm64/src/float.rs	float	step_fast	1.5
 code	crates/wcontainers-arm64/src/float.rs	float	step_fast	1.5
 code	crates/wcontainers-arm64/src/float.rs	float	step_fast	3.0
-code	crates/wcontainers-arm64/src/float.rs	int	by_hook	3
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	28
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	29
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	30
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	31
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	compare_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	constant	8
-code	crates/wcontainers-arm64/src/float.rs	int	convert_bits	4
-code	crates/wcontainers-arm64/src/float.rs	int	convert_bits	4
-code	crates/wcontainers-arm64/src/float.rs	int	convert_bits	4
-code	crates/wcontainers-arm64/src/float.rs	int	convert_bits	8
-code	crates/wcontainers-arm64/src/float.rs	int	convert_bits	8
-code	crates/wcontainers-arm64/src/float.rs	int	convert_bits	8
 code	crates/wcontainers-arm64/src/float.rs	int	default_nan	0x7fc0_0000
 code	crates/wcontainers-arm64/src/float.rs	int	default_nan	0x7ff8_0000_0000_0000
-code	crates/wcontainers-arm64/src/float.rs	int	default_nan	8
-code	crates/wcontainers-arm64/src/float.rs	int	emit	28
-code	crates/wcontainers-arm64/src/float.rs	int	from_integer	8
-code	crates/wcontainers-arm64/src/float.rs	int	from_integer_fast	64
-code	crates/wcontainers-arm64/src/float.rs	int	from_integer_fast	64
-code	crates/wcontainers-arm64/src/float.rs	int	from_integer_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	from_integer_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	from_integer_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	fused	8
 code	crates/wcontainers-arm64/src/float.rs	int	half_to	0x1f
 code	crates/wcontainers-arm64/src/float.rs	int	half_to	0x1f
 code	crates/wcontainers-arm64/src/float.rs	int	half_to	0x3ff
@@ -944,27 +809,8 @@ code	crates/wcontainers-arm64/src/float.rs	int	half_to	10
 code	crates/wcontainers-arm64/src/float.rs	int	half_to	10
 code	crates/wcontainers-arm64/src/float.rs	int	half_to	102
 code	crates/wcontainers-arm64/src/float.rs	int	half_to	23
-code	crates/wcontainers-arm64/src/float.rs	int	half_to	4
-code	crates/wcontainers-arm64/src/float.rs	int	int_eq	8
-code	crates/wcontainers-arm64/src/float.rs	int	low	16
-code	crates/wcontainers-arm64/src/float.rs	int	low	8
-code	crates/wcontainers-arm64/src/float.rs	int	low	8
-code	crates/wcontainers-arm64/src/float.rs	int	op	8
-code	crates/wcontainers-arm64/src/float.rs	int	parts	10
-code	crates/wcontainers-arm64/src/float.rs	int	parts	11
-code	crates/wcontainers-arm64/src/float.rs	int	parts	23
-code	crates/wcontainers-arm64/src/float.rs	int	parts	4
-code	crates/wcontainers-arm64/src/float.rs	int	parts	5
-code	crates/wcontainers-arm64/src/float.rs	int	parts	52
-code	crates/wcontainers-arm64/src/float.rs	int	parts	8
-code	crates/wcontainers-arm64/src/float.rs	int	product_sign	8
 code	crates/wcontainers-arm64/src/float.rs	int	quiet_bit	22
 code	crates/wcontainers-arm64/src/float.rs	int	quiet_bit	51
-code	crates/wcontainers-arm64/src/float.rs	int	quiet_bit	8
-code	crates/wcontainers-arm64/src/float.rs	int	round_away	8
-code	crates/wcontainers-arm64/src/float.rs	int	splat_bits	4
-code	crates/wcontainers-arm64/src/float.rs	int	splat_bits	8
-code	crates/wcontainers-arm64/src/float.rs	int	splat_bits	8
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	0x400
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	0x7c00
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	0x7ff
@@ -974,7 +820,6 @@ code	crates/wcontainers-arm64/src/float.rs	int	to_half	1023
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	15
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	15
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	31
-code	crates/wcontainers-arm64/src/float.rs	int	to_half	4
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	4
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	42
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	43
@@ -986,16 +831,8 @@ code	crates/wcontainers-arm64/src/float.rs	int	to_half	52
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	63
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	63
 code	crates/wcontainers-arm64/src/float.rs	int	to_half	63
-code	crates/wcontainers-arm64/src/float.rs	int	to_integer_fast	64
-code	crates/wcontainers-arm64/src/float.rs	int	to_integer_fast	8
-code	crates/wcontainers-arm64/src/float.rs	int	to_integer_fast	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	28
-code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	28
 code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	3
 code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	3
-code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	30
-code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	30
-code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	31
 code	crates/wcontainers-arm64/src/float_simd.rs	int	compare	7
 code	crates/wcontainers-arm64/src/float_simd.rs	int	emit	10
 code	crates/wcontainers-arm64/src/float_simd.rs	int	emit	12
@@ -1022,44 +859,6 @@ code	crates/wcontainers-arm64/src/float_simd.rs	int	estimate	8
 code	crates/wcontainers-arm64/src/float_simd.rs	int	estimate	8
 code	crates/wcontainers-arm64/src/float_simd.rs	int	estimate	8
 code	crates/wcontainers-arm64/src/float_simd.rs	int	estimate	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	0xff
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	11
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	11
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	128
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	23
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	256
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	3068
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	380
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	44
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	45
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	52
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	52
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	52
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_sqrt_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	0xff
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	11
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	2045
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	23
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	253
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	256
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	44
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	44
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	50
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	50
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	51
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	51
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	51
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	52
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	52
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	52
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	recip_table	8
-code	crates/wcontainers-arm64/src/float_simd.rs	int	width	16
-code	crates/wcontainers-arm64/src/float_simd.rs	int	width	8
 code	crates/wcontainers-arm64/src/forms.rs	char	Condition<'_>::atom	','
 code	crates/wcontainers-arm64/src/forms.rs	char	Condition<'_>::atom	'1'
 code	crates/wcontainers-arm64/src/forms.rs	char	Condition<'_>::atom	'_'
@@ -1097,27 +896,14 @@ code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::branch_comparis
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::branch_comparison	3
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::branch_comparison	8
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::branch_comparison	9
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	0xfff
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::control_offset	8
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::decode	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::decode	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::induction	64
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::jump_table	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::jump_table	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::jump_table	64
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::jump_table	8
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::loaded_max	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::loaded_max	8
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::reg_bit	31
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::run_hook	3
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::run_hook	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::run_hook	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::stack_move	24
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::trap_detail	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::vector_bit	64
 code	crates/wcontainers-arm64/src/guest.rs	int	BITS	16
 code	crates/wcontainers-arm64/src/guest.rs	int	BITS	31
@@ -1138,12 +924,8 @@ code	crates/wcontainers-arm64/src/guest.rs	int	SHAPES	4
 code	crates/wcontainers-arm64/src/guest.rs	int	SHAPES	5
 code	crates/wcontainers-arm64/src/guest.rs	int	SHAPES	5
 code	crates/wcontainers-arm64/src/guest.rs	int	SHAPES	5
-code	crates/wcontainers-arm64/src/guest.rs	int	inside	4
-code	crates/wcontainers-arm64/src/guest.rs	int	inside	4
-code	crates/wcontainers-arm64/src/guest.rs	int	word	4
 code	crates/wcontainers-arm64/src/habits.rs	int	bound	8
 code	crates/wcontainers-arm64/src/habits.rs	int	bound	8
-code	crates/wcontainers-arm64/src/habits.rs	int	constant	0xfff
 code	crates/wcontainers-arm64/src/habits.rs	int	jump_table	0xffff_ffff
 code	crates/wcontainers-arm64/src/habits.rs	int	jump_table	4
 code	crates/wcontainers-arm64/src/habits.rs	int	jump_table	64
@@ -1175,10 +957,6 @@ code	crates/wcontainers-arm64/src/instruction.rs	int	Instruction::memory_access	
 code	crates/wcontainers-arm64/src/instruction.rs	int	Instruction::memory_access	8
 code	crates/wcontainers-arm64/src/instruction.rs	int	Width::bits	32
 code	crates/wcontainers-arm64/src/instruction.rs	int	Width::bits	64
-code	crates/wcontainers-arm64/src/meaning.rs	int	Flag::bit	28
-code	crates/wcontainers-arm64/src/meaning.rs	int	Flag::bit	29
-code	crates/wcontainers-arm64/src/meaning.rs	int	Flag::bit	30
-code	crates/wcontainers-arm64/src/meaning.rs	int	Flag::bit	31
 code	crates/wcontainers-arm64/src/meaning.rs	int	address	15
 code	crates/wcontainers-arm64/src/meaning.rs	int	bitfield_masks	64
 code	crates/wcontainers-arm64/src/meaning.rs	int	condition_direct	10
@@ -1211,7 +989,6 @@ code	crates/wcontainers-arm64/src/meaning.rs	int	crc32	0xffff_ffff
 code	crates/wcontainers-arm64/src/meaning.rs	int	crc32	8
 code	crates/wcontainers-arm64/src/meaning.rs	int	crc32	8
 code	crates/wcontainers-arm64/src/meaning.rs	int	crc32	8
-code	crates/wcontainers-arm64/src/meaning.rs	int	emit	0xfff
 code	crates/wcontainers-arm64/src/meaning.rs	int	emit	0xffffu64
 code	crates/wcontainers-arm64/src/meaning.rs	int	emit	16
 code	crates/wcontainers-arm64/src/meaning.rs	int	emit	16
@@ -1227,7 +1004,6 @@ code	crates/wcontainers-arm64/src/meaning.rs	int	flag_value	28
 code	crates/wcontainers-arm64/src/meaning.rs	int	flag_value	31
 code	crates/wcontainers-arm64/src/meaning.rs	int	flag_value	63
 code	crates/wcontainers-arm64/src/meaning.rs	int	link_register	30
-code	crates/wcontainers-arm64/src/meaning.rs	int	link_register	4
 code	crates/wcontainers-arm64/src/meaning.rs	int	load	4
 code	crates/wcontainers-arm64/src/meaning.rs	int	load	4
 code	crates/wcontainers-arm64/src/meaning.rs	int	load	8
@@ -1305,39 +1081,7 @@ code	crates/wcontainers-arm64/src/memory.rs	int	structures	4
 code	crates/wcontainers-arm64/src/memory.rs	int	structures	4
 code	crates/wcontainers-arm64/src/memory.rs	int	structures	8
 code	crates/wcontainers-arm64/src/simd.rs	float	recip_sqrt_estimate	268_435_456.0f64
-code	crates/wcontainers-arm64/src/simd.rs	int	broadcast	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	16
 code	crates/wcontainers-arm64/src/simd.rs	int	emit	32
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	8
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	8
-code	crates/wcontainers-arm64/src/simd.rs	int	emit	8
-code	crates/wcontainers-arm64/src/simd.rs	int	extend	16
-code	crates/wcontainers-arm64/src/simd.rs	int	extend	32
-code	crates/wcontainers-arm64/src/simd.rs	int	extend	64
-code	crates/wcontainers-arm64/src/simd.rs	int	extend	8
-code	crates/wcontainers-arm64/src/simd.rs	int	extract	4
-code	crates/wcontainers-arm64/src/simd.rs	int	extract	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
-code	crates/wcontainers-arm64/src/simd.rs	int	int_binary	4
 code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	0x0002_0202_0202
 code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	0x0108_8442_2010
 code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	0x1ff
@@ -1350,30 +1094,16 @@ code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	31
 code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	62
 code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	62
 code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	63
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	int_lane	64
-code	crates/wcontainers-arm64/src/simd.rs	int	pairs	16
-code	crates/wcontainers-arm64/src/simd.rs	int	pairs	16
-code	crates/wcontainers-arm64/src/simd.rs	int	pairs	16
-code	crates/wcontainers-arm64/src/simd.rs	int	pairs	8
 code	crates/wcontainers-arm64/src/simd.rs	int	recip_estimate	19
 code	crates/wcontainers-arm64/src/simd.rs	int	recip_sqrt_estimate	256
 code	crates/wcontainers-arm64/src/simd.rs	int	recip_sqrt_estimate	28
 code	crates/wcontainers-arm64/src/simd.rs	int	recip_sqrt_estimate	28
 code	crates/wcontainers-arm64/src/simd.rs	int	recip_sqrt_estimate	512
 code	crates/wcontainers-arm64/src/simd.rs	int	recip_sqrt_estimate	512
-code	crates/wcontainers-arm64/src/simd.rs	int	replace	4
 code	crates/wcontainers-arm64/src/simd.rs	int	saturating_shift_left	63
 code	crates/wcontainers-arm64/src/simd.rs	int	saturating_shift_left	63
 code	crates/wcontainers-arm64/src/simd.rs	int	saturating_shift_left	63
 code	crates/wcontainers-arm64/src/simd.rs	int	saturating_shift_left	63
-code	crates/wcontainers-arm64/src/simd.rs	int	saturating_shift_left	64
-code	crates/wcontainers-arm64/src/simd.rs	int	saturating_shift_left	64
 code	crates/wcontainers-arm64/src/simd.rs	int	saturation	27
 code	crates/wcontainers-arm64/src/simd.rs	int	shift_by	63
 code	crates/wcontainers-arm64/src/simd.rs	int	shift_by	63
@@ -1381,23 +1111,10 @@ code	crates/wcontainers-arm64/src/simd.rs	int	shift_by	64
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	10
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	12
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	13
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	16
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	16
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	3
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	4
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	4
 code	crates/wcontainers-arm64/src/simd.rs	int	simd	4
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	4
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	4
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	64
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	8
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	8
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	8
-code	crates/wcontainers-arm64/src/simd.rs	int	simd	8
-code	crates/wcontainers-arm64/src/simd.rs	int	splat	16
-code	crates/wcontainers-arm64/src/simd.rs	int	splat	8
-code	crates/wcontainers-arm64/src/simd.rs	int	width	16
-code	crates/wcontainers-arm64/src/simd.rs	int	width	8
 code	crates/wcontainers-arm64/src/vector.rs	int	broadcast	16
 code	crates/wcontainers-arm64/src/vector.rs	int	emit	16
 code	crates/wcontainers-arm64/src/vector.rs	int	emit	4
@@ -1622,8 +1339,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
 code	crates/wcontainers-kernel-test/src/driver.rs	int	decode::Reader<'_>::number	8
-code	crates/wcontainers-kernel-test/src/driver.rs	int	look_ahead	0x1007_a4ead
-code	crates/wcontainers-kernel-test/src/driver.rs	int	look_ahead	64
 code	crates/wcontainers-kernel-test/src/driver.rs	int	moments	100
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	12
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	3
@@ -5850,13 +5565,15 @@ code	crates/wcontainers-kernel/src/vdso.rs	int	image	64
 code	crates/wcontainers-kernel/src/vdso.rs	int	image	7
 code	crates/wcontainers-kernel/src/vdso.rs	int	image	8
 code	crates/wcontainers-kernel/src/vdso.rs	int	image	8
-code	crates/wcontainers-runtime/src/container.rs	str	Runtime<B>::container	"HOME="
-code	crates/wcontainers-runtime/src/container.rs	str	Runtime<B>::container	"HOME={}"
+code	crates/wcontainers-runtime/src/container.rs	str	Runtime<E>::container	"HOME="
+code	crates/wcontainers-runtime/src/container.rs	str	Runtime<E>::container	"HOME={}"
 code	crates/wcontainers-runtime/src/image.rs	byte	Image::lookup	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	Image::lookup	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	clean	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	read_layer	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	split	b'/'
+code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::add_to	b"etc"
+code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::add_to	b"etc"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::groups	b"etc/group"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::home	b"etc/passwd"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::lookup	b"."
@@ -5867,6 +5584,9 @@ code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::user	b"etc/group"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::user	b"etc/passwd"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	clean	b"."
 code	crates/wcontainers-runtime/src/image.rs	bytestr	clean	b".."
+code	crates/wcontainers-runtime/src/image.rs	bytestr	docker_files	b"etc/hostname"
+code	crates/wcontainers-runtime/src/image.rs	bytestr	docker_files	b"etc/hosts"
+code	crates/wcontainers-runtime/src/image.rs	bytestr	docker_files	b"etc/resolv.conf"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	join	b"/"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	read_layer	b".wh."
 code	crates/wcontainers-runtime/src/image.rs	bytestr	read_layer	b".wh..opq"
@@ -5883,12 +5603,8 @@ code	crates/wcontainers-runtime/src/image.rs	char	Image::table	'#'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::table	':'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::user	':'
 code	crates/wcontainers-runtime/src/image.rs	char	with_defaults	'='
-code	crates/wcontainers-runtime/src/image.rs	int	Image::groups	3
-code	crates/wcontainers-runtime/src/image.rs	int	Image::home	5
-code	crates/wcontainers-runtime/src/image.rs	int	Image::program	0o111
-code	crates/wcontainers-runtime/src/image.rs	int	Image::root	3
-code	crates/wcontainers-runtime/src/image.rs	int	Image::user	3
-code	crates/wcontainers-runtime/src/image.rs	int	read_layer	0o7777
+code	crates/wcontainers-runtime/src/image.rs	int	docker_files	3
+code	crates/wcontainers-runtime/src/image.rs	str	Image::add_to	"/etc is not a directory, where the host name and name server files go"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::home	"/"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::oci	"1.0.0"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::oci	"application/vnd.docker.image.rootfs.diff.tar.gzip"
@@ -5898,7 +5614,6 @@ code	crates/wcontainers-runtime/src/image.rs	str	Image::oci	"oci-layout"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"PATH="
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
-code	crates/wcontainers-runtime/src/image.rs	str	Image::root	"0"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	","
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	","
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	"/"
@@ -5948,7 +5663,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	accept	"root"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"solaris"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the configuration is not a JSON object"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the kernel taking a domain name at start"
-code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the shipped outside running host programs at the points the runtime \\n                 specification names"
+code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the local system running host programs at the points the runtime \\n                 specification names"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"uidMappings"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"user namespaces in the kernel"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"vm"
@@ -5973,6 +5688,8 @@ code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"readonlyPaths"
 code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"type"
 code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"uid"
 code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"user"
+code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	", "
+code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
@@ -5981,6 +5698,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"id-mapped mounts: user namespaces in the kernel"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"mounts"
+code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"mounts[{index}]"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"mounts[{index}]"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"options"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"options"
@@ -5994,7 +5712,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"{field}.{name}"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroups: the kernel accounting CPU, memory, pids and I/O per group and enforcing \\n                 limits"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroupsPath"
-code	crates/wcontainers-runtime/src/spec.rs	str	linux	"device nodes in the kernel for each, with the outside behind them"
+code	crates/wcontainers-runtime/src/spec.rs	str	linux	"device nodes in the kernel for each, with the system behind them"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"devices"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"gidMappings"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"intelRdt"
@@ -6089,6 +5807,8 @@ code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"linux.namespaces[{in
 code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"path"
 code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"type"
 code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"type"
+code	crates/wcontainers-runtime/src/spec.rs	str	path_name	"{parent}.{key}"
+code	crates/wcontainers-runtime/src/spec.rs	str	path_name	"{}[{index}]"
 code	crates/wcontainers-runtime/src/spec.rs	str	process	"a Windows host"
 code	crates/wcontainers-runtime/src/spec.rs	str	process	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	process	"a field this runtime does not know"
@@ -6138,10 +5858,8 @@ code	crates/wcontainers-runtime/src/spec.rs	str	root	"readonly"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.path"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.readonly"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.{name}"
-code	crates/wcontainers-runtime/src/spec.rs	str	root	"the root's files are the image argument; a root read from a directory of the host \\n                 needs the shipped outside's file backend"
-code	crates/wcontainers-runtime/src/spec.rs	str	spec_from_json	"a field this runtime does not know"
-code	crates/wcontainers-runtime/src/spec.rs	str	unread	"{path}.{name}"
-code	crates/wcontainers-runtime/src/spec.rs	str	unread	"{path}[{index}]"
+code	crates/wcontainers-runtime/src/spec.rs	str	root	"the root's files are the image argument; a root read from a directory of the host \\n                 needs the local system's file backend"
+code	crates/wcontainers-runtime/src/spec.rs	str	spec_from_json	"annotations.{key}"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"a Windows host"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"additionalGids"
@@ -6151,9 +5869,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	user	"uid"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"umask"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"username"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"{field}: the kernel starts with umask 0022; others need it to take the umask at start"
-code	crates/wcontainers-runtime/src/system.rs	str	<System as Outside>::stop_flag	"wcontainers timer"
-code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	4
-code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	8
+code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as System>::stop_flag	"wcontainers timer"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"align"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"alignment"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"body"
@@ -6225,74 +5941,24 @@ code	crates/wcontainers-translator-test/programs/panics.rs	int	<Area as GlobalAl
 code	crates/wcontainers-translator-test/programs/panics.rs	int	Area	20
 code	crates/wcontainers-translator-test/programs/panics.rs	int	main	32
 code	crates/wcontainers-translator-test/programs/panics.rs	int	main	9
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	blob	31
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	blob	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	blob	35
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	blob	64
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	12
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	12
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	12
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	12
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	12
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	16
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	16
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	16
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	33
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	33
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	34
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	34
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	34
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	4
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	4
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	4
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	4
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	5
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	500_000
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	enter	31
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	enter	31
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	enter	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	enter	33
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	enter	34
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_float	8
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors	16
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors	288
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	31
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	31
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	32
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	33
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	34
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	101
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	3
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	3
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	4
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	4
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	5
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	5
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	6
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	6
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	7
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	number	16
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	time	- 1
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	timed_out	128
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	trap_test_system_calls	3
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	trap_test_system_calls	32
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	trap_test_system_calls	8
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	word	8
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	alternate_stack	"sigaltstack"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	handle	"sigaction"
-code	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"blob"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"cases"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"time"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	map	"/proc/self/maps"
@@ -6367,26 +6033,9 @@ code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"Instructi
 code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"_type"
 code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"children"
 code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"name"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	int	main	16
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	int	main	8
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	" "
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"WC_OMIT"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"depth"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"nm"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"permissions"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"returns"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"stop"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{base}.cwasm"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{base}.wasm"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{out}/{}"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{}/../../target/programs/{}.elf"
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::find_starts	8
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::find_starts	8
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::find_starts	8
-code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::in_code	4
-code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::read	4
-code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::read	4
-code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::read	4
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::word	8
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Starts::by_means	5
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Binary::find_starts	".fini_array"
@@ -6402,13 +6051,9 @@ code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"--name
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"-L"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"-c"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"-f"
-code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"../../target/binaries"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"binary-{}"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"cp"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"create"
-code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"docker"
-code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"docker"
-code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"docker"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"rm"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"run"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Source::file	"sh"
@@ -6420,128 +6065,9 @@ code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"en
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"init and fini lists"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"symbols"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"unwind tables"
-code	crates/wcontainers-translator-test/src/browser.rs	float	run_in_chrome	1000.0
-code	crates/wcontainers-translator-test/src/browser.rs	int	cases	4
-code	crates/wcontainers-translator-test/src/browser.rs	int	load_modules	16
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	0xff
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	11
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	11
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	3
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	4
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	5
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	7
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	7
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	8
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"areas"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"blob.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"changed"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"codeBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"instructions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"load"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"lookAhead"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"memoryBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"omit"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"regions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"repeat"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"sp"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"stack.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"state"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"stopAtSyscall"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"stopped"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"translator.wasm"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"Target crashed"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"WC_CHROME_JS_FLAGS"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"case.json"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"error"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"node"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"run.mjs"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"the page crashed"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"blob.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"cases"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"codeBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"codeStart"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"compiling"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"instantiating"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"load"
 code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"load-{name}"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"lookAhead"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"memoryAfter"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"memoryBefore"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"memoryBytes"
 code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"module-{i}.wasm"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"modules"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"omit"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"regions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"repeat"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"sp"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"stack.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"translator.wasm"
-code	crates/wcontainers-translator-test/src/browser.rs	str	package	"browser"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"alignment"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"blob.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"bound"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"breakpoint"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"cases"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"codeBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"count"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"counters"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"divide error"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"finished"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"float exception"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"general protection"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"kind"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"load"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"lookAhead"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"memory fault"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"memoryBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"nanoseconds"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"omit"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"optimise"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"overflow"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"pc"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"reason"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"regions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"repeat"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"runs"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"sp"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"splitBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stack fault"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stack.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"status"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stderr"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stdout"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stopped"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"translator.wasm"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"undefined"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"unsupported"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"userAgent"
-code	crates/wcontainers-translator-test/src/browser.rs	str	target	"../../target/browser"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"--quiet"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"--release"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"--target"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"--target-dir"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"CARGO"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"build"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"cargo"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"wasm32-unknown-unknown"
-code	crates/wcontainers-translator-test/src/browser.rs	str	translator	"wasm32-unknown-unknown/release/wcontainers_browser.wasm"
-code	crates/wcontainers-translator-test/src/changes.rs	float	choose	0.6
-code	crates/wcontainers-translator-test/src/changes.rs	int	choose	3
-code	crates/wcontainers-translator-test/src/changes.rs	int	compare	32
-code	crates/wcontainers-translator-test/src/changes.rs	int	compare	8
-code	crates/wcontainers-translator-test/src/jobs.rs	int	at_once	20
-code	crates/wcontainers-translator-test/src/jobs.rs	int	at_once	64
 code	crates/wcontainers-translator-test/src/layer1.rs	char	excluded	'p'
 code	crates/wcontainers-translator-test/src/layer1.rs	char	excluded	'p'
 code	crates/wcontainers-translator-test/src/layer1.rs	float	float_bits	-1e-30
@@ -6580,10 +6106,6 @@ code	crates/wcontainers-translator-test/src/layer1.rs	float	float_bits	6e-8
 code	crates/wcontainers-translator-test/src/layer1.rs	float	float_bits	8388608.5
 code	crates/wcontainers-translator-test/src/layer1.rs	float	float_bits	9.223372e18
 code	crates/wcontainers-translator-test/src/layer1.rs	float	float_bits	9.223_372_036_854_776e18
-code	crates/wcontainers-translator-test/src/layer1.rs	int	Case	32
-code	crates/wcontainers-translator-test/src/layer1.rs	int	Case	34
-code	crates/wcontainers-translator-test/src/layer1.rs	int	Outcome	32
-code	crates/wcontainers-translator-test/src/layer1.rs	int	Outcome	35
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	128
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	15
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	16
@@ -6591,20 +6113,12 @@ code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	16
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	16
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	16
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	16
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	28
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	3
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	3
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	32
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	32
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	33
-code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	34
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	4
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	4
 code	crates/wcontainers-translator-test/src/layer1.rs	int	cases	64
@@ -6688,22 +6202,11 @@ code	crates/wcontainers-translator-test/src/layer1.rs	int	of_feature_not_offered
 code	crates/wcontainers-translator-test/src/layer1.rs	int	of_feature_not_offered	7
 code	crates/wcontainers-translator-test/src/layer1.rs	int	of_feature_not_offered	7
 code	crates/wcontainers-translator-test/src/layer1.rs	int	of_feature_not_offered	7
-code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	32
-code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	33
-code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	34
-code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	35
 code	crates/wcontainers-translator-test/src/layer1.rs	int	outcome	64
-code	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome	32
 code	crates/wcontainers-translator-test/src/layer1.rs	int	regions	3
 code	crates/wcontainers-translator-test/src/layer1.rs	int	restrict	0x7fff
 code	crates/wcontainers-translator-test/src/layer1.rs	int	restrict	5
 code	crates/wcontainers-translator-test/src/layer1.rs	int	restrict	5
-code	crates/wcontainers-translator-test/src/layer1.rs	int	start_registers	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	start_registers	31
-code	crates/wcontainers-translator-test/src/layer1.rs	int	start_registers	32
-code	crates/wcontainers-translator-test/src/layer1.rs	int	start_registers	33
 code	crates/wcontainers-translator-test/src/layer1.rs	int	start_registers	64
 code	crates/wcontainers-translator-test/src/layer1.rs	int	system_register	0x7fff
 code	crates/wcontainers-translator-test/src/layer1.rs	int	system_register	5
@@ -6838,7 +6341,6 @@ code	crates/wcontainers-translator-test/src/layer2.rs	float	lookup	0.3
 code	crates/wcontainers-translator-test/src/layer2.rs	float	lookup	0.3
 code	crates/wcontainers-translator-test/src/layer2.rs	float	walk	0.25
 code	crates/wcontainers-translator-test/src/layer2.rs	int	above	8
-code	crates/wcontainers-translator-test/src/layer2.rs	int	area_offset	4096
 code	crates/wcontainers-translator-test/src/layer2.rs	int	around	28
 code	crates/wcontainers-translator-test/src/layer2.rs	int	around	28
 code	crates/wcontainers-translator-test/src/layer2.rs	int	around	4
@@ -6849,10 +6351,6 @@ code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	16
 code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	16
 code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	16
 code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	16
-code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	4096
-code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	4096
-code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	4096
-code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	4096
 code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	4u32
 code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	64
 code	crates/wcontainers-translator-test/src/layer2.rs	int	assemble	8
@@ -7155,57 +6653,12 @@ code	crates/wcontainers-translator-test/src/layer2.rs	int	walk	8
 code	crates/wcontainers-translator-test/src/layer2.rs	int	walk	8
 code	crates/wcontainers-translator-test/src/layer2.rs	int	walk	8
 code	crates/wcontainers-translator-test/src/layer2.rs	str	assemble	"layer2"
-code	crates/wcontainers-translator-test/src/layer3.rs	bytestr	gcc_image	b"FROM alpine:latest\nRUN apk add --no-cache gcc musl-dev\n"
-code	crates/wcontainers-translator-test/src/layer3.rs	int	native_in_time	128
-code	crates/wcontainers-translator-test/src/layer3.rs	int	native_in_time	14
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"--name"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"--network"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"--rm"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-I/i"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-I{}"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-T/l/flat.ld"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-Wl,--build-id=none"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-Wl,--build-id=none"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-Wl,-T,{}"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-Wl,-z,norelro"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-fPIE"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-fno-pic"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-fno-sanitize=all"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-no-pie"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-o"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-o"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-pic"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-static"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-static-pie"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-target"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-v"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-v"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-v"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-v"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-w"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"-w"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"/o/{own}.elf"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"/s/{}"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"aarch64-linux-musl"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"cc"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"clang"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"docker"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"flat.ld"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"gcc"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"gcc"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"gcc"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"none"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"run"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"{own}.elf"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"{stem}-{}{optimisation}{}"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"{}:/i:ro"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"{}:/l:ro"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"{}:/o"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	compile	"{}:/s:ro"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"--max-block-depth"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"--max-funcs"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"--seed"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"-o"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"4"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"8"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	csmith	"csmith"
@@ -7220,23 +6673,11 @@ code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"-"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"-q"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"-t"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"build"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"docker"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"docker"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"image"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"inspect"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"--name"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"--network"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"--rm"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"-c"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"-v"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"alpine:latest"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"docker"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"none"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"ordinary"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"run"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"sh"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"timeout -s KILL 20 /o/{}"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"{}:/o:ro"
 code	crates/wcontainers-translator-test/src/layout.rs	int	fill	0x94d0_49bb_1331_11eb
 code	crates/wcontainers-translator-test/src/layout.rs	int	fill	0x9e37_79b9_7f4a_7c15
 code	crates/wcontainers-translator-test/src/layout.rs	int	fill	0xbf58_476d_1ce4_e5b9
@@ -7253,70 +6694,16 @@ code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
-code	crates/wcontainers-translator-test/src/mixed.rs	bytestr	mixed	b"inject  "
-code	crates/wcontainers-translator-test/src/mixed.rs	bytestr	mixed	b"mixing  "
-code	crates/wcontainers-translator-test/src/mixed.rs	bytestr	mixed	b"run time"
-code	crates/wcontainers-translator-test/src/mixed.rs	float	mixed	0.5
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	3
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	4
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	4
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	4
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	16
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	32
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	8
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	8
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	8
 code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'-'
 code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'='
-code	crates/wcontainers-translator-test/src/programs.rs	int	flatten	8
-code	crates/wcontainers-translator-test/src/programs.rs	int	placement	4096
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	0xff
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	11
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	11
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	128
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	4
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	4
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	5
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	7
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	7
-code	crates/wcontainers-translator-test/src/programs.rs	int	ran	8
-code	crates/wcontainers-translator-test/src/programs.rs	int	ready_with	4
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-D{d}"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-Wl,--build-id=none"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-Wl,-T,{}"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-ffreestanding"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-fno-pic"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-fno-sanitize=all"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-fno-stack-protector"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-fwrapv"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-mcpu=generic-neon-fp_armv8"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-no-pie"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-nostdlib"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-o"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-static"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-target"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"S"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"aarch64-linux-musl"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"c"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"c++"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"cc"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"cpp"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"cpp"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"flat.ld"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"rs"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"rs"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"{name}.{extension}"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"{own}.elf"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"--only-section=.text"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"-O"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"-O"
@@ -7326,43 +6713,16 @@ code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"objcopy"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"objcopy"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"{own}.bin"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"{own}.text"
-code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"{}.elf"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"--name"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"--network"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"--rm"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"-v"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"-v"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native	"/p/{file}"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"/r/wcontainers-reference"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"alpine:latest"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"blob"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"docker"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"native"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"none"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"program"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"run"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native	"{}.bin"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"{}:/p:ro"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"{}:/r:ro"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	" "
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"--name"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"--network"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"--rm"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"-c"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"-v"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"-v"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {:#x} {} > /dev/null"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"alpine:latest"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"docker"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"native"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"none"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"run"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"sh"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"timing"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"{}.bin"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"{}:/p:ro"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"{}:/r:ro"
-code	crates/wcontainers-translator-test/src/programs.rs	str	out_directory	"../../target/programs"
+code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"--cidfile"
+code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"containers"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"--edition"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"--target"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-C"
@@ -7374,9 +6734,7 @@ code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-C"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-C"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-C"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-O"
-code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-o"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"2024"
-code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"aarch64-unknown-linux-musl"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"link-arg=--build-id=none"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"link-arg=-T{}"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"link-self-contained=yes"
@@ -7386,176 +6744,25 @@ code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"opt-level={lev
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"panic=unwind"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"relocation-model=static"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"rustc"
-code	crates/wcontainers-translator-test/src/programs.rs	str	source_directory	"programs"
 code	crates/wcontainers-translator-test/src/programs.rs	str	unique	"{stem}.{}.{n}"
 code	crates/wcontainers-translator-test/src/programs.rs	str	zig	"zig"
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	16
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	16
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	16
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	16
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	16
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	16
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	32
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	32
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	32
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	34
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	35
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	35
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	35
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	4
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	4
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	4
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	4
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	4
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	5
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	5
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
-code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
-code	crates/wcontainers-translator-test/src/reference.rs	int	Landed	32
-code	crates/wcontainers-translator-test/src/reference.rs	int	Landed	35
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"--name"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"--network"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"--rm"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"-i"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"-v"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"/r/wcontainers-reference"
 code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"cases"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"docker"
 code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"layer1"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"none"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"run"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"{}:/r:ro"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--manifest-path"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--quiet"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--release"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--target-dir"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"CARGO"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"aarch64-unknown-linux-musl/release/wcontainers-reference"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"build"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"cargo"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"reference/Cargo.toml"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"run"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"target/reference"
-code	crates/wcontainers-translator-test/src/reference.rs	str	build	"wcontainers-reference"
 code	crates/wcontainers-translator-test/src/reference.rs	str	container_name	"wc-translator-{purpose}-{}-{n}"
-code	crates/wcontainers-translator-test/src/reference.rs	str	workspace	"../.."
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::fresh_thread	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	32
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	8
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	65536
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	65536
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	65536
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	65536
-code	crates/wcontainers-translator-test/src/runner.rs	int	code_at	16
-code	crates/wcontainers-translator-test/src/runner.rs	int	covered	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	4
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	63
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	64
-code	crates/wcontainers-translator-test/src/runner.rs	int	instantiate	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	instantiate	65536
-code	crates/wcontainers-translator-test/src/runner.rs	int	slot	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	slot_entry	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	214
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	64
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	66
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	8
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	93
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	94
-code	crates/wcontainers-translator-test/src/runner.rs	int	thread_instance	4
-code	crates/wcontainers-translator/src/code.rs	int	Unit::bytes	8
-code	crates/wcontainers-translator/src/code.rs	int	description	3
-code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	16
-code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	64
-code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	8
-code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	8
-code	crates/wcontainers-translator/src/code.rs	int	imports	3
-code	crates/wcontainers-translator/src/code.rs	int	imports	4
-code	crates/wcontainers-translator/src/code.rs	int	imports	5
-code	crates/wcontainers-translator/src/code.rs	int	imports	5
-code	crates/wcontainers-translator/src/code.rs	int	imports	7
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	0x0101_0101_0101_0101
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	12
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	12
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	12
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	3
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	4096
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	8
-code	crates/wcontainers-translator/src/code.rs	int	permission_byte	12
-code	crates/wcontainers-translator/src/code.rs	int	permission_checker	0x1000
-code	crates/wcontainers-translator/src/code.rs	int	permission_checker	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_checker	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_exact	0x1000
-code	crates/wcontainers-translator/src/code.rs	int	permission_exact	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_exact	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_range	12
-code	crates/wcontainers-translator/src/code.rs	int	permission_range	12
-code	crates/wcontainers-translator/src/code.rs	int	types	7
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"built addresses"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"call targets"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"cuts"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"followed"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"given"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"kept reducible"
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter	8
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::frame_check	4096
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::frame_check	4096
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::piece	8
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::piece	8
 code	crates/wcontainers-translator/src/full.rs	int	aligned_after	16
-code	crates/wcontainers-translator/src/full.rs	int	checks	4096
-code	crates/wcontainers-translator/src/full.rs	str	FullEmitter<'a,G>::piece	"at most 8 tracked flags"
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	31
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	31
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	62
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	62
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	62
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::of_extend	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::of_extend	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::of_extend	64
-code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::read	0xffff_ffff
-code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::region	12
-code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::step_value	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::turns	0xffff_ffff
-code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::turns	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	64
-code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	64
-code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	64
-code	crates/wcontainers-translator/src/full/proof.rs	int	index_bound	31
-code	crates/wcontainers-translator/src/full/proof.rs	int	index_bound	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	0x0101_0101_0101_0101
-code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	12
-code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	12
-code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	7
-code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	8
-code	crates/wcontainers-translator/src/full/proof.rs	int	versioned	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	versioned	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	versioned	64
-code	crates/wcontainers-translator/src/layout.rs	int	bit_index	128
-code	crates/wcontainers-translator/src/layout.rs	int	bit_index	128
-code	crates/wcontainers-translator/src/state.rs	int	Slot::load_from	3
-code	crates/wcontainers-translator/src/state.rs	int	Slot::load_from	4
-code	crates/wcontainers-translator/src/state.rs	int	Slot::store_to	3
-code	crates/wcontainers-translator/src/state.rs	int	Slot::store_to	4
-code	crates/wcontainers-translator/src/state.rs	int	load_flag	31
-code	crates/wcontainers-translator/src/thread.rs	int	state_memory	65536
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
 code	crates/wcontainers-wasmtime/build.rs	str	main	"CARGO_MANIFEST_DIR"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"Cargo.lock"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"Cargo.toml"
@@ -7566,36 +6773,18 @@ code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rustc-env=WCONTAINERS_
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-guest-cpu"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	main	125
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	0x7f
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	0x7f
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	128
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	8
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--cache"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--config"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--look-ahead"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--oci"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--size"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--tar"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"back end"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"full"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"give one of --oci and --tar"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"kernel"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"none"
-code	crates/wcontainers-wasmtime/src/lib.rs	bytestr	Compiler<G>::file	b"wasmtime guest-memory-64 state-memory-32"
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Code	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CodeRange	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::compiled	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::copy_from	4
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::new_process	65536
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::slot_entry	4
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Key	32
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--cache"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--config"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--look-ahead"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--oci"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--size"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--tar"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"back end"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"full"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"give one of --oci and --tar"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"kernel"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"none"
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	63
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	64
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	3
@@ -7603,37 +6792,13 @@ code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	4
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	5
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	6
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	7
-code	crates/wcontainers-wasmtime/src/lib.rs	int	memory_fault	16
-code	crates/wcontainers-wasmtime/src/lib.rs	int	memory_fault	16
-code	crates/wcontainers-wasmtime/src/lib.rs	int	syscall	6
 code	crates/wcontainers-wasmtime/src/lib.rs	str	Compiler<G>::store	"partial-{}-{write}"
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	16
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	32
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	32
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	4
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	4
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	4
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	65536
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	3
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	62
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
 code	crates/wcontainers-wasmtime/src/memory.rs	str	<HostMemory as LinearMemory>::grow_to	"a memory grows only inside its reservation"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"/proc/self/pagemap"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"/proc/self/pagemap"
-code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"8"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"mach_vm_copy"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"reading /proc/self/pagemap"
-code	crates/wcontainers-wasmtime/src/starts.rs	int	Found::add	4
-code	crates/wcontainers-wasmtime/src/starts.rs	int	dynamic_starts	0xffff_ffff
-code	crates/wcontainers-wasmtime/src/starts.rs	int	dynamic_starts	8
-code	crates/wcontainers-wasmtime/src/starts.rs	int	dynamic_starts	8
 code	crates/wcontainers-wasmtime/src/starts.rs	int	find_header	4
-code	crates/wcontainers-wasmtime/src/starts.rs	int	image_starts	8
-code	crates/wcontainers-wasmtime/src/starts.rs	int	unwind_starts	8
 policy	generated	crates/wcontainers-kernel/src/linux/auxvec.rs
 policy	generated	crates/wcontainers-kernel/src/linux/elf_uapi.rs
 policy	generated	crates/wcontainers-kernel/src/linux/errno.rs
@@ -7646,7 +6811,6 @@ policy	generated	crates/wcontainers-kernel/src/linux/prctl.rs
 policy	generated	crates/wcontainers-kernel/src/linux/ptrace.rs
 policy	generated	crates/wcontainers-kernel/src/linux/system.rs
 policy	generated	crates/wcontainers-kernel/src/syscall/list.rs
-redefinition	crates/wcontainers-arm64/src/host.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-kernel-test/backend/src/main.rs	int	PORT	PORT = 9000
 redefinition	crates/wcontainers-kernel-test/src/backend.rs	int	PORT	PORT = 9000
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	MAX_RW_COUNT	MAX_RW_COUNT = 2147479552
@@ -7688,12 +6852,6 @@ redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_UNCO
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	NZCV	NZCV = 4026531840
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	PAGE = 4096
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors::FPSIMD_MAGIC	FPSIMD_MAGIC = 1179680769
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::BUS_ADRALN	BUS_ADRALN = 1
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGBUS	SIGBUS = 7
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGILL	SIGILL = 4
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGSEGV	SIGSEGV = 11
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGSYS	SIGSYS = 31
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGTRAP	SIGTRAP = 5
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_EXECFN	AT_EXECFN = 31
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_HWCAP	AT_HWCAP = 16
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_HWCAP2	AT_HWCAP2 = 26
@@ -7703,15 +6861,10 @@ redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack:
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_PHENT	AT_PHENT = 4
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_PHNUM	AT_PHNUM = 5
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_RANDOM	AT_RANDOM = 25
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::EBADF	EBADF = 9
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::EFAULT	EFAULT = 14
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::EINVAL	EINVAL = 22
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::ENOSYS	ENOSYS = 38
 redefinition	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	LOAD = 65536
-redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	BLOCK_AT	BLOCK_AT = 0
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	LOAD = 65536
-redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	PERMISSIONS_AT	PERMISSIONS_AT = 4096
-redefinition	crates/wcontainers-translator/src/contract.rs	str	PROBE	PROBE = "probe"
+redefinition	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse::WORD	WORD = 8
+redefinition	crates/wcontainers-wasmtime/src/starts.rs	int	WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	CODE = 65536
@@ -7744,6 +6897,7 @@ restated	crates/wcontainers-kernel-test/tests/lockwaits.rs	str	lock_waits_match_
 restated	crates/wcontainers-kernel-test/tests/memory.rs	str	memory_matches_reference	"memory"
 restated	crates/wcontainers-kernel-test/tests/outside.rs	int	clients	300
 restated	crates/wcontainers-kernel-test/tests/python.rs	int	system_program_matches_reference	4_000
+restated	crates/wcontainers-kernel-test/tests/script.rs	int	scripts_match_reference	0o755
 restated	crates/wcontainers-kernel-test/tests/splice.rs	str	splicing_matches_reference	"vmsplice pages copied"
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	CODE	0x10000
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	1_000_000
@@ -7767,12 +6921,12 @@ restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	384
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	387
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	400
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	432
+restated	crates/wcontainers-runtime/src/image.rs	int	tests::layer	0o755
+restated	crates/wcontainers-runtime/src/image.rs	int	tests::layer	0o755
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576
 restated	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	4096
-restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<h… #f6e51dcf9a177200
-restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"wcontainers-reference: {info}"
 restated	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	NOTICE	"\\n# Every A64 instruction encoding, taken from Arm's machine readable specification\n# (AARCHMRS, BSD release {release}) by `cargo run -p wcontainers-translat… #a00fca9f6cd09923
 restated	crates/wcontainers-translator-test/src/layout.rs	int	BLOB_HWCAP	0x183
 restated	crates/wcontainers-translator-test/tests/benchmarks.rs	float	measure_calls_between_modules	1e9
@@ -7784,32 +6938,22 @@ restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_bina
 restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e6
 restated	crates/wcontainers-translator-test/tests/binaries.rs	int	LOAD	0x10_0000
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	plan	256
-restated	crates/wcontainers-translator-test/tests/changes.rs	int	programs_with_changes_match_none	1024
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	start	0x1000
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	alloca_loop_off_the_stack	1000u32
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	index_written_back_by_a_narrow_load	0x0100
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	loop_not_proven_is_counted	1000u32
-restated	crates/wcontainers-translator-test/tests/checks.rs	int	loop_not_proven_is_counted	4096
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	loops_running_onto_a_forbidden_page	0x200
-restated	crates/wcontainers-translator-test/tests/checks.rs	int	loops_running_onto_a_forbidden_page	4096
-restated	crates/wcontainers-translator-test/tests/checks.rs	int	loops_running_onto_a_forbidden_page	4096
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	structure_frames_off_the_stack	1000u32
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	structure_loops_are_proven	0x1000
-restated	crates/wcontainers-translator-test/tests/checks.rs	int	structure_loops_are_proven	4096
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	structure_loops_running_onto_a_forbidden_page	0x200
-restated	crates/wcontainers-translator-test/tests/checks.rs	int	structure_loops_running_onto_a_forbidden_page	4096
 restated	crates/wcontainers-translator-test/tests/layer1.rs	int	designed_answers_and_faults	0x0021_0000
 restated	crates/wcontainers-translator-test/tests/layer1.rs	int	designed_answers_and_faults	0x100
-restated	crates/wcontainers-translator-test/tests/layer1.rs	int	designed_answers_and_faults	0x1000
 restated	crates/wcontainers-translator-test/tests/layer1.rs	int	designed_answers_and_faults	0x8000_0000
 restated	crates/wcontainers-translator-test/tests/layer1.rs	int	designed_answers_and_faults	1_000_000_000
-restated	crates/wcontainers-translator-test/tests/layer1.rs	int	step_edges_match_the_cpu	0x1000
-restated	crates/wcontainers-translator-test/tests/layer1.rs	int	words_in_no_form_are_illegal_as_on_the_cpu	0x1000
 restated	crates/wcontainers-translator-test/tests/layer3.rs	int	csmith_programs_match_linux	1000
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_bound	1e9
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
-restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	1024
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	256
 restated	crates/wcontainers-translator-test/tests/output.rs	int	LOOK_AHEADS	4096
 restated	crates/wcontainers-translator-test/tests/output.rs	str	bench	"thread"
@@ -7817,10 +6961,6 @@ restated	crates/wcontainers-translator-test/tests/programs.rs	float	measure	1e6
 restated	crates/wcontainers-translator-test/tests/programs.rs	float	switching_speed	1e9
 restated	crates/wcontainers-translator-test/tests/programs.rs	int	stops_at_every_check_change_nothing	1000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	0x10000
-restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	0x1000
-restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	1024
-restated	crates/wcontainers-translator-test/tests/smoke.rs	int	stop_flag_raised_while_running	0x1000
-restated	crates/wcontainers-translator-test/tests/smoke.rs	int	stop_flag_raised_while_running	1024
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	0x10000
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	256
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	4096
@@ -7828,12 +6968,16 @@ restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	MEMORY_BYTES
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	a_range_is_checked_at_run_time	0x800
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	accesses_from_a_segment_base_are_grouped_and_fault_exactly	0x100
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	accesses_from_a_segment_base_are_grouped_and_fault_exactly	0x100
-restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	run	65536
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	two_accesses_of_one_instruction_fault_exactly	0x100
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	two_accesses_of_one_instruction_fault_exactly	0x100
-restated	crates/wcontainers-translator-test/tests/test_guest.rs	str	<Test<F> as Guest>::probe_module	"probe"
 restated	crates/wcontainers-translator-test/tests/valid.rs	int	long_chains_translate_on_a_small_stack	256
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_compiler_copied_by_fork_is_dropped_there	400u32
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
 restated	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	0x10000
 restated	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	0x10000
 restated	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	0x10000
@@ -7851,8 +6995,13 @@ restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1000
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1000
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1024
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1024
+restated	crates/wcontainers-wasmtime/tests/refused.rs	int	image	0o755
 restated	crates/wcontainers-wasmtime/tests/refused.rs	str	(file)	"hooks"
 restated	crates/wcontainers-wasmtime/tests/refused.rs	str	(file)	"hooks"
+restated	crates/wcontainers-wasmtime/tests/surface.rs	int	tar_with	0o755
+restated	crates/wcontainers-wasmtime/tests/surface.rs	int	tar_with	0o755
+restated	crates/wcontainers-wasmtime/tests/surface.rs	str	a_program_not_in_the_path_is_not_found	"run"
+restated	crates/wcontainers-wasmtime/tests/surface.rs	str	a_threaded_program_matches_the_reference	"run"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	reference	"run"
 restated	crates/wcontainers-wasmtime/tests/turns.rs	int	CODE	0x10000
 restated	crates/wcontainers-wasmtime/tests/turns.rs	int	LIMIT	1000
@@ -8059,6 +7208,8 @@ role	crates/wcontainers-kernel/src/syscall/tty.rs	int	read_into	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::notify_parent	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::over_process_limit	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::send_parent_death_signals	0
+role	crates/wcontainers-runtime/src/image.rs	int	docker_file	0
+role	crates/wcontainers-runtime/src/image.rs	int	docker_file	0
 role	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	0
 role	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	1
 role	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	2
@@ -8142,7 +7293,6 @@ script	crates/wcontainers-translator-test/long-runs.sh	int	line: knobs="WC_LAYER
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: layers=${WC_LONG_LAYERS:-1,2,3}	3
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: limit=${WC_LONG_LIMIT:-90}	90
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: local log="$dir/logs/layer$layer-$k${of:+-of-$of}-${commit:0:12}.log"	12
-script	crates/wcontainers-translator-test/long-runs.sh	int	line: natives=$(ceil "$(part 1000)" "$chunks")	1000
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: part() { local n=$(( $1 * percent / 100 )); echo $(( n > 0 ? n : 1 )); }	100
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: percent=${WC_LONG_PERCENT:-100}	100
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: run_chunk 3 $((k + 1)) "" "$knobs" csmith_programs_match_linux	3

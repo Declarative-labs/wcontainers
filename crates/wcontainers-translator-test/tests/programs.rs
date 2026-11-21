@@ -1,13 +1,14 @@
 //! C programs give the same output and exit status through the translator as on real ARM64 Linux.
 
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator::{LookAhead, Optimise};
+use wcontainers_translator::{FUNCTION_BLOCKS, LookAhead, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Ran, build, build_with, native, ran, reachable_memory, ready_with, translated,
-    translated_for, translated_stopping_everywhere,
+    Blob, Library, Ran, build, build_with, native, ran, reachable_memory, ready_with,
+    run_container, translated, translated_for, translated_stopping_everywhere,
 };
+use wcontainers_translator_test::reference::{DOCKER_MOUNT, IMAGE};
 use wcontainers_translator_test::runner::Machine;
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
@@ -22,6 +23,30 @@ fn full_matches_in_chrome(blob: &Blob, theirs: &Ran) {
             blob.name
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "Docker failed")]
+fn a_container_docker_does_not_make_fails_the_case() {
+    run_container("unmade", |command| {
+        command.args([DOCKER_MOUNT, "/r:/r:not-a-mode", IMAGE, "true"]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Docker failed")]
+fn a_container_that_does_not_start_fails_the_case() {
+    run_container("unstarted", |command| {
+        command.args([IMAGE, "/no-such-command"]);
+    });
+}
+
+#[test]
+fn a_programs_own_ending_is_its_result() {
+    let output = run_container("own-ending", |command| {
+        command.args([IMAGE, "sh", "-c", "exit 125"]);
+    });
+    assert_eq!(output.status.code(), Some(125));
 }
 
 #[test]
@@ -42,6 +67,14 @@ fn stack_moved_by_a_callee_matches_linux() {
         ("callee_moves_sp_away", Library::None),
         ("callee_misaligns_sp", Library::None),
     ]);
+}
+
+/// FPSR's flags read without the program clearing or setting them first, as on Linux; and in Chrome.
+#[test]
+fn float_status_read_first_matches_linux() {
+    match_linux(&[("float_status", Library::C)]);
+    let blob = build("float_status", "-O2", Library::C);
+    full_matches_in_chrome(&blob, &native(&blob));
 }
 
 #[test]
@@ -189,6 +222,7 @@ fn cut_functions_and_split_translations_match_linux() {
                 &[0],
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 wcontainers_translator_test::runner::probe(),
                 (),
                 module_bytes,
@@ -282,7 +316,7 @@ fn differences_match_linux() {
 
 /// The same on a host whose fused multiply-add does not fuse and whose not-a-number results do not
 /// follow Arm's rules: the software fused multiply-add and the fix-up give Linux's output too, and the
-/// slow paths are counted.
+/// slow paths are counted; with FPSR read, every operation takes the exact path instead.
 #[test]
 fn differences_match_linux_on_other_hosts() {
     use wcontainers_translator_test::programs::{ran, ready_on};
@@ -290,36 +324,43 @@ fn differences_match_linux_on_other_hosts() {
         fused_multiply_add: false,
         arm_nans: false,
     };
-    for optimisation in ["-O0", "-O2"] {
-        let blob = build("differences", optimisation, Library::C);
-        let theirs = native(&blob);
-        for look_ahead in [LookAhead::None, LookAhead::Full] {
-            let mut machine = ready_on(
-                &blob,
-                (look_ahead, wcontainers_translator::Optimise::Speed),
-                wcontainers_translator::Omit::default(),
-                host,
-            );
-            let (stopped, registers) = machine.run();
-            let ours = ran(&blob, &machine, stopped, &registers);
-            let what = format!("differences at {optimisation}, look-ahead {look_ahead:?}");
-            assert_eq!(
-                String::from_utf8_lossy(&ours.stdout),
-                String::from_utf8_lossy(&theirs.stdout),
-                "output of {what}"
-            );
-            assert_eq!(ours.status, theirs.status, "exit status of {what}");
-            assert!(
-                machine.count(Reason::SoftwareFusedMultiplyAdd) > 0,
-                "{what}"
-            );
-            assert!(
-                machine.count(Reason::ExactFloatingPointRequested) > 0,
-                "{what}"
-            );
-            // At full the slow path is reached by leaving the piece.
-            if look_ahead == LookAhead::Full {
-                assert!(machine.count(Reason::LeftToAddress) > 0, "{what}");
+    for (defines, reads_float_status) in [(&[][..], true), (&["WITHOUT_FENV"][..], false)] {
+        for optimisation in ["-O0", "-O2"] {
+            let blob = build_with("differences", optimisation, Library::C, defines);
+            let theirs = native(&blob);
+            for look_ahead in [LookAhead::None, LookAhead::Full] {
+                let mut machine = ready_on(
+                    &blob,
+                    (look_ahead, wcontainers_translator::Optimise::Speed),
+                    wcontainers_translator::Omit::default(),
+                    host,
+                );
+                let (stopped, registers) = machine.run();
+                let ours = ran(&blob, &machine, stopped, &registers);
+                let what =
+                    format!("differences {defines:?} at {optimisation}, look-ahead {look_ahead:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&ours.stdout),
+                    String::from_utf8_lossy(&theirs.stdout),
+                    "output of {what}"
+                );
+                assert_eq!(ours.status, theirs.status, "exit status of {what}");
+                assert_eq!(blob.reads_float_status(), reads_float_status, "{what}");
+                let software = machine.count(Reason::SoftwareFusedMultiplyAdd);
+                if reads_float_status {
+                    // Flags kept from the start: every operation in software is exact floating point,
+                    // which at full is reached by leaving the piece.
+                    assert_eq!(software, 0, "{what}");
+                    assert!(
+                        machine.count(Reason::ExactFloatingPointRequested) > 0,
+                        "{what}"
+                    );
+                    if look_ahead == LookAhead::Full {
+                        assert!(machine.count(Reason::LeftToAddress) > 0, "{what}");
+                    }
+                } else {
+                    assert!(software > 0, "{what}");
+                }
             }
         }
     }
@@ -449,6 +490,7 @@ fn measure() {
                 &starts,
                 LookAhead::None,
                 wcontainers_translator::Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 wcontainers_translator_test::runner::probe(),
                 (),
             )
@@ -525,13 +567,7 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
     let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let chrome = std::env::var("WC_BENCH_CHROME").map_or(true, |v| v != "0");
-    let load = || {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .expect("sysctl");
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
+    let load = wcontainers_translator_test::jobs::load;
     let theirs = native(blob);
     let native = native_seconds(blob, runs);
     let mut best = f64::MAX;
@@ -569,4 +605,108 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
         load()
     );
     (native, best, Some(in_chrome))
+}
+
+/// A jump through a register to outside its function (past the next certain start of a function: one given or
+/// a direct call's target), or to its own start, is a tail call, no slow path; one to inside its function that
+/// no table explains, in its own part or in another of a function cut in parts, is, counted each time it runs;
+/// a switch whose table's address its function keeps in its frame is a table explained. The program makes
+/// `ROUNDS` of each, for speed and for size.
+#[test]
+fn only_jumps_inside_their_function_are_unrecognised() {
+    register_jumps_counted(&[]);
+}
+
+/// [`only_jumps_inside_their_function_are_unrecognised`] with the tail call's target right after its caller,
+/// named only by data.
+#[test]
+#[ignore = "known failure: a tail call to a function only data names, before the next certain start, is counted as a jump inside its caller"]
+fn a_tail_call_to_a_function_only_data_names_is_not_unrecognised() {
+    register_jumps_counted(&["STEP_AFTER_CALLER"]);
+}
+
+/// Runs `register_jumps` with `layout` among its defines and checks only its jumps inside are counted.
+fn register_jumps_counted(layout: &[&str]) {
+    const ROUNDS: u64 = 1200;
+    const JUMPS_INSIDE: u64 = 2;
+    // The part jumped into is the last of a function cut in two.
+    let far_after = FUNCTION_BLOCKS / 8;
+    let sizes = [
+        format!("ROUNDS={ROUNDS}"),
+        format!("FAR_BEFORE={FUNCTION_BLOCKS}"),
+        format!("FAR_AFTER={far_after}"),
+    ];
+    let defines: Vec<&str> = sizes
+        .iter()
+        .map(String::as_str)
+        .chain(layout.iter().copied())
+        .collect();
+    let blob = build_with("register_jumps", "-O0", Library::None, &defines);
+    let theirs = native(&blob);
+    for optimise in [Optimise::Speed, Optimise::Size] {
+        let (ours, machine, _) = translated_for(&blob, (LookAhead::Full, optimise));
+        assert_eq!(ours, theirs, "for {optimise:?}");
+        assert_eq!(
+            machine.count(Reason::JumpThroughRegisterNotRecognised),
+            JUMPS_INSIDE * ROUNDS,
+            "for {optimise:?}"
+        );
+    }
+}
+
+/// A switch whose cases lie in other parts of a function cut in parts jumps to them as tail calls, no slow
+/// path, as on Linux: none counted, and no more code translated at run time than for hello world (the C
+/// library's own).
+#[test]
+fn switch_cases_in_other_parts_are_not_slow() {
+    for optimisation in ["-O0", "-O2"] {
+        let blob = build("cut_switch", optimisation, Library::C);
+        let theirs = native(&blob);
+        let hello = build("hello", optimisation, Library::C);
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let how = (LookAhead::Full, optimise);
+            let (_, library, _) = translated_for(&hello, how);
+            let (ours, machine, _) = translated_for(&blob, how);
+            let what = format!("at {optimisation} for {optimise:?}");
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(
+                machine.count(Reason::JumpThroughRegisterNotRecognised),
+                0,
+                "{what}"
+            );
+            assert!(
+                machine.count(Reason::TranslatedAtRunTime)
+                    <= library.count(Reason::TranslatedAtRunTime),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// Jumps through a register to their own function's code that exploring it did not reach (a switch bounded
+/// by no check, a computed goto) are the slow path, counted each time they run. The program prints how many
+/// it made of each.
+#[test]
+fn jumps_to_their_function_beyond_what_was_explored_are_unrecognised() {
+    for optimisation in ["-O2", "-O3", "-Os"] {
+        let blob = build("unexplored_jumps", optimisation, Library::C);
+        let theirs = native(&blob);
+        let made: u64 = String::from_utf8_lossy(&theirs.stdout)
+            .lines()
+            .last()
+            .expect("the program prints its counts")
+            .split_whitespace()
+            .map(|n| n.parse::<u64>().expect("a count"))
+            .sum();
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let (ours, machine, _) = translated_for(&blob, (LookAhead::Full, optimise));
+            let what = format!("at {optimisation} for {optimise:?}");
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(
+                machine.count(Reason::JumpThroughRegisterNotRecognised),
+                made,
+                "{what}"
+            );
+        }
+    }
 }

@@ -7,6 +7,18 @@ use crate::instruction::*;
 use crate::meaning::{Control, Emitter};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
+/// The bytes of a q register, a v128.
+pub(crate) const Q_BYTES: u8 = size_of::<u128>() as u8;
+/// The bytes of a d register, the low half of a q register.
+pub(crate) const D_BYTES: u8 = size_of::<u64>() as u8;
+/// The bytes of a word element.
+const WORD_BYTES: u8 = size_of::<u32>() as u8;
+
+/// The bytes of a vector register an operation uses: a whole q register, or its low d half.
+fn used_bytes(whole: bool) -> u8 {
+    if whole { Q_BYTES } else { D_BYTES }
+}
+
 /// Push lane `lane` of the v128 on the stack, of `element` bytes, as an i64, sign or zero extended.
 pub(crate) fn extract(s: &mut InstructionSink<'_>, element: u8, lane: u8, signed: bool) {
     match (element, signed) {
@@ -14,8 +26,8 @@ pub(crate) fn extract(s: &mut InstructionSink<'_>, element: u8, lane: u8, signed
         (1, true) => s.i8x16_extract_lane_s(lane).i64_extend_i32_s(),
         (2, false) => s.i16x8_extract_lane_u(lane).i64_extend_i32_u(),
         (2, true) => s.i16x8_extract_lane_s(lane).i64_extend_i32_s(),
-        (4, false) => s.i32x4_extract_lane(lane).i64_extend_i32_u(),
-        (4, true) => s.i32x4_extract_lane(lane).i64_extend_i32_s(),
+        (WORD_BYTES, false) => s.i32x4_extract_lane(lane).i64_extend_i32_u(),
+        (WORD_BYTES, true) => s.i32x4_extract_lane(lane).i64_extend_i32_s(),
         _ => s.i64x2_extract_lane(lane),
     };
 }
@@ -25,7 +37,7 @@ pub(crate) fn replace(s: &mut InstructionSink<'_>, element: u8, lane: u8) {
     match element {
         1 => s.i32_wrap_i64().i8x16_replace_lane(lane),
         2 => s.i32_wrap_i64().i16x8_replace_lane(lane),
-        4 => s.i32_wrap_i64().i32x4_replace_lane(lane),
+        WORD_BYTES => s.i32_wrap_i64().i32x4_replace_lane(lane),
         _ => s.i64x2_replace_lane(lane),
     };
 }
@@ -33,8 +45,8 @@ pub(crate) fn replace(s: &mut InstructionSink<'_>, element: u8, lane: u8) {
 /// A v128 with every element of `element` bytes holding `value`.
 fn splat(element: u8, value: u64) -> i128 {
     let mut v = 0u128;
-    for i in 0..16 / element {
-        v |= u128::from(value) << (8 * u32::from(i) * u32::from(element));
+    for i in 0..Q_BYTES / element {
+        v |= u128::from(value) << (u8::BITS * u32::from(i) * u32::from(element));
     }
     v as i128
 }
@@ -285,14 +297,14 @@ fn shift_by<E: Emitter<Arm64> + ?Sized>(
 /// Sign or zero extend the low `bits` of the i64 on the stack.
 fn extend(s: &mut InstructionSink<'_>, bits: u32, signed: bool) {
     match (bits, signed) {
-        (64, _) => {}
-        (8, true) => {
+        (u64::BITS, _) => {}
+        (u8::BITS, true) => {
             s.i64_extend8_s();
         }
-        (16, true) => {
+        (u16::BITS, true) => {
             s.i64_extend16_s();
         }
-        (32, true) => {
+        (u32::BITS, true) => {
             s.i64_extend32_s();
         }
         (_, false) => {
@@ -358,9 +370,9 @@ fn saturating_shift_left<E: Emitter<Arm64> + ?Sized>(
         .i32_or()
         .local_set(saturated);
     let (min, max) = match (to_signed, bits) {
-        (true, 64) => (i64::MIN, i64::MAX),
+        (true, u64::BITS) => (i64::MIN, i64::MAX),
         (true, b) => (-(1i64 << (b - 1)), (1i64 << (b - 1)) - 1),
-        (false, 64) => (0, -1),
+        (false, u64::BITS) => (0, -1),
         (false, b) => (0, (1i64 << b) - 1),
     };
     // Negative values (only of a signed source) saturate down, the rest up.
@@ -375,8 +387,8 @@ fn saturating_shift_left<E: Emitter<Arm64> + ?Sized>(
 
 /// The shuffle that picks, from `a`:`b` (each 8 or 16 bytes used, by `whole`), the even (`odd` false) or
 /// odd elements of `element` bytes, packed.
-fn pairs(element: u8, whole: bool, odd: bool) -> [u8; 16] {
-    let per = if whole { 16 } else { 8 } / element;
+fn pairs(element: u8, whole: bool, odd: bool) -> [u8; Q_BYTES as usize] {
+    let per = used_bytes(whole) / element;
     core::array::from_fn(|i| {
         let (lane, byte) = (i as u8 / element, i as u8 % element);
         let pick = 2 * lane + u8::from(odd);
@@ -385,7 +397,7 @@ fn pairs(element: u8, whole: bool, odd: bool) -> [u8; 16] {
         } else if pick < per {
             pick * element + byte
         } else {
-            16 + (pick - per) * element + byte
+            Q_BYTES + (pick - per) * element + byte
         }
     })
 }
@@ -410,7 +422,7 @@ pub(crate) fn split_pairs<E: Emitter<Arm64> + ?Sized>(
 }
 
 /// The shuffle that makes every element a copy of element `index` of `element` bytes.
-pub(crate) fn broadcast(element: u8, index: u8) -> [u8; 16] {
+pub(crate) fn broadcast(element: u8, index: u8) -> [u8; Q_BYTES as usize] {
     core::array::from_fn(|i| index * element + i as u8 % element)
 }
 
@@ -419,47 +431,51 @@ fn int_binary(s: &mut InstructionSink<'_>, op: SimdOp, element: u8) -> bool {
     match (op, element) {
         (S::Add, 1) => s.i8x16_add(),
         (S::Add, 2) => s.i16x8_add(),
-        (S::Add, 4) => s.i32x4_add(),
+        (S::Add, WORD_BYTES) => s.i32x4_add(),
         (S::Add, _) => s.i64x2_add(),
         (S::Sub, 1) => s.i8x16_sub(),
         (S::Sub, 2) => s.i16x8_sub(),
-        (S::Sub, 4) => s.i32x4_sub(),
+        (S::Sub, WORD_BYTES) => s.i32x4_sub(),
         (S::Sub, _) => s.i64x2_sub(),
         (S::Mul, 2) => s.i16x8_mul(),
-        (S::Mul, 4) => s.i32x4_mul(),
+        (S::Mul, WORD_BYTES) => s.i32x4_mul(),
         (S::Equal, 1) => s.i8x16_eq(),
         (S::Equal, 2) => s.i16x8_eq(),
-        (S::Equal, 4) => s.i32x4_eq(),
+        (S::Equal, WORD_BYTES) => s.i32x4_eq(),
         (S::Equal, _) => s.i64x2_eq(),
         (S::Greater { signed: true }, 1) => s.i8x16_gt_s(),
         (S::Greater { signed: true }, 2) => s.i16x8_gt_s(),
-        (S::Greater { signed: true }, 4) => s.i32x4_gt_s(),
+        (S::Greater { signed: true }, WORD_BYTES) => s.i32x4_gt_s(),
         (S::Greater { signed: true }, _) => s.i64x2_gt_s(),
         (S::GreaterOrEqual { signed: true }, 1) => s.i8x16_ge_s(),
         (S::GreaterOrEqual { signed: true }, 2) => s.i16x8_ge_s(),
-        (S::GreaterOrEqual { signed: true }, 4) => s.i32x4_ge_s(),
+        (S::GreaterOrEqual { signed: true }, WORD_BYTES) => s.i32x4_ge_s(),
         (S::GreaterOrEqual { signed: true }, _) => s.i64x2_ge_s(),
         (S::Greater { signed: false }, 1) => s.i8x16_gt_u(),
         (S::Greater { signed: false }, 2) => s.i16x8_gt_u(),
-        (S::Greater { signed: false }, 4) => s.i32x4_gt_u(),
+        (S::Greater { signed: false }, WORD_BYTES) => s.i32x4_gt_u(),
         (S::GreaterOrEqual { signed: false }, 1) => s.i8x16_ge_u(),
         (S::GreaterOrEqual { signed: false }, 2) => s.i16x8_ge_u(),
-        (S::GreaterOrEqual { signed: false }, 4) => s.i32x4_ge_u(),
+        (S::GreaterOrEqual { signed: false }, WORD_BYTES) => s.i32x4_ge_u(),
         (S::Max { signed: true } | S::MaxPairwise { signed: true }, 1) => s.i8x16_max_s(),
         (S::Max { signed: true } | S::MaxPairwise { signed: true }, 2) => s.i16x8_max_s(),
-        (S::Max { signed: true } | S::MaxPairwise { signed: true }, 4) => s.i32x4_max_s(),
+        (S::Max { signed: true } | S::MaxPairwise { signed: true }, WORD_BYTES) => s.i32x4_max_s(),
         (S::Max { signed: false } | S::MaxPairwise { signed: false }, 1) => s.i8x16_max_u(),
         (S::Max { signed: false } | S::MaxPairwise { signed: false }, 2) => s.i16x8_max_u(),
-        (S::Max { signed: false } | S::MaxPairwise { signed: false }, 4) => s.i32x4_max_u(),
+        (S::Max { signed: false } | S::MaxPairwise { signed: false }, WORD_BYTES) => {
+            s.i32x4_max_u()
+        }
         (S::Min { signed: true } | S::MinPairwise { signed: true }, 1) => s.i8x16_min_s(),
         (S::Min { signed: true } | S::MinPairwise { signed: true }, 2) => s.i16x8_min_s(),
-        (S::Min { signed: true } | S::MinPairwise { signed: true }, 4) => s.i32x4_min_s(),
+        (S::Min { signed: true } | S::MinPairwise { signed: true }, WORD_BYTES) => s.i32x4_min_s(),
         (S::Min { signed: false } | S::MinPairwise { signed: false }, 1) => s.i8x16_min_u(),
         (S::Min { signed: false } | S::MinPairwise { signed: false }, 2) => s.i16x8_min_u(),
-        (S::Min { signed: false } | S::MinPairwise { signed: false }, 4) => s.i32x4_min_u(),
+        (S::Min { signed: false } | S::MinPairwise { signed: false }, WORD_BYTES) => {
+            s.i32x4_min_u()
+        }
         (S::AddPairwise, 1) => s.i8x16_add(),
         (S::AddPairwise, 2) => s.i16x8_add(),
-        (S::AddPairwise, 4) => s.i32x4_add(),
+        (S::AddPairwise, WORD_BYTES) => s.i32x4_add(),
         (S::AddPairwise, _) => s.i64x2_add(),
         (
             S::HalvingAdd {
@@ -572,7 +588,7 @@ fn int_lane<E: Emitter<Arm64> + ?Sized>(
         }
         S::SaturatingAdd { signed } | S::SaturatingSub { signed } => {
             let subtract = matches!(op, S::SaturatingSub { .. });
-            if bits == 64 {
+            if bits == u64::BITS {
                 saturate64(e, a, b, subtract, signed, saturated);
             } else {
                 let mut s = e.sink();
@@ -646,7 +662,7 @@ fn int_lane<E: Emitter<Arm64> + ?Sized>(
         }
         S::SaturatingAccumulate { signed } => {
             // suqadd: signed destination plus unsigned rn; usqadd: unsigned destination plus signed rn.
-            if bits == 64 {
+            if bits == u64::BITS {
                 suqadd64(e, d, a, signed, saturated);
             } else {
                 e.sink().local_get(d).local_get(a).i64_add().local_set(t);
@@ -665,14 +681,14 @@ fn int_lane<E: Emitter<Arm64> + ?Sized>(
                 .i64_const(1)
                 .i64_or()
                 .i64_clz()
-                .i64_const(64 - i64::from(bits))
+                .i64_const(i64::from(u64::BITS - bits))
                 .i64_sub();
         }
         S::CountLeadingZeros => {
             e.sink()
                 .local_get(a)
                 .i64_clz()
-                .i64_const(64 - i64::from(bits))
+                .i64_const(i64::from(u64::BITS - bits))
                 .i64_sub();
         }
         S::ReverseBits => {
@@ -694,7 +710,7 @@ fn int_lane<E: Emitter<Arm64> + ?Sized>(
                 s.local_get(a).local_get(a).i64_const(0).i64_lt_s().select();
             }
             s.local_set(t);
-            if bits == 64 {
+            if bits == u64::BITS {
                 // Only the most negative value does not fit.
                 let mut s = e.sink();
                 s.local_get(a)
@@ -782,7 +798,7 @@ fn int_lane<E: Emitter<Arm64> + ?Sized>(
             let wide = 2 * bits;
             let mut s = e.sink();
             s.local_get(a).local_get(b).i64_mul().local_set(t);
-            if wide == 64 {
+            if wide == u64::BITS {
                 s.local_get(t)
                     .i64_const(1 << 62)
                     .i64_eq()
@@ -807,7 +823,7 @@ fn int_lane<E: Emitter<Arm64> + ?Sized>(
                 e.sink().local_get(t);
             } else {
                 let subtract = op == S::DoublingMulSubLong;
-                if wide == 64 {
+                if wide == u64::BITS {
                     saturate64(e, d, t, subtract, true, saturated);
                 } else {
                     let mut s = e.sink();
@@ -1013,8 +1029,8 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
         } => {
             e.get_vector(rn);
             e.get_vector(rm);
-            let lanes = if whole { 16 } else { 8 } / element;
-            let pick: [u8; 16] = core::array::from_fn(|i| {
+            let lanes = used_bytes(whole) / element;
+            let pick: [u8; Q_BYTES as usize] = core::array::from_fn(|i| {
                 let (lane, byte) = (i as u8 / element, i as u8 % element);
                 if lane >= lanes {
                     return 0;
@@ -1039,12 +1055,12 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
                 let (register, at) = if source < lanes {
                     (0, source)
                 } else {
-                    (16, source - lanes)
+                    (Q_BYTES, source - lanes)
                 };
                 register + at * element + byte
             });
             e.sink().i8x16_shuffle(pick);
-            low(e, if whole { 16 } else { 8 });
+            low(e, used_bytes(whole));
             e.set_vector(rd);
         }
         Instruction::Table {
@@ -1064,7 +1080,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
                 e.get_vector((rn + k) % 32);
                 e.sink()
                     .local_get(index)
-                    .v128_const(i128::from_le_bytes([16 * k; 16]))
+                    .v128_const(i128::from_le_bytes([Q_BYTES * k; Q_BYTES as usize]))
                     .i8x16_sub()
                     .i8x16_swizzle()
                     .local_get(result)
@@ -1077,13 +1093,15 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
                 e.sink()
                     .local_get(result)
                     .local_get(index)
-                    .v128_const(i128::from_le_bytes([16 * registers - 1; 16]))
+                    .v128_const(i128::from_le_bytes(
+                        [Q_BYTES * registers - 1; Q_BYTES as usize],
+                    ))
                     .i8x16_gt_u()
                     .v128_bitselect();
             } else {
                 e.sink().local_get(result);
             }
-            low(e, if whole { 16 } else { 8 });
+            low(e, used_bytes(whole));
             e.set_vector(rd);
         }
         Instruction::ScalarElement {
@@ -1104,13 +1122,13 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
 }
 
 /// Lanes of a same-width operation and the bytes of its result.
-fn width(shape: Shape) -> u8 {
+pub(crate) fn width(shape: Shape) -> u8 {
     if shape.scalar {
         shape.element
     } else if shape.q {
-        16
+        Q_BYTES
     } else {
-        8
+        D_BYTES
     }
 }
 
@@ -1144,7 +1162,7 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
     }
     let bytes = width(shape);
     let lanes = bytes / element;
-    let bits = 8 * u32::from(element);
+    let bits = u8::BITS * u32::from(element);
     let signed = signedness(op);
     let input = |local: u32, element: u8, first: u8, signed: bool| Input {
         local,
@@ -1154,7 +1172,7 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
     };
     // The half the long operations read, and the lanes of the wide side.
     let half = if shape.q && !shape.scalar {
-        8 / element
+        D_BYTES / element
     } else {
         0
     };
@@ -1202,11 +1220,11 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
             match (op, element) {
                 (S::Abs, 1) => s.i8x16_abs(),
                 (S::Abs, 2) => s.i16x8_abs(),
-                (S::Abs, 4) => s.i32x4_abs(),
+                (S::Abs, WORD_BYTES) => s.i32x4_abs(),
                 (S::Abs, _) => s.i64x2_abs(),
                 (_, 1) => s.i8x16_neg(),
                 (_, 2) => s.i16x8_neg(),
-                (_, 4) => s.i32x4_neg(),
+                (_, WORD_BYTES) => s.i32x4_neg(),
                 _ => s.i64x2_neg(),
             };
             low(e, bytes);
@@ -1230,7 +1248,7 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
             low(e, bytes);
         }
         S::Reverse { group } => {
-            let pick: [u8; 16] = core::array::from_fn(|i| {
+            let pick: [u8; Q_BYTES as usize] = core::array::from_fn(|i| {
                 let i = i as u8;
                 let (start, within) = (i - i % group, i % group);
                 let (lane, byte) = (within / element, within % element);
@@ -1348,7 +1366,11 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
                 S::MinAcross { signed } => S::Min { signed },
                 _ => S::AddLong { signed },
             };
-            let lanes = if shape.scalar { 16 / element } else { lanes };
+            let lanes = if shape.scalar {
+                Q_BYTES / element
+            } else {
+                lanes
+            };
             // The sum (or the extreme) of every lane, element by element.
             let acc = e.local(ValType::I64);
             let value = e.local(ValType::I64);
@@ -1373,7 +1395,7 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
         _ if op.is_long() => {
             // Result elements twice as wide; sources from the low or high half (`rn` whole for wide).
             let wide = 2 * element;
-            let count = if shape.scalar { 1 } else { 8 / element };
+            let count = if shape.scalar { 1 } else { D_BYTES / element };
             let first = if shape.scalar { 0 } else { half };
             let mut inputs = vec![];
             match op {
@@ -1449,7 +1471,7 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
         _ if op.is_narrow() => {
             // Sources twice as wide; results to the low half, or the high half keeping the low.
             let wide = 2 * element;
-            let count = if shape.scalar { 1 } else { 8 / element };
+            let count = if shape.scalar { 1 } else { D_BYTES / element };
             let (base, first) = if shape.q && !shape.scalar {
                 (Some(d), count)
             } else {
@@ -1554,7 +1576,7 @@ fn simd<E: Emitter<Arm64> + ?Sized>(
         }
         S::ShiftRightInsert | S::ShiftLeftInsert => {
             let right = op == S::ShiftRightInsert;
-            let ones = if bits == 64 {
+            let ones = if bits == u64::BITS {
                 u64::MAX
             } else {
                 (1u64 << bits) - 1

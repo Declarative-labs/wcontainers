@@ -17,6 +17,10 @@ enum Value {
 
 /// A register the loop changes at one instruction only, by adding `step` (negated when `negate`), so it
 /// moves by that step at most once a turn.
+/// The widths a register is read at.
+const U32_BITS: u8 = u32::BITS as u8;
+const U64_BITS: u8 = u64::BITS as u8;
+
 #[derive(Clone, Copy, Debug)]
 struct Induction {
     at: u64,
@@ -42,18 +46,18 @@ impl Domain {
     /// wrapping. The 64 bit ones are kept well inside i64 so no sum or product here overflows.
     fn bounds(self) -> (i64, i64) {
         match self {
-            Domain::U32 => (0, (1 << 32) - 1),
-            Domain::S32 => (-(1 << 31), (1 << 31) - 1),
-            Domain::U64 => (0, 1 << 62),
-            Domain::S64 => (-(1 << 62), 1 << 62),
+            Domain::U32 => (0, i64::from(u32::MAX)),
+            Domain::S32 => (i64::from(i32::MIN), i64::from(i32::MAX)),
+            Domain::U64 => (0, 1 << (i64::BITS - 2)),
+            Domain::S64 => (-(1 << (i64::BITS - 2)), 1 << (i64::BITS - 2)),
         }
     }
 
     fn of_extend(extend: Extend) -> Option<Domain> {
         match (extend.from_bits, extend.signed) {
-            (32, false) => Some(Domain::U32),
-            (32, true) => Some(Domain::S32),
-            (64, _) => Some(Domain::U64),
+            (U32_BITS, false) => Some(Domain::U32),
+            (U32_BITS, true) => Some(Domain::S32),
+            (U64_BITS, _) => Some(Domain::U64),
             _ => None,
         }
     }
@@ -163,7 +167,7 @@ pub(super) fn versioned<G: Guest>(shape: &LoopShape<'_, G>) -> Option<Versioned>
             return None;
         }
         let i = G::induction(&shape.decoded[&at].instruction)?;
-        if G::reg_bit(i.reg) != Some(bit) || !matches!(i.bits, 32 | 64) {
+        if G::reg_bit(i.reg) != Some(bit) || !matches!(i.bits, U32_BITS | U64_BITS) {
             return None;
         }
         let step = match i.step {
@@ -247,7 +251,7 @@ pub(super) fn versioned<G: Guest>(shape: &LoopShape<'_, G>) -> Option<Versioned>
             }
             let i = induction(bit)?;
             // A 32 bit change read as 64 bits is not a fixed step from a value with high bits set.
-            if i.bits == 32 && matches!(domain, Domain::U64 | Domain::S64) {
+            if i.bits == U32_BITS && matches!(domain, Domain::U64 | Domain::S64) {
                 return None;
             }
             let (first, short) = steps(&i, b, o);
@@ -395,7 +399,7 @@ fn counting_exit<G: Guest>(
     };
     let signed = c.signed;
     let induction = induction(bit)?;
-    if induction.bits == 32 && c.bits == 64 {
+    if induction.bits == U32_BITS && c.bits == U64_BITS {
         return None;
     }
     let ahead = match steps(&induction, e, c.at) {
@@ -412,10 +416,10 @@ fn counting_exit<G: Guest>(
         _ => return None,
     };
     let domain = match (c.bits, signed) {
-        (32, false) => Domain::U32,
-        (32, true) => Domain::S32,
-        (64, false) => Domain::U64,
-        (64, true) => Domain::S64,
+        (U32_BITS, false) => Domain::U32,
+        (U32_BITS, true) => Domain::S32,
+        (U64_BITS, false) => Domain::U64,
+        (U64_BITS, true) => Domain::S64,
         _ => return None,
     };
     Some(Counter {
@@ -482,11 +486,11 @@ fn index_bound<G: Guest>(
     if G::reg_bit(c.left) != Some(bit) || between.iter().any(sets) {
         return None;
     }
-    if !(0..1 << 31).contains(&max) {
+    if !(0..=i64::from(i32::MAX)).contains(&max) {
         return None;
     }
     // A 32 bit comparison bounds all 64 bits only when what set the register cleared the top half.
-    if c.bits == 32 && matches!(domain, Domain::U64 | Domain::S64) {
+    if c.bits == U32_BITS && matches!(domain, Domain::U64 | Domain::S64) {
         let def = before(p, c.at).find(sets)?;
         loaded(def)?;
     }
@@ -496,7 +500,7 @@ fn index_bound<G: Guest>(
 /// The largest step proven loops allow, so that no product here overflows.
 const MAX_STEP: i64 = 1 << 24;
 /// The most turns a proven loop may run.
-const MAX_TURNS: i64 = 1 << 32;
+const MAX_TURNS: i64 = 1 << u32::BITS;
 /// Addresses at the loop's entry must lie within this far of zero.
 const MAX_ADDRESS: i64 = 1 << 61;
 
@@ -559,8 +563,8 @@ impl<G: Guest> FullEmitter<'_, G> {
                     .i64_mul()
                     .i64_const(c.ahead)
                     .i64_sub();
-                if c.bits == 32 {
-                    s.i64_const(0xffff_ffff).i64_and();
+                if c.bits == U32_BITS {
+                    s.i64_const(i64::from(u32::MAX)).i64_and();
                 }
                 s.local_tee(turns)
                     .i64_const(MAX_TURNS)
@@ -763,7 +767,10 @@ impl<G: Guest> FullEmitter<'_, G> {
             .i64_add()
             .local_tee(high);
         Table::GLOBALS.pages.push(&mut s);
-        s.i64_const(12).i64_shl().i64_ge_s().br_if(0);
+        s.i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
+            .i64_shl()
+            .i64_ge_s()
+            .br_if(0);
         pages_allow(&mut s, low, high, r.this, a0);
     }
 
@@ -779,7 +786,7 @@ impl<G: Guest> FullEmitter<'_, G> {
                 s.local_get(local);
                 match domain {
                     Domain::U32 => {
-                        s.i64_const(0xffff_ffff).i64_and();
+                        s.i64_const(i64::from(u32::MAX)).i64_and();
                     }
                     Domain::S32 => {
                         s.i64_extend32_s();
@@ -794,7 +801,7 @@ impl<G: Guest> FullEmitter<'_, G> {
     /// Set i64 local `to` to an induction's step as `domain` reads its changes: sign extended from 32 bits
     /// when only the low 32 bits count.
     fn step_value(&mut self, i: &Induction, domain: Domain, to: u32) {
-        let narrow = i.bits == 32 || matches!(domain, Domain::U32 | Domain::S32);
+        let narrow = i.bits == U32_BITS || matches!(domain, Domain::U32 | Domain::S32);
         self.read(i.step, if narrow { Domain::S32 } else { Domain::S64 }, to);
         let mut s = self.sink();
         if let Value::Imm(_) = i.step
@@ -824,20 +831,20 @@ fn within(s: &mut InstructionSink<'_>, v: u32, min: i64, max: i64, depth: u32) {
 /// locals, both within the table) allows an access as `this` says. Eight table bytes are read at a time
 /// while eight or more pages are left. Uses `low` and `page` as its own.
 fn pages_allow(s: &mut InstructionSink<'_>, low: u32, high: u32, this: u8, page: u32) {
-    let every = i64::from(this) * 0x0101_0101_0101_0101;
+    let every = i64::from(this) * crate::code::EVERY_BYTE;
     s.local_get(low)
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
         .local_set(page)
         .local_get(high)
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
         .local_set(high)
         .loop_(BlockType::Empty)
         .local_get(high)
         .local_get(page)
         .i64_sub()
-        .i64_const(7)
+        .i64_const(crate::code::PAGES_PER_LOAD - 1)
         .i64_ge_u()
         .if_(BlockType::Empty);
     Table::GLOBALS.at.push(s);
@@ -851,7 +858,7 @@ fn pages_allow(s: &mut InstructionSink<'_>, low: u32, high: u32, this: u8, page:
         .i64_ne()
         .br_if(2)
         .local_get(page)
-        .i64_const(8)
+        .i64_const(crate::code::PAGES_PER_LOAD)
         .i64_add()
         .local_set(page)
         .else_();

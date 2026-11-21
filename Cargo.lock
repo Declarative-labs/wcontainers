@@ -1698,6 +1698,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1795,6 +1805,9 @@ name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros",
+]
 
 [[package]]
 name = "strum_macros"
@@ -2367,12 +2380,17 @@ name = "wcontainers-arm64"
 version = "0.1.0"
 dependencies = [
  "rustc_apfloat",
+ "strum",
  "wasm-encoder 0.263.0",
  "wcontainers-abi",
  "wcontainers-guest-cpu",
  "yaxpeax-arch",
  "yaxpeax-arm",
 ]
+
+[[package]]
+name = "wcontainers-docker"
+version = "0.1.0"
 
 [[package]]
 name = "wcontainers-guest-cpu"
@@ -2414,6 +2432,7 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-docker",
  "wcontainers-kernel",
  "wcontainers-runtime",
  "wcontainers-wasmtime",
@@ -2439,6 +2458,7 @@ dependencies = [
  "flate2",
  "getrandom 0.3.4",
  "oci-spec",
+ "serde_ignored",
  "serde_json",
  "sha2",
  "tar",
@@ -2467,15 +2487,19 @@ dependencies = [
  "dynasmrt",
  "flate2",
  "gimli 0.34.0",
+ "linux-raw-sys",
  "object 0.40.0",
  "proptest",
  "rayon",
+ "rustc-hash",
+ "serde",
  "serde_json",
  "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-docker",
  "wcontainers-guest-cpu",
  "wcontainers-translator",
  "zerocopy",

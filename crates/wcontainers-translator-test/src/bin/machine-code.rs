@@ -1,38 +1,70 @@
 //! Writes what the engines run for a test program at full look-ahead, for reading the machine code: the
 //! code module (`.wasm`) and wasmtime's compiled form of it with the runner's settings (`.cwasm`, an ELF file
-//! for `objdump -d`). Prints each piece's function index (counting the six imported hooks and the
-//! dispatcher and the unwinder before the pieces), blob offset and the program's symbol there.
+//! for `objdump -d`). Prints each piece's function index in the module, blob offset and the program's symbol
+//! there.
 //!
 //! Usage: `machine-code <program> <optimisation> <out directory> [define ...]`, such as
-//! `machine-code bench -O2 out SCALE=1 WORKLOAD=2`. `WC_OMIT` (a list of stop, permissions, returns) leaves
-//! checks out, as the benchmarks do.
+//! `machine-code bench -O2 out SCALE=1 WORKLOAD=2`. `WC_OMIT` (a list of stop-check, permission-check,
+//! return-check, depth-check) leaves those checks out, as the benchmarks do; `WC_PROGRESS_COUNT=kept`
+//! keeps the progress count.
+//! `machine-code <module.wasm> <out.cwasm>` compiles a module made by hand from one of those, to compare
+//! another emission's machine code.
 
-use std::process::Command;
-use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
-use wcontainers_translator_test::programs::{Library, build_with};
-use wcontainers_translator_test::runner::precompile;
+use object::{Object, ObjectSymbol};
+use std::path::Path;
+use wcontainers_arm64::Arm64;
+use wcontainers_translator::contract::first_piece_function;
+use wcontainers_translator::{LookAhead, Omit, Optimise, ProgressCount, translate_omitting};
+use wcontainers_translator_test::programs::{LOAD, Library, build_with, elf_path};
+use wcontainers_translator_test::runner::{precompile, probe};
+
+/// The extension of a code module.
+const MODULE_EXTENSION: &str = "wasm";
+/// The extension of wasmtime's compiled form of a module.
+const COMPILED_EXTENSION: &str = "cwasm";
+/// The variable listing the checks to leave out, by the names below.
+const OMIT_VARIABLE: &str = "WC_OMIT";
+const OMIT_STOP: &str = "stop-check";
+const OMIT_PERMISSIONS: &str = "permission-check";
+const OMIT_RETURNS: &str = "return-check";
+const OMIT_DEPTH: &str = "depth-check";
+/// The variable that keeps the progress count when it is [`PROGRESS_KEPT`].
+const PROGRESS_VARIABLE: &str = "WC_PROGRESS_COUNT";
+const PROGRESS_KEPT: &str = "kept";
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let [module, out] = arguments.as_slice()
+        && Path::new(module).extension() == Some(MODULE_EXTENSION.as_ref())
+    {
+        let wasm = std::fs::read(module).expect("the module");
+        std::fs::write(out, precompile(&wasm)).unwrap();
+        return;
+    }
     let [program, optimisation, out, defines @ ..] = arguments.as_slice() else {
         panic!("usage: machine-code <program> <optimisation> <out directory> [define ...]");
     };
     let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
-    let omitted = std::env::var("WC_OMIT").unwrap_or_default();
+    let omitted = std::env::var(OMIT_VARIABLE).unwrap_or_default();
     let omit = Omit {
-        stop: omitted.contains("stop"),
-        permissions: omitted.contains("permissions"),
-        returns: omitted.contains("returns"),
-        depth: omitted.contains("depth"),
+        stop: omitted.contains(OMIT_STOP),
+        permissions: omitted.contains(OMIT_PERMISSIONS),
+        returns: omitted.contains(OMIT_RETURNS),
+        depth: omitted.contains(OMIT_DEPTH),
+    };
+    let progress = match std::env::var(PROGRESS_VARIABLE) {
+        Ok(kept) if kept == PROGRESS_KEPT => ProgressCount::Kept,
+        _ => ProgressCount::Absent,
     };
     let blob = build_with(program, optimisation, Library::None, &defines);
-    let mut translation = translate_omitting::<wcontainers_arm64::Arm64>(
+    let mut translation = translate_omitting::<Arm64>(
         &blob.bytes,
         0..blob.code_bytes,
         &[0],
         LookAhead::Full,
         Optimise::Speed,
-        wcontainers_translator_test::runner::probe(),
+        progress,
+        probe(),
         (),
         omit,
     )
@@ -40,33 +72,25 @@ fn main() {
     // A test program is far below every engine limit, so its translation is one module.
     let translation = translation.modules.remove(0);
     std::fs::create_dir_all(out).unwrap();
-    let base = format!("{out}/{}", blob.name);
-    std::fs::write(format!("{base}.wasm"), &translation.wasm).unwrap();
-    std::fs::write(format!("{base}.cwasm"), precompile(&translation.wasm)).unwrap();
+    let base = Path::new(out).join(&blob.name);
+    let module = base.with_added_extension(MODULE_EXTENSION);
+    let compiled = base.with_added_extension(COMPILED_EXTENSION);
+    std::fs::write(&module, &translation.wasm).unwrap();
+    std::fs::write(&compiled, precompile(&translation.wasm)).unwrap();
 
     // The program's symbols, to name the pieces.
-    let elf = format!(
-        "{}/../../target/programs/{}.elf",
-        env!("CARGO_MANIFEST_DIR"),
-        blob.name
-    );
-    let symbols = Command::new("nm").arg(&elf).output().expect("nm");
-    let symbols: Vec<(u64, String)> = String::from_utf8_lossy(&symbols.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let address = u64::from_str_radix(parts.next()?, 16).ok()?;
-            Some((address, parts.nth(1)?.to_string()))
-        })
-        .collect();
+    let elf = std::fs::read(elf_path(&blob.name)).expect("the linked program");
+    let elf = object::File::parse(&*elf).expect("an ELF file");
     for (i, offset) in translation.pieces.iter().enumerate() {
-        let address = wcontainers_translator_test::programs::LOAD + offset;
-        let name: Vec<&str> = symbols
-            .iter()
-            .filter(|(a, _)| *a == address)
-            .map(|(_, n)| n.as_str())
+        let address = LOAD + offset;
+        let names: Vec<&str> = elf
+            .symbols()
+            .filter(|symbol| symbol.address() == address)
+            .filter_map(|symbol| symbol.name().ok())
+            .filter(|name| !name.is_empty())
             .collect();
-        println!("function {}: offset {offset:#x} {}", 8 + i, name.join(" "));
+        let function = first_piece_function::<Arm64>() as usize + i;
+        println!("function {function}: offset {offset:#x} {names:?}");
     }
-    println!("wrote {base}.wasm and {base}.cwasm");
+    println!("wrote {} and {}", module.display(), compiled.display());
 }

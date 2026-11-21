@@ -9,6 +9,7 @@
 use crate::instruction::Rounding;
 use rustc_apfloat::ieee::{Double, Half, Single};
 use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
+use wcontainers_abi::pstate;
 
 /// One operation on elements of `size` bytes, as the meaning passes it to the hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,106 +76,178 @@ impl Operation {
         )
     }
 
-    /// The i32 the hook receives: kind, size, flags and a number.
+    /// The i32 the hook receives: the bytes of a [`Code`], lowest first.
     pub fn encode(self, size: u8) -> i32 {
         use Operation as O;
-        let rounding = |r: Rounding| ROUNDINGS.iter().position(|&x| x == r).unwrap() as u32;
-        let (kind, flags, number): (u32, u32, u32) = match self {
-            O::Add => (0, 0, 0),
-            O::Sub => (1, 0, 0),
-            O::Mul => (2, 0, 0),
-            O::Div => (3, 0, 0),
-            O::Max => (4, 0, 0),
-            O::Min => (5, 0, 0),
-            O::MaxNumber => (6, 0, 0),
-            O::MinNumber => (7, 0, 0),
-            O::MulExtended => (8, 0, 0),
-            O::MulAdd => (9, 0, 0),
-            O::ReciprocalStep => (10, 0, 0),
-            O::ReciprocalSqrtStep => (11, 0, 0),
-            O::Sqrt => (12, 0, 0),
-            O::Round(r) => (13, rounding(r), 0),
-            O::Compare { signaling } => (14, u32::from(signaling), 0),
+        let rounding = |r: Rounding| ROUNDINGS.iter().position(|&x| x == r).unwrap() as u8;
+        let integer = |signed: bool, bits: u8| {
+            (u8::from(signed) * SIGNED) | (u8::from(u32::from(bits) == u64::BITS) * LONG)
+        };
+        let (kind, flags, number) = match self {
+            O::Add => (Kind::Add, 0, 0),
+            O::Sub => (Kind::Sub, 0, 0),
+            O::Mul => (Kind::Mul, 0, 0),
+            O::Div => (Kind::Div, 0, 0),
+            O::Max => (Kind::Max, 0, 0),
+            O::Min => (Kind::Min, 0, 0),
+            O::MaxNumber => (Kind::MaxNumber, 0, 0),
+            O::MinNumber => (Kind::MinNumber, 0, 0),
+            O::MulExtended => (Kind::MulExtended, 0, 0),
+            O::MulAdd => (Kind::MulAdd, 0, 0),
+            O::ReciprocalStep => (Kind::ReciprocalStep, 0, 0),
+            O::ReciprocalSqrtStep => (Kind::ReciprocalSqrtStep, 0, 0),
+            O::Sqrt => (Kind::Sqrt, 0, 0),
+            O::Round(r) => (Kind::Round, rounding(r), 0),
+            O::Compare { signaling } => (Kind::Compare, u8::from(signaling), 0),
             O::ToInteger {
                 signed,
                 bits,
                 rounding: r,
                 fraction_bits,
             } => (
-                15,
-                rounding(r) | u32::from(signed) << 3 | u32::from(bits == 64) << 4,
-                fraction_bits.into(),
+                Kind::ToInteger,
+                rounding(r) | integer(signed, bits),
+                fraction_bits,
             ),
             O::FromInteger {
                 signed,
                 bits,
                 fraction_bits,
-            } => (
-                16,
-                u32::from(signed) << 3 | u32::from(bits == 64) << 4,
-                fraction_bits.into(),
-            ),
-            O::Convert { to, odd } => (17, u32::from(odd), to.into()),
-            O::ReciprocalEstimate => (18, 0, 0),
-            O::ReciprocalSqrtEstimate => (19, 0, 0),
-            O::ReciprocalExponent => (20, 0, 0),
-            O::ReadStatus => (21, 0, 0),
+            } => (Kind::FromInteger, integer(signed, bits), fraction_bits),
+            O::Convert { to, odd } => (Kind::Convert, u8::from(odd), to),
+            O::ReciprocalEstimate => (Kind::ReciprocalEstimate, 0, 0),
+            O::ReciprocalSqrtEstimate => (Kind::ReciprocalSqrtEstimate, 0, 0),
+            O::ReciprocalExponent => (Kind::ReciprocalExponent, 0, 0),
+            O::ReadStatus => (Kind::ReadStatus, 0, 0),
         };
-        (kind | u32::from(size) << 8 | flags << 16 | number << 24) as i32
+        u32::from_le_bytes(
+            Code {
+                kind: kind as u8,
+                size,
+                flags,
+                number,
+            }
+            .into(),
+        )
+        .cast_signed()
     }
 
     pub fn decode(code: i32) -> (Operation, u8) {
         use Operation as O;
-        let code = code as u32;
-        let (kind, size, flags, number) = (
-            code & 0xff,
-            (code >> 8) as u8,
-            (code >> 16) & 0xff,
-            (code >> 24) as u8,
-        );
-        let rounding = ROUNDINGS[(flags & 7) as usize];
-        let signed = flags & 8 != 0;
-        let bits = if flags & 16 != 0 { 64 } else { 32 };
-        let op = match kind {
-            0 => O::Add,
-            1 => O::Sub,
-            2 => O::Mul,
-            3 => O::Div,
-            4 => O::Max,
-            5 => O::Min,
-            6 => O::MaxNumber,
-            7 => O::MinNumber,
-            8 => O::MulExtended,
-            9 => O::MulAdd,
-            10 => O::ReciprocalStep,
-            11 => O::ReciprocalSqrtStep,
-            12 => O::Sqrt,
-            13 => O::Round(rounding),
-            14 => O::Compare {
+        let Code {
+            kind,
+            size,
+            flags,
+            number,
+        } = code.cast_unsigned().to_le_bytes().into();
+        let rounding = ROUNDINGS[usize::from(flags & (SIGNED - 1))];
+        let signed = flags & SIGNED != 0;
+        let bits = if flags & LONG != 0 {
+            u64::BITS
+        } else {
+            u32::BITS
+        } as u8;
+        let op = match Kind::from_repr(kind) {
+            Some(Kind::Add) => O::Add,
+            Some(Kind::Sub) => O::Sub,
+            Some(Kind::Mul) => O::Mul,
+            Some(Kind::Div) => O::Div,
+            Some(Kind::Max) => O::Max,
+            Some(Kind::Min) => O::Min,
+            Some(Kind::MaxNumber) => O::MaxNumber,
+            Some(Kind::MinNumber) => O::MinNumber,
+            Some(Kind::MulExtended) => O::MulExtended,
+            Some(Kind::MulAdd) => O::MulAdd,
+            Some(Kind::ReciprocalStep) => O::ReciprocalStep,
+            Some(Kind::ReciprocalSqrtStep) => O::ReciprocalSqrtStep,
+            Some(Kind::Sqrt) => O::Sqrt,
+            Some(Kind::Round) => O::Round(rounding),
+            Some(Kind::Compare) => O::Compare {
                 signaling: flags & 1 != 0,
             },
-            15 => O::ToInteger {
+            Some(Kind::ToInteger) => O::ToInteger {
                 signed,
                 bits,
                 rounding,
                 fraction_bits: number,
             },
-            16 => O::FromInteger {
+            Some(Kind::FromInteger) => O::FromInteger {
                 signed,
                 bits,
                 fraction_bits: number,
             },
-            17 => O::Convert {
+            Some(Kind::Convert) => O::Convert {
                 to: number,
                 odd: flags & 1 != 0,
             },
-            18 => O::ReciprocalEstimate,
-            19 => O::ReciprocalSqrtEstimate,
-            20 => O::ReciprocalExponent,
-            _ => O::ReadStatus,
+            Some(Kind::ReciprocalEstimate) => O::ReciprocalEstimate,
+            Some(Kind::ReciprocalSqrtEstimate) => O::ReciprocalSqrtEstimate,
+            Some(Kind::ReciprocalExponent) => O::ReciprocalExponent,
+            Some(Kind::ReadStatus) | None => O::ReadStatus,
         };
         (op, size)
     }
+}
+
+/// The parts of an operation's code, one byte each.
+struct Code {
+    kind: u8,
+    size: u8,
+    /// The rounding's place in [`ROUNDINGS`] (or signaling, or odd, in the lowest bit), then [`SIGNED`] and
+    /// [`LONG`].
+    flags: u8,
+    /// Fraction bits, or the size converted to.
+    number: u8,
+}
+
+impl From<Code> for [u8; size_of::<u32>()] {
+    fn from(c: Code) -> Self {
+        [c.kind, c.size, c.flags, c.number]
+    }
+}
+
+impl From<[u8; size_of::<u32>()]> for Code {
+    fn from([kind, size, flags, number]: [u8; size_of::<u32>()]) -> Self {
+        Code {
+            kind,
+            size,
+            flags,
+            number,
+        }
+    }
+}
+
+/// The flag of a signed integer, above the bits that hold a rounding's place in [`ROUNDINGS`].
+const SIGNED: u8 = ROUNDINGS.len().next_power_of_two() as u8;
+/// The flag of a 64 bit integer.
+const LONG: u8 = SIGNED << 1;
+
+/// An operation's kind, as its code's first byte.
+#[derive(Clone, Copy, strum::FromRepr)]
+#[repr(u8)]
+enum Kind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Max,
+    Min,
+    MaxNumber,
+    MinNumber,
+    MulExtended,
+    MulAdd,
+    ReciprocalStep,
+    ReciprocalSqrtStep,
+    Sqrt,
+    Round,
+    Compare,
+    ToInteger,
+    FromInteger,
+    Convert,
+    ReciprocalEstimate,
+    ReciprocalSqrtEstimate,
+    ReciprocalExponent,
+    ReadStatus,
 }
 
 // FPSR's cumulative flags.
@@ -190,6 +263,14 @@ const AHP: u32 = 1 << 26;
 const DN: u32 = 1 << 25;
 const FZ: u32 = 1 << 24;
 
+/// Byte sizes of the float formats, as instructions and operation codes give them.
+pub(crate) const HALF: u8 = size_of::<u16>() as u8;
+pub(crate) const SINGLE: u8 = size_of::<f32>() as u8;
+pub(crate) const DOUBLE: u8 = size_of::<f64>() as u8;
+
+/// How many operands an operation takes at most, as the float hook passes them.
+pub(crate) const OPERANDS: usize = 3;
+
 /// Run one operation under `fpcr`, adding the exceptions it raises to `fpsr`.
 pub fn run(code: i32, a: u64, b: u64, c: u64, fpcr: u32, fpsr: &mut u32) -> u64 {
     let (op, size) = Operation::decode(code);
@@ -198,8 +279,8 @@ pub fn run(code: i32, a: u64, b: u64, c: u64, fpcr: u32, fpsr: &mut u32) -> u64 
     }
     let mut x = Context { fpcr, flags: 0 };
     let result = match size {
-        2 => x.run::<Half>(op, a, b, c),
-        4 => x.run::<Single>(op, a, b, c),
+        HALF => x.run::<Half>(op, a, b, c),
+        SINGLE => x.run::<Single>(op, a, b, c),
         _ => x.run::<Double>(op, a, b, c),
     };
     *fpsr |= x.flags;
@@ -223,7 +304,7 @@ trait Bits: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Dou
         (1 << (Self::PRECISION - 1)) - 1
     }
     fn mask() -> u128 {
-        if Self::BITS == 128 {
+        if Self::BITS == u128::BITS as usize {
             u128::MAX
         } else {
             (1 << Self::BITS) - 1
@@ -279,7 +360,7 @@ impl Context {
 
     /// Flush to zero applies to single and double precision only.
     fn flushes<F: Bits>(&self) -> bool {
-        self.fpcr & FZ != 0 && F::BITS > 16
+        self.fpcr & FZ != 0 && F::BITS > Half::BITS
     }
 
     /// An operand, flushed to zero (raising input denormal) when FZ asks.
@@ -381,13 +462,17 @@ impl Context {
                 fraction_bits,
             } => {
                 let value = if signed {
-                    i128::from(if width == 64 {
+                    i128::from(if u32::from(width) == u64::BITS {
                         a as i64
                     } else {
                         a as i32 as i64
                     })
                 } else {
-                    i128::from(if width == 64 { a } else { a & 0xffff_ffff })
+                    i128::from(if u32::from(width) == u64::BITS {
+                        a
+                    } else {
+                        a & u64::from(u32::MAX)
+                    })
                 };
                 let scale = -i32::from(fraction_bits) as rustc_apfloat::ExpInt;
                 let result = self.finish(|round, _| {
@@ -561,16 +646,16 @@ impl Context {
                 if (signaling && nan) || x.is_signaling() || y.is_signaling() {
                     self.flags |= IOC;
                 }
-                let nzcv: u64 = if nan {
-                    0b0011
+                // Arm's FPCompare.
+                return if nan {
+                    pstate::C | pstate::V
                 } else if x == y {
-                    0b0110
+                    pstate::Z | pstate::C
                 } else if x < y {
-                    0b1000
+                    pstate::N
                 } else {
-                    0b0010
+                    pstate::C
                 };
-                return nzcv << 28;
             }
             O::ToInteger {
                 signed,
@@ -603,8 +688,8 @@ impl Context {
                     }
                     v.value as u64
                 };
-                return if width == 32 {
-                    value & 0xffff_ffff
+                return if width == u32::BITS as usize {
+                    value & u64::from(u32::MAX)
                 } else {
                     value
                 };
@@ -635,22 +720,22 @@ impl Context {
 
     fn convert<F: Bits>(&mut self, a: u64, to: u8, odd: bool) -> u64 {
         match to {
-            2 => self.convert_to::<F, Half>(a, odd),
-            4 => self.convert_to::<F, Single>(a, odd),
+            HALF => self.convert_to::<F, Half>(a, odd),
+            SINGLE => self.convert_to::<F, Single>(a, odd),
             _ => self.convert_to::<F, Double>(a, odd),
         }
     }
 
     fn convert_to<F: Bits + FloatConvert<T>, T: Bits>(&mut self, a: u64, odd: bool) -> u64 {
-        let alternative_in = F::BITS == 16 && self.fpcr & AHP != 0;
+        let alternative_in = F::BITS == Half::BITS && self.fpcr & AHP != 0;
         if alternative_in && (a >> 10) & 0x1f == 0x1f {
             // The alternative half precision has no infinity or not-a-number: the top exponent is a number.
             // Every such number is exact in single precision.
             let single = ((a & 0x8000) << 16) | ((0x1f + 112) << 23) | ((a & 0x3ff) << 13);
-            return self.convert::<Single>(single, (T::BITS / 8) as u8, odd);
+            return self.convert::<Single>(single, (T::BITS / u8::BITS as usize) as u8, odd);
         }
         let x = self.unpack::<F>(a);
-        let alternative = T::BITS == 16 && self.fpcr & AHP != 0;
+        let alternative = T::BITS == Half::BITS && self.fpcr & AHP != 0;
         if x.is_nan() {
             if alternative {
                 // No not-a-number in the alternative format: zero with the sign, and invalid.
@@ -758,7 +843,7 @@ impl Context {
             self.flags |= DZC;
             return if negative { -F::INFINITY } else { F::INFINITY };
         }
-        let (tiny, huge) = if F::BITS == 32 {
+        let (tiny, huge) = if F::BITS == Single::BITS {
             (
                 F::from_u128(1).value.scalbn(-128),
                 F::from_u128(1).value.scalbn(126),
@@ -788,7 +873,7 @@ impl Context {
             self.flags |= UFC;
             return zero(negative);
         }
-        F::from_bits(reciprocal_estimate_bits(x.to_bits() as u64, F::BITS as u32).into())
+        F::from_bits(reciprocal_estimate_bits::<F>(x.to_bits() as u64).into())
     }
 
     fn reciprocal_sqrt_estimate<F: Bits>(&mut self, x: F) -> F {
@@ -809,7 +894,7 @@ impl Context {
         if x.is_infinite() {
             return F::ZERO;
         }
-        F::from_bits(reciprocal_sqrt_estimate_bits(x.to_bits() as u64, F::BITS as u32).into())
+        F::from_bits(reciprocal_sqrt_estimate_bits::<F>(x.to_bits() as u64).into())
     }
 }
 
@@ -865,56 +950,77 @@ pub fn recip_sqrt_estimate(a: u64) -> u64 {
     b.div_ceil(2)
 }
 
+/// The fraction and exponent bits of a format.
+pub(crate) fn format_parts<F: Float>() -> (u32, u32) {
+    ((F::PRECISION - 1) as u32, (F::BITS - F::PRECISION) as u32)
+}
+
+/// The fraction bits the estimates work in: a double's.
+pub(crate) const WORKING_FRACTION_BITS: u32 = Double::PRECISION as u32 - 1;
+/// The bits below the leading one of the estimate tables' index and result (Arm's `RecipEstimate` and
+/// `RecipSqrtEstimate`).
+pub(crate) const ESTIMATE_FRACTION_BITS: u32 = 8;
+
 /// The estimate of a finite, normal-range, non-zero number's reciprocal, by Arm's `FPRecipEstimate`.
-fn reciprocal_estimate_bits(raw: u64, bits: u32) -> u64 {
-    let (fraction_bits, exponent_bits) = if bits == 32 { (23, 8) } else { (52, 11) };
+fn reciprocal_estimate_bits<F: Float>(raw: u64) -> u64 {
+    let (fraction_bits, exponent_bits) = format_parts::<F>();
+    let bits = F::BITS as u32;
     let sign = raw >> (bits - 1);
     let mut exponent = ((raw >> fraction_bits) & ((1 << exponent_bits) - 1)) as i64;
-    // The fraction as 52 bits.
-    let mut fraction = (raw & ((1 << fraction_bits) - 1)) << (52 - fraction_bits);
+    let mut fraction =
+        (raw & ((1 << fraction_bits) - 1)) << (WORKING_FRACTION_BITS - fraction_bits);
     if exponent == 0 {
-        if fraction >> 51 == 0 {
+        if fraction >> (WORKING_FRACTION_BITS - 1) == 0 {
             exponent = -1;
-            fraction = (fraction & ((1 << 50) - 1)) << 2;
+            fraction = (fraction & ((1 << (WORKING_FRACTION_BITS - 2)) - 1)) << 2;
         } else {
-            fraction = (fraction & ((1 << 51) - 1)) << 1;
+            fraction = (fraction & ((1 << (WORKING_FRACTION_BITS - 1)) - 1)) << 1;
         }
     }
-    let scaled = (1 << 8) | (fraction >> 44);
-    let mut result_exponent = if bits == 32 { 253 } else { 2045 } - exponent;
+    let scaled = (1 << ESTIMATE_FRACTION_BITS)
+        | (fraction >> (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS));
+    let mut result_exponent = 2 * i64::from(F::MAX_EXP) - 1 - exponent;
     let estimate = recip_estimate(scaled);
-    let mut fraction = (estimate & 0xff) << 44;
+    let mut fraction = (estimate & ((1 << ESTIMATE_FRACTION_BITS) - 1))
+        << (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS);
     if result_exponent == 0 {
-        fraction = (1 << 51) | (fraction >> 1);
+        fraction = (1 << (WORKING_FRACTION_BITS - 1)) | (fraction >> 1);
     } else if result_exponent == -1 {
-        fraction = (1 << 50) | (fraction >> 2);
+        fraction = (1 << (WORKING_FRACTION_BITS - 2)) | (fraction >> 2);
         result_exponent = 0;
     }
     (sign << (bits - 1))
         | ((result_exponent as u64) & ((1 << exponent_bits) - 1)) << fraction_bits
-        | fraction >> (52 - fraction_bits)
+        | fraction >> (WORKING_FRACTION_BITS - fraction_bits)
 }
+
+/// How many biases Arm's `FPRSqrtEstimate` puts in its result's exponent before halving it.
+pub(crate) const SQRT_ESTIMATE_BIASES: i64 = 3;
 
 /// The estimate of a positive, finite, non-zero number's reciprocal square root, by Arm's
 /// `FPRSqrtEstimate`.
-fn reciprocal_sqrt_estimate_bits(raw: u64, bits: u32) -> u64 {
-    let (fraction_bits, exponent_bits) = if bits == 32 { (23, 8) } else { (52, 11) };
+fn reciprocal_sqrt_estimate_bits<F: Float>(raw: u64) -> u64 {
+    let (fraction_bits, exponent_bits) = format_parts::<F>();
     let mut exponent = ((raw >> fraction_bits) & ((1 << exponent_bits) - 1)) as i64;
-    let mut fraction = (raw & ((1 << fraction_bits) - 1)) << (52 - fraction_bits);
+    let mut fraction =
+        (raw & ((1 << fraction_bits) - 1)) << (WORKING_FRACTION_BITS - fraction_bits);
     if exponent == 0 {
-        while fraction >> 51 == 0 {
-            fraction = (fraction << 1) & ((1 << 52) - 1);
+        while fraction >> (WORKING_FRACTION_BITS - 1) == 0 {
+            fraction = (fraction << 1) & ((1 << WORKING_FRACTION_BITS) - 1);
             exponent -= 1;
         }
-        fraction = (fraction << 1) & ((1 << 52) - 1);
+        fraction = (fraction << 1) & ((1 << WORKING_FRACTION_BITS) - 1);
     }
     let scaled = if exponent & 1 == 0 {
-        (1 << 8) | (fraction >> 44)
+        (1 << ESTIMATE_FRACTION_BITS)
+            | (fraction >> (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS))
     } else {
-        (1 << 7) | (fraction >> 45)
+        (1 << (ESTIMATE_FRACTION_BITS - 1))
+            | (fraction >> (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS + 1))
     };
-    let result_exponent = (if bits == 32 { 380 } else { 3068 } - exponent) / 2;
+    let result_exponent = (SQRT_ESTIMATE_BIASES * i64::from(F::MAX_EXP) - 1 - exponent) / 2;
     let estimate = recip_sqrt_estimate(scaled);
     ((result_exponent as u64) & ((1 << exponent_bits) - 1)) << fraction_bits
-        | (estimate & 0xff) << (fraction_bits - 8)
+        | (estimate & ((1 << ESTIMATE_FRACTION_BITS) - 1))
+            << (fraction_bits - ESTIMATE_FRACTION_BITS)
 }

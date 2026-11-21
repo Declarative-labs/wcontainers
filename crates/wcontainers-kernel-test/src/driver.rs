@@ -15,7 +15,7 @@ use wcontainers_kernel::{
     AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
     SignalInformation, Standard, Start, System, SystemCallResponse, TaskId,
 };
-use wcontainers_runtime::{Ending, Execution, Outside, Turn};
+use wcontainers_runtime::{Ending, Execution, System as _, Turn};
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
 use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
@@ -71,8 +71,13 @@ pub(crate) fn back_end(seed: u64, _address_space: u64, _wall_clock: bool) -> Bac
     CpuSide::new(compiler, look_ahead(seed), Optimise::Speed, ())
 }
 
+/// Mixed into the run's seed for the look-ahead's draw, so that it is not the schedule's first draw.
+#[cfg(feature = "runtime")]
+const LOOK_AHEAD_STREAM: u64 = 0x1007_a4ead;
+
 /// The look-ahead `LOOK_AHEAD` names: `full` (also when unset), `none`, or `bounded`, whose N is drawn
-/// from 1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset), and printed.
+/// from 1 to the translator's default bound from the run's seed and `LOOK_AHEAD_SEED` (0 if unset),
+/// and printed.
 #[cfg(feature = "runtime")]
 fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
     use wcontainers_wasmtime::LookAhead;
@@ -83,7 +88,8 @@ fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
             let knob = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
                 seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
             });
-            let n = StdRng::seed_from_u64(seed ^ knob ^ 0x1007_a4ead).random_range(1..=64);
+            let n = StdRng::seed_from_u64(seed ^ knob ^ LOOK_AHEAD_STREAM)
+                .random_range(1..=wcontainers_wasmtime::BOUND);
             eprintln!("look-ahead bounded {n} (run seed {seed}, LOOK_AHEAD_SEED {knob})");
             LookAhead::Bounded(n)
         }
@@ -302,13 +308,14 @@ impl TestHost {
     }
 
     /// A host whose clocks move only with the work run and the waits skipped, both from the seed,
-    /// so the kernel's choices repeat exactly for a seed.
-    pub fn repeatable(seed: u64) -> Self {
+    /// so the kernel's choices repeat exactly for a seed, with the wall clock reading `wall_start`
+    /// (the machine's clock when none) at the start.
+    pub fn repeatable(seed: u64, wall_start: Option<u64>) -> Self {
         let mut host = Self {
             virtual_now: Some(AtomicU64::new(1_000_000_000)),
             ..Self::new(seed)
         };
-        host.wall_base = wall_clock() - 1_000_000_000;
+        host.wall_base = wall_start.unwrap_or_else(wall_clock) - 1_000_000_000;
         host
     }
 
@@ -943,6 +950,9 @@ pub struct Injections {
     /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
     /// seed, as a backend whose files changed underneath would.
     pub notices: usize,
+    /// The wall clock's reading at the start, given again to repeat a run whose guest reads it; the
+    /// machine's clock when none.
+    pub wall_start: Option<u64>,
 }
 
 impl Default for Injections {
@@ -953,6 +963,7 @@ impl Default for Injections {
             wall_step: 0,
             signal: None,
             notices: 0,
+            wall_start: None,
         }
     }
 }
@@ -1051,7 +1062,7 @@ pub fn run_prepared(
             ..TestHost::new(seed)
         }
     } else {
-        TestHost::repeatable(seed)
+        TestHost::repeatable(seed, injections.wall_start)
     };
     if let Some(tape) = prepared.tape.take() {
         assert_eq!(
@@ -1399,7 +1410,7 @@ where
     }
 }
 
-impl<H: BetweenSteps + Send> Outside for TestHost<H>
+impl<H: BetweenSteps + Send> wcontainers_runtime::System for TestHost<H>
 where
     Self: System,
 {

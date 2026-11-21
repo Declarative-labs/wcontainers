@@ -1,44 +1,69 @@
 //! The browser runner: a flat blob run in Chrome by `browser/runner.js`, with the translator built for wasm32
 //! from `browser/` so that code is translated at run time there too.
 
+use crate::layout::SIGNALLED;
 use crate::programs::{Blob, Ran, placement};
+use crate::reference::{release_build, target_folder};
+use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
+use wcontainers_abi::Permissions;
+use wcontainers_arm64::INSTRUCTION_BYTES;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
+/// The browser translator's package folder beside this crate's manifest, also its folder under `target`.
+const PACKAGE: &str = "browser";
+/// Rust's name for the target the browser translator is built for, and the module that build makes.
+const MODULE_TRIPLE: &str = "wasm32-unknown-unknown";
+const MODULE: &str = "wcontainers_browser.wasm";
+/// The folder of the browser's target folder that holds a folder for each case.
+const CASES: &str = "cases";
+/// The files of a case's folder the runner loads: the translator module, the blob and its stack.
+const TRANSLATOR_FILE: &str = "translator.wasm";
+const BLOB_FILE: &str = "blob.bin";
+const STACK_FILE: &str = "stack.bin";
+/// The case's setup and its instruction cases, which `run.mjs` reads from the case's folder.
+const SETUP_FILE: &str = "case.json";
+const CASES_FILE: &str = "cases.bin";
+/// The folder of instruction cases under [`CASES`].
+const INSTRUCTION_CASES: &str = "instructions";
+/// The program that runs the browser runner's script, and that script beside this crate's manifest.
+const NODE: &str = "node";
+const RUNNER_SCRIPT: &str = "run.mjs";
+/// The variable through which the runner script gives V8 its flags.
+const JS_FLAGS_VARIABLE: &str = "WC_CHROME_JS_FLAGS";
+/// What Chrome's DevTools protocol reports when a page crashes.
+const PAGE_CRASHED: &str = "Target crashed";
+
 fn package() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PACKAGE)
 }
 
 fn target() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/browser")
+    target_folder(PACKAGE)
 }
 
 /// Build the translator for the browser, once per process, and return the module's path.
 pub fn translator() -> PathBuf {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
-        .get_or_init(|| {
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-            let status = Command::new(cargo)
-                .args([
-                    "build",
-                    "--release",
-                    "--quiet",
-                    "--target",
-                    "wasm32-unknown-unknown",
-                    "--target-dir",
-                ])
-                .arg(target())
-                .current_dir(package())
-                .status()
-                .expect("run cargo for the browser translator");
-            assert!(status.success(), "the browser translator did not build");
-            target().join("wasm32-unknown-unknown/release/wcontainers_browser.wasm")
-        })
+        .get_or_init(|| release_build(&package(), MODULE_TRIPLE, &target()).join(MODULE))
         .clone()
+}
+
+/// The folder of the case `name`, holding the translator module, `blob` and `stack`.
+fn case_folder(name: &str, blob: &[u8], stack: &[u8]) -> PathBuf {
+    let directory = target().join(CASES).join(name);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(translator(), directory.join(TRANSLATOR_FILE)).unwrap();
+    std::fs::write(directory.join(BLOB_FILE), blob).unwrap();
+    std::fs::write(directory.join(STACK_FILE), stack).unwrap();
+    directory
 }
 
 /// What happened in Chrome: the program's output and status, and the runner's report.
@@ -109,97 +134,171 @@ fn run_in_chrome(
     module_bytes: u32,
 ) -> Report {
     let place = placement(blob);
-    let directory = target().join("cases").join(&blob.name);
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), &blob.bytes).unwrap();
-    std::fs::write(directory.join("stack.bin"), &place.stack).unwrap();
-    let regions: Vec<Value> = place
-        .regions
-        .iter()
-        .map(|(range, permissions)| serde_json::json!([range.start, range.end, permissions.bits()]))
-        .collect();
-    let setup = serde_json::json!({
-        "codeBytes": blob.code_bytes,
-        "load": blob.load,
-        "memoryBytes": place.memory_bytes,
-        "regions": regions,
-        "sp": place.sp,
-        "lookAhead": match look_ahead {
-            LookAhead::None => 0,
-            LookAhead::Full => 1,
-            LookAhead::Bounded(_) => 2,
-        },
-        "bound": match look_ahead {
-            LookAhead::Bounded(n) => n,
-            _ => 0,
-        },
-        "repeat": repeat,
-        "optimise": optimise as u8,
-        "splitBytes": module_bytes,
-        "omit": u8::from(omit.stop)
-            | (u8::from(omit.permissions) << 1)
-            | (u8::from(omit.returns) << 2)
-            | (u8::from(omit.depth) << 3),
-    });
+    let directory = case_folder(&blob.name, &blob.bytes, &place.stack);
+    let (look_ahead, bound) = look_ahead.code();
+    let setup = Setup {
+        bound: Some(bound),
+        code_bytes: blob.code_bytes,
+        keep_float_flags: Some(blob.reads_float_status()),
+        load: blob.load,
+        look_ahead,
+        memory_bytes: place.memory_bytes,
+        omit: omit.bits(),
+        optimise: Some(optimise as u8),
+        regions: regions(&place.regions),
+        repeat,
+        sp: Some(place.sp),
+        split_bytes: Some(module_bytes),
+        ..Setup::default()
+    };
     let result = launch(&directory, &setup, flags);
-    let bytes = |name: &str| -> Vec<u8> {
-        result[name]
-            .as_array()
-            .expect("bytes")
-            .iter()
-            .map(|b| b.as_u64().unwrap() as u8)
-            .collect()
-    };
-    let stopped = &result["stopped"];
-    // Docker reports a process killed by a signal as 128 plus the signal's number.
-    let status = match stopped["kind"].as_str() {
+    let answer: RunAnswer = serde_json::from_value(result.clone()).expect("the runner's answer");
+    let stop: Stop = serde_json::from_value(answer.stopped.clone()).expect("the runner's stop");
+    let status = match stop.kind.as_str() {
         // Linux reports the low 8 bits of the status.
-        Some("finished") => stopped["status"].as_i64().unwrap() as i32 & 0xff,
-        Some("memory fault") => 128 + 11,
-        Some("alignment") => 128 + 7,
-        Some("undefined" | "unsupported") => 128 + 4,
-        Some("breakpoint") => 128 + 5,
-        Some("divide error" | "float exception") => 128 + 8,
-        Some("general protection" | "overflow") => 128 + 11,
-        Some("stack fault") => 128 + 7,
-        _ => panic!(
-            "the program stopped without exiting in Chrome: {stopped} at {}",
-            result["pc"]
-        ),
+        FINISHED => i32::from(stop.status.expect("an exit status") as u8),
+        kind => match STOP_SIGNALS.iter().find(|(name, _)| *name == kind) {
+            Some((_, signal)) => SIGNALLED + *signal as i32,
+            None => panic!(
+                "the program stopped without exiting in Chrome: {} at {}",
+                answer.stopped, answer.pc
+            ),
+        },
     };
-    let counters = result["counters"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| {
-            (
-                c["reason"].as_str().unwrap().to_string(),
-                c["count"].as_u64().unwrap(),
-                c["nanoseconds"].as_u64().unwrap(),
-            )
-        })
-        .collect();
     Report {
         ran: Ran {
-            stdout: bytes("stdout"),
-            stderr: bytes("stderr"),
+            stdout: answer.stdout,
+            stderr: answer.stderr,
             status,
         },
-        counters,
-        runs: result["runs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|ms| ms.as_f64().unwrap() / 1000.0)
+        counters: answer
+            .counters
+            .into_iter()
+            .map(|c| (c.reason, c.count, c.nanoseconds))
             .collect(),
-        user_agent: result["userAgent"].as_str().unwrap_or_default().to_string(),
+        runs: answer
+            .runs
+            .iter()
+            .map(|ms| ms * Duration::from_millis(1).as_secs_f64())
+            .collect(),
+        user_agent: answer.user_agent.unwrap_or_default(),
     }
+}
+
+/// The runner's name for a program that exited, and its names for the other ways a program stops, with the
+/// signal Linux gives for each.
+const FINISHED: &str = "finished";
+const STOP_SIGNALS: [(&str, u32); 10] = [
+    ("memory fault", SIGSEGV),
+    ("general protection", SIGSEGV),
+    ("overflow", SIGSEGV),
+    ("alignment", SIGBUS),
+    ("stack fault", SIGBUS),
+    ("undefined", SIGILL),
+    ("unsupported", SIGILL),
+    ("breakpoint", SIGTRAP),
+    ("divide error", SIGFPE),
+    ("float exception", SIGFPE),
+];
+
+/// What the runner is told about a case, written to the case's folder as JSON. The fields are in the
+/// order of their names, as the JSON has always had them.
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Setup {
+    /// Instruction cases' places: start and length of each.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    areas: Option<Vec<(u64, u64)>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bound: Option<u32>,
+    /// How many instruction cases `cases.bin` holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cases: Option<usize>,
+    code_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code_start: Option<u64>,
+    /// Whether FPSR's flags are kept exact from the thread's start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_float_flags: Option<bool>,
+    load: u64,
+    look_ahead: u8,
+    memory_bytes: u64,
+    /// How many code modules translated ahead of time the folder holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modules: Option<usize>,
+    omit: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optimise: Option<u8>,
+    /// Start, end and permissions of each region.
+    regions: Vec<(u64, u64, u8)>,
+    repeat: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    split_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop_at_syscall: Option<bool>,
+}
+
+fn regions(regions: &[(Range<u64>, Permissions)]) -> Vec<(u64, u64, u8)> {
+    regions
+        .iter()
+        .map(|(range, permissions)| (range.start, range.end, permissions.bits()))
+        .collect()
+}
+
+/// The runner's answer for a program run.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunAnswer {
+    stopped: Value,
+    pc: Value,
+    counters: Vec<Counter>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    /// Milliseconds of each run.
+    runs: Vec<f64>,
+    user_agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Stop {
+    kind: String,
+    status: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct Counter {
+    reason: String,
+    count: u64,
+    nanoseconds: u64,
+}
+
+/// The runner's answer when the page threw.
+#[derive(Deserialize)]
+struct Refusal {
+    error: Option<Value>,
+}
+
+/// The runner's answer for loading modules.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadAnswer {
+    compiling: f64,
+    instantiating: f64,
+    memory_before: i64,
+    memory_after: i64,
+}
+
+/// The runner's answer for instruction cases.
+#[derive(Deserialize)]
+struct CasesAnswer {
+    cases: Vec<StateRun>,
 }
 
 /// Run the browser runner on a case directory holding `translator.wasm`, `blob.bin`, `stack.bin` and, for
 /// instruction cases, `cases.bin`, with this setup and V8 flags if given; give its answer.
-fn launch(directory: &Path, setup: &Value, flags: Option<&str>) -> Value {
+fn launch(directory: &Path, setup: &Setup, flags: Option<&str>) -> Value {
     launch_or_refused(directory, setup, flags)
         .unwrap_or_else(|error| panic!("the browser runner failed: {error}"))
 }
@@ -207,29 +306,34 @@ fn launch(directory: &Path, setup: &Value, flags: Option<&str>) -> Value {
 /// [`launch`], or what the page threw.
 fn launch_or_refused(
     directory: &Path,
-    setup: &Value,
+    setup: &Setup,
     flags: Option<&str>,
 ) -> Result<Value, String> {
-    std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
+    std::fs::write(
+        directory.join(SETUP_FILE),
+        serde_json::to_string(setup).unwrap(),
+    )
+    .unwrap();
 
-    let mut command = Command::new("node");
+    let mut command = Command::new(NODE);
     if let Some(flags) = flags {
-        command.env("WC_CHROME_JS_FLAGS", flags);
+        command.env(JS_FLAGS_VARIABLE, flags);
     }
     let output = command
-        .arg(package().join("run.mjs"))
+        .arg(package().join(RUNNER_SCRIPT))
         .arg(directory)
         .output()
         .expect("run node (from the Nix shell)");
     let errors = String::from_utf8_lossy(&output.stderr);
     eprint!("{errors}");
     // A page that crashes (the engine giving up on a module) is a refusal too.
-    if errors.contains("Target crashed") {
+    if errors.contains(PAGE_CRASHED) {
         return Err("the page crashed".into());
     }
     assert!(output.status.success(), "the browser runner failed");
     let result: Value = serde_json::from_slice(&output.stdout).expect("the runner's JSON");
-    match result.get("error") {
+    let refusal: Refusal = serde_json::from_value(result.clone()).expect("the runner's answer");
+    match refusal.error {
         Some(error) => Err(error.as_str().unwrap_or_default().to_string()),
         None => Ok(result),
     }
@@ -255,35 +359,28 @@ pub fn load_modules(
     modules: &[&[u8]],
     flags: &str,
 ) -> Result<Loaded, String> {
-    let directory = target().join("cases").join(format!("load-{name}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), image).unwrap();
-    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    let directory = case_folder(&format!("load-{name}"), image, &[]);
     for (i, module) in modules.iter().enumerate() {
         std::fs::write(directory.join(format!("module-{i}.wasm")), module).unwrap();
     }
-    let memory = (load + image.len() as u64).next_multiple_of(1 << 16);
-    let setup = serde_json::json!({
-        "codeBytes": code.end,
-        "codeStart": code.start,
-        "load": load,
-        "memoryBytes": memory,
-        "regions": [],
-        "sp": 0,
-        "lookAhead": 1,
-        "repeat": 0,
-        "omit": 0,
-        "modules": modules.len(),
-    });
+    let memory = (load + image.len() as u64)
+        .next_multiple_of(wcontainers_translator::contract::WASM_PAGE_BYTES);
+    let setup = Setup {
+        code_bytes: code.end,
+        code_start: Some(code.start),
+        load,
+        look_ahead: LookAhead::Full.code().0,
+        memory_bytes: memory,
+        modules: Some(modules.len()),
+        ..Setup::default()
+    };
     let result = launch_or_refused(&directory, &setup, Some(flags));
     std::fs::remove_dir_all(&directory).unwrap();
-    let result = result?;
+    let answer: LoadAnswer = serde_json::from_value(result?).expect("the runner's answer");
     Ok(Loaded {
-        compiling: result["compiling"].as_f64().expect("a time"),
-        instantiating: result["instantiating"].as_f64().expect("a time"),
-        memory: result["memoryAfter"].as_i64().expect("bytes")
-            - result["memoryBefore"].as_i64().expect("bytes"),
+        compiling: answer.compiling,
+        instantiating: answer.instantiating,
+        memory: answer.memory_after - answer.memory_before,
     })
 }
 
@@ -297,6 +394,7 @@ pub struct StateCase {
 
 /// How an instruction case ended in Chrome: the runner's stop (its `kind` and details), the thread state
 /// after, and the bytes of the places that changed, as offsets into the places taken one after another.
+#[derive(Deserialize)]
 pub struct StateRun {
     pub stopped: Value,
     pub state: Vec<u8>,
@@ -308,15 +406,11 @@ pub struct StateRun {
 pub fn cases(
     code: u64,
     memory_bytes: u64,
-    regions: &[(std::ops::Range<u64>, wcontainers_abi::Permissions)],
-    places: &[std::ops::Range<u64>],
+    regions_given: &[(Range<u64>, Permissions)],
+    places: &[Range<u64>],
     cases: &[StateCase],
 ) -> Vec<StateRun> {
-    let directory = target().join("cases").join("instructions");
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), cases[0].word.to_le_bytes()).unwrap();
-    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    let directory = case_folder(INSTRUCTION_CASES, &cases[0].word.to_le_bytes(), &[]);
     let mut bytes = Vec::new();
     for case in cases {
         bytes.extend(case.word.to_le_bytes());
@@ -325,55 +419,24 @@ pub fn cases(
             bytes.extend(place);
         }
     }
-    std::fs::write(directory.join("cases.bin"), bytes).unwrap();
-    let regions: Vec<Value> = regions
-        .iter()
-        .map(|(range, permissions)| serde_json::json!([range.start, range.end, permissions.bits()]))
-        .collect();
-    let places: Vec<Value> = places
-        .iter()
-        .map(|range| serde_json::json!([range.start, range.end - range.start]))
-        .collect();
-    let setup = serde_json::json!({
-        "codeBytes": 4,
-        "load": code,
-        "memoryBytes": memory_bytes,
-        "regions": regions,
-        "sp": 0,
-        "lookAhead": 0,
-        "repeat": 0,
-        "omit": 0,
-        "cases": cases.len(),
-        "areas": places,
-        "stopAtSyscall": true,
-    });
-    let result = launch(&directory, &setup, None);
-    let numbers = |value: &Value| -> Vec<u8> {
-        value
-            .as_array()
-            .expect("bytes")
-            .iter()
-            .map(|b| b.as_u64().unwrap() as u8)
-            .collect()
-    };
-    result["cases"]
-        .as_array()
-        .expect("the cases' results")
-        .iter()
-        .map(|run| StateRun {
-            stopped: run["stopped"].clone(),
-            state: numbers(&run["state"]),
-            changed: run["changed"]
-                .as_array()
-                .unwrap()
+    std::fs::write(directory.join(CASES_FILE), bytes).unwrap();
+    let setup = Setup {
+        areas: Some(
+            places
                 .iter()
-                .map(|pair| {
-                    (
-                        pair[0].as_u64().unwrap() as u32,
-                        pair[1].as_u64().unwrap() as u8,
-                    )
-                })
+                .map(|range| (range.start, range.end - range.start))
                 .collect(),
-        })
-        .collect()
+        ),
+        cases: Some(cases.len()),
+        code_bytes: INSTRUCTION_BYTES as u64,
+        load: code,
+        look_ahead: LookAhead::None.code().0,
+        memory_bytes,
+        regions: regions(regions_given),
+        stop_at_syscall: Some(true),
+        ..Setup::default()
+    };
+    let answer: CasesAnswer =
+        serde_json::from_value(launch(&directory, &setup, None)).expect("the runner's answer");
+    answer.cases
 }

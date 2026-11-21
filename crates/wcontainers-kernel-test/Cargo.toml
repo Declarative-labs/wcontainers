@@ -13,6 +13,7 @@ publish = false
 wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../wcontainers-kernel" }
 wcontainers-runtime = { path = "../wcontainers-runtime" }
+wcontainers-docker = { path = "../wcontainers-docker" }
 wcontainers-wasmtime = { path = "../wcontainers-wasmtime", optional = true }
 wcontainers-arm64 = { path = "../wcontainers-arm64", optional = true }
 unicorn-engine = "2.1.5"

@@ -133,3 +133,67 @@ fn square_roots_round_as_asked() {
         &wrong[..wrong.len().min(10)]
     );
 }
+
+#[test]
+fn every_operation_code_decodes_to_its_operation() {
+    use wcontainers_arm64::Rounding as R;
+    let roundings = [
+        R::Nearest,
+        R::Away,
+        R::Floor,
+        R::Ceiling,
+        R::Zero,
+        R::Current,
+        R::CurrentExact,
+    ];
+    let mut operations = vec![
+        Operation::Add,
+        Operation::Sub,
+        Operation::Mul,
+        Operation::Div,
+        Operation::Max,
+        Operation::Min,
+        Operation::MaxNumber,
+        Operation::MinNumber,
+        Operation::MulExtended,
+        Operation::MulAdd,
+        Operation::ReciprocalStep,
+        Operation::ReciprocalSqrtStep,
+        Operation::Sqrt,
+        Operation::ReciprocalEstimate,
+        Operation::ReciprocalSqrtEstimate,
+        Operation::ReciprocalExponent,
+        Operation::ReadStatus,
+    ];
+    for signaling in [false, true] {
+        operations.push(Operation::Compare { signaling });
+    }
+    for (to, odd) in [(2, false), (4, false), (4, true), (8, false)] {
+        operations.push(Operation::Convert { to, odd });
+    }
+    for rounding in roundings {
+        operations.push(Operation::Round(rounding));
+        for signed in [false, true] {
+            for bits in [u32::BITS as u8, u64::BITS as u8] {
+                for fraction_bits in [0, 1, 63] {
+                    operations.push(Operation::ToInteger {
+                        signed,
+                        bits,
+                        rounding,
+                        fraction_bits,
+                    });
+                    operations.push(Operation::FromInteger {
+                        signed,
+                        bits,
+                        fraction_bits,
+                    });
+                }
+            }
+        }
+    }
+    for operation in operations {
+        for size in [2, 4, 8] {
+            assert_eq!(Operation::decode(operation.encode(size)), (operation, size));
+        }
+    }
+}

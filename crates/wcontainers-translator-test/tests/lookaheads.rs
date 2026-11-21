@@ -4,12 +4,12 @@
 //! `WC_LOOKAHEAD_SEED` (default 1).
 
 use proptest::prelude::RngExt;
-use proptest::test_runner::{RngAlgorithm, TestRng};
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::programs::{
     Library, build_with, ran, reachable_memory, ready, translated,
 };
+use wcontainers_translator_test::seeded::generator;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
@@ -19,9 +19,7 @@ fn setting(name: &str, default: u64) -> u64 {
 fn bounded_matches_none() {
     let cases = setting("WC_LOOKAHEAD_CASES", 4);
     let seed = setting("WC_LOOKAHEAD_SEED", 1);
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &key);
+    let mut rng = generator(seed, &[], "");
     for (name, optimisation, defines) in [
         ("bench", "-O0", &["SCALE=0"][..]),
         ("bench", "-O2", &["SCALE=0"][..]),
@@ -143,16 +141,10 @@ fn measure_bound() {
                 best = (seconds, making.0, making.1);
             }
         }
-        let load = std::process::Command::new("sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .expect("sysctl");
+        let load = wcontainers_translator_test::jobs::load();
         println!(
             "bench at {look_ahead:?}: {:.3} s, of which {:.3} s making {} pieces at run time (load {})",
-            best.0,
-            best.1,
-            best.2,
-            String::from_utf8_lossy(&load.stdout).trim()
+            best.0, best.1, best.2, load
         );
     }
 }

@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Error, Image, Machine, Runtime, RuntimeSettings, System, base_spec, spec_from_json,
+    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, base_spec, spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
 /// A root holding only its own directory.
 fn image() -> &'static PathBuf {
@@ -40,18 +40,25 @@ fn base() -> Value {
     value
 }
 
-fn make(value: Value) -> Result<(), Error> {
-    let spec = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
+/// Makes a container from the configuration; the properties it ignored.
+fn make(value: Value) -> Result<Vec<String>, Error> {
+    let (spec, ignored) = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings::default());
-    let system = System::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-    let tuning = Tuning {
+    let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
+    let translator_settings = TranslatorSettings {
         look_ahead: LookAhead::Full,
         optimise: Optimise::Speed,
     };
     let image = Image::tar(image()).unwrap();
     runtime
-        .container(&spec, &image, &tuning, &Machine { offer: () }, system)
-        .map(drop)
+        .container(
+            &spec,
+            &image,
+            &translator_settings,
+            &GuestMachine { offer: () },
+            system,
+        )
+        .map(|_| ignored)
 }
 
 fn refused(field: &str, change: impl FnOnce(&mut Value)) {
@@ -66,13 +73,48 @@ fn refused(field: &str, change: impl FnOnce(&mut Value)) {
             println!("{field}: {reason}");
         }
         Err(other) => panic!("{field}: {other}"),
-        Ok(()) => panic!("{field} was accepted"),
+        Ok(_) => panic!("{field} was accepted"),
     }
 }
 
 #[test]
 fn the_base_configuration_is_accepted() {
-    make(base()).unwrap();
+    assert_eq!(make(base()).unwrap(), Vec::<String>::new());
+}
+
+/// A property the specification does not define is ignored, and named for a warning.
+fn ignored(path: &str, change: impl FnOnce(&mut Value)) {
+    let mut value = base();
+    change(&mut value);
+    match make(value) {
+        Ok(ignored) => assert_eq!(ignored, [path]),
+        Err(error) => panic!("{path}: {error}"),
+    }
+}
+
+macro_rules! ignored {
+    ($($name:ident: $path:literal, |$value:ident| $change:expr;)*) => {
+        $(
+            #[test]
+            fn $name() {
+                ignored($path, |$value: &mut Value| {
+                    $change;
+                });
+            }
+        )*
+    };
+}
+
+ignored! {
+    a_field_oci_spec_does_not_read: "hostnmae", |v| v["hostnmae"] = json!("typo");
+    a_process_field_oci_spec_does_not_read: "process.futureProcessField", |v| v["process"]
+        ["futureProcessField"] = json!(true);
+    a_linux_field_oci_spec_does_not_read: "linux.unknownLinuxThing", |v| v["linux"]
+        ["unknownLinuxThing"] = json!({"x": 1});
+    a_mount_field_oci_spec_does_not_read: "mounts[2].label", |v| v["mounts"][2]["label"] =
+        json!("x");
+    an_annotation: "annotations.org.example.note", |v| v["annotations"] =
+        json!({"org.example.note": "x"});
 }
 
 macro_rules! refused {
@@ -92,13 +134,6 @@ refused! {
     oci_version: "ociVersion", |v| v["ociVersion"] = json!("2.0.0");
     root_path: "root.path", |v| v["root"] = json!({"path": "rootfs"});
     root_readonly: "root.readonly", |v| v["root"] = json!({"path": "", "readonly": true});
-    a_field_oci_spec_does_not_read: "hostnmae", |v| v["hostnmae"] = json!("typo");
-    a_process_field_oci_spec_does_not_read: "process.futureProcessField", |v| v["process"]
-        ["futureProcessField"] = json!(true);
-    a_linux_field_oci_spec_does_not_read: "linux.unknownLinuxThing", |v| v["linux"]
-        ["unknownLinuxThing"] = json!({"x": 1});
-    a_mount_field_oci_spec_does_not_read: "mounts[2].label", |v| v["mounts"][2]["label"] =
-        json!("x");
     uid_mappings: "uidMappings", |v| v["uidMappings"] =
         json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
     gid_mappings: "gidMappings", |v| v["gidMappings"] =
@@ -114,6 +149,11 @@ refused! {
     mounts_absent: "mounts", |v| { v.as_object_mut().unwrap().remove("mounts"); };
     linux_absent: "linux.namespaces", |v| { v.as_object_mut().unwrap().remove("linux"); };
     a_kernel_mount_left_out: "mounts", |v| { v["mounts"].as_array_mut().unwrap().remove(3); };
+    kernel_mounts_in_another_order: "mounts[1]", |v| v["mounts"].as_array_mut().unwrap().swap(1, 2);
+    a_kernel_mount_repeated: "mounts[6]", |v| {
+        let first = v["mounts"][0].clone();
+        v["mounts"].as_array_mut().unwrap().push(first);
+    };
     an_id_mapped_mount: "mounts[0].uidMappings", |v| v["mounts"][0]["uidMappings"] =
         json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
     process_absent: "process", |v| { v.as_object_mut().unwrap().remove("process"); };

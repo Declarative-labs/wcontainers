@@ -33,6 +33,12 @@ const PAGE: u64 = wcontainers_abi::PAGE_SIZE;
 /// The most pages below a range searched for its image's header.
 const SEARCH_PAGES: u64 = 1 << 14;
 
+/// Bytes of an address in the image, a word of its arrays and data.
+const WORD: u64 = size_of::<u64>() as u64;
+
+/// Every instruction of the image starts at a multiple of this.
+const INSTRUCTION_ALIGN: u64 = <wcontainers_arm64::Arm64 as wcontainers_guest_cpu::Guest>::ALIGN;
+
 /// The starts the ELF image whose executable segment is exactly `range` gives, as offsets into the
 /// range, with how many came from each source. None when no such image is found.
 pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>, Sources)> {
@@ -100,7 +106,8 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
         {
             let at = segment.p_vaddr.get(LE);
             let words: Vec<u64> =
-                read_slice(memory, at, (segment.p_filesz.get(LE) / 8) as usize).unwrap_or_default();
+                read_slice(memory, at, (segment.p_filesz.get(LE) / WORD) as usize)
+                    .unwrap_or_default();
             for word in words {
                 found.add(&image, word, Source::DataWord);
             }
@@ -152,7 +159,7 @@ struct Found {
 impl Found {
     /// Adds a guest address as a start if it is in the code.
     fn add(&mut self, image: &Image, address: u64, source: Source) {
-        if !image.code.contains(&address) || !address.is_multiple_of(4) {
+        if !image.code.contains(&address) || !address.is_multiple_of(INSTRUCTION_ALIGN) {
             return;
         }
         self.starts.push(address - image.code.start);
@@ -227,7 +234,7 @@ fn dynamic_starts(
     ] {
         if let (Some(offset), Some(size)) = (value(array), value(size)) {
             let words: Vec<u64> =
-                read_slice(memory, at(offset), (size / 8) as usize).unwrap_or_default();
+                read_slice(memory, at(offset), (size / WORD) as usize).unwrap_or_default();
             for word in words {
                 found.add(image, at(word), Source::Array);
             }
@@ -254,7 +261,7 @@ fn dynamic_starts(
         let relocations: Vec<elf::Rela64<LE>> =
             read_slice(memory, at(rela), count).unwrap_or_default();
         for relocation in relocations {
-            if (relocation.r_info.get(LE) & 0xffff_ffff) as u32 == elf::R_AARCH64_RELATIVE.0 {
+            if relocation.r_type(LE, false) == elf::R_AARCH64_RELATIVE {
                 let addend = relocation.r_addend.get(LE) as u64;
                 found.add(image, image.base.wrapping_add(addend), Source::Relocation);
             }
@@ -262,7 +269,7 @@ fn dynamic_starts(
     }
     if let (Some(relr), Some(size)) = (value(elf::DT_RELR), value(elf::DT_RELRSZ)) {
         let entries: Vec<elf::Relr64<LE>> =
-            read_slice(memory, at(relr), (size / 8) as usize).unwrap_or_default();
+            read_slice(memory, at(relr), (size / WORD) as usize).unwrap_or_default();
         let words: Vec<u64> = RelrIterator::<Elf>::new(LE, &entries)
             .filter_map(|place| read::<u64>(memory, image.base.wrapping_add(place)))
             .collect();
@@ -335,7 +342,8 @@ fn unwind_starts(
         return;
     }
     let bases = gimli::BaseAddresses::default().set_eh_frame_hdr(address);
-    let Ok(parsed) = gimli::EhFrameHdr::new(&bytes, gimli::LittleEndian).parse(&bases, 8) else {
+    let Ok(parsed) = gimli::EhFrameHdr::new(&bytes, gimli::LittleEndian).parse(&bases, WORD as u8)
+    else {
         return;
     };
     let Some(table) = parsed.table() else {

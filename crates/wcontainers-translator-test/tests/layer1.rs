@@ -8,16 +8,18 @@
 
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
-use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
+use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use std::cell::RefCell;
 use std::sync::Mutex;
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::forms;
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
     Case, Stop, cases, compare, compare_outcome, covered, translated, translated_in_chrome,
 };
-use wcontainers_translator_test::layout::{CODE, DATA};
+use wcontainers_translator_test::layout::{CASE_SP, CODE, DATA};
 use wcontainers_translator_test::reference::Cases;
+use wcontainers_translator_test::seeded;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -25,12 +27,7 @@ fn setting(name: &str, default: u64) -> u64 {
 
 /// The random generator for a form's cases, from the seed and the form's name.
 fn generator(seed: u64, name: &str, config: Config) -> TestRunner {
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    for (i, byte) in name.bytes().enumerate() {
-        key[8 + i % 24] ^= byte;
-    }
-    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+    TestRunner::new_with_rng(config, seeded::generator(seed, &[], name))
 }
 
 #[test]
@@ -138,7 +135,7 @@ fn alignment_faults_match_the_cpu() {
     for (word, sp, expected) in cases {
         let mut registers = [0u64; 34];
         registers[1] = target;
-        registers[31] = sp;
+        registers[CASE_SP] = sp;
         let case = Case {
             word,
             registers,
@@ -225,7 +222,7 @@ fn step_edges_match_the_cpu() {
                 vectors[1] = a;
                 vectors[2] = b;
                 let mut registers = [0u64; 34];
-                registers[31] = DATA + 0x1000;
+                registers[CASE_SP] = DATA + PAGE_SIZE;
                 let case = Case {
                     word,
                     registers,
@@ -247,20 +244,16 @@ fn step_edges_match_the_cpu() {
 fn words_in_no_form_are_illegal_as_on_the_cpu() {
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let seed = setting("WC_LAYER1_SEED", 1);
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    key[8..16].copy_from_slice(b"no form ");
     let mut config = Config::with_cases(count);
     config.failure_persistence = None;
-    let mut runner =
-        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+    let mut runner = TestRunner::new_with_rng(config, seeded::generator(seed, b"no form ", ""));
     let reference = RefCell::new(Cases::start());
     let unallocated = any::<u32>().prop_filter("in a form", |&word| {
         !forms::all().iter().any(|f| word & f.mask == f.value)
     });
     let result = runner.run(&unallocated, |word| {
         let mut registers = [0u64; 34];
-        registers[31] = DATA + 0x1000;
+        registers[CASE_SP] = DATA + PAGE_SIZE;
         let case = Case {
             word,
             registers,
@@ -286,7 +279,7 @@ fn designed_answers_and_faults() {
         let mut registers = [0u64; 34];
         registers[1] = x1;
         registers[2] = x2;
-        registers[31] = DATA + 0x1000;
+        registers[CASE_SP] = DATA + PAGE_SIZE;
         translated(&Case {
             word,
             registers,

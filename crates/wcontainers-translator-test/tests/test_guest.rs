@@ -28,6 +28,7 @@ use wcontainers_guest_cpu::{
 };
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
+use wcontainers_translator_test::runner;
 
 /// The test CPU, with flags or without.
 #[derive(Clone, Copy, Debug)]
@@ -610,7 +611,7 @@ impl<const F: bool> Guest for Test<F> {
         let mut functions = FunctionSection::new();
         functions.function(0);
         let mut exports = ExportSection::new();
-        exports.export("probe", ExportKind::Func, 0);
+        exports.export(wcontainers_guest_cpu::PROBE, ExportKind::Func, 0);
         let mut code = CodeSection::new();
         let mut f = wasm_encoder::Function::new([]);
         f.instructions().i32_const(0).end();
@@ -851,7 +852,9 @@ fn program() -> Vec<u8> {
 fn every_translation_valid<const F: bool>() {
     let blob = program();
     let starts = [0, FUNCTION as u64];
-    validate(&thread_module::<Test<F>>());
+    validate(&thread_module::<Test<F>>(
+        wcontainers_translator::ProgressCount::Absent,
+    ));
     for look_ahead in LOOK_AHEADS {
         for optimise in [Optimise::Speed, Optimise::Size] {
             for offer in [false, true] {
@@ -861,6 +864,7 @@ fn every_translation_valid<const F: bool>() {
                     &starts,
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     (),
                     offer,
                 )
@@ -909,8 +913,6 @@ const DATA: u64 = 0x40000;
 /// The stack pointer at the start, the top of readable and writable pages from 0x70000.
 const STACK: u64 = 0x80000;
 const MEMORY_BYTES: u64 = 0x100000;
-const BLOCK_AT: usize = 0;
-const PERMISSIONS_AT: usize = 4096;
 const SLOTS_AT: usize = 8192;
 
 /// A hook call.
@@ -1021,7 +1023,7 @@ fn read_shared(memory: &SharedMemory, at: usize, into: &mut [u8]) {
 
 fn block(caller: &Caller<'_, Host>) -> Vec<u8> {
     let mut bytes = vec![0; STATE_SIZE];
-    read_shared(&caller.data().state, BLOCK_AT, &mut bytes);
+    read_shared(&caller.data().state, runner::BLOCK_AT as usize, &mut bytes);
     bytes
 }
 
@@ -1078,7 +1080,11 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
             HOOK_STOP,
             move |mut caller: Caller<'_, Host>| -> i32 {
                 let block = block(&caller);
-                write_shared(&caller.data().state, BLOCK_AT + STOP_FLAG, &[0; 4]);
+                write_shared(
+                    &caller.data().state,
+                    runner::BLOCK_AT as usize + STOP_FLAG,
+                    &[0; 4],
+                );
                 let r0 = u64::from_le_bytes(block[..8].try_into().unwrap());
                 let pc = pc_of(&block);
                 record(&mut caller, Event::Stop { pc, r0 });
@@ -1120,6 +1126,7 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                     &[address - LOAD],
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     (),
                     false,
                 )
@@ -1157,7 +1164,11 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                 let mut bytes = block(&caller);
                 let range = hook.state.range();
                 let done = Test::<F>::run_hook(0, &[argument], &mut bytes[range.clone()]);
-                write_shared(&caller.data().state, BLOCK_AT + range.start, &bytes[range]);
+                write_shared(
+                    &caller.data().state,
+                    runner::BLOCK_AT as usize + range.start,
+                    &bytes[range],
+                );
                 done.results[0]
             },
         )
@@ -1203,8 +1214,11 @@ fn instantiate<const F: bool>(
     for (name, value) in [
         (contract::LOAD_ADDRESS, Val::I64(LOAD as i64)),
         (contract::TABLE_BASE, Val::I64(LOAD as i64)),
-        (contract::THREAD_BLOCK, Val::I32(BLOCK_AT as i32)),
-        (contract::PERMISSIONS, Val::I32(PERMISSIONS_AT as i32)),
+        (contract::THREAD_BLOCK, Val::I32(runner::BLOCK_AT as i32)),
+        (
+            contract::PERMISSIONS,
+            Val::I32(runner::PERMISSIONS_AT as i32),
+        ),
         (
             contract::PERMISSION_PAGES,
             Val::I64((MEMORY_BYTES / PAGE_SIZE) as i64),
@@ -1266,7 +1280,7 @@ fn run<const F: bool>(
             events: Vec::new(),
         },
     );
-    let pages = MEMORY_BYTES / 65536;
+    let pages = MEMORY_BYTES / contract::WASM_PAGE_BYTES;
     let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).unwrap();
     store.data_mut().memory = Some(memory);
     for &(address, value) in &start.memory {
@@ -1284,7 +1298,7 @@ fn run<const F: bool>(
             }
         })
         .collect();
-    write_shared(&state, PERMISSIONS_AT, &table);
+    write_shared(&state, runner::PERMISSIONS_AT as usize, &table);
     let mut block = vec![0; STATE_SIZE];
     block[..128].copy_from_slice(&Test::<F>::initial_block(LOAD + starts[0], STACK));
     for &(r, value) in &start.registers {
@@ -1292,7 +1306,7 @@ fn run<const F: bool>(
         block[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
     block[80..88].copy_from_slice(&start.fs.to_le_bytes());
-    write_shared(&state, BLOCK_AT, &block);
+    write_shared(&state, runner::BLOCK_AT as usize, &block);
 
     let mut linker = Linker::new(&engine);
     hooks::<F>(&mut linker);
@@ -1302,14 +1316,18 @@ fn run<const F: bool>(
     let cover = code.len() as i64 * Test::<F>::ALIGN as i64;
     for (name, value) in [
         (contract::TABLE_BASE, Val::I64(LOAD as i64)),
-        (contract::THREAD_BLOCK, Val::I32(BLOCK_AT as i32)),
+        (contract::THREAD_BLOCK, Val::I32(runner::BLOCK_AT as i32)),
         (contract::SLOTS, Val::I32(SLOTS_AT as i32)),
         (contract::SLOTS_COVER, Val::I64(cover)),
     ] {
         let global = constant(&mut store, value);
         linker.define(&store, contract::ENV, name, global).unwrap();
     }
-    let thread_module = Module::new(&engine, thread_module::<Test<F>>()).unwrap();
+    let thread_module = Module::new(
+        &engine,
+        thread_module::<Test<F>>(wcontainers_translator::ProgressCount::Absent),
+    )
+    .unwrap();
     let thread = linker.instantiate(&mut store, &thread_module).unwrap();
     store.data_mut().thread = Some(thread);
 
@@ -1319,6 +1337,7 @@ fn run<const F: bool>(
         starts,
         look_ahead,
         optimise,
+        wcontainers_translator::ProgressCount::Absent,
         (),
         false,
     )
@@ -1337,7 +1356,7 @@ fn run<const F: bool>(
     run.call(&mut store, ()).expect("the thread runs");
 
     let mut block = vec![0; STATE_SIZE];
-    read_shared(&state, BLOCK_AT, &mut block);
+    read_shared(&state, runner::BLOCK_AT as usize, &mut block);
     Ran {
         block,
         memory: memory.data(&store).to_vec(),

@@ -13,8 +13,10 @@ use serde_json::json;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::oci_spec::runtime::Spec;
-use wcontainers_runtime::{Ending, Image, Machine, Runtime, RuntimeSettings, System, base_spec};
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Origin, Tuning};
+use wcontainers_runtime::{
+    Container, Ending, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Step, base_spec,
+};
+use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorSettings};
 
 const IMAGE: &str = "alpine:3.22";
 const PIPELINE: &str = "cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; \
@@ -128,18 +130,82 @@ fn reference(command: &str) -> Outcome {
     }
 }
 
-/// Runs `spec` on `image` through the public surface, with the cache in `cache`.
-fn ours(spec: &Spec, image: &Image, cache: Option<PathBuf>) -> (Outcome, Vec<(bool, Origin)>) {
+/// The look-ahead `LOOK_AHEAD` names, as in the kernel tests: `full` (also when unset), `none`, or
+/// `bounded`, whose N (1 to the translator's default bound) is drawn from `LOOK_AHEAD_SEED` (0 if
+/// unset) and printed.
+fn look_ahead() -> LookAhead {
+    match std::env::var("LOOK_AHEAD").as_deref() {
+        Err(_) | Ok("full") => LookAhead::Full,
+        Ok("none") => LookAhead::None,
+        Ok("bounded") => {
+            let seed: u64 = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
+                seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
+            });
+            let drawn = blake3::hash(&seed.to_le_bytes()).as_bytes()[..size_of::<u32>()]
+                .try_into()
+                .map(u32::from_le_bytes)
+                .expect("a hash is longer than a word");
+            let n = drawn % BOUND + 1;
+            eprintln!("look-ahead bounded {n} (LOOK_AHEAD_SEED {seed})");
+            LookAhead::Bounded(n)
+        }
+        Ok(other) => panic!("LOOK_AHEAD is full, none or bounded, not {other}"),
+    }
+}
+
+/// The command line program's `--look-ahead` for [`look_ahead`].
+fn look_ahead_argument() -> String {
+    match look_ahead() {
+        LookAhead::Full => "full".to_string(),
+        LookAhead::None => "none".to_string(),
+        LookAhead::Bounded(n) => n.to_string(),
+    }
+}
+
+/// A container of `spec` on `image` through the public surface, at [`look_ahead`], writing into the
+/// two streams.
+fn container(
+    spec: &Spec,
+    image: &Image,
+    cache: Option<PathBuf>,
+    stdout: &Captured,
+    stderr: &Captured,
+) -> Container<CpuSide<Arm64>, LocalSystem> {
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache });
-    let (stdout, stderr) = (Captured::default(), Captured::default());
-    let system = System::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
-    let tuning = Tuning {
-        look_ahead: LookAhead::Full,
+    let system = LocalSystem::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
+    let translator_settings = TranslatorSettings {
+        look_ahead: look_ahead(),
         optimise: Optimise::Speed,
     };
-    let mut container = runtime
-        .container(spec, image, &tuning, &Machine { offer: () }, system)
-        .unwrap();
+    runtime
+        .container(
+            spec,
+            image,
+            &translator_settings,
+            &GuestMachine { offer: () },
+            system,
+        )
+        .unwrap()
+}
+
+/// What a shell reports for a wait status.
+fn outcome(status: i32, stdout: &Captured, stderr: &Captured) -> Outcome {
+    let exit_code = if status & 0x7f == 0 {
+        (status >> 8) & 0xff
+    } else {
+        128 + (status & 0x7f)
+    };
+    Outcome {
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+        exit_code,
+    }
+}
+
+/// Runs `spec` on `image` through the public surface, with the cache in `cache`.
+fn ours(spec: &Spec, image: &Image, cache: Option<PathBuf>) -> (Outcome, Vec<(bool, Origin)>) {
+    let (stdout, stderr) = (Captured::default(), Captured::default());
+    let mut container = container(spec, image, cache, &stdout, &stderr);
     let Ok(Ending::Finished { status }) = container.run();
     let origins = container
         .back_end()
@@ -147,17 +213,7 @@ fn ours(spec: &Spec, image: &Image, cache: Option<PathBuf>) -> (Outcome, Vec<(bo
         .iter()
         .map(|t| (t.at_run_time, t.origin))
         .collect();
-    let exit_code = if status & 0x7f == 0 {
-        (status >> 8) & 0xff
-    } else {
-        128 + (status & 0x7f)
-    };
-    let outcome = Outcome {
-        stdout: stdout.text(),
-        stderr: stderr.text(),
-        exit_code,
-    };
-    (outcome, origins)
+    (outcome(status, &stdout, &stderr), origins)
 }
 
 fn with_args(mut spec: Spec, args: &[&str]) -> Spec {
@@ -458,6 +514,13 @@ fn the_guest_sees_the_honoured_values() {
     }
     assert_eq!(seen[0][1], "/");
     assert_eq!(seen.len(), 1 + given.len() + readonly.len(), "{mounts}");
+    // Made in the configuration's order.
+    let destinations: Vec<&str> = seen[1..=given.len()].iter().map(|line| line[1]).collect();
+    let listed: Vec<&str> = given
+        .iter()
+        .map(|mount| mount["destination"].as_str().unwrap())
+        .collect();
+    assert_eq!(destinations, listed, "{mounts}");
 }
 
 /// The child of [`a_second_process_starts_from_the_cache`]: runs the pipeline with the cache in
@@ -535,11 +598,11 @@ fn a_second_process_starts_from_the_cache() {
 }
 
 /// The command line program runs the pipeline from the OCI image and from the plain tar as the
-/// reference does, and fails naming a refused field.
+/// reference does, and fails naming a refused field, having warned of a property it ignored.
 #[test]
 fn the_command_line_program_runs_a_container() {
     let (layout, files) = images();
-    let program = env!("CARGO_BIN_EXE_wcontainers");
+    let program = env!("CARGO_BIN_EXE_wcon");
     let expected = reference(PIPELINE);
     for source in [
         ["--oci", layout.to_str().unwrap()],
@@ -547,6 +610,7 @@ fn the_command_line_program_runs_a_container() {
     ] {
         let output = Command::new(program)
             .args(source)
+            .args(["--look-ahead", &look_ahead_argument()])
             .args(["--", "sh", "-c", PIPELINE])
             .output()
             .unwrap();
@@ -560,7 +624,9 @@ fn the_command_line_program_runs_a_container() {
     let mut process = spec.process().clone().unwrap();
     process.set_terminal(Some(true));
     spec.set_process(Some(process));
-    spec.save(&config).unwrap();
+    let mut json = serde_json::to_value(&spec).unwrap();
+    json["futureField"] = json!(true);
+    std::fs::write(&config, serde_json::to_vec(&json).unwrap()).unwrap();
     let output = Command::new(program)
         .args([
             "--tar",
@@ -576,9 +642,10 @@ fn the_command_line_program_runs_a_container() {
         stderr.contains("process.terminal is not supported"),
         "{stderr}"
     );
+    assert!(stderr.contains("ignored: futureField: 1"), "{stderr}");
 }
 
-/// The shipped outside's timer ends a free turn at the kernel's slice: a process that never makes a
+/// The local system's timer ends a free turn at the kernel's slice: a process that never makes a
 /// system call does not keep the shell from going on.
 #[test]
 fn a_busy_process_is_preempted_by_the_timer() {
@@ -588,4 +655,203 @@ fn a_busy_process_is_preempted_by_the_timer() {
     let spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
     let (outcome, _) = ours(&spec, &image, None);
     assert_eq!(outcome, reference(command));
+}
+
+/// A caller's own loop: [`Container::step`] until the container finishes, waiting with
+/// [`Container::idle`] at each idle step, gives the reference's output.
+#[test]
+fn a_container_is_stepped_from_the_callers_loop() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let command = "echo a; sleep 0.3; echo b | tr b c; exit 4";
+    let spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
+    let (stdout, stderr) = (Captured::default(), Captured::default());
+    let mut container = container(&spec, &image, None, &stdout, &stderr);
+    let (mut steps, mut idles) = (0, 0);
+    let status = loop {
+        steps += 1;
+        match container.step() {
+            Ok(Step::Ran) => {}
+            Ok(Step::Idle { until_nanoseconds }) => {
+                idles += 1;
+                container.idle(until_nanoseconds);
+            }
+            Ok(Step::Finished { status }) => break status,
+            Ok(Step::Ended(never)) | Err(never) => match never {},
+        }
+    };
+    println!("stepped: {steps} steps, {idles} idle");
+    assert!(idles > 0, "the sleep waits at an idle step");
+    assert_eq!(outcome(status, &stdout, &stderr), reference(command));
+}
+
+/// The threaded program tests/programs/threaded.c, built for linux/arm64 with zig's C compiler.
+fn threaded_program() -> PathBuf {
+    let directory = scratch().join(format!("threaded-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let program = directory.join("threaded");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/programs/threaded.c");
+    let built = Command::new("zig")
+        .args([
+            "cc",
+            "-target",
+            "aarch64-linux-musl",
+            "-O2",
+            "-static",
+            "-s",
+            "-o",
+        ])
+        .arg(&program)
+        .arg(&source)
+        .output()
+        .expect("running zig cc; run the tests inside `nix develop`");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    program
+}
+
+/// The plain tar's files with `program` added as `/wc/<its name>`.
+fn tar_with(files: &Path, program: &Path) -> PathBuf {
+    let name = program.file_name().unwrap().to_str().unwrap();
+    let combined = program.with_extension("tar");
+    let mut builder = tar::Builder::new(std::fs::File::create(&combined).unwrap());
+    let mut archive = tar::Archive::new(std::fs::File::open(files).unwrap());
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let header = entry.header().clone();
+        builder.append(&header, &mut entry).unwrap();
+    }
+    let mut directory = tar::Header::new_gnu();
+    directory.set_entry_type(tar::EntryType::Directory);
+    directory.set_mode(0o755);
+    directory.set_size(0);
+    directory.set_uid(0);
+    directory.set_gid(0);
+    directory.set_mtime(0);
+    builder
+        .append_data(&mut directory, "wc/", std::io::empty())
+        .unwrap();
+    let bytes = std::fs::read(program).unwrap();
+    let mut file = tar::Header::new_gnu();
+    file.set_mode(0o755);
+    file.set_size(bytes.len() as u64);
+    file.set_uid(0);
+    file.set_gid(0);
+    file.set_mtime(0);
+    builder
+        .append_data(&mut file, format!("wc/{name}"), bytes.as_slice())
+        .unwrap();
+    builder.finish().unwrap();
+    combined
+}
+
+/// Threads in free turns through the public surface, as on the reference: turns taken in order
+/// through a mutex and a condition variable, a contended counter, a thread that spins without system
+/// calls until another sets a flag (only the system's timer ends its turn), a timer signal sent to
+/// one chosen thread, and the process ended by one thread while another waits in `read` and the first
+/// in `pthread_join`.
+#[test]
+fn a_threaded_program_matches_the_reference() {
+    let (_, files) = images();
+    let program = threaded_program();
+    let directory = program.parent().unwrap().to_str().unwrap();
+    let output = Command::new("docker")
+        .args(["run", "--rm", "--platform", "linux/arm64", "-v"])
+        .arg(format!("{directory}:/wc:ro"))
+        .args([IMAGE, "/wc/threaded"])
+        .output()
+        .unwrap();
+    let theirs = Outcome {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap(),
+    };
+    assert_eq!(theirs.exit_code, 3, "{theirs:?}");
+    let image = Image::tar(&tar_with(files, &program)).unwrap();
+    let spec = with_args(image.spec().unwrap(), &["/wc/threaded"]);
+    let (ours, _) = ours(&spec, &image, None);
+    assert_eq!(ours, theirs);
+}
+
+/// An empty host name is no host name, as runc sets none then: the guest sees `localhost`.
+#[test]
+fn an_empty_host_name_is_localhost() {
+    let (_, files) = images();
+    let image = Image::tar(files).unwrap();
+    let mut spec = with_args(
+        image.spec().unwrap(),
+        &["sh", "-c", "uname -n; cat /etc/hostname"],
+    );
+    spec.set_hostname(Some(String::new()));
+    let (outcome, _) = ours(&spec, &image, None);
+    assert_eq!(outcome.stdout, "localhost\nlocalhost\n");
+}
+
+/// The files Docker writes in every container are there from either form of image, as on the
+/// reference: the host name, a hosts line for it, and a name server.
+#[test]
+fn dockers_files_are_written_from_either_image() {
+    let (layout, files) = images();
+    let command = "for f in hostname hosts resolv.conf; do ls -l /etc/$f | cut -c1-10; done; \
+                   [ \"$(cat /etc/hostname)\" = \"$(uname -n)\" ] && echo named; \
+                   tail -n 1 /etc/hosts | grep -c \"[[:space:]]$(uname -n)\\$\"; \
+                   grep -q ^nameserver /etc/resolv.conf && echo resolver";
+    let expected = reference(command);
+    assert_eq!(
+        expected.stdout,
+        "-rw-r--r--\n-rw-r--r--\n-rw-r--r--\nnamed\n1\nresolver\n"
+    );
+    for image in [
+        Image::oci(layout, "arm64").unwrap(),
+        Image::tar(files).unwrap(),
+    ] {
+        let spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
+        assert_eq!(ours(&spec, &image, None).0, expected);
+    }
+}
+
+/// A program name with no slash that is not in `PATH` makes no container, as runc refuses it, even
+/// when the working directory holds a file of that name.
+#[test]
+fn a_program_not_in_the_path_is_not_found() {
+    let (_, files) = images();
+    let image = Image::tar(files).unwrap();
+    let mut spec = with_args(image.spec().unwrap(), &["ls", "/etc/alpine-release"]);
+    let mut process = spec.process().clone().unwrap();
+    process.set_env(Some(vec!["PATH=/nonexistent".to_string()]));
+    process.set_cwd("/bin".into());
+    spec.set_process(Some(process));
+    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: None });
+    let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
+    let translator_settings = TranslatorSettings {
+        look_ahead: look_ahead(),
+        optimise: Optimise::Speed,
+    };
+    match runtime.container(
+        &spec,
+        &image,
+        &translator_settings,
+        &GuestMachine { offer: () },
+        system,
+    ) {
+        Err(wcontainers_runtime::Error::NotFound(name)) => assert_eq!(name, "ls"),
+        Err(other) => panic!("{other}"),
+        Ok(_) => panic!("ls was run from the working directory"),
+    }
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--platform",
+            "linux/arm64",
+            "-e",
+            "PATH=/nonexistent",
+        ])
+        .args(["-w", "/bin", IMAGE, "ls", "/etc/alpine-release"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(127));
 }

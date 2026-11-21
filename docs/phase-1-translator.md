@@ -320,6 +320,27 @@ thread in a loop never gives other threads a turn, and Ctrl-C or a timer signal 
 
 In phase one the stand-in behind the hook clears the flag and returns.
 
+### The progress count
+
+For exact replay (`ReplayDeterminism::Exact`) translated code keeps a count defined on the guest's own
+instructions, the same at every look-ahead and on every output: one event for every executed direct jump
+to its own address or below (taken or not), call, return, and jump through a register or memory. Asked for
+per translation (`ProgressCount::Kept`); without it the output is what it was.
+
+- **Where it lives.** The u64 at the stop flag's place becomes the limit, and the count is the u64 after it
+  (offsets 800 and 808 on ARM64, `contract::progress_limit_offset` and `progress_count_offset`). Whenever
+  registers are saved the block holds the count. In translated code the count is a piece's last parameter
+  and last result, so a call passes it and gets it back with no memory access, at every look-ahead. A tail
+  call off the hot path (to a stop, to a loop's checked copy, to exact code) passes it through the block,
+  and code that carries on after a stop or a system call loads it from there.
+- **The check.** The stop check stays where it is, and tests "count >= limit" instead of the flag. Raising
+  the stop writes a limit of 0.
+- **Positions.** A stop is at (count, pc), the count being the events before the instruction at pc. Between
+  two events the pc only grows. A position logged at any look-ahead is reached again from any other: run
+  with the position's count as the limit (lowered until the first stop is at or before the position), then
+  carry on at look-ahead none, which checks at every instruction, until count and pc are the position's
+  (`progress::reach` in the test crate).
+
 ### Page permissions
 
 Linux lets a program say what each 4 KiB page of its memory allows: reading, writing, both or
@@ -388,6 +409,26 @@ Phase-one reasons: translated at run time; left to an address; continued after s
 through a register not recognised; software fused multiply-add; unsupported instruction reached;
 system call not implemented; exact floating point requested; address above the host's cap; stopped by
 the flag; memory fault; fault without exact registers.
+
+### Two workarounds for what WebAssembly lacks
+
+Both are large costs that a future WebAssembly could remove. Each stays behind a small set of named functions
+in the emitters, so taking it out is a local change.
+
+- **The inline stop check**, because nothing can interrupt running WebAssembly code from outside. If the
+  platform gains a way to interrupt it (as native code already has, with a signal), the check goes. Where
+  the code changes: `push_stop_wanted` in `code.rs` (the test, flag or count), called by `stop_check` in
+  `code.rs` (look-ahead none) and `stop_check_or_deep` in `full.rs` (full and bounded), whose entry check is
+  chosen by `FullEmitter::entry_check`. With the progress count of `ReplayDeterminism::Exact`, the count is
+  merged into this same check ("count; if count >= limit, leave"), so the count would stay where the flag
+  test goes. Where nothing else can run while
+  the guest runs (one thread, no shared memory), the count is always emitted, as the only bound.
+- **The per-page permission check**, because WebAssembly memory has no page protection with catchable
+  faults. If the platform gains it (the "memory control" proposal is the one to watch), the check goes.
+  Where the code changes: `permission_fast`, `permission_exact`, `permission_range` and
+  `permission_checker` in `code.rs`, called from both emitters, and the reasoning in `full.rs` that drops
+  checks (kept pages, frame checks and proven loops), which would go with them. `Omit::permissions`
+  already builds the output without the checks, for measuring.
 
 ## 8. Where ARM64 and WebAssembly differ
 

@@ -1,6 +1,7 @@
 //! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel that
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::ops::Range;
@@ -16,16 +17,17 @@ use wcontainers_abi::{
 };
 use wcontainers_arm64::Arm64;
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
-use wcontainers_translator::contract::{self, Reason};
+use wcontainers_translator::contract::{self, Reason, SLOT_BYTES, WASM_PAGE_BYTES};
+use wcontainers_translator::contract::{progress_count_offset, progress_limit_offset};
 use wcontainers_translator::{
-    LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
+    LookAhead, Omit, Optimise, ProgressCount, Translation, translate_in_modules, translate_omitting,
 };
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Where the thread block sits in the state memory.
-const BLOCK_AT: u32 = 0;
+pub const BLOCK_AT: u32 = 0;
 /// Where the permission table starts in the state memory.
-const PERMISSIONS_AT: u32 = 4096;
+pub const PERMISSIONS_AT: u32 = 4096;
 
 /// What a system call does in this runner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +49,8 @@ pub enum Stopped {
     Finished(i32),
     /// A fault the abi's exits do not name yet (x86-64's, added to the abi with its kernel side).
     Fault(Fault),
+    /// A pause function ended the run at a stop.
+    Ended,
 }
 
 /// A fault of a guest CPU other than those the abi's exits name.
@@ -100,6 +104,31 @@ impl Paused<'_, '_> {
         raise_stop_flag(self.caller);
     }
 
+    /// The progress count now.
+    pub fn progress_count(&mut self) -> u64 {
+        read_u64(self.caller, progress_count_offset::<Arm64>())
+    }
+
+    /// The progress count the thread stops at from now on, after this stop.
+    pub fn set_progress_limit(&mut self, limit: u64) {
+        self.caller.data_mut().limit = limit;
+    }
+
+    /// At a stop: the thread leaves and carries on from its registers with only pieces made at run time at
+    /// look-ahead none, which check at every instruction.
+    pub fn carry_on_at_none(&mut self) {
+        let host = self.caller.data_mut();
+        host.loads.clear();
+        host.picks.clear();
+        host.run_time = Box::new(|| LookAhead::None);
+        host.lose_stack = true;
+    }
+
+    /// At a stop: the thread leaves, and `run` gives [`Stopped::Ended`].
+    pub fn end_run(&mut self) {
+        stop(self.caller, Stopped::Ended);
+    }
+
     /// At a stop: the WebAssembly stack is lost here. The thread leaves, and carries on from its registers in
     /// a fresh thread instance.
     pub fn lose_stack(&mut self) {
@@ -132,9 +161,9 @@ pub struct Host {
     /// What the guest wrote to file descriptors 1 and 2.
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    counters: HashMap<u32, (u64, Duration)>,
+    counters: FxHashMap<u32, (u64, Duration)>,
     /// How often each slow path was taken at each address or number.
-    places: HashMap<(u32, u64), u64>,
+    places: FxHashMap<(u32, u64), u64>,
     warnings: Vec<Warning<'static>>,
     /// Where the code of each blob loaded is, as guest addresses.
     code_ranges: Vec<Range<u64>>,
@@ -173,6 +202,10 @@ pub struct Host {
     pause: Option<PauseFunction>,
     /// No limit on instances and tables: each piece made at run time and each fresh thread instance is one.
     limits: wasmtime::StoreLimits,
+    /// Whether translations keep the progress count.
+    progress: ProgressCount,
+    /// With the progress count, the limit the stop hook puts back.
+    limit: u64,
 }
 
 pub struct Machine {
@@ -188,13 +221,21 @@ fn engine() -> Engine {
     ENGINE.get_or_init(new_engine).clone()
 }
 
-/// The thread module, compiled once.
-fn thread_module(engine: &Engine) -> Module {
-    static MODULE: OnceLock<Module> = OnceLock::new();
-    MODULE
+/// The thread module for code with or without the progress count, each compiled once.
+fn thread_module(engine: &Engine, progress: ProgressCount) -> Module {
+    static ABSENT: OnceLock<Module> = OnceLock::new();
+    static KEPT: OnceLock<Module> = OnceLock::new();
+    let module = match progress {
+        ProgressCount::Absent => &ABSENT,
+        ProgressCount::Kept => &KEPT,
+    };
+    module
         .get_or_init(|| {
-            Module::new(engine, wcontainers_translator::thread_module::<Arm64>())
-                .expect("thread module")
+            Module::new(
+                engine,
+                wcontainers_translator::thread_module::<Arm64>(progress),
+            )
+            .expect("thread module")
         })
         .clone()
 }
@@ -249,7 +290,7 @@ impl Machine {
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
         let engine = engine();
         // The table covers the whole memory, and one more byte, always zero, follows it.
-        let permission_pages = memory_bytes.div_ceil(65536) * 65536 / PAGE_SIZE;
+        let permission_pages = memory_bytes.div_ceil(WASM_PAGE_BYTES) * WASM_PAGE_BYTES / PAGE_SIZE;
         let mut store = Store::new(
             &engine,
             Host {
@@ -260,8 +301,8 @@ impl Machine {
                 snapshot: RegisterBlock::ZERO,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
-                counters: HashMap::new(),
-                places: HashMap::new(),
+                counters: FxHashMap::default(),
+                places: FxHashMap::default(),
                 warnings: Vec::new(),
                 code_ranges: Vec::new(),
                 exact_pieces: HashMap::new(),
@@ -288,14 +329,18 @@ impl Machine {
                     .tables(usize::MAX)
                     .memories(usize::MAX)
                     .build(),
+                progress: ProgressCount::Absent,
+                limit: u64::MAX,
             },
         );
         store.limiter(|host| &mut host.limits);
-        let pages = memory_bytes.div_ceil(65536);
+        let pages = memory_bytes.div_ceil(WASM_PAGE_BYTES);
         let memory =
             Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");
-        let slots_at = (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(4);
-        let state_pages = (slots_at + 4 * u64::from(slots)).div_ceil(65536) as u32;
+        let slots_at =
+            (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(SLOT_BYTES as u64);
+        let state_pages =
+            (slots_at + SLOT_BYTES as u64 * u64::from(slots)).div_ceil(WASM_PAGE_BYTES) as u32;
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
@@ -320,7 +365,7 @@ impl Machine {
         host.exact_pieces.clear();
         host.placed.clear();
         host.next_slot = contract::EXACT_SLOT as u32 + 1;
-        let entries = host.slots as usize * 4;
+        let entries = host.slots as usize * SLOT_BYTES;
         write_shared(
             host.state.as_ref().unwrap(),
             host.slots_at as usize,
@@ -347,7 +392,6 @@ impl Machine {
         seed: u64,
     ) {
         use proptest::prelude::RngExt;
-        use proptest::test_runner::{RngAlgorithm, TestRng};
         self.place(bytes, code.clone(), load_address);
         let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for (look_ahead, optimise, starts) in translations {
@@ -362,9 +406,7 @@ impl Machine {
             pieces.push(instantiate(&mut self.store, &load, false));
             self.store.data_mut().loads.push(load);
         }
-        let mut key = [0u8; 32];
-        key[..8].copy_from_slice(&seed.to_le_bytes());
-        let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &key);
+        let mut rng = crate::seeded::generator(seed, &[], "");
         let first = self.store.data().loads.len() - translations.len();
         let mut addresses: Vec<u64> = pieces.iter().flat_map(|p| p.keys().copied()).collect();
         addresses.sort_unstable();
@@ -468,6 +510,7 @@ impl Machine {
             starts,
             LookAhead::Full,
             host.optimise,
+            host.progress,
             host.facts,
             (),
             module_bytes,
@@ -523,6 +566,42 @@ impl Machine {
         self.store.data_mut().run_time = Box::new(choose);
     }
 
+    /// Translations made from now on keep the progress count, from 0, with no limit: call before any load.
+    pub fn keep_progress_count(&mut self) {
+        self.store.data_mut().progress = ProgressCount::Kept;
+        self.run = thread_instance(&mut self.store);
+        let block = BLOCK_AT as usize;
+        write_shared(
+            &self.state,
+            block + progress_limit_offset::<Arm64>(),
+            &u64::MAX.to_le_bytes(),
+        );
+        write_shared(
+            &self.state,
+            block + progress_count_offset::<Arm64>(),
+            &0u64.to_le_bytes(),
+        );
+    }
+
+    /// With the progress count, the thread stops at the first stop check where the count is at least `limit`,
+    /// and at every one after it until a pause function sets another.
+    pub fn set_progress_limit(&mut self, limit: u64) {
+        self.store.data_mut().limit = limit;
+        let at = BLOCK_AT as usize + progress_limit_offset::<Arm64>();
+        write_shared(&self.state, at, &limit.to_le_bytes());
+    }
+
+    /// The progress count now.
+    pub fn progress_count(&self) -> u64 {
+        let mut count = [0u8; size_of::<u64>()];
+        read_shared(
+            &self.state,
+            BLOCK_AT as usize + progress_count_offset::<Arm64>(),
+            &mut count,
+        );
+        u64::from_le_bytes(count)
+    }
+
     /// From now on the thread stops at every stop check it reaches (each counted), and carries on each time.
     pub fn stop_at_every_check(&mut self) {
         self.store.data_mut().stop_everywhere = true;
@@ -531,11 +610,7 @@ impl Machine {
 
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
     pub fn raise_stop_flag(&self) {
-        write_shared(
-            &self.state,
-            BLOCK_AT as usize + STOP_FLAG_OFFSET,
-            &1u32.to_le_bytes(),
-        );
+        write_stop(&self.state, self.store.data().progress, None);
     }
 
     /// Something another host thread can call to raise the stop flag while the guest runs.
@@ -788,7 +863,7 @@ fn code_at(caller: &mut Caller<'_, Host>, pc: u64) -> Vec<u8> {
     let memory = caller.data().memory.unwrap();
     let data = memory.data(&*caller);
     let at = (pc as usize).min(data.len());
-    data[at..(at + 16).min(data.len())].to_vec()
+    data[at..(at + Arm64::MAX_LENGTH as usize).min(data.len())].to_vec()
 }
 
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address
@@ -824,11 +899,31 @@ fn stop(caller: &mut Caller<'_, Host>, stopped: Stopped) {
 
 fn raise_stop_flag(caller: &Caller<'_, Host>) {
     let state = caller.data().state.clone().unwrap();
-    write_shared(
-        &state,
-        BLOCK_AT as usize + STOP_FLAG_OFFSET,
-        &1u32.to_le_bytes(),
-    );
+    write_stop(&state, caller.data().progress, None);
+}
+
+/// Raise the stop (`limit` none), or clear it: the stop flag, or with the progress count the limit (0 to
+/// raise it).
+fn write_stop(state: &SharedMemory, progress: ProgressCount, limit: Option<u64>) {
+    let block = BLOCK_AT as usize;
+    match progress {
+        ProgressCount::Absent => {
+            let flag = u32::from(limit.is_none());
+            write_shared(state, block + STOP_FLAG_OFFSET, &flag.to_le_bytes());
+        }
+        ProgressCount::Kept => {
+            let at = block + progress_limit_offset::<Arm64>();
+            write_shared(state, at, &limit.unwrap_or(0).to_le_bytes());
+        }
+    }
+}
+
+/// A u64 of the thread block, at `offset` from its start.
+fn read_u64(caller: &Caller<'_, Host>, offset: usize) -> u64 {
+    let state = caller.data().state.clone().unwrap();
+    let mut value = [0u8; size_of::<u64>()];
+    read_shared(&state, BLOCK_AT as usize + offset, &mut value);
+    u64::from_le_bytes(value)
 }
 
 fn hooks(linker: &mut Linker<Host>) {
@@ -866,17 +961,20 @@ fn hooks(linker: &mut Linker<Host>) {
     linker
         .func_wrap(HOOKS, HOOK_STOP, |mut caller: Caller<'_, Host>| -> i32 {
             let state = caller.data().state.clone().unwrap();
-            write_shared(
-                &state,
-                BLOCK_AT as usize + STOP_FLAG_OFFSET,
-                &0u32.to_le_bytes(),
-            );
+            let host = caller.data();
+            write_stop(&state, host.progress, Some(host.limit));
             // The runner raised the flag itself to make the thread leave.
             if caller.data().stopped.is_some() {
                 return 1;
             }
             // Raised from outside: the stand-in clears it and the thread carries on.
-            let pc = snapshot(&mut caller).pc;
+            let mut pc = [0u8; size_of::<u64>()];
+            read_shared(
+                &state,
+                BLOCK_AT as usize + core::mem::offset_of!(RegisterBlock, pc),
+                &mut pc,
+            );
+            let pc = u64::from_le_bytes(pc);
             slow_path(
                 caller.data_mut(),
                 Reason::StoppedByFlag.number(),
@@ -887,7 +985,8 @@ fn hooks(linker: &mut Linker<Host>) {
                 raise_stop_flag(&caller);
             }
             pause(&mut caller, Pause::Stop);
-            i32::from(caller.data().lose_stack)
+            let host = caller.data();
+            i32::from(host.lose_stack || host.stopped.is_some())
         })
         .unwrap();
     linker
@@ -1112,7 +1211,7 @@ fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtim
 /// translates the code again.
 fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
     let line = address & !63;
-    for at in (line..line + 64).step_by(4) {
+    for at in (line..line + 64).step_by(Arm64::ALIGN as usize) {
         caller.data_mut().exact_pieces.remove(&at);
         set_slot(caller.data(), at, 0);
     }
@@ -1120,19 +1219,20 @@ fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
 
 /// The guest addresses the array of slots covers.
 fn covered(host: &Host) -> Range<u64> {
-    host.table_base..host.table_base + 4 * u64::from(host.slots)
+    host.table_base..host.table_base + Arm64::ALIGN * u64::from(host.slots)
 }
 
 /// Where in the state memory the array holds the slot for an address, if it covers it.
 fn slot_entry(host: &Host, address: u64) -> Option<usize> {
-    (covered(host).contains(&address) && address.is_multiple_of(4))
-        .then(|| host.slots_at as usize + (address - host.table_base) as usize)
+    (covered(host).contains(&address) && address.is_multiple_of(Arm64::ALIGN)).then(|| {
+        host.slots_at as usize + ((address - host.table_base) / Arm64::ALIGN) as usize * SLOT_BYTES
+    })
 }
 
 /// The lookup table slot of the piece for an address, 0 for none.
 fn slot(host: &Host, address: u64) -> u32 {
     slot_entry(host, address).map_or(0, |at| {
-        let mut bytes = [0; 4];
+        let mut bytes = [0; SLOT_BYTES];
         read_shared(host.state.as_ref().unwrap(), at, &mut bytes);
         u32::from_le_bytes(bytes)
     })
@@ -1171,6 +1271,7 @@ fn translate_load(
         starts,
         look_ahead,
         optimise,
+        host.progress,
         host.facts,
         (),
         omit,
@@ -1275,12 +1376,12 @@ fn instantiate(
         (contract::PERMISSIONS, Val::I32(PERMISSIONS_AT as i32)),
         (
             contract::PERMISSION_PAGES,
-            Val::I64((pages * 65536 / PAGE_SIZE) as i64),
+            Val::I64((pages * WASM_PAGE_BYTES / PAGE_SIZE) as i64),
         ),
         (contract::SLOTS, Val::I32(store.data().slots_at as i32)),
         (
             contract::SLOTS_COVER,
-            Val::I64(4 * i64::from(store.data().slots)),
+            Val::I64(Arm64::ALIGN as i64 * i64::from(store.data().slots)),
         ),
     ] {
         let ty = wasmtime::GlobalType::new(value.ty(&store).unwrap(), wasmtime::Mutability::Const);
@@ -1322,7 +1423,7 @@ fn instantiate(
 fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
     let engine = store.engine().clone();
     let host = store.data();
-    let module = thread_module(&engine);
+    let module = thread_module(&engine, host.progress);
     let state = host.state.clone().unwrap();
     let (table_base, slots_at, slots) = (host.table_base, host.slots_at, host.slots);
     let mut linker = Linker::new(&engine);
@@ -1339,7 +1440,10 @@ fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
         (contract::TABLE_BASE, Val::I64(table_base as i64)),
         (contract::THREAD_BLOCK, Val::I32(BLOCK_AT as i32)),
         (contract::SLOTS, Val::I32(slots_at as i32)),
-        (contract::SLOTS_COVER, Val::I64(4 * i64::from(slots))),
+        (
+            contract::SLOTS_COVER,
+            Val::I64(Arm64::ALIGN as i64 * i64::from(slots)),
+        ),
     ] {
         let global = constant(store, value);
         linker.define(&*store, contract::ENV, name, global).unwrap();
@@ -1362,12 +1466,11 @@ fn file(host: &mut Host, fd: u64) -> Option<&mut Vec<u8>> {
 
 /// The stand-in kernel.
 fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
-    const EBADF: i64 = 9;
-    const EFAULT: i64 = 14;
-    const ENOSYS: i64 = 38;
-    const EINVAL: i64 = 22;
-    // Linux's limit on the vectors of one writev.
-    const IOV_MAX: u64 = 1024;
+    // The error numbers, the vector limit and `iovec` are the same on every 64 bit architecture Linux has, so
+    // the host's are the guest's.
+    use linux_raw_sys::errno::{EBADF, EFAULT, EINVAL, ENOSYS};
+    use linux_raw_sys::general::{UIO_MAXIOV, iovec};
+    let error = |errno: u32| -i64::from(errno);
     let [a0, a1, a2, ..] = call.arguments;
     let memory = caller.data().memory.unwrap();
     // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
@@ -1397,10 +1500,10 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
         // write
         64 => {
             if file(caller.data_mut(), a0).is_none() {
-                return -EBADF;
+                return error(EBADF);
             }
             let Some(bytes) = read(caller, a1, a2) else {
-                return -EFAULT;
+                return error(EFAULT);
             };
             file(caller.data_mut(), a0)
                 .unwrap()
@@ -1410,31 +1513,36 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
         // writev
         66 => {
             if file(caller.data_mut(), a0).is_none() {
-                return -EBADF;
+                return error(EBADF);
             }
             // Linux takes the vector count as a 32 bit number.
             let count = u64::from(a2 as u32);
-            if count > IOV_MAX {
-                return -EINVAL;
+            if count > u64::from(UIO_MAXIOV) {
+                return error(EINVAL);
             }
-            let Some(vectors) = read(caller, a1, 16 * count) else {
-                return -EFAULT;
+            let Some(vectors) = read(caller, a1, size_of::<iovec>() as u64 * count) else {
+                return error(EFAULT);
             };
             let vectors: Vec<(u64, u64)> = vectors
-                .chunks(16)
+                .chunks(size_of::<iovec>())
                 .map(|v| {
-                    let half = |at: usize| u64::from_le_bytes(v[at..at + 8].try_into().unwrap());
-                    (half(0), half(8))
+                    let word = |at: usize| {
+                        u64::from_le_bytes(v[at..at + size_of::<u64>()].try_into().unwrap())
+                    };
+                    (
+                        word(std::mem::offset_of!(iovec, iov_base)),
+                        word(std::mem::offset_of!(iovec, iov_len)),
+                    )
                 })
                 .collect();
             // A length that is negative as a signed number is invalid, checked before anything is read.
             if vectors.iter().any(|&(_, length)| (length as i64) < 0) {
-                return -EINVAL;
+                return error(EINVAL);
             }
             let mut gathered = Vec::new();
             for (base, length) in vectors {
                 let Some(bytes) = read(caller, base, length) else {
-                    return -EFAULT;
+                    return error(EFAULT);
                 };
                 gathered.extend_from_slice(&bytes);
             }
@@ -1455,7 +1563,7 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
         number => {
             let reason = Reason::SystemCallNotImplemented.number();
             slow_path(caller.data_mut(), reason, number, Duration::ZERO);
-            -ENOSYS
+            error(ENOSYS)
         }
     }
 }
