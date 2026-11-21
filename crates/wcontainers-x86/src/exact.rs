@@ -589,7 +589,15 @@ impl Context {
                 Some(nan) => convert_nan(nan),
                 None => {
                     let v = self.number(v, true);
-                    self.finish(v.convert(&mut false).value)
+                    let before = self.flags;
+                    let r = self.finish(v.convert(&mut false).value);
+                    // With an unmasked overflow or underflow, a denormal operand raises precision too, whatever
+                    // its significand (seen on the reference); `finish` does it for normal ones.
+                    let raised = self.flags & !before & (MXCSR_OVERFLOW | MXCSR_UNDERFLOW);
+                    if raised & !(self.mxcsr >> MXCSR_MASK_SHIFT) != 0 && v.is_denormal() {
+                        self.flags |= MXCSR_PRECISION;
+                    }
+                    r
                 }
             };
             out = with_lane::<Half>(out, n, r.to_bits());

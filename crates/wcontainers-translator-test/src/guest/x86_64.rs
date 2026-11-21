@@ -702,8 +702,14 @@ fn default_left_out_because(code: Code) -> Option<&'static str> {
         let x7 = is_x87_or_mmx(code) || uses_x87_or_mmx(&i.iced);
         return (x7 && !wcontainers_x86::written(&i)).then_some(MILESTONE_X7);
     }
+    // No case: the code's bytes with operands of every kind, as for an unoffered code.
+    let encoded: Vec<Vec<u8>> = (0..FORM_DRAWS)
+        .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
+        .map(|(bytes, _)| bytes)
+        .collect();
+    let excluded = encoded.iter().find_map(|bytes| X86_64::excluded(bytes));
     if beyond_default(code) && drawn.is_empty() {
-        return Some(MILESTONE_X8);
+        return Some(excluded.unwrap_or(MILESTONE_X8));
     }
     if is_x87_or_mmx(code) && drawn.is_empty() {
         return Some(MILESTONE_X7);
@@ -711,12 +717,7 @@ fn default_left_out_because(code: Code) -> Option<&'static str> {
     if !drawn.is_empty() {
         return Some(DECODED_ELSEWHERE);
     }
-    // No case: the code's bytes with operands of every kind, as for an unoffered code.
-    let encoded: Vec<Vec<u8>> = (0..FORM_DRAWS)
-        .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
-        .map(|(bytes, _)| bytes)
-        .collect();
-    if let Some(reason) = encoded.iter().find_map(|bytes| X86_64::excluded(bytes)) {
+    if let Some(reason) = excluded {
         return Some(reason);
     }
     // Followed by more bytes, as another code may be longer.
@@ -1337,6 +1338,9 @@ fn string(
             Instruction::with_maskmovdqu(address_size, xmm[0], xmm[1], segment)
         }
         Maskmovq_rDI_mm_mm => Instruction::with_maskmovq(address_size, xmm[0], xmm[1], segment),
+        VEX_Vmaskmovdqu_rDI_xmm_xmm => {
+            Instruction::with_vmaskmovdqu(address_size, xmm[0], xmm[1], segment)
+        }
         Movsb_m8_m8 => Instruction::with_movsb(address_size, segment, n),
         Movsw_m16_m16 => Instruction::with_movsw(address_size, segment, n),
         Movsd_m32_m32 => Instruction::with_movsd(address_size, segment, n),
@@ -1619,7 +1623,9 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         let mm =
             |draw: &mut Draw| register(Register::MM0 as u32 + draw.below(MMX_REGISTERS) as u32);
         let pair = match code {
-            Code::Maskmovdqu_rDI_xmm_xmm => [xmm(&mut draw), xmm(&mut draw)],
+            Code::Maskmovdqu_rDI_xmm_xmm | Code::VEX_Vmaskmovdqu_rDI_xmm_xmm => {
+                [xmm(&mut draw), xmm(&mut draw)]
+            }
             Code::Maskmovq_rDI_mm_mm => [mm(&mut draw), mm(&mut draw)],
             _ => [Register::None; 2],
         };
@@ -2578,6 +2584,7 @@ fn hand_cases() -> Vec<Designed> {
     .chain(cpuid_cases())
     .chain(xgetbv_cases())
     .chain(table_cases())
+    .chain(gather_cases())
     .chain(mxcsr_cases())
     .chain(store_string_cases())
     .chain(segments::far_to_32_bit_cases())
@@ -2780,6 +2787,47 @@ fn table_cases() -> Vec<Designed> {
         });
     }
     cases
+}
+
+/// A gather that faults part way with the trap flag set (plan 5.1's known difference): the reference first
+/// stops with a single step after the elements before the faulting one, and faults when run again; the
+/// translated gather faults at once, with the same elements gathered and their mask elements clear.
+fn gather_cases() -> Vec<Designed> {
+    let dword = size_of::<u32>() as u64;
+    let (destination, index, mask) = (0, 1, 2);
+    let mut case = encoded(
+        Instruction::with3(
+            Code::VEX_Vpgatherdd_xmm_vm32x_xmm,
+            register(Register::XMM0 as u32 + destination),
+            MemoryOperand::with_base_index_scale(
+                Register::RAX,
+                register(Register::XMM0 as u32 + index),
+                dword as u32,
+            ),
+            register(Register::XMM0 as u32 + mask),
+        )
+        .expect("a gather"),
+    );
+    // Element 0 is the data's last dword, element 1 the first past it, which is not mapped.
+    let lanes = (0..u128::BITS as u64 / (dword * u64::from(u8::BITS))).fold(0u128, |v, n| {
+        v | u128::from(n) << (n * dword * u64::from(u8::BITS))
+    });
+    let last = DATA + DATA_BYTES - dword;
+    let state = &mut case.state.0;
+    state[usize::from(wcontainers_x86::RAX)] = last.into();
+    state[XMM + index as usize] = lanes;
+    state[XMM + mask as usize] = u128::MAX;
+    state[RFLAGS] |= u128::from(wcontainers_x86::TF);
+    let cleared = u128::MAX << u32::BITS;
+    vec![Designed {
+        name: "a gather faulting part way with the trap flag set",
+        stop: Some(Stop::MemoryFault(last + dword)),
+        fields: vec![(RIP, CODE.into()), (XMM + mask as usize, cleared)],
+        case,
+        compared: false,
+        tracking: None,
+        counted: vec![],
+    }]
 }
 
 /// What the upper halves of the registers a 32-bit answer goes to hold before it, to see them cleared.

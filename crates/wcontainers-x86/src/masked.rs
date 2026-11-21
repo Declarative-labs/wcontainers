@@ -1,6 +1,6 @@
 //! The accesses a mask selects (plan 5.4): AVX's masked moves (`vmaskmovps`, `vmaskmovpd`) and AVX2's
 //! (`vpmaskmovd`, `vpmaskmovq`), and AVX2's gathers. Masked-off elements are never accessed, so they never
-//! fault. A masked move checks the span of its selected elements before it moves any; a gather goes through
+//! fault. A masked move checks its selected elements before it moves any; a gather goes through
 //! its elements in order, each checked, loaded and its mask element cleared, so that a fault leaves the
 //! elements before it gathered.
 
@@ -11,7 +11,6 @@ use crate::wide::{HALVES, halves, put};
 use crate::{X86_64, X86Block, XMM_BYTES};
 use iced_x86::{Mnemonic, OpKind, Register};
 use wasm_encoder::{BlockType, MemArg, ValType};
-use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{Access, AccessBytes, Emitter, Guest, Index, MemoryAccess};
 
 /// What a masked access is made of.
@@ -218,53 +217,55 @@ fn masked_move<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, shape: &
         s.local_set(bits);
     }
     let at = address(e, i);
-    let (first, last) = (e.local(ValType::I64), e.local(ValType::I64));
-    e.sink()
-        .local_get(bits)
-        .i32_eqz()
-        .i32_eqz()
-        .if_(BlockType::Empty);
-    // S, the first byte of the first selected element, and E, the last byte of the last one.
-    e.sink()
-        .local_get(at)
-        .local_get(bits)
-        .i32_ctz()
-        .i64_extend_i32_u()
-        .i64_const(element.into())
-        .i64_mul()
-        .i64_add()
-        .local_set(first)
-        .local_get(at)
-        .i32_const(u32::BITS as i32)
-        .local_get(bits)
-        .i32_clz()
-        .i32_sub()
-        .i64_extend_i32_u()
-        .i64_const(element.into())
-        .i64_mul()
-        .i64_add()
-        .i64_const(1)
-        .i64_sub()
-        .local_set(last);
     if load {
-        // The first byte not allowed of [S, E]: S, or the start of E's page when that is after S.
+        // Each selected element in order, at its first byte not allowed (seen on the reference).
+        for n in 0..shape.count {
+            let from = e.local(ValType::I64);
+            e.sink()
+                .local_get(bits)
+                .i32_const(1 << n)
+                .i32_and()
+                .if_(BlockType::Empty)
+                .local_get(at)
+                .i64_const((n * element).into())
+                .i64_add()
+                .local_set(from);
+            e.check(from, element, Access::Read, 0);
+            e.sink().end();
+        }
+    } else {
+        // S, the first byte of the first selected element, then E, the last byte of the last one: a store
+        // reports S when it is not allowed, else E (seen on the reference).
+        let (first, last) = (e.local(ValType::I64), e.local(ValType::I64));
         e.sink()
-            .local_get(last)
-            .i64_const(!(PAGE_SIZE as i64 - 1))
-            .i64_and()
-            .local_get(first)
-            .local_get(last)
-            .i64_const(!(PAGE_SIZE as i64 - 1))
-            .i64_and()
-            .local_get(first)
-            .i64_gt_u()
-            .select()
+            .local_get(bits)
+            .i32_eqz()
+            .i32_eqz()
+            .if_(BlockType::Empty)
+            .local_get(at)
+            .local_get(bits)
+            .i32_ctz()
+            .i64_extend_i32_u()
+            .i64_const(element.into())
+            .i64_mul()
+            .i64_add()
+            .local_set(first)
+            .local_get(at)
+            .i32_const(u32::BITS as i32)
+            .local_get(bits)
+            .i32_clz()
+            .i32_sub()
+            .i64_extend_i32_u()
+            .i64_const(element.into())
+            .i64_mul()
+            .i64_add()
+            .i64_const(1)
+            .i64_sub()
             .local_set(last);
+        e.check(first, 1, Access::Write, 0);
+        e.check(last, 1, Access::Write, 0);
+        e.sink().end();
     }
-    let access = if load { Access::Read } else { Access::Write };
-    e.check(first, 1, access, 0);
-    e.check(last, 1, access, 0);
-    e.sink().end();
     let data_at = e.local(ValType::I64);
     X86_64::data_address(&mut e.sink(), at);
     e.sink().local_set(data_at);
