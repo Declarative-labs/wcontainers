@@ -106,10 +106,31 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - `a_full_send_buffer_counts_its_unsent_bytes` now holds for either accounting: at least the payload held (all
   but the first two datagrams) and less than twice the size given and one datagram more. Linux's own count (at
   least twice the size given) is checked by the implementation's own `a_full_send_buffer_counts_the_memory_linux_counts`.
+- `an_icmp_error_waits_for_a_receive_after_later_sends`: an ICMP error, then a send (which Linux fails with that
+  error), then a receive gives the ICMP packet (IPv4 and IPv6); it catches a failed send that keeps no entries.
+- Own test `a_woken_wait_costs_the_watcher_nothing_until_it_is_polled` (0 watcher wakes over 1200 datagrams
+  after a wait was woken and before it is polled).
 - `conformance.sh` builds with cargo's messages first, so a failed build says why.
-- Checked here: 74 + 4 tests pass on the ARM machine, 20 runs in a row with none failing; the five broken copies
-  (M21, M11, M14, M15, and the readiness of before this run) are each caught by the checks named above
-  (scratch `run7/mutants.sh`, log `run7/mutants.log`).
+- The five broken copies of the findings (M21, M11, M14, M15, and the readiness of before this run) are each
+  caught by the checks named above (scratch `run7/mutants.sh`, log `run7/mutants.log`); the independent check
+  below covers them too.
+
+## Independent check (run 7, 2026-11-21, ARM64 machine, load 2.3 to 7.8, 243 s)
+- Script: scratch `independent-check.sh` (run 6's kept as `independent-check-run6.sh`); log
+  `independent-check-run7.log`. Clean build (fresh target folder, 13 s): 75 + 4 pass (75 + 5 with the test added after it, last run at 22:23 UTC, load 1.3). 30 runs in a row: none
+  failing (55 s).
+- 55 broken copies: 49 caught by a named check, among them this run's (every bit asked reported, overlap not
+  widened, any protocol, any checksum, failed send keeping nothing, kept entries not first, level-triggered).
+  One more was caught only after the check ran: the registration kept after every call was woken passed, and
+  `a_woken_wait_costs_the_watcher_nothing_until_it_is_polled` (added for it) fails on it (scratch `run7/kept.sh`).
+  Five pass, as expected: the would-block receive reading the error queue and an error entry read on the heap
+  (costs only, measured above: neither changes an answer), the wake `hold` gives (see "Not checked"), negative
+  route advice doing nothing and IPv4 checksum omission ignored (below).
+- cargo tree (normal, build and dev edges) of the udp-sockets, internet-protocol, configurable,
+  negative-route-advice and kernel interface crates and the UDP suite: no implementation crate. No reviewed
+  file changed: `git diff ae9c53ca HEAD` of the udp-sockets, internet-protocol, configurable and
+  negative-route-advice interfaces is empty, and this run's commits touch only the two implementation crates,
+  the suite and this track's docs.
 
 ## Milestone U1, run 6 (2026-11-21): the independent check's findings fixed
 - The crate builds on every unix system: `implementation.rs` is its root, `linux.rs` the Linux body (unchanged
@@ -234,7 +255,8 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   checks, both exit node checks, a_dual_stack_socket_takes_ipv4. connect: a_connected_socket_takes_only_its_peers_datagrams,
   and connect_takes_its_route_selectors for its selectors. disconnect: disconnect_keeps_the_binding. send_to:
   every check that sends; each header and send field by its own check; a header of the other protocol or a
-  checksum of the other protocol sent anyway by the two refusal checks. receive: every check that receives;
+  checksum of the other protocol sent anyway by the two refusal checks; a failed send that loses the error
+  queue's entries by an_icmp_error_waits_for_a_receive_after_later_sends. receive: every check that receives;
   a_short_buffer_keeps_the_whole_length (cut in the UDP header and in the payload), receive_with_nothing_queued_would_block,
   a_closed_port_answers_with_an_icmp_error, transmit_reports_carry_the_key_of_their_send,
   rejected_transmit_times_are_reported_with_their_keys. count_unsent_bytes: pacing_holds_datagrams_in_the_send_buffer,
@@ -242,7 +264,7 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   caught; one halved only by the implementation's own a_full_send_buffer_counts_the_memory_linux_counts). read_incoming_processor: the_incoming_processor_is_read_back (two processors set, and a
   connected socket's from its sender's processor). close:
   close_frees_the_port. configure: each setting's check, and the two Configurable contract checks.
-  wait_for_events: the seventeen waiting checks; a wait giving events it lacks is caught by
+  wait_for_events: the seventeen waiting checks and the implementation's five readiness tests; a wait giving events it lacks is caught by
   a_wait_gives_the_events_the_socket_has_and_no_others, one not widened for an overlapping interest by
   a_wait_for_data_or_writing_finishes_when_room_is_made, a watcher kept running by the implementation's own
   a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still; a wait that keeps its first waker is caught by

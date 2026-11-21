@@ -318,3 +318,33 @@ fn a_receive_that_would_block_allocates_nothing() {
         "allocations over {DATAGRAMS} receives that would block"
     );
 }
+
+/// A wait that was woken and is not yet polled again costs the watcher nothing for the datagrams after its own.
+#[test]
+fn a_woken_wait_costs_the_watcher_nothing_until_it_is_polled() {
+    let _alone = ALONE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
+    let (socket, sender) = pair(&sockets);
+    let wakes = Arc::new(Wakes::default());
+    let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
+    assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+    sender.send(PAYLOAD).expect("send");
+    assert!(wakes.reach(1), "woken by the datagram");
+    std::thread::sleep(SETTLE);
+    let before = watcher_wakes();
+    for _ in 0..DATAGRAMS {
+        sender.send(PAYLOAD).expect("send");
+    }
+    std::thread::sleep(SETTLE);
+    assert_eq!(
+        watcher_wakes() - before,
+        0,
+        "watcher wakes over {DATAGRAMS} datagrams after the wait was woken"
+    );
+    assert!(matches!(
+        poll_with(wait, &wakes),
+        Poll::Ready(Ok(events)) if events.data_to_read
+    ));
+}
