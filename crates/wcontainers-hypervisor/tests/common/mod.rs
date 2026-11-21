@@ -212,14 +212,9 @@ pub fn compile(directory: &str, name: &str, library: CLibrary) -> Vec<u8> {
     let object = out.with_extension(OBJECT);
     // Compiled with the C library's headers; linked with its code or without it.
     zig(Command::new("zig")
-        .args([
-            C_DRIVER,
-            ZIG_TARGET_FLAG,
-            GUEST_TARGET,
-            "-O2",
-            "-c",
-            OUTPUT_FLAG,
-        ])
+        .args([C_DRIVER, ZIG_TARGET_FLAG, GUEST_TARGET, "-O2", "-c"])
+        .arg(guest_programs_include())
+        .arg(OUTPUT_FLAG)
         .arg(&object)
         .arg(&source));
     zig(Command::new("zig")
@@ -239,6 +234,15 @@ pub const CALLS: &str = "calls";
 
 /// Where the benchmark programs' sources are, from this package.
 pub const PROGRAMS_DIRECTORY: &str = "../wcontainers-translator-test/programs";
+
+/// The include flag of the guest's own folder of those programs (`programs/arm64`), whose headers the shared
+/// programs include, as the translator's test harness builds them.
+fn guest_programs_include() -> String {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(PROGRAMS_DIRECTORY)
+        .join(<wcontainers_arm64::Arm64 as GuestTest>::NAME);
+    format!("-I{}", folder.display())
+}
 
 /// Where the speed test places a benchmark program: under the native ceiling, and above the low addresses macOS
 /// keeps for itself (it moves a mapping asked for under 0x70_0000_0000 elsewhere).
@@ -271,6 +275,7 @@ pub fn freestanding(
     zig(Command::new("zig")
         .args([C_DRIVER, ZIG_TARGET_FLAG, GUEST_TARGET, "-c"])
         .args(FREESTANDING_FLAGS)
+        .arg(guest_programs_include())
         .args(defines.iter().map(|define| format!("-D{define}")))
         .arg(OUTPUT_FLAG)
         .arg(&object)
