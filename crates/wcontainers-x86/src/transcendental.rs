@@ -194,11 +194,50 @@ pub(crate) fn logarithm(y: Extended, x: Extended) -> Wide {
 
 /// `fyl2xp1`'s value, `y * log2(x + 1)`, for `x` above -1.
 pub(crate) fn logarithm_plus_one(y: Extended, x: Extended) -> Wide {
+    logarithm_plus_one_by(
+        y,
+        x,
+        i32::from(x.exponent) - crate::x87::BIAS < SERIES_BELOW,
+    )
+}
+
+/// `fyl2xp1`'s value, by the series or by the exact sum `1 + x`.
+pub(crate) fn logarithm_plus_one_by(y: Extended, x: Extended, series: bool) -> Wide {
     settled(|p, cc| {
-        let exact = GUESS_BITS + cancelled(x);
-        let sum = of_extended(x).add(&BigFloat::from_word(1, exact), exact, ROUND);
-        sum.log2(p, ROUND, cc).mul(&of_extended(y), p, ROUND)
+        let logarithm = if series {
+            natural_logarithm_plus_one_small(&of_extended(x), p).div(&cc.ln_2(p, ROUND), p, ROUND)
+        } else {
+            let exact = GUESS_BITS + cancelled(x);
+            let sum = of_extended(x).add(&BigFloat::from_word(1, exact), exact, ROUND);
+            sum.log2(p, ROUND, cc)
+        };
+        logarithm.mul(&of_extended(y), p, ROUND)
     })
+}
+
+/// Below 2^-64 `ln(1 + x)` is summed from its series, each term 64 bits or more below the one before, which
+/// spares the sum `1 + x` the thousands of exact bits a tiny `x` gives it.
+const SERIES_BELOW: i32 = -(u64::BITS as i32);
+
+/// `ln(1 + x)` for `|x|` below 2^-64, from `x - x^2/2 + x^3/3 - ...` to the working precision and the guard
+/// bits below it.
+fn natural_logarithm_plus_one_small(x: &BigFloat, p: usize) -> BigFloat {
+    let floor = x.exponent().expect("a non-zero operand") - p as i32 - GUARD_BITS as i32;
+    let (mut sum, mut power) = (x.clone(), x.clone());
+    let mut k: Word = 1;
+    loop {
+        k += 1;
+        power = power.mul(x, p, ROUND);
+        let term = power.div(&BigFloat::from_word(k, p), p, ROUND);
+        if term.exponent().is_none_or(|e| e < floor) {
+            return sum;
+        }
+        sum = if k.is_multiple_of(2) {
+            sum.sub(&term, p, ROUND)
+        } else {
+            sum.add(&term, p, ROUND)
+        };
+    }
 }
 
 /// `fpatan`'s value, the angle of the point (`x`, `y`) from -π to π.

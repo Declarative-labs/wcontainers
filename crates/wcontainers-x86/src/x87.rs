@@ -1473,10 +1473,7 @@ impl<'a> Unit<'a> {
                 match operation {
                     Operation::Sine => both(sine(x, fcw)),
                     Operation::Cosine => both(cosine(x, fcw)),
-                    Operation::Tangent => (
-                        rounded_wide(transcendental::tangent(x), fcw),
-                        exact_value(Extended::ONE),
-                    ),
+                    Operation::Tangent => (tangent(x, fcw), exact_value(Extended::ONE)),
                     _ => (sine(x, fcw), cosine(x, fcw)),
                 }
             }
@@ -1571,24 +1568,50 @@ fn to_nearest(fcw: u16) -> u16 {
     fcw & !(FIELD << ROUNDING_SHIFT)
 }
 
-/// A sine or cosine of `x`, whose value is `value`.
-fn trigonometric_value(x: Extended, value: Wide, fcw: u16) -> Rounded<Extended> {
-    if tiny(x) {
-        Rounded {
-            up: false,
-            ..rounded_wide(value, to_nearest(fcw))
-        }
-    } else {
-        rounded_wide(value, fcw)
+/// A sine or cosine of a tiny operand, whose value is `value`: rounded to the nearest with C1 clear.
+fn tiny_trigonometric_value(value: Wide, fcw: u16) -> Rounded<Extended> {
+    Rounded {
+        up: false,
+        ..rounded_wide(value, to_nearest(fcw))
     }
 }
 
+/// The wide value next to `v` toward zero, or away from it: what a function within a small part of a wide unit
+/// of `v`, on that side, gives rounded to odd, as `v` (an 80-bit value, or one) has its lowest wide bits clear.
+/// Below 2^-68 a sine, cosine and tangent lie that near the operand, one, and the operand.
+fn next_to(v: Wide, away: bool) -> Wide {
+    let magnitude = v.abs();
+    let next = if away {
+        magnitude.next_up()
+    } else {
+        magnitude.next_down()
+    }
+    .value;
+    if v.is_negative() { -next } else { next }
+}
+
 fn sine(x: Extended, fcw: u16) -> Rounded<Extended> {
-    trigonometric_value(x, transcendental::sine(x), fcw)
+    if tiny(x) {
+        tiny_trigonometric_value(next_to(x.wide(), false), fcw)
+    } else {
+        rounded_wide(transcendental::sine(x), fcw)
+    }
 }
 
 fn cosine(x: Extended, fcw: u16) -> Rounded<Extended> {
-    trigonometric_value(x, transcendental::cosine(x), fcw)
+    if tiny(x) {
+        tiny_trigonometric_value(next_to(Extended::ONE.wide(), false), fcw)
+    } else {
+        rounded_wide(transcendental::cosine(x), fcw)
+    }
+}
+
+fn tangent(x: Extended, fcw: u16) -> Rounded<Extended> {
+    if tiny(x) {
+        rounded_wide(next_to(x.wide(), true), fcw)
+    } else {
+        rounded_wide(transcendental::tangent(x), fcw)
+    }
 }
 
 /// A result the reference flags inexact although it is exact: the precision flag, and the underflow flag
@@ -2175,4 +2198,87 @@ fn to_decimal(value: Extended, fcw: u16) -> Rounded<u128> {
         exceptions: if inexact { PRECISION } else { 0 },
         up: r.value.abs() > f.abs(),
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Operands below 2^-68, each sign, the largest exponent such an operand has down to a denormal.
+    fn tiny_operands() -> impl Iterator<Item = Extended> {
+        const SIGNIFICANDS: [u64; 3] = [INTEGER_BIT, 0xc90f_daa2_2168_c235, u64::MAX];
+        let exponents = [BIAS + TINY_BELOW - 1, BIAS + TINY_BELOW - 2, BIAS / 2, 1, 0];
+        exponents.into_iter().flat_map(|e| {
+            SIGNIFICANDS.into_iter().flat_map(move |significand| {
+                [false, true].map(|sign| Extended {
+                    sign,
+                    exponent: e as u16,
+                    significand: if e == 0 {
+                        significand >> 1
+                    } else {
+                        significand
+                    },
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn tiny_trigonometric_values_are_the_full_evaluation() {
+        for x in tiny_operands().filter(|x| x.class() != Class::Zero) {
+            assert!(tiny(x));
+            assert_eq!(
+                next_to(x.wide(), false),
+                transcendental::sine(x),
+                "sine {x:?}"
+            );
+            assert_eq!(
+                next_to(Extended::ONE.wide(), false),
+                transcendental::cosine(x),
+                "cosine {x:?}"
+            );
+            assert_eq!(
+                next_to(x.wide(), true),
+                transcendental::tangent(x),
+                "tangent {x:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_series_for_a_small_logarithm_is_the_exact_sum() {
+        let y = Extended::of(X87DoubleExtended::from_u128(3).value);
+        let exponents = [-65, -66, -69, -100, -300];
+        for e in exponents {
+            for sign in [false, true] {
+                let x = Extended {
+                    sign,
+                    exponent: (BIAS + e) as u16,
+                    significand: 0xc90f_daa2_2168_c235,
+                };
+                let series = transcendental::logarithm_plus_one_by(y, x, true);
+                let exact = transcendental::logarithm_plus_one_by(y, x, false);
+                assert_eq!(series, exact, "{x:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_operands_take_no_long_evaluation() {
+        let y = Extended::ONE;
+        for x in tiny_operands().filter(|x| x.class() != Class::Zero) {
+            let start = std::time::Instant::now();
+            let _ = (
+                sine(x, CONTROL_AT_START),
+                cosine(x, CONTROL_AT_START),
+                tangent(x, CONTROL_AT_START),
+            );
+            let _ = logarithm_plus_one(y, x, CONTROL_AT_START);
+            let took = start.elapsed();
+            assert!(took < TINY_TIME_LIMIT, "{x:?} took {took:?}");
+        }
+    }
+
+    /// Far above what the closed forms and the series take, far below the many-thousand-bit evaluations.
+    const TINY_TIME_LIMIT: std::time::Duration = std::time::Duration::from_millis(20);
 }
