@@ -7,7 +7,7 @@ mod build;
 pub mod builtin;
 pub mod cache;
 mod common;
-mod container;
+pub mod container;
 mod dxbc;
 mod dxil;
 mod ir;

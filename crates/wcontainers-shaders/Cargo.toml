@@ -15,6 +15,7 @@ crc32fast = { version = "1", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 spirv = "0.4"
+md-5 = { version = "0.11", default-features = false }
 
 [build-dependencies]
 blake3 = "1"
@@ -22,7 +23,6 @@ cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
 fastrand = "2"
-md-5 = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "msl-out", "wgsl-out"] }
 
