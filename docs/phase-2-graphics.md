@@ -778,7 +778,8 @@ queries carry over as at any split (below). Exact: the
   one per pass; the front adds their counts or combines their "any" answers.
 - One interface query runs at a time (WebGPU allows one active occlusion query per pass), and each
   index of the pass's set is begun at most once in that pass (WebGPU refuses a second), so a front
-  takes a fresh index for each stretch. Guest queries
+  takes a fresh index for each stretch; a pass whose set has no index left ends, and the next pass
+  takes a fresh set (`QuerySetSplitPass`). Guest queries
   may overlap (Direct3D 11 and 12 and OpenGL allow several active at once, for example a predicate
   around per-object queries). The front ends the running interface query at every guest begin and end
   and starts a new one, and adds each stretch's result to every guest query open during it, as DXVK
