@@ -12,7 +12,7 @@
 mod common;
 
 use common::*;
-use wcontainers_gpu::{Backend, BufferRange, BufferUsage, ReadSource};
+use wcontainers_gpu::{Backend, BufferRange, BufferUsage, ReadSource, RingKind};
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{Tessellation, Tessellator, tess};
 use windows::Win32::Graphics::Direct3D::*;
@@ -956,12 +956,14 @@ struct Staged<'a> {
 /// The same patches streamed through the whole stage helper: the vertex and hull stages, the
 /// tessellator, the domain stage as compute and geometry shader `gs` if given, then stream output of
 /// the location and the patch's number; the vertices written and the primitives the helper counted.
+/// With `ring_room`, the data ring is placed first to wrap after that many parts (`place_data_ring`).
 fn ours_staged<B: Backend>(
     b: &mut B,
     programs: &Staged<'_>,
     points: u32,
     bound: usize,
     factors: &[[f32; 8]],
+    ring_room: Option<u64>,
 ) -> (Vec<Vertex>, [u32; 2]) {
     use wcontainers_gpu::*;
     use wcontainers_shaders::convert;
@@ -1041,6 +1043,9 @@ fn ours_staged<B: Backend>(
     let filled = buffer(b, &[0u8; 32], BufferUsage::STORAGE | BufferUsage::COPY_SRC);
     let n = factors.len() as u32;
     let none = [None; 4];
+    if let Some(parts) = ring_room {
+        place_data_ring(b, parts);
+    }
     stages
         .run_after_domain(
             b,
@@ -1193,6 +1198,7 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
                     *points,
                     bound,
                     &factors,
+                    None,
                 );
                 compared += 1;
                 let name = format!(
@@ -1242,5 +1248,91 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
         failures.len(),
         known_cases.len()
     );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The data ring's size [`place_data_ring`] makes: larger than the ring the back end starts with,
+/// so that its first write makes a ring of exactly this size.
+const PLACED_RING_BYTES: u64 = 1 << 23;
+
+/// More parts than the stage helper writes into the data ring for one draw after a domain stage
+/// (each stage's values, the tessellator's three, the stream's), so the ring wraps at each in turn.
+const RING_PLACES: u64 = 12;
+
+/// Leaves the data ring `parts` parts short of its end, so that the next writes into it wrap at
+/// the `parts`th part: one write fills a ring of [`PLACED_RING_BYTES`], the next refills it from
+/// the start.
+fn place_data_ring<B: Backend>(b: &mut B, parts: u64) {
+    let align = b.caps().limits.min_uniform_offset_alignment;
+    let mut offsets = [0u64];
+    let full = vec![0u8; PLACED_RING_BYTES as usize];
+    b.write_buffer_ring(RingKind::Data, &[&full], align, &mut offsets)
+        .unwrap();
+    assert_eq!(offsets, [0], "the data ring starts at the filling write");
+    let short = vec![0u8; (PLACED_RING_BYTES - parts * u64::from(align)) as usize];
+    b.write_buffer_ring(RingKind::Data, &[&short], align, &mut offsets)
+        .unwrap();
+    assert_eq!(offsets, [0], "the data ring is {PLACED_RING_BYTES} bytes");
+}
+
+/// The stage helper's values hold wherever the data ring wraps among its writes for one draw: a
+/// draw streamed after the domain stage, directly and through a geometry shader, with the ring
+/// placed to wrap at each of its next [`RING_PLACES`] parts in turn, against real Direct3D 11.
+/// A wrap gives the ring fresh storage, so a stage whose values were written before it and bound
+/// after it would read none.
+#[test]
+fn stage_values_hold_wherever_the_data_ring_wraps() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let bound = 2 * PATCHES * tess::patch_bounds(64.0).1 as usize;
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for (i, gs) in [None, Some("gs_tess_tri")].into_iter().enumerate() {
+        let (hs, ds, per, points) = ("hs_tri_odd_cw", "ds_tri", 3, 1);
+        // Subnormal factors are another matter (the stream test's known cases): flushed here.
+        let mut rng = fastrand::Rng::with_seed(seed * 1000 + i as u64);
+        let factors: Vec<[f32; 8]> = factors(&mut rng)
+            .iter()
+            .map(|f| f.map(|v| if v.is_subnormal() { 0.0 } else { v }))
+            .collect();
+        let (reference, written) = direct3d(&gpu, hs, ds, gs, points, bound, &factors);
+        let reference = &reference[..written as usize * per];
+        for parts in 0..=RING_PLACES {
+            for route in Route::BOTH {
+                let staged = Staged { hs, ds, gs, route };
+                let (streamed, counted) =
+                    ours_staged(&mut backend, &staged, points, bound, &factors, Some(parts));
+                compared += 1;
+                let name = format!(
+                    "seed {seed} {hs} {} ring wrapping after {parts} parts {route:?}",
+                    gs.unwrap_or("streamed")
+                );
+                let counts = match counted == [written as u32; 2] {
+                    true => Ok(()),
+                    false => Err(format!(
+                        "primitives written and made {counted:?}, direct3d {written}"
+                    )),
+                };
+                match (counts, compare(reference, &streamed, per)) {
+                    (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+                    (counts, shape) => {
+                        let why: Vec<String> =
+                            [counts.err(), shape.err()].into_iter().flatten().collect();
+                        eprintln!("{name}: {}", why.join("; "));
+                        failures.push(name);
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
