@@ -5,11 +5,16 @@ use std::sync::{Mutex, PoisonError};
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use wcontainers_clock::Clock;
+use wcontainers_clock::{Clock, StandaloneClock};
 
 #[derive(Debug)]
 pub struct SeededClock {
     time: Mutex<SimulatedTime>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeededClockConfig {
+    pub seed: u64,
 }
 
 #[derive(Debug)]
@@ -20,9 +25,11 @@ struct SimulatedTime {
     realtime_offset: u64,
 }
 
-impl SeededClock {
-    pub fn new(seed: u64) -> Self {
-        let mut generator = ChaCha8Rng::seed_from_u64(seed);
+impl StandaloneClock for SeededClock {
+    type Config = SeededClockConfig;
+
+    fn new(config: Self::Config) -> Self {
+        let mut generator = ChaCha8Rng::seed_from_u64(config.seed);
         // The monotonic clock starts within a u32 of nanoseconds, as a machine's does soon after it starts.
         let monotonic = u64::from(generator.random::<u32>());
         // The wall clock starts within a u32 of seconds after 1970.
@@ -37,7 +44,9 @@ impl SeededClock {
             }),
         }
     }
+}
 
+impl SeededClock {
     /// Advances simulated time by up to a u16 of nanoseconds and gives the new monotonic reading and the offset.
     fn advance(&self) -> (u64, u64) {
         let mut time = self.time.lock().unwrap_or_else(PoisonError::into_inner);

@@ -5,3 +5,9 @@ pub trait Clock {
     fn monotonic_nanoseconds(&self) -> u64;
     fn realtime_nanoseconds(&self) -> u64;
 }
+
+pub trait StandaloneClock: Clock {
+    type Config;
+
+    fn new(config: Self::Config) -> Self;
+}

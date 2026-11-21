@@ -1,1 +1,4 @@
-wcontainers_clock_conformance::tests!(wcontainers_clock_seeded::SeededClock::new(u64::MIN));
+use wcontainers_clock::StandaloneClock;
+use wcontainers_clock_seeded::{SeededClock, SeededClockConfig};
+
+wcontainers_clock_conformance::tests!(SeededClock::new(SeededClockConfig { seed: u64::MIN }));

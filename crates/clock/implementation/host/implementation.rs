@@ -3,10 +3,18 @@
 use core::time::Duration;
 
 use rustix::time::{ClockId, clock_gettime};
-use wcontainers_clock::Clock;
+use wcontainers_clock::{Clock, StandaloneClock};
 
 #[derive(Debug)]
 pub struct HostClock;
+
+impl StandaloneClock for HostClock {
+    type Config = ();
+
+    fn new((): Self::Config) -> Self {
+        Self
+    }
+}
 
 impl Clock for HostClock {
     fn monotonic_nanoseconds(&self) -> u64 {
