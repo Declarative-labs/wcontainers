@@ -1,5 +1,6 @@
 //! The operating system's random bytes, fit for cryptography, through the getrandom crate.
 
+use wcontainers_abi::HostError;
 use wcontainers_random_source::{RandomSource, StandaloneRandomSource};
 
 #[derive(Debug)]
@@ -14,9 +15,11 @@ impl StandaloneRandomSource for HostRandomSource {
 }
 
 impl RandomSource for HostRandomSource {
-    fn fill_random_bytes(&self, into: &mut [u8]) {
-        if let Err(error) = getrandom::fill(into) {
-            panic!("the host's random source failed: {error}");
-        }
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+        getrandom::fill(into).map_err(|error| {
+            error
+                .raw_os_error()
+                .map_or(HostError::NotSupported, HostError::Errno)
+        })
     }
 }

@@ -4583,6 +4583,9 @@ dependencies = [
 [[package]]
 name = "wcontainers-random-source"
 version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+]
 
 [[package]]
 name = "wcontainers-random-source-conformance"
@@ -4596,6 +4599,7 @@ name = "wcontainers-random-source-host"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "wcontainers-abi",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
 ]
@@ -4606,6 +4610,7 @@ version = "0.1.0"
 dependencies = [
  "rand 0.9.5",
  "rand_chacha",
+ "wcontainers-abi",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
 ]

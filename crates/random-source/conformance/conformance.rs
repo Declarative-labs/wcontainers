@@ -18,8 +18,12 @@ const FILL_LENGTHS: &[usize] = &[usize::MIN, 1, RANDOM_FILL_LENGTH, LONG_FILL_LE
 pub fn fill_random_bytes_differently<R: RandomSource>(source: R) {
     let mut first = [u8::MIN; RANDOM_FILL_LENGTH];
     let mut second = [u8::MIN; RANDOM_FILL_LENGTH];
-    source.fill_random_bytes(&mut first);
-    source.fill_random_bytes(&mut second);
+    source
+        .fill_random_bytes(&mut first)
+        .expect("the random source must fill what it is given");
+    source
+        .fill_random_bytes(&mut second)
+        .expect("the random source must fill what it is given");
     assert_ne!(first, second);
 }
 
@@ -30,7 +34,9 @@ pub fn fill_every_byte_given<R: RandomSource>(source: R) {
         let mut buffer = vec![u8::MIN; length];
         for _ in 0..RANDOM_FILL_LENGTH {
             buffer.fill(u8::MIN);
-            source.fill_random_bytes(&mut buffer);
+            source
+                .fill_random_bytes(&mut buffer)
+                .expect("the random source must fill what it is given");
             for (written, &byte) in written.iter_mut().zip(&buffer) {
                 *written |= byte != u8::MIN;
             }
@@ -46,7 +52,9 @@ pub fn fill_every_byte_given<R: RandomSource>(source: R) {
 /// Checks that one long fill holds every byte value.
 pub fn fill_random_bytes_with_every_byte_value<R: RandomSource>(source: R) {
     let mut buffer = vec![u8::MIN; LONG_FILL_LENGTH];
-    source.fill_random_bytes(&mut buffer);
+    source
+        .fill_random_bytes(&mut buffer)
+        .expect("the random source must fill what it is given");
     let mut seen = [false; u8::MAX as usize + 1];
     for &byte in &buffer {
         seen[usize::from(byte)] = true;
@@ -65,7 +73,9 @@ pub fn fill_random_bytes_differently_across_threads<R: RandomSource + Sync>(sour
             .map(|_| {
                 scope.spawn(|| {
                     let mut fill = [u8::MIN; RANDOM_FILL_LENGTH];
-                    source.fill_random_bytes(&mut fill);
+                    source
+                        .fill_random_bytes(&mut fill)
+                        .expect("the random source must fill what it is given");
                     fill
                 })
             })

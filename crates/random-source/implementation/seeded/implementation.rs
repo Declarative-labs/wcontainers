@@ -4,6 +4,7 @@ use std::sync::{Mutex, PoisonError};
 
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use wcontainers_abi::HostError;
 use wcontainers_random_source::{RandomSource, StandaloneRandomSource};
 
 #[derive(Debug)]
@@ -27,10 +28,11 @@ impl StandaloneRandomSource for SeededRandomSource {
 }
 
 impl RandomSource for SeededRandomSource {
-    fn fill_random_bytes(&self, into: &mut [u8]) {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
         self.generator
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .fill_bytes(into);
+        Ok(())
     }
 }

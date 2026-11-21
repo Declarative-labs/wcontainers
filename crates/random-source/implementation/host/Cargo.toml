@@ -16,6 +16,7 @@ name = "conformance"
 path = "conformance.rs"
 
 [dependencies]
+wcontainers-abi.workspace = true
 wcontainers-random-source = { path = "../.." }
 getrandom = { version = "0.4.3", default-features = false }
 
