@@ -37,6 +37,30 @@ use super::*;
 const DEFAULT_FRAME_LATENCY: u32 = 3;
 const MAX_FRAME_LATENCY: u32 = 16;
 
+/// Not served: shaders made with a class linkage.
+const CLASS_LINKAGE: &str = "class linkage";
+
+/// Not served: queries of one context type.
+const ONE_CONTEXT_QUERIES: &str = "queries of one context type";
+
+/// Not served: predicates made by `CreateQuery1`.
+const QUERY1_PREDICATES: &str = "predicates made by CreateQuery1";
+
+/// Not served: target views of buffers.
+const BUFFER_TARGET_VIEWS: &str = "target views of buffers";
+
+/// Not served: compute shaders on a back end without compute programs.
+const NO_COMPUTE: &str = "compute shaders without the back end's compute programs";
+
+/// Not served: tessellation on a back end without compute programs.
+const NO_TESSELLATION: &str = "hull and domain shaders without the back end's compute programs";
+
+/// Not served: blend states with logic operations.
+const LOGIC_OPERATIONS: &str = "logic operations";
+
+/// Not served: rasterizer states forcing a sample count.
+const FORCED_SAMPLES: &str = "forced sample counts";
+
 #[implement(ID3D11Device3, IDXGIDevice3, ID3D10Device1, ID3D10Multithread)]
 pub struct Device {
     /// The immediate context's bindings and state object, kept for the device's life (dropped
@@ -528,10 +552,10 @@ impl Device_Impl {
     ) -> Result<()> {
         let d1 = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
         if d1.ContextType != D3D11_CONTEXT_TYPE_ALL {
-            return Err(missing("queries of one context type"));
+            return Err(missing(ONE_CONTEXT_QUERIES));
         }
         if is_predicate(d1.Query) {
-            return Err(missing("predicates made by CreateQuery1"));
+            return Err(missing(QUERY1_PREDICATES));
         }
         let d = D3D11_QUERY_DESC {
             Query: d1.Query,
@@ -625,7 +649,7 @@ impl Device_Impl {
     ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
         match resource.as_ref().and_then(resource_of) {
             Some(wcontainers_direct3d_11::object::Resource::Texture(t)) => Ok(t),
-            Some(_) => Err(missing("target views of buffers")),
+            Some(_) => Err(missing(BUFFER_TARGET_VIEWS)),
             None => Err(E_INVALIDARG.into()),
         }
     }
@@ -870,7 +894,7 @@ impl Device_Impl {
             return Err(if bytecode.is_null() {
                 E_INVALIDARG.into()
             } else {
-                missing("class linkage")
+                missing(CLASS_LINKAGE)
             });
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
@@ -893,16 +917,14 @@ impl Device_Impl {
             return Err(if bytecode.is_null() {
                 E_INVALIDARG.into()
             } else {
-                missing("class linkage")
+                missing(CLASS_LINKAGE)
             });
         }
         // 10_x takes shader model 4 compute shaders where raw and structured buffers come with
         // them (`D3D10_X_HARDWARE_OPTIONS`); the front checks the model against the level, so
         // 9_x, which takes no compute model, answers `E_INVALIDARG` as Direct3D does.
         if self.front.borrow().feature_level() >= desc::level::L10_0 && !self.compute() {
-            return Err(missing(
-                "compute shaders without the back end's compute programs",
-            ));
+            return Err(missing(NO_COMPUTE));
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
         let shader = self
@@ -1006,7 +1028,7 @@ impl Device_Impl {
             return Err(if bytecode.is_null() {
                 E_INVALIDARG.into()
             } else {
-                missing("class linkage")
+                missing(CLASS_LINKAGE)
             });
         }
         if self.front.borrow().feature_level() < desc::level::L10_0 {
@@ -1056,10 +1078,10 @@ impl Device_Impl {
         stage: SourceStage,
     ) -> Result<Rc<wcontainers_direct3d_11::object::Shader<Chosen>>> {
         if !linkage.is_null() {
-            return Err(missing("class linkage"));
+            return Err(missing(CLASS_LINKAGE));
         }
         if !self.compute() {
-            let what = "hull and domain shaders without the back end's compute programs";
+            let what = NO_TESSELLATION;
             return Err(self
                 .unserved_shader(bytecode, length, stage, what)
                 .expect_err("refused"));
@@ -1085,7 +1107,7 @@ impl Device_Impl {
             return Err(if bytecode.is_null() {
                 E_INVALIDARG.into()
             } else {
-                missing("class linkage")
+                missing(CLASS_LINKAGE)
             });
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
@@ -1117,7 +1139,7 @@ impl Device_Impl {
     ) -> Result<()> {
         let (d, logic) = convert::blend_split(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         if logic.iter().any(|l| l.0.as_bool()) {
-            return Err(missing("logic operations"));
+            return Err(missing(LOGIC_OPERATIONS));
         }
         self.blend_state(&d, logic, out)
     }
@@ -1199,7 +1221,7 @@ impl Device_Impl {
         I: Interface + windows::core::Type<I, Default = Option<I>> + From<RasterizerState>,
     {
         if d.ForcedSampleCount != 0 {
-            return Err(missing("forced sample counts"));
+            return Err(missing(FORCED_SAMPLES));
         }
         self.rasterizer_state(&convert::rasterizer_of1(d), out)
     }

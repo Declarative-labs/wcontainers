@@ -31,6 +31,18 @@ const MAX_SYNC_INTERVAL: u32 = 4;
 /// program sets another.
 const WAITABLE_LATENCY: u32 = 1;
 
+/// Not served: fullscreen swap chains.
+const FULLSCREEN: &str = "fullscreen swap chains";
+
+/// Not served: multisampled or stereo swap chains.
+const MULTISAMPLED_OR_STEREO: &str = "multisampled or stereo swap chains";
+
+/// Not served: swap chains rotating their back buffers.
+const ROTATING: &str = "swap chains rotating their back buffers";
+
+/// Not served: HDR metadata.
+const HDR_METADATA: &str = "HDR metadata";
+
 #[implement(IDXGIFactory6)]
 pub struct Factory {
     pub(super) private: Private,
@@ -233,10 +245,10 @@ impl Factory_Impl {
             return Err(DXGI_ERROR_INVALID_CALL.into());
         }
         if !windowed {
-            return Err(missing("fullscreen swap chains"));
+            return Err(missing(FULLSCREEN));
         }
         if d.SampleDesc.Count != 1 || d.Stereo.as_bool() {
-            return Err(missing("multisampled or stereo swap chains"));
+            return Err(missing(MULTISAMPLED_OR_STEREO));
         }
         let model = Model::from_dxgi(d.SwapEffect.0 as u32).ok_or(E_INVALIDARG)?;
         let (mut width, mut height) = (d.Width, d.Height);
@@ -434,7 +446,7 @@ impl SwapChain_Impl {
         _target: Ref<IDXGIOutput>,
     ) -> Result<()> {
         if fullscreen.as_bool() {
-            return Err(missing("fullscreen swap chains"));
+            return Err(missing(FULLSCREEN));
         }
         Ok(())
     }
@@ -456,7 +468,7 @@ impl SwapChain_Impl {
     /// The back buffers are presented unrotated; asking for that changes nothing.
     pub(super) fn set_rotation(&self, rotation: DXGI_MODE_ROTATION) -> Result<()> {
         if rotation != DXGI_MODE_ROTATION_IDENTITY {
-            return Err(missing("swap chains rotating their back buffers"));
+            return Err(missing(ROTATING));
         }
         Ok(())
     }
@@ -641,7 +653,7 @@ impl SwapChain_Impl {
         _data: *const c_void,
     ) -> Result<()> {
         if kind != DXGI_HDR_METADATA_TYPE_NONE {
-            return Err(missing("HDR metadata"));
+            return Err(missing(HDR_METADATA));
         }
         Ok(())
     }
