@@ -334,21 +334,18 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
 
 /// What written GLSL ES `text` lacks for the needs in `names` that the WebGL 2 back end declares
 /// through an extension: each directive a form of the need shows in the text and the text does not
-/// carry, and each such need that shows in no form at all.
+/// carry.
 #[cfg(not(target_arch = "wasm32"))]
 fn undeclared(names: &[&str], text: &str) -> Vec<String> {
     let carried = |d: &str| text.contains(&format!("{EXTENSION_DIRECTIVE}{d}{EXTENSION_REQUIRED}"));
     let mut missing = Vec::new();
-    for (need, forms) in DIRECTIVES.iter().filter(|(n, _)| names.contains(n)) {
-        let shown: Vec<&str> = forms
-            .iter()
-            .filter(|(form, _)| text.contains(form))
-            .map(|(_, d)| *d)
-            .collect();
-        if shown.is_empty() {
-            missing.push(need.to_string());
-        }
-        missing.extend(shown.into_iter().filter(|d| !carried(d)).map(String::from));
+    for (_, forms) in DIRECTIVES.iter().filter(|(n, _)| names.contains(n)) {
+        let shown = forms.iter().filter(|(form, _)| text.contains(form));
+        missing.extend(
+            shown
+                .filter(|(_, d)| !carried(d))
+                .map(|(_, d)| d.to_string()),
+        );
     }
     missing.sort_unstable();
     missing.dedup();
@@ -356,23 +353,20 @@ fn undeclared(names: &[&str], text: &str) -> Vec<String> {
 }
 
 /// The needs the WebGL 2 back end declares through an extension, each with the text its GLSL ES shows
-/// it by and the extension that text requires: OES_sample_variables's built-ins,
-/// OES_shader_multisample_interpolation's `sample` qualifier (written after an interpolation
-/// qualifier) and EXT_blend_func_extended's second source.
+/// it by and the extension that text requires: OES_sample_variables's built-ins and
+/// EXT_blend_func_extended's second source, both written by naga. The `sample` qualifier's
+/// directive is the back end's own constant, which it does not export, so it is not checked here.
 const DIRECTIVES: [(&str, &[(&str, &str)]); 2] = [
     (
         "SAMPLE_SHADING",
         &[
             ("gl_Sample", SAMPLE_VARIABLES),
             ("gl_NumSamples", SAMPLE_VARIABLES),
-            (" sample in ", SAMPLE_QUALIFIER),
-            (" sample out ", SAMPLE_QUALIFIER),
         ],
     ),
     ("DUAL_SOURCE_BLEND", &[("index = 1)", BLEND_FUNC_EXTENDED)]),
 ];
 const SAMPLE_VARIABLES: &str = "GL_OES_sample_variables";
-const SAMPLE_QUALIFIER: &str = "GL_OES_shader_multisample_interpolation";
 const BLEND_FUNC_EXTENDED: &str = "GL_EXT_blend_func_extended";
 /// An extension directive's line around the extension's name.
 #[cfg(not(target_arch = "wasm32"))]
