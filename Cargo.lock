@@ -4900,6 +4900,7 @@ dependencies = [
  "netlink-packet-core",
  "nix",
  "rustix",
+ "socket2",
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
