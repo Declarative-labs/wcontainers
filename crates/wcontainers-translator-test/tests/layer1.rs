@@ -38,15 +38,27 @@ fn sample_matches_the_cpu_in_chrome<G: GuestTest>() {
     let count = setting("WC_LAYER1_CHROME", 1);
     let seed = setting("WC_LAYER1_SEED", 1);
     let mut sample: Vec<(String, Case)> = Vec::new();
+    // The browser runner translates for the default list only, so a form beyond it waits for the runner to
+    // take a case's list.
+    let mut beyond_default = Vec::new();
     for form in G::forms() {
         let name = G::form_name(form);
         let mut runner = generator(seed, name, Config::default());
         let strategy = G::cases(form);
         for _ in 0..count {
             let tree = strategy.new_tree(&mut runner).expect("a case");
+            if G::case_offer(&tree.current()) != G::Offer::default() {
+                beyond_default.push(name.to_string());
+                continue;
+            }
             sample.push((name.to_string(), tree.current()));
         }
     }
+    beyond_default.dedup();
+    eprintln!(
+        "layer 1 in Chrome: {} forms beyond the default list not run, as the browser runner takes the default list only: {beyond_default:?}",
+        beyond_default.len()
+    );
     let all: Vec<Case> = sample.iter().map(|(_, case)| case.clone()).collect();
     let outcomes = translated_in_chrome::<G>(&all);
     let mut reference = Reference::start(&G::REFERENCE);
