@@ -1030,13 +1030,16 @@ fn temporary_address(link: &str) -> Ipv6Addr {
         let text = String::from_utf8(output.stdout).expect("ip writes text");
         if let Some(start) = text.find(LOCAL) {
             let rest = &text[start + LOCAL.len()..];
-            let end = rest.find('"').expect("an address ends");
+            let end = rest.find(JSON_QUOTE).expect("an address ends");
             return rest[..end].parse().expect("an IPv6 address");
         }
         std::thread::sleep(PATIENT_TRY);
     }
     panic!("no temporary address on {link}");
 }
+
+/// The mark that ends a string in iproute2's JSON.
+const JSON_QUOTE: char = '"';
 
 /// How often and how long apart a check looks for what Linux makes in the background.
 const PATIENT_TRIES: u32 = 200;

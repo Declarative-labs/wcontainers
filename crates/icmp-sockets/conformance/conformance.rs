@@ -829,10 +829,11 @@ pub const FAR_V6_SEGMENT: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 9);
 /// An IPv6 extension header of eight bytes: next header, length, then padding (PadN of four).
 pub const PADDING_HEADER: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
 
+/// A routing header's length in eight-byte units after its first eight, for two segments.
+pub const TWO_SEGMENTS: u8 = 4;
+
 /// A segment routing header of two segments, [`FAR_V6_SEGMENT`] last and [`ON_LINK_V6`] next.
 pub fn segment_routing_header() -> Vec<u8> {
-    /// The header's length in eight-byte units after its first eight, for two segments.
-    const TWO_SEGMENTS: u8 = 4;
     let mut routing = vec![
         u8::MIN,
         TWO_SEGMENTS,
@@ -977,6 +978,9 @@ pub fn every_path_mtu_discovery_mode_sends<S: IcmpSockets>(sockets: S) {
     }
 }
 
+/// A fragment MTU below the dummy link's MTU, which a long message does not fit.
+const FRAGMENT_MTU: u32 = 1320;
+
 /// A message longer than the link or the fragment MTU is too long where fragmenting is forbidden, and is
 /// fragmented to the link where it is allowed.
 pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets: S) {
@@ -984,8 +988,6 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
     /// The link's MTU at the end, which the commands below set.
     const LINK_MTU: u32 = 1360;
     const SMALL_LINK: &str = "link set ia mtu 1360";
-    /// A fragment MTU below the link's first MTU.
-    const FRAGMENT_MTU: u32 = 1320;
     let long = vec![u8::MAX; LONG_MESSAGE];
     let too_long = |mtu| {
         Err(SendError::MessageTooLong {
@@ -1369,7 +1371,7 @@ pub const SCHEDULED_AHEAD: Duration = Duration::from_millis(100);
 
 /// The sends a rejected transmit times check makes: each one's time, whether it asks for errors, and what is
 /// reported; its key is its place.
-pub fn rejected_sends() -> [(TransmitTime, Option<TransmitTimeError>); 4] {
+pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Tai);
     let now = Duration::new(
         u64::try_from(now.tv_sec).expect("a time after the epoch"),
@@ -1381,7 +1383,7 @@ pub fn rejected_sends() -> [(TransmitTime, Option<TransmitTimeError>); 4] {
         mode,
         errors,
     };
-    [
+    vec![
         (
             time(
                 now + SCHEDULED_AHEAD,
@@ -2106,8 +2108,6 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
     provoke_icmp_error(&sockets, &socket, to);
     let events = finished_soon(pin!(sockets.wait_for_events(&socket, READABLE)), &wakes);
     assert!(events.error_condition, "{events:?}");
-    /// A fragment MTU the long message does not fit.
-    const FRAGMENT_MTU: u32 = 1320;
     let message = echo(IpVersion::V6, &vec![u8::MAX; LONG_MESSAGE]);
     let forbidden = Ipv6HeaderFields {
         local_fragmentation: LocalFragmentation::Forbidden,

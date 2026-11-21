@@ -22,9 +22,9 @@ use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, HOP_LIMIT, LOCAL, LOCAL_V6, MARK,
     MARK_PROHIBITED, NETWORK, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED,
     PATIENCE, PAYLOAD, QUIET, READABLE, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE,
-    WAITED_SOCKETS, WAITS_ON_ONE, WRITABLE, Wakes, buffer, finished, finished_soon, index, ip, ip6,
-    ipv4, ipv6, no_reports, only_asked_for, output, plain_fields, poll_with, seen, tc, version_of,
-    write_setting,
+    TWO_SEGMENTS, WAITED_SOCKETS, WAITS_ON_ONE, WRITABLE, Wakes, buffer, finished, finished_soon,
+    index, ip, ip6, ipv4, ipv6, no_reports, only_asked_for, output, plain_fields, poll_with, seen,
+    tc, version_of, write_setting,
 };
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, IcmpType, IpHeaderFields,
@@ -52,8 +52,6 @@ pub fn enter_network_namespace() {
 
 /// `IPPROTO_RAW`: a socket of it writes its own headers, and only it takes IPv6 router alerts.
 pub const RAW_PROTOCOL: IpNumber = IpNumber(linux_raw_sys::net::IPPROTO_RAW as u8);
-/// The routing header's length in eight-byte units after its first eight, for two segments.
-const TWO_SEGMENTS: u8 = 4;
 /// The type and length of the IPv6 router alert option of a hop-by-hop header.
 const ROUTER_ALERT_HOP_OPTION: [u8; 2] = [5, 2];
 /// A payload longer than the link of the check that sends one too long.
