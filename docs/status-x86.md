@@ -145,6 +145,92 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   (every told family switched by it), and built BMI2, `xgetbv` and `xsetbv`; AVX, AVX2, FMA, F16C and `xsave`
   and `xrstor` are left (see "X8, run 1"). Run 2 (2026-11-21) built the AVX and AVX2 instructions that work lane
   by lane (454 of the 667 codes) on the ymm registers' upper halves as registers of their own (see "X8, run 2").
+  Run 3 (2026-11-21) fixed the 256-bit float instructions' exceptions, built the AVX and AVX2 instructions that
+  cross lanes or have no legacy form (75 forms) and `xsave` and `xrstor` (see "X8, run 3").
+
+## X8, run 3 (2026-11-21): partly done
+
+Machines: the rented x86-64 machine (96 processors, 5-level paging, load 0 to 4) for lint, unit tests and quick
+layer 1 runs, the i7-8750H (load 0 to 3.4, 4 at once) for layer 1 verdicts, the Mac for git and the literal
+check. Logs in scratch `x8r3/` and on the laptop in `~/wcontainers-x86/logs/x8r3-*.log`.
+
+Run 2's laptop run, read this run (`x8r2-all.log`): every form, 1,800 at 40 cases a form, seed 8204: 3 failing,
+`vdivps`, `vdivpd` and `vhaddps` on ymm, all the other lane's MXCSR flag (below, fixed); the unoffered forms
+written in run 2, 454 at 64 a form, seed 8205, under the default list: 0 failing.
+
+Built this run:
+- A 256-bit float instruction's exact path finds the exceptions of both lanes before either is written: each
+  lane's call of the float hook says which lane it is (`exact::Part`, two bits of the hook's code; the lane form
+  carries it as `Instruction::vex_lane`); the low lane's call keeps its flags in a new private word
+  (`X86Private::float_low_lane_flags`) and leaves MXCSR alone, and the high lane's call adds them to its own,
+  filters them as one instruction (Intel SDM Vol. 1 11.5.2) and raises the unmasked exception, so nothing is
+  written. The fast path is unchanged.
+- `crate::wide`: the VEX instructions that cross lanes or that no legacy form runs, each on its operands' two
+  halves: `vmovmskps`, `vmovmskpd`, `vpmovmskb` on ymm; `vptest` on ymm, `vtestps`, `vtestpd`; `vmovddup` on
+  ymm; every broadcast; `vpermq`, `vpermpd`, `vperm2f128`, `vperm2i128`, `vinsertf128`, `vinserti128`,
+  `vextractf128`, `vextracti128`, `vpblendd`, `vpermilps` and `vpermilpd` (both forms) by shuffles of the halves
+  (`pick`); `vpermd` and `vpermps` by two swizzles and a select; the variable shifts element by element
+  (a count of the width or more gives zero, or the sign for `vpsravd`); `vpmovsx` and `vpmovzx` to ymm by
+  WebAssembly's widening; the conversions between widths on ymm (`vcvtps2pd`, `vcvtdq2pd`, `vcvtpd2ps`,
+  `vcvtpd2dq`, `vcvttpd2dq`) by their legacy forms on the halves (`vex::run_legacy`), as two lanes of one
+  instruction for the exceptions; VEX `vmaskmovdqu` as its legacy form. A form of these mnemonics is taken only
+  when its claim is told (the EVEX forms are AVX-512's, never told). iced's `Float128` operand size is 16 bytes
+  (it was 0, an assertion in the runner).
+- `xsave`, `xsave64`, `xrstor`, `xrstor64` (`fpu::xstate_image`): the checks `fxsave` makes, with 64-byte
+  alignment, over the area of x87, SSE and AVX state (832 bytes); RFBM is rax with XCR0 (edx names no
+  component XCR0 has). `xsave` writes each named component (x87 as `fxsave`, MXCSR and its mask with SSE or AVX,
+  the xmm registers, the upper halves at the AVX offset) and ORs RFBM into XSTATE_BV: by design every component
+  saved is reported in use, which Intel allows (the reference reports what it saw in use). `xrstor`: general
+  protection for an XSTATE_BV bit outside XCR0, a non-zero XCOMP_BV or next eight bytes (the standard form's
+  rule, SDM Vol. 1 13.8.1), or a reserved MXCSR bit when MXCSR is loaded, before anything changes; then each
+  named component is loaded where XSTATE_BV has it and put in its initial configuration where not (FCW 0x37F
+  and the rest zero, registers zero), MXCSR from the area with SSE or AVX, all through selects so that nothing
+  is written conditionally. Layer 1 leaves the four out by design (`XSTATE_BY_DESIGN`: the reference's XCR0
+  has MPX's components and its XSTATE_BV is what it saw); the program below compares them.
+- What a program is told reaches the program runner: a `Blob` carries the key of its offer (`Blob::offer`,
+  `None` for the default), `ready_with` gives it to the machine, and the guest interface has
+  `Guest::offer_from_key` (a default for a guest with one offer, ARM64's; x86's `Offer::from_key` rebuilds the
+  list from the told bits by the kernel interface's flag names and refuses a key no offer has).
+- `programs/x86_64/xstate.c` (the first of the three programs of my own): ymm0 to ymm15, FCW and MXCSR set,
+  `xsave64` of all three components (legacy fields, registers, XSTATE_BV, upper halves printed), then four
+  `xrstor64`s, each followed by an `xsave64` printed without its header: SSE initial with MXCSR still loaded,
+  x87 and AVX initial with SSE not named, all loaded, SSE alone initial. Test `xstate_matches_linux_x86_64`,
+  told the v3 list, at none, full and bounded 1 to 4096 for speed and size: the rented machine (Sapphire Rapids
+  is its reference), 3 distinct blobs, 45 runs, all match Linux (22 s). Not yet in Chrome (the browser runner
+  takes the default offer only).
+
+Verdicts:
+- The i7-8750H (`x8r3-a.log`), seed 8304, 1,000 cases a form: the 75 new forms and the 28 ymm float forms that
+  take the exact path (`vdivps`, `vdivpd`, `vhaddps` ymm among them): 103 forms, 0 failing (279 s, load 3.4).
+- The i7-8750H (`x8r3-b.log`), after the claim check below: the 75 new forms at 200 a form, seed 8305: 0
+  failing; the same forms under the default list (the unoffered test), 76 at 64 a form, seed 8306: 0 failing.
+- The rented machine, the 75 new forms at 30 cases (seed 8302): every difference but one was 5-level paging's
+  (the reference's page fault above 2^47 where the laptop gives general protection); the one was the `Float128`
+  size, fixed.
+- The rented machine, from the tree at fc0176ca with other tracks' edits (`x8r3/check2.log`): fmt, clippy with
+  warnings denied for the five crates and both browser builds, the unit tests (x86's `tests/vex.rs`, `tables.rs`,
+  `cpuid.rs` among them), the test crate's library, the told features and hand cases: pass.
+- The literal check (the Mac): no finding in this track's files (one, `QWORD` defined twice, fixed before the
+  commit). Baseline lines: x86 117, guest-cpu 26, the test crate 1,745, the translator 8.
+- While this run went on, another track's uncommitted edits in `crates/wcontainers-arm64` (`carry.rs`,
+  `encode.rs`) did not compile, so the test crate (which builds ARM64 too) could not build in the shared tree;
+  the xstate run and its lint came from a clone of main with my files (`x8r3/clone`), as X8 run 1 did.
+
+Left of X8, most important first (137 codes, scratch `x8r2/left2.txt` less this run's):
+- The offer through the browser runner: the blob's key passed by runner.js to `browser/src/lib.rs`
+  `translate_for`, which takes `G::offer_from_key`, so that `xstate` and the next programs run in Chrome; the
+  benchmark runner's blobs built for x86-64-v3 given the v3 key.
+- FMA (96 codes): `relaxed_madd` where the host probe fuses; the exact path and a host that does not fuse go to
+  the float hook with a third operand (rustc_apfloat's `mul_add`), counted "software fused multiply-add". The
+  hook needs a third operand's two words in the private words.
+- The masked moves (`vmaskmovps`, `vmaskmovpd`, `vpmaskmovd`, `vpmaskmovq`, 16 codes; plan 5.4's rule for the
+  checks) and the gathers (16 codes, plan 5.4, element by element with the mask cleared, `memory_fault`'s
+  masked span), the designed gather case with TF.
+- F16C (`vcvtph2ps`, `vcvtps2ph`, 4 codes): no WebAssembly half-precision; the float hook with rustc_apfloat's
+  `Half`, or integer lanes for `vcvtph2ps`, with a named reason.
+- Three programs of my own using X8's instructions at every look-ahead in wasmtime and Chrome; the benchmark set
+  built for x86-64-v3 with the v3 list, and with the default list stopping with illegal instruction and the
+  counter; layer 1 at 1,000 a form for every form of the v3 list; the whole suite.
 
 ## X8, run 2 (2026-11-21): partly done
 
