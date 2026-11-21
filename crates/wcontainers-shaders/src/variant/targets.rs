@@ -313,11 +313,11 @@ fn library_source() -> String {
 
 /// A name in upper camel case (`OneMinusSrc1Alpha`) in upper snake case (`ONE_MINUS_SRC1_ALPHA`).
 fn upper_snake(name: &str) -> String {
-    const SEPARATOR: char = '_';
+    const WORD_BREAK: char = '_';
     let mut out = String::new();
     for (i, c) in name.char_indices() {
         if c.is_ascii_uppercase() && i > 0 {
-            out.push(SEPARATOR);
+            out.push(WORD_BREAK);
         }
         out.push(c.to_ascii_uppercase());
     }
