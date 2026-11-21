@@ -11,7 +11,10 @@ use core::ops::ControlFlow;
 #[cfg(feature = "std")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "std")]
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
+
+extern crate alloc;
+use alloc::sync::Arc;
 
 use wcontainers_abi::{Cpu, Exit, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel_linux::{Kernel, Standard};
@@ -184,19 +187,28 @@ pub trait System: wcontainers_kernel_linux::System {
     type End;
     /// The kernel has started: hands it what this system gives at once, such as credit on the
     /// ends it reads.
-    fn started(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu);
+    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu);
     /// How the next turn ends, for the kernel's slice.
     fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn;
     /// How far the running thread got since it was last heard from.
     fn ran(&self, progress: u64);
     /// Hands the kernel what arrived since the last exit; whether something needs the thread out of
     /// `run` before the kernel is asked what is next.
-    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
+    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
     /// No thread is in `run`: does what [`System::arrived`] asked for, and may end the run.
-    fn stopped<E: Execution>(&self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Self::End>;
+    fn stopped<E: Execution>(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut E,
+    ) -> ControlFlow<Self::End>;
     /// Nothing can run: waits for an event, or until the time on the monotonic clock, and hands it to
     /// the kernel.
-    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
+    fn idle(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        until_nanoseconds: Option<u64>,
+    );
     /// A slow path of the executor, apart from the kernel's warnings.
     fn cpu_warning(&self, warning: Warning<'_>);
     /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
@@ -246,7 +258,7 @@ impl Stepper {
         &mut self,
         kernel: &mut Kernel,
         cpu: &mut E,
-        system: &mut S,
+        system: &Arc<S>,
     ) -> Result<Step<S::End>, E::Failure> {
         match self.kept.take().unwrap_or_else(|| kernel.next()) {
             Next::Run {
@@ -278,7 +290,7 @@ impl Stepper {
         &mut self,
         kernel: &mut Kernel,
         cpu: &mut E,
-        system: &mut S,
+        system: &Arc<S>,
     ) -> Result<Ending<S::End>, E::Failure> {
         loop {
             match self.step(kernel, cpu, system)? {
@@ -295,7 +307,7 @@ impl Stepper {
 pub fn drive<E: Execution, S: System>(
     kernel: &mut Kernel,
     cpu: &mut E,
-    system: &mut S,
+    system: &Arc<S>,
 ) -> Result<Ending<S::End>, E::Failure> {
     Stepper::default().drive(kernel, cpu, system)
 }
@@ -303,7 +315,7 @@ pub fn drive<E: Execution, S: System>(
 /// The loop's answer to the running thread's exits.
 struct Answering<'a, S> {
     kernel: &'a mut Kernel,
-    system: &'a mut S,
+    system: &'a Arc<S>,
     thread: ThreadId,
     kept: &'a mut Option<Next>,
 }
@@ -311,7 +323,7 @@ struct Answering<'a, S> {
 impl<S: System> Answer for Answering<'_, S> {
     fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry {
         self.system.ran(progress);
-        self.kernel.exit(cpu, &*self.system, exit);
+        self.kernel.exit(cpu, self.system, exit);
         if self.system.arrived(self.kernel, cpu) {
             return Carry::Leave(Leaving::SystemAsked);
         }

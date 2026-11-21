@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hasher};
 
-use wcontainers_abi::{BackendRequestId, ConnectionId, End, Event, HostError, MemoryId};
+use wcontainers_abi::{ConnectionId, End, Event, HostError, MemoryId};
 use wcontainers_runtime_single_kernel::Turn;
 
 /// One thing the host gave, in the order the kernel took it.
@@ -28,6 +28,8 @@ pub enum Entry {
     Turn(Turn),
     /// An event the outside handed in.
     Event(OwnedEvent),
+    /// The backend's reply to a request a call of the kernel's waits on, by its number.
+    BackendAnswered(u64, Vec<u8>),
     /// A signal the outside sent to the first process.
     Kill(wcontainers_kernel::signal::Signal),
     /// The ends of what the outside did at a point of the driver loop, with what it answered.
@@ -42,10 +44,6 @@ pub enum Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnedEvent {
     Timer,
-    BackendReply {
-        request: BackendRequestId,
-        reply: Vec<u8>,
-    },
     BackendNotice(Vec<u8>),
     Connected {
         connection: ConnectionId,
@@ -77,10 +75,6 @@ impl OwnedEvent {
     pub fn of(event: &Event<'_>) -> Self {
         match *event {
             Event::Timer => Self::Timer,
-            Event::BackendReply { request, reply } => Self::BackendReply {
-                request,
-                reply: reply.to_vec(),
-            },
             Event::BackendNotice { notice } => Self::BackendNotice(notice.to_vec()),
             Event::Connected { connection, error } => Self::Connected { connection, error },
             Event::ConnectionReady { connection } => Self::ConnectionReady(connection),
@@ -108,10 +102,6 @@ impl OwnedEvent {
     pub fn event(&self) -> Event<'_> {
         match self {
             Self::Timer => Event::Timer,
-            Self::BackendReply { request, reply } => Event::BackendReply {
-                request: *request,
-                reply,
-            },
             Self::BackendNotice(notice) => Event::BackendNotice { notice },
             Self::Connected { connection, error } => Event::Connected {
                 connection: *connection,

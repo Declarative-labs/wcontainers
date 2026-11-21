@@ -68,9 +68,10 @@ impl ExecutionConfig {
 
 pub use wcontainers_kernel::signal_information::SignalInformation;
 
-/// What an embedder implements: the abi's services, the task ids, and the hooks. Every hook is
-/// synchronous, fires only when every operation on its process is legal, and never nests.
-pub trait System: Host + Sync {
+/// What an embedder implements: the abi's services, the file backend, the task ids, and the
+/// hooks. Every hook is synchronous, fires only when every operation on its process is legal, and
+/// never nests.
+pub trait System: Host + wcontainers_system::FuseServer + Sync + 'static {
     /// A free id for a new process or thread; `previous` is the id handed out last.
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         task_id_after(previous)

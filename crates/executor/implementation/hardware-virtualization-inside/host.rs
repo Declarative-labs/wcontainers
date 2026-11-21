@@ -4,7 +4,7 @@
 use alloc::vec::Vec;
 
 use spin::Mutex;
-use wcontainers_abi::{BackendRequestId, ConnectionId, End, Host, HostError, Warning};
+use wcontainers_abi::{ConnectionId, End, Host, HostError, Warning};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{Link, Ring};
@@ -17,7 +17,6 @@ crate::requests! {
     Random { length } -> ();
     /// A slow path: its reason in the bytes.
     Warn { count, detail } -> ();
-    BackendSend { request } -> Outcome;
     /// The bytes the kernel sends on the end numbered `stream`.
     Output { stream } -> ();
     /// The address in the bytes; `stream` is 1 for TCP.
@@ -136,13 +135,6 @@ impl<R: Ring + Send> Host for LinkHost<R> {
             },
             warning.reason.as_bytes(),
         );
-    }
-
-    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        self.ring
-            .lock()
-            .ask(&BackendSend { request: request.0 }, message)
-            .unit()
     }
 
     fn send_stream(&self, end: End, bytes: &[u8]) {
@@ -285,13 +277,6 @@ pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) 
             });
             None
         }
-        Request::BackendSend => {
-            let BackendSend { request } = link.get();
-            Some(
-                host.backend_send(BackendRequestId(request), bytes)
-                    .map(|()| 0),
-            )
-        }
         Request::Output => {
             let Output { stream } = link.get();
             host.send_stream(End(stream as u32), bytes);
@@ -377,7 +362,7 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use wcontainers_abi::{BackendRequestId, ConnectionId, End, Host, HostError, Warning};
+    use wcontainers_abi::{ConnectionId, End, Host, HostError, Warning};
     use zerocopy::FromZeros;
 
     use super::{LinkHost, Request};
@@ -410,7 +395,6 @@ mod tests {
     const REALTIME: &str = "realtime";
     const RANDOM: &str = "random";
     const WARN: &str = "warn";
-    const BACKEND: &str = "backend";
     const OUTPUT: &str = "output";
     const CREDIT: &str = "credit";
     const CLOSE_STREAM: &str = "close stream";
@@ -445,12 +429,6 @@ mod tests {
             bytes.extend_from_slice(&warning.count.to_le_bytes());
             bytes.extend_from_slice(&warning.detail.to_le_bytes());
             self.record(WARN, &bytes);
-        }
-        fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-            let mut bytes = request.0.to_le_bytes().to_vec();
-            bytes.extend_from_slice(message);
-            self.record(BACKEND, &bytes);
-            self.outcome(0).map(drop)
         }
         fn send_stream(&self, end: End, bytes: &[u8]) {
             let mut all = end.0.to_le_bytes().to_vec();
@@ -602,13 +580,6 @@ mod tests {
             let mut expected = id.0.to_le_bytes().to_vec();
             expected.extend_from_slice(&bytes);
             assert_eq!(last(&host), (SEND.into(), expected));
-            assert_eq!(
-                host.backend_send(BackendRequestId(length as u64), &bytes),
-                Ok(())
-            );
-            let mut expected = (length as u64).to_le_bytes().to_vec();
-            expected.extend_from_slice(&bytes);
-            assert_eq!(last(&host), (BACKEND.into(), expected));
 
             let given: Vec<u8> = long(length).into_iter().rev().collect();
             host.ring.lock().host.given = given.clone();
@@ -676,7 +647,6 @@ mod tests {
             assert_eq!(host.send(id, b"x"), Err(error));
             assert_eq!(host.receive(id, &mut [0; 4]), Err(error));
             assert_eq!(host.connect(id, &[0; 16], 1, false), Err(error));
-            assert_eq!(host.backend_send(BackendRequestId(1), b"x"), Err(error));
             assert_eq!(host.look_up(1, "x"), Err(error));
             assert_eq!(host.listen(id, 1), Err(error));
             assert_eq!(host.accept(id, id), Err(error));

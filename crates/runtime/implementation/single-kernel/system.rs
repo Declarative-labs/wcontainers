@@ -11,9 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use wcontainers_abi::{
-    BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, PAGE_SIZE, Warning,
-};
+use wcontainers_abi::{ConnectionId, Cpu, End, Event, Host, HostError, PAGE_SIZE, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard};
 
 use crate::arrivals::{Arrival, Arrivals};
@@ -84,8 +82,6 @@ struct LocalState {
     input_credit: Arc<InputCredit>,
     warnings: Vec<Warned>,
     files: Option<Files>,
-    /// The file backend's replies not yet handed to the kernel.
-    replies: Vec<(BackendRequestId, Vec<u8>)>,
     arrivals: Arc<Arrivals>,
     /// Made at the container's first use of the network.
     network: Option<Network>,
@@ -127,7 +123,6 @@ impl LocalSystem {
             input_credit: Arc::default(),
             warnings: Vec::new(),
             files: None,
-            replies: Vec::new(),
             arrivals: Arc::default(),
             network: None,
             published: Vec::new(),
@@ -176,6 +171,113 @@ impl LocalSystem {
     }
 }
 
+impl LocalSystem {
+    /// Hands the kernel what arrived: the output ends' credit and closes, and the network's
+    /// events, none of them while the state is held. Whether anything did.
+    fn deliver(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let (credit_owed, closing, arrivals) = {
+            let mut state = self.state();
+            (
+                std::mem::take(&mut state.credit_owed),
+                std::mem::take(&mut state.closing),
+                state.arrivals.take(),
+            )
+        };
+        let any = !credit_owed.is_empty() || !closing.is_empty() || !arrivals.is_empty();
+        for end in credit_owed {
+            kernel.event(
+                cpu,
+                self,
+                Event::StreamCredit {
+                    end,
+                    bytes: u64::MAX,
+                },
+            );
+        }
+        for end in closing {
+            kernel.event(cpu, self, Event::StreamClosed { end });
+        }
+        for arrival in arrivals {
+            match arrival {
+                Arrival::Input(bytes) => self.give_input(kernel, cpu, &bytes),
+                Arrival::InputEnded(error) => self.input_ended(kernel, cpu, error),
+                arrival => {
+                    let event = match &mut self.state().network {
+                        Some(network) => network.event(&arrival),
+                        None => continue,
+                    };
+                    if let Some(event) = event {
+                        kernel.event(cpu, self, event);
+                    }
+                }
+            }
+        }
+        let mut state = self.state();
+        let warnings: Vec<_> = state
+            .files
+            .as_mut()
+            .map(|files| files.warnings())
+            .unwrap_or_default();
+        for (reason, detail, count) in warnings {
+            state.keep(
+                Warning {
+                    reason,
+                    detail,
+                    count,
+                },
+                false,
+            );
+        }
+        any
+    }
+
+    /// Hands the kernel bytes of the input, unless one side has let go of its end.
+    fn give_input(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, bytes: &[u8]) {
+        let end = {
+            let state = self.state();
+            state.input_end.filter(|_| !state.input_closed)
+        };
+        if let Some(end) = end {
+            kernel.event(cpu, self, Event::StreamData { end, bytes });
+        }
+    }
+
+    /// The input ended: the system lets go of a pipe's end, so the guest reads end of file. A
+    /// terminal's end stays, since its output goes on; the guest reads nothing more from it.
+    fn input_ended(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        error: Option<std::io::Error>,
+    ) {
+        let closes = {
+            let mut state = self.state();
+            if let Some(error) = error {
+                let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
+                let count = state
+                    .warnings
+                    .iter()
+                    .find(|w| w.reason == INPUT_NOT_READ)
+                    .map_or(1, |w| w.count + 1);
+                state.keep(
+                    Warning {
+                        reason: INPUT_NOT_READ,
+                        detail,
+                        count,
+                    },
+                    false,
+                );
+            }
+            let closes = state.input_end == Some(INPUT) && !state.input_closed;
+            state.input_closed |= closes;
+            closes
+        };
+        if closes {
+            kernel.event(cpu, self, Event::StreamClosed { end: INPUT });
+        }
+    }
+}
+
 impl LocalState {
     fn network(&mut self) -> &mut Network {
         self.network.get_or_insert_with(|| {
@@ -185,106 +287,6 @@ impl LocalState {
             }
             network
         })
-    }
-
-    /// Hands the kernel what arrived: the output ends' credit and closes, the file backend's
-    /// replies and the network's events. Whether anything did.
-    fn deliver(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        let credit_owed = std::mem::take(&mut self.credit_owed);
-        let closing = std::mem::take(&mut self.closing);
-        let replies = std::mem::take(&mut self.replies);
-        let arrivals = self.arrivals.take();
-        let any = !credit_owed.is_empty()
-            || !closing.is_empty()
-            || !replies.is_empty()
-            || !arrivals.is_empty();
-        for end in credit_owed {
-            self.hand(
-                kernel,
-                cpu,
-                Event::StreamCredit {
-                    end,
-                    bytes: u64::MAX,
-                },
-            );
-        }
-        for end in closing {
-            self.hand(kernel, cpu, Event::StreamClosed { end });
-        }
-        for (request, reply) in replies {
-            self.hand(
-                kernel,
-                cpu,
-                Event::BackendReply {
-                    request,
-                    reply: &reply,
-                },
-            );
-        }
-        for arrival in arrivals {
-            match arrival {
-                Arrival::Input(bytes) => self.give_input(kernel, cpu, &bytes),
-                Arrival::InputEnded(error) => self.input_ended(kernel, cpu, error),
-                arrival => {
-                    let Some(network) = &mut self.network else {
-                        continue;
-                    };
-                    if let Some(event) = network.event(&arrival) {
-                        self.hand(kernel, cpu, event);
-                    }
-                }
-            }
-        }
-        if let Some(files) = &mut self.files {
-            for (reason, detail, count) in files.warnings() {
-                self.keep(
-                    Warning {
-                        reason,
-                        detail,
-                        count,
-                    },
-                    false,
-                );
-            }
-        }
-        any
-    }
-
-    /// Hands the kernel bytes of the input, unless one side has let go of its end.
-    fn give_input(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, bytes: &[u8]) {
-        if let Some(end) = self.input_end.filter(|_| !self.input_closed) {
-            self.hand(kernel, cpu, Event::StreamData { end, bytes });
-        }
-    }
-
-    /// The input ended: the system lets go of a pipe's end, so the guest reads end of file. A
-    /// terminal's end stays, since its output goes on; the guest reads nothing more from it.
-    fn input_ended(
-        &mut self,
-        kernel: &mut Kernel,
-        cpu: &mut dyn Cpu,
-        error: Option<std::io::Error>,
-    ) {
-        if let Some(error) = error {
-            let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
-            let count = self
-                .warnings
-                .iter()
-                .find(|w| w.reason == INPUT_NOT_READ)
-                .map_or(1, |w| w.count + 1);
-            self.keep(
-                Warning {
-                    reason: INPUT_NOT_READ,
-                    detail,
-                    count,
-                },
-                false,
-            );
-        }
-        if self.input_end == Some(INPUT) && !self.input_closed {
-            self.input_closed = true;
-            self.hand(kernel, cpu, Event::StreamClosed { end: INPUT });
-        }
     }
 
     fn now(&self) -> u64 {
@@ -474,13 +476,10 @@ impl LocalState {
         self.keep(warning, false);
     }
 
-    /// Served at once: the reply is handed over at the next exit or idle.
-    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+    /// Served at once; a message with no reply has an empty one.
+    fn serve(&mut self, message: &[u8]) -> Result<Vec<u8>, HostError> {
         let files = self.files.as_mut().ok_or(HostError::NotSupported)?;
-        if let Some(reply) = files.serve(message) {
-            self.replies.push((request, reply));
-        }
-        Ok(())
+        Ok(files.serve(message).unwrap_or_default())
     }
 
     fn send_stream(&mut self, end: End, bytes: &[u8]) {
@@ -589,15 +588,6 @@ macro_rules! host_on_state {
                 $state.warn(warning);
             }
 
-            fn backend_send(
-                &self,
-                request: BackendRequestId,
-                message: &[u8],
-            ) -> Result<(), HostError> {
-                let $this = self;
-                $state.backend_send(request, message)
-            }
-
             fn send_stream(&self, end: End, bytes: &[u8]) {
                 let $this = self;
                 $state.send_stream(end, bytes);
@@ -677,16 +667,11 @@ macro_rules! host_on_state {
 
 host_on_state!(LocalSystem, system => system.state());
 
-/// The state while the local system holds it, as the kernel's system for what the local system
-/// hands the kernel then: each of the kernel's calls takes it in turn.
-struct Held<'a>(Mutex<&'a mut LocalState>);
+impl wcontainers_system::FuseServer for LocalSystem {
+    type Reply = Vec<u8>;
 
-host_on_state!(Held<'_>, held => held.0.lock().unwrap_or_else(PoisonError::into_inner));
-
-impl LocalState {
-    /// Hands the kernel `event`, the kernel's calls meanwhile made on this state.
-    fn hand(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
-        kernel.event(cpu, &Held(Mutex::new(self)), event);
+    async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
+        self.state().serve(request)
     }
 }
 
@@ -695,8 +680,8 @@ impl System for LocalSystem {
     type End = core::convert::Infallible;
 
     /// Gives the output ends their credit at once.
-    fn started(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
-        self.state().deliver(kernel, cpu);
+    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        self.deliver(kernel, cpu);
     }
 
     fn stop_flag(&self, flag: StopFlag) {
@@ -745,13 +730,17 @@ impl System for LocalSystem {
     /// Time is the host's clock, not progress.
     fn ran(&self, _: u64) {}
 
-    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        self.state().deliver(kernel, cpu);
+    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        self.deliver(kernel, cpu);
         false
     }
 
     /// The turn is over, so its deadline is dropped: an idle past it raises nothing.
-    fn stopped<E: Execution>(&self, _: &mut Kernel, _: &mut E) -> ControlFlow<Self::End> {
+    fn stopped<E: Execution>(
+        self: &Arc<Self>,
+        _: &mut Kernel,
+        _: &mut E,
+    ) -> ControlFlow<Self::End> {
         self.turn_over();
         ControlFlow::Continue(())
     }
@@ -759,25 +748,26 @@ impl System for LocalSystem {
     /// Hands over what arrived, or else waits until the kernel's next timer or an arrival. With
     /// neither to come, the container waits for ever, as it would on Linux. The state is not held
     /// while waiting.
-    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+    fn idle(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        until_nanoseconds: Option<u64>,
+    ) {
+        if self.deliver(kernel, cpu) {
+            return;
+        }
         let (arrivals, now) = {
-            let mut state = self.state();
-            if state.deliver(kernel, cpu) {
-                return;
-            }
+            let state = self.state();
             (state.arrivals.clone(), state.now())
         };
         let left = until_nanoseconds.map(|until| Duration::from_nanos(until.saturating_sub(now)));
-        let mut state = if left == Some(Duration::ZERO) {
-            self.state()
-        } else {
+        if left != Some(Duration::ZERO) {
             arrivals.wait(left);
-            let mut state = self.state();
-            state.deliver(kernel, cpu);
-            state
-        };
-        if until_nanoseconds.is_some_and(|until| state.now() >= until) {
-            state.hand(kernel, cpu, Event::Timer);
+            self.deliver(kernel, cpu);
+        }
+        if until_nanoseconds.is_some_and(|until| self.state().now() >= until) {
+            kernel.event(cpu, self, Event::Timer);
         }
     }
 

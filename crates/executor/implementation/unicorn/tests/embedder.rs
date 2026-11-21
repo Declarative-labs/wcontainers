@@ -2180,10 +2180,10 @@ fn a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends() 
                 sent,
                 "{label}"
             );
-            // The one to another process's thread and the one with no number.
+            // The one to another process's thread.
             assert_eq!(
                 counted(&run, reason::SIGNAL_NOT_SENT),
-                2,
+                1,
                 "{label}: {:?}",
                 run.counters
             );

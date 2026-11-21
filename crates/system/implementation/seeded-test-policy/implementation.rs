@@ -11,10 +11,11 @@ use core::convert::Infallible;
 use core::ops::{ControlFlow, Range};
 use core::time::Duration;
 
+use alloc::sync::Arc;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
-use wcontainers_abi::{BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, Warning};
+use wcontainers_abi::{ConnectionId, Cpu, End, Event, Host, HostError, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
 use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
 
@@ -214,10 +215,6 @@ impl<H: Host> Host for TestPolicy<H> {
         self.services.warn(warning);
     }
 
-    fn backend_send(&self, request: BackendRequestId, _message: &[u8]) -> Result<(), HostError> {
-        self.refuse(request.0)
-    }
-
     fn send_stream(&self, end: End, bytes: &[u8]) {
         self.services.send_stream(end, bytes);
     }
@@ -270,15 +267,24 @@ impl<H: Host> Host for TestPolicy<H> {
     }
 }
 
-impl<H: Host> wcontainers_kernel_linux::System for TestPolicy<H> {
+/// The file backend is refused, as every other request to the outside.
+impl<H: Host> wcontainers_system::FuseServer for TestPolicy<H> {
+    type Reply = Vec<u8>;
+
+    async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
+        self.refuse(request.len() as u64).map(|()| Vec::new())
+    }
+}
+
+impl<H: Host + 'static> wcontainers_kernel_linux::System for TestPolicy<H> {
     fn free_task_id(&self, _id: TaskId) {}
 }
 
-impl<H: Host> System for TestPolicy<H> {
+impl<H: Host + 'static> System for TestPolicy<H> {
     type End = Infallible;
 
     /// The output ends take all the kernel sends, at once.
-    fn started(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
         for end in [OUTPUT, ERROR] {
             kernel.event(
                 cpu,
@@ -305,7 +311,7 @@ impl<H: Host> System for TestPolicy<H> {
         state.clock.advance(nanoseconds);
     }
 
-    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
         let closing = {
             let mut state = self.state.lock();
             state.turns += 1;
@@ -317,11 +323,20 @@ impl<H: Host> System for TestPolicy<H> {
         false
     }
 
-    fn stopped<E: Execution>(&self, _kernel: &mut Kernel, _cpu: &mut E) -> ControlFlow<Infallible> {
+    fn stopped<E: Execution>(
+        self: &Arc<Self>,
+        _kernel: &mut Kernel,
+        _cpu: &mut E,
+    ) -> ControlFlow<Infallible> {
         ControlFlow::Continue(())
     }
 
-    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+    fn idle(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        until_nanoseconds: Option<u64>,
+    ) {
         let Some(until) = until_nanoseconds else {
             panic!("the kernel is idle with nothing to wake it, and this policy has no events");
         };

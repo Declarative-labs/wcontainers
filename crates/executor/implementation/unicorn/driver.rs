@@ -1,15 +1,17 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
+use std::collections::BTreeMap;
 use std::ops::{ControlFlow, Range};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::task::{Poll, Waker};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE,
-    SystemCallRequest, Warning,
+    ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE, SystemCallRequest,
+    Warning,
 };
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal::Signal;
@@ -234,9 +236,9 @@ pub struct Run {
 /// until a time, the host's clocks jump to it instead of waiting, unless the host waits. With
 /// `NoHooks` the kernel's own provided defaults answer every hook and task id call.
 pub struct TestHost<H = NoHooks> {
-    started: Instant,
+    started: Mutex<Instant>,
     /// How far the wall clock has jumped ahead.
-    skipped: u64,
+    skipped: AtomicU64,
     random: Mutex<StdRng>,
     /// The other sides of the container's ends.
     pub(crate) streams: Mutex<Streams>,
@@ -246,21 +248,23 @@ pub struct TestHost<H = NoHooks> {
     virtual_now: Option<AtomicU64>,
     /// With a clock that moves only when the driver says, the wall clock's reading when the
     /// monotonic clock read 0: the wall clock moves with it.
-    wall_base: u64,
+    wall_base: AtomicU64,
     /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
     /// backend's answers arrive.
-    schedule: Schedule,
+    schedule: Mutex<Schedule>,
     /// With a repeatable clock, the time the kernel's work on a turn's end takes, passed at the
     /// next reading of the clock.
     kernel_work: AtomicU64,
     /// The file backend, for a container with a volume.
     pub(crate) backend: Mutex<Option<crate::backend::Backend>>,
+    /// The backend's replies the kernel's calls wait for.
+    replies: Mutex<Replies>,
     /// Connections to the outside and lookups.
     network: Mutex<crate::network::Network>,
     /// The CPU side's own slow paths.
-    cpu_warnings: Vec<Warned>,
+    cpu_warnings: Mutex<Vec<Warned>>,
     /// What a driven run has done to it between turns; none outside one.
-    injecting: Option<Injecting>,
+    injecting: Mutex<Option<Injecting>>,
     /// Whether an idle kernel's waits take their time on the machine's clock, as the reference's
     /// do, rather than being skipped.
     waits: bool,
@@ -268,6 +272,14 @@ pub struct TestHost<H = NoHooks> {
     hooks: Mutex<H>,
     /// The record of what this host gives the kernel, kept or answered from.
     tape: Option<Mutex<Tape>>,
+}
+
+/// The backend's replies that arrived for the kernel's calls and are not taken yet, and the waker of
+/// each call that waits for its reply, by request number.
+#[derive(Default)]
+struct Replies {
+    arrived: BTreeMap<u64, Vec<u8>>,
+    waiting: BTreeMap<u64, Waker>,
 }
 
 /// What a driven run has done to it at moments drawn from its seed, and where it is.
@@ -308,19 +320,20 @@ impl TestHost {
     /// A host whose clock is the wall clock's.
     pub fn new(seed: u64) -> Self {
         Self {
-            started: Instant::now(),
-            skipped: 0,
+            started: Mutex::new(Instant::now()),
+            skipped: AtomicU64::new(0),
             random: Mutex::new(StdRng::seed_from_u64(seed)),
             streams: Mutex::default(),
             warnings: Mutex::default(),
             virtual_now: None,
-            wall_base: 0,
-            schedule: Schedule::new(seed),
+            wall_base: AtomicU64::new(0),
+            schedule: Mutex::new(Schedule::new(seed)),
             kernel_work: AtomicU64::default(),
             backend: Mutex::default(),
+            replies: Mutex::default(),
             network: Default::default(),
-            cpu_warnings: Vec::new(),
-            injecting: None,
+            cpu_warnings: Mutex::default(),
+            injecting: Mutex::default(),
             waits: false,
             hooks: Mutex::new(NoHooks),
             tape: None,
@@ -336,7 +349,7 @@ impl TestHost {
             virtual_now: Some(AtomicU64::new(start)),
             ..Self::new(seed)
         };
-        host.wall_base = wall_start.unwrap_or_else(wall_clock) - start;
+        *host.wall_base.get_mut() = wall_start.unwrap_or_else(wall_clock) - start;
         host
     }
 
@@ -353,6 +366,7 @@ impl TestHost {
             schedule: self.schedule,
             kernel_work: self.kernel_work,
             backend: self.backend,
+            replies: self.replies,
             network: self.network,
             cpu_warnings: self.cpu_warnings,
             injecting: self.injecting,
@@ -378,20 +392,24 @@ impl<H: Send> TestHost<H> {
     /// repeatable one without the time the save took, moved on by `wall_step`); randomness and the
     /// length of turns come from `seed`. The backend and the answers it owes, the streams and the
     /// test's hooks go on.
-    fn move_on(&mut self, seed: u64, wall_step: u64) {
+    fn move_on(&self, seed: u64, wall_step: u64) {
         let wall = self.realtime_nanoseconds();
-        self.started = Instant::now();
-        *held(&mut self.random) = StdRng::seed_from_u64(seed);
-        if let Some(now) = &mut self.virtual_now {
-            *now.get_mut() = 0;
+        *lock(&self.started) = Instant::now();
+        *lock(&self.random) = StdRng::seed_from_u64(seed);
+        if let Some(now) = &self.virtual_now {
+            now.store(0, Ordering::Relaxed);
         }
-        self.schedule = Schedule::new(seed);
-        *self.kernel_work.get_mut() = 0;
+        *lock(&self.schedule) = Schedule::new(seed);
+        self.kernel_work.store(0, Ordering::Relaxed);
         // A new host has none of the old one's connections; its published ports go on.
-        let network = held(&mut self.network).moved();
-        *held(&mut self.network) = network;
-        self.wall_base = 0;
-        self.wall_base = wall + wall_step - self.monotonic_nanoseconds();
+        {
+            let mut network = lock(&self.network);
+            let moved = network.moved();
+            *network = moved;
+        }
+        self.wall_base.store(0, Ordering::Relaxed);
+        let base = wall + wall_step - self.monotonic_nanoseconds();
+        self.wall_base.store(base, Ordering::Relaxed);
     }
 
     /// The test's hooks for a call the kernel makes; one made while another is running nested in
@@ -405,9 +423,10 @@ impl<H: Send> TestHost<H> {
     }
 
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
-    pub fn skip_to(&mut self, until: u64) {
+    pub fn skip_to(&self, until: u64) {
         let now = self.monotonic_nanoseconds();
-        self.skipped += until.saturating_sub(now);
+        self.skipped
+            .fetch_add(until.saturating_sub(now), Ordering::Relaxed);
     }
 }
 
@@ -574,7 +593,7 @@ impl<H> TestHost<H> {
     }
 
     /// Whether the backend owes an answer.
-    pub(crate) fn backend_waiting(&mut self) -> bool {
+    pub(crate) fn backend_waiting(&self) -> bool {
         if let Some(waiting) = self.replayed(|entry| match entry {
             Entry::BackendWaiting(waiting) => Ok(waiting),
             other => Err(other),
@@ -590,10 +609,10 @@ impl<H> TestHost<H> {
     }
 
     /// What the record holds for a run that kept one, which then has no more to keep.
-    pub fn take_tape(&mut self) -> Option<Tape> {
+    pub fn take_tape(&self) -> Option<Tape> {
         self.tape
-            .take()
-            .map(|tape| tape.into_inner().unwrap_or_else(PoisonError::into_inner))
+            .as_ref()
+            .map(|tape| std::mem::take(&mut *lock(tape)))
     }
 }
 
@@ -604,12 +623,12 @@ where
     /// Does what the outside does at one point of the driver loop: in a replay, hands the kernel
     /// what the record holds up to that point's end; else does it with `live`, keeping its end.
     fn outside_part<T: Copy>(
-        &mut self,
+        self: &Arc<Self>,
         kernel: &mut Kernel,
         cpu: &mut dyn Cpu,
         ending: fn(T) -> Entry,
         ended: fn(&Entry) -> Option<T>,
-        live: impl FnOnce(&mut Self, &mut Kernel, &mut dyn Cpu) -> T,
+        live: impl FnOnce(&Arc<Self>, &mut Kernel, &mut dyn Cpu) -> T,
     ) -> T {
         if self.replaying() {
             let tape = self.tape.as_ref().expect("a record");
@@ -618,6 +637,7 @@ where
                 match entry {
                     Entry::Event(event) => kernel.event(cpu, self, event.event()),
                     Entry::Kill(signal) => kernel.kill(cpu, self, signal),
+                    Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
                     other => match ended(&other) {
                         Some(value) => return value,
                         None if other == Entry::Delivered => {}
@@ -637,7 +657,7 @@ where
 
     /// Hands the kernel an event from the outside, kept in the record; in a replay, one the
     /// driver's own work hands must be the one the record holds.
-    pub(crate) fn hand(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
+    pub(crate) fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
         self.kept_in_step(Entry::Event(OwnedEvent::of(&event)));
         let was = self.set_outside(false);
         kernel.event(cpu, self, event);
@@ -645,7 +665,7 @@ where
     }
 
     /// Sends a signal from the outside to the first process, kept in the record.
-    fn kill(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, signal: Signal) {
+    fn kill(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, signal: Signal) {
         self.kept_in_step(Entry::Kill(signal));
         let was = self.set_outside(false);
         kernel.kill(cpu, self, signal);
@@ -678,9 +698,12 @@ impl<H: Send> TestHost<H> {
         match &self.virtual_now {
             Some(now) => {
                 let work = self.kernel_work.swap(0, Ordering::Relaxed);
-                now.fetch_add(work, Ordering::Relaxed) + self.skipped
+                now.fetch_add(work, Ordering::Relaxed) + self.skipped.load(Ordering::Relaxed)
             }
-            None => self.started.elapsed().as_nanos() as u64 + self.skipped,
+            None => {
+                lock(&self.started).elapsed().as_nanos() as u64
+                    + self.skipped.load(Ordering::Relaxed)
+            }
         }
     }
 }
@@ -705,8 +728,8 @@ impl<H: Send> Host for TestHost<H> {
                 other => Err(other),
             },
             || match &self.virtual_now {
-                Some(_) => self.wall_base + self.monotonic_live(),
-                None => wall_clock() + self.skipped,
+                Some(_) => self.wall_base.load(Ordering::Relaxed) + self.monotonic_live(),
+                None => wall_clock() + self.skipped.load(Ordering::Relaxed),
             },
         )
     }
@@ -746,26 +769,6 @@ impl<H: Send> Host for TestHost<H> {
             count: warning.count,
             detail: warning.detail,
         });
-    }
-
-    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        self.answer(
-            Entry::BackendSent,
-            |entry| match entry {
-                Entry::BackendSent(result) => Ok(result),
-                other => Err(other),
-            },
-            || {
-                let mut backend = lock(&self.backend);
-                let backend = backend.as_mut().ok_or(HostError::NotSupported)?;
-                // The answer to a RETRIEVE this host sent in the server's place stays here.
-                if request.0 & RETRIEVED == RETRIEVED {
-                    return Ok(());
-                }
-                backend.send(request.0, message);
-                Ok(())
-            },
-        )
     }
 
     fn send_stream(&self, end: End, bytes: &[u8]) {
@@ -875,26 +878,92 @@ impl<H: Send> Host for TestHost<H> {
     }
 }
 
+/// The backend's messages, each sent (kept in the record) and waited on until its reply arrives:
+/// a message FUSE gives no reply, or one this host answers itself, finishes once sent.
+impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
+    type Reply = Vec<u8>;
+
+    async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
+        use fuse_abi::linux::{fuse_in_header, fuse_opcode};
+        use zerocopy::FromBytes;
+        let (header, _) =
+            fuse_in_header::read_from_prefix(request).expect("a request starts with its header");
+        let unique = header.unique;
+        // The answer to a RETRIEVE this host sent in the server's place stays here.
+        let retrieved = unique & RETRIEVED == RETRIEVED;
+        self.answer(
+            Entry::BackendSent,
+            |entry| match entry {
+                Entry::BackendSent(result) => Ok(result),
+                other => Err(other),
+            },
+            || {
+                let mut backend = lock(&self.backend);
+                let backend = backend.as_mut().ok_or(HostError::NotSupported)?;
+                if !retrieved {
+                    backend.send(unique, request);
+                }
+                Ok(())
+            },
+        )?;
+        let unanswered = [
+            fuse_opcode::FUSE_FORGET,
+            fuse_opcode::FUSE_BATCH_FORGET,
+            fuse_opcode::FUSE_NOTIFY_REPLY,
+        ]
+        .iter()
+        .any(|opcode| *opcode as u32 == header.opcode);
+        if retrieved || unanswered {
+            return Ok(Vec::new());
+        }
+        std::future::poll_fn(|context| {
+            let mut replies = lock(&self.replies);
+            match replies.arrived.remove(&unique) {
+                Some(reply) => Poll::Ready(Ok(reply)),
+                None => {
+                    replies.waiting.insert(unique, context.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+}
+
+impl<H> TestHost<H> {
+    /// The backend's reply to request `unique` arrived: the call waiting for it is woken.
+    fn reply_arrived(&self, unique: u64, reply: Vec<u8>) {
+        let waiting = {
+            let mut replies = lock(&self.replies);
+            replies.arrived.insert(unique, reply);
+            replies.waiting.remove(&unique)
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
+    }
+}
+
 impl<H: Send> StreamHost for TestHost<H>
 where
     Self: System,
 {
-    fn streams(&mut self) -> &mut Streams {
-        held(&mut self.streams)
+    fn streams(&self) -> MutexGuard<'_, Streams> {
+        lock(&self.streams)
     }
 
-    fn choices(&mut self) -> &mut StdRng {
-        self.schedule.draws()
+    fn choices(&self) -> MutexGuard<'_, Schedule> {
+        lock(&self.schedule)
     }
 
-    fn change_served(&mut self, path: &str, bytes: &[u8]) {
+    fn change_served(&self, path: &str, bytes: &[u8]) {
         self.backend()
             .as_ref()
             .expect("a container with a backend")
             .change(path, bytes);
     }
 
-    fn hand(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
+    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
         TestHost::hand(self, kernel, cpu, event);
     }
 }
@@ -1147,7 +1216,10 @@ where
     if taped {
         crate::replay::DigestMemories::keep_digests(&mut cpu);
     }
-    host.injecting = Some(Injecting::new(seed, injections));
+    *host
+        .injecting
+        .get_mut()
+        .unwrap_or_else(PoisonError::into_inner) = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(client);
     host.streams().echo = echo;
     held(&mut host.network).published = container.published.iter().copied().collect();
@@ -1192,16 +1264,12 @@ where
     };
     #[cfg(feature = "runtime")]
     let started = Instant::now();
+    let host = Arc::new(host);
     kernel
         .start(&mut cpu, &host, &start)
         .expect("the kernel runs a process serially with exact replay");
-    host.started(&mut kernel, &mut cpu);
-    let mut system = TestSystem(Mutex::new(host));
-    let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &mut system);
-    let mut host = system
-        .0
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
+    wcontainers_runtime_single_kernel::System::started(&host, &mut kernel, &mut cpu);
+    let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &host);
     let status = match ending {
         Ok(Ending::Finished { status }) => status,
         Ok(Ending::Ended(run)) => return Ok(run),
@@ -1228,7 +1296,7 @@ where
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
     }
-    let files = match host.backend() {
+    let files = match &*host.backend() {
         Some(_) if container.root_image.is_some() => Vec::new(),
         Some(backend) if root_on_backend => image::records(&backend.files()),
         _ => kernel.root_files(&mut cpu),
@@ -1249,18 +1317,19 @@ where
             tape.len()
         );
     }
-    let report = host.injecting().report;
-    let saved = host.injecting().saved;
-    let turns = host.injecting().turns;
-    let streams = std::mem::take(host.streams());
+    let (report, saved, turns) = {
+        let injecting = host.injecting();
+        (injecting.report, injecting.saved, injecting.turns)
+    };
+    let streams = std::mem::take(&mut *host.streams());
     let run = Run {
         outcome: Outcome {
             stdout: streams.stdout,
             stderr: streams.stderr,
             exit_code: exit_code(status),
         },
-        warnings: std::mem::take(held(&mut host.warnings)),
-        cpu_warnings: host.cpu_warnings,
+        warnings: std::mem::take(&mut *lock(&host.warnings)),
+        cpu_warnings: std::mem::take(&mut *lock(&host.cpu_warnings)),
         counters: kernel.counters().collect(),
         files,
         saved,
@@ -1279,12 +1348,29 @@ where
 
 impl<H> TestHost<H> {
     /// The file backend, for a container with a volume.
-    pub(crate) fn backend(&mut self) -> &mut Option<crate::backend::Backend> {
-        held(&mut self.backend)
+    pub(crate) fn backend(&self) -> MutexGuard<'_, Option<crate::backend::Backend>> {
+        lock(&self.backend)
     }
 
-    fn injecting(&mut self) -> &mut Injecting {
-        self.injecting.as_mut().expect("a driven run")
+    fn injecting(&self) -> Held<'_, Injecting> {
+        Held(lock(&self.injecting))
+    }
+}
+
+/// What a lock holds that is there only for a driven run, held.
+struct Held<'a, T>(MutexGuard<'a, Option<T>>);
+
+impl<T> std::ops::Deref for Held<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("a driven run")
+    }
+}
+
+impl<T> std::ops::DerefMut for Held<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("a driven run")
     }
 }
 
@@ -1293,10 +1379,10 @@ where
     Self: System,
 {
     /// How the next turn ends, drawn from the seed.
-    fn turn_live(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
+    fn turn_live(&self, slice_nanoseconds: Option<u64>) -> Turn {
         // The seed chooses where in its slice each turn ends, so a run repeats for a seed and
         // threads interleave differently under different seeds.
-        let mut limit = self.schedule.turn_limit(slice_nanoseconds);
+        let mut limit = lock(&self.schedule).turn_limit(slice_nanoseconds);
         // An answer owed arrives during the turn, at a moment drawn from the seed: the host raises
         // the running thread's stop flag then, as the boundary says.
         if self
@@ -1304,8 +1390,7 @@ where
             .as_ref()
             .is_some_and(|backend| backend.waiting())
         {
-            let arrival = self
-                .schedule
+            let arrival = lock(&self.schedule)
                 .draws()
                 .random_range(1..=ANSWER_ARRIVES_WITHIN);
             limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
@@ -1313,9 +1398,9 @@ where
         Turn::Counted { limit }
     }
 
-    fn arrived_live(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn arrived_live(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
         let turns = {
-            let injecting = self.injecting();
+            let mut injecting = self.injecting();
             injecting.turns += 1;
             injecting.turns
         };
@@ -1327,32 +1412,43 @@ where
             .backend()
             .as_ref()
             .is_some_and(|backend| backend.waiting())
-            && self.schedule.draws().random_bool(ANSWER_NOW_CHANCE)
+            && lock(&self.schedule).draws().random_bool(ANSWER_NOW_CHANCE)
         {
             deliver(kernel, cpu, self);
         }
         while self.injecting().notice_at.first() == Some(&turns) {
-            let injecting = self.injecting();
-            injecting.notice_at.remove(0);
-            let notice = notice(&mut injecting.notices);
+            let notice = {
+                let mut injecting = self.injecting();
+                injecting.notice_at.remove(0);
+                notice(&mut injecting.notices)
+            };
             self.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
         }
         while self.injecting().signal_at.first() == Some(&turns) {
-            self.injecting().signal_at.remove(0);
-            let signal = self.injecting().signal;
+            let signal = {
+                let mut injecting = self.injecting();
+                injecting.signal_at.remove(0);
+                injecting.signal
+            };
             TestHost::kill(self, kernel, cpu, signal);
         }
         self.injecting().at.first() == Some(&turns)
     }
 
-    fn stopped_live<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+    fn stopped_live<E: Execution>(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut E,
+    ) -> ControlFlow<Run> {
         loop {
-            let injecting = self.injecting();
-            if injecting.at.first() != Some(&injecting.turns) {
-                return ControlFlow::Continue(());
+            {
+                let mut injecting = self.injecting();
+                if injecting.at.first() != Some(&injecting.turns) {
+                    return ControlFlow::Continue(());
+                }
+                injecting.at.remove(0);
+                injecting.saved += 1;
             }
-            injecting.at.remove(0);
-            injecting.saved += 1;
             let mut ends = [0; 2];
             // SAFETY: plain system calls; the copy goes on in this thread alone and ends with
             // `_exit` once it has reported.
@@ -1370,28 +1466,32 @@ where
                     copy => {
                         libc::close(ends[1]);
                         // The copy alone holds the network from here on.
-                        drop(std::mem::take(held(&mut self.network)));
+                        drop(std::mem::take(&mut *lock(&self.network)));
                         let report = self.injecting().report;
                         return ControlFlow::Break(finish(copied_run(copy, ends[0]), report));
                     }
                 }
             }
             *cpu = cpu.restored();
-            let injecting = self.injecting();
-            let seed = injecting.seed ^ ((injecting.saved as u64) << u32::BITS);
-            let wall_step = injecting.injections.wall_step;
+            let (seed, wall_step) = {
+                let injecting = self.injecting();
+                (
+                    injecting.seed ^ ((injecting.saved as u64) << u32::BITS),
+                    injecting.injections.wall_step,
+                )
+            };
             self.move_on(seed, wall_step);
             kernel.restore(cpu, self);
         }
     }
 
     fn idle_live(
-        &mut self,
+        self: &Arc<Self>,
         kernel: &mut Kernel,
         cpu: &mut dyn Cpu,
         until_nanoseconds: Option<u64>,
     ) {
-        if held(&mut self.hooks).between_steps(kernel, cpu) {
+        if lock(&self.hooks).between_steps(kernel, cpu) {
             return;
         }
         // An answer owed comes before any time passes.
@@ -1405,7 +1505,7 @@ where
         }
         // The outside answers in real time: a wait for it goes on as long as the kernel's next
         // timer, and at most ten seconds.
-        if held(&mut self.network).waiting() {
+        if lock(&self.network).waiting() {
             let now = self.monotonic_nanoseconds();
             let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
                 Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
@@ -1438,13 +1538,12 @@ where
                 PROGRESS.fetch_add(1, Ordering::Relaxed);
             }
         } else {
-            self.skipped += left;
+            self.skipped.fetch_add(left, Ordering::Relaxed);
         }
         self.hand(kernel, cpu, Event::Timer);
     }
 }
 
-/// What the loop asks of the test host between turns, with the host held alone.
 impl<H: BetweenSteps + Send> TestHost<H>
 where
     Self: System,
@@ -1453,8 +1552,27 @@ where
     pub fn standard(&self) -> Standard {
         lock(&self.streams).client.standard()
     }
+}
 
-    fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+/// What the loop asks of the test host between turns.
+impl<H: BetweenSteps + Send + 'static> wcontainers_runtime_single_kernel::System for TestHost<H>
+where
+    Self: System,
+{
+    /// The run of a copy made at a save, as the process it was copied from gets it.
+    type End = Run;
+
+    /// What the test's client is; a test that asks for a terminal says so there too.
+    fn standard(&self, terminal: Option<TerminalSize>) -> Standard {
+        assert_eq!(
+            terminal.map(|size| (size.columns, size.rows)),
+            lock(&self.streams).client.terminal,
+            "the terminal asked for is the client's"
+        );
+        TestHost::standard(self)
+    }
+
+    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
         self.outside_part(
             kernel,
             cpu,
@@ -1464,7 +1582,7 @@ where
         );
     }
 
-    fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
+    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
         if let Some(turn) = self.replayed(|entry| match entry {
             Entry::Turn(turn) => Ok(turn),
             other => Err(other),
@@ -1482,19 +1600,25 @@ where
     /// work on what came back, both drawn from the seed. The kernel's part passes after the first
     /// reading of the clock, which the kernel takes as it is entered. The speed moves the points
     /// where the scheduler switches threads, so seeds give different interleavings.
-    fn ran(&mut self, progress: u64) {
+    fn ran(&self, progress: u64) {
         if self.replaying() {
             return;
         }
-        let picoseconds = self.schedule.draws().random_range(PROGRESS_PICOSECONDS);
-        let kernel = self.schedule.draws().random_range(TURN_NANOSECONDS);
-        if let Some(now) = &mut self.virtual_now {
-            *now.get_mut() += progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND;
-            *self.kernel_work.get_mut() = kernel;
+        let (picoseconds, kernel) = {
+            let mut schedule = lock(&self.schedule);
+            let picoseconds = schedule.draws().random_range(PROGRESS_PICOSECONDS);
+            (picoseconds, schedule.draws().random_range(TURN_NANOSECONDS))
+        };
+        if let Some(now) = &self.virtual_now {
+            now.fetch_add(
+                progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND,
+                Ordering::Relaxed,
+            );
+            self.kernel_work.store(kernel, Ordering::Relaxed);
         }
     }
 
-    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
         self.outside_part(
             kernel,
             cpu,
@@ -1511,11 +1635,20 @@ where
     /// as a host that saves copies the kernel's memory and every guest memory. The copy goes on with
     /// a new CPU side made from the saved memories and registers and a new host whose clock reads
     /// differently, while this process only waits for the copy's run.
-    fn stopped<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+    fn stopped<E: Execution>(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut E,
+    ) -> ControlFlow<Run> {
         self.stopped_live(kernel, cpu)
     }
 
-    fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+    fn idle(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        until_nanoseconds: Option<u64>,
+    ) {
         self.outside_part(
             kernel,
             cpu,
@@ -1525,7 +1658,7 @@ where
         );
     }
 
-    fn cpu_warning(&mut self, warning: Warning<'_>) {
+    fn cpu_warning(&self, warning: Warning<'_>) {
         // Printed at counts 1, 2, 4, 8 and on, as the kernel's are.
         if warning.count.is_power_of_two() {
             eprintln!(
@@ -1533,231 +1666,11 @@ where
                 warning.reason, warning.detail, warning.count
             );
         }
-        self.cpu_warnings.push(Warned {
+        lock(&self.cpu_warnings).push(Warned {
             reason: warning.reason.to_string(),
             count: warning.count,
             detail: warning.detail,
         });
-    }
-}
-
-/// The test host behind a lock, as the loop's [`wcontainers_runtime_single_kernel::System`], whose every method
-/// takes `&self`. The kernel's calls go to the host held for each call; what the host hands the
-/// kernel while the loop holds it, it hands as itself.
-struct TestSystem<H>(Mutex<TestHost<H>>);
-
-impl<H> TestSystem<H> {
-    fn host(&self) -> MutexGuard<'_, TestHost<H>> {
-        lock(&self.0)
-    }
-}
-
-impl<H: BetweenSteps + Send> wcontainers_runtime_single_kernel::System for TestSystem<H>
-where
-    TestHost<H>: System,
-{
-    /// The run of a copy made at a save, as the process it was copied from gets it.
-    type End = Run;
-
-    /// What the test's client is; a test that asks for a terminal says so there too.
-    fn standard(&self, terminal: Option<TerminalSize>) -> Standard {
-        let host = self.host();
-        assert_eq!(
-            terminal.map(|size| (size.columns, size.rows)),
-            lock(&host.streams).client.terminal,
-            "the terminal asked for is the client's"
-        );
-        host.standard()
-    }
-
-    fn started(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
-        self.host().started(kernel, cpu);
-    }
-
-    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
-        self.host().turn(slice_nanoseconds)
-    }
-
-    fn ran(&self, progress: u64) {
-        self.host().ran(progress);
-    }
-
-    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        self.host().arrived(kernel, cpu)
-    }
-
-    fn stopped<E: Execution>(&self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
-        self.host().stopped(kernel, cpu)
-    }
-
-    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
-        self.host().idle(kernel, cpu, until_nanoseconds);
-    }
-
-    fn cpu_warning(&self, warning: Warning<'_>) {
-        self.host().cpu_warning(warning);
-    }
-}
-
-/// The kernel's calls, each to the host held for it.
-impl<H: Send> Host for TestSystem<H> {
-    fn monotonic_nanoseconds(&self) -> u64 {
-        self.host().monotonic_nanoseconds()
-    }
-
-    fn realtime_nanoseconds(&self) -> u64 {
-        self.host().realtime_nanoseconds()
-    }
-
-    fn random(&self, into: &mut [u8]) {
-        self.host().random(into);
-    }
-
-    fn warn(&self, warning: Warning<'_>) {
-        self.host().warn(warning);
-    }
-
-    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        self.host().backend_send(request, message)
-    }
-
-    fn send_stream(&self, end: End, bytes: &[u8]) {
-        self.host().send_stream(end, bytes);
-    }
-
-    fn credit_stream(&self, end: End, bytes: u64) {
-        self.host().credit_stream(end, bytes);
-    }
-
-    fn close_stream(&self, end: End) {
-        self.host().close_stream(end);
-    }
-
-    fn connect(
-        &self,
-        connection: ConnectionId,
-        address: &[u8],
-        port: u16,
-        stream: bool,
-    ) -> Result<(), HostError> {
-        self.host().connect(connection, address, port, stream)
-    }
-
-    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.host().send(connection, bytes)
-    }
-
-    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        self.host().receive(connection, into)
-    }
-
-    fn finish(&self, connection: ConnectionId) {
-        self.host().finish(connection);
-    }
-
-    fn close(&self, connection: ConnectionId) {
-        self.host().close(connection);
-    }
-
-    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-        self.host().look_up(request, name)
-    }
-
-    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        self.host().listen(listener, port)
-    }
-
-    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
-        self.host().accept(listener, connection)
-    }
-}
-
-/// The task ids and every hook, each to the host held for it, so the test's hooks see every call.
-impl<H: Send> System for TestSystem<H>
-where
-    TestHost<H>: System,
-{
-    fn allocate_task_id(&self, previous: TaskId) -> TaskId {
-        self.host().allocate_task_id(previous)
-    }
-    fn free_task_id(&self, id: TaskId) {
-        self.host().free_task_id(id);
-    }
-    fn intercept_system_call_request(
-        &self,
-        process: Process<'_>,
-        thread: TaskId,
-        request: SystemCallRequest,
-    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        self.host()
-            .intercept_system_call_request(process, thread, request)
-    }
-    fn intercept_system_call_response(
-        &self,
-        process: Process<'_>,
-        thread: TaskId,
-        request: &SystemCallRequest,
-        response: SystemCallResponse,
-    ) -> SystemCallResponse {
-        self.host()
-            .intercept_system_call_response(process, thread, request, response)
-    }
-    fn on_process_starting(&self, process: Process<'_>) {
-        self.host().on_process_starting(process);
-    }
-    fn on_program_starting(&self, process: Process<'_>) {
-        self.host().on_program_starting(process);
-    }
-    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
-        self.host().on_thread_starting(process, thread);
-    }
-    fn on_process_exiting(&self, process: Process<'_>) {
-        self.host().on_process_exiting(process);
-    }
-    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
-        self.host().on_process_outgrown(process, bytes);
-    }
-    fn on_watched_memory_accessing(
-        &self,
-        process: Process<'_>,
-        thread: TaskId,
-        address: u64,
-        kind: AccessKind,
-    ) {
-        self.host()
-            .on_watched_memory_accessing(process, thread, address, kind);
-    }
-    fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
-        self.host()
-            .on_memory_written_by_kernel(process, thread, range);
-    }
-    fn on_shared_memory_mapping(
-        &self,
-        process: Process<'_>,
-        source: MemoryObject,
-        offset: u64,
-        range: Range<u64>,
-    ) {
-        self.host()
-            .on_shared_memory_mapping(process, source, offset, range);
-    }
-    fn on_shared_memory_unmapped(
-        &self,
-        process: Process<'_>,
-        source: MemoryObject,
-        offset: u64,
-        range: Range<u64>,
-    ) {
-        self.host()
-            .on_shared_memory_unmapped(process, source, offset, range);
-    }
-    fn on_signal_delivering(
-        &self,
-        process: Process<'_>,
-        thread: TaskId,
-        signal: &SignalInformation,
-    ) {
-        self.host().on_signal_delivering(process, thread, signal);
     }
 }
 
@@ -1790,16 +1703,16 @@ const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
 fn network_events<H: Send>(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
-    host: &mut TestHost<H>,
+    host: &Arc<TestHost<H>>,
     wait: Duration,
 ) -> bool
 where
     TestHost<H>: System,
 {
-    if !held(&mut host.network).waiting() {
+    if !lock(&host.network).waiting() {
         return false;
     }
-    let owed = held(&mut host.network).take(wait);
+    let owed = lock(&host.network).take(wait);
     for event in &owed {
         event.with(|event| host.hand(kernel, cpu, event));
     }
@@ -1919,7 +1832,7 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
 pub(crate) fn deliver<H: Send>(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
-    host: &mut TestHost<H>,
+    host: &Arc<TestHost<H>>,
 ) where
     TestHost<H>: System,
 {
@@ -1935,28 +1848,27 @@ pub(crate) fn deliver<H: Send>(
 fn deliver_live<H: Send>(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
-    host: &mut TestHost<H>,
+    host: &Arc<TestHost<H>>,
 ) where
     TestHost<H>: System,
 {
-    let Some(message) = held(&mut host.backend)
-        .as_mut()
-        .and_then(|backend| backend.next(host.schedule.draws()))
-    else {
+    let message = {
+        let mut backend = host.backend();
+        let mut schedule = lock(&host.schedule);
+        backend
+            .as_mut()
+            .and_then(|backend| backend.next(schedule.draws()))
+    };
+    let Some(message) = message else {
         return;
     };
     PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     match message {
+        // The call waiting for it takes it when the kernel next settles, as at once.
         crate::backend::Message::Answer(unique, reply) => {
-            let request = BackendRequestId(unique);
-            host.hand(
-                kernel,
-                cpu,
-                Event::BackendReply {
-                    request,
-                    reply: &reply,
-                },
-            );
+            host.kept_in_step(Entry::BackendAnswered(unique, reply.clone()));
+            host.reply_arrived(unique, reply);
+            host.hand(kernel, cpu, Event::Timer);
         }
         crate::backend::Message::Notice(notice) => {
             host.hand(kernel, cpu, Event::BackendNotice { notice: &notice });

@@ -14,6 +14,7 @@ path = "implementation.rs"
 wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../.." }
 wcontainers-executor = { path = "../../../executor" }
+wcontainers-system = { path = "../../../system" }
 zerocopy.workspace = true
 object = { version = "0.41", default-features = false, features = ["read_core", "elf", "unaligned"] }
 siphasher = { version = "1.0.1", default-features = false }
@@ -21,6 +22,7 @@ smallvec = { version = "1.13", default-features = false }
 fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "zerocopy"] }
 simple-dns = { version = "0.13.1", default-features = false, features = ["alloc"] }
 rangemap = { version = "1.8.0", default-features = false }
+smallbox = { version = "0.8.9", default-features = false }
 
 [build-dependencies]
 flate2 = "1"

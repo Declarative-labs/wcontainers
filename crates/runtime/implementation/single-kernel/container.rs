@@ -2,6 +2,7 @@
 //! its root's files, how its translator works (the executor's translator configuration) and what machine it sees, with a system.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use oci_spec::runtime::Spec;
 use wcontainers_kernel::errno::Errno;
@@ -143,6 +144,7 @@ impl<E: Executor> Runtime<E> {
         }
         let mut cpu = E::new(&self.shared, translator_config, &machine.offer);
         system.stop_flag(cpu.stop_flag());
+        let system = Arc::new(system);
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         let standard = system.standard(accepted.terminal);
@@ -196,7 +198,7 @@ impl<E: Executor> Runtime<E> {
 pub struct Container<E: Executor, S: System> {
     kernel: Kernel,
     cpu: E,
-    system: S,
+    system: Arc<S>,
     stepper: Stepper,
 }
 
@@ -205,7 +207,7 @@ impl<E: Executor, S: System> Container<E, S> {
     /// likes, or calls [`Container::idle`].
     pub fn step(&mut self) -> Result<Step<S::End>, E::Failure> {
         self.stepper
-            .step(&mut self.kernel, &mut self.cpu, &mut self.system)
+            .step(&mut self.kernel, &mut self.cpu, &self.system)
     }
 
     /// Waits in the system until the time an idle step gave, or for an event.
@@ -217,7 +219,7 @@ impl<E: Executor, S: System> Container<E, S> {
     /// Runs to the end: the first process's wait status, or what the system ended it with.
     pub fn run(&mut self) -> Result<Ending<S::End>, E::Failure> {
         self.stepper
-            .drive(&mut self.kernel, &mut self.cpu, &mut self.system)
+            .drive(&mut self.kernel, &mut self.cpu, &self.system)
     }
 
     /// Why the first program could not be started, once the container has finished.
@@ -227,10 +229,6 @@ impl<E: Executor, S: System> Container<E, S> {
 
     pub fn system(&self) -> &S {
         &self.system
-    }
-
-    pub fn system_mut(&mut self) -> &mut S {
-        &mut self.system
     }
 
     pub fn executor(&self) -> &E {

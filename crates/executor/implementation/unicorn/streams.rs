@@ -3,10 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::sync::{Arc, MutexGuard};
+
 use rand::Rng;
-use rand::rngs::StdRng;
 use wcontainers_abi::{Cpu, End, Event};
 use wcontainers_kernel_linux::{Kernel, Standard};
+use wcontainers_system_seeded_test_policy::Schedule;
 
 /// The ends the test host names.
 pub const INPUT: End = End(0);
@@ -250,35 +252,42 @@ impl Found {
     }
 }
 
-/// The host's streams and the seeded choices of a run, as [`act`] needs them.
+/// The host's streams and the seeded choices of a run, as [`act`] needs them. Each is held only
+/// while it is used, never while the kernel is handed something.
 pub trait StreamHost: wcontainers_kernel_linux::System {
-    fn streams(&mut self) -> &mut Streams;
-    fn choices(&mut self) -> &mut StdRng;
+    fn streams(&self) -> MutexGuard<'_, Streams>;
+    fn choices(&self) -> MutexGuard<'_, Schedule>;
     /// Does [`Step::ChangeServed`].
-    fn change_served(&mut self, path: &str, bytes: &[u8]);
+    fn change_served(&self, path: &str, bytes: &[u8]);
     /// Hands the kernel an event.
-    fn hand(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>);
+    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>);
 }
 
 /// What the client does at the start, which may still be waiting on the backend: credit for all
 /// the output when it takes everything, and the script's first steps that wait for nothing.
-pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) {
-    for end in host.streams().client.outputs() {
-        if host.streams().pace(end).is_none() {
+pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) {
+    let outputs = host.streams().client.outputs();
+    for end in outputs {
+        let unpaced = host.streams().pace(end).is_none();
+        if unpaced {
             give(kernel, cpu, host, end, UNLIMITED);
         }
     }
     act(kernel, cpu, host, false);
 }
 
-fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, end: End, bytes: u64) {
-    let given = host.streams().given.entry(end).or_default();
-    *given = given.saturating_add(bytes);
+fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end: End, bytes: u64) {
+    {
+        let mut streams = host.streams();
+        let given = streams.given.entry(end).or_default();
+        *given = given.saturating_add(bytes);
+    }
     host.hand(kernel, cpu, Event::StreamCredit { end, bytes });
 }
 
-fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, end: End) {
-    if host.streams().closed_here.insert(end) {
+fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end: End) {
+    let closes = host.streams().closed_here.insert(end);
+    if closes {
         host.hand(kernel, cpu, Event::StreamClosed { end });
     }
 }
@@ -286,10 +295,16 @@ fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
 /// The client's next move, after a turn or (`idle`) when the container can go on no other way:
 /// a piece of what it sends (when idle, or after [`BUSY_TURNS`] turns without), output credit
 /// when it is slow and the container idle, and the script's other steps. Whether it did anything.
-pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, idle: bool) -> bool {
+pub fn act(
+    kernel: &mut Kernel,
+    cpu: &mut dyn Cpu,
+    host: &Arc<impl StreamHost>,
+    idle: bool,
+) -> bool {
     let mut acted = false;
     if idle {
-        for end in host.streams().client.outputs() {
+        let outputs = host.streams().client.outputs();
+        for end in outputs {
             let due = host.streams().due(end);
             if due > 0 {
                 give(kernel, cpu, host, end, due);
@@ -298,12 +313,13 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
         }
     }
     loop {
-        let streams = host.streams();
+        let mut streams = host.streams();
         let Some(step) = streams.client.script.get(streams.step).cloned() else {
             return acted;
         };
         match step {
             Step::Expect(bytes) => {
+                let streams = &mut *streams;
                 if !streams.found.look(&streams.stdout, &streams.stderr, &bytes) {
                     return acted;
                 }
@@ -334,12 +350,11 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                 let piece = match excess {
                     0 => {
                         let most = credit.min(left.len() as u64).min(MOST_AT_ONCE);
-                        host.choices().random_range(1..=most)
+                        host.choices().draws().random_range(1..=most)
                     }
                     _ => credit.min(left.len() as u64),
                 } as usize;
                 let sent = &left[..(piece as u64 + excess).min(left.len() as u64) as usize];
-                let streams = host.streams();
                 streams.input_credit -= piece as u64;
                 streams.sent_within_credit += piece as u64;
                 streams.sends_past_credit += u64::from(sent.len() > piece);
@@ -348,11 +363,13 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                     streams.sending = None;
                     streams.step += 1;
                 }
+                drop(streams);
                 host.hand(kernel, cpu, Event::StreamData { end, bytes: sent });
                 return true;
             }
             Step::Resize { columns, rows } => {
                 streams.step += 1;
+                drop(streams);
                 host.hand(
                     kernel,
                     cpu,
@@ -367,21 +384,25 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
             Step::CloseInput => {
                 streams.step += 1;
                 let end = streams.client.input_end().expect("an input to close");
+                drop(streams);
                 close_here(kernel, cpu, host, end);
                 acted = true;
             }
             Step::CloseOutput => {
                 streams.step += 1;
+                drop(streams);
                 close_here(kernel, cpu, host, OUTPUT);
                 acted = true;
             }
             Step::ChangeServed { path, bytes } => {
                 streams.step += 1;
+                drop(streams);
                 host.change_served(&path, &bytes);
                 acted = true;
             }
             Step::Credit { end, bytes } => {
                 streams.step += 1;
+                drop(streams);
                 host.hand(kernel, cpu, Event::StreamCredit { end, bytes });
                 acted = true;
             }
@@ -391,21 +412,28 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
 
 /// After the container's end: takes the output still held, at the client's pace, until the kernel
 /// closes every output end; then lets go of every end. Whether every output end was closed.
-pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) -> bool {
+pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) -> bool {
     loop {
         if host.streams().outputs_closed() {
             break;
         }
-        let before = (host.streams().stdout.len(), host.streams().stderr.len());
+        let before = {
+            let streams = host.streams();
+            (streams.stdout.len(), streams.stderr.len())
+        };
         let mut gave = false;
-        for end in host.streams().client.outputs() {
+        let outputs = host.streams().client.outputs();
+        for end in outputs {
             let due = host.streams().due(end);
             if due > 0 {
                 give(kernel, cpu, host, end, due);
                 gave = true;
             }
         }
-        let after = (host.streams().stdout.len(), host.streams().stderr.len());
+        let after = {
+            let streams = host.streams();
+            (streams.stdout.len(), streams.stderr.len())
+        };
         if !gave && before == after {
             break;
         }
@@ -416,7 +444,8 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
     }
     let closed = host.streams().outputs_closed();
     let mut all: Vec<End> = host.streams().client.outputs();
-    all.extend(host.streams().client.input_end());
+    let input = host.streams().client.input_end();
+    all.extend(input);
     all.dedup();
     for end in all {
         close_here(kernel, cpu, host, end);

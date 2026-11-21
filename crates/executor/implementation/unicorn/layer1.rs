@@ -4492,7 +4492,7 @@ pub fn run_ours_with(
     theirs: &SequenceResult,
     backend: &mut Option<crate::backend::Backend>,
 ) -> SequenceResult {
-    let mut host = TestHost::new(0);
+    let host = std::sync::Arc::new(TestHost::new(0));
     if sequence.backend {
         *host.backend() = Some(backend.take().unwrap_or_else(|| {
             crate::backend::Backend::start(
@@ -4502,8 +4502,9 @@ pub fn run_ours_with(
             )
         }));
     }
-    let (result, mut host, _) = run_ours_digested(sequence, runner, theirs, host);
-    if let Some(mut server) = host.backend().take() {
+    let (result, host, _) = run_ours_digested(sequence, runner, theirs, host);
+    let server = host.backend().take();
+    if let Some(mut server) = server {
         // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
         server.destroy();
         server.empty();
@@ -4523,7 +4524,7 @@ pub fn run_ours_replayed(
     theirs: &SequenceResult,
     backend: &mut Option<crate::backend::Backend>,
 ) -> (SequenceResult, usize) {
-    let mut host = TestHost::new(0).taped(crate::replay::Tape::recording());
+    let host = std::sync::Arc::new(TestHost::new(0).taped(crate::replay::Tape::recording()));
     if sequence.backend {
         *host.backend() = Some(backend.take().unwrap_or_else(|| {
             crate::backend::Backend::start(
@@ -4533,16 +4534,17 @@ pub fn run_ours_replayed(
             )
         }));
     }
-    let (recorded, mut host, memories) = run_ours_digested(sequence, runner, theirs, host);
-    if let Some(mut server) = host.backend().take() {
+    let (recorded, host, memories) = run_ours_digested(sequence, runner, theirs, host);
+    let server = host.backend().take();
+    if let Some(mut server) = server {
         server.destroy();
         server.empty();
         *backend = Some(server);
     }
     let tape = host.take_tape().expect("a record");
     // Another seed, so nothing of the first run's comes from anywhere but the record.
-    let replaying = TestHost::new(u64::MAX).taped(tape.replaying());
-    let (replayed, mut host, replayed_memories) =
+    let replaying = std::sync::Arc::new(TestHost::new(u64::MAX).taped(tape.replaying()));
+    let (replayed, host, replayed_memories) =
         run_ours_digested(sequence, runner, theirs, replaying);
     let left = host.take_tape().expect("a record");
     assert!(left.used_up(), "the replay left {} entries", left.len());
@@ -4558,8 +4560,12 @@ fn run_ours_digested(
     sequence: &Sequence,
     runner: &[u8],
     theirs: &SequenceResult,
-    host: TestHost,
-) -> (SequenceResult, TestHost, crate::replay::MemoryDigests) {
+    host: std::sync::Arc<TestHost>,
+) -> (
+    SequenceResult,
+    std::sync::Arc<TestHost>,
+    crate::replay::MemoryDigests,
+) {
     let mut cpu = layer1_cpu();
     #[cfg(not(feature = "runtime"))]
     let taped = host.taped_run();
@@ -4583,9 +4589,9 @@ fn run_ours_on(
     sequence: &Sequence,
     runner: &[u8],
     theirs: &SequenceResult,
-    mut host: TestHost,
+    host: std::sync::Arc<TestHost>,
     cpu: &mut Layer1Cpu,
-) -> (SequenceResult, TestHost) {
+) -> (SequenceResult, std::sync::Arc<TestHost>) {
     let mut kernel = Kernel::new();
     let files = [
         File {
@@ -4648,7 +4654,7 @@ fn run_ours_on(
     kernel
         .start(cpu, &host, &start)
         .expect("the kernel runs a process serially with exact replay");
-    crate::streams::begin(&mut kernel, cpu, &mut host);
+    crate::streams::begin(&mut kernel, cpu, &host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
     let thread = match kernel.next() {
@@ -4660,10 +4666,10 @@ fn run_ours_on(
     // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
     // end later is killed here too.
     let deadline =
-        wcontainers_abi::Host::monotonic_nanoseconds(&host) + DEADLINE_SECONDS * 1_000_000_000;
+        wcontainers_abi::Host::monotonic_nanoseconds(&*host) + DEADLINE_SECONDS * 1_000_000_000;
     let call = |kernel: &mut Kernel,
                 cpu: &mut Layer1Cpu,
-                host: &mut TestHost,
+                host: &std::sync::Arc<TestHost>,
                 call: Call|
      -> Result<i64, i32> {
         // The thread's registers hold the call, as a CPU side leaves them.
@@ -4728,17 +4734,14 @@ fn run_ours_on(
         number: linux::__NR_mmap,
         arguments: [ARENA, ARENA_SIZE, 3, 0x32, u64::MAX, 0],
     };
-    assert_eq!(call(&mut kernel, cpu, &mut host, setup), Ok(ARENA as i64));
+    assert_eq!(call(&mut kernel, cpu, &host, setup), Ok(ARENA as i64));
     cpu.write(memory, ARENA, &sequence.arena)
         .expect("writing the arena");
     let scratch = Call {
         number: linux::__NR_mmap,
         arguments: [SCRATCH, SCRATCH_SIZE, 3, 0x32, u64::MAX, 0],
     };
-    assert_eq!(
-        call(&mut kernel, cpu, &mut host, scratch),
-        Ok(SCRATCH as i64)
-    );
+    assert_eq!(call(&mut kernel, cpu, &host, scratch), Ok(SCRATCH as i64));
     // An action of SIG_IGN at the scratch area's start, which the zeroing's vectors take later.
     cpu.write(
         memory,
@@ -4752,7 +4755,7 @@ fn run_ours_on(
             number: linux::__NR_rt_sigaction,
             arguments: [signal.into(), SCRATCH, 0, 8, 0, 0],
         };
-        assert_eq!(call(&mut kernel, cpu, &mut host, ignore), Ok(0));
+        assert_eq!(call(&mut kernel, cpu, &host, ignore), Ok(0));
     }
     // The reference's runner has remade `/dev/null` before every sequence while the container's first
     // one stays held, so it is remade here too, while descriptor 0 holds the first one.
@@ -4776,7 +4779,7 @@ fn run_ours_on(
             number,
             arguments: [linux::AT_FDCWD as u64, null, third, device, 0, 0],
         };
-        assert_eq!(call(&mut kernel, cpu, &mut host, remake), Ok(0));
+        assert_eq!(call(&mut kernel, cpu, &host, remake), Ok(0));
     }
     let mut before = vec![0u8; ARENA_SIZE as usize];
     use wcontainers_abi::Cpu;
@@ -4786,11 +4789,11 @@ fn run_ours_on(
         number: linux::__NR_getpid,
         arguments: [0; 6],
     };
-    let pid = call(&mut kernel, cpu, &mut host, own).expect("getpid") as u64;
+    let pid = call(&mut kernel, cpu, &host, own).expect("getpid") as u64;
     // The runner's `clear_range`: zeros up to the first page the process cannot write.
     let clear = |kernel: &mut Kernel,
                  cpu: &mut Layer1Cpu,
-                 host: &mut TestHost,
+                 host: &std::sync::Arc<TestHost>,
                  mut at: u64,
                  mut length: u64| {
         while length > 0 {
@@ -4841,11 +4844,11 @@ fn run_ours_on(
                 number: linux::__NR_lseek,
                 arguments: [a, 0, u64::from(linux::SEEK_CUR), 0, 0, 0],
             };
-            call(&mut kernel, cpu, &mut host, position).ok()
+            call(&mut kernel, cpu, &host, position).ok()
         } else {
             None
         };
-        let outcome = call(&mut kernel, cpu, &mut host, each);
+        let outcome = call(&mut kernel, cpu, &host, each);
         if let Ok(id) = outcome
             && each.number == linux::__NR_shmget
             && id >= 0
@@ -4880,7 +4883,7 @@ fn run_ours_on(
                     0,
                 ],
             };
-            let _ = call(&mut kernel, cpu, &mut host, wait);
+            let _ = call(&mut kernel, cpu, &host, wait);
         }
         match outcome {
             Ok(value) => {
@@ -4911,7 +4914,7 @@ fn run_ours_on(
                         _ => {}
                     }
                     for (at, length) in ranges {
-                        clear(&mut kernel, cpu, &mut host, at, length);
+                        clear(&mut kernel, cpu, &host, at, length);
                     }
                     // A sendfile's output is zeroed where the bytes went.
                     if let Some(before) = out_before {
@@ -4929,7 +4932,7 @@ fn run_ours_on(
                                     0,
                                 ],
                             };
-                            let put = call(&mut kernel, cpu, &mut host, write).unwrap_or(-1);
+                            let put = call(&mut kernel, cpu, &host, write).unwrap_or(-1);
                             if put <= 0 {
                                 break;
                             }
@@ -4958,7 +4961,7 @@ fn run_ours_on(
                     } else {
                         range.length
                     };
-                    clear(&mut kernel, cpu, &mut host, range.at, length);
+                    clear(&mut kernel, cpu, &host, range.at, length);
                 }
             }
             Err(status) => {
@@ -4987,7 +4990,7 @@ fn run_ours_on(
         };
         let mut contents = vec![0u8; PAGE_SIZE as usize];
         // A filter of the sequence's may end the process here, as it does the reference's.
-        let readable = match call(&mut kernel, cpu, &mut host, read) {
+        let readable = match call(&mut kernel, cpu, &host, read) {
             Ok(value) => value == PAGE_SIZE as i64,
             Err(status) => {
                 return (

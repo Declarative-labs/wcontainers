@@ -42,6 +42,7 @@ mod tty;
 mod user;
 mod vdso;
 pub mod wait;
+mod waiting;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
@@ -84,6 +85,8 @@ use process::{Pid, Thread, Tid};
 pub(crate) struct Context<'a, S> {
     pub cpu: &'a mut dyn Cpu,
     pub host: &'a S,
+    /// The same system, for the calls the kernel keeps while it waits on them.
+    pub system: &'a alloc::sync::Arc<S>,
     /// What is added to the host's monotonic clock to give the kernel's (see
     /// [`Kernel::restore`]).
     monotonic_offset: u64,
@@ -325,6 +328,8 @@ pub struct Kernel {
     move_cookie: u32,
     /// The last number given to a kernel object as its identity (see [`Kernel::next_object`]).
     last_object: u64,
+    /// The calls the kernel waits on its system for.
+    waiting: waiting::Waiting,
 }
 
 impl Default for Kernel {
@@ -453,6 +458,7 @@ impl Kernel {
             boot_id: [0; 16],
             move_cookie: 0,
             last_object: 0,
+            waiting: waiting::Waiting::default(),
         }
     }
 
@@ -469,8 +475,9 @@ impl Kernel {
         if let Some(status) = self.finished {
             return Next::Finished { status };
         }
-        // Come back at once ([`Event::Timer`]), so the woken threads are settled first.
-        if self.unsettled {
+        // Come back at once ([`Event::Timer`]), so the woken threads, and the answers of the calls
+        // the kernel waits on, are settled first.
+        if self.unsettled || self.waiting.woken() {
             return Next::Idle {
                 until_nanoseconds: Some(0),
             };
@@ -479,14 +486,15 @@ impl Kernel {
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub fn exit<S: System>(&mut self, cpu: &mut dyn Cpu, host: &S, exit: Exit) {
+    pub fn exit<S: System>(&mut self, cpu: &mut dyn Cpu, system: &alloc::sync::Arc<S>, exit: Exit) {
         let tid = self
             .running
             .take()
             .expect("an exit was handed back with no thread running");
         let mut cx = Context {
             cpu,
-            host,
+            host: &**system,
+            system,
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };
@@ -517,10 +525,16 @@ impl Kernel {
     }
 
     /// Something happened outside.
-    pub fn event<S: System>(&mut self, cpu: &mut dyn Cpu, host: &S, event: Event<'_>) {
+    pub fn event<S: System>(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        system: &alloc::sync::Arc<S>,
+        event: Event<'_>,
+    ) {
         let mut cx = Context {
             cpu,
-            host,
+            host: &**system,
+            system,
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };
@@ -529,12 +543,6 @@ impl Kernel {
                 self.entry_now = cx.monotonic();
                 self.wake_due();
                 syscall::timer::fire_due(self, &mut cx);
-                self.settle(&mut cx);
-                return;
-            }
-            Event::BackendReply { request, reply } => {
-                self.entry_now = cx.monotonic();
-                self.backend_answered(&mut cx, request.0, reply);
                 self.settle(&mut cx);
                 return;
             }
@@ -596,14 +604,15 @@ impl Kernel {
     pub fn kill<S: System>(
         &mut self,
         cpu: &mut dyn Cpu,
-        host: &S,
+        system: &alloc::sync::Arc<S>,
         signal: wcontainers_kernel::signal::Signal,
     ) {
         let signal = signal as u32;
         assert!(self.running.is_none(), "a signal sent while a thread runs");
         let mut cx = Context {
             cpu,
-            host,
+            host: &**system,
+            system,
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };
@@ -624,12 +633,13 @@ impl Kernel {
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
     /// it had.
-    pub fn restore<S: System>(&mut self, cpu: &mut dyn Cpu, host: &S) {
+    pub fn restore<S: System>(&mut self, cpu: &mut dyn Cpu, system: &alloc::sync::Arc<S>) {
         assert!(self.running.is_none(), "restored while a thread runs");
-        self.monotonic_offset = self.last_now.wrapping_sub(host.monotonic_nanoseconds());
+        self.monotonic_offset = self.last_now.wrapping_sub(system.monotonic_nanoseconds());
         let mut cx = Context {
             cpu,
-            host,
+            host: &**system,
+            system,
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };

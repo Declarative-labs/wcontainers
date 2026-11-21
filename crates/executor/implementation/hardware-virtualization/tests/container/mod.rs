@@ -431,7 +431,7 @@ impl Ring for Loopback<'_> {
 pub fn wasm(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> Outcome {
     let compiler = Compiler::<Arm64>::new(None);
     let mut cpu = CpuSide::new(compiler, LookAhead::None, Optimise::Speed, ());
-    let mut policy = TestPolicy::new(Recording::new(seed), seed, wall_start);
+    let policy = std::sync::Arc::new(TestPolicy::new(Recording::new(seed), seed, wall_start));
     let mut kernel = Kernel::new();
     let mut files = files.iter().cloned();
     let mut ring = Loopback {
@@ -444,11 +444,13 @@ pub fn wasm(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> 
         },
     };
     container::start(&mut ring, &mut kernel, &mut cpu, &policy).expect("files the kernel takes");
-    let status = match drive(&mut kernel, &mut cpu, &mut policy) {
+    let status = match drive(&mut kernel, &mut cpu, &policy) {
         Ok(Ending::Finished { status }) => status,
         Ok(Ending::Ended(never)) => match never {},
         Err(never) => match never {},
     };
+    let policy =
+        std::sync::Arc::into_inner(policy).expect("the kernel keeps no call on the policy");
     container::send_root(&mut ring, &kernel, &mut cpu);
     Outcome {
         status,

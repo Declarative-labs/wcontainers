@@ -18,6 +18,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use super::{Content, FileSystem, Inode, Node, Place, Time};
 use crate::Errno;
 use crate::process::Tid;
+use crate::waiting::{Answer, WaitFor};
 use wcontainers_abi::PAGE_SIZE;
 
 /// The FUSE protocol version the kernel speaks (Linux 6.9's, which `fuse-abi` describes).
@@ -117,31 +118,31 @@ pub(crate) struct Asker {
     pub pid: u32,
 }
 
-/// A request the host has: the thread whose call waits for it (none when nothing does), its opcode,
-/// and when it was handed over.
-#[derive(Clone, Copy)]
-struct Sent {
-    tid: Option<Tid>,
-    opcode: u32,
-    nodeid: u64,
-    at: u64,
-}
-
-/// A request made and not yet handed to the host.
-pub(crate) struct Outgoing {
+/// A request handed to the system: its number, the thread whose call waits for it (none when
+/// nothing does), its opcode and node, and when it was handed over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Sent {
     pub unique: u64,
+    pub tid: Option<Tid>,
     pub opcode: u32,
-    pub bytes: Vec<u8>,
+    pub nodeid: u64,
+    pub at: u64,
     /// Whether the backend answers it.
     pub answered: bool,
+}
+
+/// A request made and not yet handed to the system.
+pub(crate) struct Outgoing {
+    pub sent: Sent,
+    pub bytes: Vec<u8>,
 }
 
 /// What an answer from the backend did.
 pub(crate) enum Answered {
     /// A waiting call has it; its thread runs the call again.
     Call(Tid, u32, u64),
-    /// Nothing waits for it (its opcode and when it was sent, if it was).
-    Nobody(Option<(u32, u64)>),
+    /// Nothing waits for it (its opcode and when it was sent).
+    Nobody(u32, u64),
     /// Pages of a mapped file (its inode, if it is still held, and the file pages asked for), and
     /// the threads that wait for them, with when it was sent.
     Pages {
@@ -168,7 +169,6 @@ struct State {
     asked_again: Vec<u32>,
     calls: BTreeMap<Tid, Asked>,
     outbox: Vec<Outgoing>,
-    sent: BTreeMap<u64, Sent>,
     /// Mapped files' pages asked for, by request.
     fills: BTreeMap<u64, Fill>,
     /// Pages a fault or copy outside a call needed and could not ask for, for their counter.
@@ -590,20 +590,16 @@ impl Client {
             let opcode = fuse_opcode::FUSE_READ as u32;
             let bytes = message(unique, opcode, handle.nodeid, &asker, &[input.as_bytes()]);
             state.outbox.push(Outgoing {
-                unique,
-                opcode,
-                bytes,
-                answered: true,
-            });
-            state.sent.insert(
-                unique,
-                Sent {
+                sent: Sent {
+                    unique,
                     tid: None,
                     opcode,
                     nodeid: handle.nodeid,
                     at: 0,
+                    answered: true,
                 },
-            );
+                bytes,
+            });
             state.fills.insert(
                 unique,
                 Fill {
@@ -675,20 +671,16 @@ impl Client {
             count_change(&state.nodes, opcode as u32, nodeid, parts);
             let bytes = message(unique, opcode as u32, nodeid, &asker, parts);
             state.outbox.push(Outgoing {
-                unique,
-                opcode: opcode as u32,
-                bytes,
-                answered: true,
-            });
-            state.sent.insert(
-                unique,
-                Sent {
+                sent: Sent {
+                    unique,
                     tid: Some(asker.tid),
                     opcode: opcode as u32,
                     nodeid,
                     at: 0,
+                    answered: true,
                 },
-            );
+                bytes,
+            });
         }
         Err(Errno::PARKED)
     }
@@ -710,22 +702,16 @@ impl Client {
         let answered = opcode != fuse_opcode::FUSE_FORGET as u32
             && opcode != fuse_opcode::FUSE_BATCH_FORGET as u32;
         state.outbox.push(Outgoing {
-            unique,
-            opcode,
-            bytes,
-            answered,
-        });
-        if answered {
-            state.sent.insert(
+            sent: Sent {
                 unique,
-                Sent {
-                    tid: None,
-                    opcode,
-                    nodeid,
-                    at: 0,
-                },
-            );
-        }
+                tid: None,
+                opcode,
+                nodeid,
+                at: 0,
+                answered,
+            },
+            bytes,
+        });
     }
 
     /// Answers a notice that asked for one (NOTIFY_REPLY, which has no answer itself).
@@ -739,55 +725,46 @@ impl Client {
         let opcode = fuse_opcode::FUSE_NOTIFY_REPLY as u32;
         let bytes = message(unique, opcode, nodeid, &nobody, &[body]);
         self.state.borrow_mut().outbox.push(Outgoing {
-            unique,
-            opcode,
+            sent: Sent {
+                unique,
+                tid: None,
+                opcode,
+                nodeid,
+                at: 0,
+                answered: false,
+            },
             bytes,
-            answered: false,
         });
     }
 
-    /// The requests to hand to the host now, each marked sent at `now`.
+    /// The requests to hand to the system now, each marked sent at `now`.
     pub fn outgoing(&self, now: u64) -> Vec<Outgoing> {
-        let mut state = self.state.borrow_mut();
-        let out = core::mem::take(&mut state.outbox);
-        for request in &out {
-            if let Some(sent) = state.sent.get_mut(&request.unique) {
-                sent.at = now;
-            }
+        let mut out = core::mem::take(&mut self.state.borrow_mut().outbox);
+        for request in &mut out {
+            request.sent.at = now;
         }
         out
     }
 
-    /// The backend answered request `unique`.
-    pub fn answered(&self, unique: u64, reply: &[u8]) -> Answered {
-        let Some((header, body)) = fuse_out_header::read_from_prefix(reply).ok() else {
-            return Answered::Nobody(None);
-        };
-        let body = &body[..(header.len as usize).clamp(size_of::<fuse_out_header>(), reply.len())
-            - size_of::<fuse_out_header>()];
+    /// The backend answered a request with an error, or with a body.
+    pub fn answered(&self, sent: Sent, error: i32, body: Rc<[u8]>) -> Answered {
+        let unique = sent.unique;
         let mut state = self.state.borrow_mut();
-        let Some(sent) = state.sent.remove(&unique) else {
-            return Answered::Nobody(None);
+        let result: Result<Rc<[u8]>, Errno> = if error == 0 {
+            Ok(body)
+        } else {
+            Err(Errno(error.unsigned_abs()))
         };
         if let Some(fill) = state.fills.remove(&unique) {
             return Answered::Pages {
                 node: fill.node.upgrade(),
                 pages: fill.pages,
                 changes: fill.changes,
-                result: if header.error == 0 {
-                    Ok(Rc::from(body))
-                } else {
-                    Err(Errno(header.error.unsigned_abs()))
-                },
+                result,
                 waiters: fill.waiters,
                 at: sent.at,
             };
         }
-        let result: Result<Rc<[u8]>, Errno> = if header.error == 0 {
-            Ok(Rc::from(body))
-        } else {
-            Err(Errno(header.error.unsigned_abs()))
-        };
         if let Ok(body) = &result {
             if sent.opcode == fuse_opcode::FUSE_INIT as u32
                 && let Ok((init, _)) = fuse_init_out::read_from_prefix(body)
@@ -829,7 +806,7 @@ impl Client {
         let Some(tid) = waiter else {
             drop(state);
             self.give_back(sent.opcode, sent.nodeid, &result);
-            return Answered::Nobody(Some((sent.opcode, sent.at)));
+            return Answered::Nobody(sent.opcode, sent.at);
         };
         let asked = state.calls.get_mut(&tid).expect("waiting");
         let request = asked.waiting.take().expect("waiting");
@@ -2048,8 +2025,24 @@ pub(crate) fn removexattr(node: &Node, name: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Asks the system's file backend one request, owning what the question borrows: the reply's
+/// header and its body as the kernel keeps it.
+async fn ask_backend<S: crate::System>(system: alloc::sync::Arc<S>, request: Vec<u8>) -> Answer {
+    Answer::Backend(system.send_request(&request).await.map(|reply| {
+        match fuse_out_header::read_from_prefix(&reply) {
+            Ok((header, rest)) => {
+                let length = (header.len as usize).saturating_sub(size_of::<fuse_out_header>());
+                (header.error, Rc::from(&rest[..length.min(rest.len())]))
+            }
+            // A reply too short for its header is no answer at all.
+            Err(_) => (-(crate::Errno::EIO.0 as i32), Rc::from(&[][..])),
+        }
+    }))
+}
+
 impl crate::Kernel {
-    /// Hands the backend the messages made since the last time, counting each by its opcode.
+    /// Hands the backend the messages made since the last time, counting each by its opcode, each
+    /// a call the kernel waits on until the backend answers it.
     pub(crate) fn send_to_backend<S: crate::System>(&mut self, cx: &mut crate::Context<'_, S>) {
         let Some(client) = self.files.backend.clone() else {
             return;
@@ -2063,44 +2056,59 @@ impl crate::Kernel {
         }
         let now = cx.monotonic();
         for request in client.outgoing(now) {
+            let sent = request.sent;
             // A message with no answer is counted when it goes; the rest when answered, with
             // the time the answer took.
-            if !request.answered {
+            if !sent.answered {
                 self.counters
-                    .measure(crate::reason::BACKEND_MESSAGE, u64::from(request.opcode), 0);
+                    .measure(crate::reason::BACKEND_MESSAGE, u64::from(sent.opcode), 0);
             }
-            let id = wcontainers_abi::BackendRequestId(request.unique);
-            if cx.host.backend_send(id, &request.bytes).is_err() {
+            let call: crate::waiting::Call =
+                crate::waiting::waiting_call!(ask_backend(cx.system.clone(), request.bytes));
+            if crate::waiting::Waiting::on_heap(&call) {
                 self.counters.count(
                     cx.host,
-                    crate::reason::BACKEND_UNREACHABLE,
-                    u64::from(request.opcode),
+                    crate::reason::WAITING_CALL_ON_HEAP,
+                    u64::from(sent.opcode),
                 );
-                // As from a connection that is gone: the call that waits gets ENOTCONN.
-                let header = fuse_out_header {
-                    len: size_of::<fuse_out_header>() as u32,
-                    error: -(crate::Errno::ENOTCONN.0 as i32),
-                    unique: request.unique,
-                };
-                self.backend_answered(cx, request.unique, header.as_bytes());
+            }
+            let answer = self.waiting.start(WaitFor::Backend(sent), call);
+            if let Some(Answer::Backend(answer)) = answer {
+                self.backend_answered(cx, sent, answer);
             }
         }
     }
 
-    /// The backend answered: the call waiting for it runs again.
+    /// The backend answered a request, or could not be asked: the call waiting for it runs again.
     pub(crate) fn backend_answered<S: crate::System>(
         &mut self,
         cx: &mut crate::Context<'_, S>,
-        unique: u64,
-        reply: &[u8],
+        sent: Sent,
+        answer: Result<(i32, Rc<[u8]>), wcontainers_abi::HostError>,
     ) {
+        let (error, body) = match answer {
+            Ok(answer) => answer,
+            Err(_) => {
+                self.counters.count(
+                    cx.host,
+                    crate::reason::BACKEND_UNREACHABLE,
+                    u64::from(sent.opcode),
+                );
+                // As from a connection that is gone: the call that waits gets ENOTCONN.
+                (-(crate::Errno::ENOTCONN.0 as i32), Rc::from(&[][..]))
+            }
+        };
+        // A message with no answer is done once the system has taken it.
+        if !sent.answered {
+            return;
+        }
         let Some(client) = self.files.backend.clone() else {
             self.counters
-                .count(cx.host, crate::reason::BACKEND_UNEXPECTED, unique);
+                .count(cx.host, crate::reason::BACKEND_UNEXPECTED, sent.unique);
             return;
         };
         let now = self.entry_now;
-        match client.answered(unique, reply) {
+        match client.answered(sent, error, body) {
             Answered::Call(tid, opcode, at) => {
                 self.counters.measure(
                     crate::reason::BACKEND_MESSAGE,
@@ -2113,16 +2121,12 @@ impl crate::Kernel {
                     self.wake_thread(tid);
                 }
             }
-            Answered::Nobody(Some((opcode, at))) => {
+            Answered::Nobody(opcode, at) => {
                 self.counters.measure(
                     crate::reason::BACKEND_MESSAGE,
                     u64::from(opcode),
                     now.saturating_sub(at),
                 );
-            }
-            Answered::Nobody(None) => {
-                self.counters
-                    .count(cx.host, crate::reason::BACKEND_UNEXPECTED, unique);
             }
             Answered::Pages {
                 node,

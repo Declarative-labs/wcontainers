@@ -975,14 +975,15 @@ impl Kernel {
     pub fn start<S: crate::System>(
         &mut self,
         cpu: &mut dyn Cpu,
-        host: &S,
+        system: &alloc::sync::Arc<S>,
         start: &Start<'_>,
     ) -> Result<(), crate::Unsupported> {
         assert!(self.init.is_none(), "the container has already started");
         start.execution.supported()?;
         let mut cx = Context {
             cpu,
-            host,
+            host: &**system,
+            system,
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };

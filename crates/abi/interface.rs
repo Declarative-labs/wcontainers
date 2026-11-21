@@ -28,8 +28,7 @@ pub use exit::{
     SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber, SystemCallRequest,
 };
 pub use host::{
-    BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError,
-    NANOSECONDS_PER_SECOND, Warning,
+    ConnectionId, CounterReading, End, Event, Host, HostError, NANOSECONDS_PER_SECOND, Warning,
 };
 pub use machine::{HWCAP, HWCAP2, hwcap};
 pub use memory::{

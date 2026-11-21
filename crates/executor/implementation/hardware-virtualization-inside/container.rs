@@ -1,6 +1,7 @@
 //! A container's image files and its start, carried into the inside's kernel through the link before its
 //! first process runs.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
@@ -126,7 +127,7 @@ pub fn start<R: Ring, S: System>(
     ring: &mut R,
     kernel: &mut Kernel,
     cpu: &mut dyn Cpu,
-    system: &S,
+    system: &Arc<S>,
 ) -> Result<(), Refused> {
     while let Some(file) = record::<_, _, File>(ring, &NextFile {}) {
         let attributes = Attributes {

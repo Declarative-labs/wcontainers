@@ -3349,6 +3349,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallbox"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8d91712aabb2e735436c02f70d990d8b2241f42dd092a973694e198ea95fc93"
+
+[[package]]
 name = "smallvec"
 version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4307,6 +4313,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
+ "wcontainers-system",
  "wcontainers-system-seeded-test-policy",
  "zerocopy",
 ]
@@ -4565,10 +4572,12 @@ dependencies = [
  "rangemap",
  "simple-dns",
  "siphasher",
+ "smallbox",
  "smallvec",
  "wcontainers-abi",
  "wcontainers-executor",
  "wcontainers-kernel",
+ "wcontainers-system",
  "zerocopy",
 ]
 
@@ -4802,6 +4811,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
+ "wcontainers-system",
  "zerocopy",
  "zstd",
 ]
@@ -4863,6 +4873,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
+ "wcontainers-system",
 ]
 
 [[package]]

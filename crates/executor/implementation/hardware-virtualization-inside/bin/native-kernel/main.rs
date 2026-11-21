@@ -38,11 +38,12 @@ mod kernel {
         } = floor::ask(&Policy {}, &[]);
         let mut policy = TestPolicy::new(LinkHost::new(Doorbell), seed, wall_start);
         policy.turn_events = (turn_events != 0).then_some(turn_events);
+        let policy = alloc::sync::Arc::new(policy);
         let mut kernel = Kernel::new();
         if let Err(refused) = container::start(&mut Doorbell, &mut kernel, &mut cpu, &policy) {
             panic!("the kernel refused a file: {refused:?}");
         }
-        let status = match drive(&mut kernel, &mut cpu, &mut policy) {
+        let status = match drive(&mut kernel, &mut cpu, &policy) {
             Ok(Ending::Finished { status }) => status,
             Ok(Ending::Ended(never)) => match never {},
             Err(refused) => panic!("the native back end refused: {refused:?}"),

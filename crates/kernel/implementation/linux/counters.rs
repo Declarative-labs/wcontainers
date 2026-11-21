@@ -75,6 +75,10 @@ pub mod reason {
     /// The host could not hand a message to the backend; the call that asked gets ENOTCONN, as from
     /// a FUSE connection that is gone. Detail: the FUSE opcode.
     pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
+    /// A call the kernel waits on its system for was larger than the room a waiting call has in
+    /// its cell, so it waits on the heap, one allocation each time. Detail: what it asks (the FUSE
+    /// opcode).
+    pub const WAITING_CALL_ON_HEAP: &str = "waiting call on the heap";
     /// A mapped backend file's pages were written back whole, changed or not, since which pages a
     /// shared mapping wrote is not known (Linux writes back only dirty pages). Detail: none.
     pub const BACKEND_PAGES_WRITTEN_WHOLE: &str = "backend pages written whole";

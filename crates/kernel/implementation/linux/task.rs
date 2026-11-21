@@ -560,6 +560,12 @@ impl Kernel {
             syscall::dnotify::send(self, cx);
         }
         loop {
+            if self.waiting.woken()
+                && let Some((about, answer)) = self.waiting.next_answer()
+            {
+                self.waiting_answered(cx, about, answer);
+                continue;
+            }
             if !self.files.terminals.is_empty() {
                 syscall::tty::released(self, cx);
             }

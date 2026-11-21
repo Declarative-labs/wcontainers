@@ -10,10 +10,6 @@ pub const NANOSECONDS_PER_SECOND: u64 = core::time::Duration::from_secs(1).as_na
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(pub u32);
 
-/// One request sent to the file backend, chosen by the kernel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct BackendRequestId(pub u64);
-
 /// One end of a byte stream between the kernel and the embedder: a handle local to one kernel,
 /// whose other side the embedder holds. Each direction carries data, credit and closing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -58,11 +54,6 @@ pub struct CounterReading {
 pub enum Event<'a> {
     /// The time given in [`crate::Next::Idle`] has come.
     Timer,
-    /// The backend answered a request. The bytes are one FUSE reply.
-    BackendReply {
-        request: BackendRequestId,
-        reply: &'a [u8],
-    },
     /// The backend sent a FUSE notice that was not asked for, such as "this file changed".
     BackendNotice { notice: &'a [u8] },
     /// A connection finished connecting, or failed with a Linux error number (such as ECONNREFUSED,
@@ -104,10 +95,6 @@ pub trait Host: Sync {
     fn random(&self, into: &mut [u8]);
 
     fn warn(&self, warning: Warning<'_>);
-
-    /// Send one FUSE request to the file backend. The reply arrives as [`Event::BackendReply`], unless the
-    /// request is one FUSE defines as having no reply.
-    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 
     /// Bytes out of an end, never more than the credit the embedder gave on it.
     fn send_stream(&self, end: End, bytes: &[u8]);

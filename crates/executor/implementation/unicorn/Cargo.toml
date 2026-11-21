@@ -28,6 +28,7 @@ wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/si
 wcontainers-docker = { path = "../../../wcontainers-docker" }
 # The seeded choices of a run, shared with the native back end's inside.
 wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
+wcontainers-system = { path = "../../../system" }
 wcontainers-executor-wasmtime = { path = "../wasmtime", optional = true }
 wcontainers-arm64 = { path = "../../../wcontainers-arm64", optional = true }
 unicorn-engine = "2.1.5"
