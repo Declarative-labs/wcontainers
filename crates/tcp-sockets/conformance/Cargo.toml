@@ -20,3 +20,7 @@ wcontainers-negative-route-advice-conformance = { path = "../../negative-route-a
 etherparse = { workspace = true, features = ["std"] }
 # The raw sockets the ICMP checks capture SYNs and send errors with, as the network between the two ends.
 rustix = { version = "1.1.6", features = ["net"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Classic BPF's operation codes, for the filters the checks attach.
+libc = "0.2.191"

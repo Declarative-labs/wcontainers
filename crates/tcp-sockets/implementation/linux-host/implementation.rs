@@ -203,6 +203,9 @@ fn whole(duration: Duration, unit: Duration) -> Result<c_int, HostError> {
     c_int::try_from(duration.as_nanos() / unit.as_nanos()).map_err(|_| invalid())
 }
 
+/// The `TCP_QUICKACK` value (any even one but zero) that sends a scheduled acknowledgement, then delays if one was.
+const QUICK_ACKNOWLEDGEMENT_THEN_DELAYING: c_int = 2;
+
 const SECOND: Duration = Duration::from_secs(1);
 const MILLISECOND: Duration = Duration::from_millis(1);
 const MICROSECOND: Duration = Duration::from_micros(1);
@@ -1183,9 +1186,13 @@ impl TcpConnections for LinuxHostTcpSockets {
     ) -> Result<(), HostError> {
         let socket = connection.socket.as_fd();
         let before = sockopt::tcp_quickack(socket).map_err(host_error)?;
-        // Two sends a scheduled acknowledgement and then leaves quick mode, which it enters first: quick mode off
-        // afterwards is the sign that one was scheduled.
-        set_int(socket, uapi::SOL_TCP, uapi::TCP_QUICKACK, 2)?;
+        // Quick mode off afterwards is the sign that one was scheduled.
+        set_int(
+            socket,
+            uapi::SOL_TCP,
+            uapi::TCP_QUICKACK,
+            QUICK_ACKNOWLEDGEMENT_THEN_DELAYING,
+        )?;
         let after = sockopt::tcp_quickack(socket).map_err(host_error)?;
         let scheduled = !after;
         let wanted = if scheduled {
@@ -1218,20 +1225,26 @@ impl TcpConnections for LinuxHostTcpSockets {
     }
 
     fn send_window_probe(&self, connection: &Self::Connection) -> Result<(), HostError> {
-        // Leaving repair mode with TCP_REPAIR_OFF sends a window probe.
+        // Leaving repair mode with TCP_REPAIR_OFF sends a window probe; it also clears address sharing and the
+        // repair mode itself, which are put back as they were.
         let socket = connection.socket.as_fd();
-        set_int(
-            socket,
-            uapi::SOL_TCP,
-            uapi::TCP_REPAIR,
-            uapi::TCP_REPAIR_ON as c_int,
-        )?;
-        set_int(
-            socket,
-            uapi::SOL_TCP,
-            uapi::TCP_REPAIR,
-            uapi::TCP_REPAIR_OFF as c_int,
-        )
+        let sharing = sockopt::socket_reuseaddr(socket).map_err(host_error)?;
+        let repair = |value: u32| set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR, value as c_int);
+        let repairing = get_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR)? != 0;
+        let queue = if repairing {
+            get_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE)?
+        } else {
+            repair(uapi::TCP_REPAIR_ON)?;
+            uapi::TCP_NO_QUEUE as c_int
+        };
+        repair(uapi::TCP_REPAIR_OFF)?;
+        if repairing {
+            repair(uapi::TCP_REPAIR_ON)?;
+            set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, queue)?;
+        } else if sharing {
+            sockopt::set_socket_reuseaddr(socket, true).map_err(host_error)?;
+        }
+        Ok(())
     }
 
     fn set_timestamp_clock(
@@ -1284,14 +1297,19 @@ impl TcpListeners for LinuxHostTcpSockets {
         if protocol == TcpProtocol::Tcp {
             set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, true)?;
         }
-        for setting in settings {
-            if !matches!(setting, TcpListenerSetting::Backlog(_)) {
-                self.configure(&listener, setting.clone())?;
-            }
+        let (backlogs, others): (Vec<_>, Vec<_>) = settings
+            .iter()
+            .partition(|setting| matches!(setting, TcpListenerSetting::Backlog(_)));
+        for setting in others {
+            self.configure(&listener, setting.clone())?;
         }
         bind(socket, &local, true)?;
         rustix::net::listen(socket, i32::try_from(backlog.0).unwrap_or(i32::MAX))
             .map_err(host_error)?;
+        // A backlog among the settings is listening again with it.
+        for setting in backlogs {
+            self.configure(&listener, setting.clone())?;
+        }
         let local = socket_address(rustix::net::getsockname(socket).map_err(host_error)?)?;
         Ok(TcpListening { listener, local })
     }
