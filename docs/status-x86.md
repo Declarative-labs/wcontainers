@@ -140,6 +140,93 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   X7 dispatched again after the reorganization) fixed the four findings of the X6f check on main, added an MMX
   program and an x87 state program compared with Linux at every look-ahead in wasmtime and Chrome, and verified
   X7's bar on main from a clean build (see "X7, run 4").
+- X8 (AVX, AVX2, FMA, F16C, BMI2, XSAVE): run 1 (2026-11-21) fixed the X7 check's four findings, made what a
+  program is told a per-process list of the kernel interface that the translator, `cpuid` and `xgetbv` take
+  (every told family switched by it), and built BMI2, `xgetbv` and `xsetbv`; AVX, AVX2, FMA, F16C and `xsave`
+  and `xrstor` are left (see "X8, run 1").
+
+## X8, run 1 (2026-11-21): partly done
+
+X8 (AVX, AVX2, FMA, F16C, BMI2 and XSAVE) started. Machines: the rented x86-64 machine (96 processors, kernel
+7.0.0-1018-aws, 5-level paging, load 0 to 16 during my jobs) for lint and tests, the i7-8750H (load 0.7 to 4,
+4 at once) for every layer 1 verdict, the Mac (load 15 to 22) for git and the literal check. Logs in scratch
+`x8r1/`.
+
+The X7 check's four findings, fixed first:
+- [minor] The C1-only sub-count of X7 run 4's laptop verdict now reads 6 (F2xm1 2, Fcos 2, Fptan 1, Fyl2x 1).
+- [minor] A tiny transcendental operand is no longer slow. Below 2^-68 `fsin`, `fcos` and `fptan` take their
+  closed forms: the wide value one unit from the operand (toward zero for the sine, away for the tangent) or
+  just below one, which is what the full evaluation gives rounded to odd, since the function lies within a
+  small part of a wide unit of it (`x87::next_to`). `fyl2xp1` of an operand below 2^-64 sums the series of
+  ln(1 + x) to the working precision (`transcendental::natural_logarithm_plus_one_small`) instead of forming
+  1 + x with thousands of exact bits. Unit tests prove both equal the old evaluation (every tiny operand of
+  three significands, both signs, exponents -69, -70, -8192, the smallest normal and a denormal; the series
+  against the exact sum at exponents -65 to -300) and that no tiny operand takes 20 ms; the 30 operands' four
+  instructions together took under 0.06 s on the rented machine (the check measured 0.13 s for one
+  `fyl2xp1`). `tests/transcendental.rs`' 640 values: pass.
+- [minor] `Machine::counters` lists every slow path taken, the guest's own too, by number (it listed the
+  translator's only). The long double and MMX runs now print "x87 floating point in software" with its count.
+- [minor] `long_double_matches_linux_x86_64` and `mmx_and_x87_state_match_linux_x86_64` run at none, full and
+  bounded 1, 5, 17, 64, 256 and 4096 (twice the blocks a function may have), each for speed and size, every
+  level, registers and memory against none: rented machine, 2 passed (135 runs, 166 s, `x8r1/fix.log`).
+
+What a program is told, per process (the owner's ruling of 2026-11-20 on the brief's "AVX setting"):
+- The setting is gone. x86's `Offer` is the kernel interface's `X86_64Features` (crates/kernel/x86_64_features.rs,
+  read only), the list the kernel gets from the embedder once per program: `Offer::new(features)` takes it and
+  refuses, by name (`NotBuilt`), any feature that has no meanings here (AES, PCLMULQDQ, SHA, RDRAND, RDSEED,
+  AVX-512, AVX10 and the rest), so nothing is claimed that is not built. `offer::FULL_SPEED` is the default
+  (plan 5.10's default claims, x86-64-v2, the reference's identity); `offer::V3` adds AVX, AVX2, FMA, F16C,
+  BMI2 and XSAVE. Which list a host reports as full speed stays the owner's to rule on.
+- Every told family is switched by the list, not only the v3 ones: each `Code` has one claim byte from iced's
+  tables at build time (`claims::BASELINE_FEATURES`, one of `claims::TOLD_FEATURES`, kernel only, never); an
+  instruction of a told feature the list leaves out raises illegal instruction with the counter "an instruction
+  of a feature the program was not told of was reached". `lahf` and `sahf` follow LAHF_SAHF_64. The two rep
+  movsb hints are answered as told.
+- `cpuid` answers from the list: leaf 1's signature (family past 0xF into the extended family), every bit the
+  list has a field for, OSXSAVE with XSAVE, XCR0's components and leaf 0xD's sizes with XSAVE and AVX; the
+  bits every x86-64 CPU has stay `cpuid`'s own constants (leaf 1 edx, SYSCALL, NX, LM). The 17 copies of the
+  kernel interface's bits are gone from `cpuid.rs`, and so are their 17 accepted baseline lines.
+- The cache key: `Guest::offer_key` returns a u64 (the told features' bits, and the signature above them);
+  `wcontainers-executor-wasmtime`'s `Key.offer` widened from u32 to u64, one line (see "For the orchestrator").
+  ARM64's description bytes are unchanged (the offer was already written as a u64 there).
+- The test harness: `Machine::set_offer`, `GuestTest::case_offer` (x86: the v3 list for an instruction beyond
+  the default list), layer 1's forms now include every code beyond the default list once its meaning is
+  written, and the unoffered test runs those under the default list, where they must be illegal.
+- Tests: `tests/cpuid.rs` (designed answers through raw-cpuid, now also a narrow list, two other signatures,
+  the hints, refused lists and the key), `tests/tables.rs` (every code's claim), the told-features test (the
+  default list's names against what `cpuid` sets, read through the kernel interface's flags): pass.
+
+Built this run:
+- BMI2: `bzhi` (ZF, SF, CF as Intel, OF, AF and PF clear, as the reference leaves them), `mulx` (no flags; the
+  high half wins where both destinations are one register), `pdep` and `pext` (a pass for each set bit of
+  the mask, counted "software bit deposit or extract"), `rorx`, `sarx`, `shlx`, `shrx`. Layer 1 on the
+  i7-8750H, all 16 forms, 1,000 cases a form, seed 8102: 0 failing (`x8r1/laptop-bmi2-full.log`). On the
+  rented machine, 20 a form, the only differences were 5-level paging's (page fault where the laptop gives
+  general protection).
+- `xgetbv` (XCR0 from the list for ecx 0, general protection for any other ecx: XGETBV1 is not offered) and
+  `xsetbv` (general protection). `xgetbv` is left out of layer 1 by design (the reference's XCR0 is its own,
+  0x1F with MPX) and checked by three designed cases. Laptop: `xsetbv` at 1,000 cases, seed 8103, 0 failing;
+  the unoffered test for the 17 forms (BMI2 and `xsetbv`) under the default list, 64 a form, seed 8104, 0
+  failing; the hand cases: pass.
+
+Left of X8, most important first (667 codes beyond the default list have no meaning yet, laptop's
+`every_default_code_is_drawn_and_written_x86_64`, `x8r1/x8-left-codes.txt`: 562 AVX and AVX2, 96 FMA, 5 XSAVE,
+4 F16C):
+- AVX and AVX2: every VEX form, 256-bit operations as two 128-bit halves over `ymm_high`, 128-bit VEX forms
+  clearing the upper half, `vzeroupper` and `vzeroall`, the broadcasts, permutes, inserts and extracts, the
+  masked moves and the gathers (plan 5.4), and the designed case of a gather that faults part way with TF set.
+  The simd and float meanings have a mnemonic-to-operation table (`simd::binary`) the VEX forms can share.
+- FMA: fused on a host whose probe fuses, else software with "software fused multiply-add" counted (plan 2).
+- F16C: `vcvtph2ps`, `vcvtps2ph`.
+- XSAVE: `xsave`, `xsave64`, `xrstor`, `xrstor64` over x87, SSE and AVX state with the header's XSTATE_BV
+  (what the reference writes there for state in its initial configuration is to be probed first).
+- The browser runner takes the default offer only (`browser/src/lib.rs`); it needs the offer passed in for
+  Chrome runs of v3 code. The benchmark set built for x86-64-v3 with the v3 list, and with the default list
+  stopping with illegal instruction and the counter. Three programs of my own using what X8 adds, at every
+  look-ahead in wasmtime and Chrome. Layer 1 at 1,000 a form for every form of the list.
+
+Literal baseline lines of the track's crates after this run (the Mac, no finding in them): x86 117 (134 before:
+the 17 kernel interface bits), guest-cpu 26, the test crate 1,746, the translator 8.
 
 ## X6f, run 2 (2026-11-21)
 
@@ -227,7 +314,7 @@ Measured:
 - The verdict, the i7-8750H (load 3 to 8, another track's build beside it, 4 at once, main at d6cdc8d9 with other
   tracks' uncommitted edits; `x7r4/laptop-l1a.log`): every x87 and MMX form and every other form whose name
   holds "mm", 715 forms, 1,000 cases a form, seed 9852: 0 failing (2,234 s); 23 known failures, each with its
-  reason: F2xm1 3, Fcos 3, Fptan 8, Fsin 2, Fsincos 2, Fyl2x 3, Fyl2xp1 2 (7 of them C1 only).
+  reason: F2xm1 3, Fcos 3, Fptan 8, Fsin 2, Fsincos 2, Fyl2x 3, Fyl2xp1 2 (6 of them C1 only: F2xm1 2, Fcos 2, Fptan 1, Fyl2x 1).
 - The laptop's other verdicts (`x7r4/laptop-l1b.log`): the 108 hand cases, 64 cases in no form (the default
   count) and the Chrome sample (1,329 cases) at seed 9854, and the refusal test: pass (27 s). The unoffered
   forms, 2,991 at 20 a form, seed 9855: 0 failing (158 s). Every default form, 1,329 forms at 100 a form, seed
@@ -1519,6 +1606,13 @@ wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the 
 
 ## For the orchestrator
 
+- X8 run 1, for the executor's track: `crates/executor/implementation/wasmtime/implementation.rs`'s `Key.offer`
+  is now a u64 (it was a u32), because `Guest::offer_key` now carries the program's whole feature list and
+  identity (40 bits). Nothing else there changed. It compiled and linted at 20:53 with it; from 21:05 that crate
+  did not build in the shared tree because of other tracks' uncommitted edits in `crates/kernel/implementation/
+  linux` and `crates/runtime/implementation/single-kernel` (`BackendRequestId`, `FuseServer`), so its later
+  lint was left out of my bar. The executor still passes `G::Offer::default()` (the full-speed list) where the
+  kernel's chosen list is to come.
 - X6f run 1, for the runtime track: `wcontainers-wasmtime` changed only as far as it must to compile. `Key`
   gains `link_address: Option<u64>`, `Compiler::file` hashes it, `compiled` takes `(hash, link_address)` and
   passes it to `translate`, and `compile` passes `None`. To use it: when `starts::image_starts` finds the image
@@ -3514,6 +3608,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X8 run 1: the quick bar, `x86-run <checkout> --name x86 -- "$(cat <scratch>/x8r1/check.sh)"` (fmt, clippy of
+  the five crates, the browser crate's wasm32 clippy, unit tests, the test crate's library, the told-features
+  and hand-case tests); a form list at layer 1 on the laptop, `<scratch>/x8r1/laptop-bg.sh <name> 'ARM_JOBS=4
+  ~/wcontainers-x86/x8-l1-forms.sh <cases> <seed> <forms, comma separated>'` (copy `x8r1/l1-forms.sh` there
+  first); BMI2's 16 form names are in `x8r1/bmi2-forms.txt`; `x8r1/laptop-xsave.sh` runs `xsetbv`, the
+  unoffered test and the hand cases there. The suite in pieces: `x8r1/suite.sh <log dir>` (as `x6f/suite.sh`,
+  without the wasmtime executor in its lint, which other tracks' edits keep from building). Commits of my own
+  paths with only my lock file lines: `x8r1/commit-own.sh "<message>" <lock patch or -> <paths>`.
 - X7 run 3: the test data now comes from scratch `x7r3/gen2.py <mpmath dir> 7101 16` (adds `fsincos`, the
   flags and the reference's rules). On the laptop, in `~/wcontainers-x86/x7`: `exact.sh` (the exact results),
   `trans ... | python3 -I c1.py mpmath-1.3.0 <op>` (C1 against the true direction) and `... | python3 -I hyp.py
@@ -3956,6 +4058,9 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Licences of what this track uses
 
+- X8 run 1: no new outside dependency. The x86 crate and the test crate take the repository's kernel interface
+  (`wcontainers-kernel`) for `X86_64Features`, and the test crate `bitflags` (already in the workspace, MIT or
+  Apache-2.0) to read its flags.
 - Added at X7: `astro-float-num` 0.3.7 (MIT), without its default features, for `fsqrt`'s root (and the
   transcendental instructions to come). It is the library astro-float 0.9.6 re-exports; taking it directly
   leaves out astro-float's procedural macro crate.
@@ -4009,6 +4114,12 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X8 run 1: the plan's "AVX setting" (one container setting, part of the cache key) is, by the owner's ruling,
+  the per-process list of the kernel interface (`X86_64Features`) given with every translation; every told
+  family, not only the v3 ones, is switched by it, and a list with a feature that has no meanings is refused by
+  name rather than answered. The counter "an AVX instruction was reached while AVX is not offered" became "an
+  instruction of a feature the program was not told of was reached", for every told family; "a program asked
+  whether AVX is available and was told no" stays. Recorded in plan 5.10.
 - X7 run 2: the transcendental instructions follow the reference where it is not correctly rounded in a way
   that is a rule rather than a last-unit error (a tiny sine, cosine or arc tangent rounded to the nearest in
   every mode), so that their underflow flag matches where the correctly rounded result would cross into the
