@@ -4,9 +4,9 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, FormatKind, MapIntent, Object,
-    Origin, STORAGE_WORD, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, ViewDimension,
+    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Format, FormatKind, MapIntent,
+    Object, Origin, STORAGE_WORD, SlowPath, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, ViewDimension,
 };
 
 use naga::VectorSize;
@@ -26,6 +26,9 @@ pub struct View<B: Backend> {
     pub swizzle: [Swizzle; VectorSize::MAX],
     /// Its texels are integers, which programs sample as their nearest texel's load.
     pub integer: bool,
+    /// The components its format has (`Format::components`), as a border colour applied in the
+    /// program reads them.
+    pub components: u32,
     /// For an integer cube map, a 2D array of its faces, which programs load from.
     faces: Option<Result<B::TextureView, &'static str>>,
 }
@@ -386,10 +389,17 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: a live view, and a place for one swizzle a component.
     unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
     let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
-    // A stencil view's texels are unsigned integers.
-    let integer = crate::format::stencil_view(base.format()).is_some()
-        || crate::format::format(base.format())
-            .is_some_and(|f| matches!(f.kind(), FormatKind::Uint | FormatKind::Sint));
+    let stencil = crate::format::stencil_view(base.format());
+    let format = stencil.or_else(|| crate::format::format(base.format()));
+    // A stencil view's texels are unsigned integers, as a stencil texture's are.
+    let integer = stencil.is_some()
+        || format.is_some_and(|f| {
+            matches!(
+                f.kind(),
+                FormatKind::Uint | FormatKind::Sint | FormatKind::Stencil
+            )
+        });
+    let components = format.map_or(0, Format::components);
     // SAFETY: a live view.
     let cube = unsafe { wc_sampler_view_target(&base) } == PIPE_TEXTURE_CUBE;
     let faces = (integer && cube).then(|| texture_view::<B>(&mut backend, resource, &base, true));
@@ -398,6 +408,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         view,
         swizzle,
         integer,
+        components,
         faces,
     }))
     .cast()

@@ -96,7 +96,7 @@ const FORMATS: &[(pipe_format, Format)] = &[
 /// a view of the texture's own format reading its stencil.
 const STENCIL_VIEWS: &[(pipe_format, Format)] = &[
     (PIPE_FORMAT_X24S8_UINT, Format::Depth24PlusStencil8),
-    (PIPE_FORMAT_S8X24_UINT, Format::Depth32FloatStencil8),
+    (PIPE_FORMAT_X32_S8X24_UINT, Format::Depth32FloatStencil8),
 ];
 
 /// The depth-stencil format whose stencil a view of `format` reads, for the stencil views.
