@@ -333,8 +333,11 @@ const PACKET_OPTIONS_ROOM: usize =
     size_of::<libc::cmsghdr>() + size_of::<uapi::in6_pktinfo>() + size_of::<usize>();
 
 /// Control message room aligned as the messages' headers are.
-#[repr(C, align(8))]
-struct PacketOptions([u8; PACKET_OPTIONS_ROOM]);
+#[repr(C)]
+struct PacketOptions {
+    _aligned: [libc::cmsghdr; 0],
+    bytes: [u8; PACKET_OPTIONS_ROOM],
+}
 
 /// The host error of a failed socket2 call.
 fn io_host_error(error: std::io::Error) -> HostError {
@@ -741,17 +744,20 @@ impl HostTcpSockets {
 
     /// The interface an IPv6 SYN came in on, from the packet information the listener's `IPV6_RECVPKTINFO` kept.
     fn ipv6_arrival_interface(&self, socket: BorrowedFd<'_>) -> Option<InterfaceIndex> {
-        let mut control = PacketOptions([0; PACKET_OPTIONS_ROOM]);
+        let mut control = PacketOptions {
+            _aligned: [],
+            bytes: [0; PACKET_OPTIONS_ROOM],
+        };
         let length = options::get_bytes(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_2292PKTOPTIONS,
-            &mut control.0,
+            &mut control.bytes,
         )
         .ok()?;
         // The accepted connection keeps no packet information for what arrives later.
         set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
-        Ancillary::parse(&control.0[..length])
+        Ancillary::parse(&control.bytes[..length])
             .interface
             .map(InterfaceIndex)
     }

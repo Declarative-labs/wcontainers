@@ -185,7 +185,12 @@ readings, repair, authentication, multipath state, the privileged settings).
   nix develop -c`; there both crates build empty).
 - Files copied from the Mac can carry times older than the ARM machine's last build, so cargo there may skip
   them: `touch` the changed files in the command when a result looks stale.
-- The literal check reports nothing in this track's files.
+- The literal check (run 4, on the ARM machine in a copy given its own `git init`, since arm-run copies no .git)
+  found eight findings in this track's files that earlier runs had not seen; seven are fixed (named constants,
+  a different test flow label, alignment by `cmsghdr`'s type, the fast open sysctl as its two named bits). One
+  stays: `LOOPBACK_INTERFACE = "lo"` in the suite restates the kernel implementation's `LOOPBACK_NAME`, which the
+  suite may not import (an interface crate must not lean on an implementation); removing it needs the name in a
+  crate both can use, or the suite finding loopback by its `IFF_LOOPBACK` flag (next run).
 
 ## Next (T2)
 - read_state and read_listener_state (every query), authentication (MD5, AO, counters), repair options, queues

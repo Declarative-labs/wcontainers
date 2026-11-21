@@ -62,6 +62,22 @@ use wcontainers_tcp_sockets::{
     TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
 
+/// The byte the third fast open key is made of, unlike the two before it.
+const THIRD_KEY: u8 = 3;
+
+/// Peers of the address sharing check: two for the sharing connections, one for the connection that does not share.
+const SHARING_PEERS: usize = 3;
+
+/// Connections the backlog check makes, more than the smallest backlog holds.
+const BACKLOG_OVERFLOW: usize = 3;
+
+/// The loopback interface's name on Linux.
+const LOOPBACK_INTERFACE: &str = "lo";
+
+/// The names of the keep-alive check's two intervals, for its messages.
+const PROBE: &str = "the probe";
+const RESET: &str = "the reset";
+
 /// How long a check waits for something the network does.
 pub const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -2086,7 +2102,7 @@ pub fn fast_open_keys_and_queue_decide_what_the_listener_takes<S: TcpSockets>(so
     assert_eq!(stale.synchronize_data, MESSAGE.len());
     assert!(!stale.data_acknowledged, "a cookie of a key no longer held");
     sockets
-        .configure(&listener, keys(3, Some(2)))
+        .configure(&listener, keys(THIRD_KEY, Some(2)))
         .expect("a new key, the last one kept as backup");
     assert!(round().data_acknowledged, "a cookie of the backup key");
     sockets
@@ -2135,13 +2151,13 @@ pub fn keep_alive_probes_end_an_unanswered_connection<S: TcpSockets>(sockets: S)
     let probe = capture
         .wait_for(start, ending, |segment| is_probe(segment, next))
         .expect("a keep-alive probe");
-    assert_near("the probe", probe.at - start, KEEP_ALIVE_IDLE);
+    assert_near(PROBE, probe.at - start, KEEP_ALIVE_IDLE);
     let reset = capture
         .wait_for(start, ending, |segment| {
             segment.to_listener && segment.reset
         })
         .expect("a reset after the last probe");
-    assert_near("the reset", reset.at - probe.at, KEEP_ALIVE_INTERVAL);
+    assert_near(RESET, reset.at - probe.at, KEEP_ALIVE_INTERVAL);
     let probes = capture
         .segments()
         .iter()
@@ -2800,7 +2816,7 @@ pub fn address_sharing_lets_connections_leave_from_one_port<S: TcpSockets>(socke
     let shared = [TcpSetting::Port(PortSetting::AddressSharing(
         AddressSharing::Shared,
     ))];
-    let listeners = [(); 3].map(|_| listen(&sockets, ipv4_loopback(), &[]));
+    let listeners = [(); SHARING_PEERS].map(|_| listen(&sockets, ipv4_loopback(), &[]));
     let connect = |port: Port, peer: SocketAddr, settings: &[TcpSetting<'_>]| {
         sockets.connect(
             TcpProtocol::Tcp,
@@ -2906,7 +2922,7 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
                 .configure(&listener, smallest.clone())
                 .expect("a smaller backlog");
         }
-        let clients = [(); 3].map(|_| {
+        let clients = [(); BACKLOG_OVERFLOW].map(|_| {
             sockets
                 .connect(
                     TcpProtocol::Tcp,
@@ -3434,7 +3450,7 @@ const PADDING_HEADER: [u8; Ipv6RawExtHeader::MIN_LEN] = [0; Ipv6RawExtHeader::MI
 const MULTICAST_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MULTICAST_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const ANYCAST_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
-const FLOW_LABEL: u32 = 0x12345;
+const FLOW_LABEL: u32 = 0xABCDE;
 const MARK: PacketMark = PacketMark(7);
 
 /// The index of the loopback interface.
@@ -3442,7 +3458,8 @@ fn loopback_interface() -> InterfaceIndex {
     let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
         .expect("a socket to name interfaces with");
     InterfaceIndex(
-        rustix::net::netdevice::name_to_index(&socket, "lo").expect("the loopback interface"),
+        rustix::net::netdevice::name_to_index(&socket, LOOPBACK_INTERFACE)
+            .expect("the loopback interface"),
     )
 }
 
