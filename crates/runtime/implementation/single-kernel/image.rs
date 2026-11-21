@@ -62,10 +62,10 @@ const FILE_MODE: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
 /// The OCI image layout's marker file, its version, its index and its blobs' directory
 /// (image-layout.md).
-const LAYOUT_FILE: &str = "oci-layout";
+pub const LAYOUT_FILE: &str = "oci-layout";
 const LAYOUT_VERSION: &str = "1.0.0";
-const INDEX_FILE: &str = "index.json";
-const BLOBS_DIRECTORY: &str = "blobs";
+pub const INDEX_FILE: &str = "index.json";
+pub const BLOBS_DIRECTORY: &str = "blobs";
 
 /// Docker's media type of a gzip-compressed layer, which `docker save` writes.
 const DOCKER_LAYER_GZIP: &str = "application/vnd.docker.image.rootfs.diff.tar.gzip";
@@ -654,7 +654,18 @@ struct Zstd<'a> {
     decoder: FrameDecoder,
     /// Bytes given of the frame being read, while one is.
     in_frame: Option<u64>,
+    /// Whether the frame being read declares its size.
+    declares_size: bool,
+    /// Whether a frame, skippable or not, has begun: a stream of none is cut.
+    begun: bool,
 }
+
+/// Where a zstd frame's header descriptor is, and its bits: the content size field's size, the
+/// single segment flag, and the bit that must be clear (RFC 8878 3.1.1.1.1).
+const ZSTD_DESCRIPTOR_AT: usize = 4;
+const ZSTD_CONTENT_SIZE_FLAG: u8 = 0b1100_0000;
+const ZSTD_SINGLE_SEGMENT: u8 = 0b0010_0000;
+const ZSTD_RESERVED: u8 = 0b0000_1000;
 
 impl<'a> Zstd<'a> {
     fn new(source: &'a [u8]) -> Self {
@@ -662,7 +673,24 @@ impl<'a> Zstd<'a> {
             source,
             decoder: FrameDecoder::new(),
             in_frame: None,
+            declares_size: false,
+            begun: false,
         }
+    }
+
+    /// Checks the header descriptor of the frame that `header` starts with and the decoder has
+    /// just read, for what the decoder does not check.
+    fn begin_frame(&mut self, header: &[u8]) -> std::io::Result<()> {
+        let descriptor = header[ZSTD_DESCRIPTOR_AT];
+        if descriptor & ZSTD_RESERVED != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a zstd frame sets a reserved bit",
+            ));
+        }
+        self.declares_size = descriptor & (ZSTD_CONTENT_SIZE_FLAG | ZSTD_SINGLE_SEGMENT) != 0;
+        self.in_frame = Some(0);
+        Ok(())
     }
 
     /// Checks the frame just read to its end.
@@ -675,9 +703,7 @@ impl<'a> Zstd<'a> {
                 "a zstd frame's checksum does not match its contents",
             ));
         }
-        // A declared size of zero cannot be told from none.
-        let declared = self.decoder.content_size();
-        if declared != 0 && declared != given {
+        if self.declares_size && self.decoder.content_size() != given {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "a zstd frame's contents are not of the size it declares",
@@ -708,10 +734,18 @@ impl Read for Zstd<'_> {
                 self.in_frame = None;
             }
             if self.source.is_empty() {
-                return Ok(0);
+                if self.begun {
+                    return Ok(0);
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "a zstd stream holds no frame",
+                ));
             }
+            self.begun = true;
+            let header = self.source;
             match self.decoder.reset(&mut self.source) {
-                Ok(()) => self.in_frame = Some(0),
+                Ok(()) => self.begin_frame(header)?,
                 Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
                     length,
                     ..
@@ -1359,6 +1393,29 @@ web:x:2:
         let mut wrong_size = small.clone();
         wrong_size[5] += 1;
         damaged.push(wrong_size);
+        // A frame that sets the reserved bit of its header descriptor.
+        let mut reserved = good.clone();
+        reserved[ZSTD_DESCRIPTOR_AT] |= ZSTD_RESERVED;
+        damaged.push(reserved);
+        // A frame with a four-byte declared size, a window of 1 KiB and one raw last block of five
+        // bytes (RFC 8878 3.1.1.1 and 3.1.1.2): it decodes when it declares five, not when zero.
+        let raw_frame = |declared: u32| {
+            let mut frame = small[..ZSTD_DESCRIPTOR_AT].to_vec();
+            frame.extend([0b1000_0000, 0]);
+            frame.extend(declared.to_le_bytes());
+            frame.extend([1 | (5 << 3), 0, 0]);
+            frame.extend(b"hello");
+            frame
+        };
+        let declared_five = raw_frame(5);
+        assert_eq!(
+            zstd::stream::decode_all(declared_five.as_slice()).unwrap(),
+            b"hello"
+        );
+        assert_eq!(ours(&declared_five, 4093).unwrap(), b"hello");
+        damaged.push(raw_frame(0));
+        // No frame at all.
+        damaged.push(Vec::new());
         // A frame that needs a window above libzstd's default limit, 128 MiB.
         let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
         encoder.include_contentsize(false).unwrap();

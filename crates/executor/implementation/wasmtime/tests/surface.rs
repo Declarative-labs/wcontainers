@@ -286,16 +286,23 @@ fn a_pipeline_from_the_oci_image_matches_the_reference() {
 fn zstd_twin(layout: &Path) -> PathBuf {
     use sha2::{Digest as _, Sha256};
     use std::io::Read;
+    use wcontainers_runtime_single_kernel::image::{BLOBS_DIRECTORY, INDEX_FILE, LAYOUT_FILE};
     use wcontainers_runtime_single_kernel::oci_spec::image::{
         Descriptor, Digest, ImageIndex, ImageManifest, MediaType, Os,
     };
     let twin = layout.with_file_name("zstd-layout");
     let _ = std::fs::remove_dir_all(&twin);
-    let blobs = twin.join("blobs").join("sha256");
+    let blobs = twin.join(BLOBS_DIRECTORY).join("sha256");
     std::fs::create_dir_all(&blobs).unwrap();
     let read_blob = |descriptor: &Descriptor| {
         let digest = descriptor.digest();
-        std::fs::read(layout.join("blobs").join("sha256").join(digest.digest())).unwrap()
+        std::fs::read(
+            layout
+                .join(BLOBS_DIRECTORY)
+                .join("sha256")
+                .join(digest.digest()),
+        )
+        .unwrap()
     };
     let write_blob = |media_type: MediaType, bytes: &[u8]| {
         let digest = format!("{:x}", Sha256::digest(bytes));
@@ -303,7 +310,7 @@ fn zstd_twin(layout: &Path) -> PathBuf {
         let digest: Digest = format!("sha256:{digest}").parse().unwrap();
         Descriptor::new(media_type, bytes.len() as u64, digest)
     };
-    let mut index = ImageIndex::from_file(layout.join("index.json")).unwrap();
+    let mut index = ImageIndex::from_file(layout.join(INDEX_FILE)).unwrap();
     let found = index
         .manifests()
         .iter()
@@ -339,8 +346,8 @@ fn zstd_twin(layout: &Path) -> PathBuf {
     );
     descriptor.set_platform(found.platform().clone());
     index.set_manifests(vec![descriptor]);
-    index.to_file(twin.join("index.json")).unwrap();
-    std::fs::copy(layout.join("oci-layout"), twin.join("oci-layout")).unwrap();
+    index.to_file(twin.join(INDEX_FILE)).unwrap();
+    std::fs::copy(layout.join(LAYOUT_FILE), twin.join(LAYOUT_FILE)).unwrap();
     twin
 }
 
