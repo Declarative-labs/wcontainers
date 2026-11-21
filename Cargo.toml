@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/wcontainers-*", "crates/abi", "crates/kernel/implementation/linux", "crates/runtime/implementation/single-kernel", "crates/system/implementation/seeded-test-policy", "crates/executor/implementation/wasmtime", "crates/executor/implementation/unicorn", "crates/executor/implementation/hardware-virtualization", "crates/executor/implementation/hardware-virtualization-inside", "crates/clock", "crates/configurable", "crates/executor", "crates/icmp-sockets", "crates/internet-protocol", "crates/kernel", "crates/negative-route-advice", "crates/random-source", "crates/raw-sockets", "crates/route-resolver", "crates/runtime", "crates/system", "crates/tcp-sockets", "crates/udp-sockets", "crates/executor/conformance", "crates/kernel/conformance", "crates/system/conformance", "crates/runtime/conformance", "crates/clock/conformance", "crates/random-source/conformance", "crates/tcp-sockets/conformance", "crates/udp-sockets/conformance", "crates/icmp-sockets/conformance", "crates/raw-sockets/conformance", "crates/route-resolver/conformance", "crates/configurable/conformance", "crates/negative-route-advice/conformance"]
+members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*"]
 exclude = ["third_party"]
 
 [workspace.metadata.reviewable]
