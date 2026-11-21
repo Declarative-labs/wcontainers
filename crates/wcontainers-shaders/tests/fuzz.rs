@@ -189,8 +189,20 @@ mod codes {
 /// (after the opcode, operand, id and first register).
 const SAMPLER_DECLARATION: u32 = codes::dxbc_op::DCL_SAMPLER;
 const LAST_REGISTER_WORD: usize = 4;
-/// The program chunk's words before its first instruction: tag, size, version, length.
-const PROGRAM_HEADER_WORDS: usize = 4;
+/// The byte offset in container `b` of its program's first instruction whose opcode `wanted` takes.
+fn instruction_at(b: &[u8], wanted: impl Fn(u32) -> bool) -> usize {
+    let program = container::chunk_list(b)
+        .unwrap()
+        .map_while(Result::ok)
+        .find(|c| c.tag().is_some_and(container::is_program))
+        .and_then(|c| c.contents())
+        .expect("the program chunk");
+    let instruction = container::instructions(program)
+        .map_while(Result::ok)
+        .find(|i| wanted(token::opcode(i.opcode_token())))
+        .expect("the instruction");
+    instruction.bytes().as_ptr().addr() - b.as_ptr().addr()
+}
 /// A last register far past any binding range.
 const FAR_REGISTER: u32 = 0x3fff_ffff;
 
@@ -201,22 +213,8 @@ const FAR_REGISTER: u32 = 0x3fff_ffff;
 fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/ps_spaces.dxbc");
     let mut b = std::fs::read(path).unwrap();
-    let words: Vec<u32> = b
-        .as_chunks::<{ size_of::<u32>() }>()
-        .0
-        .iter()
-        .map(|w| u32::from_le_bytes(*w))
-        .collect();
-    let tag = u32::from_le_bytes(*b"SHEX");
-    let mut at = words
-        .iter()
-        .position(|&w| w == tag)
-        .expect("the program chunk")
-        + PROGRAM_HEADER_WORDS;
-    while token::opcode(words[at]) != SAMPLER_DECLARATION {
-        at += token::length(words[at]) as usize;
-    }
-    let last = size_of::<u32>() * (at + LAST_REGISTER_WORD);
+    let last =
+        instruction_at(&b, |op| op == SAMPLER_DECLARATION) + size_of::<u32>() * LAST_REGISTER_WORD;
     b[last..last + size_of::<u32>()].copy_from_slice(&FAR_REGISTER.to_le_bytes());
     sign(&mut b);
     assert_eq!(
@@ -242,23 +240,9 @@ fn a_globally_coherent_view_is_refused_by_name() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxbc");
     let mut b = std::fs::read(path).unwrap();
     assert!(convert(Source::Dxbc(&b), &VariantKey::default(), None).is_ok());
-    let words: Vec<u32> = b
-        .as_chunks::<{ size_of::<u32>() }>()
-        .0
-        .iter()
-        .map(|w| u32::from_le_bytes(*w))
-        .collect();
-    let tag = u32::from_le_bytes(*b"SHEX");
-    let mut at = words
-        .iter()
-        .position(|&w| w == tag)
-        .expect("the program chunk")
-        + PROGRAM_HEADER_WORDS;
-    while !VIEW_DECLARATIONS.contains(&(token::opcode(words[at]))) {
-        at += token::length(words[at]) as usize;
-    }
-    let first = size_of::<u32>() * at;
-    let marked = words[at] | GLOBALLY_COHERENT_BIT;
+    let first = instruction_at(&b, |op| VIEW_DECLARATIONS.contains(&op));
+    let word = u32::from_le_bytes(b[first..first + size_of::<u32>()].try_into().unwrap());
+    let marked = word | GLOBALLY_COHERENT_BIT;
     b[first..first + size_of::<u32>()].copy_from_slice(&marked.to_le_bytes());
     sign(&mut b);
     assert_eq!(

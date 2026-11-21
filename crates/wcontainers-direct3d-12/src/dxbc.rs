@@ -6,7 +6,9 @@
 
 use std::ops::Range;
 use wcontainers_gpu::SlotKind;
-use wcontainers_shaders::container::{self, Instruction, Tag, dxbc_op, token};
+use wcontainers_shaders::container::{
+    self, Instruction, Tag, dxbc_dimension, dxbc_op, dxbc_sampled, token,
+};
 
 /// The kind of value a typed view's declaration reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,10 +35,6 @@ pub struct TypedView {
 use dxbc_op::{
     DCL_RESOURCE, DCL_RESOURCE_RAW, DCL_RESOURCE_STRUCTURED, DCL_SAMPLER, DCL_UAV_RAW,
     DCL_UAV_STRUCTURED, DCL_UAV_TYPED,
-};
-use token::{
-    DIMENSION_BUFFER, DIMENSION_TEXTURE_2D_MS_ARRAY, RETURN_TYPE_FLOAT, RETURN_TYPE_SINT,
-    RETURN_TYPE_SNORM, RETURN_TYPE_UINT, RETURN_TYPE_UNORM,
 };
 
 /// An operand's index dimension with one index (a register, shader model 5.0) and with three
@@ -137,7 +135,7 @@ pub fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Optio
     let slots = element_slots(&views, spaces, ranges);
     let mut out = Vec::new();
     for (v, slots) in views.iter().zip(slots) {
-        let buffer = v.dimension == DIMENSION_BUFFER;
+        let buffer = v.dimension == dxbc_dimension::BUFFER;
         let typed = match v.opcode {
             DCL_UAV_TYPED => true,
             DCL_RESOURCE => buffer,
@@ -198,7 +196,7 @@ pub fn multisampled_arrays(
             .iter()
             .zip(slots)
             .filter(|(v, _)| {
-                v.opcode == DCL_RESOURCE && v.dimension == DIMENSION_TEXTURE_2D_MS_ARRAY
+                v.opcode == DCL_RESOURCE && v.dimension == dxbc_dimension::TEXTURE_2DMS_ARRAY
             })
             .flat_map(|(_, slots)| slots)
             .collect(),
@@ -240,9 +238,9 @@ fn view(instruction: Instruction) -> Option<((u32, u32), Option<u32>, bool, Opti
     let kind = instruction
         .word(at)
         .and_then(|t| match token::return_type(t) {
-            RETURN_TYPE_UNORM | RETURN_TYPE_SNORM | RETURN_TYPE_FLOAT => Some(Kind::Float),
-            RETURN_TYPE_SINT => Some(Kind::Sint),
-            RETURN_TYPE_UINT => Some(Kind::Uint),
+            dxbc_sampled::UNORM | dxbc_sampled::SNORM | dxbc_sampled::FLOAT => Some(Kind::Float),
+            dxbc_sampled::SINT => Some(Kind::Sint),
+            dxbc_sampled::UINT => Some(Kind::Uint),
             _ => None,
         });
     Some(((space, register), length, ranged, kind))
@@ -276,9 +274,6 @@ fn program(code: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its opcode.
-    const CUSTOMDATA: u32 = 53;
 
     /// A container holding one program chunk of `tokens`.
     fn container(tokens: &[u32]) -> Vec<u8> {
@@ -322,7 +317,7 @@ mod tests {
             operand,
             1,
             0x5555,
-            CUSTOMDATA,
+            dxbc_op::CUSTOM_DATA,
             3,
             0,
             buffer,

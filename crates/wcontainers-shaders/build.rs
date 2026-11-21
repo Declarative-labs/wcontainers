@@ -78,6 +78,8 @@ const IR_ENUMS: &[HeaderEnum] = &[
     ("dxbc/dxbc_parser.h", "ShaderType", "program", "u32"),
     ("dxbc/dxbc_types.h", "OpCode", "dxbc_op", "u32"),
     ("dxbc/dxbc_types.h", "UavFlag", "dxbc_uav", "u32"),
+    ("dxbc/dxbc_types.h", "ResourceDim", "dxbc_dimension", "u32"),
+    ("dxbc/dxbc_types.h", "SampledType", "dxbc_sampled", "u32"),
 ];
 
 /// The directory of this crate's own C++ boundary.

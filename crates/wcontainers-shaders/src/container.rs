@@ -257,8 +257,9 @@ pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
     Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
 }
 
-/// DXBC's opcodes (`D3D10_SB_OPCODE_TYPE`), as dxbc-spirv names them.
-pub use crate::ir::dxbc_op;
+/// DXBC's opcodes (`D3D10_SB_OPCODE_TYPE`), resource dimensions (`D3D10_SB_RESOURCE_DIMENSION`) and
+/// resource return types (`D3D10_SB_RESOURCE_RETURN_TYPE`), as dxbc-spirv names them.
+pub use crate::ir::{dxbc_dimension, dxbc_op, dxbc_sampled};
 
 /// The fields of a DXBC instruction's first word (d3d11TokenizedProgramFormat.hpp): the opcode in its
 /// low bits, the instruction's length in words, a control point count, and a declaration's resource
@@ -277,17 +278,6 @@ pub mod token {
     pub const INDEX_DIMENSION_BITS: u32 = 2;
     pub const RETURN_TYPE_BITS: u32 = 4;
     pub const EXTENDED_SHIFT: u32 = 31;
-
-    /// `D3D10_SB_RESOURCE_DIMENSION_BUFFER` and `..._TEXTURE2DMSARRAY`.
-    pub const DIMENSION_BUFFER: u32 = 1;
-    pub const DIMENSION_TEXTURE_2D_MS_ARRAY: u32 = 9;
-
-    /// `D3D10_SB_RESOURCE_RETURN_TYPE`'s values.
-    pub const RETURN_TYPE_UNORM: u32 = 1;
-    pub const RETURN_TYPE_SNORM: u32 = 2;
-    pub const RETURN_TYPE_SINT: u32 = 3;
-    pub const RETURN_TYPE_UINT: u32 = 4;
-    pub const RETURN_TYPE_FLOAT: u32 = 5;
 
     fn field(word: u32, shift: u32, bits: u32) -> u32 {
         word >> shift & ((1 << bits) - 1)
@@ -339,7 +329,12 @@ pub fn is_program(tag: Tag) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub struct Instruction<'a>(&'a [u8]);
 
-impl Instruction<'_> {
+impl<'a> Instruction<'a> {
+    /// Its bytes, within the program's.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.0
+    }
+
     /// Its word `i`.
     pub fn word(&self, i: usize) -> Option<u32> {
         word(self.0, i.checked_mul(TOKEN_BYTES)?)
@@ -487,8 +482,8 @@ pub fn signature_direction(tag: Tag) -> Option<bool> {
 }
 
 /// The elements of the signature chunk `contents` tagged `tag` (none for a tag of no signature), in
-/// order: `Err` where the chunk's header, an element's fields or its name lie past the chunk's end,
-/// which is the last item then.
+/// order: `Err` where the chunk's header, an element's fields or its name (with its terminating NUL)
+/// lie past the chunk's end, which is the last item then.
 pub fn signature_elements(
     contents: &[u8],
     tag: Tag,
@@ -525,7 +520,8 @@ fn signature_element(
     let at = start.checked_add(form.common)?;
     let field = |offset: usize| word(contents, at.checked_add(offset)?);
     let name = field(offset_of!(SignatureElement, name))?;
-    let semantic = contents.get(name as usize..)?.split(|&c| c == 0).next()?;
+    let name = contents.get(name as usize..)?;
+    let semantic = &name[..name.iter().position(|&c| c == 0)?];
     Some(Element {
         semantic: alloc::string::String::from_utf8_lossy(semantic).into_owned(),
         index: field(offset_of!(SignatureElement, index))?,
@@ -650,4 +646,102 @@ pub(crate) fn place_system_values(values: &mut alloc::vec::Vec<StageValue>, sign
         }
     }
     *values = placed;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// A container of one chunk tagged `tag` holding `contents`.
+    fn container(tag: Tag, contents: &[u8]) -> Vec<u8> {
+        let mut c = MAGIC.to_vec();
+        c.resize(offset_of!(Header, chunks), 0);
+        c.extend(1u32.to_le_bytes());
+        c.extend(((size_of::<Header>() + TOKEN_BYTES) as u32).to_le_bytes());
+        c.extend(tag);
+        c.extend((contents.len() as u32).to_le_bytes());
+        c.extend(contents);
+        let size = c.len() as u32;
+        c[offset_of!(Header, size)..][..TOKEN_BYTES].copy_from_slice(&size.to_le_bytes());
+        c
+    }
+
+    /// An `OSGN` chunk of one element whose name, `name`, is at `offset` (the bytes after the
+    /// element).
+    fn output_signature(offset: u32, name: &[u8]) -> Vec<u8> {
+        let first = size_of::<SignatureHeader>() as u32;
+        let mut s: Vec<u8> = [1, first, offset, 0, 0, 3, 0]
+            .iter()
+            .flat_map(|w: &u32| w.to_le_bytes())
+            .collect();
+        s.extend([0xf, 0xf, 0, 0]);
+        s.extend(name);
+        s
+    }
+
+    const NAME_AT: u32 = (size_of::<SignatureHeader>() + size_of::<SignatureElement>()) as u32;
+
+    #[test]
+    fn a_name_ends_with_its_nul_inside_its_chunk() {
+        let whole = output_signature(NAME_AT, b"SV_Target\0");
+        let names = |chunk: &[u8]| -> Vec<Result<alloc::string::String, Malformed>> {
+            signature_elements(chunk, OSGN)
+                .map(|e| e.map(|e| e.semantic))
+                .collect()
+        };
+        assert_eq!(names(&whole), [Ok("SV_Target".into())]);
+        // The chunk ends inside the name, before its NUL; then at the name's offset; then before it.
+        let cut = &whole[..NAME_AT as usize + 5];
+        assert_eq!(names(cut), [Err(Malformed)]);
+        assert_eq!(names(&whole[..NAME_AT as usize]), [Err(Malformed)]);
+        let past = output_signature(NAME_AT + 64, b"SV_Target\0");
+        assert_eq!(names(&past), [Err(Malformed)]);
+        // The converters' list keeps the elements before a malformed one, here none.
+        let mut cut_container = container(OSGN, cut);
+        cut_container.extend(b"rget\0");
+        assert_eq!(signature(&cut_container, &OSGN), []);
+        assert_eq!(signature(&container(OSGN, &whole), &OSGN).len(), 1);
+    }
+
+    /// `dcl_input_control_point_count` with `points` and an instruction length of `length` words.
+    fn control_point_declaration(points: u32, length: u32) -> u32 {
+        dxbc_op::DCL_INPUT_CONTROL_POINT_COUNT
+            | points << token::CONTROL_POINTS_SHIFT
+            | length << token::LENGTH_SHIFT
+    }
+
+    #[test]
+    fn an_instruction_past_its_program_ends_the_walk_before_its_opcode_is_read() {
+        let program = |declaration: u32| {
+            let words = [0x0005_0050, 3, declaration];
+            let bytes: Vec<u8> = words.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
+            container(SHEX, &bytes)
+        };
+        assert_eq!(
+            dxbc_input_control_points(&program(control_point_declaration(3, 1))),
+            Some(3)
+        );
+        assert_eq!(
+            dxbc_input_control_points(&program(control_point_declaration(3, 2))),
+            None
+        );
+        let one = program(control_point_declaration(3, 2));
+        let code = chunks(&one, SHEX).next().unwrap();
+        let walked: Vec<_> = instructions(code).map(|i| i.map(|_| ())).collect();
+        assert_eq!(walked, [Err(Malformed)]);
+    }
+
+    #[test]
+    fn a_chunk_list_entry_past_the_container_is_its_last_item() {
+        let mut c = container(OSGN, &output_signature(NAME_AT, b"SV_Target\0"));
+        c[offset_of!(Header, chunks)..][..TOKEN_BYTES].copy_from_slice(&3u32.to_le_bytes());
+        c.truncate(size_of::<Header>() + TOKEN_BYTES + 2);
+        let listed: Vec<bool> = chunk_list(&c).unwrap().map(|c| c.is_ok()).collect();
+        assert_eq!(listed, [true, false]);
+        assert_eq!(
+            chunk_list(&c[..offset_of!(Header, chunks)]).err(),
+            Some(Malformed)
+        );
+    }
 }

@@ -7,7 +7,9 @@ use wcontainers_gpu::{
     SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
     ViewComponent, helper_binding,
 };
-use wcontainers_shaders::container::{self, Chunk, Tag, dxbc_op, token};
+use wcontainers_shaders::container::{
+    self, Chunk, Tag, dxbc_dimension, dxbc_op, dxbc_sampled, token,
+};
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
 use crate::error::{Error, Result, not_implemented};
@@ -123,10 +125,6 @@ impl TypedView {
 }
 
 use dxbc_op::{DCL_CONSTANT_BUFFER, DCL_RESOURCE, DCL_UAV_TYPED};
-use token::{
-    DIMENSION_BUFFER, DIMENSION_TEXTURE_2D_MS_ARRAY, RETURN_TYPE_FLOAT, RETURN_TYPE_SINT,
-    RETURN_TYPE_SNORM, RETURN_TYPE_UINT, RETURN_TYPE_UNORM,
-};
 /// A constant buffer declaration's flag (in the dimension's bits) for a buffer indexed at run time.
 const CONSTANT_BUFFER_DYNAMIC_INDEXED: u32 = 1;
 
@@ -186,20 +184,20 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
     let mut views = Vec::new();
     for d in declarations(bytecode)? {
         let storage = match d.opcode {
-            DCL_RESOURCE if d.dimension == DIMENSION_BUFFER => false,
+            DCL_RESOURCE if d.dimension == dxbc_dimension::BUFFER => false,
             DCL_UAV_TYPED => true,
             _ => continue,
         };
         let kind = match token::return_type(d.returns) {
-            RETURN_TYPE_UNORM | RETURN_TYPE_SNORM | RETURN_TYPE_FLOAT => FormatKind::Float,
-            RETURN_TYPE_SINT => FormatKind::Sint,
-            RETURN_TYPE_UINT => FormatKind::Uint,
+            dxbc_sampled::UNORM | dxbc_sampled::SNORM | dxbc_sampled::FLOAT => FormatKind::Float,
+            dxbc_sampled::SINT => FormatKind::Sint,
+            dxbc_sampled::UINT => FormatKind::Uint,
             _ => return Err(Error::InvalidArg("malformed DXBC program")),
         };
         views.push(TypedView {
             storage,
             register: d.register,
-            buffer: d.dimension == DIMENSION_BUFFER,
+            buffer: d.dimension == dxbc_dimension::BUFFER,
             kind,
             through: false,
             textured: false,
@@ -253,7 +251,7 @@ pub fn multisampled_arrays(bytecode: &[u8]) -> Result<u128> {
         .iter()
         .filter(|d| {
             d.opcode == DCL_RESOURCE
-                && d.dimension == DIMENSION_TEXTURE_2D_MS_ARRAY
+                && d.dimension == dxbc_dimension::TEXTURE_2DMS_ARRAY
                 && d.register < 128
         })
         .fold(0, |m, d| m | 1 << d.register))
@@ -1045,6 +1043,41 @@ mod tests {
     fn truncated_declarations_are_refused() {
         let tokens = [0x0005_0050, 4, 156 | 3 << 11 | 4 << 24, 30 << 12 | 1 << 20];
         assert!(typed_views(&container(&tokens)).is_err());
+    }
+
+    /// A container of one input signature chunk holding one element named `SV_Position`, its chunk
+    /// `cut` bytes short of the name's end (the bytes stay, past the chunk).
+    fn input_signature_cut(cut: usize) -> Vec<u8> {
+        let mut chunk: Vec<u8> = [1u32, 8, 32, 0, 1, 3, 0]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        chunk.extend([0xf, 0xf, 0, 0]);
+        chunk.extend(b"SV_Position\0");
+        let mut code = b"DXBC".to_vec();
+        code.resize(20, 0);
+        code.extend(1u32.to_le_bytes());
+        code.extend(((44 + chunk.len()) as u32).to_le_bytes());
+        code.extend(1u32.to_le_bytes());
+        code.extend(36u32.to_le_bytes());
+        code.extend(b"ISGN");
+        code.extend(((chunk.len() - cut) as u32).to_le_bytes());
+        code.extend(chunk);
+        code
+    }
+
+    #[test]
+    fn a_signature_element_reaching_past_its_chunk_is_refused() {
+        let whole = input_signature(&input_signature_cut(0)).unwrap();
+        assert_eq!(whole.len(), 1);
+        assert_eq!(whole[0].semantic, "SV_Position");
+        // The chunk ends inside the name, before its NUL, and inside the element's fields.
+        for cut in [3, 12 + 20] {
+            assert!(matches!(
+                input_signature(&input_signature_cut(cut)),
+                Err(Error::InvalidArg(_))
+            ));
+        }
     }
 
     #[test]
