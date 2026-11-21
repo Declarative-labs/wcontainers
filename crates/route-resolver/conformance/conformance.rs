@@ -1017,7 +1017,7 @@ const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/da/use_tempaddr";
 const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr";
 
 /// The temporary address Linux made on the link.
-fn temporary_address(link: &str) -> Ipv6Addr {
+pub fn temporary_address(link: &str) -> Ipv6Addr {
     /// Shows the link's temporary addresses as JSON.
     const SHOW: [&str; 6] = ["-6", "-j", "address", "show", "temporary", "dev"];
     const LOCAL: &str = "\"local\":\"";

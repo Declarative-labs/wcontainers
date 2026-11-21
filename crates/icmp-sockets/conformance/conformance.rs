@@ -207,7 +207,7 @@ pub fn index(name: &str) -> InterfaceIndex {
 }
 
 /// An echo request of the version with the sequence number and payload; Linux writes the identifier and checksum.
-fn echo(version: IpVersion, payload: &[u8]) -> Vec<u8> {
+pub fn echo(version: IpVersion, payload: &[u8]) -> Vec<u8> {
     let kind = match version {
         IpVersion::V4 => icmpv4::TYPE_ECHO_REQUEST,
         IpVersion::V6 => icmpv6::TYPE_ECHO_REQUEST,
@@ -293,7 +293,7 @@ fn v6_header(route: Ipv6RouteSelectors<'_>) -> Ipv6HeaderFields<'_> {
 }
 
 /// The plain header of a message to the address.
-fn header_to(destination: IpAddr, message: &[u8]) -> IpHeaderFields<'static> {
+pub fn header_to(destination: IpAddr, message: &[u8]) -> IpHeaderFields<'static> {
     match destination {
         IpAddr::V4(address) => IpHeaderFields::V4(v4_header(v4_route(address, message))),
         IpAddr::V6(address) => IpHeaderFields::V6(v6_header(v6_route(address, message))),
@@ -729,16 +729,58 @@ pub fn receive_with_nothing_queued_would_block<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A buffer shorter than the packet takes its start and the whole length is told.
+/// Where an IPv4 header keeps its total length.
+const IPV4_TOTAL_LENGTH: core::ops::Range<usize> = 2..4;
+/// Where an IPv6 header keeps its payload length.
+const IPV6_PAYLOAD_LENGTH: core::ops::Range<usize> = 4..6;
+
+/// The whole length of a packet that the start of its header tells.
+fn told_length(version: IpVersion, start: &[u8]) -> usize {
+    let field = |range: core::ops::Range<usize>| {
+        usize::from(u16::from_be_bytes(
+            start[range].try_into().expect("a length of two bytes"),
+        ))
+    };
+    match version {
+        IpVersion::V4 => field(IPV4_TOTAL_LENGTH),
+        IpVersion::V6 => field(IPV6_PAYLOAD_LENGTH) + etherparse::Ipv6Header::LEN,
+    }
+}
+
+/// A buffer that cuts the reply in its IP header or in its ICMP message takes its start, whose header and the
+/// received length both tell the whole length.
 pub fn a_short_buffer_keeps_the_whole_length<S: IcmpSockets>(sockets: S) {
-    let socket = opened(&sockets, IpVersion::V4);
-    ping(&sockets, &socket, IpAddr::V4(Ipv4Addr::LOCALHOST), PAYLOAD).unwrap();
-    let short = etherparse::Ipv4Header::MIN_LEN + ICMP_HEADER;
-    let mut into = vec![u8::MIN; short];
-    let fields = receive_packet(&sockets, &socket, &mut into);
-    assert_eq!(fields.length, short + PAYLOAD.len());
-    assert_eq!(ipv4(&into).destination_addr(), Ipv4Addr::LOCALHOST);
-    assert_eq!(into[short - ICMP_HEADER], icmpv4::TYPE_ECHO_REPLY);
+    for (to, header, reply) in [
+        (
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            etherparse::Ipv4Header::MIN_LEN,
+            icmpv4::TYPE_ECHO_REPLY,
+        ),
+        (
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            etherparse::Ipv6Header::LEN,
+            icmpv6::TYPE_ECHO_REPLY,
+        ),
+    ] {
+        let socket = opened(&sockets, version_of(to));
+        // Longer than the header, so that the message is cut by a buffer that holds the header and more.
+        let payload = vec![u8::MAX; header + PAYLOAD.len()];
+        let whole = header + ICMP_HEADER + payload.len();
+        for short in [header / 2, header + ICMP_HEADER] {
+            ping(&sockets, &socket, to, &payload).unwrap();
+            let mut into = vec![u8::MIN; short];
+            let fields = receive_packet(&sockets, &socket, &mut into);
+            assert_eq!(fields.length, whole, "{to} into {short}");
+            assert_eq!(
+                told_length(version_of(to), &into),
+                whole,
+                "{to} into {short}"
+            );
+            if short > header {
+                assert_eq!(into[header], reply, "{to}");
+            }
+        }
+    }
 }
 
 /// The TTL, DSCP, ECN, options and source of an IPv4 send are in the header that leaves.
@@ -1251,20 +1293,33 @@ pub fn a_waived_source_check_sends_from_an_absent_address<S: IcmpSockets>(socket
     assert_eq!(seen(&capture.echo_request()).source, IpAddr::V4(ABSENT));
 }
 
-/// IPv6 source preferences are taken, the link's one address the source either way.
+/// Makes the dummy link's address the source of temporary addresses, of which Linux makes one at once.
+const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/ia/use_tempaddr";
+const MANAGED_TEMPORARY: &str = "address replace fd03::1/64 dev ia nodad mngtmpaddr";
+
+/// Gives the dummy link a temporary address beside [`LOCAL_V6`] and answers which source each preference takes.
+pub fn sources_by_preference() -> [(TemporaryAddressPreference, Ipv6Addr); 2] {
+    write_setting(TEMPORARY_ADDRESSES, "1");
+    ip6(MANAGED_TEMPORARY);
+    let temporary = wcontainers_route_resolver_conformance::temporary_address(DUMMY);
+    [
+        (TemporaryAddressPreference::Temporary, temporary),
+        (TemporaryAddressPreference::Public, LOCAL_V6),
+    ]
+}
+
+/// IPv6 source preferences choose between the link's public address and a temporary one.
 pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
+    let sources = sources_by_preference();
     let socket = opened(&sockets, IpVersion::V6);
     let capture = Capture::on(DUMMY);
     let message = echo(IpVersion::V6, PAYLOAD);
-    for temporary in [
-        TemporaryAddressPreference::Temporary,
-        TemporaryAddressPreference::Public,
-    ] {
+    for (temporary, source) in sources {
         let route = Ipv6RouteSelectors {
             source_preferences: SourcePreferences {
                 temporary,
-                mobile: MobileAddressPreference::CareOf,
+                mobile: MobileAddressPreference::Home,
             },
             ..v6_route(ON_LINK_V6, &message)
         };
@@ -1276,7 +1331,11 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
                 &message,
             )
             .expect("the request is sent");
-        assert_eq!(seen(&capture.echo_request()).source, IpAddr::V6(LOCAL_V6));
+        assert_eq!(
+            seen(&capture.echo_request()).source,
+            IpAddr::V6(source),
+            "{temporary:?}"
+        );
     }
 }
 

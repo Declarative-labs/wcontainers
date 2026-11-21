@@ -686,6 +686,9 @@ pub fn ipv4_packets_arrive_whole<S: RawSockets>(sockets: S) {
     assert_eq!(fields.specific_destination, Some(Ipv4Addr::LOCALHOST));
 }
 
+/// Assured forwarding class 4, low drop, which no default sets.
+const ARRIVING_DSCP: IpDscp = IpDscp::AF41;
+
 /// An IPv6 raw socket receives the packets of its protocol with their header and extension headers written in front.
 pub fn ipv6_packets_arrive_with_their_headers<S: RawSockets>(sockets: S) {
     /// A hop-by-hop header of eight bytes: next header, length, then padding (PadN of four).
@@ -696,10 +699,12 @@ pub fn ipv6_packets_arrive_with_their_headers<S: RawSockets>(sockets: S) {
     let mut route = v6_route(Ipv6Addr::LOCALHOST, under(IpNumber::IPV6_ICMP));
     route.upper_layer.selector = icmp_selector(&message);
     route.flow_label = Ipv6FlowLabel::try_new(FLOW_LABEL).unwrap();
+    route.dscp = ARRIVING_DSCP;
+    route.ecn = IpEcn::Ect0;
     let header = Ipv6HeaderFields {
         hop_limit: Some(HOP_LIMIT),
         hop_by_hop_options: Some(padding),
-        ..v6_header(route)
+        ..v6_header(route.clone())
     };
     send(
         &sockets,
@@ -720,6 +725,7 @@ pub fn ipv6_packets_arrive_with_their_headers<S: RawSockets>(sockets: S) {
     );
     assert_eq!(header.hop_limit(), HOP_LIMIT.0);
     assert_eq!(header.flow_label().value(), FLOW_LABEL);
+    assert_eq!((header.dscp(), header.ecn()), (route.dscp, route.ecn));
     let seen = seen(packet);
     assert_eq!(
         (seen.source, seen.destination, seen.protocol),
@@ -1085,26 +1091,6 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         prohibited
     );
     let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
-    let route = Ipv6RouteSelectors {
-        source_preferences: SourcePreferences {
-            temporary: TemporaryAddressPreference::Public,
-            mobile: MobileAddressPreference::CareOf,
-        },
-        ..v6_route(ON_LINK_V6, under(EXPERIMENT))
-    };
-    send(
-        &sockets,
-        &socket,
-        RawPacket::Payload {
-            header: IpHeaderFields::V6(v6_header(route)),
-            payload: PAYLOAD,
-        },
-    )
-    .expect("the payload is sent");
-    let packet = capture.next(|packet| {
-        seen(packet).protocol == EXPERIMENT && seen(packet).destination == IpAddr::V6(ON_LINK_V6)
-    });
-    assert_eq!(seen(&packet).source, IpAddr::V6(LOCAL_V6));
     ip6(OWNER_PROHIBITED);
     ip6(MARK_PROHIBITED);
     ip(wcontainers_icmp_sockets_conformance::TWO_ROUTES);
@@ -1173,6 +1159,37 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         ),
         prohibited
     );
+}
+
+/// IPv6 source preferences choose between the link's public address and a temporary one.
+pub fn ipv6_source_preferences_choose_the_source<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    let sources = wcontainers_icmp_sockets_conformance::sources_by_preference();
+    let capture = Capture::on(DUMMY);
+    let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    for (temporary, source) in sources {
+        let route = Ipv6RouteSelectors {
+            source_preferences: SourcePreferences {
+                temporary,
+                mobile: MobileAddressPreference::Home,
+            },
+            ..v6_route(ON_LINK_V6, under(EXPERIMENT))
+        };
+        send(
+            &sockets,
+            &socket,
+            RawPacket::Payload {
+                header: IpHeaderFields::V6(v6_header(route)),
+                payload: PAYLOAD,
+            },
+        )
+        .expect("the payload is sent");
+        let packet = capture.next(|packet| {
+            seen(packet).protocol == EXPERIMENT
+                && seen(packet).destination == IpAddr::V6(ON_LINK_V6)
+        });
+        assert_eq!(seen(&packet).source, IpAddr::V6(source), "{temporary:?}");
+    }
 }
 
 /// Path MTU modes set the don't-fragment bit as Linux does; a payload over the MTU is too long where it may not be fragmented.
@@ -1887,6 +1904,7 @@ macro_rules! tests {
             multicast_routing_takes_the_namespace_role,
             close_gives_up_the_sockets_holdings,
             payload_routes_take_their_selectors,
+            ipv6_source_preferences_choose_the_source,
             path_mtu_modes_and_too_long_payloads,
             icmp_errors_arrive_whole,
             send_fields_are_taken,
