@@ -1,0 +1,27 @@
+[package]
+name = "wcontainers-clock-seeded"
+description = "Simulated time from a seed, the same readings for the same seed."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-clock = { path = "../.." }
+rand = { version = "0.9.5", default-features = false }
+rand_chacha = { version = "0.9.0", default-features = false }
+
+[dev-dependencies]
+wcontainers-clock-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

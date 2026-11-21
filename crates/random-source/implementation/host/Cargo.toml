@@ -1,0 +1,26 @@
+[package]
+name = "wcontainers-random-source-host"
+description = "The operating system's random bytes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-random-source = { path = "../.." }
+getrandom = { version = "0.4.3", default-features = false }
+
+[dev-dependencies]
+wcontainers-random-source-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
