@@ -1,6 +1,7 @@
 //! The speed bar (docs/native.md section 8): the eight bench.c workloads and calls.c, each built once as a static
 //! ARM64 Linux program, run plainly on the host and in the kernel inside the machine, in alternating pairs, every run
-//! its own process, measured by the cycles and instructions of the whole process (`proc_pid_rusage`). The plain run
+//! its own process, measured by the cycles and instructions of the whole process (macOS's `proc_pid_rusage`; Linux's
+//! perf events, counting every thread, the kernel's and the guest's work). The plain run
 //! maps the program's segments at their own addresses and answers its system calls (write and exit) at a
 //! breakpoint put where each `svc` was in a copy of the image written before any run, so both sides run the
 //! workloads' code as the same bytes at the same addresses and the plain run does nothing a plain process does not. The bar: the geometric mean over the eight workloads of each one's median cycles ratio, with a 95%
@@ -17,32 +18,32 @@
 //! `WCONTAINERS_SPEED_PROGRAMS` a comma-separated list of the programs to run (all by default; the compute part
 //! needs the eight workloads, and `syscalls` names the system-call part); `WCONTAINERS_NATIVE_BOUND` the look-ahead.
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[path = "../../hardware-virtualization-inside/bin/native-kernel/protocol.rs"]
 mod protocol;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[path = "../../hardware-virtualization-inside/bin/native-untranslated/protocol.rs"]
 mod untranslated;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod common;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod container;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 fn main() {
-    macos::main();
+    speed::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(host_hypervisor))]
 fn main() {
-    println!("the speed test needs Hypervisor.framework; nothing to run on this host");
+    println!("the speed test needs a hypervisor this crate drives; nothing to run on this host");
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(host_hypervisor)]
+mod speed {
     use std::ffi::{c_int, c_void};
     use std::fmt::Write as _;
     use std::io::Write as _;
@@ -104,8 +105,6 @@ mod macos {
     const PLAIN: &str = "plain";
     use wcontainers_translator_test::NATIVE;
     const UNTRANSLATED: &str = "untranslated";
-    /// What the names of the dynamic loader's variables begin with, which no child inherits.
-    const LOADER_VARIABLE_PREFIX: &str = "DYLD_";
 
     /// The program a child runs, and the image of the test program inside for the other two sides.
     const IMAGE_VARIABLE: &str = "WCONTAINERS_SPEED_IMAGE";
@@ -157,103 +156,228 @@ mod macos {
     /// The name [`PROGRAMS_VARIABLE`] gives the system-call part.
     const SYSTEM_CALLS: &str = "syscalls";
 
-    /// `RUSAGE_INFO_V6` of macOS's sys/resource.h.
-    const RUSAGE_INFO_V6: c_int = 6;
-
-    /// The words of `rusage_info_v6` after `ri_pcycles`: two energies, two secure times, three neural footprints and
-    /// nine reserved.
-    const AFTER_PERFORMANCE_CYCLES: usize = 16;
-
-    /// macOS's `struct rusage_info_v6`: libc has the fourth version, whose fields lead it.
-    #[repr(C)]
-    struct RusageV6 {
-        v4: libc::rusage_info_v4,
-        flags: u64,
-        user_performance_time: u64,
-        system_performance_time: u64,
-        performance_instructions: u64,
-        performance_cycles: u64,
-        after: [u64; AFTER_PERFORMANCE_CYCLES],
-    }
-
-    /// The general registers before the frame pointer, x29, which macOS's thread state keeps by name.
-    const FRAME_POINTER: usize = 29;
-
-    /// The start of macOS's `ucontext_t` (sys/_types/_ucontext.h), to the machine context it points to.
-    #[repr(C)]
-    struct Context {
-        on_stack: c_int,
-        mask: libc::sigset_t,
-        stack: libc::stack_t,
-        link: *mut c_void,
-        machine_size: usize,
-        machine: *mut MachineContext,
-    }
-
-    /// macOS's `__darwin_mcontext64` on ARM64 (mach/arm/_structs.h): the exception state, then the thread state.
-    #[repr(C)]
-    struct MachineContext {
-        fault_address: u64,
-        syndrome: u32,
-        exception: u32,
-        thread: ThreadState,
-    }
-
-    /// `__darwin_arm_thread_state64`.
-    #[repr(C)]
-    struct ThreadState {
-        x: [u64; FRAME_POINTER],
-        frame_pointer: u64,
-        link_register: u64,
-        stack_pointer: u64,
-        pc: u64,
-        cpsr: u32,
-        flags: u32,
-    }
-
-    unsafe extern "C" {
-        /// Makes code written through the data side visible to instruction fetch (libSystem).
-        fn sys_icache_invalidate(start: *mut c_void, length: usize);
-    }
-
-    /// The whole process's counts so far.
+    /// The whole process's counts so far. The cycles on performance cores are absent where the host's cores are of
+    /// one kind.
     #[derive(Clone, Copy, Debug, Default)]
     struct Counts {
         cycles: u64,
         instructions: u64,
-        performance_cycles: u64,
+        performance_cycles: Option<u64>,
     }
 
-    fn counts() -> Counts {
-        // SAFETY: plain data, filled by the call.
-        let mut usage: RusageV6 = unsafe { std::mem::zeroed() };
-        // SAFETY: the buffer is a `rusage_info_v6`, the flavour asked for.
-        let done = unsafe {
-            libc::proc_pid_rusage(
-                libc::getpid(),
-                RUSAGE_INFO_V6,
-                (&raw mut usage).cast::<libc::rusage_info_t>(),
-            )
-        };
-        assert_eq!(done, 0, "proc_pid_rusage");
-        Counts {
-            cycles: usage.v4.ri_cycles,
-            instructions: usage.v4.ri_instructions,
-            performance_cycles: usage.performance_cycles,
+    /// What [`COUNTS_LINE`] says of an absent count.
+    const ABSENT: &str = "absent";
+
+    #[cfg(target_os = "macos")]
+    mod host {
+        use std::ffi::{c_int, c_void};
+
+        use super::Counts;
+
+        /// What the names of the dynamic loader's variables begin with, which no child inherits.
+        pub const LOADER_VARIABLE_PREFIX: &str = "DYLD_";
+
+        /// `RUSAGE_INFO_V6` of macOS's sys/resource.h.
+        const RUSAGE_INFO_V6: c_int = 6;
+
+        /// The words of `rusage_info_v6` after `ri_pcycles`: two energies, two secure times, three neural footprints
+        /// and nine reserved.
+        const AFTER_PERFORMANCE_CYCLES: usize = 16;
+
+        /// macOS's `struct rusage_info_v6`: libc has the fourth version, whose fields lead it.
+        #[repr(C)]
+        struct RusageV6 {
+            v4: libc::rusage_info_v4,
+            flags: u64,
+            user_performance_time: u64,
+            system_performance_time: u64,
+            performance_instructions: u64,
+            performance_cycles: u64,
+            after: [u64; AFTER_PERFORMANCE_CYCLES],
+        }
+
+        /// The general registers before the frame pointer, x29, which macOS's thread state keeps by name.
+        const FRAME_POINTER: usize = 29;
+
+        /// The start of macOS's `ucontext_t` (sys/_types/_ucontext.h), to the machine context it points to.
+        #[repr(C)]
+        struct Context {
+            on_stack: c_int,
+            mask: libc::sigset_t,
+            stack: libc::stack_t,
+            link: *mut c_void,
+            machine_size: usize,
+            machine: *mut MachineContext,
+        }
+
+        /// macOS's `__darwin_mcontext64` on ARM64 (mach/arm/_structs.h): the exception state, then the thread
+        /// state.
+        #[repr(C)]
+        struct MachineContext {
+            fault_address: u64,
+            syndrome: u32,
+            exception: u32,
+            thread: ThreadState,
+        }
+
+        /// `__darwin_arm_thread_state64`.
+        #[repr(C)]
+        struct ThreadState {
+            x: [u64; FRAME_POINTER],
+            frame_pointer: u64,
+            link_register: u64,
+            stack_pointer: u64,
+            pc: u64,
+            cpsr: u32,
+            flags: u32,
+        }
+
+        unsafe extern "C" {
+            /// Makes code written through the data side visible to instruction fetch (libSystem).
+            fn sys_icache_invalidate(start: *mut c_void, length: usize);
+        }
+
+        /// The process's counts run from its start: nothing to open.
+        pub fn start_counting() {}
+
+        pub fn counts() -> Counts {
+            // SAFETY: plain data, filled by the call.
+            let mut usage: RusageV6 = unsafe { std::mem::zeroed() };
+            // SAFETY: the buffer is a `rusage_info_v6`, the flavour asked for.
+            let done = unsafe {
+                libc::proc_pid_rusage(
+                    libc::getpid(),
+                    RUSAGE_INFO_V6,
+                    (&raw mut usage).cast::<libc::rusage_info_t>(),
+                )
+            };
+            assert_eq!(done, 0, "proc_pid_rusage");
+            Counts {
+                cycles: usage.v4.ri_cycles,
+                instructions: usage.v4.ri_instructions,
+                performance_cycles: Some(usage.performance_cycles),
+            }
+        }
+
+        /// Makes the code at `at` visible to instruction fetch.
+        pub fn make_visible(at: *mut c_void, length: usize) {
+            // SAFETY: the caller's range is mapped.
+            unsafe { sys_icache_invalidate(at, length) };
+        }
+
+        /// The first registers x0 to x28 and the program counter of a SA_SIGINFO handler's context.
+        ///
+        /// # Safety
+        /// `context` is the context macOS handed the handler, alive while the result is.
+        pub unsafe fn registers<'a>(context: *mut c_void) -> (&'a mut [u64], &'a mut u64) {
+            // SAFETY: macOS hands a SA_SIGINFO handler its `ucontext_t`, whose machine context it points to.
+            let state = unsafe { &mut (*(*context.cast::<Context>()).machine).thread };
+            (&mut state.x, &mut state.pc)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod host {
+        use std::ffi::{c_char, c_void};
+        use std::sync::{Mutex, OnceLock};
+
+        use perf_event::Builder;
+        use perf_event::Counter;
+        use perf_event::events::Hardware;
+
+        use super::Counts;
+
+        /// What the names of the dynamic loader's variables begin with, which no child inherits.
+        pub const LOADER_VARIABLE_PREFIX: &str = "LD_";
+
+        /// The process's cycle and instruction counters, opened at its start, then the threads it makes.
+        static COUNTERS: OnceLock<Mutex<[Counter; 2]>> = OnceLock::new();
+
+        unsafe extern "C" {
+            /// Makes code written through the data side visible to instruction fetch (the compiler's runtime
+            /// library).
+            fn __clear_cache(start: *mut c_char, end: *mut c_char);
+        }
+
+        /// Opens the counters of this process's cycles and instructions, counting at once: in every thread it
+        /// makes from now on, at every level, the kernel's work for it and its guest's included.
+        pub fn start_counting() {
+            let open = |event: Hardware| {
+                Builder::new(event)
+                    .inherit(true)
+                    .include_kernel()
+                    .include_hv()
+                    .enabled(true)
+                    .build()
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "opening the {event:?} counter: {error}; counting the kernel's work needs \
+                             kernel.perf_event_paranoid at most 1"
+                        )
+                    })
+            };
+            let counters = [Hardware::CPU_CYCLES, Hardware::INSTRUCTIONS].map(open);
+            assert!(
+                COUNTERS.set(Mutex::new(counters)).is_ok(),
+                "the counters are opened once"
+            );
+        }
+
+        pub fn counts() -> Counts {
+            let mut counters = COUNTERS
+                .get()
+                .expect("the counters were opened")
+                .lock()
+                .expect("the counters");
+            let [cycles, instructions] = counters.each_mut().map(|counter| {
+                let data = counter.read_full().expect("reading a counter");
+                // A counter shared with others on the processor counts only part of the time.
+                assert_eq!(
+                    data.time_running(),
+                    data.time_enabled(),
+                    "a counter counted all the time it was enabled"
+                );
+                data.count()
+            });
+            Counts {
+                cycles,
+                instructions,
+                performance_cycles: None,
+            }
+        }
+
+        /// Makes the code at `at` visible to instruction fetch.
+        pub fn make_visible(at: *mut c_void, length: usize) {
+            let start = at.cast::<c_char>();
+            // SAFETY: the caller's range is mapped.
+            unsafe { __clear_cache(start, start.add(length)) };
+        }
+
+        /// The general registers x0 to x30 and the program counter of a SA_SIGINFO handler's context.
+        ///
+        /// # Safety
+        /// `context` is the context Linux handed the handler, alive while the result is.
+        pub unsafe fn registers<'a>(context: *mut c_void) -> (&'a mut [u64], &'a mut u64) {
+            // SAFETY: Linux hands a SA_SIGINFO handler its `ucontext_t`.
+            let state = unsafe { &mut (*context.cast::<libc::ucontext_t>()).uc_mcontext };
+            (&mut state.regs, &mut state.pc)
         }
     }
 
     /// Reports a child's run to the parent and ends the process.
     fn report(status: i32, output: &[u8]) -> ! {
-        let counts = counts();
+        let counts = host::counts();
         let hex = output.iter().fold(String::new(), |mut hex, byte| {
             let _ = write!(hex, "{byte:02x}");
             hex
         });
         println!("{OUTPUT_LINE} {hex}");
+        let performance_cycles = counts
+            .performance_cycles
+            .map_or_else(|| ABSENT.to_owned(), |cycles| cycles.to_string());
         println!(
-            "{COUNTS_LINE} {} {} {} {status}",
-            counts.cycles, counts.instructions, counts.performance_cycles
+            "{COUNTS_LINE} {} {} {performance_cycles} {status}",
+            counts.cycles, counts.instructions
         );
         let _ = std::io::stdout().flush();
         std::process::exit(0)
@@ -261,7 +385,11 @@ mod macos {
 
     pub fn main() {
         be_signed();
-        match std::env::var(RUN_VARIABLE).as_deref() {
+        let side = std::env::var(RUN_VARIABLE);
+        if side.is_ok() {
+            host::start_counting();
+        }
+        match side.as_deref() {
             Ok(PLAIN) => {
                 let path = image_path();
                 assert_eq!(
@@ -332,8 +460,7 @@ mod macos {
             let changed = unsafe { libc::mprotect(at, length as usize, protection) };
             assert_eq!(changed, 0, "mprotect");
             if flags & PF_X != 0 {
-                // SAFETY: the range is mapped.
-                unsafe { sys_icache_invalidate(at, length as usize) };
+                host::make_visible(at, length as usize);
             }
         }
         // Linux's default stack limit.
@@ -406,16 +533,16 @@ mod macos {
 
     /// Answers the system call whose `svc` the breakpoint stands for.
     extern "C" fn on_breakpoint(_: c_int, _: *mut libc::siginfo_t, context: *mut c_void) {
-        // SAFETY: macOS hands a SA_SIGINFO handler its `ucontext_t`, whose machine context it points to.
-        let state = unsafe { &mut (*(*context.cast::<Context>()).machine).thread };
-        let [first, buffer, length] = [0, 1, 2].map(|k| state.x[k]);
-        let number = state.x[SYSCALL_NUMBER] as u32;
+        // SAFETY: the context the system handed this SA_SIGINFO handler, alive until it returns.
+        let (x, pc) = unsafe { host::registers(context) };
+        let [first, buffer, length] = [0, 1, 2].map(|k| x[k]);
+        let number = x[SYSCALL_NUMBER] as u32;
         if number == __NR_write {
             // SAFETY: the program's own buffer, mapped in this process.
             let bytes = unsafe { std::slice::from_raw_parts(buffer as *const u8, length as usize) };
             OUTPUT.lock().expect("the output").extend_from_slice(bytes);
-            state.x[0] = length;
-            state.pc += size_of::<u32>() as u64;
+            x[0] = length;
+            *pc += size_of::<u32>() as u64;
         } else if number == __NR_exit || number == __NR_exit_group {
             let output = std::mem::take(&mut *OUTPUT.lock().expect("the output"));
             report(first as i32, &output)
@@ -539,7 +666,10 @@ mod macos {
         // The loader's variables a build shell sets (a library path) make every child's start do work no plain
         // program does.
         for (name, _) in std::env::vars_os() {
-            if name.to_string_lossy().starts_with(LOADER_VARIABLE_PREFIX) {
+            if name
+                .to_string_lossy()
+                .starts_with(host::LOADER_VARIABLE_PREFIX)
+            {
                 command.env_remove(name);
             }
         }
@@ -569,21 +699,21 @@ mod macos {
         let events = text
             .lines()
             .find_map(|l| l.strip_prefix(EVENTS_LINE)?.strip_prefix(' ')?.parse().ok());
-        let numbers: Vec<i64> = line(COUNTS_LINE)
-            .split(' ')
-            .map(|n| n.parse().expect("a number"))
-            .collect();
-        let [cycles, instructions, performance_cycles, status] = numbers[..] else {
-            panic!("four numbers: {numbers:?}");
+        let counts_line = line(COUNTS_LINE);
+        let fields: Vec<&str> = counts_line.split(' ').collect();
+        let [cycles, instructions, performance_cycles, status] = fields[..] else {
+            panic!("four fields: {fields:?}");
         };
+        let number = |field: &str| field.parse::<u64>().expect("a count");
         Run {
             counts: Counts {
-                cycles: cycles as u64,
-                instructions: instructions as u64,
-                performance_cycles: performance_cycles as u64,
+                cycles: number(cycles),
+                instructions: number(instructions),
+                performance_cycles: (performance_cycles != ABSENT)
+                    .then(|| number(performance_cycles)),
             },
             wall_nanoseconds,
-            status: status as i32,
+            status: status.parse().expect("an exit code"),
             output,
             events,
         }
@@ -654,12 +784,17 @@ mod macos {
         expected: Option<(i32, String)>,
     }
 
+    /// What the raw pairs' file says of an absent count.
+    const JSON_ABSENT: &str = "null";
+
     fn json(run: &Run) -> String {
         format!(
             "{{\"cycles\":{},\"instructions\":{},\"performance_cycles\":{},\"wall_ns\":{}}}",
             run.counts.cycles,
             run.counts.instructions,
-            run.counts.performance_cycles,
+            run.counts
+                .performance_cycles
+                .map_or_else(|| JSON_ABSENT.to_owned(), |cycles| cycles.to_string()),
             run.wall_nanoseconds
         )
     }
@@ -800,13 +935,22 @@ mod macos {
         ]
         .map(|(what, mut ratios)| format!("{what} {:+.1}%", percent(median(&mut ratios))));
         let share = |of: fn(&Pair) -> &Run| {
-            median(
-                &mut program
-                    .pairs
-                    .iter()
-                    .map(|p| of(p).counts.performance_cycles as f64 / cycles(of(p)) * PERCENT)
-                    .collect::<Vec<_>>(),
-            )
+            let mut shares = program
+                .pairs
+                .iter()
+                .map(|p| Some(of(p).counts.performance_cycles? as f64 / cycles(of(p)) * PERCENT))
+                .collect::<Option<Vec<_>>>()?;
+            Some(median(&mut shares))
+        };
+        let shares = match [
+            share(|p| &p.plain),
+            share(|p| &p.native),
+            share(|p| &p.untranslated),
+        ] {
+            [Some(plain), Some(native), Some(untranslated)] => format!(
+                "on performance cores {plain:.0}% plain, {native:.0}% native, {untranslated:.0}% untranslated"
+            ),
+            _ => "the share on performance cores is absent on this host".to_owned(),
         };
         let untranslated = |of: fn(&Run) -> f64| {
             percent(median(
@@ -825,16 +969,13 @@ mod macos {
                 .collect::<Vec<_>>(),
         );
         println!(
-            "speed: {} over {} pairs, the count's events {:?}, medians native against plain: {}; untranslated against plain: cycles {:+.1}%, instructions {:+.1}%; plain {plain_cycles:.0} cycles; on performance cores {:.0}% plain, {:.0}% native, {:.0}% untranslated",
+            "speed: {} over {} pairs, the count's events {:?}, medians native against plain: {}; untranslated against plain: cycles {:+.1}%, instructions {:+.1}%; plain {plain_cycles:.0} cycles; {shares}",
             program.name,
             program.pairs.len(),
             program.pairs.first().and_then(|p| p.native.events),
             medians.join(", "),
             untranslated(cycles),
             untranslated(|r| r.counts.instructions as f64),
-            share(|p| &p.plain),
-            share(|p| &p.native),
-            share(|p| &p.untranslated),
         );
     }
 
