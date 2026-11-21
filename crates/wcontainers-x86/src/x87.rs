@@ -494,6 +494,9 @@ pub enum Operation {
     /// The control, status and full tag words and FOP from the first argument, the instruction pointer
     /// from the second and the data pointer from the third, as `fldenv` and `frstor` load them.
     LoadEnvironment,
+    /// `fprem` (`truncate`) or `fprem1`: ST(0) less a multiple of ST(1), the quotient's low bits in C0, C3
+    /// and C1, or C2 when only part of the way.
+    PartialRemainder,
     /// ST(`register`)'s 80 bits, whatever its tag.
     Register,
     /// ST(`register`)'s 80 bits from the two arguments, its tag as it is.
@@ -528,6 +531,7 @@ impl Operation {
         Operation::LoadEnvironment,
         Operation::Register,
         Operation::SetRegister,
+        Operation::PartialRemainder,
     ];
 }
 
@@ -945,6 +949,7 @@ impl<'a> Unit<'a> {
                 },
             ),
             Operation::Scale => self.scale(),
+            Operation::PartialRemainder => self.partial_remainder(),
             Operation::Extract => self.extract(),
             Operation::SquareRoot => self.unary(
                 |x| x.sign && x.class() != Class::Zero,
@@ -1312,6 +1317,58 @@ impl<'a> Unit<'a> {
         self.deliver(0, rounded);
     }
 
+    /// `fprem` and `fprem1` (Intel SDM Vol. 2A): exact, by whole quotients when the exponents differ by less
+    /// than 64, else by a quotient of `PARTIAL_BITS` plus the difference's low five bits (seen on the
+    /// reference), with C2 set.
+    fn partial_remainder(&mut self) {
+        // Unless the result says otherwise, C2 is cleared and C0 and C3 are kept (seen on the reference).
+        self.area.fsw &= !C2;
+        if self.empty(0) || self.empty(1) {
+            if self.stack_fault(false) {
+                self.set(0, Extended::INDEFINITE);
+            }
+            return;
+        }
+        let (x, y) = (self.get(0), self.get(1));
+        let (xc, yc) = (x.class(), y.class());
+        let (rounded, conditions) = if let Some(r) = special_pair(x, y) {
+            (r, None)
+        } else if xc == Class::Infinity || yc == Class::Zero {
+            (invalid(), None)
+        } else {
+            let denormal = xc == Class::Denormal || yc == Class::Denormal;
+            if !self.raise(if denormal { DENORMAL } else { 0 }) {
+                return;
+            }
+            // ST(0) itself, normalised (a pseudo-denormal is written as the normal it equals).
+            if xc == Class::Zero || yc == Class::Infinity {
+                let x = if xc == Class::Zero {
+                    x
+                } else {
+                    Extended::of(x.float())
+                };
+                (exact_value(x), Some(0))
+            } else {
+                let (r, quotient, partial) = remainder(x, y, self.code.truncate, self.area.fcw);
+                let bit = |n: u32| quotient >> n & 1 != 0;
+                let conditions = if partial {
+                    C2
+                } else {
+                    [(0, C1), (1, C3), (2, C0)]
+                        .iter()
+                        .filter(|(n, _)| bit(*n))
+                        .fold(0, |c, (_, flag)| c | flag)
+                };
+                (r, Some(conditions))
+            }
+        };
+        let kept = !self.masked(rounded.exceptions & BEFORE_RESULT);
+        self.deliver(0, rounded);
+        if let Some(conditions) = conditions.filter(|_| !kept) {
+            self.set_conditions(conditions);
+        }
+    }
+
     fn extract(&mut self) {
         // A stack underflow, or else an overflow, leaves the indefinite in both.
         let (empty, full) = (self.empty(0), self.full_below());
@@ -1351,6 +1408,58 @@ impl<'a> Unit<'a> {
         self.set(0, exponent);
         self.push(significand);
     }
+}
+
+/// The quotient's bits a partial remainder takes at least: 32 plus the exponents' difference modulo 32.
+const PARTIAL_BITS: i32 = 1 << PARTIAL_BITS_SHIFT;
+const PARTIAL_BITS_SHIFT: u32 = 5;
+/// Exponent differences from which a remainder is only partial.
+const WHOLE_DIFFERENCES: i32 = u64::BITS as i32;
+
+/// The exact remainder of finite non-zero `x` by `y` as a rounded result, the quotient's low bits, and
+/// whether it is partial.
+fn remainder(x: Extended, y: Extended, truncate: bool, fcw: u16) -> (Rounded<Extended>, u64, bool) {
+    // Each operand normalised: its exponent, and its significand as a 64-bit integer.
+    let normal = |v: Extended| {
+        let f = v.float();
+        let e = f.ilogb();
+        let top = u64::BITS as i32 - 1;
+        (e, f.abs().scalbn(top - e).to_u128(u64::BITS as usize).value)
+    };
+    let ((ex, a), (ey, b)) = (normal(x), normal(y));
+    let difference = ex - ey;
+    let partial = difference >= WHOLE_DIFFERENCES;
+    let k = if partial {
+        PARTIAL_BITS + (difference & (PARTIAL_BITS - 1))
+    } else {
+        difference
+    };
+    let bottom = ex - (u64::BITS as i32 - 1);
+    let (mut quotient, mut rest, scale) = if k < 0 {
+        (0, a, bottom)
+    } else {
+        let num = a << k;
+        (num / b, num % b, bottom - k)
+    };
+    let mut sign = x.sign;
+    // `fprem1` rounds the quotient to the nearest, ties to even.
+    let shift = if k < 0 { -k } else { 0 };
+    if !truncate && !partial && shift <= 1 {
+        let doubled = rest << (1 - shift);
+        if doubled > b || (doubled == b && quotient & 1 == 1) {
+            quotient += 1;
+            rest = (b << shift) - rest;
+            sign = !sign;
+        }
+    }
+    let value = X87DoubleExtended::from_u128(rest).value.scalbn(scale);
+    let wide = exactly::<X87DoubleExtended, Wide>(value);
+    let rounded = if rest == 0 {
+        exact_value(Extended::ZERO.with_sign(x.sign))
+    } else {
+        round_register(if sign { -wide } else { wide }, fcw, Precision::Extended)
+    };
+    (rounded, quotient as u64, partial)
 }
 
 /// How far `fscale` moves an exponent at most: past it every result overflows or underflows alike.

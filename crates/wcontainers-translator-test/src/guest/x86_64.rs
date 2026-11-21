@@ -343,11 +343,21 @@ impl GuestTest for X86_64 {
             expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
         }
         // The CPU's part of an unmasked SIMD exception is MXCSR's flags; the kernel works out the si_code.
-        // An x87 or MMX instruction's is the x87 status word's unmasked flags.
+        // An x87 instruction's, or one naming an MMX register, is the x87 status word's unmasked flags when
+        // one is pending, which it meets first (MMX's conversions then meet their own SIMD ones).
         if let Stop::FloatException(_) = expected.stop {
-            let raised = if is_x87_or_mmx(instruction.code()) {
-                let (fsw, fcw) = (expected.state.0[FSW] as u32, expected.state.0[FCW] as u32);
-                fsw & !fcw & u32::from(wcontainers_x86::x87::EXCEPTIONS)
+            let (fsw, fcw) = (expected.state.0[FSW] as u32, expected.state.0[FCW] as u32);
+            let x87 = fsw & !fcw & u32::from(wcontainers_x86::x87::EXCEPTIONS);
+            let names_mmx = (0..instruction.op_count()).any(|n| {
+                instruction.op_kind(n) == OpKind::Register && instruction.op_register(n).is_mm()
+            });
+            let x87_side = names_mmx
+                || instruction.code().cpuid_features().iter().any(|f| {
+                    use iced_x86::CpuidFeature::{FPU, FPU287, FPU387};
+                    matches!(f, FPU | FPU287 | FPU387)
+                });
+            let raised = if x87_side && x87 != 0 {
+                x87
             } else {
                 wcontainers_x86::mxcsr_raised(expected.state.0[MXCSR] as u32)
             };

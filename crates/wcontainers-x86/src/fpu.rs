@@ -102,6 +102,8 @@ pub fn written(m: Mnemonic) -> bool {
             | Fldenv
             | Fnsave
             | Frstor
+            | Fprem
+            | Fprem1
             | Fxsave
             | Fxsave64
             | Fxrstor
@@ -464,6 +466,11 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                 Fxtract => Operation::Extract,
                 _ => Operation::SquareRoot,
             };
+            call(e, c, None, None, None);
+        }
+        Fprem | Fprem1 => {
+            c.operation = Operation::PartialRemainder;
+            c.truncate = m == Fprem;
             call(e, c, None, None, None);
         }
         Fcmovb | Fcmove | Fcmovbe | Fcmovu | Fcmovnb | Fcmovne | Fcmovnbe | Fcmovnu => {

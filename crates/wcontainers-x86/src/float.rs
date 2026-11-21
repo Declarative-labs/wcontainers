@@ -108,11 +108,19 @@ fn form(m: Mnemonic) -> Option<(Operation, bool, bool)> {
         Cvtsd2si => (O::ToInt32, true, true),
         Cvttss2si => (O::TruncateToInt32, false, true),
         Cvttsd2si => (O::TruncateToInt32, true, true),
+        // MMX's: two 32-bit integers of an MMX register, or into one.
+        Cvtpi2ps => (O::FromInt32, false, false),
+        Cvtpi2pd => (O::FromInt32, true, false),
+        Cvtps2pi => (O::ToInt32, false, false),
+        Cvtpd2pi => (O::ToInt32, true, false),
+        Cvttps2pi => (O::TruncateToInt32, false, false),
+        Cvttpd2pi => (O::TruncateToInt32, true, false),
         _ => return None,
     })
 }
 
-/// Whether the instruction is one of these, on xmm registers, general registers and memory (not MMX).
+/// Whether the instruction is one of these, on xmm registers, general registers and memory, and MMX
+/// registers for MMX's conversions.
 pub fn written(i: &Instruction) -> bool {
     use Mnemonic::*;
     let ins = &i.iced;
@@ -135,10 +143,20 @@ pub fn written(i: &Instruction) -> bool {
         && !crate::meaning::is_string(i)
         && (0..ins.op_count()).all(|n| match ins.op_kind(n) {
             OpKind::Register => {
-                xmm(ins.op_register(n)).is_some() || general(ins.op_register(n)).is_some()
+                let r = ins.op_register(n);
+                xmm(r).is_some() || general(r).is_some() || (mmx(r).is_some() && converts_mmx(m))
             }
             _ => true,
         })
+}
+
+/// MMX's conversions.
+fn converts_mmx(m: Mnemonic) -> bool {
+    use Mnemonic::*;
+    matches!(
+        m,
+        Cvtpi2ps | Cvtpi2pd | Cvtps2pi | Cvtpd2pi | Cvttps2pi | Cvttpd2pi
+    )
 }
 
 /// Whether this instruction's result may differ on another x86 CPU: Intel's approximations are not
@@ -475,6 +493,11 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // A hint: it never faults, and there is no cache to fill.
         return;
     }
+    // A conversion naming an MMX register meets a pending x87 exception first; one from memory does not look
+    // (seen on the reference).
+    if crate::simd::is_mmx(i) {
+        crate::fpu::pending(e);
+    }
     let mem = memory_use(i).map(|kind| {
         let at = address(e, i);
         let bytes = memory_bytes(i);
@@ -488,11 +511,21 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         mxcsr(e, m, mem.expect("a memory operand"));
         return;
     }
+    // A conversion naming an MMX register makes the change to the x87 side (one from memory does not), after
+    // what it reads.
+    if crate::simd::is_mmx(i) {
+        crate::simd::mmx_transition(e, false);
+    }
     let value = |e: &mut E, n: u32| -> u32 {
         let v = e.local(ValType::V128);
         match ins.op_kind(n) {
             OpKind::Register => match xmm(ins.op_register(n)) {
                 Some(x) => e.get_vector(x),
+                None if mmx(ins.op_register(n)).is_some() => {
+                    e.sink().v128_const(0);
+                    e.get(mmx_register(mmx(ins.op_register(n)).unwrap()));
+                    e.sink().i64x2_replace_lane(0);
+                }
                 None => {
                     e.sink().v128_const(0);
                     get_general(e, general(ins.op_register(n)).unwrap());
@@ -529,6 +562,14 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
     };
     let b = value(e, 1);
+    // Of a single source, the two singles converted alone, so that the others raise no exception.
+    if matches!(m, Cvtps2pi | Cvttps2pi) {
+        e.sink()
+            .local_get(b)
+            .v128_const(i128::from(u64::MAX))
+            .v128_and()
+            .local_set(b);
+    }
     let r = e.local(ValType::V128);
     if matches!(m, Rcpps | Rcpss | Rsqrtps | Rsqrtss) {
         let (x, exponent, wide) = (
@@ -607,9 +648,31 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             e.set_flags(Flags::Each(each));
         }
         _ => match destination {
+            // `cvtpi2ps` keeps the destination's high half.
+            Some(x) if m == Cvtpi2ps => {
+                e.sink()
+                    .local_get(r)
+                    .local_get(a)
+                    .i8x16_shuffle(core::array::from_fn(|b| {
+                        let b = b as u8;
+                        if b < XMM_BYTES as u8 / 2 {
+                            b
+                        } else {
+                            XMM_BYTES as u8 + b
+                        }
+                    }));
+                e.set_vector(x);
+            }
             Some(x) => {
                 e.sink().local_get(r);
                 e.set_vector(x);
+            }
+            None if mmx(ins.op_register(0)).is_some() => {
+                let n = mmx(ins.op_register(0)).unwrap();
+                e.sink().local_get(r).i64x2_extract_lane(0);
+                e.set(mmx_register(n));
+                e.sink().i32_const(i32::from(u16::MAX));
+                e.set_control(Control::X87High(n));
             }
             None => {
                 let g = general(ins.op_register(0)).unwrap();
