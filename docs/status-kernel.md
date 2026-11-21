@@ -1,6 +1,57 @@
 # Kernel status
 
-Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
+Plan: docs/phase-1-kernel.md. Branch: main, in the one shared checkout (from 2026-11-21). The
+crates moved: the kernel is crates/kernel/implementation/linux (wcontainers-kernel-linux), the abi
+crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/implementation/unicorn
+(wcontainers-executor-unicorn). Older sections below say crates/wcontainers-kernel, -abi and
+-kernel-test, src/... and wcontainers-runtime for these and for
+crates/runtime/implementation/single-kernel.
+
+## For the owner
+
+Found while making the kernel implement the reviewed interface (KA, first run). Each is a place
+where the interface cannot be implemented as written or leaves something undefined; the kernel's
+side of each is worked around without changing the interface.
+- The literal check's 273 accepted lines that say they go "when kernel adopts it" cannot go by the
+  kernel's adoption. 253 are the interface's own definitions in crates/kernel/errno.rs, signal.rs
+  and signal_information.rs, which the check reports as redefinitions of linux-raw-sys, not of the
+  kernel's copy: with the kernel's generated errno file removed, crates/kernel/errno.rs:18
+  `E2BIG = 7` is still reported, now as "also linux_raw_sys::aarch64::errno::E2BIG" only. The
+  other 20 are literals inside crates/kernel/arm64_features.rs and x86_64_features.rs
+  (`PartNum::new(12)` and others). Only the 4 lines on the kernel's own restart codes
+  (linux_extra.rs) were the kernel's, and they are gone. The rest need the interface's files or
+  the check's rule for linux-raw-sys to change.
+- `ProcessController`, `FuseClient` and `Process` take no executor and no `System`, and the
+  interface has no call that drives a kernel (the abi's `next`, `exit` and `event`). So a kernel
+  that implements them must own its executor and its system, and how a driver then runs threads
+  on that executor is undefined. Example: `ProcessController::suspend_tasks(&mut self, tasks)`
+  must read each task's registers from the executor, which it is not given.
+- `System` has no way for answers to come back into the kernel, apart from `FuseClient`: TCP and
+  UDP readiness, a finished connect, a name lookup's result (`DomainNameResolver::resolve_domain`
+  returns only whether it started), bytes and credit arriving on a `StreamTransport` endpoint, a
+  terminal's new size. Example: a guest's `read` on standard input parks; nothing in the
+  interface tells the kernel that the embedder now has bytes for it (today `Event::StreamData`).
+- `FallbackObserver::on_fallback_used` takes `&Self::Fallback`, a type only the embedder knows,
+  so the kernel cannot name any of its slow paths through it. Example: the kernel's counter
+  "system call not implemented" (today `Host::warn` with the reason and a count) has no value of
+  `Fallback` to pass.
+- `SystemCallResponse` is `Result<u64, Errno>`, and `Errno` holds only the numbers Linux names
+  (1 to 133 and the restart codes). A FUSE server may answer any error from 1 to 511, which
+  Linux's FUSE client hands to the program as is. Example: a backend answering error 200 makes a
+  `read` return -200; the kernel shows that response to the embedder as `Ok` of the raw value
+  (system.rs `response_of`), since `Err` cannot carry it.
+- `ExecutionConfig<E>` is neither `Clone` nor `Copy` and `E::TranslatorConfig` is only `Default`:
+  a fork's child cannot be given a copy of its parent's configuration. The kernel will have to
+  share one value between them (for example behind an `Rc`). Example: `fork` in a process whose
+  `translator` is not the default.
+- `ProcessInfo::is_inspected` needs to know when another process reads this one's state; the
+  kernel has no such notion yet (no `on_inspection_starting` is built), so it cannot answer it
+  truthfully until `/proc/<pid>/mem`, `process_vm_readv` and ptrace are tied to it.
+- `Signal` has no 0, so `Process::send_signal` cannot be asked to send signal 0 any more; two
+  embedder test steps that checked such a request is counted and not sent were removed
+  (Departures).
+- crates/kernel/interface.rs fails `cargo clippy -- -D warnings` (`clippy::type_complexity` at
+  lines 40 and 93), so the kernel's lint runs use `--no-deps`.
 
 ## For the orchestrator
 
@@ -117,6 +168,15 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA (the kernel implements the reviewed interface), first run: part 1 (the copies) is done, and
+part 2 and part 3 are not started (see "KA, first run"). The kernel's boundary now uses the interface's `TaskId`, `Errno`, `Signal`,
+`SignalInformation` (made from and into Linux's layout by siginfo.rs), `MemoryObject` and its ids,
+`MemoryError`, `WriteMemoryError`, `WatchesFor`, `AccessKind`, `ThreadOrdering`,
+`ReplayDeterminism` and `SystemCallResponse`; the generated errno copy and the restart code
+copies are gone, and every signal number and signal code the generated bindings name now has
+the interface's value. KA is not complete; For the owner has what the interface leaves
+undefined.
 
 KF, fourth run: origin/phase-1 and origin/phase-1-literals had nothing new. Built: the last
 three of the runtime's start values (the IPC namespace's sysctls as limits the calls honour;
@@ -313,6 +373,72 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, first run
+
+Started at 17:45 UTC on 2026-11-21 at 10d3fd72 (main, one shared checkout). Builds and lints ran
+on the x86 machine (cargo check and clippy of the kernel and every crate that uses it), suites on
+the ARM64 machine; the literal check on the Mac (it needs git's history).
+
+The independent check's findings handed to this run (the thirteenth K6c run's check) were each
+answered in the K6c fourteenth run (its section has each one); ADSP038 is under "Waiting for the
+owner" by the orchestrator's ruling of 2026-11-20. Nothing more was done for them.
+
+Done (part 1, the copies):
+- Error numbers: the kernel's `Errno` is private now (it carries any number a call or the backend
+  gives, and the `PARKED` marker), its named numbers are the interface's (`errno.rs`, one list of
+  the interface's names, with the way back to the interface's `Errno`). The generated
+  linux/errno.rs is gone (the generator no longer copies linux-raw-sys's errno module), and so
+  are linux_extra.rs's restart codes. `add_file` and `start_failure` give the interface's `Errno`.
+- The plain types of system.rs are the interface's: `TaskId` (with private `task_id` and `pid_of`
+  for the kernel's numbers), `WatchesFor`, `AccessKind`, `ThreadOrdering`, `ReplayDeterminism`,
+  `MemoryObject`, `DeviceId`, `InodeNumber`, `SystemVSegmentId`, `AnonymousMemoryId`,
+  `MemoryError`, `WriteMemoryError` (the embedder's write gives it) and `SystemCallResponse`.
+  The interface's ids have no order, so the announced sharing is keyed by a private `Source`
+  ordered as before (kind, then its numbers).
+- The signal record: `SignalInformation` at the boundary (`send_signal`, `on_signal_delivering`)
+  is the interface's enum. siginfo.rs makes it from the 128 bytes the kernel keeps, by the layout
+  Linux gives the record's code (`siginfo_layout`), with every offset from the generated
+  structures (`offset_of!`), and back. A record whose bytes the structured form does not hold
+  exactly becomes `SuppliedByProcess` with every byte, so nothing is lost. Its tests: every code
+  from SI_ASYNCNL to SI_KERNEL on all 64 signals, with zero fields and with every byte set, comes
+  back as its bytes; the kernel's own kill, fault and kernel records take their layouts.
+- `Kernel::kill` takes the interface's `Signal`.
+- The generated bindings: the generator reads the interface's signal files (every variant,
+  associated constant and constant that names a Linux number) and writes each constant of
+  general.rs and ptrace.rs with such a name as the interface's value (`pub const SIGKILL: u32 =
+  wcontainers_kernel::signal::Signal::SIGKILL as u32`), so the kernel and the tests keep their
+  names and no number is defined twice. The codes of enums whose variants carry fields, which
+  `as` cannot give, come from siginfo.rs `codes` (the discriminant of each). 101 constants in
+  general.rs and 11 in ptrace.rs; a second generation gives the same files.
+
+Changed outside this track's crates, the smallest change that keeps them building:
+- crates/runtime/implementation/single-kernel: errno.rs, net.rs and files.rs take Linux's error
+  numbers from `wcontainers_kernel::errno::Errno` (as `u32` or `i32`, as before) instead of the
+  kernel's generated errno module; container.rs names the interface's `Errno` for
+  `start_failure`; Cargo.toml depends on wcontainers-kernel.
+- crates/executor/implementation/hardware-virtualization-inside: container.rs's `Refused` holds the
+  interface's `Errno`; Cargo.toml depends on wcontainers-kernel.
+- Cargo.lock: only the four new dependency lines.
+- In the unicorn crate (this track's): the driver, network.rs (its seven error number copies are
+  gone), replay.rs, hooks.rs (`signal_parts`, a record's number, code and value for the tests) and
+  the tests away, edges, embedder, script, startoptions and procsignals.
+
+Not done:
+- Part 2: no interface trait is implemented yet. The kernel still takes `&dyn System` (its own
+  trait over the abi's `Host`). Implementing `Kernel`, `ProcessController`, `FuseClient` and
+  `Process` as written needs the kernel generic over the system (whose hooks are generic
+  methods, so not callable through `dyn`) and owning its executor and system (For the owner),
+  and the network, streams and warnings have no counterpart to move to (For the owner).
+- Part 3: the conformance crate's placeholders are unchanged; its checks need part 2.
+
+Departures:
+- The embedder test's two sends of signal 0 are gone: the interface's `Signal` cannot express
+  them (For the owner).
+- A child's end announced in a signal other than SIGCHLD is read as an I/O event's record, as
+  Linux's `siginfo_layout` reads small codes of any other signal; the bytes are kept whole.
+- The leftover folder crates/wcontainers-abi (only a Finder file, after the move) was deleted: it
+  made the workspace's member glob fail.
 
 ## KF, fourth run
 
@@ -5415,6 +5541,16 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KA, after its first run:
+1. Part 2, in steps that each keep the suite as it is: the kernel generic over `S: System` (the
+   interface's) with its executor and system owned by a wrapper that implements
+   `ProcessController` and `FuseClient`; the process handle implementing `Process` and
+   `ProcessInfo`; the unicorn stand-in implementing `wcontainers_executor::Executor`. Waits on For
+   the owner for the network, streams, warnings and driving.
+2. Part 3 once part 2 exists: conformance checks drawn from embedder.rs, away.rs and suspend
+   tests (suspend and resume of tasks and processes, memory reads and writes, watches, signals,
+   the process information).
 
 KF, after its fourth run:
 1. The literal fix list: step 2's milliseconds and microseconds (once the arm64 test's `1000` is
