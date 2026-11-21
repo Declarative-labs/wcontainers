@@ -125,6 +125,8 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
 - X6f (the link address of a fixed-address program; the X6 check's open findings): run 1 (2026-11-20) fixed the
   five findings and built the owner's ruling: the translator takes the program's link address and follows
   absolute immediates through it, with the address in the cache key (see "X6f, run 1"). X6f's check passed.
+  Run 2 (2026-11-21, X6f dispatched again after the reorganization) found all of it on main and verified it
+  there (see "X6f, run 2").
 - X7 (x87 and MMX): run 1 (2026-11-21) fixed the two findings of the X6f check and built the x87 unit in
   software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
   `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
@@ -135,6 +137,37 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   part (see "X7, run 2"). Run 3 (2026-11-21) fixed what the independent check of X7 found: layer 1's known
   failures passed cases that were fixed rules of the reference, under a false reason; `fscale` by zero;
   `fxsave` and `fxrstor` called the hook 16 times; and four smaller ones (see "X7, run 3").
+
+## X6f, run 2 (2026-11-21)
+
+X6f was dispatched again after the reorganization onto main, with the X6 check's five findings that run 1
+fixed. Everything of run 1 is on main (a1960001, eb5680da, merged by f89b6659), as is X7's work after it, so
+nothing was rebuilt; this run verified the merged tree. Machines: the rented x86-64 machine (96 cores, load 0.4
+to 38 during the job), the rented ARM64 machine, the Mac (load 41) for git and the literal check. Logs in
+scratch `x6f2/`.
+- The five findings, checked on main: plan 5.7 and 12 say what X6 measured; `self_written.c` is under seen;
+  `browser.rs` and `programs.rs` name the signals; `SPIN_TIME_LIMIT` bounds the other-thread test;
+  `Paused::write` at a system call is in the plan's X10 list.
+- The link address on main: the translator's `translate` family takes `link_address`; the executor's
+  (`wcontainers-executor-wasmtime`) `Key` holds it and its cache hash takes it; its one caller still passes
+  `None`, as at run 1.
+- Rented x86-64 machine, main at 4308b9f7 with other tracks' uncommitted edits in the copy (`verify.log`):
+  `cargo fmt --check` of the five guest and translator crates, clippy with warnings denied for them and the
+  wasmtime executor, the browser crate's wasm32 clippy for both guests: pass. The unit tests of the translator,
+  guest-cpu and x86 crates and the test crate's library: pass. x86's `--test programs` (Chrome included,
+  `main_is_in_the_full_translation_x86_64` and `code_written_by_another_thread_matches_linux_x86_64` among
+  them): 24 passed, 0 failed (430 s). Layer 2 x86, seed 9781, 10,000 programs, all on the CPU, 96 at once: 0
+  failing (143 s; 3,489 faulted, 1,116 left to an address at full, 23,917 stacks lost, 24,087 pieces forgotten).
+- Rented ARM64 machine (`arm.log`): ARM64's programs, output, browser, layer 2, valid and checks tests: all
+  pass (564 s).
+- The literal check (the Mac) exits 1, with no finding in this track's crates: its 18 new findings are in
+  uncommitted edits of other tracks (the kernel's `container.rs`, the host clock, Direct3D 11, OpenGL, NIR).
+  Baseline lines of this track's crates: x86 134, guest-cpu 26, the test crate 1,746, the translator 8 (the
+  counts now take the full paths; x86's include the reviewed kernel interface's accepted lines for `cpuid.rs`,
+  "goes when x86 adopts it", which X8's feature lists remove).
+- The Mac's checkout held a folder `crates/wcontainers-abi` with only Finder metadata for a while, which broke
+  every cargo command (the workspace's `crates/*` glob); it was gone by 09:58. My copies on the rented machines
+  drop such an empty folder before building (`x6f2/verify.sh`, `x6f/suite.sh`); the checkout was not touched.
 
 ## X7, run 3 (2026-11-21)
 
