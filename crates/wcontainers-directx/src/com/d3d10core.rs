@@ -194,7 +194,7 @@ pub unsafe extern "system" fn D3D10CreateDevice1(
 const D3D10_1_SDK_VERSION: u32 = 0x20;
 
 /// Warned when a Direct3D 10 device is asked of a driver other than the hardware one.
-const NOT_HARDWARE_10: &str = "D3D10CreateDevice with a software, reference, WARP or null driver";
+const NOT_HARDWARE_10: &str = "Direct3D 10 devices of a software, reference, WARP or null driver";
 
 type CreateDevice10 =
     unsafe extern "system" fn(*mut c_void, i32, HMODULE, u32, u32, *mut *mut c_void) -> HRESULT;

@@ -490,10 +490,10 @@ const KNOWN_LEVELS: [windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL; 11] 
 };
 
 /// Warned when a device is asked of a driver other than the hardware one.
-const NOT_HARDWARE: &str = "D3D11CreateDevice with a software, reference, WARP or null driver";
+const NOT_HARDWARE: &str = "Direct3D 11 devices of a software, reference, WARP or null driver";
 
 /// Warned when a device is asked to have a video device, which is not served.
-const NO_VIDEO: &str = "D3D11CreateDevice with D3D11_CREATE_DEVICE_VIDEO_SUPPORT";
+const NO_VIDEO: &str = "Direct3D 11 devices with video support";
 
 /// `D3D11CreateDevice` for the program.
 ///
