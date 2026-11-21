@@ -4112,6 +4112,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
+ "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system-seeded-test-policy",
@@ -4137,6 +4138,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-docker",
  "wcontainers-executor-wasmtime",
+ "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system-seeded-test-policy",
@@ -4354,6 +4356,8 @@ dependencies = [
  "siphasher",
  "smallvec",
  "wcontainers-abi",
+ "wcontainers-executor",
+ "wcontainers-kernel",
  "zerocopy",
 ]
 
@@ -4529,6 +4533,7 @@ dependencies = [
  "socket2",
  "tar",
  "wcontainers-abi",
+ "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "zerocopy",
 ]

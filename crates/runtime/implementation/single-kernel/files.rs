@@ -25,7 +25,8 @@ use fuse_abi::linux::{
 use rustix::fs::{self as host, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, SeekFrom};
 use rustix::io::Errno as HostErrno;
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_kernel_linux::linux::{errno as linux_errno, general as linux};
+use wcontainers_kernel::errno::Errno;
+use wcontainers_kernel_linux::linux::general as linux;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::errno;
@@ -134,11 +135,11 @@ fn kind(file: FileType) -> (u32, u32) {
 
 /// The NUL-ended name at the start of `bytes`, and what follows it.
 fn name(bytes: &[u8]) -> Result<(CString, &[u8]), Fail> {
-    let name = CStr::from_bytes_until_nul(bytes).map_err(|_| linux_errno::EINVAL)?;
+    let name = CStr::from_bytes_until_nul(bytes).map_err(|_| Errno::EINVAL as u32)?;
     let rest = &bytes[name.to_bytes_with_nul().len()..];
     let plain = name.to_bytes();
     if plain.is_empty() || plain.contains(&b'/') || plain == b"." || plain == b".." {
-        return Err(linux_errno::EINVAL);
+        return Err(Errno::EINVAL as u32);
     }
     Ok((name.to_owned(), rest))
 }
@@ -161,7 +162,7 @@ fn make_node(
 }
 
 fn read<T: FromBytes>(body: &[u8]) -> Result<(T, &[u8]), Fail> {
-    T::read_from_prefix(body).map_err(|_| linux_errno::EINVAL)
+    T::read_from_prefix(body).map_err(|_| Errno::EINVAL as u32)
 }
 
 fn bytes<T: IntoBytes + Immutable>(value: &T) -> Vec<u8> {
@@ -217,7 +218,7 @@ impl Files {
                 reason::HOST_ERROR_WITHOUT_LINUX_NUMBER,
                 error.raw_os_error() as u64,
             );
-            linux_errno::EIO
+            Errno::EIO as u32
         })
     }
 
@@ -228,7 +229,7 @@ impl Files {
 
     /// The directory a node's name is in, and the name: the root is "." in itself.
     fn at(&self, node: u64) -> Result<(BorrowedFd<'_>, &CStr), Fail> {
-        let record = self.nodes.get(&node).ok_or(linux_errno::ENOENT)?;
+        let record = self.nodes.get(&node).ok_or(Errno::ENOENT as u32)?;
         if node == FUSE_ROOT_ID {
             let fd = record.directory.as_ref().expect("the root is open");
             return Ok((fd.as_fd(), &record.name));
@@ -238,12 +239,12 @@ impl Files {
 
     /// A directory node's descriptor.
     fn directory(&self, node: u64) -> Result<BorrowedFd<'_>, Fail> {
-        let record = self.nodes.get(&node).ok_or(linux_errno::ENOENT)?;
+        let record = self.nodes.get(&node).ok_or(Errno::ENOENT as u32)?;
         record
             .directory
             .as_ref()
             .map(AsFd::as_fd)
-            .ok_or(linux_errno::EACCES)
+            .ok_or(Errno::EACCES as u32)
     }
 
     fn stat(&mut self, node: u64) -> Result<host::Stat, Fail> {
@@ -370,7 +371,7 @@ impl Files {
     fn handle_fd(&self, handle: u64) -> Result<BorrowedFd<'_>, Fail> {
         match self.handles.get(&handle) {
             Some(Handle::File(fd) | Handle::Directory { fd, .. }) => Ok(fd.as_fd()),
-            None => Err(linux_errno::EBADF),
+            None => Err(Errno::EBADF as u32),
         }
     }
 
@@ -510,7 +511,7 @@ impl Files {
         }
         if is(FUSE_SYMLINK) {
             let (name, rest) = name(body)?;
-            let target = CStr::from_bytes_until_nul(rest).map_err(|_| linux_errno::EINVAL)?;
+            let target = CStr::from_bytes_until_nul(rest).map_err(|_| Errno::EINVAL as u32)?;
             let dir = self.directory(node)?;
             host::symlinkat(target, dir, &name).map_err(|e| self.fail(e))?;
             return self.created(node, &name);
@@ -580,7 +581,9 @@ impl Files {
         }
         if is(FUSE_WRITE) {
             let (write, data) = read::<fuse_write_in>(body)?;
-            let data = data.get(..write.size as usize).ok_or(linux_errno::EINVAL)?;
+            let data = data
+                .get(..write.size as usize)
+                .ok_or(Errno::EINVAL as u32)?;
             let fd = self.handle_fd(write.fh)?;
             let mut done = 0;
             while done < data.len() {
@@ -658,14 +661,14 @@ impl Files {
                 linux::SEEK_END => SeekFrom::End(seek.offset as i64),
                 linux::SEEK_DATA => SeekFrom::Data(seek.offset),
                 linux::SEEK_HOLE => SeekFrom::Hole(seek.offset),
-                _ => return Err(linux_errno::EINVAL),
+                _ => return Err(Errno::EINVAL as u32),
             };
             let fd = self.handle_fd(seek.fh)?;
             let offset = host::seek(fd, to).map_err(|e| self.fail(e))?;
             return Ok(bytes(&fuse_lseek_out { offset }));
         }
         self.slow(reason::REQUEST_NOT_SERVED, u64::from(opcode));
-        Err(linux_errno::ENOSYS)
+        Err(Errno::ENOSYS as u32)
     }
 
     fn attr_out(&mut self, stat: &host::Stat) -> Vec<u8> {
@@ -696,7 +699,7 @@ impl Files {
             linux::S_IFSOCK => FileType::Socket,
             _ => {
                 self.slow(reason::DEVICE_NODE, u64::from(mode));
-                return Err(linux_errno::EPERM);
+                return Err(Errno::EPERM as u32);
             }
         };
         let dir = self.directory(parent)?;
@@ -755,7 +758,7 @@ impl Files {
             }
         }
         if flags & !(linux::RENAME_NOREPLACE | linux::RENAME_EXCHANGE) != 0 {
-            return Err(linux_errno::EINVAL);
+            return Err(Errno::EINVAL as u32);
         }
         let old_dir = self.directory(from)?;
         let new_dir = self.directory(to)?;
@@ -781,7 +784,7 @@ impl Files {
         let valid = set.valid;
         let handle = if valid & FATTR_FH != 0 {
             match self.handles.get(&set.fh) {
-                Some(Handle::File(fd)) => Some(fd.try_clone().map_err(|_| linux_errno::EMFILE)?),
+                Some(Handle::File(fd)) => Some(fd.try_clone().map_err(|_| Errno::EMFILE as u32)?),
                 _ => None,
             }
         } else {
@@ -793,7 +796,7 @@ impl Files {
             .and_then(|n| n.directory.as_ref())
             .map(|fd| fd.try_clone())
             .transpose()
-            .map_err(|_| linux_errno::EMFILE)?;
+            .map_err(|_| Errno::EMFILE as u32)?;
         let own = handle.or(directory);
         if valid & FATTR_MODE != 0 {
             let mode = Mode::from_raw_mode((set.mode & PERMISSIONS) as _);
@@ -874,7 +877,7 @@ impl Files {
         use fuse_opcode::*;
         let is = |op: fuse_opcode| opcode == op as u32;
         let fd = match self.nodes.get(&node).and_then(|n| n.directory.as_ref()) {
-            Some(fd) => fd.try_clone().map_err(|_| linux_errno::EMFILE)?,
+            Some(fd) => fd.try_clone().map_err(|_| Errno::EMFILE as u32)?,
             None => {
                 let (dir, name) = self.at(node)?;
                 match host::openat(
@@ -884,7 +887,7 @@ impl Files {
                     Mode::empty(),
                 ) {
                     Ok(fd) => fd,
-                    Err(HostErrno::LOOP) => return Err(linux_errno::EPERM),
+                    Err(HostErrno::LOOP) => return Err(Errno::EPERM as u32),
                     Err(error) => return Err(self.fail(error)),
                 }
             }
@@ -893,10 +896,10 @@ impl Files {
             // Without FUSE_SETXATTR_EXT the request carries only the size and the flags.
             let (size, rest) = read::<u32>(body)?;
             let (flags, rest) = read::<u32>(rest)?;
-            let name = CStr::from_bytes_until_nul(rest).map_err(|_| linux_errno::EINVAL)?;
+            let name = CStr::from_bytes_until_nul(rest).map_err(|_| Errno::EINVAL as u32)?;
             let value = rest[name.to_bytes_with_nul().len()..]
                 .get(..size as usize)
-                .ok_or(linux_errno::EINVAL)?;
+                .ok_or(Errno::EINVAL as u32)?;
             let mut host_flags = host::XattrFlags::empty();
             if flags & linux::XATTR_CREATE != 0 {
                 host_flags |= host::XattrFlags::CREATE;
@@ -908,14 +911,14 @@ impl Files {
             return Ok(Vec::new());
         }
         if is(FUSE_REMOVEXATTR) {
-            let name = CStr::from_bytes_until_nul(body).map_err(|_| linux_errno::EINVAL)?;
+            let name = CStr::from_bytes_until_nul(body).map_err(|_| Errno::EINVAL as u32)?;
             host::fremovexattr(&fd, name).map_err(|e| self.fail(e))?;
             return Ok(Vec::new());
         }
         let (get, rest) = read::<fuse_getxattr_in>(body)?;
         let mut value = vec![0; get.size as usize];
         let count = if is(FUSE_GETXATTR) {
-            let name = CStr::from_bytes_until_nul(rest).map_err(|_| linux_errno::EINVAL)?;
+            let name = CStr::from_bytes_until_nul(rest).map_err(|_| Errno::EINVAL as u32)?;
             host::fgetxattr(&fd, name, &mut value[..])
         } else {
             host::flistxattr(&fd, &mut value[..])
@@ -940,14 +943,14 @@ impl Files {
             let entries = {
                 let fd = match self.handles.get(&read_in.fh) {
                     Some(Handle::Directory { fd, .. }) => fd,
-                    _ => return Err(linux_errno::EBADF),
+                    _ => return Err(Errno::EBADF as u32),
                 };
                 let mut dir =
-                    Dir::read_from(fd).map_err(|e| host_error(e).unwrap_or(linux_errno::EIO))?;
+                    Dir::read_from(fd).map_err(|e| host_error(e).unwrap_or(Errno::EIO as u32))?;
                 dir.rewind();
                 let mut entries = Vec::new();
                 for entry in dir {
-                    let entry = entry.map_err(|e| host_error(e).unwrap_or(linux_errno::EIO))?;
+                    let entry = entry.map_err(|e| host_error(e).unwrap_or(Errno::EIO as u32))?;
                     entries.push(Listed {
                         name: entry.file_name().to_owned(),
                         ino: entry.ino(),
@@ -962,7 +965,7 @@ impl Files {
             }
         }
         let Some(Handle::Directory { entries, .. }) = self.handles.get(&read_in.fh) else {
-            return Err(linux_errno::EBADF);
+            return Err(Errno::EBADF as u32);
         };
         let wanted: Vec<(usize, CString, u64, u32)> = entries
             .iter()
@@ -1148,14 +1151,14 @@ mod tests {
         let message = request(fuse_opcode::FUSE_UNLINK, FUSE_ROOT_ID, 8, &[b"made\0"]);
         assert_eq!(reply(&mut files, &message).0, 0);
         let message = request(fuse_opcode::FUSE_LOOKUP, FUSE_ROOT_ID, 9, &[b"made\0"]);
-        assert_eq!(reply(&mut files, &message).0, -(linux_errno::ENOENT as i32));
+        assert_eq!(reply(&mut files, &message).0, -(Errno::ENOENT as i32));
         let message = request(
             fuse_opcode::FUSE_LOOKUP,
             FUSE_ROOT_ID,
             10,
             &[b"../escape\0"],
         );
-        assert_eq!(reply(&mut files, &message).0, -(linux_errno::EINVAL as i32));
+        assert_eq!(reply(&mut files, &message).0, -(Errno::EINVAL as i32));
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

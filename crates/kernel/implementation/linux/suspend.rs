@@ -24,12 +24,12 @@ pub struct SuspendedTask {
 
 impl SuspendedTask {
     pub fn id(&self) -> TaskId {
-        TaskId::of(self.id)
+        crate::system::task_id(self.id)
     }
 
     /// The process whose context the task needs.
     pub fn process(&self) -> TaskId {
-        TaskId::of(self.thread.process)
+        crate::system::task_id(self.thread.process)
     }
 }
 
@@ -50,7 +50,7 @@ enum Place {
 /// been told the process maps of shared memory.
 pub struct ProcessContext {
     process: crate::process::Process,
-    announced: Vec<((crate::MemoryObject, Pid), sharing::Pieces)>,
+    announced: Vec<((sharing::Source, Pid), sharing::Pieces)>,
     origin: ContextOrigin,
 }
 
@@ -64,7 +64,7 @@ pub enum ContextOrigin {
 
 impl ProcessContext {
     pub fn id(&self) -> TaskId {
-        TaskId::of(self.process.pid)
+        crate::system::task_id(self.process.pid)
     }
 
     pub fn origin(&self) -> ContextOrigin {
@@ -117,13 +117,13 @@ impl Kernel {
             self.running.is_none(),
             "a process suspended while a thread runs"
         );
-        let (context, tasks) = self.take_process(cpu, process.pid())?;
+        let (context, tasks) = self.take_process(cpu, crate::system::pid_of(process))?;
         Some((context, tasks.into_iter()))
     }
 
     /// A copy of a process's context; nothing stops.
     pub fn copy_process_context(&self, process: TaskId) -> Option<ProcessContext> {
-        let pid = process.pid();
+        let pid = crate::system::pid_of(process);
         self.processes
             .get(&pid)
             .filter(|record| record.ended.is_none())?;
@@ -235,7 +235,7 @@ impl Kernel {
     ) -> Vec<(TaskId, SuspendedTask)> {
         let mut taken = Vec::new();
         for &task in tasks {
-            let tid = task.pid();
+            let tid = crate::system::pid_of(task);
             let Some(thread) = self.threads.get(&tid) else {
                 continue;
             };
@@ -277,7 +277,7 @@ impl Kernel {
         let ids: Vec<TaskId> = self.processes[&pid]
             .threads
             .iter()
-            .map(|&tid| TaskId::of(tid))
+            .map(|&tid| crate::system::task_id(tid))
             .collect();
         let tasks = self.take_tasks(cpu, Some(pid), &ids);
         if !self.processes[&pid].threads.is_empty() {
@@ -374,7 +374,7 @@ impl Kernel {
     }
 
     /// What the embedder was told process `pid` maps, taken out to go with its context.
-    fn take_announced(&mut self, pid: Pid) -> Vec<((crate::MemoryObject, Pid), sharing::Pieces)> {
+    fn take_announced(&mut self, pid: Pid) -> Vec<((sharing::Source, Pid), sharing::Pieces)> {
         let keys: Vec<_> = self
             .shared_announced
             .keys()
@@ -548,7 +548,7 @@ impl Process<'_> {
                 let ids: Vec<TaskId> = self.kernel.processes[&self.pid]
                     .threads
                     .iter()
-                    .map(|&tid| TaskId::of(tid))
+                    .map(|&tid| crate::system::task_id(tid))
                     .collect();
                 let tasks = self.kernel.take_tasks(self.cpu, Some(self.pid), &ids);
                 (self.kernel.context_copy(self.pid), tasks)

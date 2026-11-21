@@ -61,7 +61,7 @@ pub use credentials::{
     ROOT_UID,
 };
 pub use ends::Standard;
-pub use errno::Errno;
+pub(crate) use errno::Errno;
 pub use linux_extra::{ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, sched_attr};
 pub use memory::PLACEMENT_TIERS;
 pub use process::DOCKER_LIMITS;
@@ -709,7 +709,10 @@ impl Kernel {
     /// number has been tried.
     fn allocate_id(&mut self, cx: &mut Context<'_>) -> Result<i32, Errno> {
         for _ in RESERVED_PIDS..PID_MAX {
-            let id = cx.host.allocate_task_id(TaskId::of(self.last_id)).pid();
+            let id = crate::system::pid_of(
+                cx.host
+                    .allocate_task_id(crate::system::task_id(self.last_id)),
+            );
             if !(1..PID_MAX).contains(&id) {
                 self.counters
                     .count(cx.host, reason::TASK_ID_OUT_OF_RANGE, id as u32 as u64);
@@ -744,7 +747,7 @@ impl Kernel {
         ids.dedup();
         for id in ids {
             if self.finished.is_some() || !self.carried(id) {
-                cx.host.free_task_id(TaskId::of(id));
+                cx.host.free_task_id(crate::system::task_id(id));
             }
         }
     }

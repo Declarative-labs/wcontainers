@@ -31,7 +31,6 @@ pub mod ctypes {
 
 pub mod auxvec;
 pub mod elf_uapi;
-pub mod errno;
 pub mod general;
 pub mod if_arp;
 pub mod ioctl;

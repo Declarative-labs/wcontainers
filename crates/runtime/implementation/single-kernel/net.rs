@@ -16,7 +16,7 @@ use std::thread::JoinHandle;
 use polling::{Event as Interest, Events, Poller};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
 use wcontainers_abi::{ConnectionId, Event, HostError};
-use wcontainers_kernel_linux::linux::errno as linux_errno;
+use wcontainers_kernel::errno::Errno;
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::errno;
@@ -157,17 +157,17 @@ impl Network {
         port: u16,
         stream: bool,
     ) -> Result<(), HostError> {
-        let to = address(bytes, port).ok_or(HostError::Errno(linux_errno::EINVAL as i32))?;
+        let to = address(bytes, port).ok_or(HostError::Errno(Errno::EINVAL as i32))?;
         let (kind, protocol) = if stream {
             (Type::STREAM, Protocol::TCP)
         } else {
             (Type::DGRAM, Protocol::UDP)
         };
         let socket = RawSocket::new(Domain::for_address(to), kind, Some(protocol))
-            .map_err(|e| HostError::Errno(linux_error(&e, linux_errno::ENETUNREACH)))?;
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
         socket
             .set_nonblocking(true)
-            .map_err(|e| HostError::Errno(linux_error(&e, linux_errno::ENETUNREACH)))?;
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
         let connecting = match socket.connect(&to.into()) {
             Ok(()) => false,
             Err(error)
@@ -179,7 +179,7 @@ impl Network {
                 true
             }
             Err(error) => {
-                let number = linux_error(&error, linux_errno::ECONNREFUSED);
+                let number = linux_error(&error, Errno::ECONNREFUSED as u32);
                 if stream {
                     self.arrivals.push(Arrival::Connected(id, number));
                     return Ok(());
@@ -213,10 +213,10 @@ impl Network {
             return Ok(());
         };
         let socket = TcpListener::bind(at)
-            .map_err(|e| HostError::Errno(linux_error(&e, linux_errno::EADDRINUSE)))?;
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::EADDRINUSE as u32)))?;
         socket
             .set_nonblocking(true)
-            .map_err(|e| HostError::Errno(linux_error(&e, linux_errno::EADDRINUSE)))?;
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::EADDRINUSE as u32)))?;
         // SAFETY: as in `insert`.
         let _ = unsafe { self.poller.add(&socket, Interest::none(id as usize)) };
         self.listeners.insert(
@@ -236,7 +236,7 @@ impl Network {
             Ok((stream, _)) => {
                 stream
                     .set_nonblocking(true)
-                    .map_err(|e| HostError::Errno(linux_error(&e, linux_errno::ECONNABORTED)))?;
+                    .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNABORTED as u32)))?;
                 self.insert(
                     id,
                     Connection {
@@ -255,7 +255,7 @@ impl Network {
             }
             Err(error) => Err(HostError::Errno(linux_error(
                 &error,
-                linux_errno::ECONNABORTED,
+                Errno::ECONNABORTED as u32,
             ))),
         }
     }
@@ -331,16 +331,13 @@ impl Network {
                         }
                         Arrival::LookedUp(request, bytes, 0)
                     }
-                    Err(_) => Arrival::LookedUp(request, Vec::new(), linux_errno::ENOENT as i32),
+                    Err(_) => Arrival::LookedUp(request, Vec::new(), Errno::ENOENT as i32),
                 };
                 arrivals.push(arrival);
             });
         if started.is_err() {
-            self.arrivals.push(Arrival::LookedUp(
-                request,
-                Vec::new(),
-                linux_errno::EAGAIN as i32,
-            ));
+            self.arrivals
+                .push(Arrival::LookedUp(request, Vec::new(), Errno::EAGAIN as i32));
         }
     }
 
@@ -379,7 +376,7 @@ impl Network {
                     let error = match error {
                         Ok(None) => 0,
                         Ok(Some(error)) | Err(error) => {
-                            linux_error(&error, linux_errno::ECONNREFUSED)
+                            linux_error(&error, Errno::ECONNREFUSED as u32)
                         }
                     };
                     connection.read_armed = error == 0;

@@ -17,6 +17,7 @@ wcontainers-arm64 = { path = "../../../wcontainers-arm64", default-features = fa
 # The position map, which stops are resolved with.
 wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu", default-features = false }
 # The kernel, which runs inside.
+wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 # The loop, which runs inside beside the kernel.
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }

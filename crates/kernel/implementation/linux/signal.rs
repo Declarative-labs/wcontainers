@@ -11,7 +11,7 @@ use crate::linux_extra::{SIG_DFL, SIG_IGN};
 use crate::memory::Backing;
 use crate::process::{Channel, Pid, Queued, Report, Tid};
 use crate::syscall::Outcome;
-use crate::system::{SignalInformation, TaskId};
+use crate::system::SignalInformation;
 use crate::{Context, Errno, Kernel};
 
 /// The bit for a signal in a signal set.
@@ -770,7 +770,7 @@ impl Kernel {
                     };
                     let signal = information(&queued.info);
                     self.announce(cx, pid, |system, process| {
-                        system.on_signal_delivering(process, TaskId::of(tid), &signal)
+                        system.on_signal_delivering(process, crate::system::task_id(tid), &signal)
                     });
                     queued
                 }

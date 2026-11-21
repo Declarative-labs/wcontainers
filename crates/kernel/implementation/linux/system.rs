@@ -12,55 +12,20 @@ use crate::process::{Channel, Pid};
 use crate::syscall::touch::{Ending, ThreadEnd};
 use crate::{Kernel, PID_MAX, RESERVED_PIDS};
 
-/// A process or thread id: one space for both, as Linux's `pid_t`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TaskId(pub u32);
+pub use wcontainers_kernel::{
+    AccessKind, AnonymousMemoryId, DeviceId, InodeNumber, MemoryError, MemoryObject,
+    ReplayDeterminism, SystemCallResponse, SystemVSegmentId, TaskId, ThreadOrdering, WatchesFor,
+    WriteMemoryError,
+};
 
-impl TaskId {
-    pub(crate) fn of(pid: Pid) -> Self {
-        Self(pid as u32)
-    }
-
-    pub(crate) fn pid(self) -> Pid {
-        self.0 as Pid
-    }
+/// The task id of a process or thread number.
+pub(crate) fn task_id(pid: Pid) -> TaskId {
+    TaskId(pid as u32)
 }
 
-/// Which accesses of a process's pages come back to the embedder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WatchesFor {
-    None,
-    Writes,
-    /// Reads, writes and instruction fetches.
-    All,
-}
-
-/// What a watched access was.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccessKind {
-    Read,
-    Write,
-    /// An instruction fetch.
-    Execute,
-}
-
-/// How the threads of one process are run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThreadOrdering {
-    /// One thread at a time.
-    Serial,
-    Parallel,
-}
-
-/// What a run of a process guarantees about running it again from the same inputs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReplayDeterminism {
-    /// Every instruction at the same place.
-    Exact,
-    /// Consistent in everything the process does to the outside; no guarantee about its internal
-    /// state.
-    External,
-    None,
+/// The process or thread number of a task id.
+pub(crate) fn pid_of(id: TaskId) -> Pid {
+    id.0 as Pid
 }
 
 /// How one process is run.
@@ -99,53 +64,6 @@ impl ExecutionConfig {
         }
         Ok(())
     }
-}
-
-/// Why the embedder's read or write of a process's memory failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MemoryError {
-    /// Part of the range is not mapped.
-    NotMapped,
-    /// Part of the range is a page of a backend file not read yet.
-    NotRead,
-    /// Part of the range is shared memory the process may not write, which Linux's forced
-    /// writes refuse too.
-    SharedNotWritable,
-    /// The range ends before it starts, or past the last address.
-    InvalidRange,
-    /// The executor refused.
-    Executor(wcontainers_abi::CpuError),
-}
-
-/// What a system call answers: its value, or the error it fails with.
-pub type SystemCallResponse = Result<u64, crate::Errno>;
-
-/// The device a file lives on, as `stat`'s `st_dev` encodes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DeviceId(pub u64);
-
-/// The number of a file on its device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct InodeNumber(pub u64);
-
-/// The id of a System V shared memory segment (`shmget`'s answer).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SystemVSegmentId(pub i32);
-
-/// The kernel's own number for a shared anonymous memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct AnonymousMemoryId(pub u64);
-
-/// The memory a shared mapping shows, as the embedder addresses it. Memory files and POSIX
-/// shared memory are files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MemoryObject {
-    File {
-        device: DeviceId,
-        inode: InodeNumber,
-    },
-    SystemVSegment(SystemVSegmentId),
-    Anonymous(AnonymousMemoryId),
 }
 
 /// Linux's own record of a signal.
@@ -255,16 +173,15 @@ pub trait System: Host + Sync {
 
 /// The id after `previous`, wrapping past the low ids as Linux's `alloc_pid` does.
 pub fn task_id_after(previous: TaskId) -> TaskId {
-    let next = previous.pid() + 1;
-    TaskId::of(if next >= PID_MAX { RESERVED_PIDS } else { next })
+    let next = pid_of(previous) + 1;
+    task_id(if next >= PID_MAX { RESERVED_PIDS } else { next })
 }
 
 /// A call's return value as the embedder sees it.
 pub(crate) fn response_of(value: u64) -> SystemCallResponse {
-    if crate::Errno::is_error_return(value) {
-        Err(crate::Errno(value.wrapping_neg() as u32))
-    } else {
-        Ok(value)
+    match crate::Errno(value.wrapping_neg() as u32).to_linux() {
+        Some(errno) if crate::Errno::is_error_return(value) => Err(errno),
+        _ => Ok(value),
     }
 }
 
@@ -272,7 +189,7 @@ pub(crate) fn response_of(value: u64) -> SystemCallResponse {
 pub(crate) fn return_of(response: SystemCallResponse) -> u64 {
     match response {
         Ok(value) => value,
-        Err(errno) => errno.to_return(),
+        Err(errno) => crate::Errno::from_linux(errno).to_return(),
     }
 }
 
@@ -315,7 +232,7 @@ impl ProcessInfo<'_> {
 
     /// The process's parent, as `getppid` reports it; none for the container's first process.
     pub fn parent(&self) -> Option<TaskId> {
-        (self.process.parent != 0).then(|| TaskId::of(self.process.parent))
+        (self.process.parent != 0).then(|| task_id(self.process.parent))
     }
 
     /// CPU time the process's threads have used, ended ones included.
@@ -332,7 +249,7 @@ impl ProcessInfo<'_> {
 
 impl Process<'_> {
     pub fn id(&self) -> TaskId {
-        TaskId::of(self.pid)
+        task_id(self.pid)
     }
 
     pub fn info(&self) -> ProcessInfo<'_> {
@@ -370,13 +287,14 @@ impl Process<'_> {
 
     /// Writes into a mapped range, whatever its private pages allow; not counted as written by
     /// the process.
-    pub fn write_memory(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError> {
+    pub fn write_memory(&mut self, address: u64, bytes: &[u8]) -> Result<(), WriteMemoryError> {
         let process = &self.kernel.processes[&self.pid];
         let end = address
             .checked_add(bytes.len() as u64)
-            .ok_or(MemoryError::InvalidRange)?;
+            .ok_or(WriteMemoryError::Memory(MemoryError::InvalidRange))?;
         let mut map = process.map.borrow_mut();
-        map.readable_whole(address..end)?;
+        map.readable_whole(address..end)
+            .map_err(WriteMemoryError::Memory)?;
         if map.iter().any(|mapping| {
             mapping.start < end
                 && mapping.end > address
@@ -385,13 +303,13 @@ impl Process<'_> {
                     .permissions
                     .contains(wcontainers_abi::Permissions::WRITE)
         }) {
-            return Err(MemoryError::SharedNotWritable);
+            return Err(WriteMemoryError::SharedNotWritable);
         }
         map.copy_on_write(self.cpu, process.memory, address, end)
-            .map_err(|_| MemoryError::NotMapped)?;
+            .map_err(|_| WriteMemoryError::Memory(MemoryError::NotMapped))?;
         self.cpu
             .write(process.memory, address, bytes)
-            .map_err(MemoryError::Executor)
+            .map_err(|error| WriteMemoryError::Memory(MemoryError::Executor(error)))
     }
 
     /// Watches the mapped pages a range touches (pages of [`PAGE_SIZE`]); unmapping a page ends
@@ -430,7 +348,7 @@ impl Process<'_> {
         let information = crate::signal::information_bytes(&signal);
         self.kernel
             .signals_sent
-            .push_back((self.pid, thread.pid(), information));
+            .push_back((self.pid, pid_of(thread), information));
         self.kernel.unsettled = true;
     }
 
@@ -447,7 +365,7 @@ impl Process<'_> {
 impl Kernel {
     /// The process an id names, unless it has ended.
     pub fn process<'a>(&'a mut self, cpu: &'a mut dyn Cpu, id: TaskId) -> Option<Process<'a>> {
-        let pid = id.pid();
+        let pid = pid_of(id);
         self.processes
             .get(&pid)
             .filter(|process| process.ended.is_none())?;
@@ -544,7 +462,7 @@ impl Kernel {
                 pid,
             };
             cx.host
-                .on_memory_written_by_kernel(process, TaskId::of(write.tid), write.range);
+                .on_memory_written_by_kernel(process, task_id(write.tid), write.range);
         }
         // The list keeps its room; what a hook's own work wrote meanwhile goes after.
         written.append(self.kernel_writes.get_mut());
@@ -582,7 +500,7 @@ impl Kernel {
         address: u64,
         access: AccessKind,
     ) -> bool {
-        let thread = TaskId::of(tid);
+        let thread = task_id(tid);
         self.announce(cx, pid, |system, process| {
             system.on_watched_memory_accessing(process, thread, address, access)
         });
@@ -799,9 +717,6 @@ mod tests {
     #[test]
     fn the_default_task_ids_count_and_wrap_past_the_low_ones() {
         assert_eq!(task_id_after(TaskId(0)), TaskId(1));
-        assert_eq!(
-            task_id_after(TaskId::of(PID_MAX - 1)),
-            TaskId::of(RESERVED_PIDS)
-        );
+        assert_eq!(task_id_after(task_id(PID_MAX - 1)), task_id(RESERVED_PIDS));
     }
 }

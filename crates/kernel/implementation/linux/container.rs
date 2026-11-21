@@ -840,6 +840,16 @@ impl Kernel {
         path: &[u8],
         attributes: Attributes,
         file: NewFile<'_>,
+    ) -> Result<(), wcontainers_kernel::errno::Errno> {
+        self.add_root_file(path, attributes, file)
+            .map_err(Errno::to_known)
+    }
+
+    fn add_root_file(
+        &mut self,
+        path: &[u8],
+        attributes: Attributes,
+        file: NewFile<'_>,
     ) -> Result<(), Errno> {
         assert!(
             self.init.is_none(),
@@ -1178,8 +1188,8 @@ impl Kernel {
     }
 
     /// Why the container's start failed, once it has.
-    pub fn start_failure(&self) -> Option<Errno> {
-        self.start_failure
+    pub fn start_failure(&self) -> Option<wcontainers_kernel::errno::Errno> {
+        self.start_failure.map(Errno::to_known)
     }
 
     /// Whether `tid` is the first process's thread while the container starts.

@@ -13,19 +13,11 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use wcontainers_abi::{ConnectionId, Event, HostError};
+use wcontainers_kernel::errno::Errno;
 
 /// Docker Desktop's name and address for the machine it runs on.
 pub const DOCKER_HOST_NAME: &str = "host.docker.internal";
 pub const DOCKER_HOST: Ipv4Addr = Ipv4Addr::new(192, 168, 65, 254);
-
-/// Linux's error numbers for what a connect can meet.
-const ECONNREFUSED: i32 = 111;
-const ETIMEDOUT: i32 = 110;
-const ENETUNREACH: i32 = 101;
-const EHOSTUNREACH: i32 = 113;
-const ENOENT: i32 = 2;
-const EADDRINUSE: i32 = 98;
-const ECONNABORTED: i32 = 103;
 
 enum Socket {
     Stream(TcpStream),
@@ -117,11 +109,11 @@ fn local(address: &[u8], port: u16) -> SocketAddr {
 
 fn errno(error: &std::io::Error) -> i32 {
     match error.kind() {
-        ErrorKind::ConnectionRefused => ECONNREFUSED,
-        ErrorKind::TimedOut => ETIMEDOUT,
-        ErrorKind::NetworkUnreachable => ENETUNREACH,
-        ErrorKind::HostUnreachable => EHOSTUNREACH,
-        _ => ECONNREFUSED,
+        ErrorKind::ConnectionRefused => Errno::ECONNREFUSED as i32,
+        ErrorKind::TimedOut => Errno::ETIMEDOUT as i32,
+        ErrorKind::NetworkUnreachable => Errno::ENETUNREACH as i32,
+        ErrorKind::HostUnreachable => Errno::EHOSTUNREACH as i32,
+        _ => Errno::ECONNREFUSED as i32,
     }
 }
 
@@ -148,7 +140,7 @@ impl Network {
         let socket = match self.kept.remove(&port) {
             Some(socket) => socket,
             None => TcpListener::bind((Ipv4Addr::LOCALHOST, outer))
-                .map_err(|_| HostError::Errno(EADDRINUSE))?,
+                .map_err(|_| HostError::Errno(Errno::EADDRINUSE as i32))?,
         };
         socket.set_nonblocking(true).expect("nonblocking");
         let listener = Listener {
@@ -177,7 +169,7 @@ impl Network {
                 listener.armed = true;
                 Err(HostError::WouldBlock)
             }
-            Err(_) => Err(HostError::Errno(ECONNABORTED)),
+            Err(_) => Err(HostError::Errno(Errno::ECONNABORTED as i32)),
         }
     }
 
@@ -199,7 +191,8 @@ impl Network {
             }
         } else {
             let bind = if to.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-            let socket = UdpSocket::bind(bind).map_err(|_| HostError::Errno(ENETUNREACH))?;
+            let socket =
+                UdpSocket::bind(bind).map_err(|_| HostError::Errno(Errno::ENETUNREACH as i32))?;
             socket
                 .connect(to)
                 .map_err(|error| HostError::Errno(errno(&error)))?;
@@ -290,7 +283,7 @@ impl Network {
                 }
                 Owed::LookedUp(request, bytes, 0)
             }
-            Err(()) => Owed::LookedUp(request, Vec::new(), ENOENT),
+            Err(()) => Owed::LookedUp(request, Vec::new(), Errno::ENOENT as i32),
         };
         self.owed.push_back(owed);
     }

@@ -2079,7 +2079,7 @@ impl crate::Kernel {
                 // As from a connection that is gone: the call that waits gets ENOTCONN.
                 let header = fuse_out_header {
                     len: size_of::<fuse_out_header>() as u32,
-                    error: -(crate::linux::errno::ENOTCONN as i32),
+                    error: -(crate::Errno::ENOTCONN.0 as i32),
                     unique: request.unique,
                 };
                 self.backend_answered(cx, request.unique, header.as_bytes());

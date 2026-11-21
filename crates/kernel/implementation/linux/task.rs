@@ -193,7 +193,7 @@ impl Kernel {
         // it, or change it, which changes the thread's registers as a tracer's change does.
         if !again {
             let pid = self.threads[&tid].process;
-            let thread = crate::TaskId::of(tid);
+            let thread = crate::system::task_id(tid);
             let mut decision = core::ops::ControlFlow::Continue(call);
             self.call_not_begun = true;
             self.announce(cx, pid, |system, process| {
@@ -354,7 +354,7 @@ impl Kernel {
             syscall::Outcome::Return(value) => {
                 self.finish_call(cx, tid);
                 let pid = self.threads[&tid].process;
-                let thread = crate::TaskId::of(tid);
+                let thread = crate::system::task_id(tid);
                 let mut response = crate::system::response_of(value);
                 self.announce(cx, pid, |system, process| {
                     response =
@@ -403,7 +403,7 @@ impl Kernel {
         cx.cpu.registers(cpu, &mut registers);
         let given = crate::system::response_of(registers.x[0]);
         let mut response = given;
-        let thread = crate::TaskId::of(tid);
+        let thread = crate::system::task_id(tid);
         self.announce(cx, pid, |system, process| {
             response = system.intercept_system_call_response(process, thread, call, response);
         });

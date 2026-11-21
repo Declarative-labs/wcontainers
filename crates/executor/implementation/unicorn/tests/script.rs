@@ -58,7 +58,7 @@ fn scripts_match_reference() {
             assert_eq!(
                 ours.err(),
                 Some(wcontainers_executor_unicorn::driver::Failure::Start(
-                    wcontainers_kernel_linux::Errno(2)
+                    wcontainers_kernel::errno::Errno::ENOENT
                 ))
             );
             continue;

@@ -392,13 +392,6 @@ pub(crate) mod frame {
     pub const ESR_FSC_PERMISSION_3: u64 = 0x0f;
 }
 
-/// The internal answers of a call a signal interrupted, never seen by the guest
-/// (`linux/errno.h`): restarted, or turned into EINTR when a handler runs.
-pub(crate) const ERESTARTSYS: u32 = 512;
-pub(crate) const ERESTARTNOINTR: u32 = 513;
-pub(crate) const ERESTARTNOHAND: u32 = 514;
-pub(crate) const ERESTART_RESTARTBLOCK: u32 = 516;
-
 /// `AT_MINSIGSTKSZ` on the reference's CPU: arm64's `signal_minsigstksz`, the frame's size with the
 /// records that CPU has, which the made-up machine reports too (measured: 4720).
 pub(crate) const SIGNAL_MINSIGSTKSZ: u64 = 4720;

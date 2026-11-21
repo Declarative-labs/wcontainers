@@ -14,9 +14,11 @@ use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::hooks::{EMBEDDER_SENDS, Hooks};
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_executor_unicorn::{busybox, guest_directory_entry};
+use wcontainers_kernel::WriteMemoryError;
+use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    AccessKind, ContextOrigin, Errno, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
+    AccessKind, ContextOrigin, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
     SignalInformation, SuspendedTask, System, SystemCallResponse, SystemVSegmentId, TaskId,
     WatchesFor, reason, task_id_after,
 };
@@ -165,7 +167,7 @@ impl Recorder {
             // A page of a shared mapping its process cannot write is refused, not written.
             let written = process.write_memory(first.start, &bytes);
             assert!(
-                matches!(written, Ok(()) | Err(MemoryError::SharedNotWritable)),
+                matches!(written, Ok(()) | Err(WriteMemoryError::SharedNotWritable)),
                 "{seen}: {written:?}"
             );
             process.watch_memory(first.clone(), WatchesFor::None);
@@ -186,7 +188,7 @@ impl Recorder {
         );
         assert_eq!(
             process.write_memory(u64::MAX, &[0, 0]),
-            Err(MemoryError::InvalidRange)
+            Err(WriteMemoryError::Memory(MemoryError::InvalidRange))
         );
         process.watch_memory(reversed, WatchesFor::All);
         process.watch_memory(u64::MAX - 1..u64::MAX, WatchesFor::All);
@@ -1389,7 +1391,7 @@ fn watches_and_the_record_follow_pages_moved_or_dropped() {
 }
 
 /// Tries to write into a child's read-only shared page at its start.
-struct SharedWrite(u64, Arc<Mutex<Vec<Result<(), MemoryError>>>>);
+struct SharedWrite(u64, Arc<Mutex<Vec<Result<(), WriteMemoryError>>>>);
 
 impl Hooks for SharedWrite {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
@@ -1415,7 +1417,7 @@ fn a_read_only_shared_page_is_not_written_by_the_embedder() {
         assert_eq!(stdout(&run), "file x mapped x\n", "{:?}", run.outcome);
         assert_eq!(
             *results.lock().unwrap(),
-            [Err(MemoryError::SharedNotWritable)]
+            [Err(WriteMemoryError::SharedNotWritable)]
         );
     }
 }
@@ -2318,7 +2320,7 @@ fn shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_sho
         let taken = taken.lock().unwrap();
         assert_eq!(taken.len(), steps.len(), "seed {seed}");
         let keeper = taken.last().expect("the child's step").0;
-        let mut previous = BTreeSet::new();
+        let mut previous = std::collections::HashSet::new();
         for ((name, shown), (process, all)) in steps.iter().zip(taken.iter()) {
             let mine: BTreeMap<u64, u64> = all
                 .iter()
@@ -2332,7 +2334,7 @@ fn shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_sho
                 shown.clone()
             };
             assert_eq!(mine, expected, "seed {seed}, step {name}");
-            let sources: BTreeSet<MemoryObject> = all
+            let sources: std::collections::HashSet<MemoryObject> = all
                 .iter()
                 .filter(|((owner, _), _)| owner == process)
                 .map(|(_, (source, _))| *source)

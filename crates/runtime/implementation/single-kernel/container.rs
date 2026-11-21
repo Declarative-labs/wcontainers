@@ -4,7 +4,8 @@
 use std::path::PathBuf;
 
 use oci_spec::runtime::Spec;
-use wcontainers_kernel_linux::{DOCKER_MOUNTS, DockerMount, Errno, Kernel, Start, StartOptions};
+use wcontainers_kernel::errno::Errno;
+use wcontainers_kernel_linux::{DOCKER_MOUNTS, DockerMount, Kernel, Start, StartOptions};
 
 use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 

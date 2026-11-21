@@ -11,9 +11,9 @@ use std::process::{Command, Stdio};
 
 use regex::Regex;
 
-/// The linux-raw-sys modules the kernel uses.
+/// The linux-raw-sys modules the kernel uses; its error numbers are the kernel interface's.
 const MODULES: &[&str] = &[
-    "general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp",
+    "general", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp",
     "elf_uapi",
 ];
 

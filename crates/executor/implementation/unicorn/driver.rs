@@ -11,9 +11,10 @@ use wcontainers_abi::{
     BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE,
     SystemCallRequest, Warning,
 };
+use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel_linux::{
-    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
-    SignalInformation, Standard, Start, System, SystemCallResponse, TaskId,
+    AccessKind, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process, SignalInformation,
+    Standard, Start, System, SystemCallResponse, TaskId,
 };
 use wcontainers_runtime_single_kernel::{Ending, Execution, TerminalSize, Turn};
 use wcontainers_system_seeded_test_policy::{

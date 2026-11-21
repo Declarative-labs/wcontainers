@@ -1,93 +1,180 @@
-//! Linux error numbers as the kernel returns them.
+//! Linux error numbers as the kernel carries them inside: any number a call or the backend gives,
+//! and the kernel's own marker of a parked call.
 
 use wcontainers_abi::CpuError;
+use wcontainers_kernel::errno::Errno as Linux;
 
-use crate::linux::errno;
-
-/// A Linux error number, such as `ENOENT`.
+/// A Linux error number, such as `ENOENT`, or [`Errno::PARKED`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Errno(pub u32);
+pub(crate) struct Errno(pub u32);
+
+/// Names every error number of the interface on [`Errno`], and the way back to the interface's.
+macro_rules! numbers {
+    ($($name:ident),* $(,)?) => {
+        #[allow(dead_code, reason = "every number Linux names, whether the kernel returns it or not")]
+        impl Errno {
+            $(pub const $name: Self = Self(Linux::$name as u32);)*
+
+            /// The interface's error for this number, if Linux has one.
+            pub fn to_linux(self) -> Option<Linux> {
+                [$(Linux::$name),*].into_iter().find(|linux| *linux as u32 == self.0)
+            }
+        }
+    };
+}
+
+numbers!(
+    EPERM,
+    ENOENT,
+    ESRCH,
+    EINTR,
+    EIO,
+    ENXIO,
+    E2BIG,
+    ENOEXEC,
+    EBADF,
+    ECHILD,
+    EAGAIN,
+    ENOMEM,
+    EACCES,
+    EFAULT,
+    ENOTBLK,
+    EBUSY,
+    EEXIST,
+    EXDEV,
+    ENODEV,
+    ENOTDIR,
+    EISDIR,
+    EINVAL,
+    ENFILE,
+    EMFILE,
+    ENOTTY,
+    ETXTBSY,
+    EFBIG,
+    ENOSPC,
+    ESPIPE,
+    EROFS,
+    EMLINK,
+    EPIPE,
+    EDOM,
+    ERANGE,
+    EDEADLK,
+    ENAMETOOLONG,
+    ENOLCK,
+    ENOSYS,
+    ENOTEMPTY,
+    ELOOP,
+    ENOMSG,
+    EIDRM,
+    ECHRNG,
+    EL2NSYNC,
+    EL3HLT,
+    EL3RST,
+    ELNRNG,
+    EUNATCH,
+    ENOCSI,
+    EL2HLT,
+    EBADE,
+    EBADR,
+    EXFULL,
+    ENOANO,
+    EBADRQC,
+    EBADSLT,
+    EBFONT,
+    ENOSTR,
+    ENODATA,
+    ETIME,
+    ENOSR,
+    ENONET,
+    ENOPKG,
+    EREMOTE,
+    ENOLINK,
+    EADV,
+    ESRMNT,
+    ECOMM,
+    EPROTO,
+    EMULTIHOP,
+    EDOTDOT,
+    EBADMSG,
+    EOVERFLOW,
+    ENOTUNIQ,
+    EBADFD,
+    EREMCHG,
+    ELIBACC,
+    ELIBBAD,
+    ELIBSCN,
+    ELIBMAX,
+    ELIBEXEC,
+    EILSEQ,
+    ERESTART,
+    ESTRPIPE,
+    EUSERS,
+    ENOTSOCK,
+    EDESTADDRREQ,
+    EMSGSIZE,
+    EPROTOTYPE,
+    ENOPROTOOPT,
+    EPROTONOSUPPORT,
+    ESOCKTNOSUPPORT,
+    EOPNOTSUPP,
+    EPFNOSUPPORT,
+    EAFNOSUPPORT,
+    EADDRINUSE,
+    EADDRNOTAVAIL,
+    ENETDOWN,
+    ENETUNREACH,
+    ENETRESET,
+    ECONNABORTED,
+    ECONNRESET,
+    ENOBUFS,
+    EISCONN,
+    ENOTCONN,
+    ESHUTDOWN,
+    ETOOMANYREFS,
+    ETIMEDOUT,
+    ECONNREFUSED,
+    EHOSTDOWN,
+    EHOSTUNREACH,
+    EALREADY,
+    EINPROGRESS,
+    ESTALE,
+    EUCLEAN,
+    ENOTNAM,
+    ENAVAIL,
+    EISNAM,
+    EREMOTEIO,
+    EDQUOT,
+    ENOMEDIUM,
+    EMEDIUMTYPE,
+    ECANCELED,
+    ENOKEY,
+    EKEYEXPIRED,
+    EKEYREVOKED,
+    EKEYREJECTED,
+    EOWNERDEAD,
+    ENOTRECOVERABLE,
+    ERFKILL,
+    EHWPOISON,
+    ERESTARTSYS,
+    ERESTARTNOINTR,
+    ERESTARTNOHAND,
+    ERESTART_RESTARTBLOCK,
+);
 
 impl Errno {
-    pub const EPROTONOSUPPORT: Self = Self(errno::EPROTONOSUPPORT);
-    pub const ESOCKTNOSUPPORT: Self = Self(errno::ESOCKTNOSUPPORT);
-    pub const EAFNOSUPPORT: Self = Self(errno::EAFNOSUPPORT);
-    pub const EADDRINUSE: Self = Self(errno::EADDRINUSE);
-    pub const ECONNREFUSED: Self = Self(errno::ECONNREFUSED);
-    pub const EPROTOTYPE: Self = Self(errno::EPROTOTYPE);
-    pub const EPROTO: Self = Self(errno::EPROTO);
-    pub const EISCONN: Self = Self(errno::EISCONN);
-    pub const ENOTCONN: Self = Self(errno::ENOTCONN);
-    pub const EDESTADDRREQ: Self = Self(errno::EDESTADDRREQ);
-    pub const ENOBUFS: Self = Self(errno::ENOBUFS);
-    pub const ENOPROTOOPT: Self = Self(errno::ENOPROTOOPT);
-    pub const ECONNRESET: Self = Self(errno::ECONNRESET);
-    pub const ECONNABORTED: Self = Self(errno::ECONNABORTED);
-    pub const EDOM: Self = Self(errno::EDOM);
-    pub const EADDRNOTAVAIL: Self = Self(errno::EADDRNOTAVAIL);
-    pub const ENETUNREACH: Self = Self(errno::ENETUNREACH);
-    pub const EHOSTUNREACH: Self = Self(errno::EHOSTUNREACH);
-    pub const EINPROGRESS: Self = Self(errno::EINPROGRESS);
-    pub const EALREADY: Self = Self(errno::EALREADY);
-    pub const ETOOMANYREFS: Self = Self(errno::ETOOMANYREFS);
-    pub const E2BIG: Self = Self(errno::E2BIG);
-    pub const EACCES: Self = Self(errno::EACCES);
-    pub const EAGAIN: Self = Self(errno::EAGAIN);
-    pub const EBADF: Self = Self(errno::EBADF);
-    pub const EBUSY: Self = Self(errno::EBUSY);
-    pub const ECANCELED: Self = Self(errno::ECANCELED);
-    pub const EDEADLK: Self = Self(errno::EDEADLK);
-    pub const ECHILD: Self = Self(errno::ECHILD);
-    pub const EEXIST: Self = Self(errno::EEXIST);
-    pub const EFAULT: Self = Self(errno::EFAULT);
-    pub const EFBIG: Self = Self(errno::EFBIG);
-    pub const EIDRM: Self = Self(errno::EIDRM);
-    pub const EINTR: Self = Self(errno::EINTR);
-    pub const EINVAL: Self = Self(errno::EINVAL);
-    pub const EIO: Self = Self(errno::EIO);
-    pub const EISDIR: Self = Self(errno::EISDIR);
-    pub const ELIBBAD: Self = Self(errno::ELIBBAD);
-    pub const ELOOP: Self = Self(errno::ELOOP);
-    pub const EMFILE: Self = Self(errno::EMFILE);
-    pub const EMLINK: Self = Self(errno::EMLINK);
-    pub const ENAMETOOLONG: Self = Self(errno::ENAMETOOLONG);
-    pub const ENFILE: Self = Self(errno::ENFILE);
-    pub const ENODEV: Self = Self(errno::ENODEV);
-    pub const ENOENT: Self = Self(errno::ENOENT);
-    pub const ENOEXEC: Self = Self(errno::ENOEXEC);
-    pub const ENOMEM: Self = Self(errno::ENOMEM);
-    pub const EMSGSIZE: Self = Self(errno::EMSGSIZE);
-    pub const ENOMSG: Self = Self(errno::ENOMSG);
-    pub const ENOSPC: Self = Self(errno::ENOSPC);
-    pub const ENOSYS: Self = Self(errno::ENOSYS);
-    pub const ENOTDIR: Self = Self(errno::ENOTDIR);
-    pub const ENOTEMPTY: Self = Self(errno::ENOTEMPTY);
-    pub const ENOTSOCK: Self = Self(errno::ENOTSOCK);
-    pub const ENOTTY: Self = Self(errno::ENOTTY);
-    pub const ENXIO: Self = Self(errno::ENXIO);
-    pub const EOPNOTSUPP: Self = Self(errno::EOPNOTSUPP);
-    pub const EOVERFLOW: Self = Self(errno::EOVERFLOW);
-    pub const EPERM: Self = Self(errno::EPERM);
-    pub const EPIPE: Self = Self(errno::EPIPE);
-    pub const ERANGE: Self = Self(errno::ERANGE);
-    pub const EROFS: Self = Self(errno::EROFS);
-    pub const ESPIPE: Self = Self(errno::ESPIPE);
-    pub const ESRCH: Self = Self(errno::ESRCH);
-    pub const ETIMEDOUT: Self = Self(errno::ETIMEDOUT);
-    pub const ETXTBSY: Self = Self(errno::ETXTBSY);
-    pub const EXDEV: Self = Self(errno::EXDEV);
-    pub const ENODATA: Self = Self(errno::ENODATA);
-    /// A call a signal interrupted: restarted unless a handler without `SA_RESTART` runs.
-    pub const ERESTARTSYS: Self = Self(crate::linux_extra::ERESTARTSYS);
-    /// Restarted whatever the handler.
-    pub const ERESTARTNOINTR: Self = Self(crate::linux_extra::ERESTARTNOINTR);
-    /// Restarted only when no handler runs.
-    pub const ERESTARTNOHAND: Self = Self(crate::linux_extra::ERESTARTNOHAND);
-    /// Continued by `restart_syscall` when no handler runs.
-    pub const ERESTART_RESTARTBLOCK: Self = Self(crate::linux_extra::ERESTART_RESTARTBLOCK);
-
     /// Not an error: the call parked its thread and runs again when woken.
     pub const PARKED: Self = Self(u32::MAX);
+
+    /// The interface's error for one, which every number an embedder can give is.
+    pub fn from_linux(linux: Linux) -> Self {
+        Self(linux as u32)
+    }
+
+    /// The interface's error for a number the kernel chose itself, which is always one of Linux's.
+    pub fn to_known(self) -> Linux {
+        self.to_linux()
+            .expect("the kernel's own errors are Linux's error numbers")
+    }
 
     /// The value a system call returns in x0 for this error.
     pub fn to_return(self) -> u64 {
@@ -101,14 +188,15 @@ impl Errno {
 
     /// The restart answer a call's return value carries, if it is one.
     pub fn restart_of(value: u64) -> Option<Self> {
-        use crate::linux_extra::*;
-        let code = (value as i64).checked_neg()?;
-        match u32::try_from(code).ok()? {
-            ERESTARTSYS | ERESTARTNOINTR | ERESTARTNOHAND | ERESTART_RESTARTBLOCK => {
-                Some(Self(code as u32))
-            }
-            _ => None,
-        }
+        let code = Self(u32::try_from((value as i64).checked_neg()?).ok()?);
+        [
+            Self::ERESTARTSYS,
+            Self::ERESTARTNOINTR,
+            Self::ERESTARTNOHAND,
+            Self::ERESTART_RESTARTBLOCK,
+        ]
+        .contains(&code)
+        .then_some(code)
     }
 }
 
@@ -118,5 +206,18 @@ pub(crate) fn from_cpu(error: CpuError) -> Errno {
         CpuError::OutOfMemory => Errno::ENOMEM,
         CpuError::BadAddress => Errno::EFAULT,
         CpuError::NotSupported => Errno::ENOSYS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_number_goes_back_to_the_interface_and_others_do_not() {
+        assert_eq!(Errno::EAGAIN.to_linux(), Some(Linux::EAGAIN));
+        assert_eq!(Errno::ERESTARTSYS.to_linux(), Some(Linux::ERESTARTSYS));
+        assert_eq!(Errno::PARKED.to_linux(), None);
+        assert_eq!(Errno::from_linux(Linux::EHWPOISON), Errno::EHWPOISON);
     }
 }

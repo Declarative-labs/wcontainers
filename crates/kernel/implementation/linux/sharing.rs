@@ -18,10 +18,37 @@ use crate::{Context, Kernel};
 pub(crate) type Pieces = Vec<(u64, Range<u64>)>;
 
 /// What the embedder has been told each process maps, by source and process.
-pub(crate) type Announced = BTreeMap<(MemoryObject, Pid), Pieces>;
+pub(crate) type Announced = BTreeMap<(Source, Pid), Pieces>;
+
+/// The memory behind a shared mapping, in one order on every host, so announcements are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Source(pub MemoryObject);
+
+impl Source {
+    /// The kind first, then the kind's own numbers.
+    fn rank(&self) -> (u8, u64, u64) {
+        match self.0 {
+            MemoryObject::File { device, inode } => (0, device.0, inode.0),
+            MemoryObject::SystemVSegment(id) => (1, id.0 as u64, 0),
+            MemoryObject::Anonymous(id) => (2, id.0, 0),
+        }
+    }
+}
+
+impl Ord for Source {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
+impl PartialOrd for Source {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// The source a shared mapping shows, and where in it the mapping starts.
-fn source_of(mapping: &Mapping) -> Option<(MemoryObject, u64)> {
+fn source_of(mapping: &Mapping) -> Option<(Source, u64)> {
     if !mapping.shared {
         return None;
     }
@@ -41,7 +68,7 @@ fn source_of(mapping: &Mapping) -> Option<(MemoryObject, u64)> {
                     inode: InodeNumber(node.ino),
                 }
             };
-            Some((source, *offset))
+            Some((Source(source), *offset))
         }
         _ => None,
     }
@@ -175,9 +202,9 @@ impl Kernel {
             }
             self.announce_shared(cx, pid, |system, process| {
                 if start {
-                    system.on_shared_memory_mapping(process, source, offset, range)
+                    system.on_shared_memory_mapping(process, source.0, offset, range)
                 } else {
-                    system.on_shared_memory_unmapped(process, source, offset, range)
+                    system.on_shared_memory_unmapped(process, source.0, offset, range)
                 }
             });
             // A hook that ended a process had everything announced again then.

@@ -12,6 +12,8 @@ path = "implementation.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+wcontainers-kernel = { path = "../.." }
+wcontainers-executor = { path = "../../../executor" }
 zerocopy.workspace = true
 object = { version = "0.41", default-features = false, features = ["read_core", "elf", "unaligned"] }
 siphasher = { version = "1.0.1", default-features = false }

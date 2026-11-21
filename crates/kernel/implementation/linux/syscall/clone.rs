@@ -49,7 +49,7 @@ pub(super) fn clone(
             }
             let process = kernel.threads[&child].process;
             if flags & CLONE_THREAD != 0 {
-                let thread = crate::TaskId::of(child);
+                let thread = crate::system::task_id(child);
                 kernel.announce(cx, process, |system, process| {
                     system.on_thread_starting(process, thread)
                 });

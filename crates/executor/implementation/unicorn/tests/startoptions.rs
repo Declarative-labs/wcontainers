@@ -14,6 +14,7 @@ use wcontainers_executor_unicorn::assert_same_output_with;
 use wcontainers_executor_unicorn::busybox::{run_ours_with, try_ours_with};
 use wcontainers_executor_unicorn::driver::Failure;
 use wcontainers_executor_unicorn::reference::{self, docker};
+use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel_linux::linux::general::{
     __NR_mkdirat, __kernel_timespec, CAP_CHOWN, CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_TIME,
     SCHED_NORMAL,
@@ -24,9 +25,8 @@ use wcontainers_kernel_linux::linux::ptrace::{
 };
 use wcontainers_kernel_linux::{
     ADDR_NO_RANDOMIZE, CGROUP_MOUNT, CapabilitySets, DEV_MOUNT, DEVPTS_MOUNT, DOCKER_CAPABILITIES,
-    DOCKER_LIMITS, DOCKER_MOUNTS, DOCKER_UMASK, DockerMount, Errno, IOPRIO_CLASS_BE,
-    IOPRIO_CLASS_SHIFT, MQUEUE_MOUNT, PROC_MOUNT, SHM_MOUNT, SYS_MOUNT, Seccomp, StartOptions,
-    TimeOffsets, sched_attr,
+    DOCKER_LIMITS, DOCKER_MOUNTS, DOCKER_UMASK, DockerMount, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT,
+    MQUEUE_MOUNT, PROC_MOUNT, SHM_MOUNT, SYS_MOUNT, Seccomp, StartOptions, TimeOffsets, sched_attr,
 };
 
 /// What the first process shows of its start: ids, mask, limits, powers, scores and names, and
@@ -258,7 +258,7 @@ fn mkdirat_refused() -> &'static [sock_filter] {
             code: answer,
             jt: 0,
             jf: 0,
-            k: SECCOMP_RET_ERRNO | Errno::EACCES.0,
+            k: SECCOMP_RET_ERRNO | Errno::EACCES as u32,
         },
         sock_filter {
             code: answer,
@@ -276,7 +276,7 @@ fn a_seccomp_profile_of_the_containers_own_matches_reference() {
     let json = format!(
         "{{\"defaultAction\":\"SCMP_ACT_ALLOW\",\"syscalls\":[{{\"names\":[\"mkdirat\"],\
          \"action\":\"SCMP_ACT_ERRNO\",\"errnoRet\":{}}}]}}",
-        Errno::EACCES.0
+        Errno::EACCES as u32
     );
     std::fs::write(&profile, json).expect("writing the profile");
     let security = format!("{}{}", docker::SECCOMP_PROFILE, profile.display());
