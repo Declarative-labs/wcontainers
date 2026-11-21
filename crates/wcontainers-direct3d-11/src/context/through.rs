@@ -8,6 +8,10 @@ use super::*;
 use crate::desc::ViewDim;
 use wcontainers_gpu::{BufferUsage, CopyBufferTexture, TextureDesc as GpuTexture, TextureRegion};
 
+const COMPARED_FORMAT_UNCLAIMED: &str =
+    "a comparison through a view of a format Direct3D does not compare";
+const COMPARED_VIEW_INVALID: &str = "a comparison through a multisampled or 3D view";
+
 /// A storage view of a stage read through a buffer, and the copies around its uses.
 pub(crate) struct Through<B: Backend> {
     register: u32,
@@ -264,9 +268,7 @@ impl<B: Backend> Device<B> {
             Format::R32Float => Format::Depth32Float,
             Format::R16Unorm => Format::Depth16Unorm,
             _ => {
-                return not_implemented(
-                    "a comparison through a view of a format Direct3D does not compare",
-                );
+                return not_implemented(COMPARED_FORMAT_UNCLAIMED);
             }
         };
         let dimension = match v.desc.dimension {
@@ -275,9 +277,7 @@ impl<B: Backend> Device<B> {
             ViewDim::TextureCube => ViewDimension::Cube,
             ViewDim::TextureCubeArray => ViewDimension::CubeArray,
             _ => {
-                return Err(Error::InvalidArg(
-                    "a comparison through a multisampled or 3D view",
-                ));
+                return Err(Error::InvalidArg(COMPARED_VIEW_INVALID));
             }
         };
         let texture = self.backend.create_texture(&GpuTexture {

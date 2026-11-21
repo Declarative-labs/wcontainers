@@ -232,7 +232,10 @@ const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
 /// `Format::components` of a format holding a red channel alone.
 const RED: u32 = 0b0001;
 const MULTISAMPLED_DEPTH_READ: &str = "a multisampled depth texture read by shaders below 10_1";
-const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
+const SHARING_INVALID: &str = "sharing not of exactly one kind, or below 10_0 of a format the 10Level9 runtime does not share";
+const LEVEL9_BUFFER_VIEWED: &str = "a buffer viewed or streamed into below feature level 10_0";
+const LEVEL9_USE_ABSENT: &str =
+    "a use of the format the 10Level9 tables do not give the feature level";
 const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
 const TYPED_BUFFER_UNCLAIMED: &str =
     "a typed buffer view of a format whose typed buffers are not served";
@@ -1001,9 +1004,7 @@ impl<B: Backend> Device<B> {
         // 10Level9 buffers are vertex, index and constant buffers alone.
         let viewed = bind::SHADER_RESOURCE | bind::UNORDERED_ACCESS | bind::STREAM_OUTPUT;
         if self.level < level::L10_0 && d.bind_flags & viewed != 0 {
-            return Err(Error::InvalidArg(
-                "a buffer viewed or streamed into below feature level 10_0",
-            ));
+            return Err(Error::InvalidArg(LEVEL9_BUFFER_VIEWED));
         }
         if d.misc_flags & (MISC_GENERATE_MIPS | MISC_TEXTURECUBE | MISC_GDI_COMPATIBLE) != 0 {
             return Err(Error::InvalidArg("a texture's misc flags on a buffer"));
@@ -1112,9 +1113,7 @@ impl<B: Backend> Device<B> {
             needs |= CPU_LOCKABLE;
         }
         if needs & !format::level9_support(d.format, self.level) != 0 {
-            return Err(Error::InvalidArg(
-                "a use of the format the 10Level9 tables do not give the feature level",
-            ));
+            return Err(Error::InvalidArg(LEVEL9_USE_ABSENT));
         }
         Ok(())
     }
