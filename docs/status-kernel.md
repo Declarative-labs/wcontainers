@@ -60,7 +60,32 @@ side of each is worked around without changing the interface.
   embedder test steps that checked such a request is counted and not sent were removed
   (Departures).
 - crates/kernel/interface.rs fails `cargo clippy -- -D warnings` (`clippy::type_complexity` at
-  lines 40 and 93), so the kernel's lint runs use `--no-deps`.
+  lines 40 and 89), so the kernel's lint runs deny warnings only in this track's crates.
+- KA, third run: the kernel generic over its system is compiled in the embedder's crate, where
+  it cannot inline the kernel's own non-generic helpers without cross-crate optimisation. Measured
+  per pipe round trip (ARM64 machine, KA, third run): with the workspace's release profile the
+  kernel's own code runs 598 more instructions (22943 to 23541, callgrind) and the whole round
+  trip 0.4 percent more instructions and 1.2 percent more cycles; built with
+  `CARGO_PROFILE_RELEASE_LTO=thin` the round trip runs 0.5 percent fewer instructions than before
+  the milestone and its cycles are within the noise (33212 before, 33349 after). So the owner's
+  condition on pipes holds with `lto = "thin"` in the release profile and not without it.
+  Example: `[profile.release] lto = "thin"` in the root Cargo.toml (shared by every track, and
+  slower to link), or the same in each embedder's binary. Marking the hot helpers `#[inline]`
+  made it worse (868 against 853 million instructions per 6000 round trips).
+- `Process::state` and `Process::execution_config` return references to values of types only the
+  embedder knows, kept for each process and copied by a fork, so a kernel that is not generic
+  over them must keep them type-erased: this kernel keeps one boxed value per process beside its
+  record (one allocation per fork, a type check per access). Example: a fork's child gets a copy
+  of its parent's `State` and shares its parent's `ExecutionConfig` (KA, third run).
+- `Process::watch_thread_memory` has no way to refuse, and no executor implements
+  `PerThreadWatch` yet, so this kernel's body of it panics as not built. Example: an executor
+  that implements `PerThreadWatch` and calls it.
+- Nothing in the kernel interface makes a process or hands out a `Process`, so the conformance
+  suite takes its values ready made: a kernel with one of its processes, and a handle to a
+  container's first process before it runs.
+- `resolve_domain` can answer any question, but the kernel's name server still asks only for
+  addresses (A and AAAA of class IN) and answers others "not implemented", counted, as before,
+  so that the suite's results stay the same. Example: an MX question is not asked.
 
 ## For the orchestrator
 
@@ -177,6 +202,14 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, third run: names are asked of the system's `DomainNameResolver::resolve_domain` as stored
+waiting calls (the abi's `Host::look_up` and `Event::LookedUp` are gone), and the kernel
+interface's traits are implemented on `KernelWithExecutor` (the kernel with its executor, each
+process with the embedder's state) with `KernelProcess` as the process handle; the conformance
+suite has ten real checks, which pass. The pipe slowdown is found: lost inlining across crates,
+gone with thin LTO (For the owner). Not done: streams and sockets on their async calls, the old
+`System` trait's removal. KA is not complete. See "KA, third run".
 
 KA, second run: the kernel takes its system as a type parameter everywhere (no `&dyn` left), and
 the file backend is the first thing it waits on as the system's `async` call: each request is the
@@ -390,6 +423,92 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, third run
+
+Started 22:40 UTC on 2026-11-21 at 71667714. Builds and lints on the x86 machine, tests and
+measurements on the ARM64 machine, the literal check on the Mac; scripts in scratch kernel/ka3
+(subset.sh, suite.sh, ab.sh, statpipe.sh, callgrind.sh, cgdiff.py; before-tree is a clone at
+e5d693d2, the milestone's start, after-tree a clone of main).
+
+The pipe ping-pong (exact counts, the pipe kind alone at 2000 and 4000, the difference over 6000
+round trips; ARM64 machine at load 0 to 5):
+- perf stat, twice each, alternately: before 141709 instructions and 33413 cycles per round trip,
+  after 142237 and 33808 (0.4 and 1.2 percent more). The earlier 3 to 6 percent by the clock was
+  taken at load 11 to 21.
+- callgrind (300 and 600, exact; both trees carried a counter of the test host's locks, an atomic
+  add per lock): the kernel's own functions 22943 to 23541 instructions per round trip, the test
+  host's 8059 to 8073, unicorn's 72535 to 72667. The kernel's helpers (`thread_mut`, `charge`,
+  `account_system`, `next_to_run`) are now called where they were inlined.
+- The test host takes 42 locks per round trip after and 32 before (counted), about 130 of the 528
+  extra instructions.
+- With `CARGO_PROFILE_RELEASE_LTO=thin` on both: callgrind 138753 before and 138513 after
+  (kernel 23011 to 22844); perf stat 138417 and 137730 instructions, 33212 and 33349 cycles. So
+  the cost is the lost inlining across crates of generic code (For the owner), not the kernel's
+  work. Inline hints on ten helpers made it worse and were not kept.
+
+Done:
+- Names (5da46611): the name server reads the guest's query with the domain crate (simple-dns is
+  gone from the kernel), asks `resolve_domain` the question as a waiting call numbered by its
+  lookup (`WaitFor::Name`), and answers with the system's answer under the query's id and flags
+  (its answer records copied; a server failure when the system fails). A restore drops the name
+  waiting calls and asks again (`Waiting::drop_where`). `Host::look_up` and `Event::LookedUp` are
+  gone from the abi.
+- The interface's traits (02f8fb99): `KernelWithExecutor<C, State>` owns the kernel and its
+  executor and implements `ProcessController` and `Kernel`; `KernelProcess` implements
+  `Process`, `ProcessInfo` and `ProcessOf`. Each process's state and execution configuration are
+  kept beside its record as one type-erased value, copied by a fork with the record, carried in
+  its context (For the owner). A context without this embedder's value is handed back by
+  `resume_process`. The kernel's own `System` trait and hooks are unchanged.
+- The conformance suite (crates/kernel/conformance): ten checks against the traits alone (no
+  tasks, an absent process, a copy that leaves the process, a suspended process and its tasks
+  coming back, tasks taken again, what a first process tells, a write read back, bad reads
+  refused, a process suspending itself). The unicorn crate runs it (tests/conformance.rs, a
+  container started with `hello` that has not run): 10 passed.
+- Tests: the embedder data copy (executing.rs).
+
+Changed outside this track's crates, the smallest change that keeps them building and passing:
+- crates/runtime/implementation/single-kernel: a `names` module (`NameAnswer`, the answer
+  message; `address_answer`, a DNS answer from the addresses found; `resolve`, the lookup on its
+  own thread as before, which wakes the waiting call and pushes `Arrival::Answered`, so an idle
+  system goes on); `LocalSystem` implements `DomainNameResolver`; `look_up` and
+  `Arrival::LookedUp` go; domain is an optional dependency under `std`.
+- crates/system/implementation/seeded-test-policy: `DomainNameResolver` refuses as `look_up`
+  did; its warning's detail is now the question's type, not the request number.
+- crates/executor/implementation/hardware-virtualization-inside: the link's LookUp request and
+  its test lines go with the abi call.
+- crates/executor/implementation/hardware-virtualization: tests/container/mod.rs loses `look_up`.
+- Cargo.lock: domain's edges, simple-dns gone, and the new crate edges only.
+- In the unicorn crate (this track's): the test host answers a name from its network at the next
+  turn as before, now by waking the waiting call (`Replies::wait`, shared with the backend, which
+  forgets an answer when its call is dropped); the record keeps `Entry::NameAnswered`; the stand-in
+  implements `wcontainers_executor::Executor` (no translator configuration);
+  `driver::started_with_executor` makes the conformance suite's kernel.
+
+New dependencies (shipped): domain 0.12.3 (BSD-3-Clause) in the kernel with `alloc` (hashbrown
+MIT or Apache-2.0, jiff MIT or Unlicense, octseq BSD-3-Clause), already a dependency of the
+system interface. simple-dns (MIT) is no longer used.
+
+Measurements of the four waits (ab.sh, median of 9 of 500 and 1000 repetitions, before-tree and
+the after-tree at 5da46611 alternately three times, 23:25 to 23:28 UTC, load 2 to 4 on 96 cores,
+scratch ka3/ab-names.log): pipe ping-pong 12175, 11717, 11890 ns before and 12350, 12292, 12111
+after; outside socket read 16468, 14563, 14224 and 14182, 14849, 14349; backend open and read
+498417, 513501, 508408 and 527745, 511201, 514171; name lookup 137189, 137168, 137643 and
+139147, 139265, 139363 (1.4 percent more; where the 2 microseconds go was not measured).
+Allocations per repetition: pipe 142.00 both, socket 79.0 both, backend 347.99 before and 340.99
+after, name 711.00 before and 709.00 after. The kernel's waiting calls allocate nothing once
+their cell exists (waiting.rs's test).
+
+Tests run: kernel, runtime and policy unit tests (14, 13, 0 passed, then the kernel's 15);
+unicorn outside, shell, busybox, saving, inet, conformance, away, embedder. Every failure was one
+the ARM64 machine gives for its reference: inet's proc_net, route_questions and socket_edges (the
+ARM list), and busybox `system`, whose reference on this machine (a new one, Linux
+7.0.0-1018-aws) has no /proc/config.gz and other sysctl values; it is not on the ARM list and
+was not run on the Mac this run. The whole suite at 02f8fb99 runs on the ARM64 machine
+(scratch ka3/suite-after-02f8fb99.log).
+
+The literal check: no finding in any file this run changed; the resolver's 12 accepted lines are
+removed from the baseline; 269 accepted lines remain, the kernel interface's own (For the owner).
 
 ## KA, second run
 
@@ -5670,6 +5789,19 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KA, after its third run:
+1. Read the whole suite at 02f8fb99 (scratch ka3/suite-after-02f8fb99.log; `arm-run --fetch
+   kernel-ka /work/jobs/kernel-ka/<id>/log` if the copy is cut): every failure must be on the ARM
+   list (ka2/fail-before.txt) or busybox `system` (above), which goes to the Mac.
+2. The standard streams on `StreamTransport` (`send_stream`/`receive_stream` at once,
+   `wait_for_stream_events` as a waiting call per end): ends.rs, and the stream ends of the test
+   host, the runtime and the policy. A terminal's new size has no call (For the owner).
+3. Outside sockets on the four socket interfaces with `wait_for_events` per watched socket.
+4. Then the kernel's own `System` becomes the interface's (its hooks given `KernelProcess`), which
+   needs 2 and 3.
+5. The four measurements after each step (ka3/ab.sh, ka3/statpipe.sh), and the owner's word on
+   thin LTO for the pipe.
 
 KA, after its second run, in steps that each keep the suite as it is:
 1. Names on `DomainNameResolver::resolve_domain`: the guest's question (syscall/socket/outside.rs
