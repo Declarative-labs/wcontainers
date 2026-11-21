@@ -333,7 +333,13 @@ impl Future for WaitForEvents<'_> {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let held = {
+        // A call polled again whose events have come finishes before it gives a waker that a later event would wake.
+        if this.id.is_some()
+            && let Some(answer) = this.answer()
+        {
+            return Poll::Ready(answer);
+        }
+        {
             // Registered before the socket is asked, so an event after the asking finds the waiter.
             let mut state = locked(&this.watched.watch.state);
             match this.id {
@@ -358,13 +364,23 @@ impl Future for WaitForEvents<'_> {
                     }
                 }
             }
-            state.held & (this.interest | ALWAYS_REPORTED)
-        };
-        match events_now(this.watched.fd(), this.interest).map(|now| now | held) {
-            Ok(now) if now.is_empty() => Poll::Pending,
+        }
+        match this.answer() {
+            Some(answer) => Poll::Ready(answer),
+            None => Poll::Pending,
+        }
+    }
+}
+
+impl WaitForEvents<'_> {
+    /// The events the socket has now, withdrawing the wait, or none yet.
+    fn answer(&mut self) -> Option<Result<PollEvents, HostError>> {
+        let held = locked(&self.watched.watch.state).held & (self.interest | ALWAYS_REPORTED);
+        match events_now(self.watched.fd(), self.interest).map(|now| now | held) {
+            Ok(now) if now.is_empty() => None,
             answer => {
-                this.withdraw();
-                Poll::Ready(answer.map(poll_events))
+                self.withdraw();
+                Some(answer.map(poll_events))
             }
         }
     }
