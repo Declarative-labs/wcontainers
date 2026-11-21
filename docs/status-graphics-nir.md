@@ -27,7 +27,18 @@ at once, other tracks' jobs queued beside), run A at 670eac2e, 18:55:50 to 19:24
   lists and KHR-GL33 together, counting the 11,291 cases of KHR-GLES32 and KHR-GL33 as run and
   failed (they cannot start): 84,509 of 97,908, 86.31%; not met (92.9%). KHR-GL46: none run.
 - Flake: dEQP-GLES31 synchronization.inter_invocation (one case); not yet read.
-- Run B (the run's later fixes, ES 3.1 lists only): see Measurements when it ends.
+- Run B at c6daf776 (the image twins, the measured-only images, single-layer multisampled
+  textures, the atomic word types), ES 3.1 lists only, 19:30:59 to 19:43:42 with the build:
+  dEQP-GLES31 Pass 15,055, Warn 4, Fail 146, Crash 930, Flake 3, Skip 21,664: 15,059 of 16,138,
+  93.31%; KHR-GLES31 Pass 2,434, Fail 37, Crash 38, Skip 1,592: 2,434 of 2,509, 97.01%. With run
+  A's other lists: 84,846 of 86,617 run, 97.96%, over the six that start; the bar's measure
+  (KHR-GLES32 and KHR-GL33 counted as failed) 84,846 of 97,908, 86.66%.
+- Run B's flakes: dEQP-GLES31 image_load_store.2d_array.qualifiers coherent_r32ui and
+  volatile_r32f, synchronization.inter_invocation.ssbo_atomic_read_write; not yet read.
+- In run B the image_load_store crashes fell from 410 to 162 (the rest: image atomics and 3D
+  slices) and ssbo.layout's 56 to none; texture.multisample's 60 are all Fail now: the bound
+  sample mask (`glSampleMaski`, `set_sample_mask`) is kept but never given to the draw's
+  rasterizer block, a gap to close (Gallium's mask into the interface's `RasterDesc`).
 - Results: scratch `results/g9r11/full-a` (`<list>/results.csv`, `failures.csv`, the job's
   output `g9r11-full-a.log`); a 10% sample of dEQP-GLES3, -GLES31 and KHR-GLES31 at 7e3496f0 in
   `results/g9r11/f10` with the runner's logs.
@@ -272,6 +283,21 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 10) are told in this file's history:
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- G9 run 11, the whole lists on our driver (desktop, RTX 3080, one GPU job, 8 glcts at once,
+  other tracks' jobs queued beside): run A 18:55:50 to 19:24:49 (29 minutes for 112,807 cases
+  with the incremental build; dEQP-GLES31 about 16 of them), run B of the two ES 3.1 lists
+  19:30:59 to 19:43:42. A 10% sample of dEQP-GLES3, -GLES31 and KHR-GLES31 (8,669 cases):
+  18:38:58 to 18:44:54. The shadow group alone (432 cases): about a minute.
+- G9 run 11, the whole corpus run (18,738 items, 96 children, x86-64 machine, load 0.7 at the
+  start and 2.1 at the end): 742 s. Route B: 12,090 match, 156 differ, 6 not compared, as run 9;
+  route A unchanged. On the 1,072 shaders both routes match: A median 424 us, mean 622 us; B
+  median 341 us, mean 409 us. Results: scratch `results/g9r11/nir-results-g9r11.jsonl`, log
+  `logs/g9r11-corpus.log`.
+- G9 run 11, the suite of wcontainers-nir and wcontainers-opengl (x86-64 machine, load 0.0 to
+  1.0): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa
+  `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2, `route`
+  11 passed.
 
 - G9 run 10, the whole lists on our driver (desktop, RTX 3080, one GPU job each, 8 glcts at
   once, other tracks' jobs queued beside): run A 17:40:35 to 17:56:43 (about 16 minutes with the
@@ -860,7 +886,7 @@ None.
 
 ## Literal check
 
-G9 run 11: exit 1 at c6daf776 (x86-64 machine, from a git bundle; marks 0; the clone, its build
+G9 run 11: exit 1 at f6fe1681 (x86-64 machine, from a git bundle; marks 0; the clone, its build
 and the bundle deleted after; output in scratch `logs/g9r11-literals.out`): 8 findings, the 7 of
 run 10 and one new, the image refusal "one slice of a 3D texture as a 2D image" returned as a
 plain string, made a message the check reads in b4792714 (not run again after). The run's new
