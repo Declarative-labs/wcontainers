@@ -4,13 +4,13 @@ Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and liste
 readings, repair, authentication, multipath state, the privileged settings).
 
 ## For the UDP, ICMP and raw tracks
-- Run 4 (2026-11-21, after the async ruling): TCP uses the UDP track's shared `readiness` for both waits. Two
-  notes on it, for its owner: (1) every socket is registered edge-triggered for every event from the moment it
-  is watched, so the watcher thread wakes, looks the socket up and takes its lock on every edge of every socket,
-  even with nothing waiting (each segment a busy connection receives); arming a oneshot registration with the
-  waiters' interest at a wait that has to wait would cost nothing on sockets nobody waits on (a one-shot
-  registration of that kind was in the working tree, uncommitted, during run 5). (2) Done by the UDP track in
-  9ad7b201: the shared `open_socket` makes TCP's sockets with socket2's `Socket::new`.
+- New, run 6: `receive_message` (TCP's only) no longer allocates: `ReceivedMessage` has `length`, `flags` and
+  `control` (the bytes), and `messages()` walks them in place as level, type and data (`ControlMessages`, which
+  takes any control bytes the kernel wrote). UDP track: `Ancillary::parse` could take its messages from
+  `ControlMessages::new` so the crate has one CMSG walk. TCP now sends its transmit report requests through
+  socket2's `sendmsg` with the UDP track's `datagram::send::Control`.
+- TCP uses the shared `readiness` for both waits; since 12b98f7f (UDP track) it arms a one-shot registration only
+  while a call waits, and `open_socket` makes TCP's sockets with socket2 (9ad7b201).
 - The shared crate is `crates/internet-protocol/implementation/linux-socket-options` (package
   `wcontainers-internet-protocol-linux-socket-options`), made by this track. Its body is
   `cfg(target_os = "linux")`. It holds: `host_error`, `last_host_error`; the raw option calls `set_option`,
@@ -38,6 +38,37 @@ readings, repair, authentication, multipath state, the privileged settings).
   with them.
 - Still refused there with a counted reason: multicast and anycast memberships, a fixed IPv6 flow label. The
   UDP track needs them more: add them there.
+
+## Done in run 6 (2026-11-21): the independent check of run 5 answered
+- Multipath is checked on the wire (multipath_is_negotiated_when_both_ends_ask, which replaces
+  multipath_connections_carry_bytes): the capture marks segments with the MPTCP option (kind 30, which etherparse
+  reports as an unknown option); a multipath client and listener both offer it in the SYN and SYN-ACK, a plain
+  client to a multipath listener neither, a multipath client to a plain listener only in the SYN; bytes cross each.
+- shutdown_of_both_directions_ends_both now also reads the client's own end of stream (0 at once, as Linux gives).
+- The reporting send goes through socket2's `sendmsg` (`MsgHdr::with_buffers`, `with_control`), its control message
+  written by the shared `datagram::send::Control`. The receive with control messages stays libc's `recvmsg` in the
+  shared `receive_message`: socket2 0.6.5's `RecvFlags` offers only `is_truncated`, `is_end_of_record`,
+  `is_out_of_band`, `is_confirm` and `is_dontroute` (src/lib.rs:387, src/sys/unix.rs:623-659), no `MSG_CTRUNC`, and
+  both the error queue and now the timestamped receive count a cut (`CUT_CONTROL`). The control messages are walked
+  in place (no `Vec`); checked by a_receive_with_control_messages_allocates_nothing (100 timestamped receives with
+  unread-byte reports, none allocating).
+- set_timestamp_clock: Linux cannot change a connection's clock unit, which the route gives (`tcp_usec_ts`;
+  measured: a connection over a route with the feature advances 50 056 in 50 ms, one without 52, and writing
+  `TCP_TIMESTAMP` with either low bit changes neither). The implementation reads the unit from `TCP_INFO`'s
+  `TCPI_OPT_USEC_TS` and refuses the other with a counted reason. The suite's namespace adds a local route for
+  127.0.0.7 with the feature (iproute2 7.1 from the checkout's pinned nixpkgs; the machine's 6.1 lacks it):
+  timestamp_clock_set_in_repair_mode_stamps_segments checks each unit on its own route (at least 50 ms or 50 000 µs
+  past the reading after 50 ms, at most the time it ran), and
+  timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused that the other unit counts in it or is refused.
+- saved_synchronize_is_taken_once covers multipath listeners: a save setting there must either be refused (Linux:
+  ENOPROTOOPT, errno 92, for on and off) or leave the SYN to be taken.
+- Discarding error queue entries reads each as the take does but counts no cut packet (`next_error_queue_entry`
+  gives whether one was cut; only the take counts it); checked by discarding_cuts_no_packet.
+- New checks for the methods that had none: authentication_counters_are_set_only_where_authentication_is (a
+  connection without authentication may not take counters: Linux says EISCONN; a listener's, if set, read back,
+  as Linux does, else NotSupported) and listener_state_reads_a_listener (Information reads Listen and
+  CongestionControl the one given, else NotSupported). Both T2 methods still answer the counted refusal.
+- Broken copies: 99 now (mutants.sh); the new ones and their results are under Measurements.
 
 ## Done in run 5 (2026-11-21): T1 complete
 - The suite finds the loopback interface by its `IFF_LOOPBACK` flag (nix's `getifaddrs`) instead of naming it
@@ -83,7 +114,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   queue (transmit reports with packet, statistics or wireless status; ICMP errors written whole), every plain
   setting of settings.rs, and the action methods. read_state, read_listener_state, authentication and the repair
   queues are T2 (counted refusals now).
-- Suite `crates/tcp-sockets/conformance`: 72 checks against the traits alone, each on a value made anew. The body
+- Suite `crates/tcp-sockets/conformance`: 92 checks against the traits alone (and three of the implementation's
+  own: the wait and receive allocation checks and discarding_cuts_no_packet, 95 tests in one binary), each on a value made anew. The body
   is `cfg(target_os = "linux")`: the checks watch the wire. A capture thread reads the host's packet socket
   (`AF_PACKET`, every loopback packet seen twice, counted once) filtered to one listener's port, and the checks
   read headers, sequence numbers, windows, TCP timestamps and times from it. Timer checks make the peer drop
@@ -117,15 +149,19 @@ readings, repair, authentication, multipath state, the privileged settings).
   wait_ends_with_the_errors_always_reported. wait_for_listener_events: listener_wait_finishes_when_a_connection_comes,
   dropping_a_listener_wait_cancels_it.
 - Which check fails when a method or setting breaks, each one run as a broken copy by mutants.sh (results under
-  Measurements): connect, listen, accept: every check. send and receive: bytes_arrive_in_order_both_ways and the
+  Measurements): connect, listen, accept: every check; their protocol: multipath_is_negotiated_when_both_ends_ask. send and receive: bytes_arrive_in_order_both_ways and the
   request checks (urgent_*, peek_*, more_to_come_*, record_end_starts_a_new_segment, unread_byte_reports_*,
-  receive_software_timestamps_*, the transmit report checks). shut_down: the three shutdown checks. close:
+  receive_software_timestamps_*, the transmit report checks). shut_down: the three shutdown checks (ReadAndWrite as Write fails
+  shutdown_of_both_directions_ends_both). close:
   orderly_close_*, abort_resets_the_peer. stop_listening: stopped_listener_refuses_connections.
   take_error_queue_entry and discard_error_queue_entries: the report, ICMP and discarding checks.
   push_queued_data: more_to_come_holds_data_until_pushed, push_ignoring_neither_*. send_delayed_acknowledgement:
   delayed_acknowledgement_is_sent_on_demand. rearm_keep_alive_timer: rearming_the_keep_alive_timer_sends_a_due_probe.
   send_window_probe: window_probe_is_answered_and_changes_no_setting. set_timestamp_clock:
-  timestamp_clock_set_in_repair_mode_stamps_segments (the listener's: only its refusal, see For the owner).
+  timestamp_clock_set_in_repair_mode_stamps_segments and timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused
+  (the listener's: only its refusal, see For the owner). set_authentication_counters and the listener's:
+  authentication_counters_are_set_only_where_authentication_is. read_listener_state: listener_state_reads_a_listener.
+  read_state: saved_synchronize_is_taken_once (TakeSavedSynchronize only; the rest is T2).
   give_negative_route_advice: negative_route_advice_picks_a_new_flow. Settings: send and receive buffers, buffer
   locks, low waters (send_settings_*, receive_settings_*); window clamp (window_clamp_bounds_the_synchronize_window);
   pacing rate, transmit delay (their checks); hop limit, traffic class, path MTU discovery, flow label
@@ -145,6 +181,25 @@ readings, repair, authentication, multipath state, the privileged settings).
   T1.
 
 ## Measurements
+- Run 6, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 21:59 to 22:04, load 4 to 16: clippy with
+  warnings denied clean (tcp host, suite, shared crate); 95 passed, 0 failed, five runs, each 3.4 s (92 suite checks
+  and three of the implementation's own). Literal check (22:03): no finding in this track's files.
+- Run 6 broken copies (mutants.sh, 22:00 to 22:02, load 5 to 9; log mutants-run-6.log in scratch), each failed:
+  clock-always-refused (both clock checks, the window probe check), clock-unit-ignored
+  (timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused), clock-microseconds-as-milliseconds
+  (timestamp_clock_set_in_repair_mode_stamps_segments), multipath-is-tcp (multipath_is_negotiated_when_both_ends_ask,
+  saved_synchronize_is_taken_once), tcp-is-multipath (every test: a multipath listener refuses `TCP_SAVE_SYN`),
+  shutdown-both-is-write (shutdown_of_both_directions_ends_both), multipath-save-syn-refusal-skipped
+  (saved_synchronize_is_taken_once), discard-counts-cuts (discarding_cuts_no_packet), authentication-counters-fake
+  and listener-authentication-counters-fake (authentication_counters_are_set_only_where_authentication_is),
+  listener-state-fake (listener_state_reads_a_listener), report-packet-dropped and statistics-dropped (their report
+  checks, after the error queue change).
+- Run 6 independent check from a clean clone of main at ff302f08 (job host-tcp-sockets-clean, 22:01 to 22:02, load 5
+  to 6; log clean-check-run6.log in scratch): build folder emptied, clippy clean (9.3 s), 95 passed in 3.44 s;
+  `cargo tree` of tcp-sockets, internet-protocol, configurable, negative-route-advice, kernel, abi and the suite
+  shows no implementation crate; `git diff ae9c53ca HEAD` of every .rs file beside the tcp-sockets,
+  internet-protocol, kernel, configurable, negative-route-advice and abi interfaces is empty; system's interface.rs
+  differs by two lines from other tracks' commits.
 - Run 5, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 21:28, load 14 to 15: clippy with warnings
   denied clean, 90 passed in 3.43 s. Literal check (21:29): no finding in this track's files.
 - Run 5 independent check from a clean clone of main at 02f9c69c (job host-tcp-sockets-clean, 21:30 to 21:32, load
@@ -195,7 +250,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
 - Broken copies: the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
-  copy, 90 copies; names pick some).
+  copy, 99 copies; names pick some). Whether every copy's text is still there once: scratch
+  tools/check_mutants.sh <checkout> (on the Mac, no build).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
   $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance --
   -D warnings'`, and the same on the Mac without arm-run (with `CARGO_TARGET_DIR=$PWD/target/host-tcp-sockets
@@ -252,6 +308,11 @@ readings, repair, authentication, multipath state, the privileged settings).
   0.9.1: MIT.
 
 ## For the owner
+- `set_timestamp_clock` asks for a unit, but Linux fixes a connection's clock unit from its route (the
+  `tcp_usec_ts` route feature) and `TCP_TIMESTAMP` only sets the value. Example: Microseconds on a connection over
+  127.0.0.1 is answered NotSupported. And "its low bit given as the unit" is not what Linux 7.0 reports: on a
+  microsecond connection, writing 0x40000000 reads back 0x40000000 (low bit 0), on a millisecond one writing
+  0x40000001 reads 0x40000003.
 - Building one now starts a host thread and an epoll set, so it can fail: the suggested trait is
   `pub trait StandaloneTcpSockets: TcpSockets + Sized { fn new() -> Result<Self, HostError>; }` (the crate has
   `HostTcpSockets::new() -> Result<Self, HostError>`).

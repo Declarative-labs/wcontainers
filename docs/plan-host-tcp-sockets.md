@@ -38,16 +38,20 @@
   `listen(backlog)`. The `Backlog` setting is `listen` again.
 - accept: `accept4` non-blocking; the SYN's header from `TCP_SAVED_SYN`, cut to the buffer; its fields from
   that header and what the accepted socket reports.
-- send: `sendmsg` with `MSG_NOSIGNAL` and `MSG_OOB`, `MSG_MORE`, `MSG_EOR` from the request; transmit reports as
-  an `SO_TIMESTAMPING` control message with the request's record flags, the socket's own option flags (`OPT_ID`,
+- send: socket2's `send_with_flags`, or its `sendmsg` when the send asks for transmit reports, with `MSG_NOSIGNAL`
+  and `MSG_OOB`, `MSG_MORE`, `MSG_EOR` from the request; transmit reports as an `SO_TIMESTAMPING` control message
+  (written by the shared crate's `datagram::send::Control`) with the request's record flags, the socket's own option flags (`OPT_ID`,
   `OPT_TSONLY`, `OPT_STATS`) kept on by the implementation; Linux refuses `SCM_TS_OPT_ID` on TCP, so the guest's key
   is kept by the byte offset the kernel reports for the send.
-- receive: `recvmsg` with `MSG_PEEK` (and `SO_PEEK_OFF` for an offset), `MSG_OOB`; timestamps from the
-  control messages; `unread_after` from `TCP_CM_INQ` when unread-byte reports are on.
+- receive: socket2's `recv_with_flags`, or, when timestamps or unread-byte reports are on, the shared crate's
+  `receive_message` (libc's `recvmsg`, since socket2's `RecvFlags` gives no `MSG_CTRUNC`), with `MSG_PEEK` (and
+  `SO_PEEK_OFF` for an offset), `MSG_OOB`; timestamps from the control messages, walked in place without allocating;
+  `unread_after` from `TCP_CM_INQ`.
 - take_error_queue_entry: `recvmsg(MSG_ERRQUEUE)`, `sock_extended_err` and the control messages it comes with;
   an ICMP error written whole from its IP header by the shared crate's `write_icmp_error`; a report's packet
   with `OPT_TSONLY` off, its statistics from `OPT_STATS`, wireless status from `SO_WIFI_STATUS`.
-- discard_error_queue_entries: `recvmsg(MSG_ERRQUEUE)` until `EAGAIN`.
+- discard_error_queue_entries: `recvmsg(MSG_ERRQUEUE)` until `EAGAIN`, each entry read as the take reads it (its
+  report forgotten) but with no packet counted as cut.
 - wait_for_events, wait_for_listener_events: `poll` with no timeout, then the shared readiness (epoll).
 - shut_down: `shutdown`. close: `SO_LINGER` of zero for an abort, then the descriptor closes. stop_listening:
   the descriptor closes.
@@ -61,7 +65,9 @@
   `TCP_REPAIR_OFF` sends: repair on, then off; it needs CAP_NET_ADMIN (EPERM without it). Leaving repair mode clears
   `SO_REUSEADDR` and the repair mode, so both are put back (with the repair queue) as they were.
 - give_negative_route_advice: `SO_CNX_ADVICE` set to one, which calls `dst_negative_advice`.
-- set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). set_authentication_counters and the
+- set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). The unit is the one the route gave the
+  socket (`tcp_usec_ts`, read from `TCP_INFO`'s `TCPI_OPT_USEC_TS`): Linux cannot change it, so the other unit is
+  refused with a counted reason. set_authentication_counters and the
   listener's: `TCP_AO_INFO` with its counter flag.
 - read_state and read_listener_state: `TCP_INFO`, `TCP_CC_INFO`, `TCP_CONGESTION`, `SIOCINQ`/`SIOCOUTQ`/
   `SIOCOUTQNSD`, `TCP_SAVED_SYN`, `TCP_TIMESTAMP`, `TCP_REPAIR_WINDOW` and the sequence options, `TCP_AO_INFO`,
@@ -91,8 +97,13 @@
   on 127.0.0.1 (or ::1) port chosen by the kernel, connects to it, accepts, and checks one behaviour by what the
   other end sees: bytes arriving in order, the end of stream after a shutdown, a reset after an abort, urgent
   data, peeking, more-to-come and cork holding data until a push, a refused connect, an error queue entry for a
-  requested software transmit timestamp, and so on. Operations that answer `WouldBlock` are retried until a
-  deadline, since nothing in the contract waits.
+  requested software transmit timestamp, and so on. Calls other than the waits answer at once, so `WouldBlock` is
+  tried again until a deadline; the waits are polled by hand with a waker that counts its wakes.
+- Multipath is checked on the wire: the SYN and SYN-ACK carry the MPTCP option (kind 30) exactly when both ends
+  asked for multipath.
+- Methods that are T2 here (authentication counters, listener state) are checked so that an answer, if one is
+  given, is right (the counters set read back, the listener reads as listening with its congestion control), and
+  otherwise is the not-supported refusal; a connection without authentication may not accept counters.
 - ICMP errors reach a TCP socket only in SYN-SENT: a check fills a listener of backlog 0, connects again, captures
   that SYN with a raw socket and answers it with an ICMP error from a raw socket (root), all on loopback.
 - Each setting is set once and then twice on fresh pairs, and the observable outcome (what the peer sees, what
@@ -103,6 +114,8 @@
   checks look at headers, sequence numbers, windows, timestamps and timing; a peer made to drop everything (a
   minimum hop limit of 255) leaves segments unanswered for the timer checks; how much a connection takes or a peer
   sends while nothing is read shows the buffer settings.
-- The suite needs root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`, `net.ipv6.flowlabel_consistency=0` and
-  `dctcp`; run-conformance.sh makes that namespace.
+- The suite needs root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`, `net.ipv6.flowlabel_consistency=0`,
+  `net.ipv4.tcp_fwmark_accept=1`, `dctcp` and a local route for 127.0.0.7 with the `tcp_usec_ts` feature (its
+  connections' timestamps count microseconds); run-conformance.sh makes that namespace, with the iproute2 of the
+  checkout's pinned nixpkgs (the machine's 6.1 does not know the feature).
 - `tests!` runs each function as its own test on a value made anew.
