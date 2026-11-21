@@ -453,6 +453,20 @@ Changed outside this track's crates, the smallest change that keeps them buildin
 
 New dependency (shipped): smallbox 0.8.9, MIT, no dependencies of its own.
 
+The bar so far:
+- The whole suite (abi, kernel, unicorn crate, conformance crate) on the ARM64 machine before
+  (f6b24e8a, 20:35 to 22:01 UTC, load 1 to 23; scratch ka2/before-log/log) and after (4ee5def7,
+  21:27 to 22:54 UTC, load 3 to 23; ka2/suite-after-4ee5def7.log): before 337 passed, 36 failed, 7
+  ignored; after 340 passed, 36 failed, 8 ignored (the three new waiting tests, the measurement
+  ignored); the 36 are the same tests both times, exactly the ARM list (ka2/fail-before.txt,
+  ka2/fail-after.txt).
+- The Mac (layer 1, Docker Desktop's reference; ka2/mac.log, 21:29 UTC, load 6 to 12): seeds
+  9191144 and 9191145, 300 sequences, 32 on the backend, 32 on the cached backend, and the replay
+  from the record: 4 passed each.
+- Lints with warnings denied clean on the x86 machine for every changed crate; the literal check
+  (Mac) gives no finding in any crate this run changed (the check fails on other tracks'
+  uncommitted files; 269 accepted lines, which this run did not change).
+
 Measurements (ARM64 machine, release build of tests/waitcost.rs: guest/waitcost.c repeats one
 kind of wait 500 and 1000 times, the difference over 500 is one repetition; median of 9; the
 allocations are the whole test process's per repetition, kernel and test host together):
