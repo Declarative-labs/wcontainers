@@ -207,7 +207,13 @@ pub(crate) fn apply(
                         crate::stage::line_coverage_location(variant),
                     )?;
                 }
-                targets::targets_in_shader(module, &mut w, &variant.targets_in_shader, reflection)?;
+                targets::targets_in_shader(
+                    module,
+                    &mut w,
+                    &variant.targets_in_shader,
+                    variant.samples,
+                    reflection,
+                )?;
                 if dual {
                     dual_source(&mut w)?;
                 }

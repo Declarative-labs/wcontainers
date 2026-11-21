@@ -25,7 +25,7 @@ const MODE_ENTRY: usize = 1;
 const MODE: usize = 2;
 const MODE_LITERAL: usize = 3;
 /// `OpConstant`'s value, after its result type and result.
-const CONSTANT_VALUE: usize = 3;
+pub(super) const CONSTANT_VALUE: usize = 3;
 /// `OpFunction`'s function type, after its result type, result and control.
 const FUNCTION_TYPE: usize = 4;
 /// `OpFunction`'s words.

@@ -3719,3 +3719,87 @@ Runs at the tip:
 - Not run this run: the check's seeds 6601 to 6612, the laptop's glslang suite
   (the new records' GLSL outcomes are the x86 machine's, which has no glslang: they read
   `absent compute` and a write refusal, neither compiled by glslang).
+
+## G6b run 4 (run 68): the fourth check's findings
+
+Merged origin/phase-2-graphics-direct3d-11 (its round 4 run 4; nothing of this crate). Run 67's
+section is in the history file. Logs in scratch `graphics-shaders/g6b4`; GPU figures from the RTX
+3080 through the queue (other tracks' jobs beside).
+
+The check's findings, each:
+- Arrays among a DXIL geometry shader's values (blocking): the geometry pass refused any value but a
+  scalar or vector (`OutputArray`), so dxc's builds of `float3 c[2] : COLOR0` and `float2 w[3] :
+  TEXCOORD6` were refused where fxc's converted. Now a `GeometryValue` is a scalar or vector or an
+  array of them one register a row (`rows`, `row_at` in src/lower/geometry.rs): each row is a record
+  slot and a reflected output, inputs too (an input's outermost count is its vertices). An array of
+  arrays stays refused by name (`OutputArray`; no file of any corpus has one). The check's
+  `gs_c4_streams` and `gs_c4_lines` convert on both routes with the same outputs (probe,
+  x86-probe3.log). Own `geometry_rows.hlsl` (from the check's inputs): `vs_rows` writes arrays,
+  `gs_rows_lines` reads them (one row picked at run time) and writes `float2 w[3]`,
+  `gs_rows_streams` writes three point streams, an array and the position in the second. Its first
+  stream is not an array: real Direct3D 11 on the RTX 3080 refuses stream output from a geometry
+  shader of several streams whose first stream writes an array (E_OUTOFMEMORY, the debug layer
+  silent; the same shader with that stream flat is taken, and an array in the second stream is;
+  probe2.log). A matter for the Direct3D 11 front's reports, not this crate's.
+  Tests: `dxil_geometry_outputs_match_dxbc_on_every_stream` takes them; new
+  `geometry_shaders_with_rows_stream_as_direct3d_does` (tests/geometry_draw.rs) streams every row of
+  every value out on WebGPU and on the replay route (ANGLE), against Direct3D 11 running fxc's build
+  and Direct3D 12 running dxc's. On the replay route dxc's `gs_rows_lines` is refused by name
+  (`GeometryReplayArrayOfArrays`, src/stage/replay.rs, A5): its input arrays of rows are an array
+  per vertex, an array of arrays, which GLSL ES 3.00 lacks (naga: `MissingFeatures(ARRAY_OF_ARRAYS)`,
+  x86-aoa.log); before the refusal the back end failed those 8 cases unnamed (draw2.log, the
+  test's failure without it). fxc's build replays and streams equal.
+  Seeds 1 to 4 (draw4.log): 32 comparisons, 0 failed, 4 known (A22: dxc's `gs_rows_streams`, its
+  position in stream 1); every word of every row equal on both routes and both back ends; 8 replay
+  refusals of several streams and 8 of arrays of arrays, all by name.
+- A22's cause (minor): taken as the check measured it. Direct3D 12 on the RTX 3080 writes zeros for
+  the position of a geometry shader of several streams, whichever compiler built it and whichever
+  stream holds it. The streams tests now take each such zero from Direct3D 11 running fxc's build of
+  the same program (`reference_of_streams`; only words Direct3D 12 left zero at the position's places
+  of a buffer), so dxc's builds' positions are compared with a real reference, and the known pattern
+  is no longer stream 0's alone.
+  Seeds 1 to 4: 32 comparisons, 0 failed, 16 known, each dxc case 80 to 156 position words taken
+  (draw1-err.log); the check's seeds 8501 to 8516: 128, 0 failed, 64 known (probe1.log).
+- The 4-ulp allowance (minor): see A21. The allowance is now 4 units in the last place of the larger
+  of the two values and 1, the tests' operands' magnitude, where it was 4 ulp of the value: `gs_cut`'s
+  lerp from the centre takes a difference of values near 1.
+  At the check's seeds 8501 to 8516: replay route 384 comparisons, 0 failed; WebGPU 448, 0 failed
+  (probe1.log).
+- The DXBC domain shader returned as an invalid module (minor, before G6b): dxbc-spirv's bug (gap
+  A23, read in its IR); now refused by name (`ComponentPastVector`) with own `ds_rows_gap` in the
+  records. Not fixed: the fix is a line of dxbc-spirv, which this repository does not yet carry
+  patches of; the check's other cases (`ds_c4c`, `ds_m1` to `ds_m6`) still convert.
+- The milestone's claim of the four Direct3D 12 scenes (minor): the top of this file and A6 say two
+  draw equal and why the other two differ. Not rerun.
+- `hull_values_make_the_same_records_on_both_routes`' comment (minor): it now says the records are
+  the same for those programs only (the check's quad hulls give 5 constant locations from fxc's
+  build, 4 from dxc's) and that a front pairs stages of one build.
+- A10's figures at the check's seeds (minor): added under A10. Drawn again at the same seeds at
+  this run's code (probe1.log): the same 8 picture failures and 6 replay failures, case for case.
+
+Mutated copies (not committed; scratch x86-mutants.sh, x86-mutants.log): the outputs reflected for
+the first row only fails `dxil_geometry_outputs_match_dxbc_on_every_stream`; arrays refused again
+fails the own records (`gs_rows_*.dxil` "unsupported OutputArray"); the component guard removed
+fails the own records (`ds_rows_gap.dxbc` "convert invalid").
+On the RTX 3080 (draw2.log, in the job, restored after): every row read as the first
+(`b.field(v, 0)` in `location_vec4`) fails `geometry_shaders_with_rows_stream_as_direct3d_does`,
+32 comparisons, 20 failed.
+
+Runs at the tip:
+- x86 machine (96 processors, load 11 to 17, -j 64): clippy with warnings denied clean; the whole
+  suite with every corpus: every binary passes but gap A16's known failure (x86-suite2.log, at
+  c02bf001's tree; the last commit renames a test's type, Windows only).
+- Laptop (load about 1): the own records with glslang 8.13 (`vs_rows` compiles; laptop-own.log).
+- Desktop (RTX 3080, through the queue): Windows clippy with warnings denied clean; `geometry_draw`
+  9 passed and `tessellation_draw` 4 passed at seeds 1 to 4 (draw4.log, at 048f1e0a); the check's
+  seeds 8501 to 8516 (probe1.log, above) at a0c02830 with this run's test changes, before the
+  replay refusal and the flat first stream of `gs_rows_streams`, which no test drawn there reaches;
+  the rows test was skipped there.
+- Literal check (x86 machine, a clone of c02bf001): passes; this crate's lines in the baseline
+  unchanged (4,826 lines naming its paths, 395 of them under src; run 67's "530" counted otherwise).
+- Not run this run: the laptop's whole glslang suite (only the own records), WebAssembly, Chrome
+  on the new WGSL files.
+- Clean-up: this branch's build folders on the desktop (C:\wc\target\phase-2-graphics-shaders),
+  the laptop (~/wcontainers-graphics/target/phase-2-graphics-shaders) and the x86 machine
+  (/work/target/graphics-shaders, the literal clone and its build folder) deleted; the probes'
+  sources and logs kept in scratch g6b4; no build in the Mac checkout or scratch.

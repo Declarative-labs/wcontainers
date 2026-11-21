@@ -66,8 +66,8 @@ pub use reflect::{
     DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource,
     EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation,
     LinkedValues, ReflectedBinding, Reflection, ScalarKind, SlotKind, SourceStage, StageExtras,
-    StageValue, SystemValue, TARGET_COPY_BINDING, TEXEL_BUFFER_TEXTURE_WIDTH, TargetInShader,
-    TexelBufferRoute, VariantFlags, VariantKey, ViewComponent, helper_binding,
+    StageValue, SystemValue, TARGET_COPY_BINDING, TEXEL_BUFFER_TEXTURE_WIDTH, TargetCombineValue,
+    TargetInShader, TexelBufferRoute, VariantFlags, VariantKey, ViewComponent, helper_binding,
 };
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{

@@ -2488,8 +2488,8 @@ fn streams_past_the_first_match_direct3d() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The rows test's declarations: `gs_rows_lines`' every value and row into one buffer; each of
-/// `gs_rows_streams`' streams into its own buffer, every row.
+/// The rows test's declarations: `gs_rows_lines`' and `gs_rows_out`'s every value and row into one
+/// buffer; each of `gs_rows_streams`' streams into its own buffer, every row.
 fn rows_declaration(gs: &str) -> StreamOutput {
     let entry = |stream, semantic: &str, semantic_index, count, slot| StreamOutputEntry {
         stream,
@@ -2511,6 +2511,17 @@ fn rows_declaration(gs: &str) -> StreamOutput {
             ],
             strides: [48, 0, 0, 0],
         },
+        "gs_rows_out" => StreamOutput {
+            entries: vec![
+                entry(0, POSITION_SEMANTIC, 0, 4, 0),
+                entry(0, "COLOR", 0, 3, 0),
+                entry(0, "COLOR", 1, 3, 0),
+                entry(0, "COLOR", 2, 3, 0),
+                entry(0, "TEXCOORD", 1, 2, 0),
+                entry(0, "TEXCOORD", 2, 2, 0),
+            ],
+            strides: [68, 0, 0, 0],
+        },
         _ => StreamOutput {
             entries: vec![
                 entry(0, "TEXCOORD", 0, 2, 0),
@@ -2529,12 +2540,17 @@ fn rows_declaration(gs: &str) -> StreamOutput {
 }
 
 /// The rows test's buffers, one a stream: `gs_rows_lines`' appended to and small enough to fill;
-/// `gs_rows_streams`' first small enough to fill, its second appended to.
+/// `gs_rows_out`'s large enough for every vertex; `gs_rows_streams`' first small enough to fill,
+/// its second appended to.
 fn rows_bound(gs: &str) -> Bound {
     match gs {
         "gs_rows_lines" => Bound {
             sizes: [Some(48 * 16), None, None, None],
             start: [48, 0, 0, 0],
+        },
+        "gs_rows_out" => Bound {
+            sizes: [Some(68 * 200), None, None, None],
+            start: [0, 0, 0, 0],
         },
         _ => Bound {
             sizes: [Some(16 * 10), Some(56 * 40), Some(12 * 40), None],
@@ -2543,8 +2559,9 @@ fn rows_bound(gs: &str) -> Bound {
     }
 }
 
-/// The rows test's draws: lines from triangles (a list, an indexed strip), points into three streams.
-const ROWS_CASES: [Case; 3] = [
+/// The rows test's draws: lines from triangles (a list, an indexed strip), triangles from flat
+/// inputs (a list, an indexed strip), points into three streams.
+const ROWS_CASES: [Case; 5] = [
     Case {
         vs: "vs_rows",
         gs: "gs_rows_lines",
@@ -2564,6 +2581,28 @@ const ROWS_CASES: [Case; 3] = [
         first: 1,
         instances: 2,
         first_instance: 1,
+        indexed: Some(2),
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_rows_out",
+        topology: InputTopology::TriangleList,
+        count: 21,
+        first: 0,
+        instances: 2,
+        first_instance: 0,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_rows_out",
+        topology: InputTopology::TriangleStrip,
+        count: 11,
+        first: 1,
+        instances: 1,
+        first_instance: 0,
         indexed: Some(2),
         route: Route::Dxbc,
     },

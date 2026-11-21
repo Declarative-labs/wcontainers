@@ -3,7 +3,7 @@
 pub const ATOMIC_SIGNEDNESS: &str = "AtomicSignedness";
 pub const ATOMIC_TYPE: &str = "AtomicType";
 pub const BINDINGS_BEYOND_LIMIT: &str = "BindingsBeyondLimit";
-pub const BLEND_IN_SHADER: &str = "BlendInShader";
+pub const BLEND_IN_SHADER_MULTISAMPLED: &str = "BlendInShaderMultisampled";
 pub const BUILT_IN: &str = "BuiltIn";
 pub const BUILT_IN_ARRAY: &str = "BuiltInArray";
 pub const CALCULATE_LEVEL_OF_DETAIL: &str = "CalculateLevelOfDetail";

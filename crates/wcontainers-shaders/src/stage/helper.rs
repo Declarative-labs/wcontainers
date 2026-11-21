@@ -1203,25 +1203,13 @@ impl<B: Backend> Stages<B> {
         }
         let bytes = words_as_bytes(&values);
         let after_bytes = words_as_bytes(&after);
-        let mut offsets = [0u64; 2];
-        let ring = backend.write_buffer_ring(
-            RingKind::Data,
-            &[&bytes, &after_bytes],
-            limits.min_uniform_offset_alignment,
-            &mut offsets,
-        )?;
-        let uniform = |part: usize| BindingEntry {
-            binding: VALUES_BINDING,
-            stages: StageSet::COMPUTE,
-            resource: BindingResource::UniformBuffer(BufferRange {
-                buffer: &ring,
-                offset: offsets[part],
-                size: bytes.len() as u64,
-            }),
-        };
+        // Each stage's values are written into the data ring just before its set is made: a range of
+        // the ring holds only until the ring's next write, which may give it fresh storage.
+        let values_part = |part: usize| if part == 0 { &bytes } else { &after_bytes };
         let records = &self.records.as_ref().unwrap().buffer;
+        let at = ring_values(backend, &bytes)?;
         let vertex_set = backend.create_binding_set(&[
-            uniform(0),
+            values_entry(&at, &bytes),
             BindingEntry {
                 binding: INDICES_BINDING,
                 stages: StageSet::COMPUTE,
@@ -1408,8 +1396,9 @@ impl<B: Backend> Stages<B> {
                 * u64::from(WORD);
             grow(backend, &mut h.patches, patch_bytes, BufferUsage::STORAGE)?;
             let patches = &h.patches.as_ref().unwrap().buffer;
+            let at = ring_values(backend, &bytes)?;
             let hull_set = backend.create_binding_set(&[
-                uniform(0),
+                values_entry(&at, &bytes),
                 storage(VERTICES_BINDING, records, record_bytes, false),
                 storage(PATCHES_BINDING, patches, patch_bytes, true),
             ])?;
@@ -1473,8 +1462,9 @@ impl<B: Backend> Stages<B> {
             let out = &d.records.as_ref().unwrap().buffer;
             let (_, tess_points, _) = h.tessellator.owned();
             let patches = &h.patches.as_ref().unwrap();
+            let at = ring_values(backend, &after_bytes)?;
             let set = backend.create_binding_set(&[
-                uniform(1),
+                values_entry(&at, &after_bytes),
                 BindingEntry {
                     binding: INDICES_BINDING,
                     stages: StageSet::COMPUTE,
@@ -1517,8 +1507,10 @@ impl<B: Backend> Stages<B> {
                 (Some((r, bytes)), Some(later)) => (r, bytes, 1, later.geometry_sets),
                 _ => (records, record_bytes, 0, draw.geometry_sets),
             };
+            let part = values_part(part);
+            let at = ring_values(backend, part)?;
             let geometry_set = backend.create_binding_set(&[
-                uniform(part),
+                values_entry(&at, part),
                 BindingEntry {
                     binding: INDICES_BINDING,
                     stages: StageSet::COMPUTE,
@@ -1981,6 +1973,27 @@ pub(super) fn list_topology(n: u32) -> Topology {
 
 pub(super) fn words_as_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// Writes a stage's values into the data ring, for a set made before the ring's next write.
+fn ring_values<B: Backend>(backend: &mut B, bytes: &[u8]) -> Result<(B::Buffer, u64), GpuError> {
+    let align = backend.caps().limits.min_uniform_offset_alignment;
+    let mut offsets = [0u64];
+    let ring = backend.write_buffer_ring(RingKind::Data, &[bytes], align, &mut offsets)?;
+    Ok((ring, offsets[0]))
+}
+
+/// The binding of values [`ring_values`] wrote at `at`.
+fn values_entry<'a, B: Backend>(at: &'a (B::Buffer, u64), bytes: &[u8]) -> BindingEntry<'a, B> {
+    BindingEntry {
+        binding: VALUES_BINDING,
+        stages: StageSet::COMPUTE,
+        resource: BindingResource::UniformBuffer(BufferRange {
+            buffer: &at.0,
+            offset: at.1,
+            size: bytes.len() as u64,
+        }),
+    }
 }
 
 /// A storage binding of the first `size` bytes of `buffer`, for the helper's compute programs.

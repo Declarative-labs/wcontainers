@@ -256,8 +256,8 @@ struct Shape {
 }
 /// Why a geometry shader is malformed: its emit or cut functions were not made for its streams.
 const NO_CUT: &str = "a geometry shader without an emit function per stream and a cut function";
-/// A stream past `stage::STREAMS` in the output declaration.
-const STREAM_PAST_DIRECT3D: &str = "a geometry stream past Direct3D's";
+/// A stream past `stage::STREAMS`, declared or emitted into.
+pub(crate) const STREAM_PAST_DIRECT3D: &str = "a geometry stream past Direct3D's";
 
 /// Vertices per input primitive.
 fn input_vertices(input: u64) -> Result<u32> {

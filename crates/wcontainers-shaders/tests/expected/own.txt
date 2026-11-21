@@ -28,6 +28,7 @@ gs_lines.dxbc	ok ; glsl absent compute
 gs_points.dxbc	ok ; glsl absent compute
 gs_quads.dxbc	ok ; glsl absent compute
 gs_rows_lines.dxbc	ok ; glsl absent compute
+gs_rows_out.dxbc	ok ; glsl absent compute
 gs_rows_streams.dxbc	ok ; glsl absent compute
 gs_streams.dxbc	ok ; glsl absent compute
 gs_tess_line.dxbc	ok ; glsl absent compute

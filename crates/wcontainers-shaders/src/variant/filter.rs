@@ -170,7 +170,7 @@ impl Library {
         imported
     }
 
-    fn import(
+    pub(super) fn import(
         &mut self,
         module: &mut Module,
         library: &Module,
