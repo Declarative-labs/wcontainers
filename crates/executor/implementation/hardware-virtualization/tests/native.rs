@@ -100,13 +100,14 @@ mod hosted {
     }
 
     /// The register fields of a form.
-    fn register_fields(form: &Form) -> Vec<&str> {
+    fn register_fields(form: &Form) -> Vec<encode::FieldName> {
         form.fields
             .iter()
-            .filter(|(name, _, width)| {
+            .zip(encode::field_names(form))
+            .filter(|((name, _, width), _)| {
                 name.starts_with(field::REGISTER) && *width == encode::REGISTER_BITS
             })
-            .map(|(name, ..)| name.as_str())
+            .map(|(_, field)| field)
             .collect()
     }
 
@@ -117,7 +118,7 @@ mod hosted {
         let mut words: Vec<u32> = Vec::new();
         for &to in &fields {
             for &from in &fields {
-                let Some(value) = form.field(case.word, from).filter(|_| to != from) else {
+                let Some(value) = form.field(case.word, from.name()).filter(|_| to != from) else {
                     continue;
                 };
                 if let Ok(word) = encode::replace(case.word, to, value)
@@ -182,7 +183,7 @@ mod hosted {
         };
         let named: Vec<u32> = register_fields(form)
             .iter()
-            .filter_map(|f| form.field(case.word, f))
+            .filter_map(|f| form.field(case.word, f.name()))
             .collect();
         let mut free = (0..u32::from(encode::ZERO)).filter(|r| !named.contains(r));
         let mut next = || free.next().expect("a register the word does not name");
@@ -203,7 +204,7 @@ mod hosted {
         .ok()
         .filter(|&word| forms::presented(word))?;
         let store = if load { partner } else { case.word };
-        let status = form.field(store, field::RS)? as usize;
+        let status = form.field(store, field::RS.name())? as usize;
         Some((
             if load {
                 [case.word, partner]

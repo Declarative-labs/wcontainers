@@ -2,6 +2,7 @@
 //! its form's fixed bits from Arm's table ([`crate::forms`]) with the named fields filled in, so no opcode or
 //! bit position is written here. Each builder's form and fields are found in the table once, on first use.
 
+use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
 
 use wcontainers_guest_cpu::Guest;
@@ -164,8 +165,8 @@ written_forms! {
     ADR,
 }
 
-/// Arm's names of the fields filled in.
-pub mod field {
+/// Arm's names of the fields the encoder and its callers name.
+mod field_name {
     pub const RD: &str = "Rd";
     pub const RN: &str = "Rn";
     pub const RT: &str = "Rt";
@@ -185,19 +186,135 @@ pub mod field {
     pub const B40: &str = "b40";
     pub const RM: &str = "Rm";
     pub const RT2: &str = "Rt2";
-    /// An exclusive's load bit: 1 loads, 0 stores.
     pub const LOAD: &str = "L";
     pub const OPTION: &str = "option";
     pub const IMM3: &str = "imm3";
     pub const IMM7: &str = "imm7";
-    /// A system register move's register's low bit of op0.
     pub const O0: &str = "o0";
     pub const OP1: &str = "op1";
     pub const CRN: &str = "CRn";
     pub const CRM: &str = "CRm";
     pub const OP2: &str = "op2";
-    /// What the names of register fields start with.
     pub const REGISTER: &str = "R";
+}
+
+/// A [`FieldName`] constant for each of the names in [`field_name`], and their list.
+macro_rules! written_fields {
+    ($($(#[$attribute:meta])* $constant:ident,)*) => {
+        /// The fields the encoder and its callers name.
+        pub mod field {
+            use super::{FieldName, field_name};
+
+            /// Each name's place in [`NAMES`].
+            #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+            enum Place {
+                $($constant,)*
+            }
+
+            $($(#[$attribute])* pub const $constant: FieldName = FieldName(Place::$constant as u16);)*
+
+            /// Arm's name of each field above, in their order: the first places of [`FieldName`].
+            pub(super) const NAMES: [&str; [$(field_name::$constant),*].len()] = [$(field_name::$constant),*];
+
+            /// What the names of register fields start with.
+            pub const REGISTER: &str = field_name::REGISTER;
+        }
+    };
+}
+
+written_fields! {
+    RD,
+    RN,
+    RT,
+    RS,
+    IMM16,
+    HW,
+    IMMR,
+    IMMS,
+    N,
+    IMM12,
+    IMM19,
+    IMM14,
+    IMM26,
+    IMMHI,
+    IMMLO,
+    B5,
+    B40,
+    RM,
+    RT2,
+    /// An exclusive's load bit: 1 loads, 0 stores.
+    LOAD,
+    OPTION,
+    IMM3,
+    IMM7,
+    /// A system register move's register's low bit of op0.
+    O0,
+    OP1,
+    CRN,
+    CRM,
+    OP2,
+}
+
+/// A name Arm's table gives fields: its place among every such name, [`field`]'s first and then the others in
+/// the table's order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FieldName(u16);
+
+impl std::fmt::Debug for FieldName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
+impl FieldName {
+    /// Arm's name.
+    pub fn name(self) -> &'static str {
+        FIELDS.names[usize::from(self.0)]
+    }
+}
+
+/// Every field of Arm's table by its [`FieldName`], read once.
+struct Fields {
+    /// Arm's name of each [`FieldName`], by its place.
+    names: Vec<&'static str>,
+    /// The fields of each form of [`forms::all`], in its order, each in the order of the form's `fields`.
+    of_form: Vec<Box<[(FieldName, Field)]>>,
+}
+
+static FIELDS: LazyLock<Fields> = LazyLock::new(|| {
+    let mut names = field::NAMES.to_vec();
+    let mut places: HashMap<&str, FieldName> = HashMap::new();
+    let mut named = |name: &'static str| {
+        *places.entry(name).or_insert_with(|| {
+            let place = names.iter().position(|&n| n == name).unwrap_or_else(|| {
+                names.push(name);
+                names.len() - 1
+            });
+            FieldName(u16::try_from(place).expect("a field name's place fits its type"))
+        })
+    };
+    let of_form = (forms::all().iter())
+        .map(|form| {
+            (form.fields.iter())
+                .map(|(name, low, width)| {
+                    let (low, width) = (*low, *width);
+                    (named(name), Field { low, width })
+                })
+                .collect()
+        })
+        .collect();
+    Fields { names, of_form }
+});
+
+/// The fields of `form`, a form of [`forms::all`].
+fn fields_of(form: &forms::Form) -> &'static [(FieldName, Field)] {
+    let place = (forms::all().element_offset(form)).expect("a form of Arm's table");
+    &FIELDS.of_form[place]
+}
+
+/// The names of the fields of `form`, a form of [`forms::all`], in the order of its `fields`.
+pub fn field_names(form: &forms::Form) -> impl Iterator<Item = FieldName> + use<> {
+    fields_of(form).iter().map(|&(name, _)| name)
 }
 
 pub use crate::thread_state::Register;
@@ -237,16 +354,16 @@ struct Field {
 }
 
 impl Field {
-    /// The field `name` of `form`, if it has one.
-    fn of(form: &forms::Form, name: &str) -> Option<Field> {
-        (form.fields.iter())
-            .find(|(field, ..)| field == name)
-            .map(|&(_, low, width)| Field { low, width })
+    /// The field `name` of `form`, a form of [`forms::all`], if it has one.
+    fn of(form: &forms::Form, name: FieldName) -> Option<Field> {
+        (fields_of(form).iter())
+            .find(|&&(field, _)| field == name)
+            .map(|&(_, field)| field)
     }
 
     /// The field `field` of `form`, which has it.
-    fn written(form: Form, field: &str) -> Field {
-        Field::of(form.arm(), field).unwrap_or_else(|| panic!("{form:?} has no field {field}"))
+    fn written(form: Form, field: FieldName) -> Field {
+        Field::of(form.arm(), field).unwrap_or_else(|| panic!("{form:?} has no field {field:?}"))
     }
 
     /// `value` in the field's place; a value too wide for the field does not fit.
@@ -273,22 +390,12 @@ struct Shape<const N: usize> {
 }
 
 impl<const N: usize> Shape<N> {
-    /// The form `form` with the fields `fields`, if it has them all.
-    fn of(form: &forms::Form, fields: [&str; N]) -> Option<Self> {
-        let mut found = [Field { low: 0, width: 0 }; N];
-        for (slot, name) in found.iter_mut().zip(fields) {
-            *slot = Field::of(form, name)?;
-        }
-        Some(Shape {
-            fixed: form.value & form.mask,
-            fields: found,
-        })
-    }
-
     /// The form `form` with the fields `fields`, which it has.
-    fn written(form: Form, fields: [&str; N]) -> Self {
-        Shape::of(form.arm(), fields)
-            .unwrap_or_else(|| panic!("{form:?} has not every field of {fields:?}"))
+    fn written(form: Form, fields: [FieldName; N]) -> Self {
+        Shape {
+            fixed: fixed(form.arm()),
+            fields: fields.map(|field| Field::written(form, field)),
+        }
     }
 
     /// The word with `values` in the fields; a value too wide for its field does not fit.
@@ -301,23 +408,34 @@ impl<const N: usize> Shape<N> {
     }
 }
 
-/// The forms of [`form::ALL`] that have the fields `fields`, each in [`form::ALL`]'s place: what a builder that
-/// is given its form can write.
+/// The fixed bits of a form.
+fn fixed(form: &forms::Form) -> u32 {
+    form.value & form.mask
+}
+
+/// The fields `fields` of every form of [`form::ALL`], each form's fixed bits and those of the fields it has,
+/// in [`form::ALL`]'s order: what a builder that is given its form can write.
 struct Kind<const N: usize> {
-    fields: [&'static str; N],
-    shapes: [Option<Shape<N>>; form::ALL.len()],
+    fields: [FieldName; N],
+    forms: [(u32, [Option<Field>; N]); form::ALL.len()],
 }
 
 impl<const N: usize> Kind<N> {
-    fn of(fields: [&'static str; N]) -> Self {
-        let shapes = ENCODER_FORMS.map(|form| Shape::of(form, fields));
-        Kind { fields, shapes }
+    fn of(fields: [FieldName; N]) -> Self {
+        let forms =
+            ENCODER_FORMS.map(|form| (fixed(form), fields.map(|name| Field::of(form, name))));
+        Kind { fields, forms }
     }
 
-    /// The shape of `form`, which has the kind's fields.
-    fn shape(&self, form: Form) -> Shape<N> {
-        self.shapes[form.0]
-            .unwrap_or_else(|| panic!("{form:?} has not every field of {:?}", self.fields))
+    /// The word of `form` with `values` in the kind's fields, placed in their order; a value too wide for its
+    /// field does not fit, and `form` has every field up to the last value placed.
+    fn word(&self, form: Form, values: [u32; N]) -> Result<u32, DoesNotFit> {
+        let (mut word, fields) = self.forms[form.0];
+        for ((field, value), name) in fields.into_iter().zip(values).zip(self.fields) {
+            let field = field.unwrap_or_else(|| panic!("{form:?} has no field {name:?}"));
+            word |= field.place(value)?;
+        }
+        Ok(word)
     }
 }
 
@@ -335,7 +453,7 @@ fn signed(value: i64, unit: i64, bits: u32) -> Result<u32, DoesNotFit> {
 }
 
 /// The fields of a wide move, in the order of [`move_of`]'s values.
-const MOVE_FIELDS: [&str; 3] = [field::RD, field::IMM16, field::HW];
+const MOVE_FIELDS: [FieldName; 3] = [field::RD, field::IMM16, field::HW];
 static MOVES: LazyLock<Kind<3>> = LazyLock::new(|| Kind::of(MOVE_FIELDS));
 static MOVZ: LazyLock<Shape<3>> = LazyLock::new(|| Shape::written(form::MOVZ, MOVE_FIELDS));
 static MOVK: LazyLock<Shape<3>> = LazyLock::new(|| Shape::written(form::MOVK, MOVE_FIELDS));
@@ -349,7 +467,9 @@ fn move_of(shape: Shape<{ MOVE_FIELDS.len() }>, rd: Register, imm16: u16, half: 
 
 /// A wide move by form: `movz`, `movk` or `movn rd, #imm16, lsl #(16 * half)`.
 pub fn move_wide(form: Form, rd: Register, imm16: u16, half: u32) -> u32 {
-    move_of(MOVES.shape(form), rd, imm16, half)
+    MOVES
+        .word(form, [rd.into(), imm16.into(), half])
+        .expect("a move fits")
 }
 
 /// `movz rd, #imm16, lsl #(16 * half)`.
@@ -413,7 +533,7 @@ pub fn page_reach(page: u64) -> u64 {
 }
 
 /// The fields of a bit field move, in the order of [`bitfield`]'s values.
-const BITFIELD_FIELDS: [&str; 4] = [field::RD, field::RN, field::IMMR, field::IMMS];
+const BITFIELD_FIELDS: [FieldName; 4] = [field::RD, field::RN, field::IMMR, field::IMMS];
 static UBFM: LazyLock<Shape<4>> = LazyLock::new(|| Shape::written(form::UBFM, BITFIELD_FIELDS));
 static BFM: LazyLock<Shape<4>> = LazyLock::new(|| Shape::written(form::BFM, BITFIELD_FIELDS));
 
@@ -473,7 +593,7 @@ pub fn logical_immediate(value: u64) -> Option<(u32, u32, u32)> {
 }
 
 /// The fields of a logical immediate, in the order of [`logical`]'s values.
-const LOGICAL_FIELDS: [&str; 5] = [field::RD, field::RN, field::N, field::IMMR, field::IMMS];
+const LOGICAL_FIELDS: [FieldName; 5] = [field::RD, field::RN, field::N, field::IMMR, field::IMMS];
 static AND_IMMEDIATE: LazyLock<Shape<5>> =
     LazyLock::new(|| Shape::written(form::AND_IMMEDIATE, LOGICAL_FIELDS));
 static EOR_IMMEDIATE: LazyLock<Shape<5>> =
@@ -500,7 +620,7 @@ pub fn eor_immediate(rd: Register, rn: Register, value: u64) -> Result<u32, Does
 }
 
 /// The fields of an immediate add, in the order of [`add_immediate`]'s values.
-const ADD_IMMEDIATE_FIELDS: [&str; 3] = [field::RD, field::RN, field::IMM12];
+const ADD_IMMEDIATE_FIELDS: [FieldName; 3] = [field::RD, field::RN, field::IMM12];
 static ADD_IMMEDIATE: LazyLock<Shape<3>> =
     LazyLock::new(|| Shape::written(form::ADD_IMMEDIATE, ADD_IMMEDIATE_FIELDS));
 static SUB_IMMEDIATE: LazyLock<Shape<3>> =
@@ -518,7 +638,7 @@ pub fn add_immediate(rd: Register, rn: Register, value: i64) -> Result<u32, Does
 }
 
 /// The fields of a compare and branch, in the order of [`compare_branch`]'s values.
-const COMPARE_BRANCH_FIELDS: [&str; 2] = [field::RT, field::IMM19];
+const COMPARE_BRANCH_FIELDS: [FieldName; 2] = [field::RT, field::IMM19];
 static CBZ: LazyLock<Shape<2>> = LazyLock::new(|| Shape::written(form::CBZ, COMPARE_BRANCH_FIELDS));
 static CBNZ: LazyLock<Shape<2>> =
     LazyLock::new(|| Shape::written(form::CBNZ, COMPARE_BRANCH_FIELDS));
@@ -557,8 +677,7 @@ static BRANCH_REGISTERS: LazyLock<Kind<1>> = LazyLock::new(|| Kind::of([field::R
 /// `br rn`, `blr rn` or `ret rn`, by form.
 pub fn branch_register(form: Form, rn: Register) -> u32 {
     BRANCH_REGISTERS
-        .shape(form)
-        .word([rn.into()])
+        .word(form, [rn.into()])
         .expect("a register fits")
 }
 
@@ -577,41 +696,30 @@ pub fn load_store(
         return Err(DoesNotFit);
     }
     let scaled = u32::try_from(offset / unit).map_err(|_| DoesNotFit)?;
-    LOADS_AND_STORES
-        .shape(form)
-        .word([rt.into(), rn.into(), scaled])
+    LOADS_AND_STORES.word(form, [rt.into(), rn.into(), scaled])
 }
 
 /// The field `field` of a word of any form Arm's table has, set to `value`: a copied instruction with a register
 /// changed.
-pub fn replace(word: u32, field: &str, value: u32) -> Result<u32, DoesNotFit> {
+pub fn replace(word: u32, field: FieldName, value: u32) -> Result<u32, DoesNotFit> {
     let form = forms::form(word).ok_or(DoesNotFit)?;
     Field::of(form, field).ok_or(DoesNotFit)?.set(word, value)
 }
 
-/// The branch offset field of each form of Arm's table that has one, in the table's order.
-static OFFSETS: LazyLock<Vec<Option<Field>>> = LazyLock::new(|| {
-    let offsets = [field::IMM26, field::IMM19, field::IMM14];
-    (forms::all().iter())
-        .map(|form| {
-            (form.fields.iter())
-                .find(|(f, ..)| offsets.contains(&f.as_str()))
-                .map(|&(_, low, width)| Field { low, width })
-        })
-        .collect()
-});
+/// The fields that hold a direct branch's offset.
+const OFFSET_FIELDS: [FieldName; 3] = [field::IMM26, field::IMM19, field::IMM14];
 
 /// A copied direct branch of any form, its offset changed to `offset` bytes.
 pub fn retarget(word: u32, offset: i64) -> Result<u32, DoesNotFit> {
     let form = forms::form(word).ok_or(DoesNotFit)?;
-    let place =
-        (std::ptr::from_ref(form).addr() - forms::all().as_ptr().addr()) / size_of::<forms::Form>();
-    let field = OFFSETS[place].ok_or(DoesNotFit)?;
+    let &(_, field) = (fields_of(form).iter())
+        .find(|(name, _)| OFFSET_FIELDS.contains(name))
+        .ok_or(DoesNotFit)?;
     field.set(word, signed(offset, UNIT, field.width)?)
 }
 
 /// The fields of an extended-register add, in the order of [`add_extended`]'s values.
-const ADD_EXTENDED_FIELDS: [&str; 5] =
+const ADD_EXTENDED_FIELDS: [FieldName; 5] =
     [field::RD, field::RN, field::RM, field::OPTION, field::IMM3];
 static ADD_EXTENDED: LazyLock<Shape<5>> =
     LazyLock::new(|| Shape::written(form::ADD_EXTENDED, ADD_EXTENDED_FIELDS));
@@ -661,7 +769,7 @@ pub fn add_extended(
 }
 
 /// The fields of a shifted-register logical operation, in the order of [`logical_register`]'s values.
-const LOGICAL_REGISTER_FIELDS: [&str; 3] = [field::RD, field::RN, field::RM];
+const LOGICAL_REGISTER_FIELDS: [FieldName; 3] = [field::RD, field::RN, field::RM];
 static LOGICAL_REGISTERS: LazyLock<Kind<3>> = LazyLock::new(|| Kind::of(LOGICAL_REGISTER_FIELDS));
 static ORR_SHIFTED: LazyLock<Shape<3>> =
     LazyLock::new(|| Shape::written(form::ORR_SHIFTED, LOGICAL_REGISTER_FIELDS));
@@ -679,7 +787,9 @@ fn logical_register_of(
 
 /// `eor rd, rn, rm` or `orr rd, rn, rm`, by form, unshifted.
 pub fn logical_register(form: Form, rd: Register, rn: Register, rm: Register) -> u32 {
-    logical_register_of(LOGICAL_REGISTERS.shape(form), rd, rn, rm)
+    LOGICAL_REGISTERS
+        .word(form, [rd.into(), rn.into(), rm.into()])
+        .expect("registers fit")
 }
 
 /// `mov rd, rn` of general registers (`orr rd, xzr, rn`).
@@ -698,8 +808,7 @@ static LOAD_PAIRS: LazyLock<Kind<4>> =
 /// `ldp rt, rt2, [rn]` of 32-bit or 64-bit registers, by form.
 pub fn load_pair(form: Form, rt: Register, rt2: Register, rn: Register) -> u32 {
     LOAD_PAIRS
-        .shape(form)
-        .word([rt.into(), rt2.into(), rn.into(), 0])
+        .word(form, [rt.into(), rt2.into(), rn.into(), 0])
         .expect("registers fit")
 }
 
@@ -710,16 +819,14 @@ static ATOMICS: LazyLock<Kind<3>> = LazyLock::new(|| Kind::of([field::RS, field:
 /// `ldadd{b,h} rs, rt, [rn]` and the other sizes, by form; with `rt` the zero register it is `stadd`.
 pub fn load_add(form: Form, rs: Register, rt: Register, rn: Register) -> u32 {
     ATOMICS
-        .shape(form)
-        .word([rs.into(), rt.into(), rn.into()])
+        .word(form, [rs.into(), rt.into(), rn.into()])
         .expect("registers fit")
 }
 
 /// `cas{b,h} rs, rt, [rn]` of any size, or `casp` of two even pairs, by form.
 pub fn compare_swap_of(form: Form, rs: Register, rt: Register, rn: Register) -> u32 {
     ATOMICS
-        .shape(form)
-        .word([rs.into(), rt.into(), rn.into()])
+        .word(form, [rs.into(), rt.into(), rn.into()])
         .expect("registers fit")
 }
 
@@ -748,7 +855,7 @@ pub fn invalidate_whole_tlb() -> u32 {
 }
 
 /// The fields of a system register a move names, in the order of [`write_system_register`]'s values.
-const SYSTEM_REGISTER_FIELDS: [&str; 5] =
+const SYSTEM_REGISTER_FIELDS: [FieldName; 5] =
     [field::O0, field::OP1, field::CRN, field::CRM, field::OP2];
 static MSR: LazyLock<Shape<6>> = LazyLock::new(|| {
     let [o0, op1, crn, crm, op2] = SYSTEM_REGISTER_FIELDS;
@@ -769,8 +876,7 @@ static EXCEPTIONS: LazyLock<Kind<1>> = LazyLock::new(|| Kind::of([field::IMM16])
 /// `brk #imm16`, `udf #imm16` or `hvc #imm16`, by form.
 pub fn exception(form: Form, imm16: u16) -> u32 {
     EXCEPTIONS
-        .shape(form)
-        .word([imm16.into()])
+        .word(form, [imm16.into()])
         .expect("the immediate fits its field")
 }
 
@@ -855,9 +961,10 @@ impl FloatStatusMoves {
 #[cfg(test)]
 mod tests {
     use super::{
-        DoesNotFit, FloatStatusMoves, Form, Register, UNIT, ZERO, arm, field, form,
+        DoesNotFit, FieldName, FloatStatusMoves, Form, Register, UNIT, ZERO, arm, field, form,
         logical_immediate, signed,
     };
+    use crate::forms;
 
     /// The seed and the number of cases, decimal.
     const SEED: &str = "WCONTAINERS_ENCODE_SEED";
@@ -873,27 +980,39 @@ mod tests {
     }
 
     /// The width of a field, as `forms` reads Arm's table.
-    fn width(name: Form, field: &str) -> u32 {
+    fn width(name: Form, field: FieldName) -> u32 {
         let form = arm(name.name());
         (form.fields.iter())
-            .find(|(f, ..)| f == field)
+            .find(|(f, ..)| f == field.name())
             .map(|&(_, _, width)| width)
-            .unwrap_or_else(|| panic!("{name:?} has no field {field}"))
+            .unwrap_or_else(|| panic!("{name:?} has no field {field:?}"))
+    }
+
+    /// The field named `name` of a form, as `forms` reads Arm's table: its lowest bit and width.
+    fn field_at(form: &forms::Form, name: FieldName) -> Option<(u32, u32)> {
+        (form.fields.iter())
+            .find(|(f, ..)| f == name.name())
+            .map(|&(_, low, width)| (low, width))
+    }
+
+    /// `word` with the field at `low` of `width` bits set to `value`, if it fits.
+    fn set(word: u32, (low, width): (u32, u32), value: u32) -> Result<u32, DoesNotFit> {
+        if u64::from(value) >> width != 0 {
+            return Err(DoesNotFit);
+        }
+        let mask = ((1u64 << width) - 1) as u32;
+        Ok(word & !(mask << low) | value << low)
     }
 
     /// The word of form `name` with `fields` filled in, found by name in `forms`' reading of Arm's table: the
     /// reference the builders are held to.
-    fn by_name(name: Form, fields: &[(&str, u32)]) -> Result<u32, DoesNotFit> {
+    fn by_name(name: Form, fields: &[(FieldName, u32)]) -> Result<u32, DoesNotFit> {
         let form = arm(name.name());
         let mut word = form.value & form.mask;
         for &(field, value) in fields {
-            let &(_, low, width) = (form.fields.iter())
-                .find(|(f, ..)| f == field)
-                .unwrap_or_else(|| panic!("{name:?} has no field {field}"));
-            if u64::from(value) >> width != 0 {
-                return Err(DoesNotFit);
-            }
-            word |= value << low;
+            let field =
+                field_at(form, field).unwrap_or_else(|| panic!("{name:?} has no {field:?}"));
+            word = set(word, field, value)?;
         }
         Ok(word)
     }
@@ -905,9 +1024,21 @@ mod tests {
         let cases = knob(CASES, DEFAULT_CASES);
         let mut rng = fastrand::Rng::with_seed(seed);
         let bits = u64::BITS;
+        let (mut replaced, mut retargeted) = (0u64, 0u64);
         for _ in 0..cases {
-            let mut register = || -> Register { rng.u8(..=ZERO) };
-            let (rd, rn, rm, rt) = (register(), register(), register(), register());
+            // Registers as the builders that refuse take them, past 31 a quarter of the time, and as those that
+            // cannot refuse take them.
+            let mut register = || -> Register {
+                if rng.u8(..4) == 0 {
+                    rng.u8(..)
+                } else {
+                    rng.u8(..=ZERO)
+                }
+            };
+            let wide = [register(), register(), register(), register()];
+            let [xd, xn, xm, xt] = wide;
+            let [wd, wn, wm, wt] = wide.map(u32::from);
+            let [rd, rn, rm, rt] = wide.map(|r| r & ZERO);
             let [d, n, m, t] = [rd, rn, rm, rt].map(u32::from);
             let imm16 = rng.u16(..);
             let half = rng.u32(..4);
@@ -960,16 +1091,16 @@ mod tests {
                 (u64::MAX >> (bits - run)).rotate_right(rng.u32(..bits))
             };
             for (name, built) in [
-                (form::AND_IMMEDIATE, super::and_immediate(rd, rn, value)),
-                (form::EOR_IMMEDIATE, super::eor_immediate(rd, rn, value)),
+                (form::AND_IMMEDIATE, super::and_immediate(xd, xn, value)),
+                (form::EOR_IMMEDIATE, super::eor_immediate(xd, xn, value)),
             ] {
                 let reference =
                     logical_immediate(value)
                         .ok_or(DoesNotFit)
                         .and_then(|(nf, r, s)| {
                             let fields = [
-                                (field::RD, d),
-                                (field::RN, n),
+                                (field::RD, wd),
+                                (field::RN, wn),
                                 (field::N, nf),
                                 (field::IMMR, r),
                                 (field::IMMS, s),
@@ -985,19 +1116,19 @@ mod tests {
                 (form::ADD_IMMEDIATE, immediate.unsigned_abs())
             };
             let fields = [
-                (field::RD, d),
-                (field::RN, n),
+                (field::RD, wd),
+                (field::RN, wn),
                 (field::IMM12, magnitude as u32),
             ];
             assert_eq!(
-                super::add_immediate(rd, rn, immediate),
+                super::add_immediate(xd, xn, immediate),
                 by_name(name, &fields),
                 "{immediate}"
             );
             let bit = rng.u32(..bits + 8);
             // An offset within twice the reach of the field `field` of `name` in units of `unit`, half the time
             // made a multiple of the unit.
-            let mut draw = |name: Form, field: &str, unit: i64| {
+            let mut draw = |name: Form, field: FieldName, unit: i64| {
                 let reach = unit << (width(name, field) - 1);
                 rng.i64(-2 * reach..2 * reach) & !rng.choice([0, unit - 1]).expect("a choice")
             };
@@ -1005,9 +1136,9 @@ mod tests {
                 let [offset, moved] = [(); 2].map(|()| draw(name, field::IMM19, UNIT));
                 let reference = |offset| {
                     signed(offset, UNIT, width(name, field::IMM19))
-                        .and_then(|imm| by_name(name, &[(field::RT, t), (field::IMM19, imm)]))
+                        .and_then(|imm| by_name(name, &[(field::RT, wt), (field::IMM19, imm)]))
                 };
-                let built = super::compare_branch(nonzero, rt, offset);
+                let built = super::compare_branch(nonzero, xt, offset);
                 assert_eq!(built, reference(offset), "{name:?} {offset}");
                 if let Ok(word) = built {
                     let retargeted = super::retarget(word, moved);
@@ -1019,7 +1150,7 @@ mod tests {
             let reference = |offset| {
                 signed(offset, UNIT, width(form::TBNZ, field::IMM14)).and_then(|imm| {
                     let fields = [
-                        (field::RT, t),
+                        (field::RT, wt),
                         (field::B5, bit >> b40),
                         (field::B40, bit & ((1 << b40) - 1)),
                         (field::IMM14, imm),
@@ -1027,7 +1158,7 @@ mod tests {
                     by_name(form::TBNZ, &fields)
                 })
             };
-            let built = super::test_branch_nonzero(rt, bit, branch);
+            let built = super::test_branch_nonzero(xt, bit, branch);
             assert_eq!(built, reference(branch), "{bit} {branch}");
             if let Ok(word) = built {
                 assert_eq!(super::retarget(word, moved), reference(moved), "{moved}");
@@ -1049,13 +1180,13 @@ mod tests {
             let near = rng.i64(-(1 << adr_bits)..1 << adr_bits);
             let reference = signed(near, 1, adr_bits).and_then(|v| {
                 let fields = [
-                    (field::RD, d),
+                    (field::RD, wd),
                     (field::IMMLO, v & ((1 << low) - 1)),
                     (field::IMMHI, v >> low),
                 ];
                 by_name(form::ADR, &fields)
             });
-            assert_eq!(super::adr(rd, near), reference, "{near}");
+            assert_eq!(super::adr(xd, near), reference, "{near}");
             for name in [form::BR, form::BLR, form::RET] {
                 let reference = by_name(name, &[(field::RN, n)]);
                 assert_eq!(Ok(super::branch_register(name, rn)), reference);
@@ -1078,12 +1209,12 @@ mod tests {
                     let scaled = u32::try_from(place / unit).expect("small");
                     by_name(
                         name,
-                        &[(field::RT, t), (field::RN, n), (field::IMM12, scaled)],
+                        &[(field::RT, wt), (field::RN, wn), (field::IMM12, scaled)],
                     )
                 } else {
                     Err(DoesNotFit)
                 };
-                let built = super::load_store(name, rt, rn, place, unit);
+                let built = super::load_store(name, xt, xn, place, unit);
                 assert_eq!(built, reference, "{name:?} {place} {unit}");
             }
             let (signed_extend, from) = (rng.bool(), 8 << rng.u32(..4));
@@ -1093,13 +1224,13 @@ mod tests {
                 u32::from(signed_extend) << option_sign | (from / u8::BITS).trailing_zeros();
             for (subtract, name) in [(false, form::ADD_EXTENDED), (true, form::SUB_EXTENDED)] {
                 let fields = [
-                    (field::RD, d),
-                    (field::RN, n),
-                    (field::RM, m),
+                    (field::RD, wd),
+                    (field::RN, wn),
+                    (field::RM, wm),
                     (field::OPTION, option),
                     (field::IMM3, shift),
                 ];
-                let built = super::add_extended(subtract, rd, rn, rm, signed_extend, from, shift);
+                let built = super::add_extended(subtract, xd, xn, xm, signed_extend, from, shift);
                 assert_eq!(built, by_name(name, &fields), "{name:?} {from} {shift}");
             }
             let registers = [(field::RD, d), (field::RN, n), (field::RM, m)];
@@ -1159,7 +1290,7 @@ mod tests {
             let into = |name, word: u32| {
                 let form = arm(Form::name(name));
                 let &(_, low, _) = (form.fields.iter())
-                    .find(|(f, ..)| f == field::RT)
+                    .find(|(f, ..)| f == field::RT.name())
                     .expect("a register field");
                 word | (t << low)
             };
@@ -1167,6 +1298,60 @@ mod tests {
             assert_eq!(moves.read_fpcr, into(form::MRS, of_x0.read_fpcr));
             assert_eq!(moves.write_fpsr, into(form::MSR, of_x0.write_fpsr));
             assert_eq!(moves.write_fpcr, into(form::MSR, of_x0.write_fpcr));
+            // A word of any form of Arm's table, one of its fields or a field the encoder names replaced, and
+            // the word retargeted, against the field found by name in the word's form.
+            // Most forms are of features the CPU we present has not, so a few draws find a presented word.
+            let (drawn, word) = (0..16)
+                .map(|_| {
+                    let drawn = rng.choice(forms::all()).expect("forms");
+                    (drawn, drawn.word(rng.u32(..)))
+                })
+                .find(|&(_, word)| forms::form(word).is_some())
+                .unwrap_or_else(|| {
+                    let drawn = rng.choice(forms::all()).expect("forms");
+                    (drawn, drawn.word(rng.u32(..)))
+                });
+            let named = forms::form(word);
+            let own: Vec<FieldName> = super::field_names(drawn).collect();
+            let names = own.iter().map(|name| name.name());
+            assert!(
+                names.eq(drawn.fields.iter().map(|(name, ..)| name)),
+                "{}",
+                drawn.name
+            );
+            let name = match rng.choice(own) {
+                Some(name) if rng.bool() => name,
+                _ => {
+                    let ours = u16::try_from(field::NAMES.len()).expect("few");
+                    FieldName(rng.u16(..ours))
+                }
+            };
+            let value = rng.u32(..) >> rng.u32(20..u32::BITS);
+            let reference = named
+                .and_then(|found| field_at(found, name))
+                .ok_or(DoesNotFit)
+                .and_then(|field| set(word, field, value));
+            assert_eq!(
+                super::replace(word, name, value),
+                reference,
+                "{word:#x} {name:?}"
+            );
+            replaced += u64::from(reference.is_ok());
+            let offset = rng.i64(..) >> rng.u32(34..u64::BITS)
+                & !rng.choice([0, UNIT - 1]).expect("a choice");
+            let reference = named
+                .and_then(|found| {
+                    let offsets = [field::IMM26, field::IMM19, field::IMM14].map(FieldName::name);
+                    (found.fields.iter()).find(|(f, ..)| offsets.contains(&f.as_str()))
+                })
+                .ok_or(DoesNotFit)
+                .and_then(|&(_, low, width)| set(word, (low, width), signed(offset, UNIT, width)?));
+            assert_eq!(
+                super::retarget(word, offset),
+                reference,
+                "{word:#x} {offset}"
+            );
+            retargeted += u64::from(reference.is_ok());
         }
         assert_eq!(Ok(super::exception_return()), by_name(form::ERET, &[]));
         let tlbi = [
@@ -1183,6 +1368,20 @@ mod tests {
         for page in [1 << 12, 1 << 14, 1 << 16] {
             assert_eq!(super::page_reach(page), page << page_bits);
         }
-        println!("seed {seed}, {cases} cases");
+        println!(
+            "seed {seed}, {cases} cases, {replaced} drawn words replaced, {retargeted} retargeted"
+        );
+    }
+
+    /// A builder given a form of another kind places the values it can in order, so a value that does not fit
+    /// before the missing field is refused, and the missing field is a fault of the caller.
+    #[test]
+    fn a_form_of_another_kind_is_refused_or_missing_in_field_order() {
+        assert_eq!(
+            super::load_store(form::CBZ, ZERO + 1, 1, 0, 1),
+            Err(DoesNotFit)
+        );
+        let missing = std::panic::catch_unwind(|| super::load_store(form::CBZ, 1, 1, 0, 1));
+        assert!(missing.is_err(), "a missing field is a fault");
     }
 }

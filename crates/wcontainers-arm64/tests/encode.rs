@@ -284,7 +284,7 @@ fn exception_forms_read_back() {
             let word = encode::exception(name, imm);
             let found = wcontainers_arm64::forms::form(word).expect("a form");
             assert_eq!(found.name, name.name());
-            assert_eq!(found.field(word, field::IMM16), Some(imm.into()));
+            assert_eq!(found.field(word, field::IMM16.name()), Some(imm.into()));
         }
     }
     let eret = encode::exception_return();

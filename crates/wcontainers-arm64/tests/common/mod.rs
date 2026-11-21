@@ -45,8 +45,9 @@ pub fn words_of(form: &forms::Form, draws: u64, rng: &mut fastrand::Rng) -> Vec<
 fn every_register(form: &forms::Form, word: u32) -> Vec<u32> {
     form.fields
         .iter()
-        .filter(|(name, ..)| name.starts_with(field::REGISTER))
-        .flat_map(|(name, _, width)| {
+        .zip(encode::field_names(form))
+        .filter(|((name, ..), _)| name.starts_with(field::REGISTER))
+        .flat_map(|((_, _, width), name)| {
             (0..1u32 << width).filter_map(move |r| encode::replace(word, name, r).ok())
         })
         .collect()

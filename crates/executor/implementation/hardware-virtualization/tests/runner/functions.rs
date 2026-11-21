@@ -294,7 +294,7 @@ pub const EXCLUSIVE: [u32; 3] = [
 /// Fix-ups on stand-ins: a constant built for a withheld register, a store exclusive whose status, data and
 /// base are all withheld, and a load pair into one register.
 pub fn withheld() -> &'static [u32] {
-    let named = |word: u32, fields: &[(&str, Register)]| {
+    let named = |word: u32, fields: &[(encode::FieldName, Register)]| {
         fields.iter().fold(word, |w, &(f, r)| {
             encode::replace(w, f, r.into()).expect("a register fits")
         })

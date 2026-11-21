@@ -364,16 +364,17 @@ fn uses_scratch(route: Route) -> bool {
 /// found by trying them against the meaning's effects.
 fn substitute(word: u32, from: &[Register], to: &[Register]) -> u32 {
     let form = forms::form(word).expect("a decoded word has a form");
-    let fields: Vec<(&str, Register)> = form
+    let fields: Vec<(encode::FieldName, Register)> = form
         .fields
         .iter()
-        .filter(|(name, _, width)| {
+        .zip(encode::field_names(form))
+        .filter(|((name, _, width), _)| {
             name.starts_with(field::REGISTER) && *width == encode::REGISTER_BITS
         })
-        .filter_map(|(name, ..)| {
+        .filter_map(|((name, ..), field)| {
             let named = form.field(word, name)?;
             let k = from.iter().position(|&f| u32::from(f) == named)?;
-            Some((name.as_str(), to[k]))
+            Some((field, to[k]))
         })
         .collect();
     let original = decode(word);
@@ -786,8 +787,9 @@ fn collision(out: &mut Out, i: &I, word: u32) {
         Address::PreIndex { base, .. } | Address::PostIndex { base, .. } => Some(base),
         _ => None,
     };
-    let replace =
-        |w: u32, f: &str, r: Register| encode::replace(w, f, r.into()).expect("a register fits");
+    let replace = |w: u32, f: encode::FieldName, r: Register| {
+        encode::replace(w, f, r.into()).expect("a register fits")
+    };
     match *i {
         I::Load { .. } => access(out, &m, true, None, &[], replace(word, field::RT, SCRATCH)),
         I::Store { rt, .. } => {
