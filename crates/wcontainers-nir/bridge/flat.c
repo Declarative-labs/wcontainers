@@ -635,6 +635,10 @@ alu_op(nir_op op)
       return WC_ALU_##name;
       WC_ALU_OPS(WC_CASE)
 #undef WC_CASE
+   /* The value itself: the host keeps denormals and has no other canonical form, as Mesa's own
+    * algebraic step reads it where denormals are not flushed. */
+   case nir_op_fcanonicalize:
+      return WC_ALU_mov;
    default:
       return WC_ALU_UNSUPPORTED;
    }
