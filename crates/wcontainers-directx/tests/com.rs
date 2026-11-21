@@ -375,6 +375,28 @@ fn device_creation_answers_as_direct3d() {
         0
     );
     drop(unsafe { ID3D11Device::from_raw(out) });
+    // No video device is served, so a device asked to have one is refused as on an adapter
+    // without video, and nothing is handed out.
+    let mut out: *mut c_void = std::ptr::NonNull::dangling().as_ptr();
+    let refused = unsafe {
+        create(
+            null,
+            D3D_DRIVER_TYPE_HARDWARE.0,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT.0,
+            std::ptr::null(),
+            0,
+            7,
+            &mut out,
+            null.cast(),
+            null.cast(),
+        )
+    };
+    assert_eq!(
+        refused,
+        windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED
+    );
+    assert!(out.is_null());
     // Without a swap chain asked for, the device as D3D11CreateDevice makes it.
     let both = |desc: *const DXGI_SWAP_CHAIN_DESC,
                 chain: *mut *mut c_void,

@@ -210,7 +210,7 @@ pub fn level9_shareable(dxgi: u32) -> bool {
 
 /// Whether a device below 10_0 makes shared textures of DXGI format `dxgi`, which is not what it
 /// reports (measured on the RTX 3080): `R32_FLOAT` is made though not reported shareable, and
-/// `R8G8B8A8_UNORM` (with its sRGB twin, not measured) refused though reported.
+/// `R8G8B8A8_UNORM` and its sRGB twin refused though reported.
 pub fn level9_shared(dxgi: u32) -> bool {
     (level9_shareable(dxgi) || dxgi == dxgi::R32_FLOAT)
         && !matches!(dxgi, dxgi::R8G8B8A8_UNORM | dxgi::R8G8B8A8_UNORM_SRGB)

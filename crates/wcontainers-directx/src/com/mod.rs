@@ -536,6 +536,12 @@ unsafe fn create_for_program(
     if flags & windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_DEBUG.0 != 0 {
         return DXGI_ERROR_SDK_COMPONENT_MISSING;
     }
+    // No video device is served, so a device that must have one is refused as Direct3D refuses it
+    // on an adapter without video.
+    if flags & windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_VIDEO_SUPPORT.0 != 0 {
+        warn_once("D3D11CreateDevice with D3D11_CREATE_DEVICE_VIDEO_SUPPORT");
+        return DXGI_ERROR_UNSUPPORTED;
+    }
     // No list is Direct3D's default list; an empty one names no level to make.
     let asked: Vec<u32> = if levels.is_null() {
         Vec::new()
