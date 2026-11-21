@@ -15,8 +15,10 @@
 //! what geometry and tessellation stages rasterise), `unshaded` (depth-only draws without a
 //! pixel shader, depth clamped and clipped), `aa_lines` (alpha-antialiased lines
 //! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip),
-//! `format_support` (both words of every format's support) and `bgrx` (what a vertex shader reads
-//! from a `B8G8R8X8_UNORM` element). Shaders are compiled by
+//! `format_support` (both words of every format's support), `ms_depth_read` (multisampled depth
+//! textures made for reading and their views) and `bgrx` (what a vertex shader reads from a
+//! `B8G8R8X8_UNORM` element). A second argument, `10_1` or `10_0`, asks for that feature level
+//! in place of 11_0. Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -31,6 +33,11 @@ fn main() -> windows::core::Result<()> {
     use windows::core::{PCSTR, s};
 
     let case = std::env::args().nth(1).unwrap_or_default();
+    let level = match std::env::args().nth(2).as_deref() {
+        Some("10_1") => D3D_FEATURE_LEVEL_10_1,
+        Some("10_0") => D3D_FEATURE_LEVEL_10_0,
+        _ => D3D_FEATURE_LEVEL_11_0,
+    };
     let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
     let compile = |src: &str, target: PCSTR| -> Vec<u8> {
         let (mut blob, mut errors) = (None, None);
@@ -73,7 +80,7 @@ fn main() -> windows::core::Result<()> {
             D3D_DRIVER_TYPE_HARDWARE,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_FLAG(0),
-            Some(&[D3D_FEATURE_LEVEL_11_0]),
+            Some(&[level]),
             D3D11_SDK_VERSION,
             Some(&mut device),
             None,
@@ -299,6 +306,55 @@ fn main() -> windows::core::Result<()> {
                     support1.unwrap_or(0),
                     support2.OutFormatSupport2
                 );
+            }
+        }
+        "ms_depth_read" => {
+            // Four-sample depth textures bound for depth and reading, and a view of each aspect.
+            for (texture, views) in [
+                (
+                    DXGI_FORMAT_R24G8_TYPELESS,
+                    &[
+                        DXGI_FORMAT_R24_UNORM_X8_TYPELESS,
+                        DXGI_FORMAT_X24_TYPELESS_G8_UINT,
+                    ][..],
+                ),
+                (DXGI_FORMAT_R32_TYPELESS, &[DXGI_FORMAT_R32_FLOAT][..]),
+                (
+                    DXGI_FORMAT_R32G8X24_TYPELESS,
+                    &[
+                        DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS,
+                        DXGI_FORMAT_X32_TYPELESS_G8X24_UINT,
+                    ][..],
+                ),
+            ] {
+                let made = make(
+                    &Tex {
+                        w: 4,
+                        h: 4,
+                        format: texture,
+                        samples: 4,
+                        bind: D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE,
+                    },
+                    None,
+                );
+                println!(
+                    "texture {} {:#010x}",
+                    texture.0,
+                    code(made.as_ref().map(|_| ()).map_err(Clone::clone))
+                );
+                let Ok(made) = made else { continue };
+                for &view in views {
+                    let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                        Format: view,
+                        ViewDimension: D3D_SRV_DIMENSION_TEXTURE2DMS,
+                        ..Default::default()
+                    };
+                    let mut out = None;
+                    let r = unsafe {
+                        device.CreateShaderResourceView(&made, Some(&desc), Some(&mut out))
+                    };
+                    println!("view {} {:#010x}", view.0, code(r));
+                }
             }
         }
         "bgrx" => {
@@ -959,6 +1015,79 @@ fn main() -> windows::core::Result<()> {
                 &cast(&volume.unwrap().into())?,
                 &cast(&volume_staging.unwrap().into())?,
             )?;
+
+            // Target clears of integer formats with values past 32-bit integers, whole and as
+            // rectangles.
+            let wide = u32::MAX as f32;
+            let past = [
+                [wide * 2.0 + above, -wide * 2.0 - above, wide, -wide],
+                [f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY],
+                [wide / 2.0 + above, -wide / 2.0 - above, wide * above, -0.5],
+            ];
+            for (name, format, texel) in [
+                ("rgba32 uint", DXGI_FORMAT_R32G32B32A32_UINT, 16),
+                ("rgba32 sint", DXGI_FORMAT_R32G32B32A32_SINT, 16),
+                ("rgba8 uint", DXGI_FORMAT_R8G8B8A8_UINT, 4),
+                ("rgba8 sint", DXGI_FORMAT_R8G8B8A8_SINT, 4),
+                ("rgb10a2 uint", DXGI_FORMAT_R10G10B10A2_UINT, 4),
+            ] {
+                for (i, value) in past.iter().enumerate() {
+                    let t = make(&at(format, D3D11_BIND_RENDER_TARGET), None)?;
+                    let view = rtv(&t).unwrap();
+                    unsafe {
+                        context.ClearRenderTargetView(&view, value);
+                        context1.ClearView(&view, &past[(i + 1) % past.len()], Some(&rects));
+                    }
+                    print(&format!("target past {name} {i}"), &t, texel);
+                }
+            }
+
+            // An inverted rectangle whose right edge is the least integer clears nothing.
+            let t = make(
+                &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET),
+                None,
+            )?;
+            let view = rtv(&t).unwrap();
+            let inverted = RECT {
+                left: 1,
+                top: 0,
+                right: i32::MIN,
+                bottom: i32::MAX,
+            };
+            unsafe {
+                context.ClearRenderTargetView(&view, &[0.0; 4]);
+                context1.ClearView(&view, &[1.0; 4], Some(&[inverted]));
+            }
+            print("inverted to the least", &t, 4);
+
+            // Depth views, which `ClearView` clears to the first value, whole and as rectangles.
+            for (name, format, texel) in [
+                ("d32", DXGI_FORMAT_D32_FLOAT, 4),
+                ("d24s8", DXGI_FORMAT_D24_UNORM_S8_UINT, 4),
+            ] {
+                for rectangles in [None, Some(&rects[..])] {
+                    let t = make(&at(format, D3D11_BIND_DEPTH_STENCIL), None)?;
+                    let mut view = None;
+                    unsafe {
+                        device.CreateDepthStencilView(&t, None, Some(&mut view))?;
+                        let view = view.unwrap();
+                        context.ClearDepthStencilView(
+                            &view,
+                            D3D11_CLEAR_DEPTH.0 | D3D11_CLEAR_STENCIL.0,
+                            0.25,
+                            u8::MAX,
+                        );
+                        context1.ClearView(&view, &[0.75, 0.5, 0.0, 0.0], rectangles);
+                    }
+                    print(
+                        &format!("depth {name} rects {}", rectangles.is_some()),
+                        &t,
+                        texel,
+                    );
+                }
+            }
+            let removed = code(unsafe { device.GetDeviceRemovedReason() });
+            println!("clear view removed {removed:#010x}");
         }
         "cs_min_lod" => {
             // An 8x8 chain of four levels; texel (x, y) of level l is (l * 60, x * 32, y * 32, 255).

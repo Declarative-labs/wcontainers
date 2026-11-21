@@ -383,8 +383,6 @@ pub type Rect = [i32; RECT_EDGES];
 pub const RECT_EDGES: usize = 4;
 const COMPUTE_VARIANT_OF_DRAWS: &str = "a compute program variant only draws take";
 const LINES_FACING: &str = "a pixel shader reading its facing on alpha-antialiased lines";
-/// Blending into a target held as its integer twin is done in the program from a copy of the
-/// target (`BlendInShader`), which the shaders crate does not build.
 /// The bits of the channels of `R10G10B10A2` and of `R11G11B10_FLOAT`.
 const RGB10A2_BITS: [u32; 4] = [10, 10, 10, 2];
 const RG11B10_BITS: [u32; 3] = [11, 11, 10];
@@ -392,6 +390,8 @@ const CLEAR_OF_PACKED_FORMAT: &str = "a clear of a view of a packed or BGR forma
 const CLEAR_VIEW_BUFFER_RECTS: &str = "ClearView of a buffer view's rectangles";
 const CLEAR_VIEW_STORAGE_RECTS_UNSERVED: &str = "ClearView of rectangles of a storage view stored through a buffer or as an integer twin, of a 3D texture or one no pass draws into";
 const CLEAR_STORAGE_UNSERVED: &str = "a clear of a storage view stored through a buffer or as an integer twin that no pass draws into";
+/// Blending into a target held as its integer twin is done in the program from a copy of the
+/// target (`BlendInShader`), which the shaders crate does not build.
 const BLEND_INTO_INTEGER_TWIN: &str =
     "blending into a normalised target held as its integer twin (blending in the shader)";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
@@ -916,7 +916,31 @@ impl<B: Backend> Device<B> {
         if view.texture.desc.dimension == TexDim::D3 {
             return self.clear_slice_rects(view, value, &rects);
         }
-        self.clear_rects_drawn(view, value, &rects, true)
+        self.clear_rects_drawn(view, value, &rects, desc::bind::RENDER_TARGET, true)
+    }
+
+    /// `ClearView` of a depth view, whole or its rectangles: Direct3D clears its depth alone, to
+    /// the first value.
+    pub fn clear_view_depth(
+        &mut self,
+        view: &Rc<View<B>>,
+        depth: f32,
+        rects: &[Rect],
+    ) -> Result<()> {
+        if rects.is_empty() {
+            self.clear_depth_stencil_view(view, desc::clear::DEPTH, depth, 0);
+            return Ok(());
+        }
+        if self.predicated_out() {
+            return Ok(());
+        }
+        let rects: Vec<ScissorRect> = rects.iter().map(|&r| pixel_rect(r)).collect();
+        self.settle();
+        let value = ClearValue::DepthStencil {
+            depth: Some(depth.clamp(0.0, 1.0).to_bits()),
+            stencil: None,
+        };
+        self.clear_rects_drawn(view, value, &rects, desc::bind::DEPTH_STENCIL, true)
     }
 
     /// `ClearView` of rectangles of a 3D target view: no view draws into one slice of a 3D level
@@ -992,20 +1016,21 @@ impl<B: Backend> Device<B> {
     }
 
     /// Clears `rects` of each layer of `view` with `value` by drawing into it: through the view
-    /// itself where it is a target view of one layer (`target`), else through a target view of
-    /// each layer.
+    /// itself where it is a view of one layer of binding `kind` (`itself`), else through a view
+    /// of `kind` of each layer.
     fn clear_rects_drawn(
         &mut self,
         view: &Rc<View<B>>,
         value: ClearValue,
         rects: &[ScissorRect],
-        target: bool,
+        kind: u32,
+        itself: bool,
     ) -> Result<()> {
         for layer in 0..view.desc.layer_count {
-            let one = if target && view.desc.layer_count == 1 {
+            let one = if itself && view.desc.layer_count == 1 {
                 view.clone()
             } else {
-                self.layer_view(view, layer, desc::bind::RENDER_TARGET)?
+                self.layer_view(view, layer, kind)?
             };
             // What lies outside the rectangles is copied in, so that copying out keeps it.
             if one.copied() {
@@ -3119,7 +3144,8 @@ impl<B: Backend> Device<B> {
 
     /// `ClearView` of a storage view, whole or its rectangles (left, top, right, bottom) in each
     /// of its layers or slices: integer formats take each value as an integer clamped to the
-    /// channel, the others the values converted as `ClearUnorderedAccessViewFloat` converts them.
+    /// channel (`storage_integer`), the others the values converted as
+    /// `ClearUnorderedAccessViewFloat` converts them.
     pub fn clear_view_uav(
         &mut self,
         view: &ShaderView<B>,
@@ -3131,7 +3157,7 @@ impl<B: Backend> Device<B> {
             ShaderView::Buffer(b) => b.texel.map(|(f, ..)| f),
         };
         let (values, float) = match values.filter(|&f| integer_format(f)) {
-            Some(f) => (integer_clear(f, color), false),
+            Some(f) => (integer_clear(f, color, storage_integer), false),
             None => (color.map(f32::to_bits), true),
         };
         if rects.is_empty() {
@@ -3153,7 +3179,13 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented(CLEAR_VIEW_STORAGE_RECTS_UNSERVED);
         }
-        self.clear_rects_drawn(v, color_value(v, color), &rects, false)
+        self.clear_rects_drawn(
+            v,
+            color_value(v, color),
+            &rects,
+            desc::bind::RENDER_TARGET,
+            false,
+        )
     }
 
     /// Whether storage view `v` is a storage view of its own format on the back end: not stored
@@ -6044,38 +6076,76 @@ fn pixel_rect([l, t, r, b]: Rect) -> ScissorRect {
     ScissorRect {
         x: l.max(0) as u32,
         y: t.max(0) as u32,
-        width: (r - l.max(0)).max(0) as u32,
-        height: (b - t.max(0)).max(0) as u32,
+        width: r.saturating_sub(l.max(0)).max(0) as u32,
+        height: b.saturating_sub(t.max(0)).max(0) as u32,
     }
 }
 
-/// A target view's clear value of `color`: integer formats take each value as an integer clamped
-/// to the channel.
+/// A target view's clear value of `color`: integer formats take each value as a target clear
+/// converts it.
 fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
     ClearValue::Color(if let Some(f) = view.decoded {
         color.map(|c| format::encode_norm(f, c))
     } else if integer_format(view.format) {
-        integer_clear(view.format, color)
+        integer_clear(view.format, color, target_integer)
     } else {
         color.map(f32::to_bits)
     })
 }
 
-/// The integers a clear of an integer format writes for `color`, as Direct3D converts them:
-/// fractions dropped, NaN as zero, values past a channel's range clamped to it.
-fn integer_clear(format: Format, color: Color) -> [u32; COLOR_COMPONENTS] {
+/// How a clear converts a value to an integer channel of range `[min, max]` (signed where `min`
+/// is below zero).
+type IntegerConversion = fn(value: f32, min: i64, max: i64) -> i64;
+
+/// A target clear's conversion, as the RTX 3080 makes it: fractions dropped, NaN as zero and the
+/// infinities as the channel's limits; a signed value outside 32 bits as the least 32-bit
+/// integer, an unsigned one below zero or past 64 bits as zero and any other as its low 32 bits,
+/// each then limited to the channel.
+fn target_integer(value: f32, min: i64, max: i64) -> i64 {
+    // The 32- and 64-bit ranges as floats: [-2^31, 2^31) and [0, 2^63).
+    let narrow = i32::MIN as f32..-(i32::MIN as f32);
+    let wide = 0.0..-(i64::MIN as f32);
+    let c = value.trunc();
+    let integer = if c.is_nan() {
+        0
+    } else if c.is_infinite() {
+        if c > 0.0 { max } else { min }
+    } else if min < 0 {
+        if narrow.contains(&c) {
+            c as i64
+        } else {
+            i64::from(i32::MIN)
+        }
+    } else if wide.contains(&c) {
+        i64::from(c as i64 as u32)
+    } else {
+        0
+    };
+    integer.clamp(min, max)
+}
+
+/// A storage view's conversion: fractions dropped, NaN as zero, the rest clamped to the channel.
+fn storage_integer(value: f32, min: i64, max: i64) -> i64 {
+    (value as i64).clamp(min, max)
+}
+
+/// The integers a clear of an integer format writes for `color`, each converted by `convert`.
+fn integer_clear(
+    format: Format,
+    color: Color,
+    convert: IntegerConversion,
+) -> [u32; COLOR_COMPONENTS] {
     // Every integer format stores its channels in RGBA order.
     let bits = channel_bits(format).unwrap_or_else(|| vec![u32::BITS; COLOR_COMPONENTS]);
     let signed = format.kind() == FormatKind::Sint;
     std::array::from_fn(|i| {
         let Some(&b) = bits.get(i) else { return 0 };
-        let c = color[i];
-        if signed {
-            let max = (1i64 << (b - 1)) - 1;
-            (c as i64).clamp(-max - 1, max) as u32
+        let (min, max) = if signed {
+            (-(1i64 << (b - 1)), (1i64 << (b - 1)) - 1)
         } else {
-            (c as u64).min((1u64 << b) - 1) as u32
-        }
+            (0, (1i64 << b) - 1)
+        };
+        convert(color[i], min, max) as u32
     })
 }
 
