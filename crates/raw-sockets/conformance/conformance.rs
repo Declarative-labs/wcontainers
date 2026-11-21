@@ -1829,6 +1829,31 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
     );
 }
 
+/// A transmit time the link's schedule cannot keep is reported with the key of its send and why, as the ICMP suite
+/// checks it.
+pub fn rejected_transmit_times_are_reported_with_their_keys<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    tc(wcontainers_icmp_sockets_conformance::MISSING_SCHEDULE);
+    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let sends = wcontainers_icmp_sockets_conformance::rejected_sends();
+    for (place, &(time, reason)) in sends.iter().enumerate() {
+        let fields =
+            wcontainers_icmp_sockets_conformance::rejected_send_fields(place, time, reason);
+        match sockets.send_to(
+            &socket,
+            payload_to(IpAddr::V4(ON_LINK), EXPERIMENT, PAYLOAD),
+            fields,
+        ) {
+            Ok(()) | Err(SendError::Host(_)) => {}
+            Err(error) => panic!("send {place}: {error:?}"),
+        }
+    }
+    wcontainers_icmp_sockets_conformance::check_rejections(
+        |into| sockets.receive(&socket, into),
+        &sends,
+    );
+}
+
 /// A setting set twice answers as it did once, by Configurable's own suite.
 pub fn configurable_value<S: RawSockets>(
     sockets: S,
@@ -1877,6 +1902,7 @@ macro_rules! tests {
             many_waits_each_wake_once,
             an_icmp_error_ends_a_wait_for_data,
             a_wait_sees_an_error_a_send_read_first,
+            rejected_transmit_times_are_reported_with_their_keys,
         );
         $crate::configurable_checks!(
             $value;

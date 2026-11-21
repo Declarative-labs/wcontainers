@@ -13,16 +13,14 @@ use wcontainers_configurable::Configurable;
 use wcontainers_icmp_sockets::{EchoIdentifier, IcmpSockets, IdentifierSharing};
 use wcontainers_internet_protocol::{
     ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion,
-    NeighbourConfirmation, Received, SendError, UpperLayer, UpperLayerSelector,
+    NeighbourConfirmation, Received, Report, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal_information::PollEvents;
 
 use shared::datagram::addresses::local_address;
-use shared::datagram::exchange::{
-    ErrorQueue, dropped_packets, error_entry, send_message, unsent_bytes,
-};
+use shared::datagram::exchange::{ErrorQueue, dropped_packets, send_message, unsent_bytes};
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
@@ -291,7 +289,23 @@ impl IcmpSockets for HostIcmpSockets {
             Err(Refusal::Host(error)) => return Err(SendError::Host(error)),
             Err(Refusal::Unsupported(reason)) => return Err(self.refuse(reason)),
         };
-        match send_message(fd, Some(destination), message, control.bytes(), flags) {
+        let sent = send_message(fd, Some(destination), message, control.bytes(), flags);
+        // A transmit time Linux rejects at once fails the send with ENOBUFS and queues its rejection.
+        if let Some(time) = fields.transmit_time
+            && time.errors == Report::Requested
+            && matches!(sent, Ok(()) | Err(HostError::Errno(libc::ENOBUFS)))
+        {
+            let reports = &fields.transmit_reports;
+            state.errors.expect_transmit_time_errors(
+                u64::try_from(time.at.as_nanos()).unwrap_or(u64::MAX),
+                reports.key,
+                reports.packet == Report::Requested,
+            );
+            // Forgetting the sends that can no longer be rejected is tried again at the next such send.
+            let _ = state.errors.settle(fd, &self.shortfalls);
+            socket.note_kept_entries(state);
+        }
+        match sent {
             Ok(()) => Ok(()),
             Err(HostError::Errno(libc::EMSGSIZE)) => {
                 let error = state.errors.message_too_long(fd, &self.shortfalls);
@@ -314,7 +328,7 @@ impl IcmpSockets for HostIcmpSockets {
                 Err(HostError::WouldBlock) => break,
                 Err(error) => return Err(error),
             };
-            let received = error_entry(
+            let received = state.errors.received(
                 &self.shortfalls,
                 &entry,
                 into,

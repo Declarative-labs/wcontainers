@@ -32,7 +32,7 @@ use wcontainers_internet_protocol::{
     Received, ReceivedPacketFields, Report, RouteScope, SendError, SourceAddressCheck,
     SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping,
     TransmitClock, TransmitEvent, TransmitReportKey, TransmitReportRequest, TransmitStage,
-    TransmitTime, TransmitTimeMode, UpperLayer, UpperLayerSelector,
+    TransmitTime, TransmitTimeError, TransmitTimeMode, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal_information::PollEvents;
@@ -1361,6 +1361,143 @@ pub fn a_transmit_time_holds_the_send<S: IcmpSockets>(sockets: S) {
     }
 }
 
+/// A schedule of transmit times on the dummy link, on the international atomic clock in strict mode, that misses
+/// every time it holds (Linux's etf with a delta of 0).
+pub const MISSING_SCHEDULE: &str = "qdisc add dev ia root etf clockid CLOCK_TAI delta 0";
+/// How far a scheduled send is put ahead of now, and how much earlier a past one is.
+pub const SCHEDULED_AHEAD: Duration = Duration::from_millis(100);
+
+/// The sends a rejected transmit times check makes: each one's time, whether it asks for errors, and what is
+/// reported; its key is its place.
+pub fn rejected_sends() -> [(TransmitTime, Option<TransmitTimeError>); 4] {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Tai);
+    let now = Duration::new(
+        u64::try_from(now.tv_sec).expect("a time after the epoch"),
+        u32::try_from(now.tv_nsec).expect("nanoseconds"),
+    );
+    let time = |at, mode, errors| TransmitTime {
+        clock: TransmitClock::InternationalAtomicTime,
+        at,
+        mode,
+        errors,
+    };
+    [
+        (
+            time(
+                now + SCHEDULED_AHEAD,
+                TransmitTimeMode::Strict,
+                Report::NotRequested,
+            ),
+            None,
+        ),
+        (
+            time(
+                now - SCHEDULED_AHEAD,
+                TransmitTimeMode::Strict,
+                Report::Requested,
+            ),
+            Some(TransmitTimeError::InvalidParameter),
+        ),
+        (
+            time(
+                now + SCHEDULED_AHEAD,
+                TransmitTimeMode::Deadline,
+                Report::Requested,
+            ),
+            Some(TransmitTimeError::InvalidParameter),
+        ),
+        (
+            time(
+                now + SCHEDULED_AHEAD,
+                TransmitTimeMode::Strict,
+                Report::Requested,
+            ),
+            Some(TransmitTimeError::Missed),
+        ),
+    ]
+}
+
+/// The send fields of a rejected transmit times check's send at its place: a missed time asks for the packet.
+pub fn rejected_send_fields(
+    place: usize,
+    time: TransmitTime,
+    reason: Option<TransmitTimeError>,
+) -> IpSendFields {
+    let mut fields = IpSendFields {
+        transmit_time: Some(time),
+        ..plain_fields()
+    };
+    fields.transmit_reports.key = TransmitReportKey(u32::try_from(place).expect("a small place"));
+    if reason == Some(TransmitTimeError::Missed) {
+        fields.transmit_reports.packet = Report::Requested;
+    }
+    fields
+}
+
+/// Checks the rejections a socket reported, in the order received, against the sends made.
+pub fn check_rejections(
+    received: impl FnMut(&mut [u8]) -> Result<Received, HostError>,
+    sends: &[(TransmitTime, Option<TransmitTimeError>)],
+) {
+    let mut received = received;
+    let mut reported = Vec::new();
+    let mut into = buffer();
+    let start = Instant::now();
+    while start.elapsed() < SCHEDULED_AHEAD + PATIENCE {
+        match received(&mut into) {
+            Ok(Received::TransmitReport(report)) => {
+                let TransmitEvent::TransmitTimeRejected(reason) = report.event else {
+                    panic!("a rejection, not {report:?}")
+                };
+                assert_eq!(
+                    report.packet_length.is_some(),
+                    reason == TransmitTimeError::Missed
+                );
+                reported.push((report.key, Some(reason)));
+            }
+            Ok(Received::Packet(packet)) => panic!("a report, not {packet:?}"),
+            Err(HostError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+            Err(error) => panic!("receive: {error:?}"),
+        }
+        if reported.len() == sends.iter().filter(|send| send.1.is_some()).count() {
+            break;
+        }
+    }
+    reported.sort_by_key(|(key, _)| key.0);
+    let expected: Vec<_> = sends
+        .iter()
+        .enumerate()
+        .filter(|(_, send)| send.1.is_some())
+        .map(|(place, send)| {
+            (
+                TransmitReportKey(u32::try_from(place).expect("a small place")),
+                send.1,
+            )
+        })
+        .collect();
+    assert_eq!(reported, expected);
+}
+
+/// A transmit time the link's schedule cannot keep is reported with the key of its send and why: a time already
+/// past or a mode other than the schedule's is invalid, and a time the schedule misses is missed, with the packet
+/// as asked; a send that did not ask for errors gets no report.
+pub fn rejected_transmit_times_are_reported_with_their_keys<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    tc(MISSING_SCHEDULE);
+    let to = IpAddr::V4(ON_LINK);
+    let socket = opened(&sockets, IpVersion::V4);
+    let message = echo(IpVersion::V4, PAYLOAD);
+    let sends = rejected_sends();
+    for (place, &(time, reason)) in sends.iter().enumerate() {
+        let fields = rejected_send_fields(place, time, reason);
+        match sockets.send_to(&socket, header_to(to, &message), fields, &message) {
+            Ok(()) | Err(SendError::Host(_)) => {}
+            Err(error) => panic!("send {place}: {error:?}"),
+        }
+    }
+    check_rejections(|into| sockets.receive(&socket, into), &sends);
+}
+
 /// Transmit reports come on the socket with the key of their send, with the packet or without it as asked.
 pub fn transmit_reports_carry_the_key_of_their_send<S: IcmpSockets>(sockets: S) {
     for to in [
@@ -2090,6 +2227,7 @@ macro_rules! tests {
             many_waits_each_wake_once,
             an_icmp_error_ends_a_wait_for_data,
             a_wait_sees_an_error_a_send_read_first,
+            rejected_transmit_times_are_reported_with_their_keys,
         );
         mod configurable_multicast {
             $crate::configurable_suite::tests!({
