@@ -71,35 +71,115 @@ pub fn write_icmp_error(
     headers.push(quoted);
     let placed = headers.place(into, copied);
     if placed >= headers.len() {
-        let body = &into[icmp_start + icmp_header..placed];
-        let header = match (offender, us) {
-            (IpAddr::V6(offender), IpAddr::V6(us)) => Icmpv6Header::with_checksum(
-                Icmpv6Type::Unknown {
-                    type_u8: error.ee_type,
-                    code_u8: error.ee_code,
-                    bytes5to8: rest,
-                },
-                offender.octets(),
-                us.octets(),
-                body,
-            )
-            .ok()?
-            .to_bytes()
-            .to_vec(),
-            _ => Icmpv4Header::with_checksum(
-                Icmpv4Type::Unknown {
-                    type_u8: error.ee_type,
-                    code_u8: error.ee_code,
-                    bytes5to8: rest,
-                },
-                body,
-            )
-            .to_bytes()
-            .to_vec(),
-        };
-        into[icmp_start..icmp_start + header.len()].copy_from_slice(&header);
+        write_icmp_header(
+            into,
+            icmp_start,
+            icmp_header,
+            placed,
+            offender,
+            us,
+            rest,
+            error,
+        )?;
     }
     Some(icmp_start + icmp_length)
+}
+
+/// Writes the ICMP error of an error queue entry whose `copied` bytes at the start of `into` quote the packet
+/// from its IP header on, as Linux gives them to a raw socket that writes its own headers. Returns its length.
+pub fn write_icmp_error_quoting_header(
+    into: &mut [u8],
+    copied: usize,
+    ancillary: &Ancillary<'_>,
+    error: &libc::sock_extended_err,
+    offender: Option<SocketAddr>,
+    local: IpAddr,
+) -> Option<usize> {
+    let offender = offender?.ip().to_canonical();
+    let us = ancillary.header_destination.unwrap_or(local).to_canonical();
+    let rest = rest_of_header(error);
+    let mut headers = Headers::new();
+    let icmp_header;
+    let icmp_length;
+    match (offender, us) {
+        (IpAddr::V4(offender), IpAddr::V4(us)) => {
+            icmp_header = Icmpv4Header::MIN_LEN;
+            icmp_length = icmp_header + copied;
+            let outer = ipv4_header(offender, us, IpNumber::ICMP, icmp_length, ancillary)?;
+            headers.push(&outer.to_bytes());
+        }
+        (IpAddr::V6(offender), IpAddr::V6(us)) => {
+            icmp_header = Icmpv6Header::MIN_LEN;
+            icmp_length = icmp_header + copied;
+            push_ipv6_headers(
+                &mut headers,
+                offender,
+                us,
+                IpNumber::IPV6_ICMP,
+                icmp_length,
+                ancillary,
+            )?;
+        }
+        _ => return None,
+    }
+    let icmp_start = headers.len();
+    headers.push(&[u8::MIN; Icmpv6Header::MIN_LEN][..icmp_header]);
+    let placed = headers.place(into, copied);
+    if placed >= headers.len() {
+        write_icmp_header(
+            into,
+            icmp_start,
+            icmp_header,
+            placed,
+            offender,
+            us,
+            rest,
+            error,
+        )?;
+    }
+    Some(icmp_start + icmp_length)
+}
+
+/// Writes the ICMP header with its checksum over the body placed after it.
+#[allow(clippy::too_many_arguments)]
+fn write_icmp_header(
+    into: &mut [u8],
+    icmp_start: usize,
+    icmp_header: usize,
+    placed: usize,
+    offender: IpAddr,
+    us: IpAddr,
+    rest: [u8; size_of::<u32>()],
+    error: &libc::sock_extended_err,
+) -> Option<()> {
+    let body = &into[icmp_start + icmp_header..placed];
+    let header = match (offender, us) {
+        (IpAddr::V6(offender), IpAddr::V6(us)) => Icmpv6Header::with_checksum(
+            Icmpv6Type::Unknown {
+                type_u8: error.ee_type,
+                code_u8: error.ee_code,
+                bytes5to8: rest,
+            },
+            offender.octets(),
+            us.octets(),
+            body,
+        )
+        .ok()?
+        .to_bytes()
+        .to_vec(),
+        _ => Icmpv4Header::with_checksum(
+            Icmpv4Type::Unknown {
+                type_u8: error.ee_type,
+                code_u8: error.ee_code,
+                bytes5to8: rest,
+            },
+            body,
+        )
+        .to_bytes()
+        .to_vec(),
+    };
+    into[icmp_start..icmp_start + header.len()].copy_from_slice(&header);
+    Some(())
 }
 
 /// The four bytes after an ICMP message's checksum: the MTU of a packet too big, the pointer of a parameter

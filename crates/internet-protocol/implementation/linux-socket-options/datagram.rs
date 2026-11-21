@@ -2,6 +2,7 @@
 //! control messages, received control messages onto packet fields, reports and whole packets, memberships.
 
 pub mod addresses;
+pub mod exchange;
 pub mod memberships;
 pub mod receive;
 pub mod send;
