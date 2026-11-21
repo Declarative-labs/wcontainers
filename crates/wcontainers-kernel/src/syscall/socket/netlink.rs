@@ -760,7 +760,8 @@ fn neighbours(
     }
     let now = kernel.entry_now;
     // Times in clock ticks of 100 a second (`jiffies_to_clock_t`).
-    let ticks = |since: u64| (now.saturating_sub(since) / 10_000_000) as u32;
+    let ticks =
+        |since: u64| (now.saturating_sub(since) / crate::linux_extra::NANOSECONDS_PER_TICK) as u32;
     let mut out = Vec::new();
     for (slot, (kind, kind_of)) in [(AF_INET, RTN_BROADCAST), (AF_INET6, RTN_LOCAL)]
         .into_iter()

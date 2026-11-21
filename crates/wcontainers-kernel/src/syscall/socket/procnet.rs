@@ -208,7 +208,7 @@ fn tcp(kernel: &Kernel, family: u32) -> String {
                     " {TCP_SYN_RECV:02X} {:08X}:{:08X} 01:{:08X} {fires:08X} {uid:5} {:8} 0 0 {:016x}",
                     0,
                     0,
-                    left.div_ceil(10_000_000),
+                    left.div_ceil(crate::linux_extra::NANOSECONDS_PER_TICK),
                     0,
                     pointer(socket)
                 );
@@ -261,7 +261,7 @@ fn tcp(kernel: &Kernel, family: u32) -> String {
         if held.family != family || held.until <= now {
             continue;
         }
-        let left = (held.until - now) / 10_000_000;
+        let left = (held.until - now) / crate::linux_extra::NANOSECONDS_PER_TICK;
         line(&mut out, &|out: &mut String| {
             endpoint(out, family, &held.local);
             out.push(' ');

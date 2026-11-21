@@ -1807,7 +1807,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                         out,
                         "{}.{:02} 0.00",
                         up / NANOSECONDS_PER_SECOND,
-                        up % NANOSECONDS_PER_SECOND / 10_000_000
+                        up % NANOSECONDS_PER_SECOND / crate::linux_extra::NANOSECONDS_PER_TICK
                     );
                 }
                 "version" => {
@@ -2219,10 +2219,10 @@ fn process_file(
                     | ((index & !0xff) << 12);
                 (number, pty.sides[crate::tty::SLAVE].pgrp.unwrap_or(0))
             });
-            // CPU time in clock ticks (USER_HZ 100), the user's and the kernel's, as `times`
+            // CPU time in clock ticks (`USER_HZ`), the user's and the kernel's, as `times`
             // gives it: a thread's own in its task directory, else the process's with its
             // ended threads (`do_task_stat`), and its reaped children's.
-            let ticks = |nanoseconds: u64| nanoseconds / 10_000_000;
+            let ticks = |nanoseconds: u64| nanoseconds / crate::linux_extra::NANOSECONDS_PER_TICK;
             let (used, system) = if task.own {
                 source
                     .view

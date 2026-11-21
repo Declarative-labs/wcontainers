@@ -1395,7 +1395,7 @@ impl Kernel {
             } => (CLD_DUMPED, signal),
             crate::wait::Ended::Killed { signal, .. } => (CLD_KILLED, signal),
         };
-        let time = process.ended_time / 10_000_000;
+        let time = process.ended_time / crate::linux_extra::NANOSECONDS_PER_TICK;
         let uid = self.task_credentials(pid).uid;
         crate::signal::child_info(pid, uid, code as i32, value, time)
     }

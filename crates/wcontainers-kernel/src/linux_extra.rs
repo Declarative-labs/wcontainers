@@ -905,3 +905,8 @@ pub(crate) const NTP_PHASE_LIMIT: i64 = 16_000_000;
 pub(crate) const NTP_TIME_CONSTANT: i64 = 2;
 pub(crate) const USER_TICK_USEC: i64 = 10_000;
 pub(crate) const NTP_TOLERANCE: i64 = 32_768_000;
+
+/// Linux's `USER_HZ`, the clock ticks a second that `times`, `/proc` and `AT_CLKTCK` count in,
+/// and the length of one.
+pub(crate) const USER_HZ: u64 = 100;
+pub(crate) const NANOSECONDS_PER_TICK: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / USER_HZ;

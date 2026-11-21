@@ -481,7 +481,7 @@ pub(super) fn times(
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
-    let ticks = |nanoseconds: u64| (nanoseconds / 10_000_000) as i64;
+    let ticks = |nanoseconds: u64| (nanoseconds / crate::linux_extra::NANOSECONDS_PER_TICK) as i64;
     if out != 0 {
         let pid = kernel.threads[&tid].process;
         let (total, system) = process_times(kernel, pid);

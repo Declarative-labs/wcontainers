@@ -27,9 +27,6 @@ use crate::{Context, Errno, Kernel, errno};
 /// Linux's `AT_PLATFORM` string on ARM64.
 const PLATFORM: &[u8] = b"aarch64\0";
 
-/// Linux's `USER_HZ`, reported as `AT_CLKTCK`.
-const CLOCK_TICKS: u64 = 100;
-
 /// How many interpreters a script may name in a chain (`BINPRM_MAX_RECURSION`).
 const MAX_INTERPRETERS: usize = 4;
 
@@ -715,7 +712,7 @@ fn place(
         (AT_MINSIGSTKSZ, crate::linux_extra::SIGNAL_MINSIGSTKSZ),
         (AT_HWCAP, HWCAP),
         (AT_PAGESZ, PAGE_SIZE),
-        (AT_CLKTCK, CLOCK_TICKS),
+        (AT_CLKTCK, crate::linux_extra::USER_HZ),
         (AT_PHDR, main.program_headers),
         (AT_PHENT, main.program_header_size),
         (AT_PHNUM, main.program_header_count),

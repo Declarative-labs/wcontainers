@@ -3970,7 +3970,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	100
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1024
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1024
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1024
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	10_000_000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	12
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1216
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1_048_576
@@ -3997,7 +3996,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	0xff
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1000
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	10_000_000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	12
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	20
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	3
@@ -5422,7 +5420,6 @@ code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	link6	16
 code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	link6	30000
 code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	link6	65535u32
 code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	neighbours	10
-code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	neighbours	10_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	neighbours	15
 code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	neighbours	16
 code	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	neighbours	4
@@ -5539,8 +5536,6 @@ code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	endpoint	4
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	hex4	4
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	route	0x0003
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	route	32
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	10_000_000
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	10_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	30
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	4
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	contents	"00000000000000000000000000000001 01 80 10 80       lo\n"
@@ -5619,7 +5614,6 @@ code	crates/wcontainers-kernel/src/syscall/time.rs	int	cpu_clock_target	3
 code	crates/wcontainers-kernel/src/syscall/time.rs	int	cpu_sleep_clock	3
 code	crates/wcontainers-kernel/src/syscall/time.rs	int	gettimeofday	1000
 code	crates/wcontainers-kernel/src/syscall/time.rs	int	gettimeofday	8
-code	crates/wcontainers-kernel/src/syscall/time.rs	int	times	10_000_000
 code	crates/wcontainers-kernel/src/syscall/time.rs	int	timeval	1000
 code	crates/wcontainers-kernel/src/syscall/timer.rs	int	cpu_clock	3
 code	crates/wcontainers-kernel/src/syscall/timer.rs	int	interval_value	1000
@@ -5687,7 +5681,6 @@ code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	magic	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	read_capabilities	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	read_capabilities	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	set_backend_acl	4
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	10_000_000
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	128
 code	crates/wcontainers-kernel/src/tty.rs	byte	Discipline::finish_erasing	b'/'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_char	b'\t'
