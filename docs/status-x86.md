@@ -165,12 +165,30 @@ Measured:
   (per form at seed 9812: F2xm1 56, Fcos 205, Fpatan 11, Fptan 12, Fsin 201, Fsincos 77, Fyl2x 7, Fyl2xp1 21).
   Fsin and Fcos count most because layer 1 draws many operands near the edges, where the directed modes
   differ. Seeds 9801 to 9807 found the rules above (each fixed, then rerun).
-- LAYER1_VERDICT
+- The verdict, the i7-8750H (load 1 to 3.7 with another track's job beside it, 4 at once, the tree at 5aff8eed):
+  every x87 and MMX form and every other form whose name holds "mm", 715 forms, 1,000 cases a form, seed 9821:
+  0 failing (1,932 s); 305 known failures: F2xm1 33, Fcos 117, Fpatan 11, Fptan 8, Fsin 96, Fsincos 27, Fyl2x 1,
+  Fyl2xp1 12 (log `x7/laptop-x7r2-l1a.log`). No default code is left out as X7's any more.
+- The other laptop-verdict tests there (`x7/laptop-x7r2-l1b.log`): the 108 hand cases, 1,000 cases in no form
+  and the Chrome sample (1,329 cases, one known failure, Fsin) at seed 9822 pass (28 s); the refusal test
+  passes; the unoffered forms, 2,991 at 20 a form, seed 9823, 0 failing (156 s).
+- Every default form there, 1,329 forms, 100 cases a form, seed 9824, 4 at once (load 2.5 before): 0 failing,
+  34 known failures, all in the eight transcendental forms (362 s; `x7/laptop-x7r2-l1c.log`).
 - `long_double_matches_linux_x86_64` (every optimisation level; none, full for speed and size): pass, rented
   machine. `long_double_matches_linux_in_chrome_x86_64` (none, full and bounded 256, speed and size): pass.
-- SUITE_RESULT
-- ARM_RESULT
+- The suite in pieces (scratch `x6f/suite.sh`, logs `x7/suite-r2/`), rented x86-64 machine, the pieces taking
+  the tree from 214eb0aa to 08d6e683 as they started (the change between is the docs and an inlined closure):
+  every piece passes but 30 tests, the same 30 as at X7 run 1 and for the same reasons: 25 ARM64 tests (no ARM64
+  reference there) and the five x86 tests whose verdict is the laptop's (passed there, above). Lint, `cargo fmt
+  --check` and the browser crate's wasm32 lint for both guests pass (the lint piece's "exit 1" is its output
+  filter finding no line). The x86 crate's tests, `transcendental` among them: pass.
+- ARM64's tests on the rented ARM64 machine at 214eb0aa (`x7/arm-r2.log`, `x7/arm-r2b.log`): programs, output,
+  browser, layer 2, valid and checks pass; layer 1's ARM64 tests pass there but `MSR_SR_systemmove` (MSR FPSR),
+  the difference that machine's manual lists, whose verdict is the Mac's. The ARM64 layer 1 Mac verdict was not
+  run this run: the only change to it is that its comparison returns an `Agreement` (ARM64 has no known
+  failures), and the translator is untouched, so ARM64's output is unchanged.
 - The literal check (the Mac): exits 0; no baseline line added.
+- Left for X7: its independent check. Every part of the bar holds on the measurements above.
 - Not measured: the time of one transcendental instruction (a counted slow path, "x87 floating point in
   software"); the 560 unit cases take 1.1 s in the test profile, most of it the tiny operands.
 
@@ -3319,6 +3337,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X7 run 2: the transcendental values against mpmath, `cargo test -p wcontainers-x86 --test transcendental`
+  (its data from scratch `x7/probes/gen.py <mpmath dir> <seed> <count>`, mpmath 1.3.0's sources in
+  `x7/dl-mpmath`); the reference's results for given operands, scratch `x7/probes/trans.c` (`trans <op>
+  <count> <seed> <fcw hex> <class>` or `... hex <st0> [<st1>]`) with `model.py` comparing them to mpmath. Layer 1
+  prints "known failures" per form with their reason at the end of every run.
 - X7: layer 1 of the x87 and MMX forms, `WC_LAYER1_FORMS=<names> WC_LAYER1_CASES=1000 WC_LAYER1_SEED=<n>
   WC_LAYER1_JOBS=<jobs> cargo test --release -p wcontainers-translator-test --test layer1
   every_form_matches_the_cpu_x86_64 -- --nocapture`; scratch `x7/scratch/l1-x87.sh <cases> <seed> [regex]`
@@ -3579,6 +3602,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X7 run 2: layer 1 of the eight transcendental forms at 1,000 a form, seeds 9801 to 9804, and 2,000 a form,
+  9805 to 9812 (rented x86-64 machine); the 715 x87 and "mm" forms at 1,000 a form, seed 9821, every default
+  form at 100 a form, seed 9824, the hand cases, 1,000 no-form cases and the Chrome sample at 9822, the
+  unoffered at 20, seed 9823 (i7-8750H); `tests/transcendental.rs`, 560 fixed cases (mpmath seed 7101).
 - X7 run 1: layer 1 of the x87 and MMX forms at 1,000 a form, seeds 9721 to 9744 while building (rented
   x86-64 machine; see "X7, run 1" for which), 9731, 9751, 9753 to 9755 on the i7-8750H; every default form at
   100 a form, seed 9762, the unoffered at 20, seed 9763, the hand cases, no-form bytes and Chrome sample at
