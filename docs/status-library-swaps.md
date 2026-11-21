@@ -71,6 +71,51 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
   5, views 6), the runtime crate's 13, and the native executor's unit tests (12) and kept.rs (1),
   all passed. On the Mac the same cache, kept and unit tests pass.
 
+- L2 after its independent check: `store` writes the magic and then the body with postcard's
+  `to_io` straight into a buffered writer over the temporary file, so the whole file is no longer
+  built in memory (peak: the modules' serialisations, about the file). postcard's own writer drops
+  the host's error, so a small writer (`KeptError`) keeps it and `store` still reports the error
+  number (`TRANSLATION_NOT_KEPT` carries it). postcard's `use-std` feature replaces `alloc` for
+  `to_io`; it adds no crate to the lock file. New unit tests in implementation.rs:
+  `a_cache_file_is_the_magic_then_the_postcard_of_its_modules` (same bytes as before) and
+  `a_cache_write_that_fails_gives_the_host_error_number` (ENOSPC kept, whether the magic or the
+  body meets it).
+- L3 of the task (the plan's L4), the ARM64 encoder's field placement, in encode.rs only.
+  - Tried aarchmrs-instructions 0.5.0-2026-09 with aarchmrs-types 0.1.2 (both BSD-3-Clause) on
+    MOVZ_64_movewide, LDR_64_ldst_pos and TBNZ_only_testbranch, each call behind our fit check, in
+    scratch (library-swaps/l3/bench, not in the repository): same words and same refusals as ours
+    on 2,000,000 drawn inputs per form. Not taken; see "Departures".
+  - Chosen: a table of our own from the forms data we ship. Each builder's form and fields are a
+    `Shape` (fixed bits and the fields' places, in the order the builder gives values), found in
+    `forms::all()` once, on first use (`LazyLock`), as the old HashMap was built once. Building a
+    word then reads the shape and places each value after our fit check (`Field::place`, the old
+    check unchanged). The builders that take Arm's name of their form (`load_store`,
+    `branch_register`, `exception`, `move_wide`, `logical_register`, `load_pair`, `load_add`,
+    `compare_swap_of`) take theirs from a `Kind`: the shapes of every one of `form::ALL` that has the
+    builder's fields, found by the name's place in `form::ALL`. They accept exactly the forms the old
+    code accepted. `word()` (by name, fields by name; used by one test of the native executor) stays,
+    on the same table. The HashMap, `table()`, `field_of()` and `width()` are gone.
+  - New test in encode.rs, `every_builder_places_its_fields_as_the_table_read_by_name_does`: every
+    builder (and `word`, the reaches and the float status moves) against the old placement by name
+    over `forms::all()`, on drawn values that fit and that do not (offsets out of reach, misaligned,
+    immediates too wide, registers past 31 for `word`), results and refusals compared.
+    `WCONTAINERS_ENCODE_SEED` (default 0x6a09e667f3bcc908) and `WCONTAINERS_ENCODE_CASES` (default
+    10,000). Ran 10,000 cases of the default seed. It fails when two fields of a shape are swapped
+    (tried by hand, then put back).
+  - Ran on the Mac (load 9 to 13), after commit 1130f618's code: wcontainers-arm64's whole suite
+    (unit 1, encode 2, exact 4, native_routes 1), the existing tests unchanged, all passing; the
+    native executor's unit tests (12), kept (1), and its tests that build words with the encoder:
+    carry, native (1215 forms, 0 failing), exits (4 programs, 0 failed), floor, interrupts, probe
+    (0 forms of 16 bytes or fewer differ, as before), registers, host_branches, all exit 0.
+    Not run: the native executor's speed, busybox and kernel tests do not build at the moment,
+    because its tests/container/mod.rs (another track's, uncommitted) still names
+    `wcontainers_abi::BackendRequestId`, which the kernel track removed (commit 4ee5def7).
+- The track's whole suites after both commits (4c88f1b1), on the ARM machine (job
+  library-swaps/20261121-215605-4139430, load 4.1 at the start, 27.9 at the end): wcontainers-arm64
+  (1, 2, 4, 1), the wasmtime executor (unit 7, cache 4, code 4, faults 2, fork 5, refused 77,
+  surface 20 passed and 1 ignored as before, turns 5, views 6) and the runtime crate's 13, all
+  passed.
+
 ## Measurements
 
 - 2026-11-21 on the Mac (M5 Max), load average 14.6 to 38 (shared with other tracks), release
@@ -95,6 +140,19 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
   then `measure-zstd <gzip layout> <twin directory> <runs>`; the layout is what `docker save
   --platform linux/arm64 alpine:3.22` writes, unpacked.
 
+- 2026-11-21 on the Mac (M5 Max), load average 6 to 12 (shared with other tracks), release build,
+  2,000,000 drawn words per form, the last of three rounds, two runs (library-swaps/l3/bench):
+  - before (a copy of the old `word()`): movz 42.5 to 60.2 ns, ldr (by name) 51.1 to 69.9 ns, tbnz
+    73.1 to 107.5 ns per word.
+  - aarchmrs with our fit check: movz 1.0 to 1.5 ns, ldr 1.2 to 2.1 ns, tbnz 1.2 to 2.0 ns.
+  - the encoder now: movz 1.4 to 1.5 ns, ldr (by name) 8.1 to 8.8 ns, tbnz 1.6 to 1.8 ns. The
+    by-name builders cost the comparison of the name with `form::ALL`'s.
+  - aarchmrs-instructions builds clean in 1.2 s (release) and 1.3 s (debug) at load 14. Not
+    measured for the encoder now: it adds no build work beyond its own lines.
+- Measured and not kept (see "Departures"): a build script that writes Arm's table as constants
+  made every shape a compile-time constant: movz 1.4 ns, ldr 8.1 to 8.4 ns, tbnz 1.6 ns; the crate's
+  release rebuild went from 1.40 s to 1.72 s, after a first try with one struct per form took 5.6 s.
+
 ## Dependencies added
 
 - ruzstd 0.9.1 (MIT), with its twox-hash 2.1.5 (MIT), for the runtime.
@@ -107,6 +165,27 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
   of the wasmtime executor for the twin.
 
 ## Departures from the plan and the audit
+
+- L3 (the encoder): the plan said aarchmrs-instructions. Not taken, though it is as fast and its
+  words are the same, because it cannot replace our table: it has no lookup from a name or from a
+  word to a form, and `replace`, `retarget`, `moves_of_x0`, the by-name builders and `word()` (which
+  callers outside this track use with Arm's names as strings, as in the native executor's
+  tests/runner `word(form::MSR, &[("o0", 1), ...])`) need ours. Taking it would place fields from
+  two sources. Its field widths would also have to be written beside each call for our fit check
+  (`BitValue::new_u32` checks only in debug builds), where our shapes read them from the table.
+  Our own table gives the same speed on the fixed-form builders (1.4 against 1.1 ns for movz).
+- L3: the table is built once at first use, not at compile time. A compile-time table needs a
+  build script whose output the encoder includes with `include!(concat!(env!("OUT_DIR"),
+  "/encodings.rs"))`; that path is a new finding of the literal check, which may not grow. Built at
+  first use, it searches the forms by name once per shape, as the old HashMap was built once.
+- L3: the by-name builders still compare the name they are given with the 51 names of `form::ALL`
+  at each call (ldr by name took 8.1 to 8.8 ns above against 1.4 to 1.8 ns for the fixed-form
+  builders; how much of that is the name was not measured), since their callers (carry.rs, the native executor's
+  routines.rs and tests, tests/encode.rs) pass Arm's names as `&str`. Every other builder does no
+  string work after the first use. See "For the owner".
+- L2 (b): the `tempfile` line in the native executor's Cargo.toml (commit 88d924b3) is outside
+  translate.rs; the swap needs it and the line is this track's only. Not listed here before; the
+  independent check found it.
 
 - The audit said the swap was "one match arm wrapping StreamingDecoder, about 5 lines". The code
   says otherwise: `StreamingDecoder` reads one frame only, refuses a skippable frame and never
@@ -143,14 +222,27 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
 
 ## For the owner
 
+- The encoder's by-name builders take Arm's form names as strings, so each such call compares the
+  name with up to 51 others. Making `encode::form`'s constants typed shapes would remove it,
+  and would let the whole table be built at compile time; it changes the callers in carry.rs
+  (`sized` returns names), the native executor's routines.rs (`each` takes `&str`) and one line of
+  tests/encode.rs (`Some(form::ERET)` compared with a form's name), none of them this track's, and
+  a build script's include path needs one accepted line of the literal check. Example: `load_store(
+  form::LDR, ...)` would take `form::LDR` as a shape instead of looking its name up.
+- L2's independent check noted that a cache file holding only the magic and a module count of zero
+  is loaded as a translation (as before L2). Left as it is: it is what `store` writes for a
+  translation with no modules, so refusing it would change behaviour; the directory is written only
+  by compilers.
+
 - The native executor's kept translations are made 0644 (under the usual umask) and the wasmtime
   executor's cache files 0600. Both are as they were before this track; one of them could follow
   the other if you want them alike.
 
 ## Next
 
-- L2 is done (the task's L2 holds what the plan calls L2 and L3).
-- L4: the ARM64 encoder's field placement on aarchmrs-instructions.
+- L2 is done (the task's L2 holds what the plan calls L2 and L3); its check's three points are
+  answered above.
+- L3 (the plan's L4) is done. Nothing of the plan is left.
 
 ## How to run
 
@@ -159,6 +251,11 @@ The plan is docs/plan-library-swaps.md. Four swaps, L1 to L4, one commit each.
 - `cargo test -p wcontainers-executor-wasmtime --test cache` (the cache file) and `cargo test -p
   wcontainers-executor-hardware-virtualization --lib --test kept` (the native kept files) run on
   the Mac.
+- `cargo test -p wcontainers-arm64` (the encoder; `WCONTAINERS_ENCODE_SEED`, `WCONTAINERS_ENCODE_CASES`
+  for more cases) and `cargo test -p wcontainers-executor-hardware-virtualization --lib --test carry
+  --test native` (the native executor's words; Mac only) run on the Mac. The comparison with
+  aarchmrs: `RUSTC_BOOTSTRAP=1 nix develop <checkout> -c cargo build --release` in scratch
+  library-swaps/l3/bench, then `l3-encode-bench <words>`.
 - Lint only this track's packages with `cargo clippy --no-deps -p <package> --all-targets -- -D
   warnings`: without `--no-deps` clippy stops on the kernel interface's own warnings.
 - The surface test needs Docker with `alpine:3.22` for linux/arm64: `cargo test -p
