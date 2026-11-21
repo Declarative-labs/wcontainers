@@ -1,6 +1,7 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
 use std::ffi::{c_int, c_void};
+use std::marker::PhantomData;
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::num::NonZeroU32;
@@ -477,15 +478,22 @@ impl Default for ControlBuffer {
     }
 }
 
-/// What one `recvmsg` gave: the bytes it wrote, its flags, and the control messages as level, type and data and whole.
+/// What one `recvmsg` gave: the bytes it wrote, its flags and its control messages.
 pub struct ReceivedMessage<'a> {
     pub length: usize,
     pub flags: c_int,
-    pub control: Vec<(c_int, c_int, &'a [u8])>,
-    pub control_bytes: &'a [u8],
+    pub control: &'a [u8],
+}
+
+impl<'a> ReceivedMessage<'a> {
+    pub fn messages(&self) -> ControlMessages<'a> {
+        ControlMessages::new(self.control)
+    }
 }
 
 /// One `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
+///
+/// Made with libc rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`: a cut is the caller's to count.
 pub fn receive_message<'a>(
     socket: BorrowedFd<'_>,
     into: &mut [u8],
@@ -507,24 +515,8 @@ pub fn receive_message<'a>(
     if length < 0 {
         return Err(last_host_error());
     }
-    let mut messages = Vec::new();
-    // SAFETY: the header was filled by recvmsg, so the CMSG walk stays inside the control buffer.
-    unsafe {
-        let mut message = libc::CMSG_FIRSTHDR(&header);
-        while !message.is_null() {
-            let data = libc::CMSG_DATA(message);
-            let used = data.offset_from(message.cast::<u8>()) as usize;
-            let data_length = ((*message).cmsg_len as usize).saturating_sub(used);
-            messages.push((
-                (*message).cmsg_level,
-                (*message).cmsg_type,
-                std::slice::from_raw_parts(data, data_length),
-            ));
-            message = libc::CMSG_NXTHDR(&header, message);
-        }
-    }
     // SAFETY: the kernel wrote `msg_controllen` bytes of control messages into the buffer.
-    let control_bytes = unsafe {
+    let control = unsafe {
         std::slice::from_raw_parts(
             control.0.as_ptr().cast::<u8>(),
             header.msg_controllen as usize,
@@ -533,9 +525,58 @@ pub fn receive_message<'a>(
     Ok(ReceivedMessage {
         length: length as usize,
         flags: header.msg_flags,
-        control: messages,
-        control_bytes,
+        control,
     })
+}
+
+/// The control messages of a receive as level, type and data, walked in place.
+pub struct ControlMessages<'a> {
+    header: libc::msghdr,
+    next: *const libc::cmsghdr,
+    control: PhantomData<&'a [u8]>,
+}
+
+impl<'a> ControlMessages<'a> {
+    /// The messages of control bytes the kernel wrote, aligned as `cmsghdr` needs.
+    pub fn new(control: &'a [u8]) -> Self {
+        // SAFETY: msghdr is plain data; only its control fields are read by the walk.
+        let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
+        header.msg_control = control.as_ptr().cast_mut().cast();
+        header.msg_controllen = control.len() as _;
+        // SAFETY: the header describes `control`, which outlives the walk.
+        let next = unsafe { libc::CMSG_FIRSTHDR(&header) };
+        Self {
+            header,
+            next,
+            control: PhantomData,
+        }
+    }
+}
+
+impl<'a> Iterator for ControlMessages<'a> {
+    type Item = (c_int, c_int, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let message = self.next;
+        if message.is_null() {
+            return None;
+        }
+        // SAFETY: CMSG_FIRSTHDR and CMSG_NXTHDR give only whole message headers inside the control bytes, whose data
+        // runs to `cmsg_len`.
+        unsafe {
+            let data = libc::CMSG_DATA(message);
+            let used = data.offset_from(message.cast::<u8>()) as usize;
+            // A u32 on musl, a usize on glibc.
+            let length: usize = (*message).cmsg_len as _;
+            let data_length = length.saturating_sub(used);
+            self.next = libc::CMSG_NXTHDR(&self.header, message);
+            Some((
+                (*message).cmsg_level,
+                (*message).cmsg_type,
+                std::slice::from_raw_parts(data, data_length),
+            ))
+        }
+    }
 }
 
 fn timespec(time: &libc::timespec) -> Option<Duration> {
