@@ -524,9 +524,9 @@ fn blend_for<B: Backend>(
         } else if reads_alpha {
             let [.., a] = constant;
             if reads_colour && constant != [a; state::COLOR_CHANNELS] {
-                refuse(
-                    "the blend constant's colour and its alpha as colour factors of one block, for a constant whose colour is not its alpha (blending in the program is not built)",
-                );
+                refuse(format_args!(
+                    "the blend constant's colour and its alpha as colour factors of one block, for a constant whose colour is not its alpha, where no second source can give the alpha (more than one target, or none on the back end)"
+                ));
             }
             for f in colour {
                 *f = constant_of_alpha(*f);
@@ -1137,10 +1137,9 @@ fn fetched_streams<'a, B: Backend + 'a>(
             .map_or(1, |&(_, bytes)| bytes);
         let starts = [bound_stream.offset, attribute.offset, layout.stride];
         if starts.iter().any(|s| !s.is_multiple_of(component)) {
-            return Err(
+            return refused(format_args!(
                 "a fetched vertex component across words (the shaders crate's fetch reads aligned components)"
-                    .into(),
-            );
+            ));
         }
         fetched.push(Pulled {
             location,
@@ -1569,7 +1568,7 @@ fn draw_ranges<B: Backend>(
         }
         if needs_widening(backend, format) {
             return refused(format_args!(
-                "8-bit indices in a buffer on a back end without them"
+                "indices of one byte in a buffer on a back end without them"
             ));
         }
         // SAFETY: an index buffer of this driver, held by st/mesa for the draw.

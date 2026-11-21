@@ -62,7 +62,7 @@ impl<B: Backend> Sets<B> {
         self.sets
             .last()
             .cloned()
-            .ok_or_else(|| "no occlusion set".into())
+            .map_or_else(|| refused(format_args!("no occlusion set")), Ok)
     }
 }
 
