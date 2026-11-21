@@ -4,16 +4,18 @@ Plan: docs/plan-graphics-container-readers.md. On `main` in the one shared check
 
 ## Where things stand
 
-C2 (one DXIL resource-list reader): done in run 3, 2026-11-21, for its independent check (commits
-260d36d8, 99735dce, 4043e0cd, 537e3bf7, 31080b61). Direct3D 12's llvm-bitcode reader and the
-llvm-bitcode dependency are gone.
+C2 (one DXIL resource-list reader): done in run 3, 2026-11-21 (commits 260d36d8, 99735dce,
+4043e0cd, 537e3bf7, 31080b61); its independent check's seven findings settled in run 4 (below,
+"Run 4"). Direct3D 12's llvm-bitcode reader and the llvm-bitcode dependency are gone.
 - Shaders side (260d36d8): `container::dxil_views` (one C call, `wcs_dxil_views` in cpp/dxil.cpp)
   gives each shader resource and unordered access view's shape, space, register range and element
   value kind. The cache file has a third entry kind, `cache::Kind::Views`, keyed by `views_key`
   (the container's bytes and the converter version), filled by `cache::dxil_views_cached`. And
-  cpp/dxil.cpp keeps the last module its resource list readers parsed on each thread (with the
-  container it came from), so a stage's views, declared registers and constant buffer sizes come
-  from one dxil-spirv parse.
+  cpp/dxil.cpp keeps the last five modules its resource list readers parsed on each thread (one
+  per stage a graphics pipeline has, with the container each came from; run 4, before one), so a
+  stage's views, declared registers and constant buffer sizes come from one dxil-spirv parse of
+  its module in whatever order a pipeline's stages are read. The conversion itself parses the
+  module once more through dxil-spirv's own entry point, as before C2.
 - Direct3D 12 (99735dce): `formats::typed_key` reads a stage's views once (`dxil::declared`,
   through `cache::dxil_views` in the Direct3D 12 crate's cache.rs, the process's store) and gives
   the typed texture slots `convert_stage` needs beside the key. dxil.rs keeps only its numbering of
@@ -23,13 +25,43 @@ llvm-bitcode dependency are gone.
   times the old reader's cost per read; run 2's per-process memo alone left the first pipeline of
   a process starting from a cache file 32 % slower. With the views in the cache file and the parse
   shared, every measured case is faster than before (Measurements).
-- Pass bar: Direct3D 12 tests 50 passed; pipeline creation measured faster in all three cases
-  (converting, first use from a cache file, made again).
+- Pass bar: Direct3D 12 tests 51 passed (run 4); pipeline creation measured faster than before C2
+  in all four cases: converting compute, a process's first graphics pipelines converted cold, first
+  use from a cache file, made again (Measurements; the last two from run 3, whose paths run 4 did
+  not change).
 - For the check: the tests that covered the old reader are dxil.rs's (the five of before, now on
   the new reading, and `a_container_read_again_declares_what_its_module_does`), the Direct3D 12
   front and device tests and tests/cache.rs; new: container.rs
-  `a_module_s_views_are_read_once_through_the_cache`. Behaviour: as C1, the same outputs for every
-  well-formed container, and on malformed DXIL the module dxil-spirv reads (Behaviour).
+  `a_module_s_views_are_read_once_through_the_cache` and run 4's (below). Behaviour: as C1, the
+  same outputs for every well-formed container, and on malformed DXIL the module dxil-spirv reads
+  (Behaviour).
+
+Run 4 (2026-11-21), the independent check's findings (commits a8b3ccec, f8f226d0):
+- Literal baseline: run 3's 31080b61 had rewritten the accepted line of the cache warning
+  (`convert` to `Store::append`), which counts as an added line, and run 3's status wrongly said
+  the check had no finding in the track's files. The warning's text is now the constant
+  `APPEND_REFUSED` in the Direct3D 12 cache.rs, and f8f226d0 deletes the line.
+- One parse per stage: run 3 kept one module per thread, so a graphics pipeline read the vertex
+  stage's views, then the pixel stage's (replacing it), and the vertex conversion's declared
+  registers parsed the vertex module again. cpp/dxil.cpp now keeps five, one per stage a pipeline
+  has, the latest first; a test reads seven modules in turn (`modules_read_in_turn_each_give_their_own_lists`,
+  which also converts one after the others' views evicted it and after its own).
+- dxil-spirv's and dxbc-spirv's messages while views are read go into the call's error, not
+  stderr (Behaviour).
+- An undecodable views record: `dxil_views_cached` returns `ConvertError::Malformed`; the Direct3D
+  12 front reads the views again with a warning (`VIEWS_UNDECODED`) and a count
+  (`cache::views_reread`). Tests: container.rs `a_views_record_that_does_not_decode_is_malformed`,
+  tests/cache.rs's third run.
+- New tests: the checksum refusal and the bypass value (`a_module_s_views_are_read_with_its_checksum_or_the_bypass_value_only`);
+  a DXIL stage's key formats, typed buffer route, multisampled layers and storage texture slots
+  from `formats::typed_key` (device/formats.rs
+  `a_dxil_stage_s_typed_views_give_its_key_and_its_storage_texture_slots`).
+- The unbounded range size has one definition: boundary.h's `ViewRange::eUnbounded`, which
+  build.rs gives Rust as `ir::view_range::UNBOUNDED`, exported as `container::RANGE_WITHOUT_SIZE`
+  and used by cpp/dxil.cpp and the Direct3D 12 dxil.rs (the name `UNBOUNDED_RANGE` made the
+  literal check match the nir crate's `UNBOUNDED` message).
+- The cold graphics pipeline the check measured (break-even after run 3) is now measured faster
+  (Measurements).
 - Lock (4043e0cd): my commit by path also took two lines of other tracks' uncommitted manifests
   (`git commit -- Cargo.lock` commits the working file, not the staged hunks); 537e3bf7 takes them
   back out, committing the index alone. The working file was never changed.
@@ -59,7 +91,7 @@ C1 (one DXBC container reader): done in run 1; the findings of its check were se
   254; 2913 in all, against 2691 before C1. The four copies are gone; the reader and the new tests
   are larger than what they replaced (container.rs's tests are 96 of its lines).
 
-Next: C2's independent check. The plan has no milestone after C2.
+Next: C2's independent check again (run 4's fixes). The plan has no milestone after C2.
 
 ## Behaviour
 
@@ -110,8 +142,37 @@ stopped it by hand; the loop now stops a case past LIMIT_KB). The differences:
   view of the views list): dxil-spirv reads another kind than the old reader; converting 1127 and
   3862 ends the process in dxil-spirv (A11) either way.
 Not measured beyond 8,000 cases (run 2's 20,000 had no per-case record).
+- Messages: where dxil-spirv or dxbc-spirv refuses a module while its views are read, the reason
+  goes into the C call's error (run 4; run 3 let dxil-spirv print it to stderr, for example
+  `[ERROR]: Unknown type!` for `runner/blobs/hlsl+distance-4-ps.dxil`). `dxil_views` gives `None`
+  for it without a message, as the old reader gave its lists without one; the conversion, which
+  parses the same module next, reports the reason as before (`Rejected("Unknown type!")`).
+- A cache file whose views record does not decode: `cache::dxil_views_cached` answers
+  `ConvertError::Malformed`, as `convert_cached` does for a shader record; the Direct3D 12 front
+  then reads the module's views again each time, warns ("a views record of the cache does not
+  decode") and counts it (`cache::views_reread`). Run 3 read them again silently. Reaching it needs
+  a damaged record that passes the entry's CRC, as the key holds the converter version.
 
 ## Measurements (Apple M5 Max, 18 cores, shared; load averages at the time)
+
+- C2 run 4, as committed (a8b3ccec), release, recording back end. Before is HEAD f54cca11's
+  crates as in run 3 (scratch old-d3d12 on head-shaders). Load 7.9 throughout.
+  - A process's first graphics pipelines converted cold (pipeline-bench/cold.sh, the check's
+    bench: a fresh process, no cache file, the rig's triangle, then common.vs_color with
+    common.ps_color), 80 processes each, alternating, the first pair left out as warm-up
+    (c2r4-bench-cold.txt, tallied by cold-tally.sh): triangle median 641.0 us before, 601.0 us
+    after, after faster in 77 of 79 pairs; the colour pair median 289.9 us before, 266.8 us after,
+    after faster in 78 of 79. The check measured run 3 at break-even on the pair (276.5 against
+    278.5 us at load 5), which the second parse of the vertex module explains.
+  - Converting (convert.sh, 12 processes each, alternating, c2r4-bench-convert.txt): compute
+    per pipeline median 225.2 us before, 189.9 us after, after faster in 12 of 12; triangle
+    238.2 to 265.6 us before, 210.0 to 225.3 us after.
+- C2 run 4 tests: the three crates' whole suites at a8b3ccec (debug, load 10.9 at the start and
+  10.6 at the end): 237 passed, 0 failed, 6 ignored (run 3's 233, three new in container.rs and
+  one in device/formats.rs; tests/cache.rs's new run is in its one test); Direct3D 12 alone 51 (unit 18, cache 1,
+  device 18, front 12, gpu 2). c2r4-suite.log in scratch. Lint with warnings denied: clean.
+  rustfmt: clean on the changed files. Literal check: no finding in the track's files (61 of other
+  tracks at the time, c2r4-literals.txt).
 
 - C2 run 3, as committed, pipeline-bench in scratch (release, recording back end, 56 DXIL compute
   pipelines of the rig's and the shaders crate's own inputs, and the rig's triangle). Before is
@@ -138,8 +199,8 @@ Not measured beyond 8,000 cases (run 2's 20,000 had no per-case record).
 - C2 run 3 tests: the three crates' whole suites (debug, load 13 at the start and 21 at the end):
   233 passed, 0 failed, 6 ignored (run 1's 231, container.rs's new cache test, dxil.rs's new
   test); Direct3D 12 alone 50 (unit 17, cache 1, device 18, front 12, gpu 2). c2r3-suite.log in
-  scratch. Lint of the three crates with warnings denied: clean. rustfmt: clean. Literal check: no
-  finding in the track's files (19 of other tracks at the time).
+  scratch. Lint of the three crates with warnings denied: clean. rustfmt: clean. Literal check:
+  wrongly reported clean; it had the '>' line of the rewritten baseline entry (Run 4).
 - Earlier C2 figures (runs 1 and 2, the reasons for this run's shape): one dxil-spirv read of a
   stage costs 125 to 155 us against 32 to 38 us for the old reader's three (735 inputs, load 13 to
   18): checksum about 15 us, bitstream decoding about 85 us, building the module about 55 us. A
@@ -174,14 +235,18 @@ Not measured beyond 8,000 cases (run 2's 20,000 had no per-case record).
   `first.sh` and `run.sh` (BENCH_ROOT, BENCH_EXTRA, BENCH_ROUNDS, BENCH_CACHE; CONVERT_RUNS,
   FIRST_RUNS). The before side builds scratch old-d3d12 on scratch head-shaders (HEAD f54cca11's
   crates).
+- The cold graphics bench (the check's, copied): build `pipeline-bench/cold-before` and
+  `cold-after` the same way, then `COLD_RUNS=80 sh pipeline-bench/cold.sh > out.txt` and
+  `sh pipeline-bench/cold-tally.sh out.txt`.
 
 ## Departures from the plan and the brief
 
 - C2 has two parts the plan did not name, without which the speed bar fails: the cache file's third
   entry kind (crates/wcontainers-shaders/src/cache.rs, the shaders track's file, 32 lines added,
   nothing of it changed; its git status was clean before the edit), and the per-thread record of the
-  last parsed module in cpp/dxil.cpp. The record holds one module and its container's bytes per
-  thread that read one, until that thread reads another.
+  last parsed modules in cpp/dxil.cpp. The record holds up to five modules (one per stage of a
+  graphics pipeline) and their containers' bytes per thread that read one; a sixth module evicts
+  the one read longest ago. Their memory was not measured.
 - Outside the track's files for C2: the Direct3D 12 crate's device.rs, device/formats.rs,
   device/geometry.rs, cache.rs, Cargo.toml and tests/cache.rs (no track works in that crate). The
   cache test's count of entries changed with the new kind: it now counts each kind.
@@ -191,7 +256,12 @@ Not measured beyond 8,000 cases (run 2's 20,000 had no per-case record).
 - 4043e0cd took two lines of other tracks' uncommitted lock changes; 537e3bf7 took them back out
   (Where things stand). History is not rewritten.
 - C1's check fixes touched crates/wcontainers-shaders/build.rs (two lines in its list of dxbc-spirv
-  enums); C2 added three more lines there (the boundary's view enums).
+  enums); C2 added four more lines there (the boundary's view enums, run 4's `ViewRange`), and
+  the enums themselves in cpp/boundary.h.
+- Run 4, outside the track's files: the shaders crate's cache.rs again (`dxil_views_cached` now
+  returns a Result, its git status clean before the edit), and in the Direct3D 12 crate cache.rs
+  (named warnings, the reread count `views_reread`, public for its test), device/formats.rs (one
+  test module) and tests/cache.rs (a third run).
 - From run 1, still true: the container.rs commit (f4302b4a) was not the one small commit the brief
   asked for, and a Cargo.lock hunk went into a code commit (767eab22).
 - From run 1, still true: outside the track's files, one line each in the shaders crate's lib.rs and
@@ -208,7 +278,7 @@ dependencies of wcontainers-shaders.
 ## For the owner
 
 - C2 adds a cache file entry kind (`Kind::Views`) to the shaders crate's cache.rs, which is the
-  shaders track's file, and keeps a parsed module per thread in cpp/dxil.cpp: without them the
+  shaders track's file, and keeps up to five parsed modules per thread in cpp/dxil.cpp: without them the
   library read made pipeline creation slower (Departures). Example: the first compute pipeline of
   a shader in a process starting from a cache file took 60 us before and 79 us with the library
   read and a per-process record only (run 2), and 67 us before and 42 us now (run 3).
