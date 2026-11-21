@@ -4,14 +4,22 @@ Plan: docs/plan-graphics-container-readers.md. On `main` in the one shared check
 
 ## Where things stand
 
-C2 (one DXIL resource-list reader), run 1, 2026-11-21: stopped, as the brief says for a library that
-does not fit. dxil-spirv's module reader makes pipeline creation slower (Measurements), so Direct3D
-12's own resource list reader (crates/wcontainers-direct3d-12/src/dxil.rs, on llvm-bitcode) stays and
-nothing of C2's code is committed. The attempt, which was complete and passed the Direct3D 12 tests,
-is kept as a patch: scratch graphics-container-readers/c2-dxil-spirv-attempt.patch. What it would
-take to go on is under "For the owner".
+C2 (one DXIL resource-list reader): stopped again in run 2, 2026-11-21, on the speed bar; nothing of
+C2's code is committed and Direct3D 12's own reader (crates/wcontainers-direct3d-12/src/dxil.rs, on
+llvm-bitcode) stays.
+- Run 1 built the switch (one call per stage through dxil-spirv): correct on all 735 real DXIL
+  containers, but every pipeline made slower, as dxil-spirv decodes and builds the whole module
+  (scratch graphics-container-readers/c2-dxil-spirv-attempt.patch).
+- Run 2 added to it a process-wide record of what each container declares, keyed by the BLAKE3 hash
+  of its bytes, so a module is read once per process (scratch c2-dxil-spirv-memo.patch, with
+  c2r2-lock-mine.patch for Cargo.lock: llvm-bitcode gone, blake3 moved from the dev-dependencies).
+  Direct3D 12 tests: 50 passed (the 49 and one for the record). Lint clean. Result (Measurements):
+  a pipeline made again with a shader the process has read is about 45 % faster than before, but
+  the first pipeline of a shader in a process whose conversions come from a cache file is about
+  32 % slower (60 to 79 us per compute pipeline). So the bar fails for that case and the item stays
+  stopped. What it would take to go on is under "For the owner".
 
-C1 (one DXBC container reader): done in run 1; the findings of its check are settled in this run
+C1 (one DXBC container reader): done in run 1; the findings of its check were settled in C2 run 1
 (f51d47ce, e2ee94e9):
 - A signature element's name must end with its NUL inside its chunk, as in dxbc-spirv
   (`readString` fails at the end of the reader and the signature resets). A name cut by its chunk,
@@ -75,6 +83,20 @@ process would end there anyway, but the end would come earlier.
 
 ## Measurements (Apple M5 Max, 18 cores, shared; load averages at the time)
 
+- C2 run 2, the memo patch, pipeline-bench in scratch (run.sh; release, recording back end, 56 DXIL
+  compute pipelines of the rig's and the shaders crate's own inputs, the rig's triangle; before is
+  the Direct3D 12 crate at HEAD 4aec40e5, copied to scratch old-d3d12; load 20 to 31):
+  - made again, 20 rounds, two runs each, alternating: compute median 64.7 and 62.8 us before,
+    38.9 and 35.2 us after; triangle 63.7 and 64.4 us before, 31.9 and 29.1 us after.
+  - the first pass of a process whose conversions come from a cache file (BENCH_CACHE), ten
+    processes each, alternating (c2r2-bench-first.txt): compute 59.1 to 76.0 us per pipeline before
+    (nine of ten under 65), 78.0 to 83.2 us after. The triangle's first number is not a cold read
+    after (its shaders were read by the compute pass, which tries every input), so it is not used.
+  - the first pass converting (one pass per run, so noisy): compute 289.8 and 272.1 us before,
+    323.6 and 277.6 us after.
+  - A cold read costs more on bigger shaders: run 1's read alone over 735 inputs was 125 to 155 us
+    per stage against 32 to 38 us, so a first use from a cache file of a game's shader would cost
+    about 100 us more per stage (expected, not measured through pipeline creation).
 - C2, the read alone, release build, 735 DXIL inputs, 20 rounds (dxil-compare in scratch), load
   13 to 18: before, the three reads of a pixel or compute stage, 32 to 38 us per stage; after, one
   call, 125 to 155 us per stage. At load 30 the same ran 56 and 276 us. Split of the one call (load
@@ -106,18 +128,23 @@ process would end there anyway, but the end would come earlier.
 - Literal check: `RAYON_NUM_THREADS=3 nix develop -c cargo run -q -p wcontainers-literals -- check`.
 - C1's comparison (scratch compare): as in run 1, `COMPARE_ROOT=<checkout> COMPARE_CASES=20000
   COMPARE_SEED=1 COMPARE_EXTRA=<dir>:<dir> target/graphics-container-readers/release/container-compare`.
-- C2's tools, only with the attempt's patch applied: scratch dxil-compare (old reader against
+- C2's tools, only with a C2 patch applied (`git apply`, and the lock patch on Cargo.lock): scratch dxil-compare (old reader against
   `dxil::declared`; COMPARE_ROOT, COMPARE_EXTRA, COMPARE_SEED, COMPARE_CASES, COMPARE_FIRST,
   COMPARE_ROUNDS) and pipeline-bench/before and /after (`cargo build --release --manifest-path
   <scratch>/pipeline-bench/<before|after>/Cargo.toml`, run with BENCH_ROOT, BENCH_EXTRA,
-  BENCH_ROUNDS). The "before" bench builds the copy of the Direct3D 12 crate in scratch old-d3d12.
+  BENCH_ROUNDS, BENCH_CACHE), or `sh pipeline-bench/run.sh` for both sides. The "before" bench
+  builds the copy of the Direct3D 12 crate in scratch old-d3d12 (equal to HEAD's crate in run 2).
 
 ## Departures from the plan and the brief
 
 - C2 stopped (the brief's rule for a library that does not fit). Example: the rig's DXIL triangle
   pipeline, made again with its conversion cached, takes 77 us with our reader and 100 us with
   dxil-spirv's, because dxil-spirv decodes and builds the whole module, function bodies included,
-  where our reader skips every block but the module's constants and metadata.
+  where our reader skips every block but the module's constants and metadata. Run 2's example
+  with the memo: the first compute pipeline of a shader, its conversion from a cache file, takes
+  about 60 us with our reader and 79 us with dxil-spirv's.
+- Run 2 added a cache (the memo) the plan did not name: it is the only way found to keep one
+  dxil-spirv read per stage from slowing every pipeline; it is in the patch only.
 - C1's check fixes touched crates/wcontainers-shaders/build.rs (two lines in its list of dxbc-spirv
   enums), the shaders track's file, so that the dimensions and return types come from dxbc-spirv as
   the opcodes do; its git status was clean before the edit.
@@ -129,17 +156,23 @@ process would end there anyway, but the end would come earlier.
 
 ## Dependencies and licences
 
-No new dependency. md-5 0.11.0 (MIT OR Apache-2.0), already in the tree, is a normal dependency of
+No new dependency committed. The memo patch (not committed) makes blake3 1.8.7 (CC0-1.0 OR
+Apache-2.0 OR Apache-2.0 WITH LLVM-exception), already a dev-dependency, a normal dependency of
+wcontainers-direct3d-12. md-5 0.11.0 (MIT OR Apache-2.0), already in the tree, is a normal dependency of
 wcontainers-shaders. llvm-bitcode 0.4.2 (MIT) stays a dependency of wcontainers-direct3d-12.
 
 ## For the owner
 
-- C2: dxil-spirv's module reader does not meet "pipeline creation not slower": a cached pipeline is
-  made 30 to 37 % slower (Measurements). Ways on, each the owner's call: accept the slowdown
-  (the patch is ready, correct on every real DXIL container); keep our reader (now); or read the
-  list from dxc's `STAT` chunk, which holds the module without function bodies, where a container
-  has one (308 of 735 here): not measured, and a container whose `STAT` and `DXIL` disagree would
-  give a wrong key. Changing dxil-spirv to skip function bodies would be a change to vendored code.
+- C2: dxil-spirv's module reader fails "pipeline creation not slower" in one case. With run 2's
+  memo patch: pipelines made again are about 45 % faster, conversions are not measurably changed,
+  and the first pipeline of each shader in a process starting from a cache file is about 32 %
+  slower on our shaders (about 100 us per stage expected on game shaders). Ways on, each the
+  owner's call: accept that (c2-dxil-spirv-memo.patch is ready); keep our reader (now); or let the
+  shaders crate's cache file hold the view list beside the conversion (the shaders track's
+  cache.rs, a new entry kind), which removes the cold read when starting from a file and should make
+  every case not slower (expected, not built). Reading dxc's `STAT` chunk is the run 1 idea, still
+  not measured (only 308 of 735 containers have one). Changing dxil-spirv to skip function bodies
+  would be a change to vendored code.
 - Behaviour on malformed containers changed with C1 as listed under "Behaviour"; each kind now has
   a test. Example: a pixel shader whose container is cut inside its input signature chunk is
   refused with E_INVALIDARG by the Direct3D 11 front, where it was accepted.
