@@ -20,7 +20,7 @@ mod kernel {
     use wcontainers_inside::host::LinkHost;
     use wcontainers_inside::link::Start;
     use wcontainers_inside::native::NativeCpu;
-    use wcontainers_kernel::Kernel;
+    use wcontainers_kernel_linux::Kernel;
     use wcontainers_kernel_test_policy::{TestPolicy, Warned as Kept};
     use wcontainers_runtime::{Ending, System as _, drive};
 

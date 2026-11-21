@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::collections::BTreeMap;
 
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
-use wcontainers_kernel::linux::general;
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::linux::general;
+use wcontainers_kernel_linux::{
     ContextOrigin, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext,
     SignalInformation, SuspendedTask, SystemCallResponse, TaskId, reason,
 };

@@ -13,7 +13,7 @@ use linux_raw_sys::ioctl;
 use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
 use wcontainers_abi::{Event, Exit, Next, PAGE_SIZE, SystemCallRequest};
-use wcontainers_kernel::{Kernel, Start};
+use wcontainers_kernel_linux::{Kernel, Start};
 
 /// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
 /// back end's memories, permission tables, blocks of shared pages and fork copies.
@@ -213,7 +213,7 @@ const PATH_POOL: &[&str] = &[
     "a/../b",
     "nope/x",
     "a/x/",
-    wcontainers_kernel::NULL_PATH,
+    wcontainers_kernel_linux::NULL_PATH,
     "/dev/zero",
     "/dev/full",
     // The random devices: what a read of them puts anywhere is zeroed by both runners (see
@@ -236,13 +236,13 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/cgroup",
     "/proc/self/limits",
     // devpts's root, which statx and the others answer by its own rules.
-    wcontainers_kernel::DEVPTS_PATH,
+    wcontainers_kernel_linux::DEVPTS_PATH,
     // The mqueue file system and a queue in it, which mq_open names "a".
     "/dev/mqueue",
     "/dev/mqueue/a",
     // Pseudo-terminals: the master, the first two slaves, and the controlling terminal, which no
     // sequence has (every open is O_NOCTTY).
-    wcontainers_kernel::PTMX_PATH,
+    wcontainers_kernel_linux::PTMX_PATH,
     "/dev/pts/0",
     "/dev/pts/1",
     "/dev/tty",
@@ -4639,11 +4639,11 @@ fn run_ours_on(
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
         standard: crate::streams::StreamClient::default().standard(),
-        address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes: wcontainers_abi::Cpu::address_space(cpu).end,
         ceiling: None,
-        execution: wcontainers_kernel::ExecutionConfig::default(),
-        options: wcontainers_kernel::StartOptions::default(),
+        execution: wcontainers_kernel_linux::ExecutionConfig::default(),
+        options: wcontainers_kernel_linux::StartOptions::default(),
     };
     kernel
         .start(cpu, &host, &start)
@@ -5635,7 +5635,7 @@ pub fn difference(
     let (their_seen, their_status, their_play) = seen(sequence, theirs, &unshared);
     let mut text = String::new();
     for (index, call) in sequence.calls.iter().enumerate() {
-        let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");
+        let name = wcontainers_kernel_linux::system_call_name(call.number.into()).unwrap_or("?");
         let mut line = format!("{index}: {name}({:x?})", call.arguments);
         if matches!(
             call.number,

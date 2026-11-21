@@ -59,7 +59,7 @@ pub fn shapes_of_image(files: &[File]) -> BTreeMap<String, Shape> {
     out
 }
 
-pub fn shapes_of_kernel(files: &[wcontainers_kernel::FileRecord]) -> BTreeMap<String, Shape> {
+pub fn shapes_of_kernel(files: &[wcontainers_kernel_linux::FileRecord]) -> BTreeMap<String, Shape> {
     files
         .iter()
         .map(|file| {
@@ -165,7 +165,7 @@ pub fn run_ours_hooked(
 /// As [`run_ours`], with what the container's configuration sets beyond its program.
 pub fn run_ours_with(
     command: &[&str],
-    options: wcontainers_kernel::StartOptions<'static>,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
 ) -> driver::Run {
     try_ours_with(command, options)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
@@ -174,7 +174,7 @@ pub fn run_ours_with(
 /// As [`run_ours_with`], with a start that fails given back.
 pub fn try_ours_with(
     command: &[&str],
-    options: wcontainers_kernel::StartOptions<'static>,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
 ) -> Result<driver::Run, driver::Failure> {
     let path = on_path(command[0]);
     let container = container(command, &path, None);
@@ -270,7 +270,7 @@ pub fn compare(command: &[&str]) -> driver::Run {
         let messages: u64 = ours
             .counters
             .iter()
-            .filter(|counter| counter.reason == wcontainers_kernel::reason::BACKEND_MESSAGE)
+            .filter(|counter| counter.reason == wcontainers_kernel_linux::reason::BACKEND_MESSAGE)
             .map(|counter| counter.count)
             .sum();
         assert_eq!(
@@ -308,7 +308,7 @@ impl Reference {
         command: &[&str],
         root: &str,
         ours: &driver::Outcome,
-        files: &[wcontainers_kernel::FileRecord],
+        files: &[wcontainers_kernel_linux::FileRecord],
     ) {
         let theirs = &self.outcome;
         let their_changes = &self.changes;
@@ -442,9 +442,14 @@ pub const FILES: &[&[&str]] = &[
         "/etc/passwd",
         "/bin/sh",
         "/dev/shm",
-        wcontainers_kernel::NULL_PATH,
+        wcontainers_kernel_linux::NULL_PATH,
     ],
-    &["ls", "-la", "/dev/shm", wcontainers_kernel::DEVPTS_PATH],
+    &[
+        "ls",
+        "-la",
+        "/dev/shm",
+        wcontainers_kernel_linux::DEVPTS_PATH,
+    ],
     &["ln", "-s", "/etc/passwd", "/tmp/link"],
     &["ln", "/etc/passwd", "/tmp/hard"],
     &["chmod", "4755", "/etc/motd"],

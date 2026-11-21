@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use wcontainers_kernel::reason;
+use wcontainers_kernel_linux::reason;
 use wcontainers_kernel_test::assert_same_output;
 
 #[test]

@@ -79,7 +79,7 @@ fn file_calls_match_reference() {
         let messages: u64 = run
             .counters
             .iter()
-            .filter(|counter| counter.reason == wcontainers_kernel::reason::BACKEND_MESSAGE)
+            .filter(|counter| counter.reason == wcontainers_kernel_linux::reason::BACKEND_MESSAGE)
             .map(|counter| counter.count)
             .sum();
         assert!(messages > 0, "no message reached the backend");
@@ -99,7 +99,7 @@ fn attributes_and_allocation_match_reference() {
 /// private, across a fork and with the file changed while mapped. Nothing is read whole.
 #[test]
 fn mapped_pages_read_when_touched_match_reference() {
-    use wcontainers_kernel::reason;
+    use wcontainers_kernel_linux::reason;
     let injections = driver::Injections {
         saves: 4,
         save_gap: 10,
@@ -172,7 +172,7 @@ fn arguments_taken_once_match_reference() {
 fn listings_match_reference() {
     for cached in [false, true] {
         for run in same_on("backendlisting", driver::Injections::default(), cached) {
-            assert_warned_only(&run, &[wcontainers_kernel::reason::FLAG_NOT_BUILT]);
+            assert_warned_only(&run, &[wcontainers_kernel_linux::reason::FLAG_NOT_BUILT]);
         }
     }
 }
@@ -292,7 +292,7 @@ fn cached_mappings_share_pages_as_reference() {
 /// The only warnings a run with shared mappings of backend files gives: their pages written back
 /// whole, and the syndrome of a fault past a file's end.
 fn assert_only_written_whole(run: &driver::Run) {
-    use wcontainers_kernel::reason;
+    use wcontainers_kernel_linux::reason;
     assert_warned_only(
         run,
         &[
@@ -332,7 +332,7 @@ fn file_calls_survive_saves() {
 #[test]
 fn backend_notices_are_handled() {
     use fuse_abi::linux::fuse_notify_code::*;
-    use wcontainers_kernel::reason;
+    use wcontainers_kernel_linux::reason;
     let injections = driver::Injections {
         notices: 400,
         ..Default::default()
@@ -402,7 +402,7 @@ fn messages_per_call() {
         assert_eq!(run.outcome.stdout, format!("{kind} done\n").into_bytes());
         run.counters
             .iter()
-            .filter(|counter| counter.reason == wcontainers_kernel::reason::BACKEND_MESSAGE)
+            .filter(|counter| counter.reason == wcontainers_kernel_linux::reason::BACKEND_MESSAGE)
             .map(|counter| (counter.detail, counter.count))
             .collect()
     };

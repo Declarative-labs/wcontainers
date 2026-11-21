@@ -4190,7 +4190,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
- "wcontainers-kernel",
+ "wcontainers-kernel-linux",
  "wcontainers-kernel-test",
  "wcontainers-kernel-test-policy",
  "wcontainers-runtime-single-kernel",
@@ -4239,7 +4239,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
- "wcontainers-kernel",
+ "wcontainers-kernel-linux",
  "wcontainers-kernel-test-policy",
  "wcontainers-runtime-single-kernel",
  "zerocopy",
@@ -4251,21 +4251,6 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "wcontainers-abi",
-]
-
-[[package]]
-name = "wcontainers-kernel"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "fuse-abi",
- "object 0.41.0",
- "rangemap",
- "simple-dns",
- "siphasher",
- "smallvec",
- "wcontainers-abi",
- "zerocopy",
 ]
 
 [[package]]
@@ -4282,6 +4267,21 @@ name = "wcontainers-kernel-interface-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-kernel-interface",
+]
+
+[[package]]
+name = "wcontainers-kernel-linux"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "fuse-abi",
+ "object 0.41.0",
+ "rangemap",
+ "simple-dns",
+ "siphasher",
+ "smallvec",
+ "wcontainers-abi",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4302,7 +4302,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-docker",
- "wcontainers-kernel",
+ "wcontainers-kernel-linux",
  "wcontainers-kernel-test-policy",
  "wcontainers-runtime-single-kernel",
  "wcontainers-wasmtime",
@@ -4316,7 +4316,7 @@ dependencies = [
  "rand 0.9.5",
  "spin 0.10.1",
  "wcontainers-abi",
- "wcontainers-kernel",
+ "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
 ]
 
@@ -4473,7 +4473,7 @@ dependencies = [
  "socket2",
  "tar",
  "wcontainers-abi",
- "wcontainers-kernel",
+ "wcontainers-kernel-linux",
  "zerocopy",
 ]
 

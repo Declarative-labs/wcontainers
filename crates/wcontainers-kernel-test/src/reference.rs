@@ -74,7 +74,7 @@ fn guest_volume(directory: &Path) -> String {
 /// could not run.
 fn assert_docker_ran(exit_code: i32, stderr: &[u8]) {
     assert!(
-        !(wcontainers_kernel::EXIT_START_FAILED..=wcontainers_kernel::EXIT_NOT_FOUND)
+        !(wcontainers_kernel_linux::EXIT_START_FAILED..=wcontainers_kernel_linux::EXIT_NOT_FOUND)
             .contains(&exit_code),
         "docker could not run the container (exit {exit_code}): {}",
         String::from_utf8_lossy(stderr)
@@ -230,7 +230,7 @@ pub fn refused_with(options: &[&str], command: &[&str]) -> Outcome {
         .expect("running docker");
     let exit_code = output.status.code().expect("docker exited normally");
     assert!(
-        (wcontainers_kernel::EXIT_START_FAILED..=wcontainers_kernel::EXIT_NOT_FOUND)
+        (wcontainers_kernel_linux::EXIT_START_FAILED..=wcontainers_kernel_linux::EXIT_NOT_FOUND)
             .contains(&exit_code),
         "docker ran the container (exit {exit_code})"
     );

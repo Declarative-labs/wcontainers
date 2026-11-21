@@ -11,7 +11,7 @@ use wcontainers_abi::{
     BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE,
     SystemCallRequest, Warning,
 };
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::{
     AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
     SignalInformation, Standard, Start, System, SystemCallResponse, TaskId,
 };
@@ -727,8 +727,8 @@ impl<H: Send> Host for TestHost<H> {
 
     fn warn(&self, warning: Warning<'_>) {
         // Only a missing call's detail is a call number.
-        let name = if warning.reason == wcontainers_kernel::reason::NOT_IMPLEMENTED {
-            wcontainers_kernel::system_call_name(warning.detail).unwrap_or("")
+        let name = if warning.reason == wcontainers_kernel_linux::reason::NOT_IMPLEMENTED {
+            wcontainers_kernel_linux::system_call_name(warning.detail).unwrap_or("")
         } else {
             ""
         };
@@ -899,9 +899,9 @@ where
 
 /// The exit code `docker run` gives for a wait status.
 pub fn exit_code(wait_status: i32) -> i32 {
-    match wcontainers_kernel::wait::decode(wait_status) {
-        wcontainers_kernel::wait::Ended::Exited(code) => code,
-        wcontainers_kernel::wait::Ended::Killed { signal, .. } => {
+    match wcontainers_kernel_linux::wait::decode(wait_status) {
+        wcontainers_kernel_linux::wait::Ended::Exited(code) => code,
+        wcontainers_kernel_linux::wait::Ended::Killed { signal, .. } => {
             wcontainers_abi::SIGNALLED_EXIT_BASE + signal
         }
     }
@@ -1043,7 +1043,7 @@ pub struct Prepared {
     /// A record to keep of what the host gives the kernel, or to answer from in its place.
     pub tape: Option<Tape>,
     /// What the container's configuration sets beyond its program.
-    pub options: wcontainers_kernel::StartOptions<'static>,
+    pub options: wcontainers_kernel_linux::StartOptions<'static>,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -1182,7 +1182,7 @@ where
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
         standard: host.standard(),
-        address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes: cpu.address_space().end,
         ceiling,
         execution: ExecutionConfig::default(),

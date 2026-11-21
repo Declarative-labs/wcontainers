@@ -15,7 +15,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
 use wcontainers_abi::{BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, Warning};
-use wcontainers_kernel::{Kernel, Standard, TaskId};
+use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
 use wcontainers_runtime::{Execution, System, TerminalSize, Turn};
 
 /// The ends this policy names for the first process's standard output and error; it gives no input.
@@ -270,7 +270,7 @@ impl<H: Host> Host for TestPolicy<H> {
     }
 }
 
-impl<H: Host> wcontainers_kernel::System for TestPolicy<H> {
+impl<H: Host> wcontainers_kernel_linux::System for TestPolicy<H> {
     fn free_task_id(&self, _id: TaskId) {}
 }
 

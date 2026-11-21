@@ -31,7 +31,8 @@ fn root_files_match_reference() {
         assert!(
             !run.warnings
                 .iter()
-                .any(|warning| warning.reason == wcontainers_kernel::reason::COPY_SHORT_OF_PAGES),
+                .any(|warning| warning.reason
+                    == wcontainers_kernel_linux::reason::COPY_SHORT_OF_PAGES),
             "a copy came short: {:?}",
             run.warnings
         );

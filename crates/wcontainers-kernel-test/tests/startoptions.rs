@@ -10,15 +10,15 @@ use std::path::Path;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use linux_raw_sys::general::RLIMIT_NOFILE;
-use wcontainers_kernel::linux::general::{
+use wcontainers_kernel_linux::linux::general::{
     __NR_mkdirat, __kernel_timespec, CAP_CHOWN, CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_TIME,
     SCHED_NORMAL,
 };
-use wcontainers_kernel::linux::ptrace::{
+use wcontainers_kernel_linux::linux::ptrace::{
     AUDIT_ARCH_AARCH64, BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W,
     SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS, seccomp_data, sock_filter,
 };
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::{
     ADDR_NO_RANDOMIZE, CGROUP_MOUNT, CapabilitySets, DEV_MOUNT, DEVPTS_MOUNT, DOCKER_CAPABILITIES,
     DOCKER_LIMITS, DOCKER_MOUNTS, DOCKER_UMASK, DockerMount, Errno, IOPRIO_CLASS_BE,
     IOPRIO_CLASS_SHIFT, MQUEUE_MOUNT, PROC_MOUNT, SHM_MOUNT, SYS_MOUNT, Seccomp, StartOptions,

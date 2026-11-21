@@ -138,7 +138,7 @@ fn socket_edges_match_reference() {
 
 #[test]
 fn options_not_acted_on_are_counted() {
-    use wcontainers_kernel::reason;
+    use wcontainers_kernel_linux::reason;
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let program = wcontainers_kernel_test::guest::build("sockedges", &[], &out);
     let (ours, theirs) = wcontainers_kernel_test::run_both(&program, &["unacted"]);

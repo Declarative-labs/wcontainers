@@ -184,7 +184,7 @@ pub fn assert_same_output_on_wall_clock(out: &Path, name: &str) -> driver::Run {
 pub fn assert_same_output_with(
     out: &Path,
     name: &str,
-    options: wcontainers_kernel::StartOptions<'static>,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
     docker_options: &[&str],
     reference_arguments: &[&str],
 ) -> driver::Run {

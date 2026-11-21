@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use wcontainers_kernel::reason;
+use wcontainers_kernel_linux::reason;
 use wcontainers_kernel_test::reference::{GUEST_DIRECTORY, PLATFORM, docker};
 use wcontainers_kernel_test::runtimes::{self, JAVA, JDK};
 

@@ -9,4463 +9,4424 @@ use core::mem::{align_of, size_of};
 #[test]
 fn layouts_match_linux_raw_sys() {
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_fd_set>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_fd_set>(),
         size_of::<linux_raw_sys::general::__kernel_fd_set>(),
         "general::__kernel_fd_set"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_fd_set>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_fd_set>(),
         align_of::<linux_raw_sys::general::__kernel_fd_set>(),
         "general::__kernel_fd_set"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_fsid_t>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_fsid_t>(),
         size_of::<linux_raw_sys::general::__kernel_fsid_t>(),
         "general::__kernel_fsid_t"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_fsid_t>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_fsid_t>(),
         align_of::<linux_raw_sys::general::__kernel_fsid_t>(),
         "general::__kernel_fsid_t"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__user_cap_header_struct>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__user_cap_header_struct>(),
         size_of::<linux_raw_sys::general::__user_cap_header_struct>(),
         "general::__user_cap_header_struct"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__user_cap_header_struct>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__user_cap_header_struct>(),
         align_of::<linux_raw_sys::general::__user_cap_header_struct>(),
         "general::__user_cap_header_struct"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__user_cap_data_struct>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__user_cap_data_struct>(),
         size_of::<linux_raw_sys::general::__user_cap_data_struct>(),
         "general::__user_cap_data_struct"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__user_cap_data_struct>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__user_cap_data_struct>(),
         align_of::<linux_raw_sys::general::__user_cap_data_struct>(),
         "general::__user_cap_data_struct"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::vfs_cap_data>(),
+        size_of::<wcontainers_kernel_linux::linux::general::vfs_cap_data>(),
         size_of::<linux_raw_sys::general::vfs_cap_data>(),
         "general::vfs_cap_data"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::vfs_cap_data>(),
+        align_of::<wcontainers_kernel_linux::linux::general::vfs_cap_data>(),
         align_of::<linux_raw_sys::general::vfs_cap_data>(),
         "general::vfs_cap_data"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::vfs_cap_data__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::vfs_cap_data__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::vfs_cap_data__bindgen_ty_1>(),
         "general::vfs_cap_data__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::vfs_cap_data__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::vfs_cap_data__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::vfs_cap_data__bindgen_ty_1>(),
         "general::vfs_cap_data__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::vfs_ns_cap_data>(),
+        size_of::<wcontainers_kernel_linux::linux::general::vfs_ns_cap_data>(),
         size_of::<linux_raw_sys::general::vfs_ns_cap_data>(),
         "general::vfs_ns_cap_data"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::vfs_ns_cap_data>(),
+        align_of::<wcontainers_kernel_linux::linux::general::vfs_ns_cap_data>(),
         align_of::<linux_raw_sys::general::vfs_ns_cap_data>(),
         "general::vfs_ns_cap_data"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::vfs_ns_cap_data__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::vfs_ns_cap_data__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::vfs_ns_cap_data__bindgen_ty_1>(),
         "general::vfs_ns_cap_data__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::vfs_ns_cap_data__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::vfs_ns_cap_data__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::vfs_ns_cap_data__bindgen_ty_1>(),
         "general::vfs_ns_cap_data__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::f_owner_ex>(),
+        size_of::<wcontainers_kernel_linux::linux::general::f_owner_ex>(),
         size_of::<linux_raw_sys::general::f_owner_ex>(),
         "general::f_owner_ex"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::f_owner_ex>(),
+        align_of::<wcontainers_kernel_linux::linux::general::f_owner_ex>(),
         align_of::<linux_raw_sys::general::f_owner_ex>(),
         "general::f_owner_ex"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::flock>(),
+        size_of::<wcontainers_kernel_linux::linux::general::flock>(),
         size_of::<linux_raw_sys::general::flock>(),
         "general::flock"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::flock>(),
+        align_of::<wcontainers_kernel_linux::linux::general::flock>(),
         align_of::<linux_raw_sys::general::flock>(),
         "general::flock"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::flock64>(),
+        size_of::<wcontainers_kernel_linux::linux::general::flock64>(),
         size_of::<linux_raw_sys::general::flock64>(),
         "general::flock64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::flock64>(),
+        align_of::<wcontainers_kernel_linux::linux::general::flock64>(),
         align_of::<linux_raw_sys::general::flock64>(),
         "general::flock64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::open_how>(),
+        size_of::<wcontainers_kernel_linux::linux::general::open_how>(),
         size_of::<linux_raw_sys::general::open_how>(),
         "general::open_how"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::open_how>(),
+        align_of::<wcontainers_kernel_linux::linux::general::open_how>(),
         align_of::<linux_raw_sys::general::open_how>(),
         "general::open_how"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::epoll_event>(),
+        size_of::<wcontainers_kernel_linux::linux::general::epoll_event>(),
         size_of::<linux_raw_sys::general::epoll_event>(),
         "general::epoll_event"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::epoll_event>(),
+        align_of::<wcontainers_kernel_linux::linux::general::epoll_event>(),
         align_of::<linux_raw_sys::general::epoll_event>(),
         "general::epoll_event"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::epoll_params>(),
+        size_of::<wcontainers_kernel_linux::linux::general::epoll_params>(),
         size_of::<linux_raw_sys::general::epoll_params>(),
         "general::epoll_params"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::epoll_params>(),
+        align_of::<wcontainers_kernel_linux::linux::general::epoll_params>(),
         align_of::<linux_raw_sys::general::epoll_params>(),
         "general::epoll_params"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_policy_v1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_policy_v1>(),
         size_of::<linux_raw_sys::general::fscrypt_policy_v1>(),
         "general::fscrypt_policy_v1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_policy_v1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_policy_v1>(),
         align_of::<linux_raw_sys::general::fscrypt_policy_v1>(),
         "general::fscrypt_policy_v1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_key>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_key>(),
         size_of::<linux_raw_sys::general::fscrypt_key>(),
         "general::fscrypt_key"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_key>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_key>(),
         align_of::<linux_raw_sys::general::fscrypt_key>(),
         "general::fscrypt_key"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_policy_v2>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_policy_v2>(),
         size_of::<linux_raw_sys::general::fscrypt_policy_v2>(),
         "general::fscrypt_policy_v2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_policy_v2>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_policy_v2>(),
         align_of::<linux_raw_sys::general::fscrypt_policy_v2>(),
         "general::fscrypt_policy_v2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_get_policy_ex_arg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_get_policy_ex_arg>(),
         size_of::<linux_raw_sys::general::fscrypt_get_policy_ex_arg>(),
         "general::fscrypt_get_policy_ex_arg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_get_policy_ex_arg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_get_policy_ex_arg>(),
         align_of::<linux_raw_sys::general::fscrypt_get_policy_ex_arg>(),
         "general::fscrypt_get_policy_ex_arg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_key_specifier>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_key_specifier>(),
         size_of::<linux_raw_sys::general::fscrypt_key_specifier>(),
         "general::fscrypt_key_specifier"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_key_specifier>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_key_specifier>(),
         align_of::<linux_raw_sys::general::fscrypt_key_specifier>(),
         "general::fscrypt_key_specifier"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_provisioning_key_payload>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_provisioning_key_payload>(),
         size_of::<linux_raw_sys::general::fscrypt_provisioning_key_payload>(),
         "general::fscrypt_provisioning_key_payload"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_provisioning_key_payload>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_provisioning_key_payload>(),
         align_of::<linux_raw_sys::general::fscrypt_provisioning_key_payload>(),
         "general::fscrypt_provisioning_key_payload"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_add_key_arg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_add_key_arg>(),
         size_of::<linux_raw_sys::general::fscrypt_add_key_arg>(),
         "general::fscrypt_add_key_arg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_add_key_arg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_add_key_arg>(),
         align_of::<linux_raw_sys::general::fscrypt_add_key_arg>(),
         "general::fscrypt_add_key_arg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_remove_key_arg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_remove_key_arg>(),
         size_of::<linux_raw_sys::general::fscrypt_remove_key_arg>(),
         "general::fscrypt_remove_key_arg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_remove_key_arg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_remove_key_arg>(),
         align_of::<linux_raw_sys::general::fscrypt_remove_key_arg>(),
         "general::fscrypt_remove_key_arg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_get_key_status_arg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_get_key_status_arg>(),
         size_of::<linux_raw_sys::general::fscrypt_get_key_status_arg>(),
         "general::fscrypt_get_key_status_arg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_get_key_status_arg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_get_key_status_arg>(),
         align_of::<linux_raw_sys::general::fscrypt_get_key_status_arg>(),
         "general::fscrypt_get_key_status_arg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::mount_attr>(),
+        size_of::<wcontainers_kernel_linux::linux::general::mount_attr>(),
         size_of::<linux_raw_sys::general::mount_attr>(),
         "general::mount_attr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::mount_attr>(),
+        align_of::<wcontainers_kernel_linux::linux::general::mount_attr>(),
         align_of::<linux_raw_sys::general::mount_attr>(),
         "general::mount_attr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::statmount>(),
+        size_of::<wcontainers_kernel_linux::linux::general::statmount>(),
         size_of::<linux_raw_sys::general::statmount>(),
         "general::statmount"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::statmount>(),
+        align_of::<wcontainers_kernel_linux::linux::general::statmount>(),
         align_of::<linux_raw_sys::general::statmount>(),
         "general::statmount"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::mnt_id_req>(),
+        size_of::<wcontainers_kernel_linux::linux::general::mnt_id_req>(),
         size_of::<linux_raw_sys::general::mnt_id_req>(),
         "general::mnt_id_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::mnt_id_req>(),
+        align_of::<wcontainers_kernel_linux::linux::general::mnt_id_req>(),
         align_of::<linux_raw_sys::general::mnt_id_req>(),
         "general::mnt_id_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::file_clone_range>(),
+        size_of::<wcontainers_kernel_linux::linux::general::file_clone_range>(),
         size_of::<linux_raw_sys::general::file_clone_range>(),
         "general::file_clone_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::file_clone_range>(),
+        align_of::<wcontainers_kernel_linux::linux::general::file_clone_range>(),
         align_of::<linux_raw_sys::general::file_clone_range>(),
         "general::file_clone_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fstrim_range>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fstrim_range>(),
         size_of::<linux_raw_sys::general::fstrim_range>(),
         "general::fstrim_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fstrim_range>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fstrim_range>(),
         align_of::<linux_raw_sys::general::fstrim_range>(),
         "general::fstrim_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fsuuid2>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fsuuid2>(),
         size_of::<linux_raw_sys::general::fsuuid2>(),
         "general::fsuuid2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fsuuid2>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fsuuid2>(),
         align_of::<linux_raw_sys::general::fsuuid2>(),
         "general::fsuuid2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fs_sysfs_path>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fs_sysfs_path>(),
         size_of::<linux_raw_sys::general::fs_sysfs_path>(),
         "general::fs_sysfs_path"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fs_sysfs_path>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fs_sysfs_path>(),
         align_of::<linux_raw_sys::general::fs_sysfs_path>(),
         "general::fs_sysfs_path"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::logical_block_metadata_cap>(),
+        size_of::<wcontainers_kernel_linux::linux::general::logical_block_metadata_cap>(),
         size_of::<linux_raw_sys::general::logical_block_metadata_cap>(),
         "general::logical_block_metadata_cap"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::logical_block_metadata_cap>(),
+        align_of::<wcontainers_kernel_linux::linux::general::logical_block_metadata_cap>(),
         align_of::<linux_raw_sys::general::logical_block_metadata_cap>(),
         "general::logical_block_metadata_cap"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::file_dedupe_range_info>(),
+        size_of::<wcontainers_kernel_linux::linux::general::file_dedupe_range_info>(),
         size_of::<linux_raw_sys::general::file_dedupe_range_info>(),
         "general::file_dedupe_range_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::file_dedupe_range_info>(),
+        align_of::<wcontainers_kernel_linux::linux::general::file_dedupe_range_info>(),
         align_of::<linux_raw_sys::general::file_dedupe_range_info>(),
         "general::file_dedupe_range_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::file_dedupe_range>(),
+        size_of::<wcontainers_kernel_linux::linux::general::file_dedupe_range>(),
         size_of::<linux_raw_sys::general::file_dedupe_range>(),
         "general::file_dedupe_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::file_dedupe_range>(),
+        align_of::<wcontainers_kernel_linux::linux::general::file_dedupe_range>(),
         align_of::<linux_raw_sys::general::file_dedupe_range>(),
         "general::file_dedupe_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::files_stat_struct>(),
+        size_of::<wcontainers_kernel_linux::linux::general::files_stat_struct>(),
         size_of::<linux_raw_sys::general::files_stat_struct>(),
         "general::files_stat_struct"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::files_stat_struct>(),
+        align_of::<wcontainers_kernel_linux::linux::general::files_stat_struct>(),
         align_of::<linux_raw_sys::general::files_stat_struct>(),
         "general::files_stat_struct"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::inodes_stat_t>(),
+        size_of::<wcontainers_kernel_linux::linux::general::inodes_stat_t>(),
         size_of::<linux_raw_sys::general::inodes_stat_t>(),
         "general::inodes_stat_t"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::inodes_stat_t>(),
+        align_of::<wcontainers_kernel_linux::linux::general::inodes_stat_t>(),
         align_of::<linux_raw_sys::general::inodes_stat_t>(),
         "general::inodes_stat_t"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fsxattr>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fsxattr>(),
         size_of::<linux_raw_sys::general::fsxattr>(),
         "general::fsxattr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fsxattr>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fsxattr>(),
         align_of::<linux_raw_sys::general::fsxattr>(),
         "general::fsxattr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::file_attr>(),
+        size_of::<wcontainers_kernel_linux::linux::general::file_attr>(),
         size_of::<linux_raw_sys::general::file_attr>(),
         "general::file_attr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::file_attr>(),
+        align_of::<wcontainers_kernel_linux::linux::general::file_attr>(),
         align_of::<linux_raw_sys::general::file_attr>(),
         "general::file_attr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::page_region>(),
+        size_of::<wcontainers_kernel_linux::linux::general::page_region>(),
         size_of::<linux_raw_sys::general::page_region>(),
         "general::page_region"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::page_region>(),
+        align_of::<wcontainers_kernel_linux::linux::general::page_region>(),
         align_of::<linux_raw_sys::general::page_region>(),
         "general::page_region"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::pm_scan_arg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::pm_scan_arg>(),
         size_of::<linux_raw_sys::general::pm_scan_arg>(),
         "general::pm_scan_arg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::pm_scan_arg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::pm_scan_arg>(),
         align_of::<linux_raw_sys::general::pm_scan_arg>(),
         "general::pm_scan_arg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::procmap_query>(),
+        size_of::<wcontainers_kernel_linux::linux::general::procmap_query>(),
         size_of::<linux_raw_sys::general::procmap_query>(),
         "general::procmap_query"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::procmap_query>(),
+        align_of::<wcontainers_kernel_linux::linux::general::procmap_query>(),
         align_of::<linux_raw_sys::general::procmap_query>(),
         "general::procmap_query"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::futex_waitv>(),
+        size_of::<wcontainers_kernel_linux::linux::general::futex_waitv>(),
         size_of::<linux_raw_sys::general::futex_waitv>(),
         "general::futex_waitv"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::futex_waitv>(),
+        align_of::<wcontainers_kernel_linux::linux::general::futex_waitv>(),
         align_of::<linux_raw_sys::general::futex_waitv>(),
         "general::futex_waitv"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::robust_list>(),
+        size_of::<wcontainers_kernel_linux::linux::general::robust_list>(),
         size_of::<linux_raw_sys::general::robust_list>(),
         "general::robust_list"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::robust_list>(),
+        align_of::<wcontainers_kernel_linux::linux::general::robust_list>(),
         align_of::<linux_raw_sys::general::robust_list>(),
         "general::robust_list"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::robust_list_head>(),
+        size_of::<wcontainers_kernel_linux::linux::general::robust_list_head>(),
         size_of::<linux_raw_sys::general::robust_list_head>(),
         "general::robust_list_head"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::robust_list_head>(),
+        align_of::<wcontainers_kernel_linux::linux::general::robust_list_head>(),
         align_of::<linux_raw_sys::general::robust_list_head>(),
         "general::robust_list_head"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::inotify_event>(),
+        size_of::<wcontainers_kernel_linux::linux::general::inotify_event>(),
         size_of::<linux_raw_sys::general::inotify_event>(),
         "general::inotify_event"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::inotify_event>(),
+        align_of::<wcontainers_kernel_linux::linux::general::inotify_event>(),
         align_of::<linux_raw_sys::general::inotify_event>(),
         "general::inotify_event"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::cachestat_range>(),
+        size_of::<wcontainers_kernel_linux::linux::general::cachestat_range>(),
         size_of::<linux_raw_sys::general::cachestat_range>(),
         "general::cachestat_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::cachestat_range>(),
+        align_of::<wcontainers_kernel_linux::linux::general::cachestat_range>(),
         align_of::<linux_raw_sys::general::cachestat_range>(),
         "general::cachestat_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::cachestat>(),
+        size_of::<wcontainers_kernel_linux::linux::general::cachestat>(),
         size_of::<linux_raw_sys::general::cachestat>(),
         "general::cachestat"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::cachestat>(),
+        align_of::<wcontainers_kernel_linux::linux::general::cachestat>(),
         align_of::<linux_raw_sys::general::cachestat>(),
         "general::cachestat"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::pollfd>(),
+        size_of::<wcontainers_kernel_linux::linux::general::pollfd>(),
         size_of::<linux_raw_sys::general::pollfd>(),
         "general::pollfd"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::pollfd>(),
+        align_of::<wcontainers_kernel_linux::linux::general::pollfd>(),
         align_of::<linux_raw_sys::general::pollfd>(),
         "general::pollfd"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::rand_pool_info>(),
+        size_of::<wcontainers_kernel_linux::linux::general::rand_pool_info>(),
         size_of::<linux_raw_sys::general::rand_pool_info>(),
         "general::rand_pool_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::rand_pool_info>(),
+        align_of::<wcontainers_kernel_linux::linux::general::rand_pool_info>(),
         align_of::<linux_raw_sys::general::rand_pool_info>(),
         "general::rand_pool_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::vgetrandom_opaque_params>(),
+        size_of::<wcontainers_kernel_linux::linux::general::vgetrandom_opaque_params>(),
         size_of::<linux_raw_sys::general::vgetrandom_opaque_params>(),
         "general::vgetrandom_opaque_params"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::vgetrandom_opaque_params>(),
+        align_of::<wcontainers_kernel_linux::linux::general::vgetrandom_opaque_params>(),
         align_of::<linux_raw_sys::general::vgetrandom_opaque_params>(),
         "general::vgetrandom_opaque_params"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_timespec>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_timespec>(),
         size_of::<linux_raw_sys::general::__kernel_timespec>(),
         "general::__kernel_timespec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_timespec>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_timespec>(),
         align_of::<linux_raw_sys::general::__kernel_timespec>(),
         "general::__kernel_timespec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_itimerspec>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_itimerspec>(),
         size_of::<linux_raw_sys::general::__kernel_itimerspec>(),
         "general::__kernel_itimerspec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_itimerspec>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_itimerspec>(),
         align_of::<linux_raw_sys::general::__kernel_itimerspec>(),
         "general::__kernel_itimerspec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_old_timeval>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_old_timeval>(),
         size_of::<linux_raw_sys::general::__kernel_old_timeval>(),
         "general::__kernel_old_timeval"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_old_timeval>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_old_timeval>(),
         align_of::<linux_raw_sys::general::__kernel_old_timeval>(),
         "general::__kernel_old_timeval"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_old_timespec>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_old_timespec>(),
         size_of::<linux_raw_sys::general::__kernel_old_timespec>(),
         "general::__kernel_old_timespec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_old_timespec>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_old_timespec>(),
         align_of::<linux_raw_sys::general::__kernel_old_timespec>(),
         "general::__kernel_old_timespec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_old_itimerval>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_old_itimerval>(),
         size_of::<linux_raw_sys::general::__kernel_old_itimerval>(),
         "general::__kernel_old_itimerval"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_old_itimerval>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_old_itimerval>(),
         align_of::<linux_raw_sys::general::__kernel_old_itimerval>(),
         "general::__kernel_old_itimerval"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__kernel_sock_timeval>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__kernel_sock_timeval>(),
         size_of::<linux_raw_sys::general::__kernel_sock_timeval>(),
         "general::__kernel_sock_timeval"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__kernel_sock_timeval>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__kernel_sock_timeval>(),
         align_of::<linux_raw_sys::general::__kernel_sock_timeval>(),
         "general::__kernel_sock_timeval"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::rusage>(),
+        size_of::<wcontainers_kernel_linux::linux::general::rusage>(),
         size_of::<linux_raw_sys::general::rusage>(),
         "general::rusage"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::rusage>(),
+        align_of::<wcontainers_kernel_linux::linux::general::rusage>(),
         align_of::<linux_raw_sys::general::rusage>(),
         "general::rusage"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::rlimit>(),
+        size_of::<wcontainers_kernel_linux::linux::general::rlimit>(),
         size_of::<linux_raw_sys::general::rlimit>(),
         "general::rlimit"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::rlimit>(),
+        align_of::<wcontainers_kernel_linux::linux::general::rlimit>(),
         align_of::<linux_raw_sys::general::rlimit>(),
         "general::rlimit"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::rlimit64>(),
+        size_of::<wcontainers_kernel_linux::linux::general::rlimit64>(),
         size_of::<linux_raw_sys::general::rlimit64>(),
         "general::rlimit64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::rlimit64>(),
+        align_of::<wcontainers_kernel_linux::linux::general::rlimit64>(),
         align_of::<linux_raw_sys::general::rlimit64>(),
         "general::rlimit64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::clone_args>(),
+        size_of::<wcontainers_kernel_linux::linux::general::clone_args>(),
         size_of::<linux_raw_sys::general::clone_args>(),
         "general::clone_args"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::clone_args>(),
+        align_of::<wcontainers_kernel_linux::linux::general::clone_args>(),
         align_of::<linux_raw_sys::general::clone_args>(),
         "general::clone_args"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigset_t>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigset_t>(),
         size_of::<linux_raw_sys::general::sigset_t>(),
         "general::sigset_t"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigset_t>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigset_t>(),
         align_of::<linux_raw_sys::general::sigset_t>(),
         "general::sigset_t"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigaction>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigaction>(),
         size_of::<linux_raw_sys::general::sigaction>(),
         "general::sigaction"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigaction>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigaction>(),
         align_of::<linux_raw_sys::general::sigaction>(),
         "general::sigaction"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigaltstack>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigaltstack>(),
         size_of::<linux_raw_sys::general::sigaltstack>(),
         "general::sigaltstack"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigaltstack>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigaltstack>(),
         align_of::<linux_raw_sys::general::sigaltstack>(),
         "general::sigaltstack"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_1>(),
         "general::__sifields__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_1>(),
         "general::__sifields__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_2>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_2>(),
         "general::__sifields__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_2>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_2>(),
         "general::__sifields__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_3>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_3>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_3>(),
         "general::__sifields__bindgen_ty_3"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_3>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_3>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_3>(),
         "general::__sifields__bindgen_ty_3"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_4>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_4>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_4>(),
         "general::__sifields__bindgen_ty_4"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_4>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_4>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_4>(),
         "general::__sifields__bindgen_ty_4"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5>(),
         "general::__sifields__bindgen_ty_5"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5>(),
         "general::__sifields__bindgen_ty_5"
     );
-    assert_eq!(size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1");
-    assert_eq!(align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1");
-    assert_eq!(size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2");
-    assert_eq!(align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2");
-    assert_eq!(size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3");
-    assert_eq!(align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_2");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3>(), "general::__sifields__bindgen_ty_5__bindgen_ty_1__bindgen_ty_3");
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_6>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_6>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_6>(),
         "general::__sifields__bindgen_ty_6"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_6>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_6>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_6>(),
         "general::__sifields__bindgen_ty_6"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_7>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_7>(),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_7>(),
         "general::__sifields__bindgen_ty_7"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_7>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_7>(),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_7>(),
         "general::__sifields__bindgen_ty_7"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::siginfo>(),
+        size_of::<wcontainers_kernel_linux::linux::general::siginfo>(),
         size_of::<linux_raw_sys::general::siginfo>(),
         "general::siginfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::siginfo>(),
+        align_of::<wcontainers_kernel_linux::linux::general::siginfo>(),
         align_of::<linux_raw_sys::general::siginfo>(),
         "general::siginfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::siginfo__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::siginfo__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::siginfo__bindgen_ty_1__bindgen_ty_1>(),
         "general::siginfo__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::siginfo__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::siginfo__bindgen_ty_1__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::siginfo__bindgen_ty_1__bindgen_ty_1>(),
         "general::siginfo__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigevent>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigevent>(),
         size_of::<linux_raw_sys::general::sigevent>(),
         "general::sigevent"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigevent>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigevent>(),
         align_of::<linux_raw_sys::general::sigevent>(),
         "general::sigevent"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigevent__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigevent__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::sigevent__bindgen_ty_1__bindgen_ty_1>(),
         "general::sigevent__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigevent__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigevent__bindgen_ty_1__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::general::sigevent__bindgen_ty_1__bindgen_ty_1>(),
         "general::sigevent__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::statx_timestamp>(),
+        size_of::<wcontainers_kernel_linux::linux::general::statx_timestamp>(),
         size_of::<linux_raw_sys::general::statx_timestamp>(),
         "general::statx_timestamp"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::statx_timestamp>(),
+        align_of::<wcontainers_kernel_linux::linux::general::statx_timestamp>(),
         align_of::<linux_raw_sys::general::statx_timestamp>(),
         "general::statx_timestamp"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::statx>(),
+        size_of::<wcontainers_kernel_linux::linux::general::statx>(),
         size_of::<linux_raw_sys::general::statx>(),
         "general::statx"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::statx>(),
+        align_of::<wcontainers_kernel_linux::linux::general::statx>(),
         align_of::<linux_raw_sys::general::statx>(),
         "general::statx"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::termios>(),
+        size_of::<wcontainers_kernel_linux::linux::general::termios>(),
         size_of::<linux_raw_sys::general::termios>(),
         "general::termios"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::termios>(),
+        align_of::<wcontainers_kernel_linux::linux::general::termios>(),
         align_of::<linux_raw_sys::general::termios>(),
         "general::termios"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::termios2>(),
+        size_of::<wcontainers_kernel_linux::linux::general::termios2>(),
         size_of::<linux_raw_sys::general::termios2>(),
         "general::termios2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::termios2>(),
+        align_of::<wcontainers_kernel_linux::linux::general::termios2>(),
         align_of::<linux_raw_sys::general::termios2>(),
         "general::termios2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::ktermios>(),
+        size_of::<wcontainers_kernel_linux::linux::general::ktermios>(),
         size_of::<linux_raw_sys::general::ktermios>(),
         "general::ktermios"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::ktermios>(),
+        align_of::<wcontainers_kernel_linux::linux::general::ktermios>(),
         align_of::<linux_raw_sys::general::ktermios>(),
         "general::ktermios"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::winsize>(),
+        size_of::<wcontainers_kernel_linux::linux::general::winsize>(),
         size_of::<linux_raw_sys::general::winsize>(),
         "general::winsize"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::winsize>(),
+        align_of::<wcontainers_kernel_linux::linux::general::winsize>(),
         align_of::<linux_raw_sys::general::winsize>(),
         "general::winsize"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::termio>(),
+        size_of::<wcontainers_kernel_linux::linux::general::termio>(),
         size_of::<linux_raw_sys::general::termio>(),
         "general::termio"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::termio>(),
+        align_of::<wcontainers_kernel_linux::linux::general::termio>(),
         align_of::<linux_raw_sys::general::termio>(),
         "general::termio"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::timespec>(),
+        size_of::<wcontainers_kernel_linux::linux::general::timespec>(),
         size_of::<linux_raw_sys::general::timespec>(),
         "general::timespec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::timespec>(),
+        align_of::<wcontainers_kernel_linux::linux::general::timespec>(),
         align_of::<linux_raw_sys::general::timespec>(),
         "general::timespec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::timeval>(),
+        size_of::<wcontainers_kernel_linux::linux::general::timeval>(),
         size_of::<linux_raw_sys::general::timeval>(),
         "general::timeval"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::timeval>(),
+        align_of::<wcontainers_kernel_linux::linux::general::timeval>(),
         align_of::<linux_raw_sys::general::timeval>(),
         "general::timeval"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::itimerspec>(),
+        size_of::<wcontainers_kernel_linux::linux::general::itimerspec>(),
         size_of::<linux_raw_sys::general::itimerspec>(),
         "general::itimerspec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::itimerspec>(),
+        align_of::<wcontainers_kernel_linux::linux::general::itimerspec>(),
         align_of::<linux_raw_sys::general::itimerspec>(),
         "general::itimerspec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::itimerval>(),
+        size_of::<wcontainers_kernel_linux::linux::general::itimerval>(),
         size_of::<linux_raw_sys::general::itimerval>(),
         "general::itimerval"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::itimerval>(),
+        align_of::<wcontainers_kernel_linux::linux::general::itimerval>(),
         align_of::<linux_raw_sys::general::itimerval>(),
         "general::itimerval"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::timezone>(),
+        size_of::<wcontainers_kernel_linux::linux::general::timezone>(),
         size_of::<linux_raw_sys::general::timezone>(),
         "general::timezone"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::timezone>(),
+        align_of::<wcontainers_kernel_linux::linux::general::timezone>(),
         align_of::<linux_raw_sys::general::timezone>(),
         "general::timezone"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::iovec>(),
+        size_of::<wcontainers_kernel_linux::linux::general::iovec>(),
         size_of::<linux_raw_sys::general::iovec>(),
         "general::iovec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::iovec>(),
+        align_of::<wcontainers_kernel_linux::linux::general::iovec>(),
         align_of::<linux_raw_sys::general::iovec>(),
         "general::iovec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::dmabuf_cmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::dmabuf_cmsg>(),
         size_of::<linux_raw_sys::general::dmabuf_cmsg>(),
         "general::dmabuf_cmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::dmabuf_cmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::dmabuf_cmsg>(),
         align_of::<linux_raw_sys::general::dmabuf_cmsg>(),
         "general::dmabuf_cmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::dmabuf_token>(),
+        size_of::<wcontainers_kernel_linux::linux::general::dmabuf_token>(),
         size_of::<linux_raw_sys::general::dmabuf_token>(),
         "general::dmabuf_token"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::dmabuf_token>(),
+        align_of::<wcontainers_kernel_linux::linux::general::dmabuf_token>(),
         align_of::<linux_raw_sys::general::dmabuf_token>(),
         "general::dmabuf_token"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::xattr_args>(),
+        size_of::<wcontainers_kernel_linux::linux::general::xattr_args>(),
         size_of::<linux_raw_sys::general::xattr_args>(),
         "general::xattr_args"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::xattr_args>(),
+        align_of::<wcontainers_kernel_linux::linux::general::xattr_args>(),
         align_of::<linux_raw_sys::general::xattr_args>(),
         "general::xattr_args"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg>(),
         size_of::<linux_raw_sys::general::uffd_msg>(),
         "general::uffd_msg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg>(),
         align_of::<linux_raw_sys::general::uffd_msg>(),
         "general::uffd_msg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_2>(),
         size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_2>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_2>(
+        ),
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_2>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_3>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_3>(),
         size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_3>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_3"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_3>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_3>(
+        ),
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_3>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_3"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_4>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_4>(),
         size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_4>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_4"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_4>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_4>(
+        ),
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_4>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_4"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_5>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_5>(),
         size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_5>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_5"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_5>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_5>(
+        ),
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_5>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_5"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_api>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_api>(),
         size_of::<linux_raw_sys::general::uffdio_api>(),
         "general::uffdio_api"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_api>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_api>(),
         align_of::<linux_raw_sys::general::uffdio_api>(),
         "general::uffdio_api"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_range>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_range>(),
         size_of::<linux_raw_sys::general::uffdio_range>(),
         "general::uffdio_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_range>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_range>(),
         align_of::<linux_raw_sys::general::uffdio_range>(),
         "general::uffdio_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_register>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_register>(),
         size_of::<linux_raw_sys::general::uffdio_register>(),
         "general::uffdio_register"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_register>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_register>(),
         align_of::<linux_raw_sys::general::uffdio_register>(),
         "general::uffdio_register"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_copy>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_copy>(),
         size_of::<linux_raw_sys::general::uffdio_copy>(),
         "general::uffdio_copy"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_copy>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_copy>(),
         align_of::<linux_raw_sys::general::uffdio_copy>(),
         "general::uffdio_copy"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_zeropage>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_zeropage>(),
         size_of::<linux_raw_sys::general::uffdio_zeropage>(),
         "general::uffdio_zeropage"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_zeropage>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_zeropage>(),
         align_of::<linux_raw_sys::general::uffdio_zeropage>(),
         "general::uffdio_zeropage"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_writeprotect>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_writeprotect>(),
         size_of::<linux_raw_sys::general::uffdio_writeprotect>(),
         "general::uffdio_writeprotect"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_writeprotect>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_writeprotect>(),
         align_of::<linux_raw_sys::general::uffdio_writeprotect>(),
         "general::uffdio_writeprotect"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_continue>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_continue>(),
         size_of::<linux_raw_sys::general::uffdio_continue>(),
         "general::uffdio_continue"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_continue>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_continue>(),
         align_of::<linux_raw_sys::general::uffdio_continue>(),
         "general::uffdio_continue"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_poison>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_poison>(),
         size_of::<linux_raw_sys::general::uffdio_poison>(),
         "general::uffdio_poison"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_poison>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_poison>(),
         align_of::<linux_raw_sys::general::uffdio_poison>(),
         "general::uffdio_poison"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffdio_move>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffdio_move>(),
         size_of::<linux_raw_sys::general::uffdio_move>(),
         "general::uffdio_move"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffdio_move>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffdio_move>(),
         align_of::<linux_raw_sys::general::uffdio_move>(),
         "general::uffdio_move"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::linux_dirent64>(),
+        size_of::<wcontainers_kernel_linux::linux::general::linux_dirent64>(),
         size_of::<linux_raw_sys::general::linux_dirent64>(),
         "general::linux_dirent64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::linux_dirent64>(),
+        align_of::<wcontainers_kernel_linux::linux::general::linux_dirent64>(),
         align_of::<linux_raw_sys::general::linux_dirent64>(),
         "general::linux_dirent64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::stat>(),
+        size_of::<wcontainers_kernel_linux::linux::general::stat>(),
         size_of::<linux_raw_sys::general::stat>(),
         "general::stat"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::stat>(),
+        align_of::<wcontainers_kernel_linux::linux::general::stat>(),
         align_of::<linux_raw_sys::general::stat>(),
         "general::stat"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::statfs>(),
+        size_of::<wcontainers_kernel_linux::linux::general::statfs>(),
         size_of::<linux_raw_sys::general::statfs>(),
         "general::statfs"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::statfs>(),
+        align_of::<wcontainers_kernel_linux::linux::general::statfs>(),
         align_of::<linux_raw_sys::general::statfs>(),
         "general::statfs"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::statfs64>(),
+        size_of::<wcontainers_kernel_linux::linux::general::statfs64>(),
         size_of::<linux_raw_sys::general::statfs64>(),
         "general::statfs64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::statfs64>(),
+        align_of::<wcontainers_kernel_linux::linux::general::statfs64>(),
         align_of::<linux_raw_sys::general::statfs64>(),
         "general::statfs64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::compat_statfs64>(),
+        size_of::<wcontainers_kernel_linux::linux::general::compat_statfs64>(),
         size_of::<linux_raw_sys::general::compat_statfs64>(),
         "general::compat_statfs64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::compat_statfs64>(),
+        align_of::<wcontainers_kernel_linux::linux::general::compat_statfs64>(),
         align_of::<linux_raw_sys::general::compat_statfs64>(),
         "general::compat_statfs64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::user_desc>(),
+        size_of::<wcontainers_kernel_linux::linux::general::user_desc>(),
         size_of::<linux_raw_sys::general::user_desc>(),
         "general::user_desc"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::user_desc>(),
+        align_of::<wcontainers_kernel_linux::linux::general::user_desc>(),
         align_of::<linux_raw_sys::general::user_desc>(),
         "general::user_desc"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::kernel_sigset_t>(),
+        size_of::<wcontainers_kernel_linux::linux::general::kernel_sigset_t>(),
         size_of::<linux_raw_sys::general::kernel_sigset_t>(),
         "general::kernel_sigset_t"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::kernel_sigset_t>(),
+        align_of::<wcontainers_kernel_linux::linux::general::kernel_sigset_t>(),
         align_of::<linux_raw_sys::general::kernel_sigset_t>(),
         "general::kernel_sigset_t"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::kernel_sigaction>(),
+        size_of::<wcontainers_kernel_linux::linux::general::kernel_sigaction>(),
         size_of::<linux_raw_sys::general::kernel_sigaction>(),
         "general::kernel_sigaction"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::kernel_sigaction>(),
+        align_of::<wcontainers_kernel_linux::linux::general::kernel_sigaction>(),
         align_of::<linux_raw_sys::general::kernel_sigaction>(),
         "general::kernel_sigaction"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_get_policy_ex_arg__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_get_policy_ex_arg__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::general::fscrypt_get_policy_ex_arg__bindgen_ty_1>(),
         "general::fscrypt_get_policy_ex_arg__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_get_policy_ex_arg__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_get_policy_ex_arg__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::general::fscrypt_get_policy_ex_arg__bindgen_ty_1>(),
         "general::fscrypt_get_policy_ex_arg__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::fscrypt_key_specifier__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::fscrypt_key_specifier__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::fscrypt_key_specifier__bindgen_ty_1>(),
         "general::fscrypt_key_specifier__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::fscrypt_key_specifier__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::fscrypt_key_specifier__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::fscrypt_key_specifier__bindgen_ty_1>(),
         "general::fscrypt_key_specifier__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigval>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigval>(),
         size_of::<linux_raw_sys::general::sigval>(),
         "general::sigval"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigval>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigval>(),
         align_of::<linux_raw_sys::general::sigval>(),
         "general::sigval"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields>(),
         size_of::<linux_raw_sys::general::__sifields>(),
         "general::__sifields"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields>(),
         align_of::<linux_raw_sys::general::__sifields>(),
         "general::__sifields"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1>(),
         "general::__sifields__bindgen_ty_5__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::__sifields__bindgen_ty_5__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::general::__sifields__bindgen_ty_5__bindgen_ty_1>(),
         "general::__sifields__bindgen_ty_5__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::siginfo__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::siginfo__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::siginfo__bindgen_ty_1>(),
         "general::siginfo__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::siginfo__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::siginfo__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::siginfo__bindgen_ty_1>(),
         "general::siginfo__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::sigevent__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::sigevent__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::sigevent__bindgen_ty_1>(),
         "general::sigevent__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::sigevent__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::sigevent__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::sigevent__bindgen_ty_1>(),
         "general::sigevent__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1>(),
         size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1>(),
         "general::uffd_msg__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1>(),
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1>(),
         "general::uffd_msg__bindgen_ty_1"
     );
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), "general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), "general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1");
     assert_eq!(
-        size_of::<
-            wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        size_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(),
-        "general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        align_of::<
-            wcontainers_kernel::linux::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(),
-        "general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        size_of::<wcontainers_kernel::linux::system::sysinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::system::sysinfo>(),
         size_of::<linux_raw_sys::system::sysinfo>(),
         "system::sysinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::system::sysinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::system::sysinfo>(),
         align_of::<linux_raw_sys::system::sysinfo>(),
         "system::sysinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::system::oldold_utsname>(),
+        size_of::<wcontainers_kernel_linux::linux::system::oldold_utsname>(),
         size_of::<linux_raw_sys::system::oldold_utsname>(),
         "system::oldold_utsname"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::system::oldold_utsname>(),
+        align_of::<wcontainers_kernel_linux::linux::system::oldold_utsname>(),
         align_of::<linux_raw_sys::system::oldold_utsname>(),
         "system::oldold_utsname"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::system::old_utsname>(),
+        size_of::<wcontainers_kernel_linux::linux::system::old_utsname>(),
         size_of::<linux_raw_sys::system::old_utsname>(),
         "system::old_utsname"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::system::old_utsname>(),
+        align_of::<wcontainers_kernel_linux::linux::system::old_utsname>(),
         align_of::<linux_raw_sys::system::old_utsname>(),
         "system::old_utsname"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::system::new_utsname>(),
+        size_of::<wcontainers_kernel_linux::linux::system::new_utsname>(),
         size_of::<linux_raw_sys::system::new_utsname>(),
         "system::new_utsname"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::system::new_utsname>(),
+        align_of::<wcontainers_kernel_linux::linux::system::new_utsname>(),
         align_of::<linux_raw_sys::system::new_utsname>(),
         "system::new_utsname"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::prctl::prctl_mm_map>(),
+        size_of::<wcontainers_kernel_linux::linux::prctl::prctl_mm_map>(),
         size_of::<linux_raw_sys::prctl::prctl_mm_map>(),
         "prctl::prctl_mm_map"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::prctl::prctl_mm_map>(),
+        align_of::<wcontainers_kernel_linux::linux::prctl::prctl_mm_map>(),
         align_of::<linux_raw_sys::prctl::prctl_mm_map>(),
         "prctl::prctl_mm_map"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::__kernel_sockaddr_storage>(),
+        size_of::<wcontainers_kernel_linux::linux::net::__kernel_sockaddr_storage>(),
         size_of::<linux_raw_sys::net::__kernel_sockaddr_storage>(),
         "net::__kernel_sockaddr_storage"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::__kernel_sockaddr_storage>(),
+        align_of::<wcontainers_kernel_linux::linux::net::__kernel_sockaddr_storage>(),
         align_of::<linux_raw_sys::net::__kernel_sockaddr_storage>(),
         "net::__kernel_sockaddr_storage"
     );
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
     assert_eq!(
-        size_of::<
-            wcontainers_kernel::linux::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        size_of::<linux_raw_sys::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(),
-        "net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        align_of::<
-            wcontainers_kernel::linux::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        align_of::<linux_raw_sys::net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(),
-        "net::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in_addr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in_addr>(),
         size_of::<linux_raw_sys::net::in_addr>(),
         "net::in_addr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in_addr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in_addr>(),
         align_of::<linux_raw_sys::net::in_addr>(),
         "net::in_addr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_mreq>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_mreq>(),
         size_of::<linux_raw_sys::net::ip_mreq>(),
         "net::ip_mreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_mreq>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_mreq>(),
         align_of::<linux_raw_sys::net::ip_mreq>(),
         "net::ip_mreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_mreqn>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_mreqn>(),
         size_of::<linux_raw_sys::net::ip_mreqn>(),
         "net::ip_mreqn"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_mreqn>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_mreqn>(),
         align_of::<linux_raw_sys::net::ip_mreqn>(),
         "net::ip_mreqn"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_mreq_source>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_mreq_source>(),
         size_of::<linux_raw_sys::net::ip_mreq_source>(),
         "net::ip_mreq_source"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_mreq_source>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_mreq_source>(),
         align_of::<linux_raw_sys::net::ip_mreq_source>(),
         "net::ip_mreq_source"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_msfilter>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_msfilter>(),
         size_of::<linux_raw_sys::net::ip_msfilter>(),
         "net::ip_msfilter"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_msfilter>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_msfilter>(),
         align_of::<linux_raw_sys::net::ip_msfilter>(),
         "net::ip_msfilter"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_msfilter__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_msfilter__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1>(),
         "net::ip_msfilter__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_msfilter__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_msfilter__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1>(),
         "net::ip_msfilter__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1>(),
         "net::ip_msfilter__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1>(),
         "net::ip_msfilter__bindgen_ty_1__bindgen_ty_1"
     );
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), "net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(), "net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1");
     assert_eq!(
-        size_of::<
-            wcontainers_kernel::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        size_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(),
-        "net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        align_of::<
-            wcontainers_kernel::linux::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        align_of::<linux_raw_sys::net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(),
-        "net::ip_msfilter__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::group_req>(),
+        size_of::<wcontainers_kernel_linux::linux::net::group_req>(),
         size_of::<linux_raw_sys::net::group_req>(),
         "net::group_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::group_req>(),
+        align_of::<wcontainers_kernel_linux::linux::net::group_req>(),
         align_of::<linux_raw_sys::net::group_req>(),
         "net::group_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::group_source_req>(),
+        size_of::<wcontainers_kernel_linux::linux::net::group_source_req>(),
         size_of::<linux_raw_sys::net::group_source_req>(),
         "net::group_source_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::group_source_req>(),
+        align_of::<wcontainers_kernel_linux::linux::net::group_source_req>(),
         align_of::<linux_raw_sys::net::group_source_req>(),
         "net::group_source_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::group_filter>(),
+        size_of::<wcontainers_kernel_linux::linux::net::group_filter>(),
         size_of::<linux_raw_sys::net::group_filter>(),
         "net::group_filter"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::group_filter>(),
+        align_of::<wcontainers_kernel_linux::linux::net::group_filter>(),
         align_of::<linux_raw_sys::net::group_filter>(),
         "net::group_filter"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::group_filter__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::group_filter__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::group_filter__bindgen_ty_1>(),
         "net::group_filter__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::group_filter__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::group_filter__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::group_filter__bindgen_ty_1>(),
         "net::group_filter__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::group_filter__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::group_filter__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::group_filter__bindgen_ty_1__bindgen_ty_1>(),
         "net::group_filter__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::group_filter__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::group_filter__bindgen_ty_1__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::net::group_filter__bindgen_ty_1__bindgen_ty_1>(),
         "net::group_filter__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::group_filter__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::net::group_filter__bindgen_ty_1__bindgen_ty_2>(),
         size_of::<linux_raw_sys::net::group_filter__bindgen_ty_1__bindgen_ty_2>(),
         "net::group_filter__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::group_filter__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::net::group_filter__bindgen_ty_1__bindgen_ty_2>(
+        ),
         align_of::<linux_raw_sys::net::group_filter__bindgen_ty_1__bindgen_ty_2>(),
         "net::group_filter__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in_pktinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in_pktinfo>(),
         size_of::<linux_raw_sys::net::in_pktinfo>(),
         "net::in_pktinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in_pktinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in_pktinfo>(),
         align_of::<linux_raw_sys::net::in_pktinfo>(),
         "net::in_pktinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::sockaddr_in>(),
+        size_of::<wcontainers_kernel_linux::linux::net::sockaddr_in>(),
         size_of::<linux_raw_sys::net::sockaddr_in>(),
         "net::sockaddr_in"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::sockaddr_in>(),
+        align_of::<wcontainers_kernel_linux::linux::net::sockaddr_in>(),
         align_of::<linux_raw_sys::net::sockaddr_in>(),
         "net::sockaddr_in"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::iphdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::iphdr>(),
         size_of::<linux_raw_sys::net::iphdr>(),
         "net::iphdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::iphdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::iphdr>(),
         align_of::<linux_raw_sys::net::iphdr>(),
         "net::iphdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::iphdr__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::iphdr__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::iphdr__bindgen_ty_1__bindgen_ty_1>(),
         "net::iphdr__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::iphdr__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::iphdr__bindgen_ty_1__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::iphdr__bindgen_ty_1__bindgen_ty_1>(),
         "net::iphdr__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::iphdr__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::net::iphdr__bindgen_ty_1__bindgen_ty_2>(),
         size_of::<linux_raw_sys::net::iphdr__bindgen_ty_1__bindgen_ty_2>(),
         "net::iphdr__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::iphdr__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::net::iphdr__bindgen_ty_1__bindgen_ty_2>(),
         align_of::<linux_raw_sys::net::iphdr__bindgen_ty_1__bindgen_ty_2>(),
         "net::iphdr__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_auth_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_auth_hdr>(),
         size_of::<linux_raw_sys::net::ip_auth_hdr>(),
         "net::ip_auth_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_auth_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_auth_hdr>(),
         align_of::<linux_raw_sys::net::ip_auth_hdr>(),
         "net::ip_auth_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_esp_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_esp_hdr>(),
         size_of::<linux_raw_sys::net::ip_esp_hdr>(),
         "net::ip_esp_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_esp_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_esp_hdr>(),
         align_of::<linux_raw_sys::net::ip_esp_hdr>(),
         "net::ip_esp_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_comp_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_comp_hdr>(),
         size_of::<linux_raw_sys::net::ip_comp_hdr>(),
         "net::ip_comp_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_comp_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_comp_hdr>(),
         align_of::<linux_raw_sys::net::ip_comp_hdr>(),
         "net::ip_comp_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_beet_phdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_beet_phdr>(),
         size_of::<linux_raw_sys::net::ip_beet_phdr>(),
         "net::ip_beet_phdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_beet_phdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_beet_phdr>(),
         align_of::<linux_raw_sys::net::ip_beet_phdr>(),
         "net::ip_beet_phdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_iptfs_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_iptfs_hdr>(),
         size_of::<linux_raw_sys::net::ip_iptfs_hdr>(),
         "net::ip_iptfs_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_iptfs_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_iptfs_hdr>(),
         align_of::<linux_raw_sys::net::ip_iptfs_hdr>(),
         "net::ip_iptfs_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip_iptfs_cc_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip_iptfs_cc_hdr>(),
         size_of::<linux_raw_sys::net::ip_iptfs_cc_hdr>(),
         "net::ip_iptfs_cc_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip_iptfs_cc_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip_iptfs_cc_hdr>(),
         align_of::<linux_raw_sys::net::ip_iptfs_cc_hdr>(),
         "net::ip_iptfs_cc_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in6_addr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in6_addr>(),
         size_of::<linux_raw_sys::net::in6_addr>(),
         "net::in6_addr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in6_addr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in6_addr>(),
         align_of::<linux_raw_sys::net::in6_addr>(),
         "net::in6_addr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::sockaddr_in6>(),
+        size_of::<wcontainers_kernel_linux::linux::net::sockaddr_in6>(),
         size_of::<linux_raw_sys::net::sockaddr_in6>(),
         "net::sockaddr_in6"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::sockaddr_in6>(),
+        align_of::<wcontainers_kernel_linux::linux::net::sockaddr_in6>(),
         align_of::<linux_raw_sys::net::sockaddr_in6>(),
         "net::sockaddr_in6"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6_mreq>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6_mreq>(),
         size_of::<linux_raw_sys::net::ipv6_mreq>(),
         "net::ipv6_mreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6_mreq>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6_mreq>(),
         align_of::<linux_raw_sys::net::ipv6_mreq>(),
         "net::ipv6_mreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in6_flowlabel_req>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in6_flowlabel_req>(),
         size_of::<linux_raw_sys::net::in6_flowlabel_req>(),
         "net::in6_flowlabel_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in6_flowlabel_req>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in6_flowlabel_req>(),
         align_of::<linux_raw_sys::net::in6_flowlabel_req>(),
         "net::in6_flowlabel_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in6_pktinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in6_pktinfo>(),
         size_of::<linux_raw_sys::net::in6_pktinfo>(),
         "net::in6_pktinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in6_pktinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in6_pktinfo>(),
         align_of::<linux_raw_sys::net::in6_pktinfo>(),
         "net::in6_pktinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6_mtuinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6_mtuinfo>(),
         size_of::<linux_raw_sys::net::ip6_mtuinfo>(),
         "net::ip6_mtuinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6_mtuinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6_mtuinfo>(),
         align_of::<linux_raw_sys::net::ip6_mtuinfo>(),
         "net::ip6_mtuinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in6_ifreq>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in6_ifreq>(),
         size_of::<linux_raw_sys::net::in6_ifreq>(),
         "net::in6_ifreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in6_ifreq>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in6_ifreq>(),
         align_of::<linux_raw_sys::net::in6_ifreq>(),
         "net::in6_ifreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6_rt_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6_rt_hdr>(),
         size_of::<linux_raw_sys::net::ipv6_rt_hdr>(),
         "net::ipv6_rt_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6_rt_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6_rt_hdr>(),
         align_of::<linux_raw_sys::net::ipv6_rt_hdr>(),
         "net::ipv6_rt_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6_opt_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6_opt_hdr>(),
         size_of::<linux_raw_sys::net::ipv6_opt_hdr>(),
         "net::ipv6_opt_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6_opt_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6_opt_hdr>(),
         align_of::<linux_raw_sys::net::ipv6_opt_hdr>(),
         "net::ipv6_opt_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::rt0_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::rt0_hdr>(),
         size_of::<linux_raw_sys::net::rt0_hdr>(),
         "net::rt0_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::rt0_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::rt0_hdr>(),
         align_of::<linux_raw_sys::net::rt0_hdr>(),
         "net::rt0_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::rt2_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::rt2_hdr>(),
         size_of::<linux_raw_sys::net::rt2_hdr>(),
         "net::rt2_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::rt2_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::rt2_hdr>(),
         align_of::<linux_raw_sys::net::rt2_hdr>(),
         "net::rt2_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6_destopt_hao>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6_destopt_hao>(),
         size_of::<linux_raw_sys::net::ipv6_destopt_hao>(),
         "net::ipv6_destopt_hao"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6_destopt_hao>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6_destopt_hao>(),
         align_of::<linux_raw_sys::net::ipv6_destopt_hao>(),
         "net::ipv6_destopt_hao"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6hdr>(),
         size_of::<linux_raw_sys::net::ipv6hdr>(),
         "net::ipv6hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6hdr>(),
         align_of::<linux_raw_sys::net::ipv6hdr>(),
         "net::ipv6hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::ipv6hdr__bindgen_ty_1__bindgen_ty_1>(),
         "net::ipv6hdr__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::ipv6hdr__bindgen_ty_1__bindgen_ty_1>(),
         "net::ipv6hdr__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_2>(),
         size_of::<linux_raw_sys::net::ipv6hdr__bindgen_ty_1__bindgen_ty_2>(),
         "net::ipv6hdr__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6hdr__bindgen_ty_1__bindgen_ty_2>(),
         align_of::<linux_raw_sys::net::ipv6hdr__bindgen_ty_1__bindgen_ty_2>(),
         "net::ipv6hdr__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcphdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcphdr>(),
         size_of::<linux_raw_sys::net::tcphdr>(),
         "net::tcphdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcphdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcphdr>(),
         align_of::<linux_raw_sys::net::tcphdr>(),
         "net::tcphdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_repair_opt>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_repair_opt>(),
         size_of::<linux_raw_sys::net::tcp_repair_opt>(),
         "net::tcp_repair_opt"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_repair_opt>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_repair_opt>(),
         align_of::<linux_raw_sys::net::tcp_repair_opt>(),
         "net::tcp_repair_opt"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_repair_window>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_repair_window>(),
         size_of::<linux_raw_sys::net::tcp_repair_window>(),
         "net::tcp_repair_window"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_repair_window>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_repair_window>(),
         align_of::<linux_raw_sys::net::tcp_repair_window>(),
         "net::tcp_repair_window"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_info>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_info>(),
         size_of::<linux_raw_sys::net::tcp_info>(),
         "net::tcp_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_info>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_info>(),
         align_of::<linux_raw_sys::net::tcp_info>(),
         "net::tcp_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_md5sig>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_md5sig>(),
         size_of::<linux_raw_sys::net::tcp_md5sig>(),
         "net::tcp_md5sig"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_md5sig>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_md5sig>(),
         align_of::<linux_raw_sys::net::tcp_md5sig>(),
         "net::tcp_md5sig"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_diag_md5sig>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_diag_md5sig>(),
         size_of::<linux_raw_sys::net::tcp_diag_md5sig>(),
         "net::tcp_diag_md5sig"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_diag_md5sig>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_diag_md5sig>(),
         align_of::<linux_raw_sys::net::tcp_diag_md5sig>(),
         "net::tcp_diag_md5sig"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_ao_add>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_ao_add>(),
         size_of::<linux_raw_sys::net::tcp_ao_add>(),
         "net::tcp_ao_add"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_ao_add>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_ao_add>(),
         align_of::<linux_raw_sys::net::tcp_ao_add>(),
         "net::tcp_ao_add"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_ao_del>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_ao_del>(),
         size_of::<linux_raw_sys::net::tcp_ao_del>(),
         "net::tcp_ao_del"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_ao_del>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_ao_del>(),
         align_of::<linux_raw_sys::net::tcp_ao_del>(),
         "net::tcp_ao_del"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_ao_info_opt>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_ao_info_opt>(),
         size_of::<linux_raw_sys::net::tcp_ao_info_opt>(),
         "net::tcp_ao_info_opt"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_ao_info_opt>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_ao_info_opt>(),
         align_of::<linux_raw_sys::net::tcp_ao_info_opt>(),
         "net::tcp_ao_info_opt"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_ao_getsockopt>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_ao_getsockopt>(),
         size_of::<linux_raw_sys::net::tcp_ao_getsockopt>(),
         "net::tcp_ao_getsockopt"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_ao_getsockopt>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_ao_getsockopt>(),
         align_of::<linux_raw_sys::net::tcp_ao_getsockopt>(),
         "net::tcp_ao_getsockopt"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_ao_repair>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_ao_repair>(),
         size_of::<linux_raw_sys::net::tcp_ao_repair>(),
         "net::tcp_ao_repair"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_ao_repair>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_ao_repair>(),
         align_of::<linux_raw_sys::net::tcp_ao_repair>(),
         "net::tcp_ao_repair"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_zerocopy_receive>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_zerocopy_receive>(),
         size_of::<linux_raw_sys::net::tcp_zerocopy_receive>(),
         "net::tcp_zerocopy_receive"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_zerocopy_receive>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_zerocopy_receive>(),
         align_of::<linux_raw_sys::net::tcp_zerocopy_receive>(),
         "net::tcp_zerocopy_receive"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::sockaddr_un>(),
+        size_of::<wcontainers_kernel_linux::linux::net::sockaddr_un>(),
         size_of::<linux_raw_sys::net::sockaddr_un>(),
         "net::sockaddr_un"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::sockaddr_un>(),
+        align_of::<wcontainers_kernel_linux::linux::net::sockaddr_un>(),
         align_of::<linux_raw_sys::net::sockaddr_un>(),
         "net::sockaddr_un"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::sockaddr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::sockaddr>(),
         size_of::<linux_raw_sys::net::sockaddr>(),
         "net::sockaddr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::sockaddr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::sockaddr>(),
         align_of::<linux_raw_sys::net::sockaddr>(),
         "net::sockaddr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::sync_serial_settings>(),
+        size_of::<wcontainers_kernel_linux::linux::net::sync_serial_settings>(),
         size_of::<linux_raw_sys::net::sync_serial_settings>(),
         "net::sync_serial_settings"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::sync_serial_settings>(),
+        align_of::<wcontainers_kernel_linux::linux::net::sync_serial_settings>(),
         align_of::<linux_raw_sys::net::sync_serial_settings>(),
         "net::sync_serial_settings"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::te1_settings>(),
+        size_of::<wcontainers_kernel_linux::linux::net::te1_settings>(),
         size_of::<linux_raw_sys::net::te1_settings>(),
         "net::te1_settings"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::te1_settings>(),
+        align_of::<wcontainers_kernel_linux::linux::net::te1_settings>(),
         align_of::<linux_raw_sys::net::te1_settings>(),
         "net::te1_settings"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::raw_hdlc_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::net::raw_hdlc_proto>(),
         size_of::<linux_raw_sys::net::raw_hdlc_proto>(),
         "net::raw_hdlc_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::raw_hdlc_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::net::raw_hdlc_proto>(),
         align_of::<linux_raw_sys::net::raw_hdlc_proto>(),
         "net::raw_hdlc_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::fr_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::net::fr_proto>(),
         size_of::<linux_raw_sys::net::fr_proto>(),
         "net::fr_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::fr_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::net::fr_proto>(),
         align_of::<linux_raw_sys::net::fr_proto>(),
         "net::fr_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::fr_proto_pvc>(),
+        size_of::<wcontainers_kernel_linux::linux::net::fr_proto_pvc>(),
         size_of::<linux_raw_sys::net::fr_proto_pvc>(),
         "net::fr_proto_pvc"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::fr_proto_pvc>(),
+        align_of::<wcontainers_kernel_linux::linux::net::fr_proto_pvc>(),
         align_of::<linux_raw_sys::net::fr_proto_pvc>(),
         "net::fr_proto_pvc"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::fr_proto_pvc_info>(),
+        size_of::<wcontainers_kernel_linux::linux::net::fr_proto_pvc_info>(),
         size_of::<linux_raw_sys::net::fr_proto_pvc_info>(),
         "net::fr_proto_pvc_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::fr_proto_pvc_info>(),
+        align_of::<wcontainers_kernel_linux::linux::net::fr_proto_pvc_info>(),
         align_of::<linux_raw_sys::net::fr_proto_pvc_info>(),
         "net::fr_proto_pvc_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::cisco_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::net::cisco_proto>(),
         size_of::<linux_raw_sys::net::cisco_proto>(),
         "net::cisco_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::cisco_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::net::cisco_proto>(),
         align_of::<linux_raw_sys::net::cisco_proto>(),
         "net::cisco_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::x25_hdlc_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::net::x25_hdlc_proto>(),
         size_of::<linux_raw_sys::net::x25_hdlc_proto>(),
         "net::x25_hdlc_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::x25_hdlc_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::net::x25_hdlc_proto>(),
         align_of::<linux_raw_sys::net::x25_hdlc_proto>(),
         "net::x25_hdlc_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ifmap>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ifmap>(),
         size_of::<linux_raw_sys::net::ifmap>(),
         "net::ifmap"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ifmap>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ifmap>(),
         align_of::<linux_raw_sys::net::ifmap>(),
         "net::ifmap"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::if_settings>(),
+        size_of::<wcontainers_kernel_linux::linux::net::if_settings>(),
         size_of::<linux_raw_sys::net::if_settings>(),
         "net::if_settings"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::if_settings>(),
+        align_of::<wcontainers_kernel_linux::linux::net::if_settings>(),
         align_of::<linux_raw_sys::net::if_settings>(),
         "net::if_settings"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ifreq>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ifreq>(),
         size_of::<linux_raw_sys::net::ifreq>(),
         "net::ifreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ifreq>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ifreq>(),
         align_of::<linux_raw_sys::net::ifreq>(),
         "net::ifreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ifconf>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ifconf>(),
         size_of::<linux_raw_sys::net::ifconf>(),
         "net::ifconf"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ifconf>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ifconf>(),
         align_of::<linux_raw_sys::net::ifconf>(),
         "net::ifconf"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_match>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_match>(),
         size_of::<linux_raw_sys::net::xt_entry_match>(),
         "net::xt_entry_match"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_match>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_match>(),
         align_of::<linux_raw_sys::net::xt_entry_match>(),
         "net::xt_entry_match"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::net::xt_entry_match__bindgen_ty_1__bindgen_ty_1>(),
         "net::xt_entry_match__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::net::xt_entry_match__bindgen_ty_1__bindgen_ty_1>(),
         "net::xt_entry_match__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_2>(
+        ),
         size_of::<linux_raw_sys::net::xt_entry_match__bindgen_ty_1__bindgen_ty_2>(),
         "net::xt_entry_match__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_match__bindgen_ty_1__bindgen_ty_2>(
+        ),
         align_of::<linux_raw_sys::net::xt_entry_match__bindgen_ty_1__bindgen_ty_2>(),
         "net::xt_entry_match__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_target>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_target>(),
         size_of::<linux_raw_sys::net::xt_entry_target>(),
         "net::xt_entry_target"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_target>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_target>(),
         align_of::<linux_raw_sys::net::xt_entry_target>(),
         "net::xt_entry_target"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::net::xt_entry_target__bindgen_ty_1__bindgen_ty_1>(),
         "net::xt_entry_target__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::net::xt_entry_target__bindgen_ty_1__bindgen_ty_1>(),
         "net::xt_entry_target__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_2>(
+        ),
         size_of::<linux_raw_sys::net::xt_entry_target__bindgen_ty_1__bindgen_ty_2>(),
         "net::xt_entry_target__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_target__bindgen_ty_1__bindgen_ty_2>(
+        ),
         align_of::<linux_raw_sys::net::xt_entry_target__bindgen_ty_1__bindgen_ty_2>(),
         "net::xt_entry_target__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_standard_target>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_standard_target>(),
         size_of::<linux_raw_sys::net::xt_standard_target>(),
         "net::xt_standard_target"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_standard_target>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_standard_target>(),
         align_of::<linux_raw_sys::net::xt_standard_target>(),
         "net::xt_standard_target"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_error_target>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_error_target>(),
         size_of::<linux_raw_sys::net::xt_error_target>(),
         "net::xt_error_target"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_error_target>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_error_target>(),
         align_of::<linux_raw_sys::net::xt_error_target>(),
         "net::xt_error_target"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_get_revision>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_get_revision>(),
         size_of::<linux_raw_sys::net::xt_get_revision>(),
         "net::xt_get_revision"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_get_revision>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_get_revision>(),
         align_of::<linux_raw_sys::net::xt_get_revision>(),
         "net::xt_get_revision"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::_xt_align>(),
+        size_of::<wcontainers_kernel_linux::linux::net::_xt_align>(),
         size_of::<linux_raw_sys::net::_xt_align>(),
         "net::_xt_align"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::_xt_align>(),
+        align_of::<wcontainers_kernel_linux::linux::net::_xt_align>(),
         align_of::<linux_raw_sys::net::_xt_align>(),
         "net::_xt_align"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_counters>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_counters>(),
         size_of::<linux_raw_sys::net::xt_counters>(),
         "net::xt_counters"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_counters>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_counters>(),
         align_of::<linux_raw_sys::net::xt_counters>(),
         "net::xt_counters"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_counters_info>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_counters_info>(),
         size_of::<linux_raw_sys::net::xt_counters_info>(),
         "net::xt_counters_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_counters_info>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_counters_info>(),
         align_of::<linux_raw_sys::net::xt_counters_info>(),
         "net::xt_counters_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_tcp>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_tcp>(),
         size_of::<linux_raw_sys::net::xt_tcp>(),
         "net::xt_tcp"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_tcp>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_tcp>(),
         align_of::<linux_raw_sys::net::xt_tcp>(),
         "net::xt_tcp"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_udp>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_udp>(),
         size_of::<linux_raw_sys::net::xt_udp>(),
         "net::xt_udp"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_udp>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_udp>(),
         align_of::<linux_raw_sys::net::xt_udp>(),
         "net::xt_udp"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_ip6>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_ip6>(),
         size_of::<linux_raw_sys::net::ip6t_ip6>(),
         "net::ip6t_ip6"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_ip6>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_ip6>(),
         align_of::<linux_raw_sys::net::ip6t_ip6>(),
         "net::ip6t_ip6"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_entry>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_entry>(),
         size_of::<linux_raw_sys::net::ip6t_entry>(),
         "net::ip6t_entry"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_entry>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_entry>(),
         align_of::<linux_raw_sys::net::ip6t_entry>(),
         "net::ip6t_entry"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_standard>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_standard>(),
         size_of::<linux_raw_sys::net::ip6t_standard>(),
         "net::ip6t_standard"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_standard>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_standard>(),
         align_of::<linux_raw_sys::net::ip6t_standard>(),
         "net::ip6t_standard"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_error>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_error>(),
         size_of::<linux_raw_sys::net::ip6t_error>(),
         "net::ip6t_error"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_error>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_error>(),
         align_of::<linux_raw_sys::net::ip6t_error>(),
         "net::ip6t_error"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_icmp>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_icmp>(),
         size_of::<linux_raw_sys::net::ip6t_icmp>(),
         "net::ip6t_icmp"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_icmp>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_icmp>(),
         align_of::<linux_raw_sys::net::ip6t_icmp>(),
         "net::ip6t_icmp"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_getinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_getinfo>(),
         size_of::<linux_raw_sys::net::ip6t_getinfo>(),
         "net::ip6t_getinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_getinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_getinfo>(),
         align_of::<linux_raw_sys::net::ip6t_getinfo>(),
         "net::ip6t_getinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_replace>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_replace>(),
         size_of::<linux_raw_sys::net::ip6t_replace>(),
         "net::ip6t_replace"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_replace>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_replace>(),
         align_of::<linux_raw_sys::net::ip6t_replace>(),
         "net::ip6t_replace"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ip6t_get_entries>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ip6t_get_entries>(),
         size_of::<linux_raw_sys::net::ip6t_get_entries>(),
         "net::ip6t_get_entries"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ip6t_get_entries>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ip6t_get_entries>(),
         align_of::<linux_raw_sys::net::ip6t_get_entries>(),
         "net::ip6t_get_entries"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::so_timestamping>(),
+        size_of::<wcontainers_kernel_linux::linux::net::so_timestamping>(),
         size_of::<linux_raw_sys::net::so_timestamping>(),
         "net::so_timestamping"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::so_timestamping>(),
+        align_of::<wcontainers_kernel_linux::linux::net::so_timestamping>(),
         align_of::<linux_raw_sys::net::so_timestamping>(),
         "net::so_timestamping"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::hwtstamp_config>(),
+        size_of::<wcontainers_kernel_linux::linux::net::hwtstamp_config>(),
         size_of::<linux_raw_sys::net::hwtstamp_config>(),
         "net::hwtstamp_config"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::hwtstamp_config>(),
+        align_of::<wcontainers_kernel_linux::linux::net::hwtstamp_config>(),
         align_of::<linux_raw_sys::net::hwtstamp_config>(),
         "net::hwtstamp_config"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::scm_ts_pktinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::net::scm_ts_pktinfo>(),
         size_of::<linux_raw_sys::net::scm_ts_pktinfo>(),
         "net::scm_ts_pktinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::scm_ts_pktinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::net::scm_ts_pktinfo>(),
         align_of::<linux_raw_sys::net::scm_ts_pktinfo>(),
         "net::scm_ts_pktinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::sock_txtime>(),
+        size_of::<wcontainers_kernel_linux::linux::net::sock_txtime>(),
         size_of::<linux_raw_sys::net::sock_txtime>(),
         "net::sock_txtime"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::sock_txtime>(),
+        align_of::<wcontainers_kernel_linux::linux::net::sock_txtime>(),
         align_of::<linux_raw_sys::net::sock_txtime>(),
         "net::sock_txtime"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::linger>(),
+        size_of::<wcontainers_kernel_linux::linux::net::linger>(),
         size_of::<linux_raw_sys::net::linger>(),
         "net::linger"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::linger>(),
+        align_of::<wcontainers_kernel_linux::linux::net::linger>(),
         align_of::<linux_raw_sys::net::linger>(),
         "net::linger"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::msghdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::msghdr>(),
         size_of::<linux_raw_sys::net::msghdr>(),
         "net::msghdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::msghdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::msghdr>(),
         align_of::<linux_raw_sys::net::msghdr>(),
         "net::msghdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::cmsghdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::cmsghdr>(),
         size_of::<linux_raw_sys::net::cmsghdr>(),
         "net::cmsghdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::cmsghdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::cmsghdr>(),
         align_of::<linux_raw_sys::net::cmsghdr>(),
         "net::cmsghdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ucred>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ucred>(),
         size_of::<linux_raw_sys::net::ucred>(),
         "net::ucred"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ucred>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ucred>(),
         align_of::<linux_raw_sys::net::ucred>(),
         "net::ucred"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::mmsghdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::mmsghdr>(),
         size_of::<linux_raw_sys::net::mmsghdr>(),
         "net::mmsghdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::mmsghdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::mmsghdr>(),
         align_of::<linux_raw_sys::net::mmsghdr>(),
         "net::mmsghdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_match>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_match>(),
         size_of::<linux_raw_sys::net::xt_match>(),
         "net::xt_match"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_match>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_match>(),
         align_of::<linux_raw_sys::net::xt_match>(),
         "net::xt_match"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_target>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_target>(),
         size_of::<linux_raw_sys::net::xt_target>(),
         "net::xt_target"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_target>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_target>(),
         align_of::<linux_raw_sys::net::xt_target>(),
         "net::xt_target"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::iovec>(),
+        size_of::<wcontainers_kernel_linux::linux::net::iovec>(),
         size_of::<linux_raw_sys::net::iovec>(),
         "net::iovec"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::iovec>(),
+        align_of::<wcontainers_kernel_linux::linux::net::iovec>(),
         align_of::<linux_raw_sys::net::iovec>(),
         "net::iovec"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::__kernel_sockaddr_storage__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::__kernel_sockaddr_storage__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::__kernel_sockaddr_storage__bindgen_ty_1>(),
         "net::__kernel_sockaddr_storage__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::__kernel_sockaddr_storage__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::__kernel_sockaddr_storage__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::__kernel_sockaddr_storage__bindgen_ty_1>(),
         "net::__kernel_sockaddr_storage__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::iphdr__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::iphdr__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::iphdr__bindgen_ty_1>(),
         "net::iphdr__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::iphdr__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::iphdr__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::iphdr__bindgen_ty_1>(),
         "net::iphdr__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::in6_addr__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::in6_addr__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::in6_addr__bindgen_ty_1>(),
         "net::in6_addr__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::in6_addr__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::in6_addr__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::in6_addr__bindgen_ty_1>(),
         "net::in6_addr__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ipv6hdr__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ipv6hdr__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::ipv6hdr__bindgen_ty_1>(),
         "net::ipv6hdr__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ipv6hdr__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ipv6hdr__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::ipv6hdr__bindgen_ty_1>(),
         "net::ipv6hdr__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::tcp_word_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::tcp_word_hdr>(),
         size_of::<linux_raw_sys::net::tcp_word_hdr>(),
         "net::tcp_word_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::tcp_word_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::tcp_word_hdr>(),
         align_of::<linux_raw_sys::net::tcp_word_hdr>(),
         "net::tcp_word_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::if_settings__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::if_settings__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::if_settings__bindgen_ty_1>(),
         "net::if_settings__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::if_settings__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::if_settings__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::if_settings__bindgen_ty_1>(),
         "net::if_settings__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ifreq__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ifreq__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::ifreq__bindgen_ty_1>(),
         "net::ifreq__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ifreq__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ifreq__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::ifreq__bindgen_ty_1>(),
         "net::ifreq__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ifreq__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ifreq__bindgen_ty_2>(),
         size_of::<linux_raw_sys::net::ifreq__bindgen_ty_2>(),
         "net::ifreq__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ifreq__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ifreq__bindgen_ty_2>(),
         align_of::<linux_raw_sys::net::ifreq__bindgen_ty_2>(),
         "net::ifreq__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::ifconf__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::ifconf__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::ifconf__bindgen_ty_1>(),
         "net::ifconf__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::ifconf__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::ifconf__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::ifconf__bindgen_ty_1>(),
         "net::ifconf__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::nf_inet_addr>(),
+        size_of::<wcontainers_kernel_linux::linux::net::nf_inet_addr>(),
         size_of::<linux_raw_sys::net::nf_inet_addr>(),
         "net::nf_inet_addr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::nf_inet_addr>(),
+        align_of::<wcontainers_kernel_linux::linux::net::nf_inet_addr>(),
         align_of::<linux_raw_sys::net::nf_inet_addr>(),
         "net::nf_inet_addr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_match__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_match__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::xt_entry_match__bindgen_ty_1>(),
         "net::xt_entry_match__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_match__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_match__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::xt_entry_match__bindgen_ty_1>(),
         "net::xt_entry_match__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::net::xt_entry_target__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::net::xt_entry_target__bindgen_ty_1>(),
         size_of::<linux_raw_sys::net::xt_entry_target__bindgen_ty_1>(),
         "net::xt_entry_target__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::net::xt_entry_target__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::net::xt_entry_target__bindgen_ty_1>(),
         align_of::<linux_raw_sys::net::xt_entry_target__bindgen_ty_1>(),
         "net::xt_entry_target__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::audit_status>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::audit_status>(),
         size_of::<linux_raw_sys::ptrace::audit_status>(),
         "ptrace::audit_status"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::audit_status>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::audit_status>(),
         align_of::<linux_raw_sys::ptrace::audit_status>(),
         "ptrace::audit_status"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::audit_features>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::audit_features>(),
         size_of::<linux_raw_sys::ptrace::audit_features>(),
         "ptrace::audit_features"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::audit_features>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::audit_features>(),
         align_of::<linux_raw_sys::ptrace::audit_features>(),
         "ptrace::audit_features"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::audit_tty_status>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::audit_tty_status>(),
         size_of::<linux_raw_sys::ptrace::audit_tty_status>(),
         "ptrace::audit_tty_status"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::audit_tty_status>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::audit_tty_status>(),
         align_of::<linux_raw_sys::ptrace::audit_tty_status>(),
         "ptrace::audit_tty_status"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::audit_rule_data>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::audit_rule_data>(),
         size_of::<linux_raw_sys::ptrace::audit_rule_data>(),
         "ptrace::audit_rule_data"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::audit_rule_data>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::audit_rule_data>(),
         align_of::<linux_raw_sys::ptrace::audit_rule_data>(),
         "ptrace::audit_rule_data"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::sock_filter>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::sock_filter>(),
         size_of::<linux_raw_sys::ptrace::sock_filter>(),
         "ptrace::sock_filter"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::sock_filter>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::sock_filter>(),
         align_of::<linux_raw_sys::ptrace::sock_filter>(),
         "ptrace::sock_filter"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::sock_fprog>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::sock_fprog>(),
         size_of::<linux_raw_sys::ptrace::sock_fprog>(),
         "ptrace::sock_fprog"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::sock_fprog>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::sock_fprog>(),
         align_of::<linux_raw_sys::ptrace::sock_fprog>(),
         "ptrace::sock_fprog"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_peeksiginfo_args>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_peeksiginfo_args>(),
         size_of::<linux_raw_sys::ptrace::ptrace_peeksiginfo_args>(),
         "ptrace::ptrace_peeksiginfo_args"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::ptrace_peeksiginfo_args>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_peeksiginfo_args>(),
         align_of::<linux_raw_sys::ptrace::ptrace_peeksiginfo_args>(),
         "ptrace::ptrace_peeksiginfo_args"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::seccomp_metadata>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_metadata>(),
         size_of::<linux_raw_sys::ptrace::seccomp_metadata>(),
         "ptrace::seccomp_metadata"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::seccomp_metadata>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_metadata>(),
         align_of::<linux_raw_sys::ptrace::seccomp_metadata>(),
         "ptrace::seccomp_metadata"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info>(),
         size_of::<linux_raw_sys::ptrace::ptrace_syscall_info>(),
         "ptrace::ptrace_syscall_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info>(),
         align_of::<linux_raw_sys::ptrace::ptrace_syscall_info>(),
         "ptrace::ptrace_syscall_info"
     );
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(), "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(), "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(), size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(), "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(), align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(), "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(), size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(), "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(), align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(), "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3");
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(
-        ),
-        size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(),
-        "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        align_of::<
-            wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1,
-        >(),
-        align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1>(),
-        "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_1"
-    );
-    assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(
-        ),
-        size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(),
-        "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2"
-    );
-    assert_eq!(
-        align_of::<
-            wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2,
-        >(),
-        align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2>(),
-        "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_2"
-    );
-    assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(
-        ),
-        size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(),
-        "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3"
-    );
-    assert_eq!(
-        align_of::<
-            wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3,
-        >(),
-        align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3>(),
-        "ptrace::ptrace_syscall_info__bindgen_ty_1__bindgen_ty_3"
-    );
-    assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_rseq_configuration>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_rseq_configuration>(),
         size_of::<linux_raw_sys::ptrace::ptrace_rseq_configuration>(),
         "ptrace::ptrace_rseq_configuration"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::ptrace_rseq_configuration>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_rseq_configuration>(),
         align_of::<linux_raw_sys::ptrace::ptrace_rseq_configuration>(),
         "ptrace::ptrace_rseq_configuration"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_sud_config>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_sud_config>(),
         size_of::<linux_raw_sys::ptrace::ptrace_sud_config>(),
         "ptrace::ptrace_sud_config"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::ptrace_sud_config>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_sud_config>(),
         align_of::<linux_raw_sys::ptrace::ptrace_sud_config>(),
         "ptrace::ptrace_sud_config"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_pt_regs>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_pt_regs>(),
         size_of::<linux_raw_sys::ptrace::user_pt_regs>(),
         "ptrace::user_pt_regs"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_pt_regs>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_pt_regs>(),
         align_of::<linux_raw_sys::ptrace::user_pt_regs>(),
         "ptrace::user_pt_regs"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_fpsimd_state>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_fpsimd_state>(),
         size_of::<linux_raw_sys::ptrace::user_fpsimd_state>(),
         "ptrace::user_fpsimd_state"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_fpsimd_state>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_fpsimd_state>(),
         align_of::<linux_raw_sys::ptrace::user_fpsimd_state>(),
         "ptrace::user_fpsimd_state"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_hwdebug_state>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_hwdebug_state>(),
         size_of::<linux_raw_sys::ptrace::user_hwdebug_state>(),
         "ptrace::user_hwdebug_state"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_hwdebug_state>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_hwdebug_state>(),
         align_of::<linux_raw_sys::ptrace::user_hwdebug_state>(),
         "ptrace::user_hwdebug_state"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_hwdebug_state__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_hwdebug_state__bindgen_ty_1>(),
         size_of::<linux_raw_sys::ptrace::user_hwdebug_state__bindgen_ty_1>(),
         "ptrace::user_hwdebug_state__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_hwdebug_state__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_hwdebug_state__bindgen_ty_1>(),
         align_of::<linux_raw_sys::ptrace::user_hwdebug_state__bindgen_ty_1>(),
         "ptrace::user_hwdebug_state__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_sve_header>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_sve_header>(),
         size_of::<linux_raw_sys::ptrace::user_sve_header>(),
         "ptrace::user_sve_header"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_sve_header>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_sve_header>(),
         align_of::<linux_raw_sys::ptrace::user_sve_header>(),
         "ptrace::user_sve_header"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_pac_mask>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_pac_mask>(),
         size_of::<linux_raw_sys::ptrace::user_pac_mask>(),
         "ptrace::user_pac_mask"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_pac_mask>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_pac_mask>(),
         align_of::<linux_raw_sys::ptrace::user_pac_mask>(),
         "ptrace::user_pac_mask"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_pac_address_keys>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_pac_address_keys>(),
         size_of::<linux_raw_sys::ptrace::user_pac_address_keys>(),
         "ptrace::user_pac_address_keys"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_pac_address_keys>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_pac_address_keys>(),
         align_of::<linux_raw_sys::ptrace::user_pac_address_keys>(),
         "ptrace::user_pac_address_keys"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_pac_generic_keys>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_pac_generic_keys>(),
         size_of::<linux_raw_sys::ptrace::user_pac_generic_keys>(),
         "ptrace::user_pac_generic_keys"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_pac_generic_keys>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_pac_generic_keys>(),
         align_of::<linux_raw_sys::ptrace::user_pac_generic_keys>(),
         "ptrace::user_pac_generic_keys"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_za_header>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_za_header>(),
         size_of::<linux_raw_sys::ptrace::user_za_header>(),
         "ptrace::user_za_header"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_za_header>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_za_header>(),
         align_of::<linux_raw_sys::ptrace::user_za_header>(),
         "ptrace::user_za_header"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::user_gcs>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::user_gcs>(),
         size_of::<linux_raw_sys::ptrace::user_gcs>(),
         "ptrace::user_gcs"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::user_gcs>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::user_gcs>(),
         align_of::<linux_raw_sys::ptrace::user_gcs>(),
         "ptrace::user_gcs"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::seccomp_data>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_data>(),
         size_of::<linux_raw_sys::ptrace::seccomp_data>(),
         "ptrace::seccomp_data"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::seccomp_data>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_data>(),
         align_of::<linux_raw_sys::ptrace::seccomp_data>(),
         "ptrace::seccomp_data"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::seccomp_notif_sizes>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif_sizes>(),
         size_of::<linux_raw_sys::ptrace::seccomp_notif_sizes>(),
         "ptrace::seccomp_notif_sizes"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::seccomp_notif_sizes>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif_sizes>(),
         align_of::<linux_raw_sys::ptrace::seccomp_notif_sizes>(),
         "ptrace::seccomp_notif_sizes"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::seccomp_notif>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif>(),
         size_of::<linux_raw_sys::ptrace::seccomp_notif>(),
         "ptrace::seccomp_notif"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::seccomp_notif>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif>(),
         align_of::<linux_raw_sys::ptrace::seccomp_notif>(),
         "ptrace::seccomp_notif"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::seccomp_notif_resp>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif_resp>(),
         size_of::<linux_raw_sys::ptrace::seccomp_notif_resp>(),
         "ptrace::seccomp_notif_resp"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::seccomp_notif_resp>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif_resp>(),
         align_of::<linux_raw_sys::ptrace::seccomp_notif_resp>(),
         "ptrace::seccomp_notif_resp"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::seccomp_notif_addfd>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif_addfd>(),
         size_of::<linux_raw_sys::ptrace::seccomp_notif_addfd>(),
         "ptrace::seccomp_notif_addfd"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::seccomp_notif_addfd>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::seccomp_notif_addfd>(),
         align_of::<linux_raw_sys::ptrace::seccomp_notif_addfd>(),
         "ptrace::seccomp_notif_addfd"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::audit_status__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::audit_status__bindgen_ty_1>(),
         size_of::<linux_raw_sys::ptrace::audit_status__bindgen_ty_1>(),
         "ptrace::audit_status__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::audit_status__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::audit_status__bindgen_ty_1>(),
         align_of::<linux_raw_sys::ptrace::audit_status__bindgen_ty_1>(),
         "ptrace::audit_status__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1>(),
         size_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1>(),
         "ptrace::ptrace_syscall_info__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::ptrace::ptrace_syscall_info__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::ptrace::ptrace_syscall_info__bindgen_ty_1>(),
         align_of::<linux_raw_sys::ptrace::ptrace_syscall_info__bindgen_ty_1>(),
         "ptrace::ptrace_syscall_info__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::__kernel_sockaddr_storage>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::__kernel_sockaddr_storage>(),
         size_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage>(),
         "netlink::__kernel_sockaddr_storage"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::__kernel_sockaddr_storage>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::__kernel_sockaddr_storage>(),
         align_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage>(),
         "netlink::__kernel_sockaddr_storage"
     );
-    assert_eq!(size_of::<wcontainers_kernel::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
-    assert_eq!(align_of::<wcontainers_kernel::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "netlink::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::sockaddr_nl>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::sockaddr_nl>(),
         size_of::<linux_raw_sys::netlink::sockaddr_nl>(),
         "netlink::sockaddr_nl"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::sockaddr_nl>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::sockaddr_nl>(),
         align_of::<linux_raw_sys::netlink::sockaddr_nl>(),
         "netlink::sockaddr_nl"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nlmsghdr>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nlmsghdr>(),
         size_of::<linux_raw_sys::netlink::nlmsghdr>(),
         "netlink::nlmsghdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nlmsghdr>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nlmsghdr>(),
         align_of::<linux_raw_sys::netlink::nlmsghdr>(),
         "netlink::nlmsghdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nlmsgerr>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nlmsgerr>(),
         size_of::<linux_raw_sys::netlink::nlmsgerr>(),
         "netlink::nlmsgerr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nlmsgerr>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nlmsgerr>(),
         align_of::<linux_raw_sys::netlink::nlmsgerr>(),
         "netlink::nlmsgerr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl_pktinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl_pktinfo>(),
         size_of::<linux_raw_sys::netlink::nl_pktinfo>(),
         "netlink::nl_pktinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl_pktinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl_pktinfo>(),
         align_of::<linux_raw_sys::netlink::nl_pktinfo>(),
         "netlink::nl_pktinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl_mmap_req>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl_mmap_req>(),
         size_of::<linux_raw_sys::netlink::nl_mmap_req>(),
         "netlink::nl_mmap_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl_mmap_req>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl_mmap_req>(),
         align_of::<linux_raw_sys::netlink::nl_mmap_req>(),
         "netlink::nl_mmap_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl_mmap_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl_mmap_hdr>(),
         size_of::<linux_raw_sys::netlink::nl_mmap_hdr>(),
         "netlink::nl_mmap_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl_mmap_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl_mmap_hdr>(),
         align_of::<linux_raw_sys::netlink::nl_mmap_hdr>(),
         "netlink::nl_mmap_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nlattr>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nlattr>(),
         size_of::<linux_raw_sys::netlink::nlattr>(),
         "netlink::nlattr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nlattr>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nlattr>(),
         align_of::<linux_raw_sys::netlink::nlattr>(),
         "netlink::nlattr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nla_bitfield32>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nla_bitfield32>(),
         size_of::<linux_raw_sys::netlink::nla_bitfield32>(),
         "netlink::nla_bitfield32"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nla_bitfield32>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nla_bitfield32>(),
         align_of::<linux_raw_sys::netlink::nla_bitfield32>(),
         "netlink::nla_bitfield32"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_sta_flag_update>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_sta_flag_update>(),
         size_of::<linux_raw_sys::netlink::nl80211_sta_flag_update>(),
         "netlink::nl80211_sta_flag_update"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_sta_flag_update>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_sta_flag_update>(),
         align_of::<linux_raw_sys::netlink::nl80211_sta_flag_update>(),
         "netlink::nl80211_sta_flag_update"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_txrate_vht>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_txrate_vht>(),
         size_of::<linux_raw_sys::netlink::nl80211_txrate_vht>(),
         "netlink::nl80211_txrate_vht"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_txrate_vht>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_txrate_vht>(),
         align_of::<linux_raw_sys::netlink::nl80211_txrate_vht>(),
         "netlink::nl80211_txrate_vht"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_txrate_he>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_txrate_he>(),
         size_of::<linux_raw_sys::netlink::nl80211_txrate_he>(),
         "netlink::nl80211_txrate_he"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_txrate_he>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_txrate_he>(),
         align_of::<linux_raw_sys::netlink::nl80211_txrate_he>(),
         "netlink::nl80211_txrate_he"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_pattern_support>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_pattern_support>(),
         size_of::<linux_raw_sys::netlink::nl80211_pattern_support>(),
         "netlink::nl80211_pattern_support"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_pattern_support>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_pattern_support>(),
         align_of::<linux_raw_sys::netlink::nl80211_pattern_support>(),
         "netlink::nl80211_pattern_support"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_wowlan_tcp_data_seq>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_wowlan_tcp_data_seq>(),
         size_of::<linux_raw_sys::netlink::nl80211_wowlan_tcp_data_seq>(),
         "netlink::nl80211_wowlan_tcp_data_seq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_wowlan_tcp_data_seq>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_wowlan_tcp_data_seq>(),
         align_of::<linux_raw_sys::netlink::nl80211_wowlan_tcp_data_seq>(),
         "netlink::nl80211_wowlan_tcp_data_seq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_wowlan_tcp_data_token>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_wowlan_tcp_data_token>(),
         size_of::<linux_raw_sys::netlink::nl80211_wowlan_tcp_data_token>(),
         "netlink::nl80211_wowlan_tcp_data_token"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_wowlan_tcp_data_token>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_wowlan_tcp_data_token>(),
         align_of::<linux_raw_sys::netlink::nl80211_wowlan_tcp_data_token>(),
         "netlink::nl80211_wowlan_tcp_data_token"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_wowlan_tcp_data_token_feature>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_wowlan_tcp_data_token_feature>(
+        ),
         size_of::<linux_raw_sys::netlink::nl80211_wowlan_tcp_data_token_feature>(),
         "netlink::nl80211_wowlan_tcp_data_token_feature"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_wowlan_tcp_data_token_feature>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_wowlan_tcp_data_token_feature>(
+        ),
         align_of::<linux_raw_sys::netlink::nl80211_wowlan_tcp_data_token_feature>(),
         "netlink::nl80211_wowlan_tcp_data_token_feature"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_coalesce_rule_support>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_coalesce_rule_support>(),
         size_of::<linux_raw_sys::netlink::nl80211_coalesce_rule_support>(),
         "netlink::nl80211_coalesce_rule_support"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_coalesce_rule_support>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_coalesce_rule_support>(),
         align_of::<linux_raw_sys::netlink::nl80211_coalesce_rule_support>(),
         "netlink::nl80211_coalesce_rule_support"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_vendor_cmd_info>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_vendor_cmd_info>(),
         size_of::<linux_raw_sys::netlink::nl80211_vendor_cmd_info>(),
         "netlink::nl80211_vendor_cmd_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_vendor_cmd_info>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_vendor_cmd_info>(),
         align_of::<linux_raw_sys::netlink::nl80211_vendor_cmd_info>(),
         "netlink::nl80211_vendor_cmd_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nl80211_bss_select_rssi_adjust>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nl80211_bss_select_rssi_adjust>(),
         size_of::<linux_raw_sys::netlink::nl80211_bss_select_rssi_adjust>(),
         "netlink::nl80211_bss_select_rssi_adjust"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nl80211_bss_select_rssi_adjust>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nl80211_bss_select_rssi_adjust>(),
         align_of::<linux_raw_sys::netlink::nl80211_bss_select_rssi_adjust>(),
         "netlink::nl80211_bss_select_rssi_adjust"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtnl_link_stats>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtnl_link_stats>(),
         size_of::<linux_raw_sys::netlink::rtnl_link_stats>(),
         "netlink::rtnl_link_stats"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtnl_link_stats>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtnl_link_stats>(),
         align_of::<linux_raw_sys::netlink::rtnl_link_stats>(),
         "netlink::rtnl_link_stats"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtnl_link_stats64>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtnl_link_stats64>(),
         size_of::<linux_raw_sys::netlink::rtnl_link_stats64>(),
         "netlink::rtnl_link_stats64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtnl_link_stats64>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtnl_link_stats64>(),
         align_of::<linux_raw_sys::netlink::rtnl_link_stats64>(),
         "netlink::rtnl_link_stats64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtnl_hw_stats64>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtnl_hw_stats64>(),
         size_of::<linux_raw_sys::netlink::rtnl_hw_stats64>(),
         "netlink::rtnl_hw_stats64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtnl_hw_stats64>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtnl_hw_stats64>(),
         align_of::<linux_raw_sys::netlink::rtnl_hw_stats64>(),
         "netlink::rtnl_hw_stats64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtnl_link_ifmap>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtnl_link_ifmap>(),
         size_of::<linux_raw_sys::netlink::rtnl_link_ifmap>(),
         "netlink::rtnl_link_ifmap"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtnl_link_ifmap>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtnl_link_ifmap>(),
         align_of::<linux_raw_sys::netlink::rtnl_link_ifmap>(),
         "netlink::rtnl_link_ifmap"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_bridge_id>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_bridge_id>(),
         size_of::<linux_raw_sys::netlink::ifla_bridge_id>(),
         "netlink::ifla_bridge_id"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_bridge_id>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_bridge_id>(),
         align_of::<linux_raw_sys::netlink::ifla_bridge_id>(),
         "netlink::ifla_bridge_id"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_cacheinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_cacheinfo>(),
         size_of::<linux_raw_sys::netlink::ifla_cacheinfo>(),
         "netlink::ifla_cacheinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_cacheinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_cacheinfo>(),
         align_of::<linux_raw_sys::netlink::ifla_cacheinfo>(),
         "netlink::ifla_cacheinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vlan_flags>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vlan_flags>(),
         size_of::<linux_raw_sys::netlink::ifla_vlan_flags>(),
         "netlink::ifla_vlan_flags"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vlan_flags>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vlan_flags>(),
         align_of::<linux_raw_sys::netlink::ifla_vlan_flags>(),
         "netlink::ifla_vlan_flags"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vlan_qos_mapping>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vlan_qos_mapping>(),
         size_of::<linux_raw_sys::netlink::ifla_vlan_qos_mapping>(),
         "netlink::ifla_vlan_qos_mapping"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vlan_qos_mapping>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vlan_qos_mapping>(),
         align_of::<linux_raw_sys::netlink::ifla_vlan_qos_mapping>(),
         "netlink::ifla_vlan_qos_mapping"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::tunnel_msg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::tunnel_msg>(),
         size_of::<linux_raw_sys::netlink::tunnel_msg>(),
         "netlink::tunnel_msg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::tunnel_msg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::tunnel_msg>(),
         align_of::<linux_raw_sys::netlink::tunnel_msg>(),
         "netlink::tunnel_msg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vxlan_port_range>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vxlan_port_range>(),
         size_of::<linux_raw_sys::netlink::ifla_vxlan_port_range>(),
         "netlink::ifla_vxlan_port_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vxlan_port_range>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vxlan_port_range>(),
         align_of::<linux_raw_sys::netlink::ifla_vxlan_port_range>(),
         "netlink::ifla_vxlan_port_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_geneve_port_range>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_geneve_port_range>(),
         size_of::<linux_raw_sys::netlink::ifla_geneve_port_range>(),
         "netlink::ifla_geneve_port_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_geneve_port_range>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_geneve_port_range>(),
         align_of::<linux_raw_sys::netlink::ifla_geneve_port_range>(),
         "netlink::ifla_geneve_port_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_mac>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_mac>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_mac>(),
         "netlink::ifla_vf_mac"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_mac>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_mac>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_mac>(),
         "netlink::ifla_vf_mac"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_broadcast>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_broadcast>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_broadcast>(),
         "netlink::ifla_vf_broadcast"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_broadcast>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_broadcast>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_broadcast>(),
         "netlink::ifla_vf_broadcast"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_vlan>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_vlan>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_vlan>(),
         "netlink::ifla_vf_vlan"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_vlan>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_vlan>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_vlan>(),
         "netlink::ifla_vf_vlan"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_vlan_info>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_vlan_info>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_vlan_info>(),
         "netlink::ifla_vf_vlan_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_vlan_info>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_vlan_info>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_vlan_info>(),
         "netlink::ifla_vf_vlan_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_tx_rate>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_tx_rate>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_tx_rate>(),
         "netlink::ifla_vf_tx_rate"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_tx_rate>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_tx_rate>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_tx_rate>(),
         "netlink::ifla_vf_tx_rate"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_rate>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_rate>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_rate>(),
         "netlink::ifla_vf_rate"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_rate>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_rate>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_rate>(),
         "netlink::ifla_vf_rate"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_spoofchk>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_spoofchk>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_spoofchk>(),
         "netlink::ifla_vf_spoofchk"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_spoofchk>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_spoofchk>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_spoofchk>(),
         "netlink::ifla_vf_spoofchk"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_guid>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_guid>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_guid>(),
         "netlink::ifla_vf_guid"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_guid>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_guid>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_guid>(),
         "netlink::ifla_vf_guid"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_link_state>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_link_state>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_link_state>(),
         "netlink::ifla_vf_link_state"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_link_state>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_link_state>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_link_state>(),
         "netlink::ifla_vf_link_state"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_rss_query_en>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_rss_query_en>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_rss_query_en>(),
         "netlink::ifla_vf_rss_query_en"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_rss_query_en>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_rss_query_en>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_rss_query_en>(),
         "netlink::ifla_vf_rss_query_en"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_vf_trust>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_trust>(),
         size_of::<linux_raw_sys::netlink::ifla_vf_trust>(),
         "netlink::ifla_vf_trust"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_vf_trust>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_vf_trust>(),
         align_of::<linux_raw_sys::netlink::ifla_vf_trust>(),
         "netlink::ifla_vf_trust"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_port_vsi>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_port_vsi>(),
         size_of::<linux_raw_sys::netlink::ifla_port_vsi>(),
         "netlink::ifla_port_vsi"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_port_vsi>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_port_vsi>(),
         align_of::<linux_raw_sys::netlink::ifla_port_vsi>(),
         "netlink::ifla_port_vsi"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::if_stats_msg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::if_stats_msg>(),
         size_of::<linux_raw_sys::netlink::if_stats_msg>(),
         "netlink::if_stats_msg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::if_stats_msg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::if_stats_msg>(),
         align_of::<linux_raw_sys::netlink::if_stats_msg>(),
         "netlink::if_stats_msg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifla_rmnet_flags>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifla_rmnet_flags>(),
         size_of::<linux_raw_sys::netlink::ifla_rmnet_flags>(),
         "netlink::ifla_rmnet_flags"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifla_rmnet_flags>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifla_rmnet_flags>(),
         align_of::<linux_raw_sys::netlink::ifla_rmnet_flags>(),
         "netlink::ifla_rmnet_flags"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifaddrmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifaddrmsg>(),
         size_of::<linux_raw_sys::netlink::ifaddrmsg>(),
         "netlink::ifaddrmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifaddrmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifaddrmsg>(),
         align_of::<linux_raw_sys::netlink::ifaddrmsg>(),
         "netlink::ifaddrmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifa_cacheinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifa_cacheinfo>(),
         size_of::<linux_raw_sys::netlink::ifa_cacheinfo>(),
         "netlink::ifa_cacheinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifa_cacheinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifa_cacheinfo>(),
         align_of::<linux_raw_sys::netlink::ifa_cacheinfo>(),
         "netlink::ifa_cacheinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ndmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ndmsg>(),
         size_of::<linux_raw_sys::netlink::ndmsg>(),
         "netlink::ndmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ndmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ndmsg>(),
         align_of::<linux_raw_sys::netlink::ndmsg>(),
         "netlink::ndmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nda_cacheinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nda_cacheinfo>(),
         size_of::<linux_raw_sys::netlink::nda_cacheinfo>(),
         "netlink::nda_cacheinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nda_cacheinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nda_cacheinfo>(),
         align_of::<linux_raw_sys::netlink::nda_cacheinfo>(),
         "netlink::nda_cacheinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ndt_stats>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ndt_stats>(),
         size_of::<linux_raw_sys::netlink::ndt_stats>(),
         "netlink::ndt_stats"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ndt_stats>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ndt_stats>(),
         align_of::<linux_raw_sys::netlink::ndt_stats>(),
         "netlink::ndt_stats"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ndtmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ndtmsg>(),
         size_of::<linux_raw_sys::netlink::ndtmsg>(),
         "netlink::ndtmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ndtmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ndtmsg>(),
         align_of::<linux_raw_sys::netlink::ndtmsg>(),
         "netlink::ndtmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ndt_config>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ndt_config>(),
         size_of::<linux_raw_sys::netlink::ndt_config>(),
         "netlink::ndt_config"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ndt_config>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ndt_config>(),
         align_of::<linux_raw_sys::netlink::ndt_config>(),
         "netlink::ndt_config"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtattr>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtattr>(),
         size_of::<linux_raw_sys::netlink::rtattr>(),
         "netlink::rtattr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtattr>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtattr>(),
         align_of::<linux_raw_sys::netlink::rtattr>(),
         "netlink::rtattr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtmsg>(),
         size_of::<linux_raw_sys::netlink::rtmsg>(),
         "netlink::rtmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtmsg>(),
         align_of::<linux_raw_sys::netlink::rtmsg>(),
         "netlink::rtmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtnexthop>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtnexthop>(),
         size_of::<linux_raw_sys::netlink::rtnexthop>(),
         "netlink::rtnexthop"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtnexthop>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtnexthop>(),
         align_of::<linux_raw_sys::netlink::rtnexthop>(),
         "netlink::rtnexthop"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtvia>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtvia>(),
         size_of::<linux_raw_sys::netlink::rtvia>(),
         "netlink::rtvia"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtvia>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtvia>(),
         align_of::<linux_raw_sys::netlink::rtvia>(),
         "netlink::rtvia"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rta_cacheinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rta_cacheinfo>(),
         size_of::<linux_raw_sys::netlink::rta_cacheinfo>(),
         "netlink::rta_cacheinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rta_cacheinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rta_cacheinfo>(),
         align_of::<linux_raw_sys::netlink::rta_cacheinfo>(),
         "netlink::rta_cacheinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rta_session>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rta_session>(),
         size_of::<linux_raw_sys::netlink::rta_session>(),
         "netlink::rta_session"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rta_session>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rta_session>(),
         align_of::<linux_raw_sys::netlink::rta_session>(),
         "netlink::rta_session"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::netlink::rta_session__bindgen_ty_1__bindgen_ty_1>(),
         "netlink::rta_session__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::netlink::rta_session__bindgen_ty_1__bindgen_ty_1>(),
         "netlink::rta_session__bindgen_ty_1__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_2>(
+        ),
         size_of::<linux_raw_sys::netlink::rta_session__bindgen_ty_1__bindgen_ty_2>(),
         "netlink::rta_session__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rta_session__bindgen_ty_1__bindgen_ty_2>(
+        ),
         align_of::<linux_raw_sys::netlink::rta_session__bindgen_ty_1__bindgen_ty_2>(),
         "netlink::rta_session__bindgen_ty_1__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rta_mfc_stats>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rta_mfc_stats>(),
         size_of::<linux_raw_sys::netlink::rta_mfc_stats>(),
         "netlink::rta_mfc_stats"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rta_mfc_stats>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rta_mfc_stats>(),
         align_of::<linux_raw_sys::netlink::rta_mfc_stats>(),
         "netlink::rta_mfc_stats"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rtgenmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rtgenmsg>(),
         size_of::<linux_raw_sys::netlink::rtgenmsg>(),
         "netlink::rtgenmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rtgenmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rtgenmsg>(),
         align_of::<linux_raw_sys::netlink::rtgenmsg>(),
         "netlink::rtgenmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::ifinfomsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::ifinfomsg>(),
         size_of::<linux_raw_sys::netlink::ifinfomsg>(),
         "netlink::ifinfomsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::ifinfomsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::ifinfomsg>(),
         align_of::<linux_raw_sys::netlink::ifinfomsg>(),
         "netlink::ifinfomsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::prefixmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::prefixmsg>(),
         size_of::<linux_raw_sys::netlink::prefixmsg>(),
         "netlink::prefixmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::prefixmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::prefixmsg>(),
         align_of::<linux_raw_sys::netlink::prefixmsg>(),
         "netlink::prefixmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::prefix_cacheinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::prefix_cacheinfo>(),
         size_of::<linux_raw_sys::netlink::prefix_cacheinfo>(),
         "netlink::prefix_cacheinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::prefix_cacheinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::prefix_cacheinfo>(),
         align_of::<linux_raw_sys::netlink::prefix_cacheinfo>(),
         "netlink::prefix_cacheinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::tcmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::tcmsg>(),
         size_of::<linux_raw_sys::netlink::tcmsg>(),
         "netlink::tcmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::tcmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::tcmsg>(),
         align_of::<linux_raw_sys::netlink::tcmsg>(),
         "netlink::tcmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::nduseroptmsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::nduseroptmsg>(),
         size_of::<linux_raw_sys::netlink::nduseroptmsg>(),
         "netlink::nduseroptmsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::nduseroptmsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::nduseroptmsg>(),
         align_of::<linux_raw_sys::netlink::nduseroptmsg>(),
         "netlink::nduseroptmsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::tcamsg>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::tcamsg>(),
         size_of::<linux_raw_sys::netlink::tcamsg>(),
         "netlink::tcamsg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::tcamsg>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::tcamsg>(),
         align_of::<linux_raw_sys::netlink::tcamsg>(),
         "netlink::tcamsg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::fib_rule_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::fib_rule_hdr>(),
         size_of::<linux_raw_sys::netlink::fib_rule_hdr>(),
         "netlink::fib_rule_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::fib_rule_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::fib_rule_hdr>(),
         align_of::<linux_raw_sys::netlink::fib_rule_hdr>(),
         "netlink::fib_rule_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::fib_rule_uid_range>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::fib_rule_uid_range>(),
         size_of::<linux_raw_sys::netlink::fib_rule_uid_range>(),
         "netlink::fib_rule_uid_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::fib_rule_uid_range>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::fib_rule_uid_range>(),
         align_of::<linux_raw_sys::netlink::fib_rule_uid_range>(),
         "netlink::fib_rule_uid_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::fib_rule_port_range>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::fib_rule_port_range>(),
         size_of::<linux_raw_sys::netlink::fib_rule_port_range>(),
         "netlink::fib_rule_port_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::fib_rule_port_range>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::fib_rule_port_range>(),
         align_of::<linux_raw_sys::netlink::fib_rule_port_range>(),
         "netlink::fib_rule_port_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage__bindgen_ty_1>(),
         "netlink::__kernel_sockaddr_storage__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::__kernel_sockaddr_storage__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::netlink::__kernel_sockaddr_storage__bindgen_ty_1>(),
         "netlink::__kernel_sockaddr_storage__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::netlink::rta_session__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::netlink::rta_session__bindgen_ty_1>(),
         size_of::<linux_raw_sys::netlink::rta_session__bindgen_ty_1>(),
         "netlink::rta_session__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::netlink::rta_session__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::netlink::rta_session__bindgen_ty_1>(),
         align_of::<linux_raw_sys::netlink::rta_session__bindgen_ty_1>(),
         "netlink::rta_session__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::__kernel_sockaddr_storage>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::__kernel_sockaddr_storage>(),
         size_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage>(),
         "if_arp::__kernel_sockaddr_storage"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::__kernel_sockaddr_storage>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::__kernel_sockaddr_storage>(),
         align_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage>(),
         "if_arp::__kernel_sockaddr_storage"
     );
-    assert_eq!(size_of::<wcontainers_kernel::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
-    assert_eq!(align_of::<wcontainers_kernel::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(size_of::<wcontainers_kernel_linux::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), size_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
+    assert_eq!(align_of::<wcontainers_kernel_linux::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), align_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1>(), "if_arp::__kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1");
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::sockaddr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr>(),
         size_of::<linux_raw_sys::if_arp::sockaddr>(),
         "if_arp::sockaddr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::sockaddr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr>(),
         align_of::<linux_raw_sys::if_arp::sockaddr>(),
         "if_arp::sockaddr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::sync_serial_settings>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::sync_serial_settings>(),
         size_of::<linux_raw_sys::if_arp::sync_serial_settings>(),
         "if_arp::sync_serial_settings"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::sync_serial_settings>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::sync_serial_settings>(),
         align_of::<linux_raw_sys::if_arp::sync_serial_settings>(),
         "if_arp::sync_serial_settings"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::te1_settings>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::te1_settings>(),
         size_of::<linux_raw_sys::if_arp::te1_settings>(),
         "if_arp::te1_settings"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::te1_settings>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::te1_settings>(),
         align_of::<linux_raw_sys::if_arp::te1_settings>(),
         "if_arp::te1_settings"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::raw_hdlc_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::raw_hdlc_proto>(),
         size_of::<linux_raw_sys::if_arp::raw_hdlc_proto>(),
         "if_arp::raw_hdlc_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::raw_hdlc_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::raw_hdlc_proto>(),
         align_of::<linux_raw_sys::if_arp::raw_hdlc_proto>(),
         "if_arp::raw_hdlc_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::fr_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::fr_proto>(),
         size_of::<linux_raw_sys::if_arp::fr_proto>(),
         "if_arp::fr_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::fr_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::fr_proto>(),
         align_of::<linux_raw_sys::if_arp::fr_proto>(),
         "if_arp::fr_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::fr_proto_pvc>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::fr_proto_pvc>(),
         size_of::<linux_raw_sys::if_arp::fr_proto_pvc>(),
         "if_arp::fr_proto_pvc"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::fr_proto_pvc>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::fr_proto_pvc>(),
         align_of::<linux_raw_sys::if_arp::fr_proto_pvc>(),
         "if_arp::fr_proto_pvc"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::fr_proto_pvc_info>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::fr_proto_pvc_info>(),
         size_of::<linux_raw_sys::if_arp::fr_proto_pvc_info>(),
         "if_arp::fr_proto_pvc_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::fr_proto_pvc_info>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::fr_proto_pvc_info>(),
         align_of::<linux_raw_sys::if_arp::fr_proto_pvc_info>(),
         "if_arp::fr_proto_pvc_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::cisco_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::cisco_proto>(),
         size_of::<linux_raw_sys::if_arp::cisco_proto>(),
         "if_arp::cisco_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::cisco_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::cisco_proto>(),
         align_of::<linux_raw_sys::if_arp::cisco_proto>(),
         "if_arp::cisco_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::x25_hdlc_proto>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::x25_hdlc_proto>(),
         size_of::<linux_raw_sys::if_arp::x25_hdlc_proto>(),
         "if_arp::x25_hdlc_proto"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::x25_hdlc_proto>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::x25_hdlc_proto>(),
         align_of::<linux_raw_sys::if_arp::x25_hdlc_proto>(),
         "if_arp::x25_hdlc_proto"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifmap>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifmap>(),
         size_of::<linux_raw_sys::if_arp::ifmap>(),
         "if_arp::ifmap"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifmap>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifmap>(),
         align_of::<linux_raw_sys::if_arp::ifmap>(),
         "if_arp::ifmap"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::if_settings>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::if_settings>(),
         size_of::<linux_raw_sys::if_arp::if_settings>(),
         "if_arp::if_settings"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::if_settings>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::if_settings>(),
         align_of::<linux_raw_sys::if_arp::if_settings>(),
         "if_arp::if_settings"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifreq>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifreq>(),
         size_of::<linux_raw_sys::if_arp::ifreq>(),
         "if_arp::ifreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifreq>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifreq>(),
         align_of::<linux_raw_sys::if_arp::ifreq>(),
         "if_arp::ifreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifconf>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifconf>(),
         size_of::<linux_raw_sys::if_arp::ifconf>(),
         "if_arp::ifconf"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifconf>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifconf>(),
         align_of::<linux_raw_sys::if_arp::ifconf>(),
         "if_arp::ifconf"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ethhdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ethhdr>(),
         size_of::<linux_raw_sys::if_arp::ethhdr>(),
         "if_arp::ethhdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ethhdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ethhdr>(),
         align_of::<linux_raw_sys::if_arp::ethhdr>(),
         "if_arp::ethhdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::sockaddr_pkt>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr_pkt>(),
         size_of::<linux_raw_sys::if_arp::sockaddr_pkt>(),
         "if_arp::sockaddr_pkt"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::sockaddr_pkt>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr_pkt>(),
         align_of::<linux_raw_sys::if_arp::sockaddr_pkt>(),
         "if_arp::sockaddr_pkt"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::sockaddr_ll>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr_ll>(),
         size_of::<linux_raw_sys::if_arp::sockaddr_ll>(),
         "if_arp::sockaddr_ll"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::sockaddr_ll>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr_ll>(),
         align_of::<linux_raw_sys::if_arp::sockaddr_ll>(),
         "if_arp::sockaddr_ll"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_stats>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_stats>(),
         size_of::<linux_raw_sys::if_arp::tpacket_stats>(),
         "if_arp::tpacket_stats"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_stats>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_stats>(),
         align_of::<linux_raw_sys::if_arp::tpacket_stats>(),
         "if_arp::tpacket_stats"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_stats_v3>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_stats_v3>(),
         size_of::<linux_raw_sys::if_arp::tpacket_stats_v3>(),
         "if_arp::tpacket_stats_v3"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_stats_v3>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_stats_v3>(),
         align_of::<linux_raw_sys::if_arp::tpacket_stats_v3>(),
         "if_arp::tpacket_stats_v3"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_rollover_stats>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_rollover_stats>(),
         size_of::<linux_raw_sys::if_arp::tpacket_rollover_stats>(),
         "if_arp::tpacket_rollover_stats"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_rollover_stats>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_rollover_stats>(),
         align_of::<linux_raw_sys::if_arp::tpacket_rollover_stats>(),
         "if_arp::tpacket_rollover_stats"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_auxdata>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_auxdata>(),
         size_of::<linux_raw_sys::if_arp::tpacket_auxdata>(),
         "if_arp::tpacket_auxdata"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_auxdata>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_auxdata>(),
         align_of::<linux_raw_sys::if_arp::tpacket_auxdata>(),
         "if_arp::tpacket_auxdata"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_hdr>(),
         size_of::<linux_raw_sys::if_arp::tpacket_hdr>(),
         "if_arp::tpacket_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_hdr>(),
         align_of::<linux_raw_sys::if_arp::tpacket_hdr>(),
         "if_arp::tpacket_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket2_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket2_hdr>(),
         size_of::<linux_raw_sys::if_arp::tpacket2_hdr>(),
         "if_arp::tpacket2_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket2_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket2_hdr>(),
         align_of::<linux_raw_sys::if_arp::tpacket2_hdr>(),
         "if_arp::tpacket2_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_hdr_variant1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_hdr_variant1>(),
         size_of::<linux_raw_sys::if_arp::tpacket_hdr_variant1>(),
         "if_arp::tpacket_hdr_variant1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_hdr_variant1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_hdr_variant1>(),
         align_of::<linux_raw_sys::if_arp::tpacket_hdr_variant1>(),
         "if_arp::tpacket_hdr_variant1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket3_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket3_hdr>(),
         size_of::<linux_raw_sys::if_arp::tpacket3_hdr>(),
         "if_arp::tpacket3_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket3_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket3_hdr>(),
         align_of::<linux_raw_sys::if_arp::tpacket3_hdr>(),
         "if_arp::tpacket3_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_bd_ts>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_bd_ts>(),
         size_of::<linux_raw_sys::if_arp::tpacket_bd_ts>(),
         "if_arp::tpacket_bd_ts"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_bd_ts>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_bd_ts>(),
         align_of::<linux_raw_sys::if_arp::tpacket_bd_ts>(),
         "if_arp::tpacket_bd_ts"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_hdr_v1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_hdr_v1>(),
         size_of::<linux_raw_sys::if_arp::tpacket_hdr_v1>(),
         "if_arp::tpacket_hdr_v1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_hdr_v1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_hdr_v1>(),
         align_of::<linux_raw_sys::if_arp::tpacket_hdr_v1>(),
         "if_arp::tpacket_hdr_v1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_block_desc>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_block_desc>(),
         size_of::<linux_raw_sys::if_arp::tpacket_block_desc>(),
         "if_arp::tpacket_block_desc"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_block_desc>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_block_desc>(),
         align_of::<linux_raw_sys::if_arp::tpacket_block_desc>(),
         "if_arp::tpacket_block_desc"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_req>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_req>(),
         size_of::<linux_raw_sys::if_arp::tpacket_req>(),
         "if_arp::tpacket_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_req>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_req>(),
         align_of::<linux_raw_sys::if_arp::tpacket_req>(),
         "if_arp::tpacket_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_req3>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_req3>(),
         size_of::<linux_raw_sys::if_arp::tpacket_req3>(),
         "if_arp::tpacket_req3"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_req3>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_req3>(),
         align_of::<linux_raw_sys::if_arp::tpacket_req3>(),
         "if_arp::tpacket_req3"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::packet_mreq>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::packet_mreq>(),
         size_of::<linux_raw_sys::if_arp::packet_mreq>(),
         "if_arp::packet_mreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::packet_mreq>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::packet_mreq>(),
         align_of::<linux_raw_sys::if_arp::packet_mreq>(),
         "if_arp::packet_mreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::fanout_args>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::fanout_args>(),
         size_of::<linux_raw_sys::if_arp::fanout_args>(),
         "if_arp::fanout_args"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::fanout_args>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::fanout_args>(),
         align_of::<linux_raw_sys::if_arp::fanout_args>(),
         "if_arp::fanout_args"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::sockaddr_nl>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr_nl>(),
         size_of::<linux_raw_sys::if_arp::sockaddr_nl>(),
         "if_arp::sockaddr_nl"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::sockaddr_nl>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::sockaddr_nl>(),
         align_of::<linux_raw_sys::if_arp::sockaddr_nl>(),
         "if_arp::sockaddr_nl"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nlmsghdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nlmsghdr>(),
         size_of::<linux_raw_sys::if_arp::nlmsghdr>(),
         "if_arp::nlmsghdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nlmsghdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nlmsghdr>(),
         align_of::<linux_raw_sys::if_arp::nlmsghdr>(),
         "if_arp::nlmsghdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nlmsgerr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nlmsgerr>(),
         size_of::<linux_raw_sys::if_arp::nlmsgerr>(),
         "if_arp::nlmsgerr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nlmsgerr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nlmsgerr>(),
         align_of::<linux_raw_sys::if_arp::nlmsgerr>(),
         "if_arp::nlmsgerr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nl_pktinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nl_pktinfo>(),
         size_of::<linux_raw_sys::if_arp::nl_pktinfo>(),
         "if_arp::nl_pktinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nl_pktinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nl_pktinfo>(),
         align_of::<linux_raw_sys::if_arp::nl_pktinfo>(),
         "if_arp::nl_pktinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nl_mmap_req>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nl_mmap_req>(),
         size_of::<linux_raw_sys::if_arp::nl_mmap_req>(),
         "if_arp::nl_mmap_req"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nl_mmap_req>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nl_mmap_req>(),
         align_of::<linux_raw_sys::if_arp::nl_mmap_req>(),
         "if_arp::nl_mmap_req"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nl_mmap_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nl_mmap_hdr>(),
         size_of::<linux_raw_sys::if_arp::nl_mmap_hdr>(),
         "if_arp::nl_mmap_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nl_mmap_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nl_mmap_hdr>(),
         align_of::<linux_raw_sys::if_arp::nl_mmap_hdr>(),
         "if_arp::nl_mmap_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nlattr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nlattr>(),
         size_of::<linux_raw_sys::if_arp::nlattr>(),
         "if_arp::nlattr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nlattr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nlattr>(),
         align_of::<linux_raw_sys::if_arp::nlattr>(),
         "if_arp::nlattr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::nla_bitfield32>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::nla_bitfield32>(),
         size_of::<linux_raw_sys::if_arp::nla_bitfield32>(),
         "if_arp::nla_bitfield32"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::nla_bitfield32>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::nla_bitfield32>(),
         align_of::<linux_raw_sys::if_arp::nla_bitfield32>(),
         "if_arp::nla_bitfield32"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::rtnl_link_stats>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_link_stats>(),
         size_of::<linux_raw_sys::if_arp::rtnl_link_stats>(),
         "if_arp::rtnl_link_stats"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::rtnl_link_stats>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_link_stats>(),
         align_of::<linux_raw_sys::if_arp::rtnl_link_stats>(),
         "if_arp::rtnl_link_stats"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::rtnl_link_stats64>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_link_stats64>(),
         size_of::<linux_raw_sys::if_arp::rtnl_link_stats64>(),
         "if_arp::rtnl_link_stats64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::rtnl_link_stats64>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_link_stats64>(),
         align_of::<linux_raw_sys::if_arp::rtnl_link_stats64>(),
         "if_arp::rtnl_link_stats64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::rtnl_hw_stats64>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_hw_stats64>(),
         size_of::<linux_raw_sys::if_arp::rtnl_hw_stats64>(),
         "if_arp::rtnl_hw_stats64"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::rtnl_hw_stats64>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_hw_stats64>(),
         align_of::<linux_raw_sys::if_arp::rtnl_hw_stats64>(),
         "if_arp::rtnl_hw_stats64"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::rtnl_link_ifmap>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_link_ifmap>(),
         size_of::<linux_raw_sys::if_arp::rtnl_link_ifmap>(),
         "if_arp::rtnl_link_ifmap"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::rtnl_link_ifmap>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::rtnl_link_ifmap>(),
         align_of::<linux_raw_sys::if_arp::rtnl_link_ifmap>(),
         "if_arp::rtnl_link_ifmap"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_bridge_id>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_bridge_id>(),
         size_of::<linux_raw_sys::if_arp::ifla_bridge_id>(),
         "if_arp::ifla_bridge_id"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_bridge_id>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_bridge_id>(),
         align_of::<linux_raw_sys::if_arp::ifla_bridge_id>(),
         "if_arp::ifla_bridge_id"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_cacheinfo>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_cacheinfo>(),
         size_of::<linux_raw_sys::if_arp::ifla_cacheinfo>(),
         "if_arp::ifla_cacheinfo"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_cacheinfo>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_cacheinfo>(),
         align_of::<linux_raw_sys::if_arp::ifla_cacheinfo>(),
         "if_arp::ifla_cacheinfo"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vlan_flags>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vlan_flags>(),
         size_of::<linux_raw_sys::if_arp::ifla_vlan_flags>(),
         "if_arp::ifla_vlan_flags"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vlan_flags>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vlan_flags>(),
         align_of::<linux_raw_sys::if_arp::ifla_vlan_flags>(),
         "if_arp::ifla_vlan_flags"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vlan_qos_mapping>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vlan_qos_mapping>(),
         size_of::<linux_raw_sys::if_arp::ifla_vlan_qos_mapping>(),
         "if_arp::ifla_vlan_qos_mapping"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vlan_qos_mapping>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vlan_qos_mapping>(),
         align_of::<linux_raw_sys::if_arp::ifla_vlan_qos_mapping>(),
         "if_arp::ifla_vlan_qos_mapping"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tunnel_msg>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tunnel_msg>(),
         size_of::<linux_raw_sys::if_arp::tunnel_msg>(),
         "if_arp::tunnel_msg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tunnel_msg>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tunnel_msg>(),
         align_of::<linux_raw_sys::if_arp::tunnel_msg>(),
         "if_arp::tunnel_msg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vxlan_port_range>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vxlan_port_range>(),
         size_of::<linux_raw_sys::if_arp::ifla_vxlan_port_range>(),
         "if_arp::ifla_vxlan_port_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vxlan_port_range>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vxlan_port_range>(),
         align_of::<linux_raw_sys::if_arp::ifla_vxlan_port_range>(),
         "if_arp::ifla_vxlan_port_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_geneve_port_range>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_geneve_port_range>(),
         size_of::<linux_raw_sys::if_arp::ifla_geneve_port_range>(),
         "if_arp::ifla_geneve_port_range"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_geneve_port_range>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_geneve_port_range>(),
         align_of::<linux_raw_sys::if_arp::ifla_geneve_port_range>(),
         "if_arp::ifla_geneve_port_range"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_mac>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_mac>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_mac>(),
         "if_arp::ifla_vf_mac"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_mac>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_mac>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_mac>(),
         "if_arp::ifla_vf_mac"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_broadcast>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_broadcast>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_broadcast>(),
         "if_arp::ifla_vf_broadcast"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_broadcast>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_broadcast>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_broadcast>(),
         "if_arp::ifla_vf_broadcast"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_vlan>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_vlan>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_vlan>(),
         "if_arp::ifla_vf_vlan"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_vlan>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_vlan>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_vlan>(),
         "if_arp::ifla_vf_vlan"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_vlan_info>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_vlan_info>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_vlan_info>(),
         "if_arp::ifla_vf_vlan_info"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_vlan_info>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_vlan_info>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_vlan_info>(),
         "if_arp::ifla_vf_vlan_info"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_tx_rate>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_tx_rate>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_tx_rate>(),
         "if_arp::ifla_vf_tx_rate"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_tx_rate>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_tx_rate>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_tx_rate>(),
         "if_arp::ifla_vf_tx_rate"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_rate>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_rate>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_rate>(),
         "if_arp::ifla_vf_rate"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_rate>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_rate>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_rate>(),
         "if_arp::ifla_vf_rate"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_spoofchk>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_spoofchk>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_spoofchk>(),
         "if_arp::ifla_vf_spoofchk"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_spoofchk>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_spoofchk>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_spoofchk>(),
         "if_arp::ifla_vf_spoofchk"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_guid>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_guid>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_guid>(),
         "if_arp::ifla_vf_guid"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_guid>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_guid>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_guid>(),
         "if_arp::ifla_vf_guid"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_link_state>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_link_state>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_link_state>(),
         "if_arp::ifla_vf_link_state"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_link_state>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_link_state>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_link_state>(),
         "if_arp::ifla_vf_link_state"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_rss_query_en>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_rss_query_en>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_rss_query_en>(),
         "if_arp::ifla_vf_rss_query_en"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_rss_query_en>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_rss_query_en>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_rss_query_en>(),
         "if_arp::ifla_vf_rss_query_en"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_vf_trust>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_trust>(),
         size_of::<linux_raw_sys::if_arp::ifla_vf_trust>(),
         "if_arp::ifla_vf_trust"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_vf_trust>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_vf_trust>(),
         align_of::<linux_raw_sys::if_arp::ifla_vf_trust>(),
         "if_arp::ifla_vf_trust"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_port_vsi>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_port_vsi>(),
         size_of::<linux_raw_sys::if_arp::ifla_port_vsi>(),
         "if_arp::ifla_port_vsi"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_port_vsi>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_port_vsi>(),
         align_of::<linux_raw_sys::if_arp::ifla_port_vsi>(),
         "if_arp::ifla_port_vsi"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::if_stats_msg>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::if_stats_msg>(),
         size_of::<linux_raw_sys::if_arp::if_stats_msg>(),
         "if_arp::if_stats_msg"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::if_stats_msg>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::if_stats_msg>(),
         align_of::<linux_raw_sys::if_arp::if_stats_msg>(),
         "if_arp::if_stats_msg"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifla_rmnet_flags>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifla_rmnet_flags>(),
         size_of::<linux_raw_sys::if_arp::ifla_rmnet_flags>(),
         "if_arp::ifla_rmnet_flags"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifla_rmnet_flags>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifla_rmnet_flags>(),
         align_of::<linux_raw_sys::if_arp::ifla_rmnet_flags>(),
         "if_arp::ifla_rmnet_flags"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::arpreq>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::arpreq>(),
         size_of::<linux_raw_sys::if_arp::arpreq>(),
         "if_arp::arpreq"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::arpreq>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::arpreq>(),
         align_of::<linux_raw_sys::if_arp::arpreq>(),
         "if_arp::arpreq"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::arpreq_old>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::arpreq_old>(),
         size_of::<linux_raw_sys::if_arp::arpreq_old>(),
         "if_arp::arpreq_old"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::arpreq_old>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::arpreq_old>(),
         align_of::<linux_raw_sys::if_arp::arpreq_old>(),
         "if_arp::arpreq_old"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::arphdr>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::arphdr>(),
         size_of::<linux_raw_sys::if_arp::arphdr>(),
         "if_arp::arphdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::arphdr>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::arphdr>(),
         align_of::<linux_raw_sys::if_arp::arphdr>(),
         "if_arp::arphdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1>(
+        ),
         size_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage__bindgen_ty_1>(),
         "if_arp::__kernel_sockaddr_storage__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::__kernel_sockaddr_storage__bindgen_ty_1>(
+        ),
         align_of::<linux_raw_sys::if_arp::__kernel_sockaddr_storage__bindgen_ty_1>(),
         "if_arp::__kernel_sockaddr_storage__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::if_settings__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::if_settings__bindgen_ty_1>(),
         size_of::<linux_raw_sys::if_arp::if_settings__bindgen_ty_1>(),
         "if_arp::if_settings__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::if_settings__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::if_settings__bindgen_ty_1>(),
         align_of::<linux_raw_sys::if_arp::if_settings__bindgen_ty_1>(),
         "if_arp::if_settings__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifreq__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifreq__bindgen_ty_1>(),
         size_of::<linux_raw_sys::if_arp::ifreq__bindgen_ty_1>(),
         "if_arp::ifreq__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifreq__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifreq__bindgen_ty_1>(),
         align_of::<linux_raw_sys::if_arp::ifreq__bindgen_ty_1>(),
         "if_arp::ifreq__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifreq__bindgen_ty_2>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifreq__bindgen_ty_2>(),
         size_of::<linux_raw_sys::if_arp::ifreq__bindgen_ty_2>(),
         "if_arp::ifreq__bindgen_ty_2"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifreq__bindgen_ty_2>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifreq__bindgen_ty_2>(),
         align_of::<linux_raw_sys::if_arp::ifreq__bindgen_ty_2>(),
         "if_arp::ifreq__bindgen_ty_2"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::ifconf__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::ifconf__bindgen_ty_1>(),
         size_of::<linux_raw_sys::if_arp::ifconf__bindgen_ty_1>(),
         "if_arp::ifconf__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::ifconf__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::ifconf__bindgen_ty_1>(),
         align_of::<linux_raw_sys::if_arp::ifconf__bindgen_ty_1>(),
         "if_arp::ifconf__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_stats_u>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_stats_u>(),
         size_of::<linux_raw_sys::if_arp::tpacket_stats_u>(),
         "if_arp::tpacket_stats_u"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_stats_u>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_stats_u>(),
         align_of::<linux_raw_sys::if_arp::tpacket_stats_u>(),
         "if_arp::tpacket_stats_u"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket3_hdr__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket3_hdr__bindgen_ty_1>(),
         size_of::<linux_raw_sys::if_arp::tpacket3_hdr__bindgen_ty_1>(),
         "if_arp::tpacket3_hdr__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket3_hdr__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket3_hdr__bindgen_ty_1>(),
         align_of::<linux_raw_sys::if_arp::tpacket3_hdr__bindgen_ty_1>(),
         "if_arp::tpacket3_hdr__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_bd_ts__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_bd_ts__bindgen_ty_1>(),
         size_of::<linux_raw_sys::if_arp::tpacket_bd_ts__bindgen_ty_1>(),
         "if_arp::tpacket_bd_ts__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_bd_ts__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_bd_ts__bindgen_ty_1>(),
         align_of::<linux_raw_sys::if_arp::tpacket_bd_ts__bindgen_ty_1>(),
         "if_arp::tpacket_bd_ts__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_bd_header_u>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_bd_header_u>(),
         size_of::<linux_raw_sys::if_arp::tpacket_bd_header_u>(),
         "if_arp::tpacket_bd_header_u"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_bd_header_u>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_bd_header_u>(),
         align_of::<linux_raw_sys::if_arp::tpacket_bd_header_u>(),
         "if_arp::tpacket_bd_header_u"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::if_arp::tpacket_req_u>(),
+        size_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_req_u>(),
         size_of::<linux_raw_sys::if_arp::tpacket_req_u>(),
         "if_arp::tpacket_req_u"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::if_arp::tpacket_req_u>(),
+        align_of::<wcontainers_kernel_linux::linux::if_arp::tpacket_req_u>(),
         align_of::<linux_raw_sys::if_arp::tpacket_req_u>(),
         "if_arp::tpacket_req_u"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Dyn>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Dyn>(),
         size_of::<linux_raw_sys::elf_uapi::Elf32_Dyn>(),
         "elf_uapi::Elf32_Dyn"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Dyn>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Dyn>(),
         align_of::<linux_raw_sys::elf_uapi::Elf32_Dyn>(),
         "elf_uapi::Elf32_Dyn"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Dyn>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Dyn>(),
         size_of::<linux_raw_sys::elf_uapi::Elf64_Dyn>(),
         "elf_uapi::Elf64_Dyn"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Dyn>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Dyn>(),
         align_of::<linux_raw_sys::elf_uapi::Elf64_Dyn>(),
         "elf_uapi::Elf64_Dyn"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_rel>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_rel>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_rel>(),
         "elf_uapi::elf32_rel"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_rel>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_rel>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_rel>(),
         "elf_uapi::elf32_rel"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_rel>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_rel>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_rel>(),
         "elf_uapi::elf64_rel"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_rel>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_rel>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_rel>(),
         "elf_uapi::elf64_rel"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_rela>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_rela>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_rela>(),
         "elf_uapi::elf32_rela"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_rela>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_rela>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_rela>(),
         "elf_uapi::elf32_rela"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_rela>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_rela>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_rela>(),
         "elf_uapi::elf64_rela"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_rela>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_rela>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_rela>(),
         "elf_uapi::elf64_rela"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_sym>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_sym>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_sym>(),
         "elf_uapi::elf32_sym"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_sym>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_sym>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_sym>(),
         "elf_uapi::elf32_sym"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_sym>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_sym>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_sym>(),
         "elf_uapi::elf64_sym"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_sym>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_sym>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_sym>(),
         "elf_uapi::elf64_sym"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_hdr>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_hdr>(),
         "elf_uapi::elf32_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_hdr>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_hdr>(),
         "elf_uapi::elf32_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_hdr>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_hdr>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_hdr>(),
         "elf_uapi::elf64_hdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_hdr>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_hdr>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_hdr>(),
         "elf_uapi::elf64_hdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_phdr>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_phdr>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_phdr>(),
         "elf_uapi::elf32_phdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_phdr>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_phdr>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_phdr>(),
         "elf_uapi::elf32_phdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_phdr>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_phdr>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_phdr>(),
         "elf_uapi::elf64_phdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_phdr>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_phdr>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_phdr>(),
         "elf_uapi::elf64_phdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_shdr>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_shdr>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_shdr>(),
         "elf_uapi::elf32_shdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_shdr>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_shdr>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_shdr>(),
         "elf_uapi::elf32_shdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_shdr>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_shdr>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_shdr>(),
         "elf_uapi::elf64_shdr"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_shdr>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_shdr>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_shdr>(),
         "elf_uapi::elf64_shdr"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf32_note>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_note>(),
         size_of::<linux_raw_sys::elf_uapi::elf32_note>(),
         "elf_uapi::elf32_note"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf32_note>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf32_note>(),
         align_of::<linux_raw_sys::elf_uapi::elf32_note>(),
         "elf_uapi::elf32_note"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::elf64_note>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_note>(),
         size_of::<linux_raw_sys::elf_uapi::elf64_note>(),
         "elf_uapi::elf64_note"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::elf64_note>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::elf64_note>(),
         align_of::<linux_raw_sys::elf_uapi::elf64_note>(),
         "elf_uapi::elf64_note"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Verdef>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Verdef>(),
         size_of::<linux_raw_sys::elf_uapi::Elf32_Verdef>(),
         "elf_uapi::Elf32_Verdef"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Verdef>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Verdef>(),
         align_of::<linux_raw_sys::elf_uapi::Elf32_Verdef>(),
         "elf_uapi::Elf32_Verdef"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Verdef>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Verdef>(),
         size_of::<linux_raw_sys::elf_uapi::Elf64_Verdef>(),
         "elf_uapi::Elf64_Verdef"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Verdef>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Verdef>(),
         align_of::<linux_raw_sys::elf_uapi::Elf64_Verdef>(),
         "elf_uapi::Elf64_Verdef"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Verdaux>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Verdaux>(),
         size_of::<linux_raw_sys::elf_uapi::Elf32_Verdaux>(),
         "elf_uapi::Elf32_Verdaux"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Verdaux>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Verdaux>(),
         align_of::<linux_raw_sys::elf_uapi::Elf32_Verdaux>(),
         "elf_uapi::Elf32_Verdaux"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Verdaux>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Verdaux>(),
         size_of::<linux_raw_sys::elf_uapi::Elf64_Verdaux>(),
         "elf_uapi::Elf64_Verdaux"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Verdaux>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Verdaux>(),
         align_of::<linux_raw_sys::elf_uapi::Elf64_Verdaux>(),
         "elf_uapi::Elf64_Verdaux"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Dyn__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Dyn__bindgen_ty_1>(),
         size_of::<linux_raw_sys::elf_uapi::Elf32_Dyn__bindgen_ty_1>(),
         "elf_uapi::Elf32_Dyn__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf32_Dyn__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf32_Dyn__bindgen_ty_1>(),
         align_of::<linux_raw_sys::elf_uapi::Elf32_Dyn__bindgen_ty_1>(),
         "elf_uapi::Elf32_Dyn__bindgen_ty_1"
     );
     assert_eq!(
-        size_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Dyn__bindgen_ty_1>(),
+        size_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Dyn__bindgen_ty_1>(),
         size_of::<linux_raw_sys::elf_uapi::Elf64_Dyn__bindgen_ty_1>(),
         "elf_uapi::Elf64_Dyn__bindgen_ty_1"
     );
     assert_eq!(
-        align_of::<wcontainers_kernel::linux::elf_uapi::Elf64_Dyn__bindgen_ty_1>(),
+        align_of::<wcontainers_kernel_linux::linux::elf_uapi::Elf64_Dyn__bindgen_ty_1>(),
         align_of::<linux_raw_sys::elf_uapi::Elf64_Dyn__bindgen_ty_1>(),
         "elf_uapi::Elf64_Dyn__bindgen_ty_1"
     );

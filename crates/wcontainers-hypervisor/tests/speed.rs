@@ -66,7 +66,7 @@ mod macos {
     };
     use wcontainers_inside::link::{self, Fatal, Parts};
     use wcontainers_inside::stop::SYSCALL_NUMBER;
-    use wcontainers_kernel::{Kernel, Start};
+    use wcontainers_kernel_linux::{Kernel, Start};
     use wcontainers_kernel_test::buffer::BufferCpu;
     use wcontainers_kernel_test::driver::TestHost;
     use wcontainers_kernel_test::driver::exit_code;
@@ -991,11 +991,11 @@ mod macos {
                     groups: &starting.groups,
                     backend: None,
                     standard: host.standard(),
-                    address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+                    address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
                     memory_bytes,
                     ceiling: None,
-                    execution: wcontainers_kernel::ExecutionConfig::default(),
-                    options: wcontainers_kernel::StartOptions::default(),
+                    execution: wcontainers_kernel_linux::ExecutionConfig::default(),
+                    options: wcontainers_kernel_linux::StartOptions::default(),
                 },
             )
             .expect("the kernel runs a default container's first process");

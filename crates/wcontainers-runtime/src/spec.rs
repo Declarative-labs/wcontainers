@@ -44,7 +44,7 @@ const UMASK: u64 = 0o022;
 
 // The paths the kernel mounts again read-only, and those it masks, as a default Docker container
 // has those of its lists that its file systems have.
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::{
     DOCKER_MASKED_PATHS as MASKED_PATHS, DOCKER_READ_ONLY_PATHS as READONLY_PATHS,
 };
 

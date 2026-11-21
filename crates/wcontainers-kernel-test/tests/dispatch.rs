@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use wcontainers_kernel::reason;
+use wcontainers_kernel_linux::reason;
 use wcontainers_kernel_test::{guest, run_both};
 
 /// Built once for all tests here: a program renamed over while a reference container starts it can be
@@ -20,7 +20,7 @@ fn program() -> std::path::PathBuf {
 
 #[test]
 fn every_linux_call_has_an_entry() {
-    let calls: Vec<_> = wcontainers_kernel::system_calls().collect();
+    let calls: Vec<_> = wcontainers_kernel_linux::system_calls().collect();
     for name in [
         "read",
         "write",
@@ -34,7 +34,7 @@ fn every_linux_call_has_an_entry() {
     let numbers: std::collections::BTreeSet<_> = calls.iter().map(|call| call.number).collect();
     assert_eq!(numbers.len(), calls.len());
     assert_eq!(
-        wcontainers_kernel::system_call_name(linux_raw_sys::general::__NR_write.into()),
+        wcontainers_kernel_linux::system_call_name(linux_raw_sys::general::__NR_write.into()),
         Some("write")
     );
 }
@@ -43,7 +43,7 @@ fn every_linux_call_has_an_entry() {
 fn not_implemented_counts_and_warns() {
     // A call not built that Docker's profile passes to the kernel (it answers ptrace and
     // Landlock's itself).
-    let missing = wcontainers_kernel::system_calls()
+    let missing = wcontainers_kernel_linux::system_calls()
         .find(|call| !call.implemented && call.name == "fanotify_mark")
         .expect("fanotify_mark is not built yet");
     let program = program();

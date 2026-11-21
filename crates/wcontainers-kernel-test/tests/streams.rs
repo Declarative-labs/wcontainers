@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use wcontainers_kernel::reason;
+use wcontainers_kernel_linux::reason;
 use wcontainers_kernel_test::driver::Run;
 use wcontainers_kernel_test::reference::{ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel_test::streams::{INPUT, Step, StreamClient};

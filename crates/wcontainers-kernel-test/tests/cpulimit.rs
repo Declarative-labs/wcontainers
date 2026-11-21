@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use wcontainers_kernel::reason::CORE_DUMP_NOT_WRITTEN;
+use wcontainers_kernel_linux::reason::CORE_DUMP_NOT_WRITTEN;
 use wcontainers_kernel_test::assert_same_output;
 
 #[test]

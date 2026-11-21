@@ -49,7 +49,7 @@ fn device_listings_match_the_reference() {
     let program = guest::build("proclist", &[], &out);
     let (ours, theirs) = run_both(
         &program,
-        &["/dev", wcontainers_kernel::DEVPTS_PATH, "/dev/shm"],
+        &["/dev", wcontainers_kernel_linux::DEVPTS_PATH, "/dev/shm"],
     );
     assert_eq!(ours.outcome.exit_code, theirs.exit_code);
     let show = |entries: Vec<((String, String), String)>| {

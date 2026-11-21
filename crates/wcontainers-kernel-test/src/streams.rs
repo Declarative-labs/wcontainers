@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rand::Rng;
 use rand::rngs::StdRng;
 use wcontainers_abi::{Cpu, End, Event};
-use wcontainers_kernel::{Kernel, Standard};
+use wcontainers_kernel_linux::{Kernel, Standard};
 
 /// The ends the test host names.
 pub const INPUT: End = End(0);
@@ -251,7 +251,7 @@ impl Found {
 }
 
 /// The host's streams and the seeded choices of a run, as [`act`] needs them.
-pub trait StreamHost: wcontainers_kernel::System {
+pub trait StreamHost: wcontainers_kernel_linux::System {
     fn streams(&mut self) -> &mut Streams;
     fn choices(&mut self) -> &mut StdRng;
     /// Does [`Step::ChangeServed`].

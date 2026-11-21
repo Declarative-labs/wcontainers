@@ -19,7 +19,7 @@ fn kernel_builds_for_wasm32() {
         .args([
             "build",
             "-p",
-            "wcontainers-kernel",
+            "wcontainers-kernel-linux",
             "--target",
             "wasm32-unknown-unknown",
         ])
@@ -60,7 +60,7 @@ fn tree(package: &str, target: &str) -> String {
 fn unicorn_stays_out_of_the_shipped_crates() {
     // The check can see unicorn where it is.
     assert!(tree("wcontainers-kernel-test", "all").contains("unicorn-engine"));
-    for package in ["wcontainers-kernel", "wcontainers-abi"] {
+    for package in ["wcontainers-kernel-linux", "wcontainers-abi"] {
         for target in ["wasm32-unknown-unknown", "all"] {
             let tree = tree(package, target);
             assert!(tree.starts_with(package), "{tree}");

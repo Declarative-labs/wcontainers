@@ -25,7 +25,7 @@ mod untranslated {
     use wcontainers_inside::layout::{BLOCK_SIZE, linear};
     use wcontainers_inside::link::{Ring, Start};
     use wcontainers_inside::stop::SYSCALL_NUMBER;
-    use wcontainers_kernel::linux::general::{__NR_exit, __NR_exit_group, __NR_write};
+    use wcontainers_kernel_linux::linux::general::{__NR_exit, __NR_exit_group, __NR_write};
 
     use crate::protocol::{Exited, Load, Output, Segment, Segments};
 

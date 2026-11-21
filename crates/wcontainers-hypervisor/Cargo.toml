@@ -49,7 +49,7 @@ wcontainers-runtime = { package = "wcontainers-runtime-single-kernel", path = ".
 # The kernel test's policy, the same on both sides.
 wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy" }
 # The root's files at a container's end.
-wcontainers-kernel = { path = "../wcontainers-kernel" }
+wcontainers-kernel-linux = { path = "../kernel/implementation/linux" }
 # The busybox test's commands, reference image and check against the reference (GPL-2.0-only, test only).
 wcontainers-kernel-test = { path = "../wcontainers-kernel-test" }
 # The register count's emulator (GPL-2.0, test only, as in wcontainers-kernel-test).

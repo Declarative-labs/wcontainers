@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 wcontainers-abi.workspace = true
-wcontainers-kernel = { path = "../wcontainers-kernel" }
+wcontainers-kernel-linux = { path = "../kernel/implementation/linux" }
 wcontainers-runtime = { package = "wcontainers-runtime-single-kernel", path = "../wcontainers-runtime" }
 wcontainers-docker = { path = "../wcontainers-docker" }
 # The seeded choices of a run, shared with the native back end's inside.

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use oci_spec::runtime::Spec;
-use wcontainers_kernel::{DOCKER_MOUNTS, DockerMount, Errno, Kernel, Start, StartOptions};
+use wcontainers_kernel_linux::{DOCKER_MOUNTS, DockerMount, Errno, Kernel, Start, StartOptions};
 
 use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 
@@ -170,10 +170,10 @@ impl<E: Executor> Runtime<E> {
                     groups: &accepted.groups,
                     backend: accepted.volume.as_ref().map(|v| v.destination.as_bytes()),
                     standard,
-                    address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+                    address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
                     memory_bytes,
                     ceiling: None,
-                    execution: wcontainers_kernel::ExecutionConfig::default(),
+                    execution: wcontainers_kernel_linux::ExecutionConfig::default(),
                     options: StartOptions {
                         mounts: &mounts,
                         ..StartOptions::default()

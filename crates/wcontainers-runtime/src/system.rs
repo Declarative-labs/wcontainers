@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wcontainers_abi::{
     BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, PAGE_SIZE, Warning,
 };
-use wcontainers_kernel::{Kernel, Standard};
+use wcontainers_kernel_linux::{Kernel, Standard};
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
@@ -669,8 +669,8 @@ macro_rules! host_on_state {
         }
 
         /// Every task id is free, and no hook does anything.
-        impl wcontainers_kernel::System for $host {
-            fn free_task_id(&self, _: wcontainers_kernel::TaskId) {}
+        impl wcontainers_kernel_linux::System for $host {
+            fn free_task_id(&self, _: wcontainers_kernel_linux::TaskId) {}
         }
     };
 }

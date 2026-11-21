@@ -25,7 +25,7 @@ use fuse_abi::linux::{
 use rustix::fs::{self as host, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, SeekFrom};
 use rustix::io::Errno as HostErrno;
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_kernel::linux::{errno as linux_errno, general as linux};
+use wcontainers_kernel_linux::linux::{errno as linux_errno, general as linux};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::errno;

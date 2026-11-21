@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 use wcontainers_abi::Cpu;
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::{
     ARM64_ADDRESS_SPACE_BYTES, Attributes, Errno, ExecutionConfig, FileRecord, Kernel, NewFile,
     Start, StartOptions,
 };
@@ -212,7 +212,7 @@ mod tests {
 
     use zerocopy::FromZeros;
 
-    use wcontainers_kernel::FileRecord;
+    use wcontainers_kernel_linux::FileRecord;
 
     use super::{
         File, FileKind, Kept, Monitor, NextFile, Request, RootFile, StartContainer, Starting,
@@ -268,7 +268,7 @@ mod tests {
             file("/bin/sh", FileKind::Symlink(b"busybox".to_vec())),
             file("/bin/ls", FileKind::HardLink(b"/bin/busybox".to_vec())),
             file(
-                wcontainers_kernel::NULL_PATH,
+                wcontainers_kernel_linux::NULL_PATH,
                 FileKind::CharacterDevice { major: 1, minor: 3 },
             ),
             file("/dev/loop0", FileKind::BlockDevice { major: 7, minor: 0 }),

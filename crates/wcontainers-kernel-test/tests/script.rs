@@ -57,7 +57,7 @@ fn scripts_match_reference() {
             assert_eq!(
                 ours.err(),
                 Some(wcontainers_kernel_test::driver::Failure::Start(
-                    wcontainers_kernel::Errno(2)
+                    wcontainers_kernel_linux::Errno(2)
                 ))
             );
             continue;

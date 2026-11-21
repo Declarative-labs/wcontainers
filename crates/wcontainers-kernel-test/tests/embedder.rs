@@ -10,8 +10,8 @@ use std::time::Duration;
 use std::ops::ControlFlow;
 
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
-use wcontainers_kernel::linux::general;
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::linux::general;
+use wcontainers_kernel_linux::{
     AccessKind, ContextOrigin, Errno, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
     SignalInformation, SuspendedTask, System, SystemCallResponse, SystemVSegmentId, TaskId,
     WatchesFor, reason, task_id_after,
@@ -208,7 +208,7 @@ impl Recorder {
 impl Hooks for Recorder {
     fn allocate_task_id(&mut self, previous: TaskId) -> TaskId {
         let Some((next, freed)) = &mut self.pool else {
-            return wcontainers_kernel::task_id_after(previous);
+            return wcontainers_kernel_linux::task_id_after(previous);
         };
         let id = freed.pop().unwrap_or_else(|| {
             *next += 1;
@@ -2460,7 +2460,7 @@ thread_local! {
     /// records, which stay on the thread that drives it).
     static SUSPENDED: std::cell::RefCell<Vec<SuspendedTask>> = const { std::cell::RefCell::new(Vec::new()) };
     /// A process context taken between steps, kept as [`SUSPENDED`] is.
-    static CONTEXT: std::cell::RefCell<Option<wcontainers_kernel::ProcessContext>> = const { std::cell::RefCell::new(None) };
+    static CONTEXT: std::cell::RefCell<Option<wcontainers_kernel_linux::ProcessContext>> = const { std::cell::RefCell::new(None) };
 }
 
 /// How the suspending test takes tasks.

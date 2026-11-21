@@ -2,7 +2,7 @@
 //! (macOS's do).
 
 use rustix::io::Errno as Host;
-use wcontainers_kernel::linux::errno as linux;
+use wcontainers_kernel_linux::linux::errno as linux;
 
 /// The host's errors and Linux's numbers for them.
 const NUMBERS: &[(Host, u32)] = &[

@@ -13,11 +13,11 @@ use oci_spec::image::{
 };
 use oci_spec::runtime::{Spec, User};
 use sha2::{Digest as _, Sha256};
-use wcontainers_kernel::linux::general::{
+use wcontainers_kernel_linux::linux::general::{
     S_IRGRP, S_IROTH, S_IRUSR, S_IRWXG, S_IRWXO, S_IRWXU, S_ISGID, S_ISUID, S_ISVTX, S_IWUSR,
     S_IXGRP, S_IXOTH, S_IXUSR,
 };
-use wcontainers_kernel::{Attributes, Kernel, NewFile};
+use wcontainers_kernel_linux::{Attributes, Kernel, NewFile};
 
 use crate::Error;
 
@@ -512,8 +512,8 @@ impl Image {
 /// What Docker writes over its mounts in every container: the host name, the hosts file with the
 /// kernel's made-up address for it, and the kernel's name server.
 fn docker_files(hostname: &str) -> Vec<(Vec<u8>, Entry)> {
-    let address = std::net::Ipv4Addr::from(wcontainers_kernel::network::ADDRESS);
-    let name_server = std::net::Ipv4Addr::from(wcontainers_kernel::network::NAME_SERVER);
+    let address = std::net::Ipv4Addr::from(wcontainers_kernel_linux::network::ADDRESS);
+    let name_server = std::net::Ipv4Addr::from(wcontainers_kernel_linux::network::NAME_SERVER);
     let (v4, v6) = (std::net::Ipv4Addr::LOCALHOST, std::net::Ipv6Addr::LOCALHOST);
     let hosts = format!(
         "{v4}\tlocalhost\n{v6}\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\

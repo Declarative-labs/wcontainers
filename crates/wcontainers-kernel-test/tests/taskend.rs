@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_abi::{Cpu, SystemCallRequest};
-use wcontainers_kernel::linux::general;
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::linux::general;
+use wcontainers_kernel_linux::{
     ExecutionConfig, Kernel, Process, ProcessContext, SuspendedTask, SystemCallResponse, TaskId,
 };
 use wcontainers_kernel_test::driver::{self, Run};

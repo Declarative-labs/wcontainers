@@ -3,7 +3,7 @@
 use std::ops::{ControlFlow, Range};
 
 use wcontainers_abi::{Cpu, SystemCallRequest};
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::{
     AccessKind, Kernel, MemoryObject, Process, SignalInformation, SystemCallResponse, TaskId,
     task_id_after,
 };

@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, SystemCallRequest};
-use wcontainers_kernel::linux::general;
-use wcontainers_kernel::{
+use wcontainers_kernel_linux::linux::general;
+use wcontainers_kernel_linux::{
     AccessKind, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext, SignalInformation,
     SuspendedTask, SystemCallResponse, TaskId, WatchesFor,
 };

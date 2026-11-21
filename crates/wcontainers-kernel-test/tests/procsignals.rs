@@ -47,7 +47,7 @@ fn injected_signals_change_nothing() {
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let injections = wcontainers_kernel_test::driver::Injections {
             saves: 3,
-            signal: Some((wcontainers_kernel::linux::general::SIGUSR1, 40)),
+            signal: Some((wcontainers_kernel_linux::linux::general::SIGUSR1, 40)),
             ..Default::default()
         };
         let ours = wcontainers_kernel_test::run_ours_injected(

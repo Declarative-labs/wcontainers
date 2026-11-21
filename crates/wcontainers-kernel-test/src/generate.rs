@@ -98,10 +98,13 @@ fn linux_raw_sys_source() -> (PathBuf, String) {
     (directory, package.version.to_string())
 }
 
+/// The kernel's source folder, relative to the workspace root.
+const KERNEL_SOURCE: &str = "crates/kernel/implementation/linux";
+
 /// Every file the generator owns, with the contents it should have.
 pub fn generate() -> Vec<Generated> {
     let (source, version) = linux_raw_sys_source();
-    let kernel = workspace_root().join("crates/wcontainers-kernel/src");
+    let kernel = workspace_root().join(KERNEL_SOURCE);
     let mut out = Vec::new();
     let mut structs = Vec::new();
     for module in MODULES {
@@ -241,8 +244,8 @@ fn layout_test(structs: &[String], version: &str) -> String {
     );
     for name in structs {
         out.push_str(&format!(
-            "    assert_eq!(size_of::<wcontainers_kernel::linux::{name}>(), size_of::<linux_raw_sys::{name}>(), \"{name}\");\n\
-             \x20   assert_eq!(align_of::<wcontainers_kernel::linux::{name}>(), align_of::<linux_raw_sys::{name}>(), \"{name}\");\n"
+            "    assert_eq!(size_of::<wcontainers_kernel_linux::linux::{name}>(), size_of::<linux_raw_sys::{name}>(), \"{name}\");\n\
+             \x20   assert_eq!(align_of::<wcontainers_kernel_linux::linux::{name}>(), align_of::<linux_raw_sys::{name}>(), \"{name}\");\n"
         ));
     }
     out.push_str("}\n");

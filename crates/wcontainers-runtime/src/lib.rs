@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Cpu, Exit, Next, Resume, ThreadId, Warning};
-pub use wcontainers_kernel::{Kernel, Standard};
+pub use wcontainers_kernel_linux::{Kernel, Standard};
 
 #[cfg(feature = "std")]
 mod arrivals;
@@ -176,10 +176,10 @@ pub trait Execution: Cpu + Sized {
     fn restored(&self) -> Self;
 }
 
-/// What surrounds the kernel: its [`wcontainers_kernel::System`] (the abi's `Host`, `Sync`), and
+/// What surrounds the kernel: its [`wcontainers_kernel_linux::System`] (the abi's `Host`, `Sync`), and
 /// what the loop asks between turns, by shared reference so that the system synchronizes what it
 /// changes.
-pub trait System: wcontainers_kernel::System {
+pub trait System: wcontainers_kernel_linux::System {
     /// What a run ended by the system gives back.
     type End;
     /// The kernel has started: hands it what this system gives at once, such as credit on the

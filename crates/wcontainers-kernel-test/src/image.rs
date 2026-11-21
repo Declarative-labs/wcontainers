@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use wcontainers_kernel::{Attributes, Kernel, NewFile, ROOT_GID, ROOT_UID};
+use wcontainers_kernel_linux::{Attributes, Kernel, NewFile, ROOT_GID, ROOT_UID};
 
 // The image's user and group databases, and how their lines are made: fields apart and a group's
 // members apart, as the runtime reads them.
@@ -164,7 +164,7 @@ pub fn as_started(files: &[File]) -> impl Iterator<Item = File> + '_ {
 
 /// `/etc/hosts` as Docker writes it, for the made-up network's address.
 pub(crate) fn hosts() -> String {
-    let [a, b, c, d] = wcontainers_kernel::network::ADDRESS;
+    let [a, b, c, d] = wcontainers_kernel_linux::network::ADDRESS;
     format!(
         "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
          ff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n\
@@ -175,7 +175,7 @@ pub(crate) fn hosts() -> String {
 
 /// `/etc/resolv.conf` naming the kernel's name server, as Docker names its own.
 pub(crate) fn resolver() -> String {
-    let [a, b, c, d] = wcontainers_kernel::network::NAME_SERVER;
+    let [a, b, c, d] = wcontainers_kernel_linux::network::NAME_SERVER;
     format!("nameserver {a}.{b}.{c}.{d}\n")
 }
 
@@ -240,8 +240,8 @@ pub fn to_tar(files: &[File]) -> Vec<u8> {
 
 /// Files read back from a tar archive as the kernel's records of a root file system, with hard
 /// links given their target's contents.
-pub fn records(files: &[File]) -> Vec<wcontainers_kernel::FileRecord> {
-    let mut out: Vec<wcontainers_kernel::FileRecord> = Vec::new();
+pub fn records(files: &[File]) -> Vec<wcontainers_kernel_linux::FileRecord> {
+    let mut out: Vec<wcontainers_kernel_linux::FileRecord> = Vec::new();
     for file in files.iter().filter(|file| !file.path.is_empty()) {
         let (kind, contents, rdev) = match &file.kind {
             Kind::Directory => (0o040000, Vec::new(), 0),
@@ -273,7 +273,7 @@ pub fn records(files: &[File]) -> Vec<wcontainers_kernel::FileRecord> {
             }
             Kind::Fifo => (0o010000, Vec::new(), 0),
         };
-        out.push(wcontainers_kernel::FileRecord {
+        out.push(wcontainers_kernel_linux::FileRecord {
             path: format!("/{}", file.path).into_bytes(),
             mode: kind | file.mode,
             uid: file.uid,

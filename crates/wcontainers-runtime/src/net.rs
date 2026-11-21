@@ -16,7 +16,7 @@ use std::thread::JoinHandle;
 use polling::{Event as Interest, Events, Poller};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
 use wcontainers_abi::{ConnectionId, Event, HostError};
-use wcontainers_kernel::linux::errno as linux_errno;
+use wcontainers_kernel_linux::linux::errno as linux_errno;
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::errno;
