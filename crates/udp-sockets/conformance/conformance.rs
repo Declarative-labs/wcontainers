@@ -2758,17 +2758,25 @@ pub fn a_full_send_buffer_counts_its_unsent_bytes<S: UdpSockets>(sockets: S) {
     }
 }
 
-/// A wait for writing on a full send buffer does not finish until its paced datagrams leave room, then does.
+/// A wait for writing on a full send buffer does not finish until its paced datagrams leave room, then does,
+/// also after a wait for data on the same socket was woken first.
 pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) {
-    let (sender, from, _receiver, to) = slowly_paced(&sockets, IpVersion::V4, usize::MIN);
+    let (sender, from, receiver, to) = slowly_paced(&sockets, IpVersion::V4, usize::MIN);
     let payload = vec![u8::MAX; PACED_LENGTH];
     fill_send_buffer(&sockets, &sender, from, to, &payload);
+    let reading = Arc::new(Wakes::default());
+    let mut read = pin!(sockets.wait_for_events(&sender, READABLE));
+    assert!(poll_with(read.as_mut(), &reading).is_pending());
     let wakes = Arc::new(Wakes::default());
     let mut wait = pin!(sockets.wait_for_events(&sender, WRITABLE));
     assert!(
         poll_with(wait.as_mut(), &wakes).is_pending(),
         "writable with a full send buffer"
     );
+    send(&sockets, &receiver, UdpProtocol::Udp, to, from, PAYLOAD);
+    assert!(reading.reach(1), "the wait for data woken by its datagram");
+    assert!(finished(poll_with(read.as_mut(), &reading)).data_to_read);
+    assert_eq!(wakes.count(), 0, "the wait for writing woken with no room");
     assert!(
         wakes.reach_within(1, ROOM_PATIENCE),
         "woken when room is made"
