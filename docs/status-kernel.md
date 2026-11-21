@@ -350,8 +350,9 @@ as the item asks. The test now asserts exactly that (1c2f20a2); it passed with e
 26, processes, layout, memory and loader on the ARM64 machine (00:34 UTC, load 2). The verdicts
 changed by this milestone on purpose: that test, and processes
 `killed_children_end_when_they_next_run_as_on_linux` (new).
-A last whole suite at 1c2f20a2 (job kernel/20261121-003536-281361, log kf1/suite-1c2f20a2.log)
-covers the wait module.
+The last whole suite at 1c2f20a2 (job kernel/20261121-003536-281361, 00:35 to 01:57 UTC, load
+1 to 6; scratch kf1/suite-1c2f20a2.log, kf1/fail-1c2f20a2.txt), with the wait module: fmt and
+clippy clean; 277 passed, 36 failed, 6 ignored; the 36 are exactly the ARM list.
 
 The Mac's part at bdf4674f (scratch kf1/mac.sh, log kf1/mac.log; 15:09 to 15:12 PST, load 8 to
 31, -j 4): layer 1 seeds 9191126 to 9191128 passed (300 sequences, 32 on the backend, 32 on the
@@ -5164,19 +5165,17 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 KF, after its first run (the bar: each item's tests, the whole suite unchanged but where an item
 changes it, the literal check with a smaller baseline):
-1. Read the whole suite at 1c2f20a2 (ARM64 job kernel/20261121-003536-281361, log scratch
-   kf1/suite-1c2f20a2.log, `arm-run --fetch kernel /work/jobs/kernel/<id>/log` if the follower
-   stopped): every failure must be on the ARM list (k6c14/fail14.txt), as at bdf4674f.
-2. The record and replay test: the driver keeps every result the System and the Cpu gave the
+1. The record and replay test: the driver keeps every result the System and the Cpu gave the
    kernel in a run (clock, randomness, backend answers, stream events, the CPU side's exits and
    reads), a second kernel runs from that record alone, and every process's memory is compared
    at the end; for the shell tests (shell.rs, busybox.rs) and layer 1's sequences.
-3. The runtime's start values (origin/main docs/status-runtime.md "Asked of the kernel track"):
+2. The runtime's start values (origin/main docs/status-runtime.md "Asked of the kernel track"):
    user and group, umask, capability sets, limits, no_new_privs, a seccomp filter, sysctls, the
    mount list, the domain name, the per-process values; and the defaults as public constants
    (capabilities, limits, the umask and the wait status's parts are exported; the mounts with
    their options and the read-only paths are not).
-4. The literal fix list, from step 2 (time units).
+3. The literal fix list, from step 2 (time units).
+4. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
 
 K6c, after the twenty-first run: the bar is met at 91d85e31 (K6c, twenty-first run). Next is
 the independent check, which follows "For the independent check"; the Mac's part is scratch
