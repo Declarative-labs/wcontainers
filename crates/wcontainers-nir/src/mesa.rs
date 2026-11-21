@@ -265,11 +265,13 @@ pub enum Wrap {
     Repeat,
     ClampToEdge,
     MirroredRepeat,
+    /// Outside the texture, the border colour.
+    ClampToBorder,
 }
 
 /// The sampler at one texture unit whose texture holds integers (`struct wc_nearest_sampler`):
-/// its wraps, whether it selects a level by the level of detail, and that level's bounds (as f32
-/// bits).
+/// its wraps, whether it selects a level by the level of detail, that level's bounds (as f32
+/// bits), and the border colour's integers.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NearestSampler {
@@ -279,6 +281,7 @@ pub struct NearestSampler {
     pub mipmapped: bool,
     pub min_lod: u32,
     pub max_lod: u32,
+    pub border: [u32; naga::VectorSize::MAX],
 }
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space,

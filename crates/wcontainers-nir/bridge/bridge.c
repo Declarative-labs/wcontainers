@@ -710,8 +710,38 @@ listed_sampler(const struct nearest_samplers *s, uint32_t unit)
    return sampler;
 }
 
-/* An integer cube map at a listed unit made a 2D array of its six faces, which the host loads
- * (it loads no cube texel); the driver binds such a view of it. */
+/* Whether a texture instruction samples (filters, as OpenGL's texture functions do) rather than
+ * fetches, gathers or queries. */
+static bool
+sampling(const nir_tex_instr *tex)
+{
+   return tex->op == nir_texop_tex || tex->op == nir_texop_txb || tex->op == nir_texop_txl ||
+          tex->op == nir_texop_txd;
+}
+
+/* Whether the program samples through `var`. */
+static bool
+sampled_through(nir_shader *nir, const nir_variable *var)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            int at = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
+            if (at >= 0 && sampling(tex) &&
+                nir_deref_instr_get_variable(nir_src_as_deref(tex->src[at].src)) == var)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+/* An integer cube map at a listed unit that the program samples made a 2D array of its six faces,
+ * which the host loads (it loads no cube texel, and gathers its cubes as they are); the driver
+ * binds such a view of it. */
 static void
 integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
 {
@@ -724,7 +754,7 @@ integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
          continue;
       enum glsl_base_type base = glsl_get_sampler_result_type(t);
       if ((base != GLSL_TYPE_INT && base != GLSL_TYPE_UINT) ||
-          !listed_sampler(s, var->data.binding))
+          !listed_sampler(s, var->data.binding) || !sampled_through(nir, var))
          continue;
       const struct glsl_type *layers =
          glsl_type_is_sampler(t) ? glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, true, base)
@@ -753,6 +783,23 @@ cube_layers_query(nir_builder *b, nir_tex_instr *tex)
    return true;
 }
 
+/* A gather of a cube map made a 2D array of its faces, from its face's coordinates; texels past
+ * the face's edges are its edge's, not the next face's. */
+static bool
+cube_layers_gather(nir_builder *b, nir_tex_instr *tex)
+{
+   b->cursor = nir_before_instr(&tex->instr);
+   int at = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   nir_def *layer;
+   nir_def *face = cube_face(b, tex->src[at].src.ssa, &layer);
+   nir_def *coord = nir_vec3(b, nir_channel(b, face, 0), nir_channel(b, face, 1), nir_i2f32(b, layer));
+   nir_src_rewrite(&tex->src[at].src, coord);
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->is_array = true;
+   tex->coord_components = coord->num_components;
+   return true;
+}
+
 static bool
 nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
 {
@@ -766,8 +813,9 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    const bool cube = tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE &&
                      glsl_get_sampler_dim(texture->type) == GLSL_SAMPLER_DIM_2D;
    nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
-   bool sampled = tex->op == nir_texop_tex || tex->op == nir_texop_txb ||
-                  tex->op == nir_texop_txl || tex->op == nir_texop_txd;
+   bool sampled = sampling(tex);
+   if (cube && tex->op == nir_texop_tg4)
+      return cube_layers_gather(b, tex);
    if (cube && !sampled)
       return cube_layers_query(b, tex);
    uint32_t unit;
@@ -833,11 +881,15 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    if (offset)
       texel = nir_iadd(b, texel, nir_trim_vector(b, offset, axes));
    nir_scalar parts[WC_COMPONENTS];
+   /* Whether the texel is outside the texture on an axis that wraps to the border. */
+   nir_def *outside = nir_imm_false(b);
    for (unsigned c = 0; c < axes; c++) {
       /* A cube map's faces clamp to their edges, whatever the sampler's wraps. */
       uint8_t wrap = cube ? WC_WRAP_CLAMP_TO_EDGE : sampler->wrap[c];
-      parts[c] = nir_get_scalar(wrap_texel(b, nir_channel(b, texel, c), nir_channel(b, size, c), wrap),
-                                0);
+      nir_def *i = nir_channel(b, texel, c), *side = nir_channel(b, size, c);
+      if (wrap == WC_WRAP_CLAMP_TO_BORDER)
+         outside = nir_ior(b, outside, nir_ior(b, nir_ilt_imm(b, i, 0), nir_ige(b, i, side)));
+      parts[c] = nir_get_scalar(wrap_texel(b, i, side, wrap), 0);
    }
    unsigned components = axes;
    if (cube) {
@@ -851,6 +903,11 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    }
    nir_def *loaded = nir_txf(b, nir_vec_scalars(b, parts, components), .texture_deref = texture,
                              .lod = level);
+   nir_const_value border[WC_COMPONENTS];
+   for (unsigned c = 0; c < WC_COMPONENTS; c++)
+      border[c] = nir_const_value_for_raw_uint(sampler->border[c], loaded->bit_size);
+   loaded = nir_bcsel(b, outside, nir_build_imm(b, loaded->num_components, loaded->bit_size, border),
+                      loaded);
    nir_def_replace(&tex->def, nir_trim_vector(b, loaded, tex->def.num_components));
    return true;
 }

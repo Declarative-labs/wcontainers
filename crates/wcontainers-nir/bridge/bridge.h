@@ -243,10 +243,12 @@ enum wc_wrap {
    WC_WRAP_REPEAT,
    WC_WRAP_CLAMP_TO_EDGE,
    WC_WRAP_MIRRORED_REPEAT,
+   /* Outside the texture, the border colour. */
+   WC_WRAP_CLAMP_TO_BORDER,
 };
 
 /* The sampler at one texture unit whose texture holds integers: its wraps, whether it selects a
- * level by the level of detail, and that level's bounds. */
+ * level by the level of detail, that level's bounds, and the border colour's integers. */
 #define WC_TEXTURE_AXES 3
 
 struct wc_nearest_sampler {
@@ -255,6 +257,7 @@ struct wc_nearest_sampler {
    bool mipmapped;
    float min_lod;
    float max_lod;
+   uint32_t border[WC_COMPONENTS];
 };
 
 /* Every sampling of an integer texture at the units listed made a load of its nearest texel, as
