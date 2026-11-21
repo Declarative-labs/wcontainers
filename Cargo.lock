@@ -4241,6 +4241,7 @@ dependencies = [
  "postcard",
  "proptest",
  "serde",
+ "tempfile",
  "unicorn-engine",
  "vmm-sys-util",
  "wcontainers-abi",
