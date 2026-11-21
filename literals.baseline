@@ -1,5 +1,30 @@
 code	crates/abi/registers.rs	int	RegisterBlock	31
 code	crates/abi/registers.rs	int	RegisterBlock	32
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"0: add x{counter}, x{counter}, #1\n b 0b"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"adr x1, .\n ldr x0, [x1]\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"br x1"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"ldr x0, [x1]\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"movz x0, #{mark_a}\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"movz x0, #{mark_b}\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"mrs x0, tpidrro_el0\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"msr tpidrro_el0, x1\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	(file)	"str x2, [x1]\n svc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	".balign {instruction}"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	".global snippet_"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	".global snippet_"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	".section .rodata.snippets, \"a\""
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	":"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"C"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"C"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"_end"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"_end:"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
+code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
+code	crates/executor/implementation/hardware-virtualization-inside/floor/entry.rs	str	(file)	r#"\n.section .text.entry, "ax"\n.global _start\n_start:\n    bl floor_main\n0:  b 0b\n\n.section .text.vectors, "ax"\n.balign {vectors_bytes}\n.global floor_ve… #d67f09bc5e7a1c6f
+code	crates/executor/implementation/hardware-virtualization-inside/floor/mod.rs	str	doorbell	"hvc #0"
+code	crates/executor/implementation/hardware-virtualization-inside/floor/mod.rs	str	make_code_visible	"dc cvau, {0}"
+code	crates/executor/implementation/hardware-virtualization-inside/floor/mod.rs	str	make_code_visible	"ic ivau, {0}"
 code	crates/executor/implementation/unicorn/backend.rs	float	Backend::next	0.5
 code	crates/executor/implementation/unicorn/backend.rs	int	Backend::receive	16
 code	crates/executor/implementation/unicorn/backend.rs	int	Backend::receive	16
@@ -12612,31 +12637,6 @@ code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"stopped by 
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"system call not implemented"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"translated at run time"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"unsupported instruction reached"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"0: add x{counter}, x{counter}, #1\n b 0b"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"adr x1, .\n ldr x0, [x1]\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"br x1"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"ldr x0, [x1]\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"movz x0, #{mark_a}\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"movz x0, #{mark_b}\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"mrs x0, tpidrro_el0\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"msr tpidrro_el0, x1\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"str x2, [x1]\n svc #0"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".balign {instruction}"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".global snippet_"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".global snippet_"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	".section .rodata.snippets, \"a\""
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	":"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"C"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"C"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"_end"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"_end:"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
-code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
-code	crates/wcontainers-inside/src/floor/entry.rs	str	(file)	r#"\n.section .text.entry, "ax"\n.global _start\n_start:\n    bl floor_main\n0:  b 0b\n\n.section .text.vectors, "ax"\n.balign {vectors_bytes}\n.global floor_ve… #d67f09bc5e7a1c6f
-code	crates/wcontainers-inside/src/floor/mod.rs	str	doorbell	"hvc #0"
-code	crates/wcontainers-inside/src/floor/mod.rs	str	make_code_visible	"dc cvau, {0}"
-code	crates/wcontainers-inside/src/floor/mod.rs	str	make_code_visible	"ic ivau, {0}"
 code	crates/wcontainers-shaders/build.rs	byte	hash_files	b'\r'
 code	crates/wcontainers-shaders/build.rs	char	evaluate	'('
 code	crates/wcontainers-shaders/build.rs	char	evaluate	')'
@@ -23406,6 +23406,7 @@ restated	third_party/wgpu/src/backend/wgpu_core.rs	str	default_error_handler	"Ha
 restated	third_party/wgpu/src/backend/wgpu_core.rs	str	default_error_handler	"wgpu error: {err}\n"
 restated	third_party/wgpu/src/macros/mod.rs	int	make_spirv_be_pass	0x07230203
 restated	third_party/wgpu/src/macros/mod.rs	int	make_spirv_le_pass	0x07230203
+role	crates/executor/implementation/hardware-virtualization/hvf.rs	int	code	0
 role	crates/executor/implementation/unicorn/backend/src/main.rs	int	mount	1
 role	crates/executor/implementation/unicorn/bin/ltp.rs	int	main	2
 role	crates/executor/implementation/unicorn/bin/ltp.rs	int	usage	2
@@ -23626,7 +23627,6 @@ role	crates/wcontainers-graphics-test/src/bin/gt-run.rs	int	main	1
 role	crates/wcontainers-graphics-test/src/bin/gt-run.rs	int	main	2
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	1
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	2
-role	crates/wcontainers-hypervisor/src/hvf.rs	int	code	0
 role	crates/wcontainers-shaders/src/dxbc.rs	int	to_ir	0
 role	crates/wcontainers-shaders/src/dxil.rs	int	to_spirv	0
 role	crates/wcontainers-shaders/src/ir.rs	int	first_literal	1

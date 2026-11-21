@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
     dead_code,
     reason = "the build scripts on Mesa use only some of the shared names"
 )]
-#[path = "../../wcontainers-inside/src/build_environment.rs"]
+#[path = "../../executor/implementation/hardware-virtualization-inside/build_environment.rs"]
 mod build_environment;
 #[allow(
     unused_imports,

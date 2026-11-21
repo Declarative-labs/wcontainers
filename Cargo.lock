@@ -4044,6 +4044,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-hardware-virtualization"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "applevisor",
+ "applevisor-sys",
+ "blake3",
+ "cc",
+ "fastrand",
+ "libc",
+ "linux-raw-sys",
+ "object 0.37.3",
+ "postcard",
+ "proptest",
+ "serde",
+ "unicorn-engine",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-executor-hardware-virtualization-inside",
+ "wcontainers-executor-unicorn",
+ "wcontainers-executor-wasmtime",
+ "wcontainers-guest-cpu",
+ "wcontainers-kernel-linux",
+ "wcontainers-runtime-single-kernel",
+ "wcontainers-system-seeded-test-policy",
+ "wcontainers-translator",
+ "wcontainers-translator-test",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-executor-hardware-virtualization-inside"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "aarch64-paging",
+ "arm-gic",
+ "arm-sysregs",
+ "cc",
+ "postcard",
+ "rangemap",
+ "rustc-hash 2.1.3",
+ "safe-mmio",
+ "serde",
+ "spin 0.10.1",
+ "talc",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-guest-cpu",
+ "wcontainers-kernel-linux",
+ "wcontainers-runtime-single-kernel",
+ "wcontainers-system-seeded-test-policy",
+ "zerocopy",
+]
+
+[[package]]
 name = "wcontainers-executor-unicorn"
 version = "0.1.0"
 dependencies = [
@@ -4224,37 +4280,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-hypervisor"
-version = "0.1.0"
-dependencies = [
- "aarch64-cpu",
- "applevisor",
- "applevisor-sys",
- "blake3",
- "cc",
- "fastrand",
- "libc",
- "linux-raw-sys",
- "object 0.37.3",
- "postcard",
- "proptest",
- "serde",
- "unicorn-engine",
- "wcontainers-abi",
- "wcontainers-arm64",
- "wcontainers-executor-unicorn",
- "wcontainers-executor-wasmtime",
- "wcontainers-guest-cpu",
- "wcontainers-inside",
- "wcontainers-kernel-linux",
- "wcontainers-runtime-single-kernel",
- "wcontainers-system-seeded-test-policy",
- "wcontainers-translator",
- "wcontainers-translator-test",
- "zerocopy",
-]
-
-[[package]]
 name = "wcontainers-icmp-sockets"
 version = "0.1.0"
 dependencies = [
@@ -4272,31 +4297,6 @@ dependencies = [
  "wcontainers-icmp-sockets",
  "wcontainers-internet-protocol",
  "wcontainers-kernel-interface",
-]
-
-[[package]]
-name = "wcontainers-inside"
-version = "0.1.0"
-dependencies = [
- "aarch64-cpu",
- "aarch64-paging",
- "arm-gic",
- "arm-sysregs",
- "cc",
- "postcard",
- "rangemap",
- "rustc-hash 2.1.3",
- "safe-mmio",
- "serde",
- "spin 0.10.1",
- "talc",
- "wcontainers-abi",
- "wcontainers-arm64",
- "wcontainers-guest-cpu",
- "wcontainers-kernel-linux",
- "wcontainers-runtime-single-kernel",
- "wcontainers-system-seeded-test-policy",
- "zerocopy",
 ]
 
 [[package]]
