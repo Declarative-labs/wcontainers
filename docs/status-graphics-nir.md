@@ -106,8 +106,14 @@ where none was read):
   WebGPU renders no 565; required 63: a vertex program sampling integer samplers at units that
   hold no integer texture, in a branch it does not take); precision and invariance (46), smaller
   groups not yet read.
-- The RTX 3080's own OpenGL (`-Driver system`) on run A's failing groups: results below (System
-  run), when it has ended.
+- The RTX 3080's own OpenGL (`-Driver system`) on every group holding a failure of run A (77
+  groups: dEQP's at four levels of the name, KHR's at three; 19,623 cases, desktop, one GPU job,
+  21:06:23 to 21:09:48) passes every case it runs: dEQP-GLES2 642 of 642, dEQP-GLES3 6,871 of
+  6,871 (28 Warn), dEQP-GLES31 8,657 of 8,657 (12 Warn), KHR-GLES3 2,459 of 2,459, KHR-GLES31
+  904 of 904. So every failure of ours is one real OpenGL on the same GPU passes, and each needs
+  its named reason: those listed above as "not yet read" do not have one yet, which the bar
+  does not allow. Output: scratch `results/g9r12/system.log`, the groups in
+  `system-include.txt`.
 - NotSupported (dEQP-GLES31 21,804): by group, copy_image (OES_copy_image), builtin functions and
   linkage (geometry and tessellation stages), implicit conversions
   (EXT_shader_implicit_conversions), texture_buffer and image_load_store.buffer
@@ -304,8 +310,10 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
   start and 2.1 at the end) at 35710fc3: 741 s. Route B: 12,090 match, 156 differ, 6 not
   compared, as run 11; route A unchanged. On the 1,072 shaders both routes match: A median
   426 us, mean 620 us; B median 338 us, mean 412 us. Results: scratch
-  `results/g9r12/nir-results-g9r12.jsonl`. A second run at 1c711c04 (the signed words' loads and
-  stores): Measurements below when read.
+  `results/g9r12/nir-results-g9r12.jsonl`. Again at 1c711c04 (the signed words' loads and
+  stores; load 21 at the end, others' jobs beside): 741 s, route B 12,095 match (5 more: the
+  signed atomic minimum and maximum), 156 differ, 6 not compared; B median 346 us, mean 416 us;
+  `results/g9r12/nir-results-g9r12b.jsonl`.
 - G9 run 12, the suite of wcontainers-nir and wcontainers-opengl at 1c711c04 (x86-64 machine,
   load 0.0 to 0.9): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa
   `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2, `route`
