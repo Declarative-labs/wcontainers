@@ -1,5 +1,5 @@
 //! The shader cache on the recording back end: a second pipeline of the same shaders and the next
-//! run's pipeline take their conversions from the cache. Its own test binary, since the cache is the
+//! run's pipeline take their conversions and their modules' views from the cache. Its own test binary, since the cache is the
 //! process's.
 
 #[allow(dead_code)]
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use record::Recorder;
 use wcontainers_direct3d_12::{Device, cache};
-use wcontainers_shaders::cache::Cache;
+use wcontainers_shaders::cache::{Cache, Kind};
 
 /// A file the test reads back: the bytes appended.
 #[derive(Clone, Default)]
@@ -47,7 +47,13 @@ fn pipelines_take_shaders_converted_before_in_the_process_and_in_the_last_run() 
     drop(device);
     let bytes = file.0.lock().unwrap().clone();
     let (loaded, dropped) = Cache::load(bytes).unwrap();
-    assert_eq!((loaded.len() as u64, dropped), (converted, 0));
+    // Each conversion, and the views of the two DXIL modules, once.
+    let of = |kind: Kind| loaded.entries().filter(|e| e.0 == kind as u8).count() as u64;
+    assert_eq!(
+        (of(Kind::Shader), of(Kind::Views), dropped),
+        (converted, 2, 0)
+    );
+    assert_eq!(loaded.len() as u64, converted + 2);
 
     // Next run: nothing is converted and nothing appended.
     let file = File::default();

@@ -1093,10 +1093,12 @@ impl<B: Backend> Device<B> {
         let has_geometry = !desc.gs.is_empty() || tessellated;
         // `GetRenderTargetSampleCount` reads the targets' sample count.
         let pixel_samples = desc.samples.clamp(1, 32) as u8;
-        let mut vs_typed = formats::typed_key(desc.vs, self.texel_route(), &root, bind::VERTEX);
+        let mut vs_typed = formats::typed_key(desc.vs, self.texel_route(), &root, bind::VERTEX).0;
         let ps = if desc.ps.is_empty() {
             None
         } else {
+            let (typed, through) =
+                formats::typed_key(desc.ps, self.texel_route(), &root, bind::PIXEL);
             // Dual-source blending reads the second output as the blend's second source.
             let mut key = VariantKey {
                 flags: if desc.blend.dual_source() {
@@ -1105,9 +1107,10 @@ impl<B: Backend> Device<B> {
                     VariantFlags::empty()
                 },
                 samples: pixel_samples,
-                ..formats::typed_key(desc.ps, self.texel_route(), &root, bind::PIXEL)
+                ..typed
             };
-            let converted = self.convert_stage(desc.ps, ShaderStage::Fragment, &mut key)?;
+            let converted =
+                self.convert_stage(desc.ps, ShaderStage::Fragment, &mut key, through)?;
             Some((converted, key))
         };
         let (mut ps, mut ps_key) = match ps {
@@ -1630,9 +1633,9 @@ impl<B: Backend> Device<B> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
-        let mut key = formats::typed_key(cs, self.texel_route(), &root, bind::ALL);
+        let (mut key, through) = formats::typed_key(cs, self.texel_route(), &root, bind::ALL);
         let code = cs;
-        let cs = self.convert_stage(code, ShaderStage::Compute, &mut key)?;
+        let cs = self.convert_stage(code, ShaderStage::Compute, &mut key, through)?;
         let bindings = bind::stage_bindings(&cs, 0, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
@@ -1695,19 +1698,19 @@ impl<B: Backend> Device<B> {
     }
 
     /// A pixel or compute shader in the common form with `key`; where the converter refuses
-    /// atomics on storage textures, with its typed texture views read through buffers
-    /// (`AtomicsThroughBuffer`), which `key` then says.
+    /// atomics on storage textures, with its typed texture views (the slots `through`, from
+    /// `formats::typed_key`) read through buffers (`AtomicsThroughBuffer`), which `key` then says.
     fn convert_stage(
         &mut self,
         code: &[u8],
         stage: ShaderStage,
         key: &mut VariantKey,
+        through: u64,
     ) -> Result<Converted, Error> {
         let source = match container_has(code, *b"DXIL") {
             true => Source::Dxil(code),
             false => Source::Dxbc(code),
         };
-        let through = formats::typed_texture_slots(code, &key.register_ranges);
         if key.texels_through_buffer == 0
             && through != 0
             && let Err(ConvertError::Unsupported("StorageImageAtomics")) =
@@ -1864,7 +1867,7 @@ impl<B: Backend> Device<B> {
             let mut key = VariantKey {
                 flags: VariantFlags::COUNTING,
                 samples,
-                ..formats::typed_key(&pixel, self.texel_route(), &root, bind::PIXEL)
+                ..formats::typed_key(&pixel, self.texel_route(), &root, bind::PIXEL).0
             };
             linked.apply(&mut key);
             self.convert(&pixel, ShaderStage::Fragment, key)?

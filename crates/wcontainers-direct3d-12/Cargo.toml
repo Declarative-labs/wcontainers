@@ -15,7 +15,6 @@ slab = "0.4"
 half = { version = "2.7.1", default-features = false }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 naga = { workspace = true }
-llvm-bitcode = "0.4.1"
 
 [dev-dependencies]
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }

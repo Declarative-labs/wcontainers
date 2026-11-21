@@ -65,29 +65,39 @@ pub(super) struct Formats<B: Backend> {
     variants: Vec<Variant<B>>,
 }
 
-/// The typed views a DXBC or DXIL shader declares, one per element of an array, whose unbounded
-/// arrays `ranges` sizes; none where its declarations cannot be read.
-fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Vec<TypedView> {
-    crate::dxbc::typed_views(code, ranges)
-        .or_else(|| crate::dxil::typed_views(code))
-        .unwrap_or_default()
+/// The typed views a DXBC or DXIL shader declares, one per element of an array, and the texture
+/// slots of its multisampled arrays, its unbounded arrays sized by `ranges`; none where its
+/// declarations cannot be read. A DXIL module is read once for both.
+fn declared(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> (Vec<TypedView>, Vec<u32>) {
+    let views = crate::dxbc::typed_views(code, ranges);
+    let arrays = crate::dxbc::multisampled_arrays(code, ranges);
+    let (dxil_views, dxil_arrays) = match views.is_none() || arrays.is_none() {
+        true => crate::dxil::declared(code),
+        false => (None, None),
+    };
+    (
+        views.or(dxil_views).unwrap_or_default(),
+        arrays.or(dxil_arrays).unwrap_or_default(),
+    )
 }
 
 /// The key fields a shader's typed views are first converted with: their formats by slot,
-/// `route` where it declares typed buffers, and its multisampled arrays' layer counts. Default
-/// for shaders declaring none.
+/// `route` where it declares typed buffers, and its multisampled arrays' layer counts (default for
+/// shaders declaring none); with the slots of its typed unordered access views of textures, one bit
+/// each (`VariantKey::texels_through_buffer` where the converter refuses their atomics).
 pub(super) fn typed_key(
     code: &[u8],
     route: TexelBufferRoute,
     root: &RootSignatureDesc,
     visibility: u32,
-) -> VariantKey {
+) -> (VariantKey, u64) {
     let mut key = VariantKey::default();
     // Arrays declared without a length take the rest of the root signature's range.
     if crate::dxbc::declares_unbounded_array(code) {
         key.register_ranges = root.register_ranges(visibility);
     }
-    for v in typed_views(code, &key.register_ranges) {
+    let (views, arrays) = declared(code, &key.register_ranges);
+    for v in &views {
         let format = match v.kind {
             Kind::Float => Format::R32Float,
             Kind::Uint => Format::R32Uint,
@@ -104,24 +114,13 @@ pub(super) fn typed_key(
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
     // Converted reading one layer of each; the bound views' layer counts come at the draw.
-    let arrays = crate::dxbc::multisampled_arrays(code, &key.register_ranges)
-        .or_else(|| crate::dxil::multisampled_arrays(code));
-    key.texture_layers = arrays
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| (s, 1))
-        .collect();
+    key.texture_layers = arrays.into_iter().map(|s| (s, 1)).collect();
     key.texture_layers.sort_unstable();
-    key
-}
-
-/// The slots of a shader's typed unordered access views of textures, one bit each, its unbounded
-/// arrays sized by `ranges`.
-pub(super) fn typed_texture_slots(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> u64 {
-    typed_views(code, ranges)
+    let texture_slots = views
         .iter()
-        .filter(|v| v.storage && !v.buffer && v.slot < 64)
-        .fold(0, |m, v| m | (1 << v.slot))
+        .filter(|v| v.storage && !v.buffer && v.slot < u64::BITS)
+        .fold(0u64, |m, v| m | (1 << v.slot));
+    (key, texture_slots)
 }
 
 /// The formats of `key` by slot, sorted.

@@ -216,7 +216,7 @@ impl<B: Backend> Device<B> {
                 true => interpolation.to_vec(),
                 false => Vec::new(),
             },
-            ..formats::typed_key(vs, self.texel_route(), root, bind::VERTEX)
+            ..formats::typed_key(vs, self.texel_route(), root, bind::VERTEX).0
         };
         // Behind the cull route (no geometry stage, lines or stream output) the vertex program
         // is the last vertex stage, and the pass-through passes what it links.
@@ -249,16 +249,16 @@ impl<B: Backend> Device<B> {
                 let hull = self.convert_staged(
                     hs,
                     SourceStage::Hull,
-                    formats::typed_key(hs, self.texel_route(), root, HULL),
+                    formats::typed_key(hs, self.texel_route(), root, HULL).0,
                 )?;
                 // A domain stage the rasteriser follows writes its outputs as the pixel stage
                 // interpolates them.
                 let domain_key = match gs.is_empty() {
                     true => VariantKey {
                         output_interpolation: interpolation.to_vec(),
-                        ..formats::typed_key(ds, self.texel_route(), root, DOMAIN)
+                        ..formats::typed_key(ds, self.texel_route(), root, DOMAIN).0
                     },
-                    false => formats::typed_key(ds, self.texel_route(), root, DOMAIN),
+                    false => formats::typed_key(ds, self.texel_route(), root, DOMAIN).0,
                 };
                 let domain = match gs.is_empty() {
                     true => {
