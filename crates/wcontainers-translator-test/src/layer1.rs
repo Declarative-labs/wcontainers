@@ -104,6 +104,7 @@ pub fn translated_on<G: GuestTest>(
 ) -> (Outcome, Machine<G>) {
     // The table covers the case's one instruction only, so control that lands anywhere else stops there.
     let mut machine = Machine::<G>::new(memory::<G>(), CODE, 1, Syscalls::Stop);
+    machine.set_offer(G::case_offer(case));
     prepare(&mut machine);
     for (range, permissions) in regions::<G>() {
         machine.set_permissions(range, permissions);

@@ -15,8 +15,8 @@ use wcontainers_arm64::Arm64;
 use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
-    Agreement, compare, compare_outcome, on_reference, translated, translated_in_chrome,
-    translated_on, translated_with,
+    Agreement, compare, compare_outcome, on_reference, translated_in_chrome, translated_on,
+    translated_with,
 };
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_translator_test::seeded;
@@ -189,7 +189,7 @@ fn unoffered_forms_are_illegal<G: GuestTest>() {
         count,
         " of the unoffered forms",
         |reference, form, case| {
-            let actual = translated::<G>(case);
+            let actual = translated_with::<G>(case, |m| m.set_offer(Default::default()));
             if !G::reference_has(form) {
                 return compare_outcome::<G>(reference, case, actual);
             }

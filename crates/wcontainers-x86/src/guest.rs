@@ -94,6 +94,7 @@ pub enum Reason {
     MxcsrFlagsReadNotKept,
     FarTransferTo32Bit,
     X87InSoftware,
+    BitDepositOrExtractInSoftware,
 }
 
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
@@ -556,6 +557,10 @@ impl Guest for X86_64 {
             "far transfer to 32-bit code, not provided",
         ),
         (Reason::X87InSoftware, "x87 floating point in software"),
+        (
+            Reason::BitDepositOrExtractInSoftware,
+            "software bit deposit or extract: pdep and pext, a pass for each bit of the mask",
+        ),
     ];
 
     type Host = Host;

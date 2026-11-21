@@ -107,7 +107,8 @@ pub fn written(i: &Instruction) -> bool {
                     | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
                     | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase | Popf | Popfq | Rdtsc
                     | Rdtscp | Cpuid | Xlatb | Movnti | Lfence | Mfence | Sfence | Crc32
-                    | Enter | Andn | Bextr | Blsi | Blsmsk | Blsr | Emms
+                    | Enter | Andn | Bextr | Blsi | Blsmsk | Blsr | Emms | Bzhi | Mulx | Pdep
+                    | Pext | Rorx | Sarx | Shlx | Shrx | Xgetbv | Xsetbv
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -291,6 +292,16 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         Bsf | Bsr | Tzcnt | Lzcnt | Popcnt => bit_count(e, i, m),
         Bswap | Movbe => byte_reverse(e, i, m),
         Andn | Bextr | Blsi | Blsmsk | Blsr => bit_manipulation(e, i, m),
+        Bzhi => zero_high_bits(e, i),
+        Xgetbv => extended_control(e),
+        // Writing an extended control register is the kernel's.
+        Xsetbv => {
+            e.trap(Trap::GeneralProtection);
+            return true;
+        }
+        Mulx => multiply_flagless(e, i),
+        Pdep | Pext => deposit_or_extract(e, i, m),
+        Rorx | Sarx | Shlx | Shrx => shift_flagless(e, i, m),
         Xadd => exchange_add(e, i),
         Cmpxchg => compare_exchange(e, i),
         Cmpxchg8b | Cmpxchg16b => compare_exchange_pair(e, i),
@@ -2752,6 +2763,196 @@ fn bit_manipulation<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: 
     e.set_flags(Flags::Packed(word));
 }
 
+/// BMI2's `bzhi`: the source with the bits from the index (the third operand's low byte) up cleared, CF set where
+/// the index is past the operand (the source then kept), ZF and SF from the result, OF, AF and PF clear.
+fn zero_high_bits<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let source = read(e, i, 1, mem);
+    let index = read(e, i, 2, None);
+    let (result, past) = (e.local(ValType::I64), e.local(ValType::I32));
+    let mut s = e.sink();
+    s.local_get(index)
+        .i64_const(u8::MAX.into())
+        .i64_and()
+        .local_tee(index)
+        .i64_const(w.into())
+        .i64_ge_u()
+        .local_set(past);
+    s.local_get(source)
+        .local_get(source)
+        .i64_const(1)
+        .local_get(index)
+        .i64_shl()
+        .i64_const(1)
+        .i64_sub()
+        .i64_and()
+        .local_get(past)
+        .select()
+        .local_set(result);
+    write(e, i, 0, None, result);
+    if !e.flags_live() {
+        return;
+    }
+    let word = e.local(ValType::I32);
+    let mut s = e.sink();
+    s.local_get(result)
+        .i64_eqz()
+        .i32_const(Flag::Z.bit() as i32)
+        .i32_shl()
+        .local_get(result)
+        .i64_const(i64::from(w - 1))
+        .i64_shr_u()
+        .i32_wrap_i64()
+        .i32_const(1)
+        .i32_and()
+        .i32_const(Flag::S.bit() as i32)
+        .i32_shl()
+        .i32_or()
+        .local_get(past)
+        .i32_const(Flag::C.bit() as i32)
+        .i32_shl()
+        .i32_or()
+        .local_set(word);
+    e.set_flags(Flags::Packed(word));
+}
+
+/// BMI2's `mulx`: the unsigned product of rdx or edx and the source, its low half to the second operand and
+/// then its high half to the first (which wins where they are one register), no flags changed.
+fn multiply_flagless<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let source = read(e, i, 2, mem);
+    let multiplier = e.local(ValType::I64);
+    get_general(e, register(RDX, w));
+    e.sink().local_set(multiplier);
+    let (low, high) = (e.local(ValType::I64), e.local(ValType::I64));
+    if w == W64 {
+        e.sink()
+            .local_get(multiplier)
+            .local_get(source)
+            .i64_mul()
+            .local_set(low);
+        high_product(e, multiplier, source, false);
+        e.sink().local_set(high);
+    } else {
+        e.sink()
+            .local_get(multiplier)
+            .local_get(source)
+            .i64_mul()
+            .local_tee(low)
+            .i64_const(w.into())
+            .i64_shr_u()
+            .local_set(high);
+        truncate(e, low, w);
+    }
+    write(e, i, 1, None, low);
+    write(e, i, 0, None, high);
+}
+
+/// BMI2's `pdep` and `pext`, one pass for each set bit of the mask (the third operand), counted as software:
+/// `pdep` puts the source's low bits, in order, where the mask has its bits; `pext` gathers the source's bits
+/// under the mask into the low bits. No flags changed.
+fn deposit_or_extract<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    e.warn(Reason::BitDepositOrExtractInSoftware);
+    let mem = checked(e, i);
+    let source = read(e, i, 1, None);
+    let mask_bits = read(e, i, 2, mem);
+    let (result, lowest, next) = (
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+    );
+    // `next` is the bit of the packed side the pass is at; `lowest` the mask's lowest bit left.
+    let (from, to) = if m == Mnemonic::Pdep {
+        (next, lowest)
+    } else {
+        (lowest, next)
+    };
+    let mut s = e.sink();
+    s.i64_const(0)
+        .local_set(result)
+        .i64_const(1)
+        .local_set(next);
+    s.block(BlockType::Empty).loop_(BlockType::Empty);
+    s.local_get(mask_bits).i64_eqz().br_if(1);
+    s.i64_const(0)
+        .local_get(mask_bits)
+        .i64_sub()
+        .local_get(mask_bits)
+        .i64_and()
+        .local_set(lowest);
+    s.local_get(result)
+        .local_get(to)
+        .i64_const(0)
+        .local_get(source)
+        .local_get(from)
+        .i64_and()
+        .i64_eqz()
+        .i32_eqz()
+        .select()
+        .i64_or()
+        .local_set(result);
+    s.local_get(mask_bits)
+        .local_get(lowest)
+        .i64_xor()
+        .local_set(mask_bits)
+        .local_get(next)
+        .i64_const(1)
+        .i64_shl()
+        .local_set(next)
+        .br(0);
+    s.end().end();
+    write(e, i, 0, None, result);
+}
+
+/// BMI2's `rorx`, `sarx`, `shlx` and `shrx`: a rotate by an immediate or a shift by a register, the count
+/// masked to the width as the shifts mask it, no flags changed.
+fn shift_flagless<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    use Mnemonic::*;
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let source = read(e, i, 1, mem);
+    let count = if m == Rorx {
+        let count = e.local(ValType::I64);
+        e.sink()
+            .i64_const(i.iced.immediate8().into())
+            .local_set(count);
+        count
+    } else {
+        read(e, i, 2, None)
+    };
+    let result = e.local(ValType::I64);
+    let mut s = e.sink();
+    s.local_get(count)
+        .i64_const(i64::from(w - 1))
+        .i64_and()
+        .local_set(count);
+    if w == W64 {
+        s.local_get(source).local_get(count);
+        match m {
+            Rorx => s.i64_rotr(),
+            Sarx => s.i64_shr_s(),
+            Shlx => s.i64_shl(),
+            _ => s.i64_shr_u(),
+        };
+    } else {
+        s.local_get(source)
+            .i32_wrap_i64()
+            .local_get(count)
+            .i32_wrap_i64();
+        match m {
+            Rorx => s.i32_rotr(),
+            Sarx => s.i32_shr_s(),
+            Shlx => s.i32_shl(),
+            _ => s.i32_shr_u(),
+        };
+        s.i64_extend_i32_u();
+    }
+    s.local_set(result);
+    write(e, i, 0, None, result);
+}
+
 /// `xadd`: the destination gets the sum and the source the destination's old value, flags as `add`.
 fn exchange_add<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let w = width(i, 0);
@@ -3168,6 +3369,25 @@ fn crc32<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let result = e.local(ValType::I64);
     e.sink().local_get(crc).i64_extend_i32_u().local_set(result);
     set_general(e, register(destination.number, W64), result);
+}
+
+/// `xgetbv`: for ecx 0, XCR0 in edx:eax, the state components the kernel enables for what the program is told,
+/// upper halves cleared; any other ecx names no register the CPU presented has (XGETBV1 is not offered),
+/// general protection.
+fn extended_control<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    let state = crate::cpuid::enabled_state(e.offer());
+    get_general(e, register(RCX, W32));
+    e.sink().i64_eqz().i32_eqz().if_(BlockType::Empty);
+    e.trap(Trap::GeneralProtection);
+    e.sink().end();
+    let (low, high) = (e.local(ValType::I64), e.local(ValType::I64));
+    e.sink()
+        .i64_const(state.into())
+        .local_set(low)
+        .i64_const(0)
+        .local_set(high);
+    set_general(e, register(RAX, W64), low);
+    set_general(e, register(RDX, W64), high);
 }
 
 /// `cpuid`: eax, ebx, ecx and edx from the table of [`crate::cpuid`] by the leaf in eax and the sub-leaf in

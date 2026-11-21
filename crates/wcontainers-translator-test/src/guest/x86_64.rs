@@ -252,6 +252,16 @@ impl GuestTest for X86_64 {
             .boxed()
     }
 
+    fn case_offer(case: &Case) -> wcontainers_x86::Offer {
+        let told_elsewhere = wcontainers_x86::decode(case.code.code())
+            .is_some_and(|(i, _)| beyond_default(i.iced.code()));
+        if told_elsewhere {
+            wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a list of built features")
+        } else {
+            wcontainers_x86::Offer::default()
+        }
+    }
+
     fn unoffered_forms() -> &'static [Form] {
         static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
         FORMS.get_or_init(unoffered_forms)
@@ -557,6 +567,7 @@ impl GuestTest for X86_64 {
             Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
             Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
             Code::Cpuid => Some(CPUID_BY_DESIGN),
+            Code::Xgetbv => Some(XGETBV_BY_DESIGN),
             Code::Sgdt_m1664 | Code::Sidt_m1664 => Some(TABLES_BY_DESIGN),
             code if code.cpuid_features().contains(&iced_x86::CpuidFeature::VMX) => {
                 Some(VMX_BY_HOST)
@@ -630,10 +641,11 @@ impl GuestTest for X86_64 {
     }
 }
 
-/// The forms: every default code (plan 7.4) with a case the translator decodes as that code, but the codes of
-/// milestone X7 whose meaning is not written yet.
+/// The forms: every default code (plan 7.4) and every code of a told feature beyond the default list with a case
+/// the translator decodes as that code, but those whose meaning is not written yet.
 fn forms() -> Vec<Form> {
     default_codes()
+        .chain(beyond_default_codes())
         .filter(|&code| default_left_out_because(code).is_none())
         .map(|code| Form {
             code,
@@ -656,16 +668,39 @@ fn default_codes() -> impl Iterator<Item = Code> {
     })
 }
 
-/// Why a default code has no form: left out by design, decoded as another code, milestone X7's and not
-/// written yet, or not drawn; `None` for a code with a form.
+/// The codes of a told feature the default list leaves out (the x86-64-v3 level's), valid in 64-bit mode.
+fn beyond_default_codes() -> impl Iterator<Item = Code> {
+    Code::values().filter(|&code| {
+        let info = code.op_code();
+        info.mode64()
+            && info.is_instruction()
+            && info.encoding() != iced_x86::EncodingKind::MVEX
+            && beyond_default(code)
+    })
+}
+
+/// Whether `code` is of a told feature the default list does not tell of.
+fn beyond_default(code: Code) -> bool {
+    wcontainers_x86::told_feature(wcontainers_x86::claim(code))
+        .is_some_and(|at| !wcontainers_x86::Offer::default().tells(at))
+}
+
+/// Why a default code, or one beyond the default list, has no form: left out by design, decoded as another
+/// code, milestone X7's or X8's and not written yet, or not drawn; `None` for a code with a form.
 fn default_left_out_because(code: Code) -> Option<&'static str> {
     let drawn: Vec<Vec<u8>> = (0..FORM_DRAWS)
         .filter_map(|draw| case(code, draw))
         .map(|c| c.code.code().to_vec())
         .collect();
     if let Some(i) = drawn.iter().find_map(|bytes| decoded_as(bytes, code)) {
+        if beyond_default(code) {
+            return (!wcontainers_x86::written(&i)).then_some(MILESTONE_X8);
+        }
         let x7 = is_x87_or_mmx(code) || uses_x87_or_mmx(&i.iced);
         return (x7 && !wcontainers_x86::written(&i)).then_some(MILESTONE_X7);
+    }
+    if beyond_default(code) && drawn.is_empty() {
+        return Some(MILESTONE_X8);
     }
     if is_x87_or_mmx(code) && drawn.is_empty() {
         return Some(MILESTONE_X7);
@@ -694,9 +729,10 @@ fn default_left_out_because(code: Code) -> Option<&'static str> {
     })
 }
 
-/// The default codes with no form, and why.
+/// The default codes and those beyond the default list with no form, and why.
 pub fn default_left_out() -> Vec<(String, &'static str)> {
     default_codes()
+        .chain(beyond_default_codes())
         .filter_map(|code| Some((format!("{code:?}"), default_left_out_because(code)?)))
         .collect()
 }
@@ -724,6 +760,9 @@ pub fn unwritten_forms() -> Vec<String> {
 pub const TRANSCENDENTAL_ROUNDING: &str = "Intel's transcendental result is within one unit in the last place, not correctly rounded (SDM Vol. 1 8.3.10)";
 /// The reason of one whose result is ours but whose C1 is not.
 pub const TRANSCENDENTAL_DIRECTION: &str = "Intel's transcendental approximation lies on the other side of the correctly rounded result, so C1 (rounded up) differs";
+
+/// Why a code beyond the default list has no form yet: the x86-64-v3 level's families are milestone X8's.
+pub const MILESTONE_X8: &str = "a family of the x86-64-v3 level: milestone X8's, not written yet";
 
 /// Why a default code has no form yet: the x87 unit, MMX registers and `fxsave` are milestone X7's (plan 9).
 pub const MILESTONE_X7: &str =
@@ -1328,6 +1367,8 @@ const LONG_COUNTS: u64 = 12;
 const OVERLAPPED: u64 = 8;
 /// Why layer 1 leaves out `cpuid`.
 const CPUID_BY_DESIGN: &str = "cpuid: the claims and designed leaves, not the CPU's";
+/// Why layer 1 leaves out `xgetbv`.
+const XGETBV_BY_DESIGN: &str = "xgetbv: the state the program's list enables, not the CPU's";
 /// Why layer 1 leaves out `sgdt` and `sidt`.
 const TABLES_BY_DESIGN: &str = "sgdt and sidt: designed answers, not the kernel's addresses";
 /// Why layer 1 leaves out the VMX instructions (plan 5.2).
@@ -2488,6 +2529,7 @@ fn hand_cases() -> Vec<Designed> {
     ]
     .into_iter()
     .chain(cpuid_cases())
+    .chain(xgetbv_cases())
     .chain(table_cases())
     .chain(mxcsr_cases())
     .chain(store_string_cases())
@@ -2693,12 +2735,55 @@ fn table_cases() -> Vec<Designed> {
     cases
 }
 
+/// What the upper halves of the registers a 32-bit answer goes to hold before it, to see them cleared.
+const HIGH: u128 = 0x5a5a_5a5a << u32::BITS;
+
+/// `xgetbv` gives XCR0 for ecx 0, the state components the x86-64-v3 list enables, the upper halves cleared,
+/// and general protection for any other ecx (plan 5.10); the reference's XCR0 is its own, so none is compared.
+fn xgetbv_cases() -> Vec<Designed> {
+    const XGETBV: [u8; 3] = [0x0f, 0x01, 0xd0];
+    let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
+    let state = wcontainers_x86::cpuid::enabled_state(v3);
+    let [rax, rcx, rdx] = [
+        wcontainers_x86::RAX,
+        wcontainers_x86::RCX,
+        wcontainers_x86::RDX,
+    ]
+    .map(usize::from);
+    [0, 1, u32::MAX]
+        .into_iter()
+        .map(|register| {
+            let mut case = plain(&XGETBV);
+            case.state.0[rax] = HIGH;
+            case.state.0[rdx] = HIGH;
+            case.state.0[rcx] = HIGH | u128::from(register);
+            let after = CODE + XGETBV.len() as u64;
+            let (stop, fields) = if register == 0 {
+                (
+                    Stop::Landed(after),
+                    vec![(rax, state.into()), (rdx, 0), (RIP, after.into())],
+                )
+            } else {
+                (Stop::GeneralProtection, vec![(RIP, CODE.into())])
+            };
+            Designed {
+                name: Box::leak(format!("xgetbv {register:#x}").into_boxed_str()),
+                case,
+                stop: Some(stop),
+                fields,
+                compared: false,
+                tracking: None,
+                counted: vec![],
+            }
+        })
+        .collect()
+}
+
 /// `cpuid` gives the table's answer for its leaf and sub-leaf, read from the low halves of rax and rcx, with
 /// the upper halves of all four registers cleared (plan 5.10).
 fn cpuid_cases() -> Vec<Designed> {
     use wcontainers_x86::cpuid::{EXTENDED, MAX_BASIC, MAX_EXTENDED, answer, leaves, sub_leaves};
     const CPUID: [u8; 2] = [0x0f, 0xa2];
-    const HIGH: u128 = 0x5a5a_5a5a << u32::BITS;
     let [rax, rbx, rcx, rdx] = [
         wcontainers_x86::RAX,
         wcontainers_x86::RBX,
