@@ -8,7 +8,8 @@ use md5::digest::array::Array;
 use md5::digest::block_api::{BlockSizeUser, OutputSizeUser, UpdateCore};
 use md5::digest::common::hazmat::SerializableState;
 use md5::digest::typenum::Unsigned;
-use wcontainers_gpu::{StageValue, SystemValue};
+use serde::{Deserialize, Serialize};
+use wcontainers_gpu::{ScalarKind as ValueKind, StageValue, SystemValue};
 
 /// A chunk's tag: four characters, read as one word.
 pub type Tag = [u8; size_of::<u32>()];
@@ -83,6 +84,8 @@ pub(crate) const OSGN: Tag = *b"OSGN";
 pub(crate) const OSG5: Tag = *b"OSG5";
 pub(crate) const ISG1: Tag = *b"ISG1";
 pub(crate) const OSG1: Tag = *b"OSG1";
+/// The tag of a DXIL program's chunk.
+const DXIL: Tag = *b"DXIL";
 
 /// A signature chunk's form: its tag, whether it is an input signature, its elements' size, where
 /// their common fields start, and where their geometry stream is, in the forms that have one.
@@ -250,7 +253,7 @@ pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
 /// The program's type (`ir::program`), from the version token of its code chunk (`DXIL`, `SHEX` or
 /// `SHDR`): the token's high half.
 pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
-    let code = chunks(container, *b"DXIL")
+    let code = chunks(container, DXIL)
         .chain(chunks(container, SHEX))
         .chain(chunks(container, SHDR))
         .next()?;
@@ -648,6 +651,85 @@ pub(crate) fn place_system_values(values: &mut alloc::vec::Vec<StageValue>, sign
     *values = placed;
 }
 
+/// What a view's resource kind (`DXIL::ResourceKind`) is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DxilShape {
+    /// A texture of any kind but a multisampled array.
+    Texture,
+    /// A multisampled array texture (`Texture2DMSArray`).
+    MultisampledArray,
+    TypedBuffer,
+    /// A raw or structured buffer, or another resource.
+    Other,
+}
+
+/// A shader resource view or unordered access view of a DXIL module's resource list
+/// (`dx.resources`; `DXIL.rst`, "Resources").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DxilView {
+    pub shape: DxilShape,
+    pub space: u32,
+    /// Its range's first register and size (`u32::MAX` for a range without one).
+    pub register: u32,
+    pub count: u32,
+    /// The kind of value its elements hold, where its extended properties give their type.
+    pub value: Option<ValueKind>,
+}
+
+/// The two view lists of a DXIL module's resource list, each in its order: `None` for a list the
+/// resource list lacks or one holding a view whose fields cannot be read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DxilViews {
+    /// The shader resource views.
+    pub views: Option<alloc::vec::Vec<DxilView>>,
+    /// The unordered access views.
+    pub storage: Option<alloc::vec::Vec<DxilView>>,
+}
+
+/// The views `container`'s DXIL module declares, read by dxil-spirv's reader in one pass over the
+/// module; `None` where it holds no `DXIL` chunk, its checksum does not match, or its module does not
+/// parse.
+pub fn dxil_views(container: &[u8]) -> Option<DxilViews> {
+    use crate::ir::{view_shape, view_value, view_word};
+    chunks(container, DXIL).next()?;
+    let words = crate::dxil::views(container).ok()?;
+    let (&held, views) = words.split_first()?;
+    let mut lists = [Some(alloc::vec::Vec::new()), Some(alloc::vec::Vec::new())];
+    for list in lists.iter_mut().skip(held as usize) {
+        *list = None;
+    }
+    for v in views.as_chunks::<{ view_word::COUNT }>().0 {
+        let Some(list) = lists.get_mut(v[view_word::LIST] as usize) else {
+            continue;
+        };
+        if v[view_word::READABLE] == 0 {
+            *list = None;
+        }
+        let Some(list) = list else {
+            continue;
+        };
+        list.push(DxilView {
+            shape: match v[view_word::SHAPE] {
+                view_shape::TEXTURE => DxilShape::Texture,
+                view_shape::MULTISAMPLED_ARRAY => DxilShape::MultisampledArray,
+                view_shape::TYPED_BUFFER => DxilShape::TypedBuffer,
+                _ => DxilShape::Other,
+            },
+            space: v[view_word::SPACE],
+            register: v[view_word::LOWER_BOUND],
+            count: v[view_word::RANGE_SIZE],
+            value: match v[view_word::VALUE] {
+                view_value::FLOAT => Some(ValueKind::Float),
+                view_value::SINT => Some(ValueKind::Sint),
+                view_value::UINT => Some(ValueKind::Uint),
+                _ => None,
+            },
+        });
+    }
+    let [views, storage] = lists;
+    Some(DxilViews { views, storage })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,5 +825,40 @@ mod tests {
             chunk_list(&c[..offset_of!(Header, chunks)]).err(),
             Some(Malformed)
         );
+    }
+
+    #[test]
+    fn a_module_s_views_are_read_once_through_the_cache() {
+        use crate::cache::{Cache, dxil_views_cached};
+        // texels.hlsl's cs_texels: Buffer<float4> t0 to t3, RWBuffer<float4> u0, RWBuffer<uint>
+        // u1 and a structured buffer at u2.
+        let code = include_bytes!("../tests/own/cs_texels.dxil");
+        let read = dxil_views(code).unwrap();
+        let shapes = |list: &Option<Vec<DxilView>>| -> Vec<DxilShape> {
+            list.as_ref().unwrap().iter().map(|v| v.shape).collect()
+        };
+        assert_eq!(shapes(&read.views), [DxilShape::TypedBuffer; 4]);
+        let storage = [
+            DxilShape::TypedBuffer,
+            DxilShape::TypedBuffer,
+            DxilShape::Other,
+        ];
+        assert_eq!(shapes(&read.storage), storage);
+        let mut cache = Cache::default();
+        let (first, appended) = dxil_views_cached(&mut cache, code);
+        assert_eq!((first.as_ref(), appended.is_empty()), (Some(&read), false));
+        assert_eq!(
+            dxil_views_cached(&mut cache, code),
+            (Some(read.clone()), Vec::new())
+        );
+        let (mut loaded, _) = Cache::load(cache.bytes().to_vec()).unwrap();
+        assert_eq!(
+            dxil_views_cached(&mut loaded, code),
+            (Some(read), Vec::new())
+        );
+        // A container without a module is recorded as declaring none.
+        let dxbc = include_bytes!("../tests/own/cs_images.dxbc");
+        assert_eq!(dxil_views_cached(&mut loaded, dxbc).0, None);
+        assert_eq!(dxil_views_cached(&mut loaded, dxbc), (None, Vec::new()));
     }
 }

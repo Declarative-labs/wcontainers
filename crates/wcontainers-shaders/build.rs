@@ -89,6 +89,9 @@ const BOUNDARY: &str = "cpp";
 const BOUNDARY_ENUMS: &[HeaderEnum] = &[
     ("boundary.h", "ResourceClass", "class", "u32"),
     ("boundary.h", "TableWord", "table_word", "usize"),
+    ("boundary.h", "ViewWord", "view_word", "usize"),
+    ("boundary.h", "ViewShape", "view_shape", "u32"),
+    ("boundary.h", "ViewValue", "view_value", "u32"),
 ];
 
 const DXIL_SPIRV: &[&str] = &[

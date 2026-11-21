@@ -15,6 +15,7 @@ use std::collections::hash_map::Entry;
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{Reflection, ShaderModule, ShaderStage, VariantKey};
 
+use crate::container::DxilViews;
 use crate::{CONVERTER_VERSION, ConvertError, Converted, Source, convert};
 
 pub const MAGIC: [u8; 10] = *b"WCGPUCACHE";
@@ -66,6 +67,8 @@ pub enum Kind {
     Shader = 1,
     /// A state combination a program used, for building ahead at the next start.
     Combination = 2,
+    /// The views a DXIL module declares: [`views_key`] to [`dxil_views_cached`]'s record.
+    Views = 3,
 }
 
 /// Why a file was not read as a cache.
@@ -252,6 +255,8 @@ enum KeyedFrom {
     SpirV,
     /// A program another route brought into the common form, named by that route's own key.
     Rewritten,
+    /// A DXIL module's view lists.
+    DxilViews,
 }
 
 /// The content key of a converted shader: the source bytes, the converter version and the variant.
@@ -361,6 +366,33 @@ pub fn convert_cached(
         .insert(Kind::Shader, key, &encode(&converted))
         .to_vec();
     Ok((converted, appended))
+}
+
+/// The content key of the views a DXIL container's module declares: its bytes and the converter
+/// version.
+pub fn views_key(container: &[u8]) -> [u8; KEY_BYTES] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&[KeyedFrom::DxilViews as u8]);
+    hasher.update(&(container.len() as u64).to_le_bytes());
+    hasher.update(container);
+    hasher.update(CONVERTER_VERSION.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// [`crate::container::dxil_views`] through the cache: a recorded reading is decoded, anything else
+/// read and recorded. Returns the bytes appended to the file, if any, beside the result.
+pub fn dxil_views_cached(cache: &mut Cache, container: &[u8]) -> (Option<DxilViews>, Vec<u8>) {
+    let key = views_key(container);
+    if let Some(views) = cache
+        .get(Kind::Views, &key)
+        .and_then(|record| postcard::from_bytes(record).ok())
+    {
+        return (views, Vec::new());
+    }
+    let views = crate::container::dxil_views(container);
+    let record = postcard::to_allocvec(&views).expect("a view list serialises");
+    let appended = cache.insert(Kind::Views, key, &record).to_vec();
+    (views, appended)
 }
 
 /// Records a state combination a program was drawn with, in the front's own terms (its blocks, the

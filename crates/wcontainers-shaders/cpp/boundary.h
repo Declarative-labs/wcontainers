@@ -33,6 +33,38 @@ enum class TableWord : uint32_t {
   eCount,
 };
 
+// The words of one view the DXIL boundary lists from the resource list: its list (0 the shader resource
+// views, 1 the unordered access views), whether its fields could be read, its `ViewShape`, space,
+// first register and range size, and its `ViewValue`.
+enum class ViewWord : uint32_t {
+  eList,
+  eReadable,
+  eShape,
+  eSpace,
+  eLowerBound,
+  eRangeSize,
+  eValue,
+  eCount,
+};
+
+// What a view's resource kind (`DXIL::ResourceKind`) is: a texture of a kind other than a multisampled
+// array, a multisampled array texture, a typed buffer, or another resource.
+enum class ViewShape : uint32_t {
+  eTexture,
+  eMultisampledArray,
+  eTypedBuffer,
+  eOther,
+};
+
+// The kind of value a view's elements hold, from the element type (`DXIL::ComponentType`) its extended
+// properties give; none where they give none or one of no such kind.
+enum class ViewValue : uint32_t {
+  eNone,
+  eFloat,
+  eSint,
+  eUint,
+};
+
 // Keeps the first error dxbc-spirv reports on this thread while it lives, as the reason a call failed.
 class ErrorLog : public dxbc_spv::util::Logger {
 public:

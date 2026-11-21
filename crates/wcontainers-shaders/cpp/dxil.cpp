@@ -1,6 +1,7 @@
 // The one boundary to dxil-spirv: DXIL bytes in, SPIR-V words out, the constant buffers' sizes and
-// the registers the resource list declares.
+// the registers and views the resource list declares.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
@@ -186,15 +187,33 @@ int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, 
   return 0;
 }
 
-// An integer operand of a metadata node, if it is one.
-bool integer(const llvm::MDNode* node, unsigned index, uint32_t* value) {
+// An integer operand of a metadata node, sign extended, if it is one.
+bool integer64(const llvm::MDNode* node, unsigned index, int64_t* value) {
   if (index >= node->getNumOperands())
     return false;
   auto* c = llvm::dyn_cast<llvm::ConstantAsMetadata>(node->getOperand(index));
   auto* v = c ? llvm::dyn_cast<llvm::ConstantInt>(c->getValue()) : nullptr;
   if (!v)
     return false;
-  *value = uint32_t(v->getUniqueInteger().getSExtValue());
+  *value = v->getUniqueInteger().getSExtValue();
+  return true;
+}
+
+// An integer operand of a metadata node, if it is one, in its low 32 bits.
+bool integer(const llvm::MDNode* node, unsigned index, uint32_t* value) {
+  int64_t v;
+  if (!integer64(node, index, &v))
+    return false;
+  *value = uint32_t(v);
+  return true;
+}
+
+// An integer operand of a metadata node, if it is one and a 32-bit unsigned value.
+bool word(const llvm::MDNode* node, unsigned index, uint32_t* value) {
+  int64_t v;
+  if (!integer64(node, index, &v) || v < 0 || v > int64_t(UINT32_MAX))
+    return false;
+  *value = uint32_t(v);
   return true;
 }
 
@@ -211,24 +230,67 @@ enum ResourceOperand : unsigned {
   eRangeSize = 5,
   // A constant buffer's size in bytes.
   eConstantBytes = 6,
+  // A view's resource kind (`DXIL::ResourceKind`).
+  eKind = 6,
 };
 
 // The range size DXIL gives an unbounded range.
 constexpr uint32_t UNBOUNDED = UINT32_MAX;
 
+// The module the resource list readers parsed last on this thread, with the container it came from:
+// a stage's views, declared registers and constant buffer sizes are read from one parse of it.
+struct Parsed {
+  std::vector<uint8_t> container;
+  bool dxbc_binary = false;
+  std::unique_ptr<dxil_spv::LLVMBCParser> bitcode;
+};
+thread_local Parsed last;
+
+// The module of a container's `DXIL` chunk, or of its DXBC program where `dxbc` allows one; null with
+// the reason in `error` where there is none or it does not parse. Valid until the next call.
+dxil_spv::LLVMBCParser* parse(const uint8_t* data, size_t size, bool dxbc, char** error) {
+  if (!(last.bitcode && last.container.size() == size && std::memcmp(last.container.data(), data, size) == 0)) {
+    last = Parsed();
+    dxil_spv::DXILContainerParser container;
+    if (!container.parse_container(data, size, false)) {
+      *error = wcs::copy("the DXIL did not parse");
+      return nullptr;
+    }
+    auto bitcode = std::make_unique<dxil_spv::LLVMBCParser>();
+    bool dxbc_binary = container.is_dxbc_binary();
+    if (dxbc_binary && !dxbc) {
+      *error = wcs::copy("not a DXIL container");
+      return nullptr;
+    }
+    if (!(dxbc_binary ? bitcode->parseDXBCBinary(data, size)
+                      : bitcode->parse(container.get_blob().data(), container.get_blob().size()))) {
+      *error = wcs::copy("the DXIL did not parse");
+      return nullptr;
+    }
+    last.container.assign(data, data + size);
+    last.dxbc_binary = dxbc_binary;
+    last.bitcode = std::move(bitcode);
+  }
+  if (last.dxbc_binary && !dxbc) {
+    *error = wcs::copy("not a DXIL container");
+    return nullptr;
+  }
+  return last.bitcode.get();
+}
+
+// The node of the module's resource list (`dx.resources`) holding its lists, or null where it has none.
+const llvm::MDNode* resource_lists(dxil_spv::LLVMBCParser& bitcode) {
+  auto* resources = bitcode.get_module().getNamedMetadata("dx.resources");
+  return resources && resources->getNumOperands() ? resources->getOperand(0) : nullptr;
+}
+
 // Calls `f(list, node)` for every resource node of the module's resource list.
 template <typename F>
 bool each_resource(const uint8_t* data, size_t size, char** error, F&& f) {
-  dxil_spv::DXILContainerParser container;
-  dxil_spv::LLVMBCParser bitcode;
-  if (!container.parse_container(data, size, false) ||
-      !(container.is_dxbc_binary() ? bitcode.parseDXBCBinary(data, size)
-                                   : bitcode.parse(container.get_blob().data(), container.get_blob().size()))) {
-    *error = wcs::copy("the DXIL did not parse");
+  auto* bitcode = parse(data, size, true, error);
+  if (!bitcode)
     return false;
-  }
-  auto* resources = bitcode.get_module().getNamedMetadata("dx.resources");
-  auto* lists = resources && resources->getNumOperands() ? resources->getOperand(0) : nullptr;
+  auto* lists = resource_lists(*bitcode);
   for (unsigned list = 0; lists && list < std::size(LIST_CLASSES) && list < lists->getNumOperands(); list++) {
     auto* nodes = llvm::dyn_cast<llvm::MDNode>(lists->getOperand(list));
     for (unsigned i = 0; nodes && i < nodes->getNumOperands(); i++)
@@ -279,6 +341,95 @@ int declared_registers(const uint8_t* data, size_t size, uint32_t** out, size_t*
   return give(registers, out, out_words, error);
 }
 
+// The lists of the resource list `views` reads (the shader resource views', the unordered access
+// views'), and where each list's views hold their extended properties (`DXIL.rst`, "Resources").
+constexpr unsigned VIEW_LISTS = 2;
+constexpr unsigned EXTENDED_PROPERTIES[VIEW_LISTS] = { 8, 10 };
+// The tag of the extended property giving the element type (DirectXShaderCompiler's
+// `kDxilTypedBufferElementTypeTag`).
+constexpr int64_t ELEMENT_TYPE_TAG = 0;
+
+// The shape of a view of resource kind `kind`.
+wcs::ViewShape shape(int64_t kind) {
+  using K = DXIL::ResourceKind;
+  if (kind == int64_t(K::Texture2DMSArray))
+    return wcs::ViewShape::eMultisampledArray;
+  if (kind == int64_t(K::TypedBuffer))
+    return wcs::ViewShape::eTypedBuffer;
+  if (kind >= int64_t(K::Texture1D) && kind <= int64_t(K::TextureCubeArray))
+    return wcs::ViewShape::eTexture;
+  return wcs::ViewShape::eOther;
+}
+
+// The kind of value of element type `type`.
+wcs::ViewValue value(int64_t type) {
+  using C = DXIL::ComponentType;
+  for (C sint : { C::I1, C::I16, C::I32, C::I64 })
+    if (type == int64_t(sint))
+      return wcs::ViewValue::eSint;
+  for (C uint : { C::U16, C::U32, C::U64 })
+    if (type == int64_t(uint))
+      return wcs::ViewValue::eUint;
+  if (type >= int64_t(C::F16) && type <= int64_t(C::UNormF64))
+    return wcs::ViewValue::eFloat;
+  return wcs::ViewValue::eNone;
+}
+
+// The number of the two view lists the module's resource list holds (both where it has none), then for
+// every view of them its `ViewWord`s. A container whose checksum does not match is not read.
+int views(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  if (!signed_or_bypassed(data, size)) {
+    *error = wcs::copy("the container's checksum does not match its bytes");
+    return 1;
+  }
+  auto* bitcode = parse(data, size, false, error);
+  if (!bitcode)
+    return 1;
+  auto* lists = resource_lists(*bitcode);
+  unsigned held = lists ? std::min(lists->getNumOperands(), VIEW_LISTS) : VIEW_LISTS;
+  std::vector<uint32_t> words = { held };
+  for (unsigned list = 0; lists && list < held; list++) {
+    auto* nodes = llvm::dyn_cast<llvm::MDNode>(lists->getOperand(list));
+    for (unsigned i = 0; nodes && i < nodes->getNumOperands(); i++) {
+      using W = wcs::ViewWord;
+      uint32_t view[size_t(W::eCount)] = { };
+      auto at = [&](W w) -> uint32_t& { return view[size_t(w)]; };
+      auto* node = llvm::dyn_cast<llvm::MDNode>(nodes->getOperand(i));
+      int64_t kind = 0, count = 0;
+      at(W::eList) = list;
+      at(W::eReadable) = node && integer64(node, eKind, &kind) && word(node, eSpace, &at(W::eSpace)) &&
+                         word(node, eLowerBound, &at(W::eLowerBound)) && integer64(node, eRangeSize, &count);
+      // DXIL writes an unbounded range's size as -1; a size of no 32-bit unsigned value is one too.
+      at(W::eRangeSize) = count >= 0 && count <= int64_t(UNBOUNDED) ? uint32_t(count) : UNBOUNDED;
+      at(W::eShape) = uint32_t(shape(kind));
+      unsigned extended = EXTENDED_PROPERTIES[list];
+      auto* tags = at(W::eReadable) && extended < node->getNumOperands()
+                       ? llvm::dyn_cast<llvm::MDNode>(node->getOperand(extended))
+                       : nullptr;
+      for (unsigned t = 0; tags && t < tags->getNumOperands(); t += 2) {
+        int64_t tag, type;
+        if (integer64(tags, t, &tag) && tag == ELEMENT_TYPE_TAG) {
+          if (integer64(tags, t + 1, &type))
+            at(W::eValue) = uint32_t(value(type));
+          break;
+        }
+      }
+      words.insert(words.end(), std::begin(view), std::end(view));
+    }
+  }
+  return give(words, out, out_words, error);
+}
+
+}
+
+// Returns 0 and the views of the resource list (`views`) in `out` (free with wcs_free), or nonzero with
+// the reason in `error`.
+extern "C" int wcs_dxil_views(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
+                              char** error) {
+  *out = nullptr;
+  *out_words = 0;
+  *error = nullptr;
+  return wcs::contained("dxil-spirv", error, [&] { return views(data, size, out, out_words, error); });
 }
 
 // Returns 0 and the constant buffers' (space, register, size in bytes) triples in `out` (free with

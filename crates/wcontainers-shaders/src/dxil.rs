@@ -55,6 +55,13 @@ unsafe extern "C" {
         out_words: *mut usize,
         error: *mut *mut c_char,
     ) -> c_int;
+    fn wcs_dxil_views(
+        data: *const u8,
+        size: usize,
+        out: *mut *mut u32,
+        out_words: *mut usize,
+        error: *mut *mut c_char,
+    ) -> c_int;
     fn wcs_free(p: *mut c_void);
 }
 
@@ -157,6 +164,12 @@ fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
         .as_chunks::<TRIPLE>()
         .0
         .to_vec())
+}
+
+/// The views of the DXIL's resource list, as `cpp/dxil.cpp`'s `views` gives them
+/// (`container::dxil_views`).
+pub(crate) fn views(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+    resource_list(dxil, wcs_dxil_views)
 }
 
 /// The largest constant buffer, in bytes, which dxil-spirv declares for every dynamically indexed one.
