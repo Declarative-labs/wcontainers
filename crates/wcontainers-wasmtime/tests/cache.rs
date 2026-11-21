@@ -8,7 +8,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, Origin, reason};
 use zerocopy::FromZeros;
 
-const CODE: u64 = 0x10000;
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
 /// `movz x0, #7; add x0, x0, #5; svc #0`.
 const PROGRAM: [u32; 3] = [0xd280_00e0, 0x9100_1400, 0xd400_0001];
 
@@ -33,14 +33,14 @@ impl Answer for Recorder {
     }
 }
 
-/// Runs the program on a new back end of `compiler`; x0 at its system call and where its code came
+/// Runs the program on a new executor of `compiler`; x0 at its system call and where its code came
 /// from.
 fn run(compiler: std::sync::Arc<Compiler<Arm64>>, look_ahead: LookAhead) -> (u64, Origin) {
     let (value, origin, _) = run_warned(compiler, look_ahead);
     (value, origin)
 }
 
-/// As `run`, with the back end's warnings.
+/// As `run`, with the executor's warnings.
 fn run_warned(
     compiler: std::sync::Arc<Compiler<Arm64>>,
     look_ahead: LookAhead,

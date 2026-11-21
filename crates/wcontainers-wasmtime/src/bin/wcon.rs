@@ -1,25 +1,40 @@
 //! A demonstration of the library: runs one container to its end and exits with its status.
 //!
 //! wcon (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
-//!      [--look-ahead full|none|N] [--size] [-- ARGUMENTS...]
+//!      [--look-ahead full|none|N] [--size] [--volume SOURCE:DESTINATION]
+//!      [--publish ADDRESS:PORT:CONTAINER_PORT]... [--interactive] [--tty] [-- ARGUMENTS...]
 //!
 //! What runs is the OCI image's configuration converted, or the runtime's base configuration for a
-//! plain tar, or `--config`'s; the arguments, when given, replace `process.args`.
+//! plain tar, or `--config`'s; the arguments, when given, replace `process.args`. `--volume` adds a
+//! bind mount of a host directory to it; `--publish` lets the host reach a TCP port of the container.
+//! `--interactive` gives the container this program's standard input, and `--tty` sets
+//! `process.terminal`, as `docker run` takes them.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Warned,
+    Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Warned, bind_mount,
     spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
+use wcontainers_wasmtime::cli::{
+    CACHE, CONFIG, END_OF_OPTIONS, INTERACTIVE, LOOK_AHEAD, OCI, PUBLISH, SIZE, TAR, TTY, VOLUME,
+};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorConfig};
 
 type Back = CpuSide<Arm64>;
 
 /// The warning for a property of the configuration that is ignored, with its path and count.
 const IGNORED: &str = "a property the specification does not define, or an annotation, ignored";
+
+/// `--look-ahead`'s words; any other value is a bounded look-ahead's length.
+const LOOK_AHEAD_FULL: &str = "full";
+const LOOK_AHEAD_NONE: &str = "none";
+
+/// What separates the parts of `--volume` and `--publish`.
+const SEPARATOR: char = ':';
 
 /// Docker's exit statuses for a program not found and for its own failures.
 const NOT_FOUND: u8 = 127;
@@ -46,19 +61,23 @@ fn main() -> ExitCode {
 
 fn run() -> Result<u8, Box<dyn std::error::Error>> {
     let mut arguments = pico_args::Arguments::from_env();
-    let oci: Option<PathBuf> = arguments.opt_value_from_str("--oci")?;
-    let tar: Option<PathBuf> = arguments.opt_value_from_str("--tar")?;
-    let config: Option<PathBuf> = arguments.opt_value_from_str("--config")?;
-    let cache: Option<PathBuf> = arguments.opt_value_from_str("--cache")?;
+    let oci: Option<PathBuf> = arguments.opt_value_from_str(OCI)?;
+    let tar: Option<PathBuf> = arguments.opt_value_from_str(TAR)?;
+    let config: Option<PathBuf> = arguments.opt_value_from_str(CONFIG)?;
+    let cache: Option<PathBuf> = arguments.opt_value_from_str(CACHE)?;
     let look_ahead = match arguments
-        .opt_value_from_str::<_, String>("--look-ahead")?
+        .opt_value_from_str::<_, String>(LOOK_AHEAD)?
         .as_deref()
     {
-        None | Some("full") => LookAhead::Full,
-        Some("none") => LookAhead::None,
+        None | Some(LOOK_AHEAD_FULL) => LookAhead::Full,
+        Some(LOOK_AHEAD_NONE) => LookAhead::None,
         Some(n) => LookAhead::Bounded(n.parse()?),
     };
-    let optimise = if arguments.contains("--size") {
+    let volume: Option<String> = arguments.opt_value_from_str(VOLUME)?;
+    let published: Vec<String> = arguments.values_from_str(PUBLISH)?;
+    let interactive = arguments.contains(INTERACTIVE);
+    let tty = arguments.contains(TTY);
+    let optimise = if arguments.contains(SIZE) {
         Optimise::Size
     } else {
         Optimise::Speed
@@ -69,7 +88,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         .map(|a| a.into_string().map_err(|a| format!("{a:?} is not text")))
         .collect::<Result<_, _>>()?;
     let command: Vec<String> = match rest.split_first() {
-        Some((dashes, command)) if dashes == "--" => command.to_vec(),
+        Some((dashes, command)) if dashes == END_OF_OPTIONS => command.to_vec(),
         Some((unknown, _)) => return Err(format!("unexpected argument {unknown}").into()),
         None => Vec::new(),
     };
@@ -77,7 +96,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     let image = match (oci, tar) {
         (Some(directory), None) => Image::oci(&directory, Back::ARCHITECTURE)?,
         (None, Some(file)) => Image::tar(&file)?,
-        _ => return Err("give one of --oci and --tar".into()),
+        _ => return Err(format!("give one of {OCI} and {TAR}").into()),
     };
     let mut spec = match config {
         Some(path) => {
@@ -92,22 +111,44 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         }
         None => image.spec()?,
     };
-    if !command.is_empty() {
+    if let Some(volume) = volume {
+        let (source, destination) = volume
+            .split_once(SEPARATOR)
+            .ok_or(format!("{VOLUME} is SOURCE{SEPARATOR}DESTINATION"))?;
+        let mut mounts = spec.mounts().clone().unwrap_or_default();
+        mounts.push(bind_mount(source.as_ref(), destination));
+        spec.set_mounts(Some(mounts));
+    }
+    if !command.is_empty() || tty {
         let mut process = spec.process().clone().unwrap_or_default();
-        process.set_args(Some(command));
+        if !command.is_empty() {
+            process.set_args(Some(command));
+        }
+        if tty {
+            process.set_terminal(Some(true));
+        }
         spec.set_process(Some(process));
     }
 
-    let runtime = Runtime::<Back>::new(&RuntimeSettings { cache });
-    let system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
-    let translator_settings = TranslatorSettings {
+    let runtime = Runtime::<Back>::new(&RuntimeConfig { cache });
+    let mut system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
+    if interactive {
+        system.input(Box::new(std::io::stdin()));
+    }
+    for publish in published {
+        let (at, port) = publish.rsplit_once(SEPARATOR).ok_or(format!(
+            "{PUBLISH} is ADDRESS{SEPARATOR}PORT{SEPARATOR}CONTAINER_PORT"
+        ))?;
+        system.publish(port.parse()?, at.parse::<SocketAddr>()?);
+    }
+    let translator_config = TranslatorConfig {
         look_ahead,
         optimise,
     };
     let mut container = runtime.container(
         &spec,
         &image,
-        &translator_settings,
+        &translator_config,
         &GuestMachine { offer: () },
         system,
     )?;
@@ -117,10 +158,13 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     }
     for Warned {
         reason, count, cpu, ..
-    } in container.system().warnings().iter()
+    } in container.system().warnings()
     {
-        let side = if *cpu { "back end" } else { "kernel" };
-        eprintln!("wcon: {side}: {reason}: {count}");
+        if cpu {
+            eprintln!("wcon: executor: {reason}: {count}");
+        } else {
+            eprintln!("wcon: kernel: {reason}: {count}");
+        }
     }
     // As a shell reports it.
     Ok(if status & SIGNAL_BITS == 0 {

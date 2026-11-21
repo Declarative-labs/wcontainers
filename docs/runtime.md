@@ -179,7 +179,11 @@ stand-in's own exits with no kernel.
   `stopped(kernel, cpu: &mut E) -> ControlFlow<Self::End>` does that something once no thread is in `run`
   (a save, section 11, which replaces the back end with `cpu.restored()` in the copy) and may end the run
   with its own result; `idle(kernel, cpu, until)` waits for an event or the time; `cpu_warning(warning)`
-  is told each slow path of the back end, kept apart from the kernel's `Host::warn`. Implemented by the
+  is told each slow path of the back end, kept apart from the kernel's `Host::warn`. These take `&self`, and
+  `System` requires `Sync` (the owner's ruling of 2026-11-19), so that the kernel may later call them for
+  different processes at once: a system keeps what they change in atomics or behind its own lock. `Host`'s
+  calls, the kernel's interface, still take `&mut self` until the kernel track changes them; a system with a
+  lock answers them through `Mutex::get_mut`, with no locking. Implemented by the
   shipped outside (J3), by the test outside (J1), and by any user who brings their own: the outside is a
   type the user supplies, never built into the loop.
 
@@ -785,7 +789,7 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   (section 11), on macOS mach2, and, at build time only, blake3, cargo_metadata and cargo-lock (the build identity). The split keeps wasmtime out of every build that does not run WebAssembly
   (the kernel tests on the stand-in, a later native back end).
 - No new test crate. The kernel test crate's driver calls `drive`; its stand-in implements `Execution`; its
-  `TestHost` implements `System`, holding the per-turn work the driver loop does today (backend answers,
+  `TestHost`, behind a lock as `TestSystem`, implements `System`, holding the per-turn work the driver loop does today (backend answers,
   notices, signals and saves at the seed's moments, the repeatable clock). A cargo feature `runtime` of that
   crate puts `CpuSide<Arm64>` behind every one of its tests (layers 1 to 3). One loop, one set of tests, the
   back end chosen when the test binary is built. This is the one change outside the runtime's own crates;
@@ -795,18 +799,18 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
 **User surface (the owner's rulings of 2026-11-17), as built in J3.** The library is the product; the
 command line program is a thin demonstration that only calls the library (J3, last). Names approved by
 the owner: the crates `wcontainers-runtime` and `wcontainers-wasmtime`, the types `Runtime`,
-`RuntimeSettings` and `Image`. `ContainerSettings` is withdrawn: it hand-rolled what the Open Container
+`RuntimeConfig` and `Image`. `ContainerSettings` is withdrawn: it hand-rolled what the Open Container
 Initiative (OCI) standardises and mixed what to run with how it runs. The surface takes what to run, the
 root's files, how we run and what machine the container sees as separate arguments, and an outside:
 
 ```rust
-let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: Some(path) });  // None: memory only
+let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeConfig { cache: Some(path) });  // None: memory only
 let image = Image::oci(&layout, CpuSide::<Arm64>::ARCHITECTURE)?;  // or Image::tar(&file)
 let spec: oci_spec::runtime::Spec = image.spec()?;   // the image's conversion; or spec_from_json(config.json)
 let mut container = runtime.container(
     &spec,
     &image,
-    &TranslatorSettings { look_ahead: LookAhead::Full, optimise: Optimise::Speed }, // how the translator works
+    &TranslatorConfig { look_ahead: LookAhead::Full, optimise: Optimise::Speed }, // how the translator works
     &GuestMachine { offer: () },                                  // what machine the guest is told it runs on
     LocalSystem::new(Box::new(stdout()), Box::new(stderr())),     // the local system, or the user's
 )?;                       // Error::Refused names the first field it cannot honour
@@ -852,8 +856,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   kernel's name server), mode 0644, owned by root, in place of the image's own, from either form of image.
   Docker writes them over its mounts; an OCI image's layers have no `/etc/resolv.conf`. `/.dockerenv` is
   not written: it marks the Docker engine, which this is not.
-- **How we run it** is the back end's own type (`Executor::TranslatorSettings`; for the WebAssembly back end
-  `TranslatorSettings { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
+- **How we run it** is the back end's own type (`Executor::TranslatorConfig`; for the WebAssembly back end
+  `TranslatorConfig { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
 - **What machine the container appears to run on** is `GuestMachine<Offer>`, separate because the guest sees it:
   today the CPU feature claim (`offer`, the guest's `Guest::Offer`, `()` for ARM64; x86-64's AVX claim with
   that guest). The address-space size and the memory size the guest is told join it when the kernel takes
@@ -861,38 +865,46 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   `address_space` and the guest is told that size, so `GuestMachine` holds no field that would do nothing. The
   architecture comes from the image and must be the back end's.
 - **The back end the runtime makes** is a trait of the runtime crate, `Executor: Execution` (name suggested):
-  what a runtime's containers share (the compiler and its cache), `TranslatorSettings`, `Offer`, its architecture as the
+  what a runtime's containers share (the compiler and its cache), `TranslatorConfig`, `Offer`, its architecture as the
   image configuration names it, and its stop flag. The kernel tests' stand-in is no `Executor`; the test
   driver makes it itself.
 - **Every field of the configuration is honoured or refused by name.** A property the specification does
   not define is ignored with a warning (`spec_from_json`, above), and `accept` refuses any field of
   oci-spec's it does not know. Honoured:
   `ociVersion` 1.x, `process.args`, `process.env`, `process.cwd` (absolute),
-  `process.user.additionalGids`, `hostname` (absent or empty: `localhost`; runc sets no host name when it is
+  `process.user.additionalGids`, `process.terminal` and `process.consoleSize` (below), `hostname` (absent or empty: `localhost`; runc sets no host name when it is
   empty), `annotations` (data, no behaviour), and
   these when they are what the kernel gives: `process.user.uid` and `gid` 0, `process.user.umask` 0022,
   `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient
   (a set left out is empty, as the specification says, so leaving out `capabilities` or one of those three
   is refused),
-  `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
+  `process.rlimits` at the kernel's values, `process.noNewPrivileges` false,
   `mounts` exactly the kernel's six, once each and in the order the kernel makes them (`/proc`, `/dev`,
   `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each with Docker's type, source and options; the standard
   makes mounts in the listed order, so another order or a repeat is refused at the first `mounts[n]` that
-  differs), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
+  differs), then at most one bind mount of a host directory (J5: type `bind` or option `bind`/`rbind`, options
+  only those and `rw`, `private`, `rprivate`, an absolute source, an absolute destination other than `/`),
+  which the system serves as the kernel's file backend mounted there (`System::serve_directory`; a system
+  that cannot refuses the mount by name; `bind_mount(source, destination)` makes one), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
   makes), `linux.namespaces` exactly pid, network, ipc, uts, mount and
   cgroup with no `path`; a configuration without `mounts`, `linux` or `linux.readonlyPaths` is refused as
   one leaving those out is, since the kernel makes them whatever it says. The surface tests check that the
   guest sees each of these values (umask, every limit, the capability sets, the mounts and the read-only
   path), so a change in the kernel fails a test rather than leaving a refusal stale. Refused, each with what
   supporting it would take:
-  - `root.path`: the root's files are the `Image` argument; a root read from a directory of the host needs
-    the local system's file backend (J5), with the files' owners and devices as the host keeps them;
+  - `root.path`: the root's files are the `Image` argument. The local system's file backend (J5) serves a
+    host directory with the rights of the user the runtime runs as, so a root from a directory would show
+    every file owned by that user and could make no set-id or device files, unlike the image's own root.
+    Honouring it needs an `Image` read from a directory and owners mapped (user namespaces, refused below);
+    and `root.path` with the kernel's one file backend leaves no bind mount;
   - the user, umask, capabilities, limits and no_new_privs at other values, and `linux.sysctl`: the kernel
     taking them at start (today `Start` takes the program, arguments, environment, working directory, host
     name, groups and the backend, kernel container.rs);
-  - `mounts` other than the kernel's, or lacking one of them: bind mounts of host directories need the shipped
-    outside's file backend (J5), other file systems the kernel, and leaving one out, another order or a
-    repeat the kernel taking its mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
+  - `mounts` other than the kernel's six and one bind mount after them, or lacking one of the six: other file
+    systems need the kernel; a second bind mount the kernel taking more than one file backend; a read-only
+    bind mount (`ro`) or one with other options read-only and propagated mounts in the kernel; a bind mount
+    at `/` is `root.path`'s; leaving one of the six out, another order or a repeat the kernel taking its
+    mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
   - `hooks` (they run host programs): the local system running them at the lifecycle points the runtime
     specification names;
   - `linux.resources` and `linux.cgroupsPath` (cgroups): the kernel accounting CPU, memory, pids and I/O per
@@ -905,8 +917,6 @@ let ending = container.run()?;   // to the end; or container.step() and containe
     a program installs);
   - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths` other than `/proc/sys`, `linux.rootfsPropagation`,
     `linux.mountLabel`: read-only, masking and labelled mounts in the kernel;
-  - `process.terminal` and `process.consoleSize`: standard input in the kernel's interface (asked of the
-    kernel track) and the terminal surface;
   - `process.apparmorProfile`, `process.selinuxLabel`: a security module in the kernel;
   - `process.oomScoreAdj`, `process.ioPriority`, `process.scheduler`, `process.execCPUAffinity`,
     `linux.personality`, `linux.intelRdt`, `linux.memoryPolicy`, `linux.timeOffsets`, `linux.netDevices`,
@@ -916,17 +926,43 @@ let ending = container.run()?;   // to the end; or container.step() and containe
 - **The system** is a parameter. `LocalSystem`, the shipped one, writes standard output and error to the byte
   streams it is given, answers the clocks from the host's, randomness from the system's (`getrandom`), keeps
   the kernel's and the back end's warnings by reason, gives free turns ended by one timer thread at the
-  kernel's slice (the turn stores its deadline in an atomic and wakes the thread only for an earlier one), and
-  waits in real time in `idle`. It has no file backend, network or terminal input yet (J5): the kernel's calls
-  for them answer `NotSupported`, which the kernel turns into Linux's errors. Standard input is not in the
-  surface: the kernel gives the first process /dev/null as descriptor 0, the abi has only output streams, and
-  terminal input events are counted as unexpected; what the kernel's interface needs is asked of the kernel
-  track (status file). A system learns the back end's stop flag through `System::stop_flag` before the
+  kernel's slice (the turn stores its deadline in an atomic and wakes the thread only for an earlier one; a
+  turn's deadline is dropped when the turn ends), and waits in real time in `idle` for the timer or an
+  arrival. Since J5 it has:
+  - a file backend (src/files.rs): a host directory served in Linux's FUSE messages (fuse-abi's types, which
+    the kernel uses), through the host's file calls (rustix), each name opened relative to its directory's
+    descriptor without following links. Requests are served at once inside `backend_send` and the replies
+    handed over at the next exit or idle, so a file call costs no thread hop. Written for this purpose since
+    no crate serves Linux's FUSE messages from a macOS host (fuse-backend-rs's passthrough, which the kernel
+    tests use, is Linux only, and its macOS form speaks macFUSE's messages). Host errors are given Linux's
+    numbers by name (src/errno.rs); open flags the host lacks, requests not served, device nodes, a
+    directory not opened and a host error with no Linux number are counted and warned. Owners are the
+    host's: files the container makes belong to the user the runtime runs as, and a change of owner the
+    host refuses fails as it does there (EPERM);
+  - the host's network (src/net.rs): connections are host sockets connected without waiting (socket2), a
+    thread of its own waits for their changes (polling) and hands them over as arrivals that raise the stop
+    flag and wake `idle`, names are looked up by the host's resolver on a thread each, and a container's TCP
+    port is reached from the host only where `LocalSystem::publish(port, address)` puts it (as `docker run
+    --publish`); a listen on a port not published succeeds and nothing outside reaches it.
+  - standard input, output and error on the kernel's stream ends (docs/streams.md): `System::standard` names
+    the ends of descriptors 0 to 2 when the container is made, a terminal of `process.consoleSize`'s size
+    when `process.terminal` is true (0 by 0 without a size, as `docker run --tty` gives a client with no
+    terminal; a size past 65,535 is refused by name), else pipes. The local system gives each output end all
+    the credit it will ever take (it writes everything as it comes) and lets go of an end the kernel closed.
+    With `LocalSystem::input(reader)` (as `docker run --interactive`) descriptor 0 is a pipe, or the terminal
+    takes input; without it, /dev/null. The input is read on a thread of its own, never more than the
+    credit the kernel gave, each piece handed over as an arrival that raises the stop flag and wakes `idle`;
+    its end of file lets go of a pipe's end (the guest reads end of file) and leaves a terminal's end open;
+    a read error is counted and warned. A terminal's resizing has no surface yet.
+  A system learns the back end's stop flag through `System::stop_flag` before the
   first turn; one that counts every turn, as the kernel tests' does, needs none.
 - **The command line program** (`wcon`, the owner's name; crates/wcontainers-wasmtime/src/bin/wcon.rs):
   `--oci DIRECTORY` or `--tar FILE`, `--config config.json`, `--cache DIRECTORY`, `--look-ahead
-  full|none|N`, `--size`, and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
-  with the container's status, 125 when the library refuses. Its arguments are read with pico-args.
+  full|none|N`, `--size`, `--volume SOURCE:DESTINATION` (adds `bind_mount`'s mount), `--publish
+  ADDRESS:PORT:CONTAINER_PORT` (repeatable; `LocalSystem::publish`), `--interactive` (its own standard input
+  as the container's; `LocalSystem::input`), `--tty` (`process.terminal`), and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
+  with the container's status, 125 when the library refuses. Its arguments are read with pico-args; their
+  names are the library's `cli` constants, which its tests use too.
 
 ## 15. Testing
 
@@ -1070,7 +1106,7 @@ Each bar is checkable by running the named command on this Mac with Docker.
   the one-million run is one command. System call and fork cost measured (section 15), with both sides of the
   fork copy (the copy, and the first writes after it).
 - **J3, the user surface.** The library surface of section 14 as the owner ruled it: `oci_spec::runtime::Spec`
-  with every field honoured or refused by name, `TranslatorSettings` and `GuestMachine` apart from it, images from an OCI image
+  with every field honoured or refused by name, `TranslatorConfig` and `GuestMachine` apart from it, images from an OCI image
   in the OCI layout (by the image specification's conversion) and from a plain tar, the on-disk cache, the
   shipped outside (free turns with its timer thread, output streams; standard input waits for the kernel's
   interface, asked of the kernel track). Last, once the library bar passes, the command line program: thin,
@@ -1107,9 +1143,17 @@ Each bar is checkable by running the named command on this Mac with Docker.
   - **J4b.** The same count at every exit for a seed across look-ahead settings and against the stand-in.
     Starts once the owner rules on the unit and the translator emits it.
 - **J5, files outside, sockets, network, and the whole suite.** The local system's backend and network
-  (taken from what the kernel test host does, written for shipping). Bar: the whole kernel test crate with
+  (taken from what the kernel test host does, written for shipping; section 14), with one bind mount of the
+  configuration honoured, and `root.path` refused with why. Bar: the whole kernel test crate with
   `--features runtime` gives the same verdicts as without, test by test, at full, none and bounded
-  look-ahead; the Linux Test Project's verdicts, at full,
+  look-ahead, except the tests listed by name in the status file as waiting (the count
+  comparison of J4b, and the K6b runtimes that J6 brings, whose processes reserve more than the back end's
+  address ceiling); the surface tests of the file backend and the network match the reference
+  (`a_host_directory_is_served_through_a_bind_mount`, `a_tcp_connection_from_the_host_reaches_a_published_port`),
+  and, once the streams track's ends are merged, standard input and the terminal match `docker run
+  --interactive` and `--tty` (`standard_input_matches_docker_interactive`, `a_terminal_matches_docker_tty`,
+  `the_command_line_program_passes_its_input`);
+  the Linux Test Project's verdicts, at full,
   equal the stand-in run's for every test (the kernel's ltp harness, one command, run by the orchestrator).
 - **J6, the runtimes of K6b.** Python, Node, a Go program and Java as the kernel track lands them, with code
   written at run time. Measured: run-time translations, "code changed after it ran", "continued after stack
@@ -1260,13 +1304,21 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 
 ## 20. Decisions for the owner
 
-- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`; and, by the owner's ruling of
-  2026-11-18 (built in J4a run 3): the trait the embedder implements `System` (first `Outside`), the
-  shipped one `LocalSystem` (first `System`), the back end trait `Executor` (first `BackEnd`), how the
-  translator works `TranslatorSettings` (first `Tuning`), what machine the guest is told it runs on
-  `GuestMachine` (first `Machine`), and the command line program `wcon`. Still yours: `StopFlag` (perhaps
+- **Names**: approved for the crates and `Runtime`, `Image`; and, by the owner's rulings of
+  2026-11-18 (built in J4a run 3 and J5 run 3): the trait the embedder implements `System` (first `Outside`), the
+  shipped one `LocalSystem` (first `System`), the execution side's trait `Executor` (first `BackEnd`; its
+  getter `Container::executor`, first `back_end`), long-lived
+  configuration types ending in `Config` (`RuntimeConfig`, first `RuntimeSettings`; how the translator works
+  `TranslatorConfig`, first `Tuning` and then `TranslatorSettings`), what machine the guest is told it runs on
+  `GuestMachine` (first `Machine`), and the command line program `wcon`. The per-process
+  `ExecutionConfig { thread_ordering, replay_determinism, translator }` comes with the threads plan and the
+  progress count; until then the translator's configuration is given to `Runtime::container` alone. Still yours: `StopFlag` (perhaps
   `Interrupt`, and whether it stays in this form) and the kernel's own configuration (`base_spec`).
 - **The user surface**: ruled (section 14) and built in J3, the OCI image layout included as J3's task asked.
+  Added in J5, names suggested: `System::serve_directory` (a system serving a host directory for the one bind
+  mount), `LocalSystem::publish` (a container port reached from the host), `bind_mount`, and wcon's
+  `--volume` and `--publish` (Docker's names); and the reading that a bind mount's files keep their host
+  owners (no id mapping), with `root.path` refused until owners are mapped.
   Yours: the host name a configuration without `hostname` gets (built: `localhost`; runc would keep the
   host's, which the container never sees).
 - **Address ceilings** (section 8), the owner's direction taken as written there: the container's

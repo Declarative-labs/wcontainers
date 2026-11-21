@@ -15,7 +15,7 @@ use wcontainers_kernel::{
     AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
     SignalInformation, Standard, Start, System, SystemCallResponse, TaskId,
 };
-use wcontainers_runtime::{Ending, Execution, System as _, Turn};
+use wcontainers_runtime::{Ending, Execution, TerminalSize, Turn};
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
 use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
@@ -66,34 +66,49 @@ pub(crate) fn back_end(seed: u64, _address_space: u64, _wall_clock: bool) -> Bac
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
     let compiler = COMPILER
-        .get_or_init(|| Compiler::new(Some(crate::backend::out().join("translations"))))
+        .get_or_init(|| Compiler::new(Some(crate::backend::out().join(TRANSLATIONS))))
         .clone();
     CpuSide::new(compiler, look_ahead(seed), Optimise::Speed, ())
 }
+
+/// The folder of the translation cache, in the tests' output folder.
+#[cfg(feature = "runtime")]
+const TRANSLATIONS: &str = "translations";
 
 /// Mixed into the run's seed for the look-ahead's draw, so that it is not the schedule's first draw.
 #[cfg(feature = "runtime")]
 const LOOK_AHEAD_STREAM: u64 = 0x1007_a4ead;
 
-/// The look-ahead `LOOK_AHEAD` names: `full` (also when unset), `none`, or `bounded`, whose N is drawn
-/// from 1 to the translator's default bound from the run's seed and `LOOK_AHEAD_SEED` (0 if unset),
-/// and printed.
+/// The variable naming the look-ahead: `full` (also when unset), `none`, or `bounded`.
+#[cfg(feature = "runtime")]
+const LOOK_AHEAD_VARIABLE: &str = "LOOK_AHEAD";
+
+/// The variable mixed into the run's seed for a bounded look-ahead's N (0 if unset).
+#[cfg(feature = "runtime")]
+const LOOK_AHEAD_SEED_VARIABLE: &str = "LOOK_AHEAD_SEED";
+
+/// The look-ahead [`LOOK_AHEAD_VARIABLE`] names; at `bounded` its N is drawn from 1 to the
+/// translator's default bound from the run's seed and [`LOOK_AHEAD_SEED_VARIABLE`], and printed.
 #[cfg(feature = "runtime")]
 fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
     use wcontainers_wasmtime::LookAhead;
-    match std::env::var("LOOK_AHEAD").as_deref() {
+    match std::env::var(LOOK_AHEAD_VARIABLE).as_deref() {
         Err(_) | Ok("full") => LookAhead::Full,
         Ok("none") => LookAhead::None,
         Ok("bounded") => {
-            let knob = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
-                seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
+            let knob = std::env::var(LOOK_AHEAD_SEED_VARIABLE).map_or(0, |seed| {
+                seed.parse().unwrap_or_else(|_| {
+                    panic!("{LOOK_AHEAD_SEED_VARIABLE} is an unsigned number, not {seed}")
+                })
             });
             let n = StdRng::seed_from_u64(seed ^ knob ^ LOOK_AHEAD_STREAM)
                 .random_range(1..=wcontainers_wasmtime::BOUND);
-            eprintln!("look-ahead bounded {n} (run seed {seed}, LOOK_AHEAD_SEED {knob})");
+            eprintln!(
+                "look-ahead bounded {n} (run seed {seed}, {LOOK_AHEAD_SEED_VARIABLE} {knob})"
+            );
             LookAhead::Bounded(n)
         }
-        Ok(other) => panic!("LOOK_AHEAD is full, none or bounded, not {other}"),
+        Ok(other) => panic!("{LOOK_AHEAD_VARIABLE} is full, none or bounded, not {other}"),
     }
 }
 
@@ -141,16 +156,16 @@ fn report(cpu: &Back, container: &Container<'_>, took: Duration) {
         })
         .collect();
     eprintln!(
-        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from disk ({:.1} ms), {} from memory; run {:.1} ms",
+        "cpu side: {} translations ({} at run time), {} made ({:.1?} translating, {:.1?} compiling), {} from disk ({:.1?}), {} from memory; run {:.1?}",
         translated.len(),
         at_run_time,
         made.len(),
-        translating as f64 / 1e6,
-        compiling as f64 / 1e6,
+        Duration::from_nanos(translating),
+        Duration::from_nanos(compiling),
         disk.len(),
-        disk.iter().sum::<u64>() as f64 / 1e6,
+        Duration::from_nanos(disk.iter().sum::<u64>()),
         translated.len() - made.len() - disk.len(),
-        took.as_secs_f64() * 1e3
+        took
     );
     for t in translated.iter().filter(|t| !t.at_run_time) {
         eprintln!(
@@ -311,11 +326,12 @@ impl TestHost {
     /// so the kernel's choices repeat exactly for a seed, with the wall clock reading `wall_start`
     /// (the machine's clock when none) at the start.
     pub fn repeatable(seed: u64, wall_start: Option<u64>) -> Self {
+        let start = Duration::from_secs(1).as_nanos() as u64;
         let mut host = Self {
-            virtual_now: Some(AtomicU64::new(1_000_000_000)),
+            virtual_now: Some(AtomicU64::new(start)),
             ..Self::new(seed)
         };
-        host.wall_base = wall_start.unwrap_or_else(wall_clock) - 1_000_000_000;
+        host.wall_base = wall_start.unwrap_or_else(wall_clock) - start;
         host
     }
 
@@ -346,7 +362,7 @@ impl TestHost {
 fn wall_clock() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("the clock is after 1970")
+        .expect("the clock is after the epoch")
         .as_nanos() as u64
 }
 
@@ -959,7 +975,7 @@ impl Default for Injections {
     fn default() -> Self {
         Self {
             saves: 0,
-            save_gap: 100,
+            save_gap: MOMENTS_APART,
             wall_step: 0,
             signal: None,
             notices: 0,
@@ -968,9 +984,13 @@ impl Default for Injections {
     }
 }
 
-/// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
+/// The most turns between two injected moments, unless a run asks for another spacing.
+const MOMENTS_APART: u64 = 100;
+
+/// Turn counts at which something is injected: `count` of them, each 1 to [`MOMENTS_APART`] turns
+/// after the last.
 fn moments(seed: u64, count: usize) -> Vec<u64> {
-    moments_apart(seed, count, 100)
+    moments_apart(seed, count, MOMENTS_APART)
 }
 
 /// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
@@ -1171,7 +1191,13 @@ where
         .start(&mut cpu, &host, &start)
         .expect("the kernel runs a process serially with exact replay");
     host.started(&mut kernel, &mut cpu);
-    let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
+    let mut system = TestSystem(Mutex::new(host));
+    let ending = wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut system);
+    let mut host = system
+        .0
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    let status = match ending {
         Ok(Ending::Finished { status }) => status,
         Ok(Ending::Ended(run)) => return Ok(run),
         // A copy cannot hand a failure back; it says what it was and ends.
@@ -1410,13 +1436,11 @@ where
     }
 }
 
-impl<H: BetweenSteps + Send> wcontainers_runtime::System for TestHost<H>
+/// What the loop asks of the test host between turns, with the host held alone.
+impl<H: BetweenSteps + Send> TestHost<H>
 where
     Self: System,
 {
-    /// The run of a copy made at a save, as the process it was copied from gets it.
-    type End = Run;
-
     fn standard(&self) -> Standard {
         lock(&self.streams).client.standard()
     }
@@ -1508,6 +1532,226 @@ where
     }
 }
 
+/// The test host behind a lock, as the loop's [`wcontainers_runtime::System`], whose every method
+/// takes `&self`. The kernel's calls go to the host held for each call; what the host hands the
+/// kernel while the loop holds it, it hands as itself.
+struct TestSystem<H>(Mutex<TestHost<H>>);
+
+impl<H> TestSystem<H> {
+    fn host(&self) -> MutexGuard<'_, TestHost<H>> {
+        lock(&self.0)
+    }
+}
+
+impl<H: BetweenSteps + Send> wcontainers_runtime::System for TestSystem<H>
+where
+    TestHost<H>: System,
+{
+    /// The run of a copy made at a save, as the process it was copied from gets it.
+    type End = Run;
+
+    /// What the test's client is; a test that asks for a terminal says so there too.
+    fn standard(&self, terminal: Option<TerminalSize>) -> Standard {
+        let host = self.host();
+        assert_eq!(
+            terminal.map(|size| (size.columns, size.rows)),
+            lock(&host.streams).client.terminal,
+            "the terminal asked for is the client's"
+        );
+        host.standard()
+    }
+
+    fn started(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        self.host().started(kernel, cpu);
+    }
+
+    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
+        self.host().turn(slice_nanoseconds)
+    }
+
+    fn ran(&self, progress: u64) {
+        self.host().ran(progress);
+    }
+
+    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        self.host().arrived(kernel, cpu)
+    }
+
+    fn stopped<E: Execution>(&self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+        self.host().stopped(kernel, cpu)
+    }
+
+    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+        self.host().idle(kernel, cpu, until_nanoseconds);
+    }
+
+    fn cpu_warning(&self, warning: Warning<'_>) {
+        self.host().cpu_warning(warning);
+    }
+}
+
+/// The kernel's calls, each to the host held for it.
+impl<H: Send> Host for TestSystem<H> {
+    fn monotonic_nanoseconds(&self) -> u64 {
+        self.host().monotonic_nanoseconds()
+    }
+
+    fn realtime_nanoseconds(&self) -> u64 {
+        self.host().realtime_nanoseconds()
+    }
+
+    fn random(&self, into: &mut [u8]) {
+        self.host().random(into);
+    }
+
+    fn warn(&self, warning: Warning<'_>) {
+        self.host().warn(warning);
+    }
+
+    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        self.host().backend_send(request, message)
+    }
+
+    fn send_stream(&self, end: End, bytes: &[u8]) {
+        self.host().send_stream(end, bytes);
+    }
+
+    fn credit_stream(&self, end: End, bytes: u64) {
+        self.host().credit_stream(end, bytes);
+    }
+
+    fn close_stream(&self, end: End) {
+        self.host().close_stream(end);
+    }
+
+    fn connect(
+        &self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        self.host().connect(connection, address, port, stream)
+    }
+
+    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.host().send(connection, bytes)
+    }
+
+    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.host().receive(connection, into)
+    }
+
+    fn finish(&self, connection: ConnectionId) {
+        self.host().finish(connection);
+    }
+
+    fn close(&self, connection: ConnectionId) {
+        self.host().close(connection);
+    }
+
+    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
+        self.host().look_up(request, name)
+    }
+
+    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.host().listen(listener, port)
+    }
+
+    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
+        self.host().accept(listener, connection)
+    }
+}
+
+/// The task ids and every hook, each to the host held for it, so the test's hooks see every call.
+impl<H: Send> System for TestSystem<H>
+where
+    TestHost<H>: System,
+{
+    fn allocate_task_id(&self, previous: TaskId) -> TaskId {
+        self.host().allocate_task_id(previous)
+    }
+    fn free_task_id(&self, id: TaskId) {
+        self.host().free_task_id(id);
+    }
+    fn intercept_system_call_request(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        self.host()
+            .intercept_system_call_request(process, thread, request)
+    }
+    fn intercept_system_call_response(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        self.host()
+            .intercept_system_call_response(process, thread, request, response)
+    }
+    fn on_process_starting(&self, process: Process<'_>) {
+        self.host().on_process_starting(process);
+    }
+    fn on_program_starting(&self, process: Process<'_>) {
+        self.host().on_program_starting(process);
+    }
+    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
+        self.host().on_thread_starting(process, thread);
+    }
+    fn on_process_exiting(&self, process: Process<'_>) {
+        self.host().on_process_exiting(process);
+    }
+    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
+        self.host().on_process_outgrown(process, bytes);
+    }
+    fn on_watched_memory_accessing(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        address: u64,
+        kind: AccessKind,
+    ) {
+        self.host()
+            .on_watched_memory_accessing(process, thread, address, kind);
+    }
+    fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
+        self.host()
+            .on_memory_written_by_kernel(process, thread, range);
+    }
+    fn on_shared_memory_mapping(
+        &self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        self.host()
+            .on_shared_memory_mapping(process, source, offset, range);
+    }
+    fn on_shared_memory_unmapped(
+        &self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        self.host()
+            .on_shared_memory_unmapped(process, source, offset, range);
+    }
+    fn on_signal_delivering(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        self.host().on_signal_delivering(process, thread, signal);
+    }
+}
+
 /// Mixed into a run's seed for the schedule's choices and the moments of saves and signals, so
 /// that each draws apart from the host's own randomness.
 const SCHEDULE_SALT: u64 = 0x5eed;
@@ -1562,31 +1806,50 @@ const ANSWER_ARRIVES_WITHIN: u64 = 50_000;
 /// The request numbers of RETRIEVE notices this host sends: above any the kernel numbers.
 const RETRIEVED: u64 = 1 << 62;
 
-/// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
-/// few the backend numbers, some never looked up) drawn from `random`, sometimes cut short. The kernel's NOTIFY_REPLY to
-/// a RETRIEVE comes back to this host, which sent it, not to the server ([`RETRIEVED`]).
+/// The kinds of notice a backend sends unasked, but RESEND, which only answers the kernel's requests.
+const NOTICE_KINDS: &[fuse_abi::linux::fuse_notify_code] = {
+    use fuse_abi::linux::fuse_notify_code::*;
+    &[
+        FUSE_NOTIFY_POLL,
+        FUSE_NOTIFY_INVAL_INODE,
+        FUSE_NOTIFY_INVAL_ENTRY,
+        FUSE_NOTIFY_DELETE,
+        FUSE_NOTIFY_RETRIEVE,
+        FUSE_NOTIFY_STORE,
+    ]
+};
+
+/// The nodes notices are about: the first few the backend numbers, some never looked up.
+const NOTICE_NODES: std::ops::Range<u64> = 1..12;
+
+/// The name INVAL_ENTRY and DELETE notices carry, and the bytes STORE notices write.
+const NOTICE_NAME: &std::ffi::CStr = c"backend-file";
+
+/// One notice in this many is cut short, which Linux refuses.
+const CUT_SHORT_ONE_IN: u32 = 8;
+
+/// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node drawn from `random`,
+/// sometimes cut short. The kernel's NOTIFY_REPLY to a RETRIEVE comes back to this host, which sent
+/// it, not to the server ([`RETRIEVED`]).
 fn notice(random: &mut StdRng) -> Vec<u8> {
     use fuse_abi::linux::*;
+    use rand::seq::IndexedRandom;
     use zerocopy::IntoBytes;
-    let node: u64 = random.random_range(1..12);
-    let name = b"backend-file\0";
-    let namelen = (name.len() - 1) as u32;
-    let (code, mut body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
-        0 => (
-            fuse_notify_code::FUSE_NOTIFY_POLL,
-            fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
-        ),
-        1 => (
-            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-            fuse_notify_inval_inode_out {
-                ino: node,
-                off: 0,
-                len: -1,
-            }
-            .as_bytes()
-            .to_vec(),
-        ),
-        2 => {
+    let node = random.random_range(NOTICE_NODES);
+    let namelen = NOTICE_NAME.count_bytes() as u32;
+    let code = *NOTICE_KINDS.choose(random).expect("a kind of notice");
+    let mut body = match code {
+        fuse_notify_code::FUSE_NOTIFY_POLL => {
+            fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec()
+        }
+        fuse_notify_code::FUSE_NOTIFY_INVAL_INODE => fuse_notify_inval_inode_out {
+            ino: node,
+            off: 0,
+            len: -1,
+        }
+        .as_bytes()
+        .to_vec(),
+        fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY => {
             let mut body = fuse_notify_inval_entry_out {
                 parent: node,
                 namelen,
@@ -1594,48 +1857,45 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
             }
             .as_bytes()
             .to_vec();
-            body.extend_from_slice(name);
-            (fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY, body)
+            body.extend_from_slice(NOTICE_NAME.to_bytes_with_nul());
+            body
         }
-        3 => {
+        fuse_notify_code::FUSE_NOTIFY_DELETE => {
             let mut body = fuse_notify_delete_out {
-                parent: 1,
+                parent: FUSE_ROOT_ID,
                 child: node,
                 namelen,
                 padding: 0,
             }
             .as_bytes()
             .to_vec();
-            body.extend_from_slice(name);
-            (fuse_notify_code::FUSE_NOTIFY_DELETE, body)
+            body.extend_from_slice(NOTICE_NAME.to_bytes_with_nul());
+            body
         }
-        4 => (
-            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-            fuse_notify_retrieve_out {
-                notify_unique: RETRIEVED | node,
-                nodeid: node,
-                offset: 0,
-                size: PAGE_SIZE as u32,
-                padding: 0,
-            }
-            .as_bytes()
-            .to_vec(),
-        ),
-        _ => {
+        fuse_notify_code::FUSE_NOTIFY_RETRIEVE => fuse_notify_retrieve_out {
+            notify_unique: RETRIEVED | node,
+            nodeid: node,
+            offset: 0,
+            size: PAGE_SIZE as u32,
+            padding: 0,
+        }
+        .as_bytes()
+        .to_vec(),
+        fuse_notify_code::FUSE_NOTIFY_STORE => {
             let mut body = fuse_notify_store_out {
                 nodeid: node,
                 offset: 0,
-                size: 4,
+                size: NOTICE_NAME.count_bytes() as u32,
                 padding: 0,
             }
             .as_bytes()
             .to_vec();
-            body.extend_from_slice(b"data");
-            (fuse_notify_code::FUSE_NOTIFY_STORE, body)
+            body.extend_from_slice(NOTICE_NAME.to_bytes());
+            body
         }
+        other => unreachable!("{other:?} is not one of NOTICE_KINDS"),
     };
-    // One in eight is cut short, which Linux refuses.
-    if random.random_ratio(1, 8) {
+    if random.random_ratio(1, CUT_SHORT_ONE_IN) {
         body.truncate(random.random_range(0..body.len()));
     }
     let header = fuse_out_header {
@@ -1731,22 +1991,16 @@ fn panic_in_copy(why: &str) -> ! {
 
 /// The run of a copy made at a save, read from its pipe once it has ended.
 fn copied_run(copy: libc::pid_t, fd: i32) -> Run {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
     let mut bytes = Vec::new();
-    let mut buffer = [0u8; 65536];
-    // SAFETY: reads the copy's pipe until it closes, then reaps the copy.
-    let status = unsafe {
-        loop {
-            let count = libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len());
-            if count <= 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..count as usize]);
-        }
-        libc::close(fd);
-        let mut status = 0;
-        libc::waitpid(copy, &mut status, 0);
-        status
-    };
+    // SAFETY: the read end of the copy's pipe, which only this function uses and closes.
+    std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) })
+        .read_to_end(&mut bytes)
+        .expect("the copy's pipe reads to its end");
+    let mut status = 0;
+    // SAFETY: reaps the copy, a child of this process.
+    unsafe { libc::waitpid(copy, &mut status, 0) };
     assert!(
         !bytes.is_empty() && status == 0,
         "the copy made at a save ended without a run (wait status {status}); why is above"
@@ -1810,9 +2064,9 @@ fn decode(input: &[u8]) -> Run {
     struct Reader<'a>(&'a [u8]);
     impl Reader<'_> {
         fn number(&mut self) -> u64 {
-            let (value, rest) = self.0.split_at(8);
+            let (value, rest) = self.0.split_first_chunk().expect("a whole number");
             self.0 = rest;
-            u64::from_le_bytes(value.try_into().expect("eight bytes"))
+            u64::from_le_bytes(*value)
         }
         fn bytes(&mut self) -> Vec<u8> {
             let length = self.number() as usize;

@@ -7,13 +7,14 @@ use std::sync::OnceLock;
 
 use wcontainers_kernel::{Attributes, Kernel, NewFile, ROOT_GID, ROOT_UID};
 
-/// The image's user and group databases, and how their lines are made: fields apart, a group's
-/// members apart, and where a line keeps its id, a group line its members, and how many fields a
-/// group line has.
-const PASSWD_PATH: &str = "etc/passwd";
-const GROUP_PATH: &str = "etc/group";
-const FIELD_SEPARATOR: char = ':';
-const MEMBER_SEPARATOR: char = ',';
+// The image's user and group databases, and how their lines are made: fields apart and a group's
+// members apart, as the runtime reads them.
+use wcontainers_runtime::image::{
+    FIELD_SEPARATOR, GROUP as GROUP_PATH, MEMBER_SEPARATOR, PASSWD as PASSWD_PATH,
+};
+
+/// Where a line of the image's user and group databases keeps its id, a group line its members,
+/// and how many fields a group line has.
 const NAME_FIELD: usize = 0;
 const ID_FIELD: usize = 2;
 const MEMBERS_FIELD: usize = 3;

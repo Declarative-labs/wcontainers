@@ -8,7 +8,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, reason};
 use zerocopy::FromZeros;
 
-const CODE: u64 = 0x10000;
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
 const VIEWS: u64 = 0x40_0000;
 
 /// The system calls the guest made, as their argument registers.

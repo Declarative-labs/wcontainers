@@ -2,15 +2,16 @@
 //! start with an error naming the field: one test for each, from the runtime's base configuration
 //! with that one field set, read from its JSON. The base configuration itself is accepted.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, base_spec, spec_from_json,
+    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, base_spec, bind_mount,
+    spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorConfig};
 
 /// A root holding only its own directory.
 fn image() -> &'static PathBuf {
@@ -43,9 +44,9 @@ fn base() -> Value {
 /// Makes a container from the configuration; the properties it ignored.
 fn make(value: Value) -> Result<Vec<String>, Error> {
     let (spec, ignored) = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
-    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings::default());
+    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeConfig::default());
     let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-    let translator_settings = TranslatorSettings {
+    let translator_config = TranslatorConfig {
         look_ahead: LookAhead::Full,
         optimise: Optimise::Speed,
     };
@@ -54,7 +55,7 @@ fn make(value: Value) -> Result<Vec<String>, Error> {
         .container(
             &spec,
             &image,
-            &translator_settings,
+            &translator_config,
             &GuestMachine { offer: () },
             system,
         )
@@ -80,6 +81,20 @@ fn refused(field: &str, change: impl FnOnce(&mut Value)) {
 #[test]
 fn the_base_configuration_is_accepted() {
     assert_eq!(make(base()).unwrap(), Vec::<String>::new());
+}
+
+/// One bind mount of a host directory after the kernel's mounts is honoured; one of a directory that
+/// does not exist fails as the host's error.
+#[test]
+fn a_bind_mount_of_a_host_directory_is_accepted() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wc-refused-volume");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut value = base();
+    let bind = serde_json::to_value(bind_mount(&directory, "/data")).unwrap();
+    value["mounts"].as_array_mut().unwrap().push(bind);
+    assert_eq!(make(value.clone()).unwrap(), Vec::<String>::new());
+    value["mounts"][6]["source"] = json!(directory.join("absent"));
+    assert!(matches!(make(value), Err(Error::Io { .. })));
 }
 
 /// A property the specification does not define is ignored, and named for a warning.
@@ -140,11 +155,22 @@ refused! {
         json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
     a_gid_mapped_mount: "mounts[0].gidMappings", |v| v["mounts"][0]["gidMappings"] =
         json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
-    a_bind_mount: "mounts[6]", |v| v["mounts"].as_array_mut().unwrap().push(
-        json!({"destination": "/data", "type": "bind", "source": "/srv", "options": ["rbind"]}));
+    a_second_bind_mount: "mounts[7]", |v| {
+        let mounts = v["mounts"].as_array_mut().unwrap();
+        for destination in ["/data", "/more"] {
+            mounts.push(json!({"destination": destination, "type": "bind", "source": "/srv",
+                               "options": ["rbind"]}));
+        }
+    };
+    a_read_only_bind_mount: "mounts[6].options", |v| v["mounts"].as_array_mut().unwrap().push(
+        json!({"destination": "/data", "type": "bind", "source": "/srv", "options": ["rbind", wcontainers_docker::READ_ONLY]}));
+    a_bind_mount_over_the_root: "mounts[6].destination", |v| v["mounts"].as_array_mut().unwrap()
+        .push(json!({"destination": "/", "type": "bind", "source": "/srv", "options": ["rbind"]}));
+    a_bind_mount_of_a_relative_source: "mounts[6].source", |v| v["mounts"].as_array_mut().unwrap()
+        .push(json!({"destination": "/data", "type": "bind", "source": "srv", "options": ["rbind"]}));
     a_mount_of_another_file_system: "mounts[6]", |v| v["mounts"].as_array_mut().unwrap().push(
         json!({"destination": "/sys/fs/cgroup", "type": "cgroup", "source": "cgroup",
-               "options": ["ro", "nosuid", "noexec", "nodev"]}));
+               "options": [wcontainers_docker::READ_ONLY, "nosuid", "noexec", "nodev"]}));
     a_mount_with_other_options: "mounts[0]", |v| v["mounts"][0]["options"] = json!(["nosuid"]);
     mounts_absent: "mounts", |v| { v.as_object_mut().unwrap().remove("mounts"); };
     linux_absent: "linux.namespaces", |v| { v.as_object_mut().unwrap().remove("linux"); };
@@ -159,9 +185,10 @@ refused! {
     process_absent: "process", |v| { v.as_object_mut().unwrap().remove("process"); };
     process_args_empty: "process.args", |v| v["process"]["args"] = json!([]);
     process_cwd_relative: "process.cwd", |v| v["process"]["cwd"] = json!("tmp");
-    process_terminal: "process.terminal", |v| v["process"]["terminal"] = json!(true);
-    process_console_size: "process.consoleSize", |v| v["process"]["consoleSize"] =
-        json!({"height": 24, "width": 80});
+    process_console_size_too_wide: "process.consoleSize.width", |v| {
+        v["process"]["terminal"] = json!(true);
+        v["process"]["consoleSize"] = json!({"height": 24, "width": u32::from(u16::MAX) + 1});
+    };
     process_user_uid: "process.user.uid", |v| v["process"]["user"]["uid"] = json!(1000);
     process_user_gid: "process.user.gid", |v| v["process"]["user"]["gid"] = json!(1000);
     process_user_umask: "process.user.umask", |v| v["process"]["user"]["umask"] = json!(0o077);

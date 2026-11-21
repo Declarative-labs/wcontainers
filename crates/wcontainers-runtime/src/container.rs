@@ -1,5 +1,5 @@
 //! The library surface: a runtime makes a container from what to run (the OCI runtime configuration),
-//! its root's files, how its translator works (the executor's translator settings) and what machine it sees, with a system.
+//! its root's files, how its translator works (the executor's translator configuration) and what machine it sees, with a system.
 
 use std::path::PathBuf;
 
@@ -8,31 +8,34 @@ use wcontainers_kernel::{Errno, Kernel, Start};
 
 use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 
-/// Settings of a runtime, shared by its containers.
+/// The start of the variable in `process.env` holding the user's home directory.
+const HOME_ASSIGNMENT: &str = "HOME=";
+
+/// The configuration of a runtime, shared by its containers.
 #[derive(Clone, Debug, Default)]
-pub struct RuntimeSettings {
+pub struct RuntimeConfig {
     /// Where compiled translations are kept between runs and processes; none keeps them in memory.
     pub cache: Option<PathBuf>,
 }
 
-/// An executor: the back end the runtime makes for each container.
+/// What runs a container's guest threads; the runtime makes one for each container.
 pub trait Executor: Execution {
     /// What the containers of one runtime share, such as compiled translations.
     type Shared;
     /// How the translator works for a container: it changes speed, never behaviour.
-    type TranslatorSettings;
+    type TranslatorConfig;
     /// The CPU features the guest is told it has.
     type Offer;
     /// The architecture of the guests it runs, as an OCI image configuration names it.
     const ARCHITECTURE: &'static str;
 
-    fn shared(settings: &RuntimeSettings) -> Self::Shared;
+    fn shared(config: &RuntimeConfig) -> Self::Shared;
     fn new(
         shared: &Self::Shared,
-        translator_settings: &Self::TranslatorSettings,
+        translator_config: &Self::TranslatorConfig,
         offer: &Self::Offer,
     ) -> Self;
-    /// What ends a free turn of this back end.
+    /// What ends a free turn of this executor.
     fn stop_flag(&self) -> StopFlag;
 }
 
@@ -79,15 +82,15 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Makes containers on one kind of back end.
+/// Makes containers on one kind of executor.
 pub struct Runtime<E: Executor> {
     shared: E::Shared,
 }
 
 impl<E: Executor> Runtime<E> {
-    pub fn new(settings: &RuntimeSettings) -> Self {
+    pub fn new(config: &RuntimeConfig) -> Self {
         Self {
-            shared: E::shared(settings),
+            shared: E::shared(config),
         }
     }
 
@@ -97,34 +100,51 @@ impl<E: Executor> Runtime<E> {
         &self,
         spec: &Spec,
         image: &Image,
-        translator_settings: &E::TranslatorSettings,
+        translator_config: &E::TranslatorConfig,
         machine: &GuestMachine<E::Offer>,
-        mut system: S,
+        system: S,
     ) -> Result<Container<E, S>, Error> {
         let accepted = spec::accept(spec)?;
         if let Some(architecture) = image.architecture()
             && architecture != E::ARCHITECTURE
         {
             return Err(Error::Image(format!(
-                "it is for {architecture}; this back end runs {}",
+                "it is for {architecture}; this executor runs {}",
                 E::ARCHITECTURE
             )));
         }
         let mut env = accepted.env;
         // As runc: a process without HOME gets its user's home directory.
-        if !env.iter().any(|variable| variable.starts_with("HOME=")) {
-            env.push(format!("HOME={}", image.home(accepted.uid)));
+        if !env
+            .iter()
+            .any(|variable| variable.starts_with(HOME_ASSIGNMENT))
+        {
+            env.push(format!("{HOME_ASSIGNMENT}{}", image.home(accepted.uid)));
         }
         let path = image
             .program(&accepted.args[0], &env, &accepted.cwd)
             .ok_or_else(|| Error::NotFound(accepted.args[0].clone()))?;
         let mut kernel = Kernel::new();
         image.add_to(&mut kernel, &accepted.hostname)?;
-        let mut cpu = E::new(&self.shared, translator_settings, &machine.offer);
+        if let Some(volume) = &accepted.volume {
+            system
+                .serve_directory(&volume.source)
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::Unsupported => Error::Refused {
+                        field: spec::mount_field(volume.index),
+                        reason: "this system serves no directory of the host".to_string(),
+                    },
+                    _ => Error::Io {
+                        path: volume.source.clone(),
+                        error,
+                    },
+                })?;
+        }
+        let mut cpu = E::new(&self.shared, translator_config, &machine.offer);
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
-        let standard = system.standard();
+        let standard = system.standard(accepted.terminal);
         let memory_bytes = wcontainers_abi::Cpu::address_space(&cpu).end;
         kernel
             .start(
@@ -137,7 +157,7 @@ impl<E: Executor> Runtime<E> {
                     working_directory: accepted.cwd.as_bytes(),
                     hostname: accepted.hostname.as_bytes(),
                     groups: &accepted.groups,
-                    backend: None,
+                    backend: accepted.volume.as_ref().map(|v| v.destination.as_bytes()),
                     standard,
                     address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
                     memory_bytes,
@@ -198,7 +218,7 @@ impl<E: Executor, S: System> Container<E, S> {
         &mut self.system
     }
 
-    pub fn back_end(&self) -> &E {
+    pub fn executor(&self) -> &E {
         &self.cpu
     }
 }

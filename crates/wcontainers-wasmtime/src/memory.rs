@@ -1,4 +1,4 @@
-//! Guest memories the back end maps itself and hands to wasmtime, and where things sit in a process's
+//! Guest memories the executor maps itself and hands to wasmtime, and where things sit in a process's
 //! state memory.
 
 use std::ffi::c_void;
@@ -173,7 +173,7 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
         // after a fork of the host process is not this one.
         use std::os::unix::fs::FileExt;
         use zerocopy::IntoBytes;
-        let pagemap = std::fs::File::open("/proc/self/pagemap").expect("/proc/self/pagemap");
+        let pagemap = std::fs::File::open(PAGEMAP).expect(PAGEMAP);
         let page = host_page() as usize;
         let mut entries: Vec<u64> = Vec::new();
         for run in runs {
@@ -184,7 +184,7 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
                     entries.as_mut_bytes(),
                     ((from as usize + run.start) / page * PAGEMAP_ENTRY) as u64,
                 )
-                .expect("reading /proc/self/pagemap");
+                .unwrap_or_else(|error| panic!("reading {PAGEMAP}: {error}"));
             let held = |index: usize| {
                 u64::from_le(entries[index]) & (PAGEMAP_PRESENT | PAGEMAP_SWAPPED) != 0
             };
@@ -225,6 +225,8 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
 /// Bytes of one entry of Linux's `/proc/self/pagemap`, and its bits for a page present in memory and
 /// one swapped out (Linux's Documentation/admin-guide/mm/pagemap.rst).
 #[cfg(target_os = "linux")]
+const PAGEMAP: &str = "/proc/self/pagemap";
+#[cfg(target_os = "linux")]
 const PAGEMAP_ENTRY: usize = size_of::<u64>();
 #[cfg(target_os = "linux")]
 const PAGEMAP_PRESENT: u64 = 1 << 63;
@@ -251,7 +253,7 @@ const BLOCKS_BYTES: u64 = 15 << 20;
 /// Where things sit in a process's state memory, and the address ceiling that follows.
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
-    /// The addresses a process may use on this back end: guest memory, the permission table and the
+    /// The addresses a process may use on this executor: guest memory, the permission table and the
     /// array of slots all cover 0 to this.
     pub ceiling: u64,
     /// Bytes of one thread's state: its block and the CPU side's own words, a multiple of
@@ -345,9 +347,10 @@ mod tests {
                 )
             }
             .expect("paging out");
+            use super::{PAGEMAP, PAGEMAP_ENTRY, PAGEMAP_PRESENT, PAGEMAP_SWAPPED};
             use std::os::unix::fs::FileExt;
             let mut entry = [0u8; PAGEMAP_ENTRY];
-            std::fs::File::open("/proc/self/pagemap")
+            std::fs::File::open(PAGEMAP)
                 .unwrap()
                 .read_exact_at(
                     &mut entry,

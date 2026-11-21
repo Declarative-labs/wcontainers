@@ -8,7 +8,7 @@ pub const SIGNALLED: i32 = 128;
 /// stdin: a blob's file, load address, stack top, stack bytes and optional program headers and
 /// count. Each answer is the status as a shell reports it (`i32`), then stdout and stderr, each as a `u32`
 /// length and its bytes.
-pub const SERVE_BLOBS: &str = "blobs";
+pub const SERVING_MODE: &str = "blobs";
 /// What separates a request's arguments, and what ends a request.
 pub const REQUEST_SEPARATOR: u8 = b' ';
 pub const REQUEST_END: u8 = b'\n';

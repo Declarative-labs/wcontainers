@@ -12,8 +12,8 @@ use wasmtime::{
     SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{
-    Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, SystemCallRequest,
-    Warning,
+    Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET,
+    SystemCallRequest, Warning,
 };
 use wcontainers_arm64::Arm64;
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};

@@ -1,12 +1,11 @@
 [package]
 name = "wcontainers-docker"
-description = "The Docker client and the words of its command line, named once for every test crate that starts reference containers."
+description = "The Docker client and the words of its command line, named once for the command line program that shares them and the test crates that start reference containers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
 
 [lints]
 workspace = true

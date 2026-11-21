@@ -171,6 +171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-rs"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f33498dde6d47bf09454b1c7221c888ddb2a59000b3b45fa155627d98fcb646e"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -316,6 +325,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "concurrent-queue"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -968,6 +986,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hermit-abi"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
+
+[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1323,6 +1347,20 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "polling"
+version = "3.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0e4f59085d47d8241c88ead0f274e8a0cb551f3625263c05eb8dd897c34218"
+dependencies = [
+ "cfg-if",
+ "concurrent-queue",
+ "hermit-abi",
+ "pin-project-lite",
+ "rustix",
+ "windows-sys",
+]
 
 [[package]]
 name = "postcard"
@@ -1786,6 +1824,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys",
 ]
 
 [[package]]
@@ -2456,14 +2504,20 @@ name = "wcontainers-runtime"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "fuse-abi",
  "getrandom 0.3.4",
+ "libc",
  "oci-spec",
+ "polling",
+ "rustix",
  "serde_ignored",
  "serde_json",
  "sha2",
+ "socket2",
  "tar",
  "wcontainers-abi",
  "wcontainers-kernel",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2510,6 +2564,7 @@ name = "wcontainers-wasmtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "build-rs",
  "cargo-lock",
  "cargo_metadata",
  "gimli 0.34.0",
@@ -2521,10 +2576,12 @@ dependencies = [
  "rustix",
  "serde_json",
  "tar",
+ "tempfile",
  "wasm-encoder 0.263.0",
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-docker",
  "wcontainers-guest-cpu",
  "wcontainers-runtime",
  "wcontainers-translator",

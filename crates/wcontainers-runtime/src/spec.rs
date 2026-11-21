@@ -4,7 +4,7 @@
 use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
 
-use crate::Error;
+use crate::{Error, TerminalSize};
 
 /// The powers the kernel gives the first process: a default Docker container's.
 const CAPABILITIES: &[&str] = &[
@@ -61,6 +61,14 @@ fn mounts() -> Value {
         {"destination": "/dev/shm", "type": "tmpfs", "source": "shm",
          "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]},
     ])
+}
+
+/// The configuration's field that lists its mounts.
+const MOUNTS: &str = "mounts";
+
+/// A mount's field path, as the refusals name it.
+pub(crate) fn mount_field(index: usize) -> String {
+    format!("{MOUNTS}[{index}]")
 }
 
 /// The configuration of everything the kernel gives a container, with no program: what an image's
@@ -133,7 +141,35 @@ pub(crate) struct Accepted {
     pub hostname: String,
     pub groups: Vec<u32>,
     pub uid: u32,
+    /// The terminal the first process has, when it has one.
+    pub terminal: Option<TerminalSize>,
+    /// The bind mount of a host directory, if one is given.
+    pub volume: Option<Volume>,
 }
+
+/// A directory of the host bind-mounted into the container, served by the system's file backend.
+pub(crate) struct Volume {
+    /// Its place among the configuration's mounts, to name it in a refusal.
+    pub index: usize,
+    pub source: std::path::PathBuf,
+    pub destination: String,
+}
+
+/// The mount type of a bind mount, and the options that make one.
+const BIND: &str = "bind";
+const RBIND: &str = "rbind";
+const BIND_OPTIONS: &[&str] = &[BIND, RBIND];
+
+/// The other options of a bind mount that the kernel's mount of the file backend has: read and
+/// write, and no propagation to or from the host.
+const READ_WRITE: &str = "rw";
+const HONOURED_OPTIONS: &[&str] = &[READ_WRITE, "private", "rprivate"];
+
+/// Refusal reasons given for more than one field.
+const UNKNOWN_FIELD: &str = "a field this runtime does not know";
+const NEEDS_USER_NAMESPACES: &str = "user namespaces in the kernel";
+const NEEDS_WINDOWS: &str = "a Windows host";
+const NEEDS_VALUE_AT_START: &str = "the kernel taking the value at start";
 
 fn refused(field: impl Into<String>, reason: impl Into<String>) -> Error {
     Error::Refused {
@@ -182,7 +218,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
                 }
             }
             "root" => root(field)?,
-            "mounts" => {}
+            MOUNTS => {}
             "process" => process(field)?,
             "hostname" | "annotations" => {}
             "domainname" => absent(name, field, "the kernel taking a domain name at start")?,
@@ -193,16 +229,16 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
                  specification names",
             )?,
             "linux" => linux(field)?,
-            "uidMappings" | "gidMappings" => absent(name, field, "user namespaces in the kernel")?,
+            "uidMappings" | "gidMappings" => absent(name, field, NEEDS_USER_NAMESPACES)?,
             "solaris" | "windows" | "vm" | "zos" => {
                 absent(name, field, "another kind of host than Linux")?;
             }
-            _ => return Err(refused(name, "a field this runtime does not know")),
+            _ => return Err(refused(name, UNKNOWN_FIELD)),
         }
     }
     // The kernel makes its mounts and namespaces whatever the configuration says, so leaving the lists
     // out is refused as leaving one of them out is.
-    check_mounts(fields.get("mounts").unwrap_or(&Value::Null))?;
+    let volume = check_mounts(fields.get(MOUNTS).unwrap_or(&Value::Null))?;
     if !fields.contains_key("linux") {
         namespaces(&Value::Null)?;
     }
@@ -249,6 +285,8 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             .unwrap_or_else(|| "localhost".to_string()),
         groups: process.user().additional_gids().clone().unwrap_or_default(),
         uid: process.user().uid(),
+        terminal: terminal(process)?,
+        volume,
     })
 }
 
@@ -258,15 +296,14 @@ fn root(value: &Value) -> Result<(), Error> {
             "path" => absent(
                 "root.path",
                 field,
-                "the root's files are the image argument; a root read from a directory of the host \
-                 needs the local system's file backend",
+                "the root's files are the image argument; the local system's file backend serves a \
+                 host directory with the host user's rights, so a root from one would show every file \
+                 owned by that user and could make no set-id or device files, unlike the image's own \
+                 root; it needs an image read from a directory and owners mapped (user namespaces)",
             )?,
             "readonly" => absent("root.readonly", field, "read-only mounts in the kernel")?,
             _ => {
-                return Err(refused(
-                    format!("root.{name}"),
-                    "a field this runtime does not know",
-                ));
+                return Err(refused(format!("root.{name}"), UNKNOWN_FIELD));
             }
         }
     }
@@ -274,11 +311,24 @@ fn root(value: &Value) -> Result<(), Error> {
 }
 
 /// The mounts must be the kernel's own, each as it makes it and in its order: it makes all of them,
-/// once each, and no others, and the standard makes them in the listed order.
-fn check_mounts(value: &Value) -> Result<(), Error> {
+/// once each, and the standard makes them in the listed order. After them may come one bind mount of
+/// a host directory, which the kernel mounts last, as its file backend.
+fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
     let kernel = mounts();
     let kernel = kernel.as_array().expect("a list");
-    let given = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut given = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut volume = None;
+    if given.len() > kernel.len() {
+        let index = kernel.len();
+        volume = Some(check_bind_mount(index, &given[index])?);
+        if given.len() > index + 1 {
+            return Err(refused(
+                mount_field(index + 1),
+                "one directory of the host per container: the kernel takes one file backend",
+            ));
+        }
+        given = &given[..index];
+    }
     let options = |mount: &Value| -> Vec<String> {
         let mut options: Vec<String> = mount["options"]
             .as_array()
@@ -296,7 +346,7 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             && options(ours) == options(mount)
     };
     for (index, mount) in given.iter().enumerate() {
-        let field = format!("mounts[{index}]");
+        let field = mount_field(index);
         if let Some(name) = mount
             .as_object()
             .into_iter()
@@ -306,7 +356,7 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
         {
             return Err(refused(
                 format!("{field}.{name}"),
-                "id-mapped mounts: user namespaces in the kernel",
+                format!("id-mapped mounts: {NEEDS_USER_NAMESPACES}"),
             ));
         }
         if !kernel.iter().any(|ours| same(ours, mount)) {
@@ -326,7 +376,7 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             .any(|mount| mount["destination"] == ours["destination"])
         {
             return Err(refused(
-                "mounts",
+                MOUNTS,
                 format!(
                     "lacks {}, which the kernel always mounts; leaving it out needs the kernel to \
                      take its mounts at start",
@@ -345,7 +395,7 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             .filter_map(|ours| ours["destination"].as_str())
             .collect();
         return Err(refused(
-            format!("mounts[{index}]"),
+            mount_field(index),
             format!(
                 "{}: the kernel makes its mounts once each, in the order {}; another order or a \
                  repeat needs the kernel to take its mounts at start",
@@ -354,7 +404,98 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             ),
         ));
     }
-    Ok(())
+    Ok(volume)
+}
+
+/// The bind mount of host directory `source` at `destination`, read and write, as this runtime
+/// honours one: to be added after the configuration's other mounts.
+pub fn bind_mount(source: &std::path::Path, destination: &str) -> oci_spec::runtime::Mount {
+    let mut mount = oci_spec::runtime::Mount::default();
+    mount.set_destination(destination.into());
+    mount.set_typ(Some(BIND.to_string()));
+    mount.set_source(Some(source.to_path_buf()));
+    mount.set_options(Some(vec![RBIND.to_string(), READ_WRITE.to_string()]));
+    mount
+}
+
+/// The terminal `process.terminal` asks for, of `process.consoleSize`'s size (0 by 0 without one, as
+/// `docker run --tty` gives when its client has no terminal); the size is ignored without a
+/// terminal, as the specification says.
+fn terminal(process: &oci_spec::runtime::Process) -> Result<Option<TerminalSize>, Error> {
+    if process.terminal() != Some(true) {
+        return Ok(None);
+    }
+    let Some(size) = process.console_size() else {
+        return Ok(Some(TerminalSize::default()));
+    };
+    let fit = |value: u64, name: &str| {
+        u16::try_from(value).map_err(|_| {
+            refused(
+                format!("process.consoleSize.{name}"),
+                format!(
+                    "{value}: a terminal's size is at most {} characters",
+                    u16::MAX
+                ),
+            )
+        })
+    };
+    Ok(Some(TerminalSize {
+        columns: fit(size.width(), "width")?,
+        rows: fit(size.height(), "height")?,
+    }))
+}
+
+/// A bind mount of a host directory, read and write, at an absolute path other than the root.
+fn check_bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
+    let field = mount_field(index);
+    let options: Vec<&str> = mount["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let bind = mount["type"].as_str() == Some(BIND)
+        || options.iter().any(|option| BIND_OPTIONS.contains(option));
+    if !bind {
+        return Err(refused(
+            &field,
+            format!(
+                "{mount}: of the kernel's own mounts and bind mounts of host directories only these \
+                 are made; other file systems need the kernel"
+            ),
+        ));
+    }
+    if let Some(option) = options
+        .iter()
+        .find(|option| !BIND_OPTIONS.contains(option) && !HONOURED_OPTIONS.contains(option))
+    {
+        return Err(refused(
+            format!("{field}.options"),
+            format!(
+                "{option}: a host directory is mounted read and write with no propagation; other \
+                 options need the kernel's mounts to take them"
+            ),
+        ));
+    }
+    let destination = mount["destination"].as_str().unwrap_or_default();
+    if !destination.starts_with('/') || destination.trim_end_matches('/').is_empty() {
+        return Err(refused(
+            format!("{field}.destination"),
+            format!("{destination:?}: a bind mount needs an absolute path other than the root"),
+        ));
+    }
+    let source = mount["source"].as_str().unwrap_or_default();
+    if !source.starts_with('/') {
+        return Err(refused(
+            format!("{field}.source"),
+            format!("{source:?}: a host directory is named by its absolute path"),
+        ));
+    }
+    Ok(Volume {
+        index,
+        source: source.into(),
+        destination: destination.to_string(),
+    })
 }
 
 fn process(value: &Value) -> Result<(), Error> {
@@ -362,14 +503,9 @@ fn process(value: &Value) -> Result<(), Error> {
         let path = format!("process.{name}");
         match name.as_str() {
             "args" | "env" | "cwd" => {}
-            "terminal" => absent(
-                &path,
-                field,
-                "a terminal: standard input in the kernel's interface and the terminal surface",
-            )?,
-            "consoleSize" => absent(&path, field, "a terminal (see process.terminal)")?,
+            "terminal" | "consoleSize" => {}
             "user" => user(field)?,
-            "commandLine" => absent(&path, field, "a Windows host")?,
+            "commandLine" => absent(&path, field, NEEDS_WINDOWS)?,
             "capabilities" => {
                 let sets = field.as_object().cloned().unwrap_or_default();
                 if let Some(set) = ["bounding", "effective", "permitted"]
@@ -396,10 +532,7 @@ fn process(value: &Value) -> Result<(), Error> {
                         "bounding" | "effective" | "permitted" => CAPABILITIES.to_vec(),
                         "inheritable" | "ambient" => Vec::new(),
                         _ => {
-                            return Err(refused(
-                                format!("{path}.{set}"),
-                                "a field this runtime does not know",
-                            ));
+                            return Err(refused(format!("{path}.{set}"), UNKNOWN_FIELD));
                         }
                     };
                     ours.sort_unstable();
@@ -442,9 +575,9 @@ fn process(value: &Value) -> Result<(), Error> {
                 absent(&path, field, "a security module in the kernel")?;
             }
             "oomScoreAdj" | "ioPriority" | "scheduler" | "execCPUAffinity" => {
-                absent(&path, field, "the kernel taking the value at start")?;
+                absent(&path, field, NEEDS_VALUE_AT_START)?;
             }
-            _ => return Err(refused(path, "a field this runtime does not know")),
+            _ => return Err(refused(path, UNKNOWN_FIELD)),
         }
     }
     Ok(())
@@ -470,13 +603,13 @@ fn user(value: &Value) -> Result<(), Error> {
                     return Err(refused(
                         path,
                         format!(
-                            "{field}: the kernel starts with umask 0022; others need it to take the umask at start"
+                            "{field}: the kernel starts with umask {UMASK:04o}; others need it to take the umask at start"
                         ),
                     ));
                 }
             }
-            "username" => absent(&path, field, "a Windows host")?,
-            _ => return Err(refused(path, "a field this runtime does not know")),
+            "username" => absent(&path, field, NEEDS_WINDOWS)?,
+            _ => return Err(refused(path, UNKNOWN_FIELD)),
         }
     }
     Ok(())
@@ -487,7 +620,7 @@ fn linux(value: &Value) -> Result<(), Error> {
         let path = format!("linux.{name}");
         match name.as_str() {
             "namespaces" => namespaces(field)?,
-            "uidMappings" | "gidMappings" => absent(&path, field, "user namespaces in the kernel")?,
+            "uidMappings" | "gidMappings" => absent(&path, field, NEEDS_USER_NAMESPACES)?,
             "sysctl" => absent(&path, field, "the kernel taking its settings at start")?,
             "resources" | "cgroupsPath" => absent(
                 &path,
@@ -512,9 +645,9 @@ fn linux(value: &Value) -> Result<(), Error> {
                 "read-only, masking and labelled mounts in the kernel",
             )?,
             "intelRdt" | "memoryPolicy" | "personality" | "timeOffsets" | "netDevices" => {
-                absent(&path, field, "the kernel taking the value at start")?;
+                absent(&path, field, NEEDS_VALUE_AT_START)?;
             }
-            _ => return Err(refused(path, "a field this runtime does not know")),
+            _ => return Err(refused(path, UNKNOWN_FIELD)),
         }
     }
     Ok(())

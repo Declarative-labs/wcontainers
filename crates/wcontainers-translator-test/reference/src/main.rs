@@ -5,7 +5,7 @@
 //! and returns into the instruction; wherever control then lands raises the next signal, whose frame holds
 //! the registers after it. System calls made from the instruction are caught by seccomp and never run.
 //!
-//! `wcontainers-reference blobs` runs flat blobs, as `SERVE_BLOBS` describes, each from its first byte with all
+//! `wcontainers-reference blobs` runs flat blobs, as `SERVING_MODE` describes, each from its first byte with all
 //! registers zero and the starting stack of `initial_stack`, for real; its output and exit status are the
 //! program's.
 //!
@@ -393,7 +393,7 @@ fn blob(path: &str, load: u64, stack_top: u64, stack_bytes: u64, headers: Option
     unreachable!("the blob returned without exiting");
 }
 
-/// Serve blobs (`SERVE_BLOBS`) until stdin ends.
+/// Serve blobs (`SERVING_MODE`) until stdin ends.
 fn serve_blobs() {
     let mut requests = std::io::stdin().lock();
     let mut answers = std::io::stdout().lock();
@@ -527,7 +527,7 @@ fn main() {
     let arguments: Vec<String> = std::env::args().collect();
     match arguments.get(1).map(String::as_str) {
         Some("cases") => cases(),
-        Some(SERVE_BLOBS) => serve_blobs(),
+        Some(SERVING_MODE) => serve_blobs(),
         Some("time") => time(
             arguments[2].parse().expect("a number of runs"),
             &arguments[3],
@@ -537,7 +537,7 @@ fn main() {
             headers(&arguments[7..]),
         ),
         _ => panic!(
-            "usage: {} cases | {SERVE_BLOBS} | time <runs> <file> <load> <stack top> <stack bytes> [<headers> <count>]",
+            "usage: {} cases | {SERVING_MODE} | time <runs> <file> <load> <stack top> <stack bytes> [<headers> <count>]",
             env!("CARGO_PKG_NAME")
         ),
     }

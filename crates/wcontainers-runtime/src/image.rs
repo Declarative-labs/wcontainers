@@ -8,8 +8,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use oci_spec::image::{
-    ANNOTATION_CREATED, Descriptor, ImageConfiguration, ImageIndex, ImageManifest, MediaType,
-    OciLayout,
+    ANNOTATION_CREATED, Descriptor, DigestAlgorithm, ImageConfiguration, ImageIndex, ImageManifest,
+    MediaType, OciLayout, Os,
 };
 use oci_spec::runtime::{Spec, User};
 use sha2::{Digest as _, Sha256};
@@ -58,6 +58,67 @@ const EXECUTABLE: u32 = S_IXUSR | S_IXGRP | S_IXOTH;
 const DIRECTORY_MODE: u32 = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
 const FILE_MODE: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
+/// The OCI image layout's marker file, its version, its index and its blobs' directory
+/// (image-layout.md).
+const LAYOUT_FILE: &str = "oci-layout";
+const LAYOUT_VERSION: &str = "1.0.0";
+const INDEX_FILE: &str = "index.json";
+const BLOBS_DIRECTORY: &str = "blobs";
+
+/// Docker's media type of a gzip-compressed layer, which `docker save` writes.
+const DOCKER_LAYER_GZIP: &str = "application/vnd.docker.image.rootfs.diff.tar.gzip";
+
+/// The start of a whiteout's name, and the name of the whiteout that empties its directory
+/// (layer.md).
+const WHITEOUT_PREFIX: &[u8] = b".wh.";
+const OPAQUE_WHITEOUT: &[u8] = b".wh..wh..opq";
+
+/// The start of a PAX header key holding an extended attribute.
+const XATTR_PAX_PREFIX: &[u8] = b"SCHILY.xattr.";
+
+/// The annotations conversion.md makes of an image configuration's fields.
+mod annotation {
+    pub const OS: &str = "org.opencontainers.image.os";
+    pub const ARCHITECTURE: &str = "org.opencontainers.image.architecture";
+    pub const VARIANT: &str = "org.opencontainers.image.variant";
+    pub const OS_VERSION: &str = "org.opencontainers.image.os.version";
+    pub const OS_FEATURES: &str = "org.opencontainers.image.os.features";
+    pub const AUTHOR: &str = "org.opencontainers.image.author";
+    pub const STOP_SIGNAL: &str = "org.opencontainers.image.stopSignal";
+    pub const EXPOSED_PORTS: &str = "org.opencontainers.image.exposedPorts";
+}
+
+/// What joins the items of a list in an annotation (conversion.md).
+const LIST_SEPARATOR: &str = ",";
+
+/// The image configuration's fields this runtime refuses values of, as the refusals name them.
+const CONFIG_VOLUMES: &str = "config.Volumes";
+const CONFIG_USER: &str = "config.User";
+
+/// The account tables in the root (passwd(5), group(5)): their paths, what separates fields and
+/// the members of a group, and what starts a comment line.
+pub const PASSWD: &str = "etc/passwd";
+pub const GROUP: &str = "etc/group";
+pub const FIELD_SEPARATOR: char = ':';
+pub const MEMBER_SEPARATOR: char = ',';
+const COMMENT: char = '#';
+
+/// What separates the user from the group in an image configuration's `User` (config.md).
+const USER_GROUP_SEPARATOR: char = ':';
+
+/// The directory Docker writes its files in, and those files: the host name, the hosts file and
+/// the name server's.
+const ETC: &[u8] = b"etc";
+const HOSTNAME_FILE: &[u8] = b"etc/hostname";
+const HOSTS_FILE: &[u8] = b"etc/hosts";
+const RESOLV_CONF: &[u8] = b"etc/resolv.conf";
+
+/// An environment variable's assignment of the program search path, what separates its
+/// directories, and what separates a variable's name from its value.
+const PATH_ASSIGNMENT: &str = "PATH=";
+const PATH_LIST_SEPARATOR: char = ':';
+const ASSIGNMENT: char = '=';
+
 /// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
 /// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
 mod field {
@@ -84,24 +145,24 @@ impl Image {
     /// `architecture` (as the image configuration names it, [`crate::Executor::ARCHITECTURE`]) on
     /// Linux, its blobs checked against their digests and its layers applied in order.
     pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
-        let layout = directory.join("oci-layout");
+        let layout = directory.join(LAYOUT_FILE);
         let header = OciLayout::from_reader(open(&layout)?)
             .map_err(|error| Error::Image(format!("{}: {error}", layout.display())))?;
-        if header.image_layout_version() != "1.0.0" {
+        if header.image_layout_version() != LAYOUT_VERSION {
             return Err(Error::Image(format!(
-                "{}: image layout version {} is not 1.0.0",
+                "{}: image layout version {} is not {LAYOUT_VERSION}",
                 layout.display(),
                 header.image_layout_version()
             )));
         }
-        let index_path = directory.join("index.json");
+        let index_path = directory.join(INDEX_FILE);
         let index = ImageIndex::from_reader(open(&index_path)?)
             .map_err(|error| Error::Image(format!("{}: {error}", index_path.display())))?;
         let manifest = find_manifest(directory, index.manifests(), architecture)?;
         let config_bytes = blob(directory, manifest.config())?;
         let configuration = ImageConfiguration::from_reader(config_bytes.as_slice())
             .map_err(|error| Error::Image(format!("the image configuration: {error}")))?;
-        if configuration.os().to_string() != "linux"
+        if *configuration.os() != Os::Linux
             || configuration.architecture().to_string() != architecture
         {
             return Err(Error::Image(format!(
@@ -122,9 +183,7 @@ impl Image {
                     let reader = flate2::read::GzDecoder::new(bytes.as_slice());
                     read_layer(reader, &name, true, &mut files)?;
                 }
-                MediaType::Other(other)
-                    if other == "application/vnd.docker.image.rootfs.diff.tar.gzip" =>
-                {
+                MediaType::Other(other) if other == DOCKER_LAYER_GZIP => {
                     let reader = flate2::read::GzDecoder::new(bytes.as_slice());
                     read_layer(reader, &name, true, &mut files)?;
                 }
@@ -163,21 +222,24 @@ impl Image {
         };
         // Implicit annotations first, so that a label of the same key takes precedence.
         let mut annotations: HashMap<String, String> = [
-            ("os", Some(configuration.os().to_string())),
+            (annotation::OS, Some(configuration.os().to_string())),
             (
-                "architecture",
+                annotation::ARCHITECTURE,
                 Some(configuration.architecture().to_string()),
             ),
-            ("variant", configuration.variant().clone()),
-            ("os.version", configuration.os_version().clone()),
+            (annotation::VARIANT, configuration.variant().clone()),
+            (annotation::OS_VERSION, configuration.os_version().clone()),
             (
-                "os.features",
-                configuration.os_features().as_ref().map(|f| f.join(",")),
+                annotation::OS_FEATURES,
+                configuration
+                    .os_features()
+                    .as_ref()
+                    .map(|f| f.join(LIST_SEPARATOR)),
             ),
-            ("author", configuration.author().clone()),
+            (annotation::AUTHOR, configuration.author().clone()),
         ]
         .into_iter()
-        .filter_map(|(name, value)| Some((format!("org.opencontainers.image.{name}"), value?)))
+        .filter_map(|(name, value)| Some((name.to_string(), value?)))
         .chain(
             configuration
                 .created()
@@ -188,7 +250,7 @@ impl Image {
         if let Some(config) = configuration.config() {
             if let Some(volumes) = config.volumes().as_ref().filter(|v| !v.is_empty()) {
                 return Err(Error::Refused {
-                    field: "config.Volumes".to_string(),
+                    field: CONFIG_VOLUMES.to_string(),
                     reason: format!(
                         "{volumes:?}: a volume is a mount of a directory from outside, which needs \
                          the local system's file backend"
@@ -208,15 +270,12 @@ impl Image {
                 process.set_user(self.user(user)?);
             }
             if let Some(signal) = config.stop_signal() {
-                annotations.insert(
-                    "org.opencontainers.image.stopSignal".to_string(),
-                    signal.clone(),
-                );
+                annotations.insert(annotation::STOP_SIGNAL.to_string(), signal.clone());
             }
             if let Some(ports) = config.exposed_ports().as_ref().filter(|p| !p.is_empty()) {
                 annotations.insert(
-                    "org.opencontainers.image.exposedPorts".to_string(),
-                    ports.join(","),
+                    annotation::EXPOSED_PORTS.to_string(),
+                    ports.join(LIST_SEPARATOR),
                 );
             }
             annotations.extend(config.labels().clone().unwrap_or_default());
@@ -229,14 +288,14 @@ impl Image {
     /// `process.user` for the image configuration's `User` (`user`, `uid`, `user:group`, `uid:gid`
     /// and the mixed forms), names looked up in the root's `/etc/passwd` and `/etc/group`.
     fn user(&self, text: &str) -> Result<User, Error> {
-        let passwd = self.table(b"etc/passwd");
-        let group = self.table(b"etc/group");
-        let (name, group_name) = match text.split_once(':') {
+        let passwd = self.table(PASSWD);
+        let group = self.table(GROUP);
+        let (name, group_name) = match text.split_once(USER_GROUP_SEPARATOR) {
             Some((name, group)) => (name, Some(group)),
             None => (text, None),
         };
         let refused = |reason: String| Error::Refused {
-            field: "config.User".to_string(),
+            field: CONFIG_USER.to_string(),
             reason,
         };
         let account = passwd.iter().find(|fields| {
@@ -249,7 +308,7 @@ impl Image {
             Ok(uid) => uid,
             Err(_) => account
                 .and_then(|fields| fields.get(field::UID)?.parse().ok())
-                .ok_or_else(|| refused(format!("no user {name} in /etc/passwd")))?,
+                .ok_or_else(|| refused(format!("no user {name} in the image's {PASSWD}")))?,
         };
         let gid = match group_name {
             Some(group_name) => match group_name.parse::<u32>() {
@@ -258,7 +317,9 @@ impl Image {
                     .iter()
                     .find(|fields| fields.get(field::NAME) == Some(&group_name))
                     .and_then(|fields| fields.get(field::GROUP_GID)?.parse().ok())
-                    .ok_or_else(|| refused(format!("no group {group_name} in /etc/group")))?,
+                    .ok_or_else(|| {
+                        refused(format!("no group {group_name} in the image's {GROUP}"))
+                    })?,
             },
             None => account
                 .and_then(|fields| fields.get(field::GID)?.parse().ok())
@@ -276,7 +337,7 @@ impl Image {
 
     /// The user where the image names none: root, in its groups, as Docker gives it.
     fn root(&self) -> User {
-        let passwd = self.table(b"etc/passwd");
+        let passwd = self.table(PASSWD);
         let account = passwd
             .iter()
             .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(0));
@@ -296,12 +357,12 @@ impl Image {
     /// then each group `/etc/group` lists the user in, in its order.
     fn groups(&self, name: &str, gid: u32) -> Vec<u32> {
         let members = self
-            .table(b"etc/group")
+            .table(GROUP)
             .into_iter()
             .filter(|fields| {
                 fields
                     .get(field::GROUP_MEMBERS)
-                    .is_some_and(|members| members.split(',').any(|m| m == name))
+                    .is_some_and(|members| members.split(MEMBER_SEPARATOR).any(|m| m == name))
             })
             .filter_map(|fields| fields.get(field::GROUP_GID)?.parse().ok());
         std::iter::once(gid).chain(members).collect()
@@ -309,7 +370,7 @@ impl Image {
 
     /// The home directory of `uid` in the root's `/etc/passwd`, or `/` as runc has it.
     pub(crate) fn home(&self, uid: u32) -> String {
-        self.table(b"etc/passwd")
+        self.table(PASSWD)
             .iter()
             .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid))
             .and_then(|fields| fields.get(field::HOME))
@@ -318,16 +379,16 @@ impl Image {
     }
 
     /// The lines of a colon-separated table in the root, such as `/etc/passwd`, split into fields.
-    fn table(&self, path: &[u8]) -> Vec<Vec<&str>> {
-        match self.lookup(path) {
+    fn table(&self, path: &str) -> Vec<Vec<&str>> {
+        match self.lookup(path.as_bytes()) {
             Some(Entry {
                 kind: Kind::Regular(bytes),
                 ..
             }) => std::str::from_utf8(bytes)
                 .unwrap_or("")
                 .lines()
-                .filter(|line| !line.starts_with('#'))
-                .map(|line| line.split(':').collect())
+                .filter(|line| !line.starts_with(COMMENT))
+                .map(|line| line.split(FIELD_SEPARATOR).collect())
                 .collect(),
             _ => Vec::new(),
         }
@@ -381,9 +442,9 @@ impl Image {
         let path = env
             .iter()
             .rev()
-            .find_map(|variable| variable.strip_prefix("PATH="))
+            .find_map(|variable| variable.strip_prefix(PATH_ASSIGNMENT))
             .unwrap_or("");
-        path.split(':')
+        path.split(PATH_LIST_SEPARATOR)
             .filter(|directory| !directory.is_empty())
             .map(|directory| format!("{}/{name}", directory.trim_end_matches('/')))
             .find(|candidate| {
@@ -398,19 +459,17 @@ impl Image {
     /// with the files Docker writes in every container in place of the image's own.
     pub(crate) fn add_to(&self, kernel: &mut Kernel, hostname: &str) -> Result<(), Error> {
         let written = docker_files(hostname);
-        let etc = match self.files.get(&b"etc"[..]) {
-            None => Some((
-                b"etc".to_vec(),
-                docker_file(DIRECTORY_MODE, Kind::Directory),
-            )),
+        let etc = match self.files.get(ETC) {
+            None => Some((ETC.to_vec(), docker_file(DIRECTORY_MODE, Kind::Directory))),
             Some(Entry {
                 kind: Kind::Directory,
                 ..
             }) => None,
             Some(_) => {
-                return Err(Error::Image(
-                    "/etc is not a directory, where the host name and name server files go".into(),
-                ));
+                return Err(Error::Image(format!(
+                    "the image's {} is not a directory, where the host name and name server files go",
+                    ETC.escape_ascii()
+                )));
             }
         };
         let hard_links = self
@@ -452,7 +511,7 @@ impl Image {
 
 /// What Docker writes over its mounts in every container: the host name, the hosts file with the
 /// kernel's made-up address for it, and the kernel's name server.
-fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
+fn docker_files(hostname: &str) -> Vec<(Vec<u8>, Entry)> {
     let address = std::net::Ipv4Addr::from(wcontainers_kernel::network::ADDRESS);
     let name_server = std::net::Ipv4Addr::from(wcontainers_kernel::network::NAME_SERVER);
     let (v4, v6) = (std::net::Ipv4Addr::LOCALHOST, std::net::Ipv6Addr::LOCALHOST);
@@ -462,11 +521,11 @@ fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
          {address}\t{hostname}\n"
     );
     let file = |bytes: String| docker_file(FILE_MODE, Kind::Regular(bytes.into_bytes()));
-    [
-        (b"etc/hostname".to_vec(), file(format!("{hostname}\n"))),
-        (b"etc/hosts".to_vec(), file(hosts)),
+    vec![
+        (HOSTNAME_FILE.to_vec(), file(format!("{hostname}\n"))),
+        (HOSTS_FILE.to_vec(), file(hosts)),
         (
-            b"etc/resolv.conf".to_vec(),
+            RESOLV_CONF.to_vec(),
             file(format!("nameserver {name_server}\n")),
         ),
     ]
@@ -501,7 +560,7 @@ fn open(path: &Path) -> Result<File, Error> {
 fn blob_path(directory: &Path, descriptor: &Descriptor) -> PathBuf {
     let digest = descriptor.digest();
     directory
-        .join("blobs")
+        .join(BLOBS_DIRECTORY)
         .join(digest.algorithm().to_string())
         .join(digest.digest())
 }
@@ -517,7 +576,7 @@ fn blob(directory: &Path, descriptor: &Descriptor) -> Result<Vec<u8>, Error> {
             error,
         })?;
     let digest = descriptor.digest();
-    if digest.algorithm().to_string() != "sha256" {
+    if *digest.algorithm() != DigestAlgorithm::Sha256 {
         return Err(Error::Image(format!(
             "{digest}: only sha256 digests are checked by this runtime"
         )));
@@ -541,8 +600,7 @@ fn find_manifest(
 ) -> Result<ImageManifest, Error> {
     let fits = |descriptor: &Descriptor| {
         descriptor.platform().as_ref().is_none_or(|platform| {
-            platform.os().to_string() == "linux"
-                && platform.architecture().to_string() == architecture
+            *platform.os() == Os::Linux && platform.architecture().to_string() == architecture
         })
     };
     for descriptor in descriptors.iter().filter(|d| fits(d)) {
@@ -599,7 +657,7 @@ fn read_layer(
         if let Some(extensions) = entry.pax_extensions().map_err(|e| fail(e.to_string()))? {
             for extension in extensions {
                 let extension = extension.map_err(|e| fail(e.to_string()))?;
-                if extension.key_bytes().starts_with(b"SCHILY.xattr.") {
+                if extension.key_bytes().starts_with(XATTR_PAX_PREFIX) {
                     return Err(fail(format!(
                         "/{} has extended attributes, which the kernel's files do not take yet",
                         String::from_utf8_lossy(&path)
@@ -611,8 +669,8 @@ fn read_layer(
             Some(at) => (&path[..at], &path[at + 1..]),
             None => (&path[..0], &path[..]),
         };
-        if whiteouts && let Some(hidden) = base.strip_prefix(b".wh.") {
-            if hidden == b".wh..opq" {
+        if whiteouts && let Some(hidden) = base.strip_prefix(WHITEOUT_PREFIX) {
+            if base == OPAQUE_WHITEOUT {
                 emptied.push(parent.to_vec());
             } else {
                 removed.push(join(parent, hidden));
@@ -727,7 +785,7 @@ fn clean(path: &[u8]) -> Option<Vec<u8>> {
 /// The image's environment with the runtime's defaults (such as `PATH`) for the names it lacks, so
 /// that a default never removes or changes one of the image's variables.
 fn with_defaults(defaults: Vec<String>, image: Vec<String>) -> Vec<String> {
-    let name = |variable: &str| variable.split('=').next().unwrap_or("").to_string();
+    let name = |variable: &str| variable.split(ASSIGNMENT).next().unwrap_or("").to_string();
     let named: Vec<String> = image.iter().map(|v| name(v)).collect();
     defaults
         .into_iter()
@@ -751,7 +809,7 @@ mod tests {
             header.set_mtime(0);
             if path.ends_with('/') {
                 header.set_entry_type(tar::EntryType::Directory);
-                header.set_mode(0o755);
+                header.set_mode(DIRECTORY_MODE);
                 header.set_size(0);
                 builder
                     .append_data(&mut header, path, std::io::empty())
@@ -763,7 +821,7 @@ mod tests {
                 builder.append_link(&mut header, path, target).unwrap();
             } else {
                 header.set_entry_type(tar::EntryType::Regular);
-                header.set_mode(0o755);
+                header.set_mode(DIRECTORY_MODE);
                 header.set_size(contents.len() as u64);
                 builder
                     .append_data(&mut header, path, contents.as_bytes())
@@ -859,10 +917,10 @@ mod tests {
             &[&[
                 ("etc/", ""),
                 (
-                    "etc/passwd",
+                    PASSWD,
                     "root:x:0:0::/root:/bin/sh\nweb:x:100:101::/:/bin/sh\n",
                 ),
-                ("etc/group", "root:x:0:\nweb:x:101:\nlog:x:4:web,root\n"),
+                (GROUP, "root:x:0:\nweb:x:101:\nlog:x:4:web,root\n"),
             ]],
             Some(serde_json::json!({
                 "User": "web", "Entrypoint": ["/serve"], "Cmd": ["--port", "80"],
@@ -891,10 +949,7 @@ mod tests {
         );
         let annotations = spec.annotations().as_ref().unwrap();
         assert_eq!(annotations["name"], "web");
-        assert_eq!(
-            annotations["org.opencontainers.image.stopSignal"],
-            "SIGQUIT"
-        );
+        assert_eq!(annotations[annotation::STOP_SIGNAL], "SIGQUIT");
     }
 
     #[test]
@@ -903,8 +958,7 @@ mod tests {
             &[&[]],
             Some(serde_json::json!({
                 "Env": ["PATH=/bin"], "StopSignal": "SIGQUIT",
-                "Labels": {"org.opencontainers.image.stopSignal": "SIGINT",
-                           "org.opencontainers.image.os": "label"},
+                "Labels": {(annotation::STOP_SIGNAL): "SIGINT", (annotation::OS): "label"},
             })),
         );
         let configuration = image.configuration.as_mut().unwrap();
@@ -916,20 +970,17 @@ mod tests {
         let spec = image.spec().unwrap();
         let annotations = spec.annotations().as_ref().unwrap();
         let expected = [
-            ("os", "label"),
-            ("architecture", "arm64"),
-            ("variant", "v8"),
-            ("os.version", "6.1"),
-            ("os.features", "a,b"),
-            ("author", "someone"),
-            ("created", "2026-11-18T00:00:00Z"),
-            ("stopSignal", "SIGINT"),
+            (annotation::OS, "label"),
+            (annotation::ARCHITECTURE, "arm64"),
+            (annotation::VARIANT, "v8"),
+            (annotation::OS_VERSION, "6.1"),
+            (annotation::OS_FEATURES, "a,b"),
+            (annotation::AUTHOR, "someone"),
+            (ANNOTATION_CREATED, "2026-11-18T00:00:00Z"),
+            (annotation::STOP_SIGNAL, "SIGINT"),
         ];
         for (name, value) in expected {
-            assert_eq!(
-                annotations[&format!("org.opencontainers.image.{name}")],
-                value
-            );
+            assert_eq!(annotations[name], value);
         }
         assert_eq!(annotations.len(), expected.len());
         let process = spec.process().as_ref().unwrap();
@@ -943,12 +994,12 @@ mod tests {
         let files: &[(&str, &str)] = &[
             ("etc/", ""),
             (
-                "etc/passwd",
+                PASSWD,
                 "root:x:0:0::/root:/bin/sh
 ",
             ),
             (
-                "etc/group",
+                GROUP,
                 "root:x:0:root
 wheel:x:10:root
 bin:x:1:root,bin
@@ -973,7 +1024,7 @@ web:x:2:
     fn volumes_are_refused_by_name() {
         let image = image(&[&[]], Some(serde_json::json!({"Volumes": {"/data": {}}})));
         match image.spec() {
-            Err(Error::Refused { field, .. }) => assert_eq!(field, "config.Volumes"),
+            Err(Error::Refused { field, .. }) => assert_eq!(field, CONFIG_VOLUMES),
             other => panic!("{:?}", other.map(|_| ())),
         }
     }

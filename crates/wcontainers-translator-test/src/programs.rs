@@ -1,6 +1,6 @@
 //! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
 
-use crate::layout::{REQUEST_END, REQUEST_SEPARATOR, SERVE_BLOBS, initial_stack};
+use crate::layout::{REQUEST_END, REQUEST_SEPARATOR, SERVING_MODE, initial_stack};
 use crate::reference::{
     DOCKER, GUEST_TRIPLE, IMAGE, PROGRAMS_FOLDER, REFERENCE_CONTAINER, RUNNER_FOLDER, RUNNER_NAME,
     build as build_reference, container_name, mount, serving, target_folder,
@@ -573,7 +573,7 @@ thread_local! {
     static BLOB_SERVER: RefCell<Option<BlobServer>> = const { RefCell::new(None) };
 }
 
-/// A reference runner serving blobs (`SERVE_BLOBS`) in a container of its own, which ends when its input does.
+/// A reference runner serving blobs (`SERVING_MODE`) in a container of its own, which ends when its input does.
 struct BlobServer {
     client: Child,
     requests: Option<ChildStdin>,
@@ -582,7 +582,7 @@ struct BlobServer {
 
 impl BlobServer {
     fn start() -> Self {
-        let mut client = serving(SERVE_BLOBS, SERVE_BLOBS, |command| {
+        let mut client = serving(SERVING_MODE, SERVING_MODE, |command| {
             mount(command, &native_directory(), PROGRAMS_FOLDER);
         });
         let requests = client.stdin.take();

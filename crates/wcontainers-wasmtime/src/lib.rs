@@ -1,17 +1,19 @@
-//! The WebAssembly back end of the runtime: the translator's output for a guest `G`, run by wasmtime,
+//! The WebAssembly executor of the runtime: the translator's output for a guest `G`, run by wasmtime,
 //! behind the kernel's `Cpu` side. One store per process; a thread's instances are made at its first
-//! run; code is translated at first use and kept in a cache shared by every back end of a [`Compiler`].
+//! run; code is translated at first use and kept in a cache shared by every executor of a [`Compiler`].
 
+pub mod cli;
 mod memory;
 pub mod starts;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
+use std::io::Write;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -26,7 +28,7 @@ use wcontainers_abi::{
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_runtime::{
-    Answer, Carry, Execution, Executor, Leaving, RuntimeSettings, StopFlag, Turn,
+    Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
@@ -37,7 +39,7 @@ use memory::SLOT_BYTES;
 pub use starts::Sources;
 pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
-/// The back end's own slow paths, besides the translator's [`Reason`]s.
+/// The executor's own slow paths, besides the translator's [`Reason`]s.
 pub mod reason {
     /// Progress is counted by stop checks passed until the translator emits the guest's own count.
     pub const PROGRESS_BY_STOP_CHECKS: &str = "progress counted by stop checks";
@@ -68,14 +70,19 @@ pub mod reason {
     /// A file of the cache's directory could not be read whole or wasmtime refused it, so its
     /// translation is made again; the detail is the host's error number (`u64::MAX` when it gave none).
     pub const TRANSLATION_REFUSED: &str = "translation in the cache's directory refused";
-    /// The guest read the counter on a back end brought back from a save, whose clock hook answers the
+    /// The guest read the counter on an executor brought back from a save, whose clock hook answers the
     /// system's monotonic clock without the kernel's offset until the kernel makes its clock public.
     pub const COUNTER_WITHOUT_KERNEL_OFFSET: &str = "counter read without the kernel's offset";
+    /// A new thread found every thread block of its process's state memory in use, so the kernel
+    /// is told the memory ran out; the detail is how many blocks a process has.
+    pub const THREAD_BLOCKS_USED_UP: &str = "no thread block left in the process";
+    /// The host refused the memories of a new process, so the kernel is told the memory ran out.
+    pub const PROCESS_MEMORY_REFUSED: &str = "the host refused a process's memories";
     /// The detail of a leave after an exit that is not a system call.
     pub const NOT_A_CALL: u64 = u64::MAX;
 }
 
-/// What every back end of one engine shares: the engine, the thread module, the pool translation and
+/// What every executor of one engine shares: the engine, the thread module, the pool translation and
 /// compiling run in, the probe's answer, the compiled translations kept in memory, and the directory
 /// they are kept in between runs.
 pub struct Compiler<G: Guest> {
@@ -90,7 +97,7 @@ pub struct Compiler<G: Guest> {
     directory: Option<PathBuf>,
 }
 
-/// Where a translation a back end used came from.
+/// Where a translation an executor used came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// Compiled modules kept in memory.
@@ -104,11 +111,21 @@ pub enum Origin {
 /// Names the build of the translator and its guests, made from their sources by the build script.
 const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
 
-/// The back end and its output's memory widths, as the cache key names them.
-const OUTPUT_FORM: &str = "wasmtime guest-memory-64 state-memory-32";
+/// The executor and its output's memory widths (guest memory 64 bit, state memory 32 bit), as the
+/// cache key names them.
+fn output_form() -> String {
+    format!(
+        "wasmtime guest-memory-{} state-memory-{}",
+        u64::BITS,
+        u32::BITS
+    )
+}
 
 /// The first bytes of a cache file.
 const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
+
+/// Bytes of each count and length in a cache file.
+const CACHE_WORD: usize = size_of::<u64>();
 
 /// What a compiled translation is kept under.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -150,7 +167,7 @@ impl<G: Guest> Compiler<G> {
         let engine = Engine::new(&config).expect("a wasmtime engine");
         let pool = rayon::ThreadPoolBuilder::new()
             .build()
-            .expect("the back end's pool");
+            .expect("the executor's pool");
         let thread_module = pool
             .install(|| {
                 Module::new(
@@ -186,8 +203,8 @@ impl<G: Guest> Compiler<G> {
     fn file(&self, directory: &Path, key: &Key) -> PathBuf {
         let mut hasher = blake3::Hasher::new();
         hasher.update(TRANSLATOR_BUILD.as_bytes());
-        // The back end, the guest, the host's answer, and the output's memory widths.
-        hasher.update(OUTPUT_FORM.as_bytes());
+        // The executor, the guest, the host's answer, and the output's memory widths.
+        hasher.update(output_form().as_bytes());
         hasher.update(&(G::ID as u32).to_le_bytes());
         hasher.update(&G::host_key(self.host).to_le_bytes());
         hasher.update(&key.offer.to_le_bytes());
@@ -222,19 +239,18 @@ impl<G: Guest> Compiler<G> {
             rest = after;
             Some(taken)
         };
-        const WORD: usize = size_of::<u64>();
         let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word"));
-        let count = word(take(WORD)?);
+        let count = word(take(CACHE_WORD)?);
         let (mut modules, mut pieces) = (Vec::new(), Vec::new());
         for _ in 0..count {
-            let length = usize::try_from(word(take(WORD)?)).ok()?;
-            let list: Vec<u64> = take(length.checked_mul(WORD)?)?
-                .as_chunks::<WORD>()
+            let length = usize::try_from(word(take(CACHE_WORD)?)).ok()?;
+            let list: Vec<u64> = take(length.checked_mul(CACHE_WORD)?)?
+                .as_chunks::<CACHE_WORD>()
                 .0
                 .iter()
                 .map(|bytes| u64::from_le_bytes(*bytes))
                 .collect();
-            let length = usize::try_from(word(take(WORD)?)).ok()?;
+            let length = usize::try_from(word(take(CACHE_WORD)?)).ok()?;
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
             let module = unsafe { Module::deserialize(engine, take(length)?) }.ok()?;
@@ -259,17 +275,12 @@ impl<G: Guest> Compiler<G> {
             bytes.extend((serialised.len() as u64).to_le_bytes());
             bytes.extend(serialised);
         }
-        // A name no other writer uses, in this process or another sharing the directory.
-        static WRITES: AtomicU64 = AtomicU64::new(0);
-        let write = WRITES.fetch_add(1, Ordering::Relaxed);
-        let partial = file.with_extension(format!("partial-{}-{write}", std::process::id()));
-        let written = std::fs::create_dir_all(file.parent().expect("a directory"))
-            .and_then(|()| std::fs::write(&partial, &bytes))
-            .and_then(|()| std::fs::rename(&partial, file));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&partial);
-        }
-        written
+        let directory = file.parent().expect("a directory");
+        std::fs::create_dir_all(directory)?;
+        let mut partial = tempfile::NamedTempFile::new_in(directory)?;
+        partial.write_all(&bytes)?;
+        partial.persist(file)?;
+        Ok(())
     }
 
     /// The compiled translation of a blob from its starts, from the cache or made now, where it came
@@ -379,7 +390,7 @@ impl<G: Guest> Compiler<G> {
     }
 }
 
-/// A slow path the cache's directory took, for the back end to count: why, its detail and the time
+/// A slow path the cache's directory took, for the executor to count: why, its detail and the time
 /// it cost. The run goes on either way.
 struct CacheSlowPath {
     reason: &'static str,
@@ -398,7 +409,7 @@ impl<G: Guest> Drop for Compiler<G> {
     }
 }
 
-/// One translation a back end used: where, how, and what it cost.
+/// One translation an executor used: where, how, and what it cost.
 #[derive(Clone, Debug)]
 pub struct Translated {
     pub start: u64,
@@ -413,7 +424,7 @@ pub struct Translated {
     pub origin: Origin,
 }
 
-/// The WebAssembly back end for guest `G`.
+/// The WebAssembly executor for guest `G`.
 pub struct CpuSide<G: Guest> {
     compiler: Arc<Compiler<G>>,
     look_ahead: LookAhead,
@@ -455,7 +466,7 @@ struct Running {
     code_dropped: bool,
 }
 
-/// One guest process: its store, its memories and what the back end keeps about its pages and code.
+/// One guest process: its store, its memories and what the executor keeps about its pages and code.
 struct Process<G: Guest> {
     /// None while one of its threads runs.
     store: Option<Store<Data<G>>>,
@@ -496,12 +507,12 @@ const LOCK_SHARED: u8 = 1;
 /// the same memory, whose copy alone holds the writes until the copies are made.
 const LOCK_VIEW: u8 = 2;
 
-/// What the back end keeps about one guest page.
+/// What the executor keeps about one guest page.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Page {
     /// What the kernel last said the page allows.
     allows: Permissions,
-    /// The back end's write locks on it, by reason bit.
+    /// The executor's write locks on it, by reason bit.
     locks: u8,
     /// It may hold anything but zeros: given access or written since last zeroed.
     data: bool,
@@ -515,8 +526,10 @@ impl Page {
     };
 }
 
-/// Pages one chunk of the records covers: 16 MiB of guest memory.
-const CHUNK: usize = 4096;
+/// Guest memory one chunk of the records covers.
+const CHUNK_BYTES: u64 = 16 << 20;
+/// Pages one chunk of the records covers.
+const CHUNK: usize = (CHUNK_BYTES / PAGE_SIZE) as usize;
 
 /// Every page's record, in chunks that copies of a process share until one of them changes it, so a
 /// fork copies what the process uses, not its whole address space. A chunk not there holds nothing.
@@ -691,7 +704,7 @@ impl<G: Guest> CpuSide<G>
 where
     G: Guest<Block = RegisterBlock>,
 {
-    /// A back end translating at `look_ahead` for `optimise`, with the CPU features `offer` claims.
+    /// An executor translating at `look_ahead` for `optimise`, with the CPU features `offer` claims.
     pub fn new(
         compiler: Arc<Compiler<G>>,
         look_ahead: LookAhead,
@@ -775,12 +788,12 @@ where
         }
     }
 
-    /// Bytes of a thread's state. They are the state memory's, which is shared, not the back end's.
+    /// Bytes of a thread's state. They are the state memory's, which is shared, not the executor's.
     #[allow(clippy::mut_from_ref)]
     fn block_bytes(&self, memory: MemoryId, block_at: u32, length: usize) -> &mut [u8] {
         let process = self.process(memory);
         // SAFETY: inside the state memory's thread blocks; no guest thread runs or is in a hook that
-        // reads these bytes while the back end changes them.
+        // reads these bytes while the executor changes them.
         unsafe { std::slice::from_raw_parts_mut(process.state_base.add(block_at as usize), length) }
     }
 
@@ -1215,7 +1228,7 @@ where
     }
 
     /// A process with a new store and memories, all zeros, where every page allows nothing.
-    fn new_process(&self, id: MemoryId) -> Result<Process<G>, CpuError> {
+    fn new_process(&mut self, id: MemoryId) -> Result<Process<G>, CpuError> {
         let engine = self.compiler.engine.clone();
         let mut store = Store::new(
             &engine,
@@ -1244,14 +1257,19 @@ where
         store.limiter(|data| &mut data.limits);
         let layout = self.layout;
         let pages = layout.ceiling / memory::wasm_page();
-        let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages)))
-            .map_err(|_| CpuError::OutOfMemory)?;
+        let memories =
+            Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).and_then(|memory| {
+                SharedMemory::new(
+                    &engine,
+                    MemoryType::shared(layout.state_pages, layout.state_pages),
+                )
+                .map(|state| (memory, state))
+            });
+        let Ok((memory, state)) = memories else {
+            self.slow_path(reason::PROCESS_MEMORY_REFUSED, 0, 0);
+            return Err(CpuError::OutOfMemory);
+        };
         let base = memory.data_ptr(&store);
-        let state = SharedMemory::new(
-            &engine,
-            MemoryType::shared(layout.state_pages, layout.state_pages),
-        )
-        .map_err(|_| CpuError::OutOfMemory)?;
         let state_base = state.data().as_ptr() as *mut u8;
         let hooks = hooks::<G>(&mut store);
         let pages = layout.permission_pages as usize;
@@ -1276,7 +1294,7 @@ where
         })
     }
 
-    /// Makes `into`, a new process, a copy of `source` (of this back end or another of the same guest):
+    /// Makes `into`, a new process, a copy of `source` (of this executor or another of the same guest):
     /// every page that may hold data copied exactly, the same pages' permissions, locks and blocks
     /// shown, and, with `code`, the same translations at the same slots. Threads are not copied.
     fn copy_from(&self, into: &mut Process<G>, source: &Process<G>, code: bool) {
@@ -1693,10 +1711,10 @@ fn instantiate<G: Guest>(
     Instance::new(&mut store, module, &imports).expect("an instance of a translated module")
 }
 
-/// The back end a hook's store belongs to.
+/// The executor a hook's store belongs to.
 fn side<'a, G: Guest>(caller: &Caller<'_, Data<G>>) -> &'a mut CpuSide<G> {
-    // SAFETY: set by `run` for the call in progress, which has given up its own use of the back end
-    // until the call returns; the running store is not inside the back end.
+    // SAFETY: set by `run` for the call in progress, which has given up its own use of the executor
+    // until the call returns; the running store is not inside the executor.
     unsafe { &mut *caller.data().side }
 }
 
@@ -1897,11 +1915,6 @@ where
 {
     let side = side(caller);
     let (memory, thread) = (caller.data().memory, caller.data().thread);
-    // Pages under the view lock do not hold what the guest wrote through another page yet; a step ends
-    // here.
-    if !side.process(memory).viewing.is_empty() || side.stepping.is_some() {
-        side.flush(memory);
-    }
     // Code runs only from pages that allow it, as on Linux.
     let page = address / PAGE_SIZE;
     let runs = side
@@ -1920,6 +1933,23 @@ where
     }
     let index = side.range_at(memory, address);
     let range = side.process(memory).ranges[index].range.clone();
+    let record = &side.process(memory).ranges[index];
+    // A new run is translated with its image's starts, read from beyond the range.
+    let new_run =
+        !exact && !record.changed && !record.covered.iter().any(|run| run.contains(&address));
+    // Pages under the view lock do not hold what the guest wrote through another page yet, so they
+    // are brought up to date before code is read from them; a step ends here. Otherwise the locks
+    // stay, so that a write let through for the instruction about to run is not locked again first.
+    let code_pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
+    let viewed = side
+        .process(memory)
+        .viewing
+        .range(code_pages)
+        .next()
+        .is_some();
+    if new_run || viewed || side.stepping.is_some() {
+        side.flush(memory);
+    }
     let instance = side.threads[&thread]
         .instance
         .clone()
@@ -1936,8 +1966,8 @@ where
             .expect("the exact slot");
         return 1;
     }
-    let code = &side.process(memory).ranges[index];
-    if !code.changed && !code.covered.iter().any(|run| run.contains(&address)) {
+    if new_run {
+        let code = &side.process(memory).ranges[index];
         let first = code.covered.is_empty();
         let before = code.hash.clone();
         let run = side.executable_run(memory, &range, &code.covered, address);
@@ -2670,7 +2700,10 @@ where
                 process.next_block += 1;
                 (process.next_block - 1) * bytes
             }
-            None => return Err(CpuError::OutOfMemory),
+            None => {
+                self.slow_path(reason::THREAD_BLOCKS_USED_UP, u64::from(blocks), 0);
+                return Err(CpuError::OutOfMemory);
+            }
         };
         self.block_bytes(memory, block_at, bytes as usize).fill(0);
         let id = ThreadId(self.fresh());
@@ -2716,6 +2749,7 @@ mod tests {
         CHUNK, Carry, Compiler, Cpu, CpuSide, Execution, Exit, Leaving, LookAhead, MemoryId,
         Optimise, Page, Pages, Permissions, RegisterBlock, Resume, ThreadId, Turn,
     };
+    use wcontainers_abi::LOWEST_ADDRESS;
     use wcontainers_arm64::Arm64;
     use zerocopy::FromZeros;
 
@@ -2785,20 +2819,21 @@ mod tests {
             let mut cpu =
                 CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
             let memory = cpu.memory_new().unwrap();
-            code(&mut cpu, memory, 0x10000);
-            let first = start(&mut cpu, memory, 0x10000);
-            let other = start(&mut cpu, memory, 0x10000);
+            let (first_code, second_code) = (LOWEST_ADDRESS, 2 * LOWEST_ADDRESS);
+            code(&mut cpu, memory, first_code);
+            let first = start(&mut cpu, memory, first_code);
+            let other = start(&mut cpu, memory, first_code);
             let (block_at, made) = {
                 let record = &cpu.threads[&first];
                 let instance = record.instance.as_ref().expect("instances made at its run");
                 (record.block_at, format!("{:?}", instance.instance))
             };
             cpu.thread_drop(first);
-            code(&mut cpu, memory, 0x20000);
-            run_from(&mut cpu, other, 0x20000);
+            code(&mut cpu, memory, second_code);
+            run_from(&mut cpu, other, second_code);
             let loads = cpu.process(memory).loads.len();
             assert!(cpu.process(memory).kept[&block_at].loads < loads);
-            let next = start(&mut cpu, memory, 0x20000);
+            let next = start(&mut cpu, memory, second_code);
             let record = &cpu.threads[&next];
             assert_eq!(record.block_at, block_at);
             let instance = record.instance.as_ref().expect("instances");
@@ -2812,8 +2847,31 @@ mod tests {
         }
     }
 
+    /// A process whose thread blocks are all in use refuses a new thread as out of memory, counted
+    /// and warned with how many blocks a process has.
+    #[test]
+    fn a_thread_past_the_blocks_is_counted_and_warned() {
+        let mut cpu =
+            CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
+        let memory = cpu.memory_new().unwrap();
+        let blocks = cpu.layout.blocks();
+        for _ in 0..blocks {
+            cpu.thread_new(memory).expect("a block");
+        }
+        assert_eq!(cpu.thread_new(memory), Err(super::CpuError::OutOfMemory));
+        let counted = cpu
+            .counters()
+            .into_iter()
+            .find(|c| c.reason == super::reason::THREAD_BLOCKS_USED_UP)
+            .expect("counted");
+        assert_eq!(counted.count, 1);
+        assert!(cpu.unsent.iter().any(|w| {
+            w.reason == super::reason::THREAD_BLOCKS_USED_UP && w.detail == u64::from(blocks)
+        }));
+    }
+
     /// A compiler copied into a fork of this process, where its pool's threads are not, is dropped
-    /// there whatever those threads were doing at the fork, as a save's copy drops the back end it
+    /// there whatever those threads were doing at the fork, as a save's copy drops the executor it
     /// was brought back from.
     #[test]
     fn a_compiler_copied_by_fork_is_dropped_there() {
@@ -2891,7 +2949,7 @@ mod tests {
 /// How the translator works for a container: it changes speed, never behaviour, and is part of
 /// every cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TranslatorSettings {
+pub struct TranslatorConfig {
     pub look_ahead: LookAhead,
     pub optimise: Optimise,
 }
@@ -2901,7 +2959,7 @@ where
     G: Guest<Block = RegisterBlock>,
 {
     type Shared = Arc<Compiler<G>>;
-    type TranslatorSettings = TranslatorSettings;
+    type TranslatorConfig = TranslatorConfig;
     type Offer = G::Offer;
     const ARCHITECTURE: &'static str = match G::ID {
         GuestId::Arm64 => "arm64",
@@ -2909,19 +2967,19 @@ where
         GuestId::Rv64 => "riscv64",
     };
 
-    fn shared(settings: &RuntimeSettings) -> Arc<Compiler<G>> {
-        Compiler::new(settings.cache.clone())
+    fn shared(config: &RuntimeConfig) -> Arc<Compiler<G>> {
+        Compiler::new(config.cache.clone())
     }
 
     fn new(
         shared: &Arc<Compiler<G>>,
-        translator_settings: &TranslatorSettings,
+        translator_config: &TranslatorConfig,
         offer: &G::Offer,
     ) -> Self {
         CpuSide::new(
             shared.clone(),
-            translator_settings.look_ahead,
-            translator_settings.optimise,
+            translator_config.look_ahead,
+            translator_config.optimise,
             *offer,
         )
     }

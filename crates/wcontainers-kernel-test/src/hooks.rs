@@ -8,6 +8,10 @@ use wcontainers_kernel::{
     task_id_after,
 };
 
+/// The embedder guest's `interrupted` sender that leaves the signal to the embedder (guest/embedder.c),
+/// a word of its own that shares its spelling with the look-ahead none.
+pub const EMBEDDER_SENDS: &str = "none";
+
 /// A test's side of the kernel's hooks and task id calls, for the tests that act at some of them;
 /// each left alone does nothing, or for task ids, counts as the kernel's default does.
 pub trait Hooks: Send {

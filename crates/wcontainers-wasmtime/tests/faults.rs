@@ -9,7 +9,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use zerocopy::FromZeros;
 
-const CODE: u64 = 0x10000;
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
 /// `ldr x0, [x1]; svc #0` at the start, and a handler `movz x0, #9; svc #0` after it.
 const PROGRAM: [u32; 4] = [0xf940_0020, 0xd400_0001, 0xd280_0120, 0xd400_0001];
 const HANDLER: u64 = CODE + 8;

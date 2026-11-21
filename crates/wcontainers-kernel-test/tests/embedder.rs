@@ -17,7 +17,7 @@ use wcontainers_kernel::{
     WatchesFor, reason, task_id_after,
 };
 use wcontainers_kernel_test::driver::{self, Run};
-use wcontainers_kernel_test::hooks::Hooks;
+use wcontainers_kernel_test::hooks::{EMBEDDER_SENDS, Hooks};
 use wcontainers_kernel_test::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel_test::{busybox, guest_directory_entry};
 
@@ -2167,8 +2167,12 @@ fn a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends() 
                 watch_lifted: false,
             };
             let delivered = sender.delivered.clone();
-            let run =
-                run_embedder_below(&["interrupted", "none"], Some(Box::new(sender)), seed, None);
+            let run = run_embedder_below(
+                &["interrupted", EMBEDDER_SENDS],
+                Some(Box::new(sender)),
+                seed,
+                None,
+            );
             let label = format!("{sending:?}, seed {seed}");
             assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
             let delivered = delivered.lock().unwrap();

@@ -1,5 +1,5 @@
 //! A duplicated memory holds what the source held, shows the same blocks of shared pages, runs the
-//! same translated code, and goes its own way afterwards; a back end brought back from another holds
+//! same translated code, and goes its own way afterwards; an executor brought back from another holds
 //! the same memories and threads and translates again.
 
 use wcontainers_abi::{
@@ -10,7 +10,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, Origin};
 use zerocopy::FromZeros;
 
-const CODE: u64 = 0x10000;
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
 /// `ldr x0, [x1]; svc #0`: gives the word at x1 to a system call.
 const PROGRAM: [u32; 2] = [0xf940_0020, 0xd400_0001];
 const HEAP: u64 = 0x40_0000;
@@ -138,7 +138,7 @@ fn a_duplicate_is_exact_and_its_own_none() {
 }
 
 #[test]
-fn a_back_end_brought_back_holds_the_same_and_translates_again() {
+fn an_executor_brought_back_holds_the_same_and_translates_again() {
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
     let (memory, block) = parent(&mut cpu);
     let thread = cpu.thread_new(memory).unwrap();
@@ -167,16 +167,16 @@ fn a_back_end_brought_back_holds_the_same_and_translates_again() {
     assert_eq!(load(&mut back, memory, SHOWN + PAGE_SIZE), 9);
 }
 
-/// In a copy of this process made by fork, which holds only the forking thread, a back end brought
+/// In a copy of this process made by fork, which holds only the forking thread, an executor brought
 /// back translates and compiles new code in its own pool and runs it.
 #[test]
-fn a_back_end_brought_back_in_a_copy_of_the_process_compiles_there() {
+fn an_executor_brought_back_in_a_copy_of_the_process_compiles_there() {
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
     let (memory, _) = parent(&mut cpu);
     let thread = cpu.thread_new(memory).unwrap();
     // Rayon's global pool has threads here, which the copy will not have.
     rayon::join(|| {}, || {});
-    // SAFETY: the copy only runs the back end and leaves with `_exit`.
+    // SAFETY: the copy only runs the executor and leaves with `_exit`.
     let child = unsafe { libc::fork() };
     assert!(child >= 0, "fork");
     if child == 0 {
@@ -223,7 +223,7 @@ fn a_duplicate_made_after_the_host_process_forked_is_exact() {
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
     let (memory, _) = parent(&mut cpu);
     cpu.memory_duplicate(memory).unwrap();
-    // SAFETY: the copy only uses the back end and leaves with `_exit`.
+    // SAFETY: the copy only uses the executor and leaves with `_exit`.
     let child = unsafe { libc::fork() };
     assert!(child >= 0, "fork");
     if child == 0 {
