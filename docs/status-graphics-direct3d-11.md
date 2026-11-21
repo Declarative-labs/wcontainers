@@ -617,41 +617,36 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
-Main run 1 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
-the queue, not alone except the load times; other tracks' jobs shared it (the shaders track's
-display-reset hazard jobs held the queue for about 25 minutes before the WebGL 2 cases). Code: main
-as it moved under other tracks' commits from d6cdc8d9 (the bar, scratch main/q5-final.sh m2,
-logs/m2-*) and 1b47d3dc (Wine's two files and the load times, m3-*); this track's two crates are
-those of 5e34f8ff throughout.
-- Lint of both builds clean (m2-lint, 10:37). Library (m2-lib, 10:37 to 10:47): com 15 pass,
+Main run 2 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
+the queue, not alone except the load times; other tracks' display-reset hazard jobs held the queue
+twice (about 12:44 to 12:55 and 13:13 to 13:37). Code: main at f6b24e8a (the bar, scratch
+main/q5-final.sh m2b, logs/m2b-*), which holds the video refusal and dcf9fc21's shader.rs;
+the literal check, lint, library suite and load times again at the final head (m2c-*, below).
+- Lint of both builds clean (m2b-lint, 12:34). Library (m2b-lib, 12:34 to 12:44): com 15 pass,
   1 ignored; programs 55 pass, 3 ignored. The WebGL 2 build's 10_0 cases: 5 pass, 1 ignored
-  (m2-webgllib). Front 60, unit 5, cache 1 on the rented x86 machine (96 cores, load 6 to 42,
-  logs/m2-front.log).
-- Wine (m3-wine, m3-wine10, 11:42 to 11:47): d3d11 151 of 166, d3d10core 110 of 111, the same
-  failing tests as before (Gap list). Through the WebGL 2 build d3d10core 98 of 111, the same 13
-  (m2-wine10gl).
+  (m2b-webgllib). Front 60, unit 6, cache 1 on the rented x86 machine (96 cores, load 2 to 4,
+  m2b-front; HEAD 20066035 exported without other tracks' uncommitted edits).
+- Wine (m2b-wine, m2b-wine10, 12:55 to 12:59): d3d11 151 of 166, d3d10core 110 of 111, the same
+  failing tests as before (Gap list); test_video_support now fails 1 check of 49 instead of
+  crashing. Through the WebGL 2 build d3d10core 98 of 111, the same 13 (m2b-wine10gl).
 - Scenes through the library 135 pass, 0 fail, 4 absent; the WebGL 2 build's 95 pass, 17 fail,
-  30 absent (m2-bar), as before.
-- Programs (m2-programs, 11:20 to 11:22): the bar's three (godot-platformer-3d-d3d11,
+  30 absent (m2b-scenes, m2b-webgl), as before.
+- Programs (m2b-programs, 13:37 to 13:38): the bar's three (godot-platformer-3d-d3d11,
   chocolate-doom, atg-simplelightingpc) match real Direct3D on every compared frame, and so do
   atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
-  to 07; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (8 pixels, 4 beyond their
-  tiles' allowance) differ as before. bgfx (m2-bgfx): 26-occlusion differs by its one overlay line
-  (Gap list), the rest as before.
-- Module sizes (section 10), release builds 11:23 to 11:29 (m2-sizes): `wcontainers_directx.dll`
-  14,333,440 bytes on WebGPU and 9,909,248 bytes on WebGL 2; the forwarders 1,024 bytes each;
-  the Direct3D 12 track's `wcontainers_d3d12.dll` 13,766,656 bytes. At 1b47d3dc that library no
-  longer builds (its code uses the shaders crate's private `container` module; m3-sizes), so its
-  load time below is of the 5e34f8ff build.
-- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (m3-load,
-  11:47): the system's d3d11.dll 1,156 us; ours on WebGPU 1,627 us; ours on WebGL 2 1,099 us;
-  `wcontainers_d3d12.dll` 1,625 us.
-- Building ahead (plan 4.4; main/run-warm.sh, five programs run twice from one cache directory,
-  11:29 to 11:33, m2-warm): Godot 3D's cold run built 124 ahead and drew none, 66 at their first
-  draw; its warm start built its 61 recorded combinations at start and drew all 61, built 124
-  ahead and drew none, and 26 at their first draw. Godot 2D: 13 at first draw cold; warm, 3 built
-  at start and drawn, 10 at first draw. Why building ahead does not hit: Differences from the RTX
-  3080 (traced, programs/m1dbg).
+  to 07; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (frame 10: 8 pixels, 4 beyond
+  their tiles' allowance) differ as before (Gap list).
+- Module sizes (section 10), release builds at 13:40 (m2b-sizes): `wcontainers_directx.dll`
+  14,340,608 bytes on WebGPU and 9,916,928 bytes on WebGL 2; the forwarders 1,024 bytes each; the
+  Direct3D 12 track's `wcontainers_d3d12.dll` 13,770,752 bytes.
+- Building ahead (m2b-warm): as at main run 1. Godot 3D's warm start built its 61 recorded
+  combinations at start and drew all 61, built 124 ahead and drew none, 26 at their first draw;
+  Godot 2D warm 3 built at start and drawn, 10 at first draw.
+- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians, of the
+  modules m2b-sizes built (m2c-load, 14:19): the system's d3d11.dll 1,149 us; ours on WebGPU
+  1,630 us; ours on WebGL 2 1,095 us; `wcontainers_d3d12.dll` 1,610 us.
+- At the final head 5b323d97 (m2c, 13:59 to 14:19): the literal check finds no line of this
+  track's; lint of both builds clean; library com 15 pass, 1 ignored, programs 55 pass, 3 ignored.
 
 Earlier runs' measurements are in this file's git history.
 
