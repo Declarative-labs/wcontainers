@@ -12,8 +12,8 @@
 //           or joins them; each step is marked with sched_yield and shows /proc/self/maps.
 //   writer: a parent maps a file shared and writable and waits for its child, which maps the same
 //           file read-only, marks it with sched_yield, shows /proc/self/maps and exits.
-//   memory: a forked child, a vfork child that runs this program again, and a child cloned with
-//           CLONE_VM, each waited for.
+//   memory-id: a forked child, a vfork child that runs this program again, and a child cloned with
+//              CLONE_VM, each waited for.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -311,7 +311,7 @@ int main(int count, char **arguments) {
     if (strcmp(mode, "writer") == 0) {
         return edges_writer();
     }
-    if (strcmp(mode, "memory") == 0) {
+    if (strcmp(mode, "memory-id") == 0) {
         return edges_memory(arguments[0]);
     }
     if (strcmp(mode, "nothing") == 0) {

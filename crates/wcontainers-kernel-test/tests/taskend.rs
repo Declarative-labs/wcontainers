@@ -51,6 +51,7 @@ fn ours(arguments: &[&str], hooks: Box<dyn Hooks>, seed: u64) -> Run {
         backend: None,
         cached: false,
         published: &[],
+        root_image: None,
         address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
     };
     let prepared = driver::Prepared {

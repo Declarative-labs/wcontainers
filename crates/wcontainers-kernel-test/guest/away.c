@@ -11,7 +11,7 @@
 //   pieces:  a parent maps a file read-only at two places; its child maps it writable, sleeps and
 //            exits while the parent waits; the parent unmaps both.
 //   sent:    a thread waits in a read; with "self" the main thread sends it a signal it handles.
-//   socket:  a child waits in a socket read with a receive timeout; with "stop" the parent stops
+//   socket:  a child waits in a socket read with a receive timeout; with "stopping" the parent stops
 //            and continues it, with "handler" it sends a signal the child handles with SA_RESTART.
 
 #define _GNU_SOURCE
@@ -307,7 +307,7 @@ static int away_socket(const char *how) {
         _exit(0);
     }
     away_sleep(AWAY_PARENT_MS);
-    if (strcmp(how, "stop") == 0) {
+    if (strcmp(how, "stopping") == 0) {
         kill(child, SIGSTOP);
     }
     if (strcmp(how, "handler") == 0) {
@@ -316,7 +316,7 @@ static int away_socket(const char *how) {
     away_sleep(AWAY_PARENT_MS);
     // A mark the embedder's test acts on.
     getppid();
-    if (strcmp(how, "stop") == 0) {
+    if (strcmp(how, "stopping") == 0) {
         kill(child, SIGCONT);
     }
     waitpid(child, NULL, 0);

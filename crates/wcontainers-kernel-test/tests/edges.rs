@@ -57,6 +57,7 @@ fn ours(arguments: &[&str], hooks: Box<dyn Hooks>, seed: u64) -> Run {
         backend: None,
         cached: false,
         published: &[],
+        root_image: None,
         address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
     };
     let prepared = driver::Prepared {
@@ -598,11 +599,11 @@ impl Hooks for MemoryIds {
 
 #[test]
 fn a_child_shares_its_parents_memory_id_only_while_it_shares_the_memory() {
-    let theirs = theirs(&["memory"]);
+    let theirs = theirs(&["memory-id"]);
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let ids = MemoryIds::default();
         let seen = ids.0.clone();
-        let run = ours(&["memory"], Box::new(ids), seed);
+        let run = ours(&["memory-id"], Box::new(ids), seed);
         assert_eq!(stdout(&run), theirs, "seed {seed}");
         let seen = seen.lock().unwrap().clone();
         // The first process and its program, a forked child, a vfork child and the program it
