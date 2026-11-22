@@ -15,7 +15,7 @@ use std::pin::{Pin, pin};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use etherparse::{
     IpDscp, IpEcn, IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6FragmentHeaderSlice,
@@ -1894,6 +1894,17 @@ pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
             ),
             Some(TransmitTimeError::InvalidParameter),
         ),
+        // A time of another clock than the schedule's is invalid; it is one the schedule's clock would only miss.
+        // Linux tells a rejection by its time alone, so it goes before the missed send of the same time.
+        (
+            TransmitTime {
+                clock: TransmitClock::Realtime,
+                at: now + SCHEDULED_AHEAD,
+                mode: TransmitTimeMode::Strict,
+                errors: Report::Requested,
+            },
+            Some(TransmitTimeError::InvalidParameter),
+        ),
         (
             time(
                 now + SCHEDULED_AHEAD,
@@ -1901,19 +1912,6 @@ pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
                 Report::Requested,
             ),
             Some(TransmitTimeError::Missed),
-        ),
-        // A time on another clock than the schedule's is invalid however near it is on its own clock.
-        (
-            TransmitTime {
-                clock: TransmitClock::Realtime,
-                at: SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("a time after the epoch")
-                    + SCHEDULED_AHEAD,
-                mode: TransmitTimeMode::Strict,
-                errors: Report::Requested,
-            },
-            Some(TransmitTimeError::InvalidParameter),
         ),
     ]
 }
@@ -2777,7 +2775,10 @@ pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
 ) -> ReadyFor {
     match poll_with(call.as_mut(), wakes) {
         Poll::Pending => {
-            woken(call.as_mut(), wakes, "the facts it waits for");
+            if !wakes.first_came() {
+                let now = poll_with(call.as_mut(), wakes);
+                panic!("the wait is not woken; polled again, it gives {now:?}");
+            }
             finished(poll_with(call, wakes))
         }
         ready => finished(ready),
