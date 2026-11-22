@@ -7,12 +7,12 @@ use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
     BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall,
-    DrawRange, Extent, FillMode, Filter, Format, FrontFace, HelperValue, Interpolation, MapIntent,
-    Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend,
-    SamplerDesc, SlotKind, StageSet, StepMode, StoreOp, TEXEL_BUFFER_TEXTURE_WIDTH,
-    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    DrawRange, Extent, FillMode, Filter, Format, FrontFace, GpuError, HelperValue, Interpolation,
+    MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
+    RenderTargetBlend, SamplerDesc, SlotKind, StageSet, StepMode, StoreOp,
+    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
+    VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -1060,6 +1060,15 @@ pub fn ours<B: Backend + 'static>(
     draw: &Draw<'_>,
     provoking: ProvokingVertex,
 ) -> Vec<u8> {
+    try_ours(b, draw, provoking).unwrap()
+}
+
+/// [`ours`], or the back end's refusal of the converted programs.
+pub fn try_ours<B: Backend + 'static>(
+    b: &mut B,
+    draw: &Draw<'_>,
+    provoking: ProvokingVertex,
+) -> Result<Vec<u8>, GpuError> {
     // As a front links the stages: the vertex program writes each output as the pixel program reads it.
     let setup = &draw.setup;
     let ps = if setup.no_pixel_shader {
@@ -1078,14 +1087,12 @@ pub fn ours<B: Backend + 'static>(
         ..setup.vs_key.clone()
     };
     let vs = convert(draw.vs, &key, None).unwrap();
-    let vertex = b.create_shader(&vs.modules[0]).unwrap();
-    let fragment = b.create_shader(&ps.modules[0]).unwrap();
-    let program = b
-        .create_program(&Program::Render {
-            vertex: &vertex,
-            fragment: Some(&fragment),
-        })
-        .unwrap();
+    let vertex = b.create_shader(&vs.modules[0])?;
+    let fragment = b.create_shader(&ps.modules[0])?;
+    let program = b.create_program(&Program::Render {
+        vertex: &vertex,
+        fragment: Some(&fragment),
+    })?;
 
     let constants = buffer(b, &draw.constants, BufferUsage::UNIFORM);
     let (texture_object, view) = texture_levels(
@@ -1618,24 +1625,25 @@ pub fn ours<B: Backend + 'static>(
             },
         },
         &mut out,
-    )
-    .unwrap();
-    assert_eq!(
-        b.status(),
-        wcontainers_gpu::DeviceStatus::Ok,
-        "{}vertex {:?}, pixel {:?}, {} samples, depth {}, viewport {:?}, format {:?}",
-        (b as &dyn std::any::Any)
-            .downcast_ref::<wcontainers_gpu_webgl::WebGl>()
-            .map(|gl| format!("{}: ", gl.last_log()))
-            .unwrap_or_default(),
-        setup.vs_key.flags,
-        setup.ps_key,
-        setup.samples,
-        setup.depth,
-        setup.viewport,
-        draw.format
-    );
-    out
+    )?;
+    // A browser API reports a program it cannot run by losing the device at the draw.
+    if b.status() != wcontainers_gpu::DeviceStatus::Ok {
+        eprintln!(
+            "device lost: {}vertex {:?}, pixel {:?}, {} samples, depth {}, viewport {:?}, format {:?}",
+            (b as &dyn std::any::Any)
+                .downcast_ref::<wcontainers_gpu_webgl::WebGl>()
+                .map(|gl| format!("{}: ", gl.last_log()))
+                .unwrap_or_default(),
+            setup.vs_key.flags,
+            setup.ps_key,
+            setup.samples,
+            setup.depth,
+            setup.viewport,
+            draw.format
+        );
+        return Err(GpuError::DeviceLost);
+    }
+    Ok(out)
 }
 
 /// How many texels differ, and the largest difference of any channel (8-bit channels, or 32-bit

@@ -82,7 +82,7 @@ const CASES: [Case; 29] = [
         format: Format::Rgba32Uint,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: [Some("GLSL ES 3.00 has no bitfield operations"), None],
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
         dxil_against_11: false,
@@ -93,10 +93,7 @@ const CASES: [Case; 29] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: false,
-        not_on_webgl: [
-            Some("GLSL ES 3.00 has no bitfield operations (vs_fullscreen inserts bits)"),
-            None,
-        ],
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
         dxil_against_11: false,
@@ -118,7 +115,7 @@ const CASES: [Case; 29] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: [Some("GLSL ES 3.00 has no noperspective"), None],
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
         dxil_against_11: false,
@@ -207,7 +204,10 @@ const CASES: [Case; 29] = [
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [
-            Some("GLSL ES 3.00 has no bitfield operations (fxc extracts bits)"),
+            Some(
+                "ANGLE's translation to Direct3D 11 refuses fxc's continue inside a switch \
+                 (X3708), losing the device at the draw (the WebGL 2 track's)",
+            ),
             None,
         ],
         known_on_webgl: None,
@@ -308,11 +308,11 @@ const CASES: [Case; 29] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: [
-            Some("GLSL ES 3.00 has no textureGather"),
-            Some("GLSL ES 3.00 has no textureGather"),
-        ],
-        known_on_webgl: None,
+        not_on_webgl: [None, None],
+        known_on_webgl: Some(
+            "the back end's gathers by samples floor the texel position at full precision, where \
+             Direct3D rounds it to 8 bits of subtexel first (gap A31)",
+        ),
         dxil: true,
         dxil_against_11: false,
     },
@@ -358,10 +358,7 @@ const CASES: [Case; 29] = [
         format: Format::Rgba32Uint,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: [
-            Some("GLSL ES 3.00 has no bitfield operations (fxc inserts bits)"),
-            None,
-        ],
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
         dxil_against_11: false,
@@ -725,9 +722,30 @@ fn own_shaders_draw_as_direct3d_does() {
                 format!("webgpu-{route}"),
                 ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
             ));
-            match case.not_on_webgl[usize::from(dxil)] {
-                None => runs.push((format!("webgl-{route}"), ours(&mut gl, &draw, provoking))),
-                Some(why) => eprintln!("{name} webgl {route}: not drawn: {why}"),
+            // Always tried, so that a stated reason the back end no longer has cannot hide a draw.
+            let drawn = try_ours(&mut gl, &draw, provoking);
+            if drawn.is_err() {
+                // A refusal may lose the device; the next case draws on a new one.
+                gl = webgl();
+            }
+            match (drawn, case.not_on_webgl[usize::from(dxil)]) {
+                (Ok(texels), None) => runs.push((format!("webgl-{route}"), texels)),
+                (Err(e), Some(why)) => {
+                    eprintln!("{name} webgl {route}: refused as expected ({why}): {e:?}")
+                }
+                (Ok(texels), Some(why)) => {
+                    eprintln!(
+                        "{name} webgl {route}: drawn, though the case says it cannot be: {why}"
+                    );
+                    failures.push(format!(
+                        "{name} webgl-{route}: drawn against its stated reason"
+                    ));
+                    runs.push((format!("webgl-{route}"), texels));
+                }
+                (Err(e), None) => {
+                    eprintln!("{name} webgl {route}: refused: {e:?}");
+                    failures.push(format!("{name} webgl-{route}: refused"));
+                }
             }
         }
         for (back_end, texels) in runs {
