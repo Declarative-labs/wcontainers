@@ -8,6 +8,7 @@ cs_images.dxbc	ok views:R32Float ; glsl absent compute
 cs_one_d.dxbc	ok views:R32Float ; glsl absent compute
 cs_readonly.dxbc	ok ; glsl absent compute
 cs_shared.dxbc	ok ; glsl absent compute
+cs_structured_array.dxbc	unsupported UnboundedResourceArray
 cs_texels.dxbc	ok views:R32Float ; glsl absent compute
 cs_through.dxbc	ok views:R32Float through ; glsl absent compute
 cs_typed_array.dxbc	unsupported UnboundedResourceArray

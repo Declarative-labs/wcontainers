@@ -1,5 +1,5 @@
 cs_atomics.dxil	ok ; glsl absent compute
-cs_buffer_array.dxil	unsupported ResourceArray
+cs_buffer_array.dxil	unsupported UnboundedResourceArray
 cs_decrement.dxil	ok ; glsl absent compute
 cs_divide.dxil	ok ; glsl absent compute
 cs_escape.dxil	ok ; glsl absent compute
@@ -8,6 +8,7 @@ cs_images.dxil	ok views:R32Float ; glsl absent compute
 cs_one_d.dxil	ok views:R32Float ; glsl absent compute
 cs_readonly.dxil	ok ; glsl absent compute
 cs_shared.dxil	ok ; glsl absent compute
+cs_structured_array.dxil	unsupported UnboundedResourceArray
 cs_texels.dxil	ok views:R32Float ; glsl absent compute
 cs_through.dxil	ok views:R32Float through ; glsl absent compute
 cs_typed_array.dxil	unsupported UnboundedResourceArray
