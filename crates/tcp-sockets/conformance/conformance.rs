@@ -5519,6 +5519,11 @@ fn observed<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> Observed 
     }
 }
 
+/// What part of the first round trip measured RFC 6298's first variance estimate is.
+///
+/// https://www.rfc-editor.org/rfc/rfc6298#section-2
+const ROUND_TRIP_VARIANCE_SHARE: u128 = 2;
+
 /// Checks that a connection's information reads its state and what it carried, each end agreeing with the other.
 ///
 /// The window scales and options each end negotiated, the bytes sent, acknowledged and received, and the states a
@@ -5532,6 +5537,13 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
     assert_eq!(
         (client.state, server.state),
         (TcpState::Established, TcpState::Established)
+    );
+    // The client has measured one round trip, its SYN's, so RFC 6298's first estimate holds: the measurement and its half.
+    assert_eq!(client.round_trip_time, client.minimum_round_trip_time);
+    assert_eq!(
+        client.round_trip_time_variance.as_micros(),
+        client.round_trip_time.as_micros() / ROUND_TRIP_VARIANCE_SHARE,
+        "{client:?}"
     );
     assert_eq!(client.window_scales.send, server.window_scales.receive);
     assert_eq!(client.window_scales.receive, server.window_scales.send);
@@ -5657,6 +5669,18 @@ pub fn congestion_control_state_names_the_algorithm<S: TcpSockets>(sockets: S) {
                 }),
             ) => {
                 assert!(bandwidth.0 > u64::MIN, "{information:?}");
+                // No delivery rate is measured over less than the smallest round trip, so none is above every
+                // segment sent delivered in one.
+                let carried = self::information(&sockets, &pair.client);
+                let most = (u128::from(carried.segments_out.0)
+                    * u128::from(carried.send_maximum_segment_size.0)
+                    * Duration::from_secs(u64::from(true)).as_nanos())
+                .checked_div(carried.minimum_round_trip_time.as_nanos())
+                .expect("a smallest round trip measured");
+                assert!(
+                    u128::from(bandwidth.0) <= most,
+                    "{information:?} above {most} bytes a second"
+                );
                 assert!(pacing_gain.0 > u32::MIN, "{information:?}");
                 assert!(congestion_window_gain.0 > u32::MIN, "{information:?}");
             }
@@ -5729,6 +5753,11 @@ pub fn queues_count_unread_unacknowledged_and_unsent<S: TcpSockets>(sockets: S) 
 /// https://www.rfc-editor.org/rfc/rfc8200#section-5
 const IPV6_MINIMUM_MTU: u32 = 1280;
 
+/// How many times the send buffer's size a tuned check asks of the receive buffer, more than Linux's doubling.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const LARGER_BUFFER: usize = 4;
+
 /// Checks that the tuned values follow the settings given: buffers at least as asked, the low water and clamp as asked.
 ///
 /// The segment size within the one given before connect, quick acknowledgement as last set, a path MTU loopback
@@ -5742,9 +5771,11 @@ pub fn tuned_values_follow_the_settings<S: TcpSockets>(sockets: S) {
         ))],
     );
     let clamp = WindowSize(SETTING_BYTES as u32);
+    // Larger than the send buffer doubled, so that a receive buffer read from the send buffer is seen.
+    let receive_buffer = SETTING_BYTES * LARGER_BUFFER;
     for setting in [
         TcpSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(SETTING_BYTES))),
-        TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(SETTING_BYTES))),
+        TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(receive_buffer))),
         TcpSetting::ReceiveLowWater(ByteCount(READ_PART)),
         TcpSetting::WindowClamp(Some(clamp)),
         TcpSetting::QuickAcknowledgement(TcpQuickAcknowledgement::On),
@@ -5755,12 +5786,13 @@ pub fn tuned_values_follow_the_settings<S: TcpSockets>(sockets: S) {
     }
     let read = tuned(&sockets, &pair.client);
     assert!(read.send_buffer.0 >= SETTING_BYTES, "{read:?}");
-    assert!(read.receive_buffer.0 >= SETTING_BYTES, "{read:?}");
+    assert!(read.receive_buffer.0 >= receive_buffer, "{read:?}");
     assert_eq!(read.receive_low_water, ByteCount(READ_PART));
     assert_eq!(read.window_clamp, clamp);
     assert!(read.quick_acknowledgement, "{read:?}");
     assert!(read.maximum_segment_size.0 <= SEGMENT.0, "{read:?}");
     assert!(read.path_mtu.0 >= IPV6_MINIMUM_MTU, "{read:?}");
+    assert_eq!(read.path_mtu, information(&sockets, &pair.client).path_mtu);
     sockets
         .configure(
             &pair.client,
@@ -5844,13 +5876,17 @@ pub fn timestamp_reads_the_clock_in_its_unit<S: TcpSockets>(sockets: S) {
 /// first one's peer and its segment size.
 pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    // A small receive buffer on the client's side, so that its window and the server's differ; a small window on the
+    // server's side would bound the segment size the repaired client sends.
     let connected = sockets
         .connect(
             TcpProtocol::Tcp,
             OWNER,
             bind_any_port(ipv4_loopback()),
             local,
-            &[],
+            &[TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(
+                SMALL_RECEIVE_BUFFER,
+            )))],
             TcpFastOpen::Off,
         )
         .expect("connect");
@@ -5873,6 +5909,15 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
     let peer = repair_state(&sockets, &pair.server).expect("the server's repair state");
     assert_eq!(original.send_sequence, peer.receive_sequence);
     assert_eq!(original.receive_sequence, peer.send_sequence);
+    // Each end's send window is the window the other offered, the client's the smaller.
+    assert_eq!(
+        (original.window.send_window, original.window.receive_window),
+        (peer.window.receive_window, peer.window.send_window)
+    );
+    assert!(
+        original.window.receive_window.0 < original.window.send_window.0,
+        "{original:?}"
+    );
     assert_eq!(original.authentication, None);
     sockets
         .configure(&pair.server, TcpSetting::Repair(TcpRepair::Off))
@@ -5979,6 +6024,11 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
     );
     close(&sockets, restored_pair);
 }
+
+/// A receive buffer well below the window a connection offers by default, for a check whose two ends' windows differ.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const SMALL_RECEIVE_BUFFER: usize = 1 << 13;
 
 /// The send segment size a TCP connection assumes when no maximum segment size option came.
 ///
@@ -6219,6 +6269,8 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
         (ByteTotal(message), ByteTotal(message), ByteTotal(reply))
     );
     assert_eq!(server.bytes_received, ByteTotal(message));
+    // A token names its connection among those of its host, so the two ends of one on the same host differ.
+    assert_ne!(client.token, server.token);
     assert_eq!(client.write_sequence, client.send_unacknowledged);
     assert_eq!(client.receive_next, server.write_sequence);
     assert_eq!(server.receive_next, client.write_sequence);
@@ -6232,7 +6284,21 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
                 (subflow.local, subflow.peer),
                 (connected.local, listening.local)
             );
-            assert_eq!(subflow.information.state, TcpState::Established);
+            // The one subflow carried every byte, as the connection's own information reads.
+            let carried = subflow.information;
+            assert_eq!(carried.state, TcpState::Established);
+            assert_eq!(
+                (
+                    carried.bytes_received,
+                    carried.bytes_acknowledged.0 >= message
+                ),
+                (ByteTotal(reply), true),
+                "{carried:?}"
+            );
+            assert!(
+                carried.send_maximum_segment_size.0 > u16::MIN,
+                "{carried:?}"
+            );
         }
         other => panic!("the first subflow read {other:?}"),
     }
@@ -6270,28 +6336,48 @@ const NO_INTERFACE: InterfaceIndex = InterfaceIndex(u32::MIN);
 
 /// Checks that a connection asked to record the last header it received reads the interface and address it came to.
 ///
-/// One not asked, or no longer asked, reads none, over IPv4 and IPv6.
+/// And over IPv6 the hop-by-hop header its peer sent; one not asked, or no longer asked, reads none, over IPv4 and IPv6.
 pub fn last_received_header_records_where_the_last_packet_came<S: TcpSockets>(sockets: S) {
     let records = |report| TcpSetting::RecordsLastReceivedHeader(report);
-    for (address, destination) in [
-        (ipv4_loopback(), Some(Ipv4Addr::LOCALHOST)),
-        (ipv6_loopback(), None),
+    let hop_by_hop = [TcpSetting::Packet(IpPacketSetting::HopByHopOptions(
+        padding_header(),
+    ))];
+    // IPv4 carries no options here; the IPv6 client sends a hop-by-hop header with every packet.
+    for (address, destination, client_settings) in [
+        (ipv4_loopback(), Some(Ipv4Addr::LOCALHOST), &[][..]),
+        (ipv6_loopback(), None, &hop_by_hop[..]),
     ] {
         let recorded = pair_at(
             &sockets,
             address,
-            &[],
+            client_settings,
             &[TcpListenerSetting::Socket(records(Report::Requested))],
         );
         let plain_pair = pair_at(&sockets, address, &[], &[]);
         assert_carries_bytes(&sockets, &recorded);
         assert_carries_bytes(&sockets, &plain_pair);
-        let (fields, _) = last_received_header(&sockets, &recorded.server);
+        let (fields, recorded_header) = last_received_header(&sockets, &recorded.server);
         assert_eq!(
             (fields.interface, fields.specific_destination),
             (loopback_interface(), destination),
             "{address:?}"
         );
+        if client_settings.is_empty() {
+            assert!(recorded_header.is_empty(), "{recorded_header:?}");
+        } else {
+            // The header as sent, with the next header its sender filled in.
+            let extension = Ipv6RawExtHeaderSlice::from_slice(&recorded_header)
+                .expect("the recorded hop-by-hop header");
+            assert_eq!(
+                (
+                    extension.next_header(),
+                    extension.slice().len(),
+                    recorded_header.len()
+                ),
+                (IpNumber::TCP, PADDING_HEADER.len(), PADDING_HEADER.len())
+            );
+            assert!(extension.payload().iter().all(|&byte| byte == u8::MIN));
+        }
         let (fields, header) = last_received_header(&sockets, &plain_pair.server);
         assert_eq!((fields.interface, header.len()), (NO_INTERFACE, usize::MIN));
         sockets
@@ -6306,20 +6392,29 @@ pub fn last_received_header_records_where_the_last_packet_came<S: TcpSockets>(so
     }
 }
 
+/// A processor a listener is told to receive on, not the first, so that a reading of the first alone is seen.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const SET_PROCESSOR: ProcessorIndex = ProcessorIndex(3);
+
 /// Checks that a connection that received reads a processor it was received on, and a listener the one set or none.
 pub fn incoming_processor_is_read_as_received_or_set<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     assert_carries_bytes(&sockets, &pair);
-    assert!(matches!(
-        sockets.read_state(&pair.server, TcpQuery::IncomingProcessor),
-        Ok(TcpReading::IncomingProcessor(Some(_)))
-    ));
+    let processors = std::thread::available_parallelism().map_or(u32::MAX, |count| {
+        u32::try_from(count.get()).unwrap_or(u32::MAX)
+    });
+    match sockets.read_state(&pair.server, TcpQuery::IncomingProcessor) {
+        Ok(TcpReading::IncomingProcessor(Some(ProcessorIndex(index)))) => {
+            assert!(index < processors, "processor {index} of {processors}")
+        }
+        other => panic!("the connection's incoming processor read {other:?}"),
+    }
     let read =
         |listener| sockets.read_listener_state(listener, TcpListenerQuery::IncomingProcessor);
     let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
     assert_eq!(read(&listener), Ok(TcpReading::IncomingProcessor(None)));
-    let first = ProcessorIndex(u32::MIN);
-    for processor in [Some(first), None] {
+    for processor in [Some(ProcessorIndex(u32::MIN)), Some(SET_PROCESSOR), None] {
         sockets
             .configure(
                 &listener,

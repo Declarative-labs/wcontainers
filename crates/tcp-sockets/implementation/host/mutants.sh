@@ -179,9 +179,24 @@ mutant authentication-requirement-inverted "$state" 'requirement: if found.ao_re
 mutant authentication-key-never-held "$state" 'Ok(_) if asked.nkeys == ONE_KEY =>' 'Ok(_) if false =>'
 mutant multipath-sent-as-received "$state" 'bytes_sent: ByteTotal(found.bytes_sent),' 'bytes_sent: ByteTotal(found.bytes_received),'
 mutant subflow-addresses-swapped "$state" 'local: address(subflow.local)?,' 'local: address(subflow.remote)?,'
-mutant last-header-ipv4-unread "$state" $'uapi::IP_PKTOPTIONS,\n            &mut control.bytes,' $'uapi::IP_PKTOPTIONS,\n            &mut [],'
+mutant last-header-ipv4-unread "$state" $'uapi::IP_PKTOPTIONS,\n                &mut control.bytes,' $'uapi::IP_PKTOPTIONS,\n                &mut [],'
+mutant last-header-bytes-dropped "$state" 'header: &into[..written],' 'header: &into[..usize::MIN],'
+mutant last-header-room-of-the-packet-information "$state" $'uapi::IPV6_2292PKTOPTIONS,\n            &mut control.bytes,' \
+    $'uapi::IPV6_2292PKTOPTIONS,\n            &mut control.bytes[..super::PACKET_OPTIONS_ROOM],'
 mutant listener-state-refused "$implementation" 'self.read_socket_state(listener.socket.fd(), listener.family, query)' '{ let _ = (listener, query); Err(HostError::NotSupported) }'
 mutant incoming-processor-none "$state" 'NO_PROCESSOR => Ok(None),' 'processor if processor >= NO_PROCESSOR => Ok(None),'
+mutant incoming-processor-always-first "$state" '.map(|index| Some(ProcessorIndex(index)))' '.map(|_index| Some(ProcessorIndex(u32::MIN)))'
+mutant tuned-path-mtu-fixed "$state" 'path_mtu: MaximumTransmissionUnit(information.tcpi_pmtu),' 'path_mtu: MaximumTransmissionUnit(1500),'
+mutant tuned-receive-buffer-is-send "$state" 'receive_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_RCVBUF)?)?),' \
+    'receive_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_SNDBUF)?)?),'
+mutant information-rtt-is-variance "$state" 'round_trip_time: microseconds(info.tcpi_rtt),' 'round_trip_time: microseconds(info.tcpi_rttvar),'
+mutant bbr-bandwidth-halves-swapped "$state" 'u64::from(found.bandwidth_high) << u32::BITS | u64::from(found.bandwidth_low),' \
+    'u64::from(found.bandwidth_low) << u32::BITS | u64::from(found.bandwidth_high),'
+mutant multipath-token-zero "$state" 'token: MultipathToken(found.token),' 'token: MultipathToken(0),'
+mutant subflow-information-zeroed "$state" 'information: information_of(information, shortfalls)?,' \
+    'information: information_of(&{ let mut zeroed = *information; zeroed.bytes[8..].fill(0); zeroed }, shortfalls)?,'
+mutant repair-window-read-swapped "$state" $'send_window: WindowSize(window.snd_wnd),\n            maximum_window: WindowSize(window.max_window),\n            receive_window: WindowSize(window.rcv_wnd),' \
+    $'send_window: WindowSize(window.rcv_wnd),\n            maximum_window: WindowSize(window.max_window),\n            receive_window: WindowSize(window.snd_wnd),'
 status=0
 for index in "${!names[@]}"; do
     name=${names[$index]}
