@@ -63,6 +63,8 @@ use wcontainers_tcp_sockets::{
     TcpUrgency,
 };
 
+mod state;
+
 use super::{
     ABORT_CLOSED_IN_ORDER, HeldAddress, HostTcpConnection, HostTcpListener, HostTcpSockets,
     InterfaceAddresses, ReportedSend, TransmitReports,
@@ -119,10 +121,6 @@ const IPV6_RECORDS: &[u32] = &[
 ];
 
 /// The reasons the host could not honour a request, each counted by [`Shortfalls`].
-const NO_AUTHENTICATION_COUNTERS: &str = "setting the TCP Authentication Option counters of a connection or listener is not mapped to the host yet";
-const NO_AUTHENTICATION_REPAIR: &str =
-    "the TCP Authentication Option repair values are not mapped to the host yet";
-const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
 const ARRIVAL_INTERFACE_OF_THE_HANDSHAKE: &str = "Linux keeps for an IPv4 connection the interface of the segment that completed its handshake, which is given as its SYN's";
@@ -142,9 +140,7 @@ const CUT_REPORT_PACKET: &str = "a transmit report's packet was cut to the buffe
 const NO_STATISTICS: &str = "a transmit report came without the statistics its send asked for";
 const CUT_CONTROL: &str = "the control messages of a receive or an error queue entry did not fit";
 const UNASKED_REPORT: &str = "a transmit report for no send that asked for it";
-const NO_CONNECTION_STATE: &str = "reading a TCP connection's state is not mapped to the host yet";
 const CLOCK_UNIT_OF_THE_ROUTE: &str = "a TCP timestamp clock counts in the unit its route gives (the tcp_usec_ts route feature), which Linux cannot change";
-const NO_LISTENER_STATE: &str = "reading a TCP listener's state is not mapped to the host yet";
 const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow label only as it connects: a listener, an accepted connection or a connected one takes no other";
 
 impl HostTcpSockets {
@@ -1148,7 +1144,9 @@ impl HostTcpSockets {
             TcpSetting::InitialAuthenticationCounters(ref counters) => {
                 set_authentication_counters(socket, counters)
             }
-            TcpSetting::AuthenticationRepair(_) => refuse(NO_AUTHENTICATION_REPAIR),
+            TcpSetting::AuthenticationRepair(ref repair) => {
+                state::set_authentication_repair(socket, repair)
+            }
             TcpSetting::Repair(mode) => tcp(
                 uapi::TCP_REPAIR,
                 match mode {
@@ -1167,7 +1165,8 @@ impl HostTcpSockets {
             TcpSetting::QueueSequence(sequence) => {
                 set_option(socket, uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, &sequence.0)
             }
-            TcpSetting::RepairOptions(_) | TcpSetting::RepairWindow(_) => refuse(NO_REPAIR_OPTIONS),
+            TcpSetting::RepairOptions(repair) => state::set_repair_options(socket, repair),
+            TcpSetting::RepairWindow(ref window) => state::set_repair_window(socket, window),
         }
     }
 
@@ -1798,6 +1797,7 @@ impl TcpConnections for HostTcpSockets {
         connection: &Self::Connection,
         query: TcpQuery<'a>,
     ) -> Result<TcpReading<'a>, HostError> {
+        let socket = connection.socket.fd();
         match query {
             // As `TCP_SAVED_SYN` does: too small a buffer keeps the headers and tells their length.
             TcpQuery::TakeSavedSynchronize(into) => {
@@ -1816,7 +1816,49 @@ impl TcpConnections for HostTcpSockets {
                 };
                 Ok(TcpReading::SavedSynchronize(header))
             }
-            _ => Err(self.shortfalls.refuse(NO_CONNECTION_STATE)),
+            TcpQuery::LastReceivedHeader(into) => {
+                let peer = connection.addresses.get().map_or(
+                    IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED),
+                    |(_, peer)| peer.ip(),
+                );
+                state::last_received_header(socket, peer, into, &self.shortfalls)
+            }
+            TcpQuery::Queues => state::queues(socket).map(TcpReading::Queues),
+            TcpQuery::Repair => state::repair_state(socket).map(TcpReading::Repair),
+            TcpQuery::Multipath => {
+                state::multipath(socket, &self.shortfalls).map(TcpReading::Multipath)
+            }
+            TcpQuery::MultipathSubflow(position) => {
+                state::multipath_subflow(socket, position, &self.shortfalls)
+                    .map(TcpReading::MultipathSubflow)
+            }
+            TcpQuery::Information => {
+                self.read_socket_state(socket, connection.family, TcpListenerQuery::Information)
+            }
+            TcpQuery::CongestionControl(into) => self.read_socket_state(
+                socket,
+                connection.family,
+                TcpListenerQuery::CongestionControl(into),
+            ),
+            TcpQuery::Tuned => {
+                self.read_socket_state(socket, connection.family, TcpListenerQuery::Tuned)
+            }
+            TcpQuery::Timestamp => {
+                self.read_socket_state(socket, connection.family, TcpListenerQuery::Timestamp)
+            }
+            TcpQuery::Authentication => {
+                self.read_socket_state(socket, connection.family, TcpListenerQuery::Authentication)
+            }
+            TcpQuery::AuthenticationKey(identity) => self.read_socket_state(
+                socket,
+                connection.family,
+                TcpListenerQuery::AuthenticationKey(identity),
+            ),
+            TcpQuery::IncomingProcessor => self.read_socket_state(
+                socket,
+                connection.family,
+                TcpListenerQuery::IncomingProcessor,
+            ),
         }
     }
 
@@ -1956,14 +1998,46 @@ impl TcpConnections for HostTcpSockets {
 
     fn set_authentication_counters(
         &self,
-        _connection: &Self::Connection,
-        _values: TcpAuthenticationCounters,
+        connection: &Self::Connection,
+        values: TcpAuthenticationCounters,
     ) -> Result<(), HostError> {
-        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))
+        set_authentication_counters(connection.socket.fd(), &values)
     }
 }
 
 impl HostTcpSockets {
+    /// Reads what a connection and a listener both answer, through the listener's query that names it.
+    fn read_socket_state<'a>(
+        &self,
+        socket: BorrowedFd<'_>,
+        family: IpVersion,
+        query: TcpListenerQuery<'a>,
+    ) -> Result<TcpReading<'a>, HostError> {
+        let shortfalls = &self.shortfalls;
+        match query {
+            TcpListenerQuery::Information => {
+                state::information(socket, shortfalls).map(TcpReading::Information)
+            }
+            TcpListenerQuery::CongestionControl(into) => {
+                state::congestion_control(socket, into, shortfalls)
+            }
+            TcpListenerQuery::Tuned => state::tuned(socket, shortfalls).map(TcpReading::Tuned),
+            TcpListenerQuery::Timestamp => {
+                state::timestamp(socket, shortfalls).map(TcpReading::Timestamp)
+            }
+            TcpListenerQuery::Authentication => {
+                state::authentication(socket).map(TcpReading::Authentication)
+            }
+            TcpListenerQuery::AuthenticationKey(identity) => {
+                state::authentication_key(socket, family, &identity)
+                    .map(TcpReading::AuthenticationKey)
+            }
+            TcpListenerQuery::IncomingProcessor => {
+                state::incoming_processor(socket).map(TcpReading::IncomingProcessor)
+            }
+        }
+    }
+
     /// Sets the clock, which counts in the unit its route gave the socket (`tcp_usec_ts`): Linux cannot change it.
     fn set_timestamp_clock(
         &self,
@@ -2113,18 +2187,18 @@ impl TcpListeners for HostTcpSockets {
 
     fn read_listener_state<'a>(
         &self,
-        _listener: &Self::Listener,
-        _query: TcpListenerQuery<'a>,
+        listener: &Self::Listener,
+        query: TcpListenerQuery<'a>,
     ) -> Result<TcpReading<'a>, HostError> {
-        Err(self.shortfalls.refuse(NO_LISTENER_STATE))
+        self.read_socket_state(listener.socket.fd(), listener.family, query)
     }
 
     fn set_listener_authentication_counters(
         &self,
-        _listener: &Self::Listener,
-        _values: TcpAuthenticationCounters,
+        listener: &Self::Listener,
+        values: TcpAuthenticationCounters,
     ) -> Result<(), HostError> {
-        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))
+        set_authentication_counters(listener.socket.fd(), &values)
     }
 
     fn set_listener_timestamp_clock(
