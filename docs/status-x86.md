@@ -141,7 +141,9 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   `fxsave` and `fxrstor` called the hook 16 times; and four smaller ones (see "X7, run 3"). Run 4 (2026-11-21,
   X7 dispatched again after the reorganization) fixed the four findings of the X6f check on main, added an MMX
   program and an x87 state program compared with Linux at every look-ahead in wasmtime and Chrome, and verified
-  X7's bar on main from a clean build (see "X7, run 4").
+  X7's bar on main from a clean build (see "X7, run 4"). Run 5 (2026-11-21, X7 dispatched again on branch
+  agents) kept the X6f check's open finding listed for the runtime track and verified X7's bar again from a
+  clean build (see "X7, run 5").
 - X8 (AVX, AVX2, FMA, F16C, BMI2, XSAVE): run 1 (2026-11-21) fixed the X7 check's four findings, made what a
   program is told a per-process list of the kernel interface that the translator, `cpuid` and `xgetbv` take
   (every told family switched by it), and built BMI2, `xgetbv` and `xsetbv`; AVX, AVX2, FMA, F16C and `xsave`
@@ -153,6 +155,41 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   runner's offer; its tool access ended before it wrote this file, so run 5 records it. Run 5 (2026-11-21) ran
   the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
   it found (see "X8, runs 4 and 5").
+
+## X7, run 5 (2026-11-21)
+
+X7 was dispatched again, on branch agents in the shared worktree, with one finding of the X6f check. All of X7 is
+in the tree (runs 1 to 4), so nothing was rebuilt; this run checked its bar again from a clean build after the
+owner's evening interface changes, which reach none of this track's crates. Machines: the rented x86-64 machine
+(96 processors, kernel 7.0.0-1018-aws, still 5-level paging, load 0 to 10 during the job), the i7-8750H (load 4
+from other jobs before mine, 4 at once), the rented ARM64 machine (load 3.6 to 5.7), the Mac for git and the
+literal check. Logs and scripts in scratch `x7r5/` (`laptop-bg.sh` now copies the agents worktree).
+- The finding: the shipped executor still passes no link address. It is the runtime track's crate; the entry
+  under "For the orchestrator" keeps the recipe (`Some(run.start)` for `ET_EXEC`) and now also asks for a cache
+  test with `Some`, with the check's measurement.
+- Rented x86-64 machine, a new build folder (`--name x7r5`), agents at 13175969 with other agents' uncommitted
+  edits in the copy (`verify.log`, 13 min in all): `cargo fmt --check` of the five crates; clippy `--no-deps`
+  with warnings denied for them and the wasmtime executor, all targets; the browser crate's wasm32 clippy for
+  both guests: pass. Unit tests of the translator, guest-cpu, x86 (the 640 transcendental values among them)
+  and arm64 crates and the test crate's library: pass. `--test programs --test checks --test smoke -- x86_64`:
+  28 + 2 + 6 passed, 0 failed (480 s; `long_double` and `mmx_and_x87_state_match_linux_x86_64` among them).
+  Chrome, `long_double` and `mmx_and_x87_state` every way: 2 passed. Layer 2 x86, seed 11853, 10,000 programs,
+  all on the CPU, 96 at once: 0 failing (126 s; 3,459 faulted, 1,179 left to an address at full, 23,266 stacks
+  lost, 23,404 pieces forgotten).
+- Rented ARM64 machine (`arm.log`): ARM64's programs, output, browser, layer 2, valid and checks tests: 28
+  passed, 0 failed (493 s).
+- The literal check (the Mac, `literals.log`) exits 1 with no finding in this track's crates (its new findings
+  are the two shader submodules and other tracks' uncommitted edits). Baseline lines: x86 117, guest-cpu 26,
+  the test crate 1,738, the translator 8, unchanged.
+- The verdict, the i7-8750H (load 4 from other jobs, 4 at once, the same tree; `laptop-l1a.log`): every x87 and
+  MMX form and every other form whose name holds "mm" (1,375 forms now, X8's VEX forms among them), 1,000 cases a
+  form, seed 11852: 0 failing (4,154 s); 24 known failures, each with its reason: F2xm1 2, Fcos 2, Fpatan 2,
+  Fptan 6, Fsin 4, Fsincos 4, Fyl2x 3, Fyl2xp1 1 (3 of them C1 only: F2xm1, Fsin, Fyl2xp1 one each).
+- The laptop's other verdicts at seed 11854 (`laptop-l1b.log`, `l1c`, `l1d`): the hand cases, the cases in no
+  form, the refusal test and the Chrome sample: pass. The Chrome sample first failed with "run node: not found"
+  because my job lacked the laptop's node, Playwright and Chrome paths outside Nix (`time-rounds.sh` has them);
+  with them it passes (39 s).
+- Every part of X7's bar holds on branch agents.
 
 ## X6f, run 3 (2026-11-21)
 
@@ -1908,7 +1945,10 @@ wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the 
   gains `link_address: Option<u64>`, `Compiler::file` hashes it, `compiled` takes `(hash, link_address)` and
   passes it to `translate`, and `compile` passes `None`. To use it: when `starts::image_starts` finds the image
   of a run and its header's `e_type` is `ET_EXEC`, pass `Some(run.start)` (a fixed image is mapped at its link
-  address, so the run's start is where its first byte is linked); `None` otherwise and at run time.
+  address, so the run's start is where its first byte is linked); `None` otherwise and at run time. Add a
+  test to its `tests/cache.rs` that compiles one image with `Some` and with `None` and finds two entries.
+  Still open at X7 run 5 (2026-11-21): the executor's line 1055 passes `None`; the X6f check measured 45 to 55
+  translations at run time for its fixed programs at full look-ahead without the address, 15 to 18 with it.
 - X6f run 1, a question: addresses held in data are still not followed, the global offset table's above all
   (rustc's x86 start code and, I expect, ARM64's position independent start code take `main` from it). For a
   fixed program, a `mov r, [rip + d]` that reads a word of the blob could be followed through the link
@@ -4188,6 +4228,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X7 run 5: layer 1 on the i7-8750H, the 1,375 x87 and "mm" forms at 1,000 a form (seed 11852), the hand cases,
+  the cases in no form at their default and the Chrome sample at 1 a form (seed 11854); layer 2 for x86 at
+  10,000, all on the CPU (seed 11853, rented x86-64 machine); the suite's other random tests at their defaults.
 - X7 run 4: layer 1 on the i7-8750H, the 715 x87 and "mm" forms at 1,000 a form (seed 9852), every default form
   at 100 a form (seed 9856), the unoffered forms at 20 a form (seed 9855), 64 cases in no form, the hand cases
   and the Chrome sample at 1 a form (seed 9854); layer 2 for x86 at 10,000, all on the CPU (seed 9853, rented
