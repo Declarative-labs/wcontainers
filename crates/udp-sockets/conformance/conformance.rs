@@ -77,11 +77,11 @@ const APART: Duration = Duration::from_millis(10);
 /// caller's network routes through a gateway.
 const BEYOND_A_GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
 
-/// Local addresses the caller's network routes with an MTU of ROUTE_MTU: 127.0.0.2 and 2001:db8::2 (of the
-/// documentation prefix, [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849)).
+/// Local addresses the caller's network routes with an MTU of ROUTE_MTU, Ethernet's: 127.0.0.2 and 2001:db8::2 (of
+/// the documentation prefix, [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849)).
 const NARROW_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
-const ROUTE_MTU: u16 = 1500;
+const ROUTE_MTU: u16 = linux_raw_sys::if_ether::ETH_DATA_LEN as u16;
 
 /// The addresses of the interface with a schedule of transmit times, of TEST-NET-3 and the documentation prefix,
 /// an address its IPv4 route reaches and one its IPv6 prefix does, and the multicast interface's address.
