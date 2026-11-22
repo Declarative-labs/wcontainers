@@ -370,10 +370,12 @@ impl GuestTest for X86_64 {
     /// correctly rounded, which ours are (plan 5.8). A case of one of them is a known failure where, and only
     /// where, either a register the reference wrote is one unit from ours, with C1 and the precision flag (the
     /// underflow flag where that register is a denormal; the summary and busy bits where one of those is
-    /// unmasked) as its rounding left them; or every register is ours and only C1 differs.
+    /// unmasked) as its rounding left them; or every register is ours and only C1 differs, ours telling the side
+    /// of the exact value the result lies on.
     fn known_failure(case: &Case, expected: &Outcome, actual: &Outcome) -> Option<&'static str> {
         use wcontainers_x86::x87::{
-            BUSY, C1, Extended, PRECISION, REGISTERS, SUMMARY, UNDERFLOW, neighbours,
+            BUSY, C1, Extended, PRECISION, REGISTERS, SUMMARY, TOP_SHIFT, UNDERFLOW, above_exact,
+            neighbours,
         };
         let instruction = Decoder::with_ip(
             wcontainers_x86::MODE_BITS,
@@ -396,7 +398,22 @@ impl GuestTest for X86_64 {
         let mut c1_only = taken.clone();
         with_fsw(&mut c1_only, C1);
         if c1_only == *want {
-            return Some(TRANSCENDENTAL_DIRECTION);
+            // Ours must be the side the exact value lies on.
+            let st = |s: &[u128], i: usize| {
+                let top = usize::from(s[FSW] as u16 >> TOP_SHIFT) & (REGISTERS - 1);
+                let bits =
+                    s[R0 + (top + i) % REGISTERS] & ((1 << wcontainers_x86::X87_REGISTER_BITS) - 1);
+                Extended::from_bits(bits)
+            };
+            let before = &case.state.0;
+            let result = st(
+                &taken,
+                usize::from(instruction.mnemonic() == Mnemonic::Fptan),
+            );
+            let up = taken[FSW] as u16 & C1 != 0;
+            return (above_exact(instruction.mnemonic(), st(before, 0), st(before, 1), result)
+                == Some(up))
+            .then_some(TRANSCENDENTAL_DIRECTION);
         }
         let mut flags = C1 | PRECISION;
         let denormal = |bits: u128| Extended::from_bits(bits).exponent == 0;

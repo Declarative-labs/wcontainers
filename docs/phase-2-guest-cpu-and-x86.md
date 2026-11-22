@@ -2212,10 +2212,13 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   results. Rounding control and the unmasked-exception rule (the exception is raised at the next x87
   instruction that waits) follow the manual.
 - **Precision control** (FCW bits 8 and 9: 24, 53 or 64 bits) affects only fadd, fsub, fsubr, fmul, fdiv,
-  fdivr (with their `p` and `i` forms) and fsqrt, as the manual says; the rest always round to 64 bits. At 64
-  bits, the default Linux sets (FCW 0x037F), an arithmetic operation is one `X87DoubleExtended` operation. At
+  fdivr (with their `p` and `i` forms) and fsqrt, as the manual says; the rest always round to 64 bits. At
   24 or 53 bits the result must be rounded once to that many bits while keeping the 15-bit exponent range,
-  which `X87DoubleExtended` does not offer. Decision: two more semantics of rustc_apfloat's public
+  which `X87DoubleExtended` does not offer. At 64 bits too, the default Linux sets (FCW 0x037F), an arithmetic
+  operation goes through the same wide path below and is rounded once to 64 bits, not one `X87DoubleExtended`
+  operation: the results are the same, and the one path also gives x86's tininess after rounding and the
+  exponent adjustment of an unmasked overflow or underflow, which `X87DoubleExtended` does not. Decision: two
+  more semantics of rustc_apfloat's public
   `ieee::Semantics` trait, defined in `wcontainers-x86` (15 exponent bits, precision 24 and 53), and a wide
   one (18 exponent bits, precision 66: three bits past the format's 15, so that no product or quotient of
   80-bit values, nor an `fscale` by up to 2^16, leaves its range before the one rounding that sees the
@@ -2318,9 +2321,16 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   only in one of two ways: a register is one unit from ours and nothing else differs but C1 and the precision
   flag (the underflow flag where that register is a denormal, the summary and busy bits where one of those
   is unmasked), "Intel's transcendental result is within one unit in the last place"; or every register is
-  ours and only C1 differs, "Intel's approximation lies on the other side of the correctly rounded result".
-  `tests/transcendental.rs` checks the unit's results and its C1 and precision flags against mpmath, so
-  what these two reasons pass is the reference's departure from correct rounding, not ours. Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
+  ours and only C1 differs and ours tells the side of the exact value the result lies on (worked out again by
+  the full evaluation, `x87::above_exact`), "Intel's approximation lies on the other side of the correctly
+  rounded result". `tests/transcendental.rs` checks the unit's results and its C1 and precision flags against
+  mpmath, so what these two reasons pass is the reference's departure from correct rounding, not ours.
+  What a program sees of it: a program that prints the exact bits of transcendental work does not give the
+  CPU's output. musl's `expl`, `logl`, `log2l`, `log10l`, `log1pl`, `atanl`, `atan2l`, `asinl`, `acosl` and
+  `powl` go through these instructions, and the X7 check's sweep of them and of the instructions inline, in
+  all four rounding modes printed with `%La` and the status word, differed from the i7-8750H in 164 of 2,040
+  lines (about 8%), each by one unit at 64 bits or by C1 alone. Printed to 16 significant digits, which one
+  unit of 64 bits does not reach, the output is the CPU's. Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
   (`pyro-parked/wcontainers-scratch/x86/x87-crate`, opt-level s, LTO, stripped) using sin, atan, log2,
   exp and add at 128 bits, against the same cdylib without it: 142,688 bytes raw, 40,947 brotli -q 11 more.
   Only the x86 browser build carries it.
