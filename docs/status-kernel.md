@@ -1,11 +1,23 @@
 # Kernel status
 
-Plan: docs/phase-1-kernel.md. Branch: main, in the one shared checkout (from 2026-11-21). The
+Plan: docs/phase-1-kernel.md. Branch: agents, in the shared worktree wcontainers-agents (from the
+evening of 2026-11-21; before that main, in the one shared checkout). The
 crates moved: the kernel is crates/kernel/implementation/linux (wcontainers-kernel-linux), the abi
 crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/implementation/unicorn
 (wcontainers-executor-unicorn). Older sections below say crates/wcontainers-kernel, -abi and
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
+
+## 2026-11-22: a wait gives a readiness report
+
+- The owner's interfaces merged at a00ab267: `wait_until_ready` returns `ReadinessReport { ready_for,
+  unconditional }`, and ERROR and HANG_UP are `UnconditionalEvents`, reported unasked. Conformed
+  in ff8f629f (kernel, stand-in) and 108fc0df (runtime, test policy, hardware embedders): the
+  kernel reads a failed wait as ERROR (waiting.rs `report_of`); a stream end's kept wait is
+  `Option<ReadyFor>` (none kept, or what it asks beside the unconditional events), since an empty
+  interest is now a real wait for hang-up alone. The other changes of that merge (BindingSetting,
+  the negative-route-advisable rename, the resolver's AnswerBytes) needed nothing in these crates.
+- The For-the-owner note below on ERROR and HANG_UP is settled by that change.
 
 ## 2026-11-21: waiting is the Readiness trait
 
@@ -153,6 +165,12 @@ side of each is worked around without changing the interface.
   16 bytes of `AT_RANDOM` at every exec, the boot id, layout randomization, port choice. So a
   failed source stops the kernel with a panic naming it (implementation.rs `Context::random`).
   Example: a browser embedder whose crypto source refuses ends the container at its first exec.
+- KA, ninth run: the owner's condition that a guest pipe pays nothing new holds in instructions
+  (the whole round trip within 0.2 percent of the milestone's start) but not in cycles with the
+  release profile as it is (thin LTO in the third run's suggestion: 1.5 percent more cycles); with
+  `lto = "fat"` and `codegen-units = 1` it holds in cycles too. The kernel generic over its system
+  is compiled in each embedder's crate, so how its code is inlined, and so its cycles, follow the
+  embedder's profile. Example: tests/waitcost.rs's pipe kind, KA ninth run's measurements.
 - KA, eighth run: the kernel's hooks cannot be the interface's `ProcessTracer` without making the
   whole kernel generic over its executor: each hook takes `P: ProcessOf<ProcessState, Executor>`,
   a process handle whose kernel is a `ProcessController` with that executor, but the kernel calls
@@ -275,6 +293,19 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, ninth run: the owner's readiness report (a00ab267) is conformed to in the kernel, the stand-in
+and the embedders it changed, and their tests give the same results as before. The guest pipe's 2
+percent is found to be code generation, not work: the whole round trip runs as many instructions
+as at the milestone's start (0.2 percent fewer by callgrind, 0.06 percent more by perf stat) but
+about 1.5 percent more cycles with thin LTO; built with fat LTO and one codegen unit it runs no
+more cycles than the milestone's start built the same way. The kernel's own functions run 300 to
+850 more instructions per round trip depending on the build, which moves with what the compiler
+inlines (inline hints moved it again and did not lower the total). Whether the owner's condition
+on pipes counts as met with the release profile as it is, or needs `lto = "fat"` and
+`codegen-units = 1`, is his to rule (For the owner). Not done, as before: the hooks as
+`ProcessTracer`, warnings through `FallbackObserver`, ICMP and raw sockets, the linter findings
+(the linter may not run for now), the independent check. KA is not complete. See "KA, ninth run".
 
 KA, eighth run: the seventh run's two open problems are fixed and neither was the kernel's. The
 nonblocking `large_output_to_a_slow_client` failure was the stand-in's client giving output room
@@ -545,6 +576,71 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, ninth run
+
+Started 05:13 UTC on 2026-11-22 at a00ab267 (branch agents). Lints on the x86 machine, tests and
+measurements on the ARM64 machine; scratch kernel/ka9 (subset.sh, suite.sh, callgrind.sh,
+callgrind2.sh, cgdiff*.py, statpipe.sh, fatpipe.sh, cgfat.sh; logs beside them).
+
+The check's findings handed to this run are the K6c thirteenth run's: each was answered in the
+K6c fourteenth run (see there: SIOCADDRT and the unknown 0x89xx requests, truncate breaking
+leases, aio writes to an eventfd, leases on /proc, the clock wording and copy_file_range03, the
+reference's three timing failures, the LTP_TIMEOUT_MUL limits, timers on the Mac, shmget05), and
+ADSP038 and the gap list past section 15 are under "Waiting for the owner" by the orchestrator's
+ruling of 2026-11-20. Nothing was redone.
+
+Done:
+- ff8f629f, 108fc0df: the readiness report (the dated section at the top). Changed outside this
+  track's crates, the smallest change that builds: the runtime (net.rs keeps a `ReadinessReport`
+  per socket, a wait ends on anything asked or any unconditional event; system.rs and tcp.rs
+  return reports), the test policy (two signatures), hardware-virtualization-inside (its
+  always-writable endpoint and its test recording) and hardware-virtualization's
+  tests/container/mod.rs (still not building since 4ee5def7, for other reasons).
+
+Tests (ARM64 machine, 05:16 to 05:24 UTC, load 5 to 13; ka9/subset.log): kernel lib 15, kernel
+conformance 14, runtime 13, policy 0, abi 1, hardware-virtualization-inside 2 passed; stand-in
+streams 18, embedder 35, saving 1, script 1, shell 3, repeats 5, round_trips 3, outside 5,
+netprograms 3 passed; inet 23 passed and 3 failed, terminal 9 passed and `making_pairs` failed
+(all four on the ARM list, as in the eighth run). Clippy with warnings denied (`--no-deps
+--all-targets`) on the abi, kernel, stand-in, runtime, policy, hardware-virtualization-inside,
+wasmtime and kernel conformance packages passed (x86 machine, 05:15 UTC). The eighth run's whole
+suite (job kernel/20261122-042926-4046149, at fcc62339) was still running at this run's start; it
+was stopped at 05:47 in the python tests, its results so far are ka9/ka8-suite-partial.log (167
+passed, 15 failed, every failure on the ARM list but `instances_are_limited_per_user`, not yet
+looked at). The whole suite at this run's tip runs as ka9/suite.sh (log ka9/suite.log; on the
+machine, job name kernel: `arm-run --attach kernel` follows it).
+
+The guest pipe (pipe ping-pong of tests/waitcost.rs, per round trip; before is the clone at
+e5d693d2, the milestone's start; ARM64 machine, load 7 to 22 on 96 cores, 05:15 to 05:46 UTC):
+- Callgrind with thin LTO, counts 300 and 600 (setup varies by up to about 700 instructions per
+  round trip at these counts: one `std::fs::read` of the test host's differed by that much between
+  two runs): e5d693d2 138472, 02f8fb99 138575, 56e334a8 138880, 4b384fd6 138289, this run's tree
+  138960. Counts 1000 and 2000: e5d693d2 138458, now 138184. The kernel's own functions 22971 to
+  23827; the test host's hashing of memory ids, its random draws and its clock answers about 1650
+  fewer.
+- perf stat with thin LTO, n 2000 and 4000, six pairs each, alternately (ka9/statpipe.log, load 7
+  to 10): before 138003 instructions and 33042 cycles (means), after 138081 and 33545: the
+  eighth run's 2 percent by the clock is these cycles, with the same instructions.
+- Inline hints on the ten scheduler methods the compiler outlined now (`Parked` and `RunQueue`
+  insert, remove, pop, on_either, due and others): the kernel's functions 434 fewer, the
+  standard library's maps they call 336 more, the total 98 more (138282). Not kept.
+- Fat LTO and one codegen unit on both (ka9/fatpipe.log; the first round was lost to a guest
+  build in it): before 135158 and 135213 instructions, 30614 and 30342 cycles; after 135924 and
+  136045 instructions, 30110 and 30244 cycles. Callgrind of the same builds (counts 1000 and
+  2000): 135573 before, 136097 after; the kernel's part about 330 more once the kernel's `exit`,
+  now inlined into the runtime's `Answer::exit`, is counted as the kernel's, the test host's about
+  250 more.
+- Allocations per repetition: 142, as at the milestone's start.
+- Read from the profiles, not built: every pipe write and read walks the pipe's ends to find any
+  with FASYNC (`Pipe::async_ends`, about 250 to 500 instructions per round trip, as before this
+  milestone); a count of FASYNC ends kept with the pipe would take most of it away.
+
+Next, in order: the owner's ruling on the release profile for the pipe condition (or the FASYNC
+count above, which would put the kernel's own pipe path below the milestone's start with any
+profile); read ka9/suite.log; the hooks as `ProcessTracer`, which needs the kernel's entry points
+generic over the executor; warnings through `FallbackObserver` once the owner rules; the linter
+findings once the linter may run again; the independent check.
 
 ## KA, eighth run
 
