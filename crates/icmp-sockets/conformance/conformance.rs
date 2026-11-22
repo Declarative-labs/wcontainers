@@ -42,8 +42,7 @@ use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
 pub use wcontainers_configurable_conformance;
 pub use wcontainers_readiness_conformance;
 
-/// Moves the calling thread into a new network namespace, which needs `CAP_SYS_ADMIN`, with loopback up and
-/// every group in the range Linux lets open ICMP echo sockets.
+/// Moves the calling thread into a new network namespace (root only) with loopback up and every group allowed ICMP echo sockets.
 pub fn enter_network_namespace() {
     // SAFETY: a new network namespace shares no memory or file with the rest of the process.
     unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
@@ -62,8 +61,8 @@ pub const ANYCAST_LIST: &str = "/proc/thread-self/net/anycast6";
 pub const TRAFFIC_CONTROL: &str = "tc";
 const STATISTICS: &str = "-s";
 const JSON: &str = "-j";
-pub const SHOW_CLASSES: &[&str] = &[STATISTICS, JSON, "class", "show", "dev"];
-pub const SHOW_GROUPS: &[&str] = &["maddr", "show", "dev"];
+pub const SHOW_CLASSES: &[&str] = &[STATISTICS, JSON, "class", "show", DEVICE];
+pub const SHOW_GROUPS: &[&str] = &["maddr", "show", DEVICE];
 /// The third band of a prio queue, which its default map gives `TC_PRIO_FILLER` alone.
 pub const THIRD_BAND: &str = "\"handle\":\"1:3\"";
 /// The gateways of the dummy link, as neighbours last confirmed long ago; the link resolves neighbours so that IPv6 confirms them.
@@ -166,8 +165,7 @@ pub const NOWHERE_V6: Ipv6Addr = Ipv6Addr::new(0xfd08, 0, 0, 0, 0, 0, 0, 1);
 pub const PAYLOAD: &[u8] = b"wcontainers echo";
 // https://www.rfc-editor.org/rfc/rfc792
 const IDENTIFIER: EchoIdentifier = EchoIdentifier(NonZeroU16::new(0x4a21).unwrap());
-/// Another identifier, for a socket of the other version: Linux keeps one table of identifiers for both, and a
-/// closed socket's identifier stays taken while a child that another test thread forks still holds its descriptor.
+/// The other version's identifier, since both share Linux's table, where a closed socket's stays taken while a forked child holds it.
 ///
 /// https://www.rfc-editor.org/rfc/rfc792
 const IDENTIFIER_V6: EchoIdentifier = EchoIdentifier(NonZeroU16::new(0x4a22).unwrap());
@@ -180,6 +178,8 @@ fn identifier(version: IpVersion) -> EchoIdentifier {
 }
 // https://www.rfc-editor.org/rfc/rfc792
 const SEQUENCE: u16 = 0x0102;
+/// How long a check sleeps before it asks again for what has not come yet.
+pub const LOOK_AGAIN_SOON: Duration = Duration::from_millis(1);
 /// How long a check waits for a packet that should come.
 ///
 /// https://man7.org/linux/man-pages/man7/icmp.7.html
@@ -216,7 +216,7 @@ pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
 pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
     const FIELD: &str = "\"confirmed\":";
     /// Shows the neighbour entries with their times, as JSON.
-    const SHOW: &[&str] = &["-s", "-j", "neigh", "show"];
+    const SHOW: &[&str] = &[STATISTICS, JSON, "neigh", "show"];
     let output = Command::new(IP)
         .args(SHOW)
         .arg(address.to_string())
@@ -230,7 +230,7 @@ pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
 /// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
 fn temporary_address(link: &str) -> Ipv6Addr {
     /// Shows the link's temporary addresses that are no longer tentative, as JSON.
-    const SHOW: &[&str] = &["-6", "-j", "address", "show", "temporary", "-tentative"];
+    const SHOW: &[&str] = &["-6", JSON, "address", "show", "temporary", "-tentative"];
     /// The mark that ends a string in iproute2's JSON.
     const JSON_QUOTE: char = '"';
     /// The time between two looks, a hundredth of the time duplicate address detection waits.
@@ -474,7 +474,7 @@ fn receive<S: IcmpSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> 
     loop {
         match sockets.receive(socket, into) {
             Err(HostError::WouldBlock) if start.elapsed() < PATIENCE => {
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(LOOK_AGAIN_SOON);
             }
             other => return other.expect("something arrives"),
         }
@@ -603,7 +603,7 @@ impl Capture {
                 )
             };
             if read.is_negative() {
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(LOOK_AGAIN_SOON);
                 continue;
             }
             let bytes = &packet[..read as usize];
@@ -734,8 +734,9 @@ pub fn checks_out(message: &[u8], seen: &Seen<'_>) -> bool {
     }
 }
 
-/// Checks that the IP headers given before a packet's payload are those it had on the wire, but for what Linux
-/// does not give of an IPv4 header (the identification and fragment fields), with a checksum over what is given.
+/// Checks that the IP headers given before a packet's payload are those it had on the wire.
+///
+/// Linux does not give an IPv4 header's identification and fragment fields; the checksum must hold over what is given.
 pub fn headers_are_as_on_the_wire(packet: &[u8], on_the_wire: &[u8]) {
     let headers = packet.len() - seen(packet).payload.len();
     assert_eq!(headers, on_the_wire.len() - seen(on_the_wire).payload.len());
@@ -945,7 +946,7 @@ pub fn close_frees_the_identifier<S: IcmpSockets>(sockets: S) {
         let rebound = loop {
             match sockets.bind_identifier(&second, identifier, IdentifierSharing::Exclusive) {
                 Err(HostError::Errno(libc::EADDRINUSE)) if start.elapsed() < PATIENCE => {
-                    std::thread::sleep(Duration::from_millis(1));
+                    std::thread::sleep(LOOK_AGAIN_SOON);
                 }
                 other => break other,
             }
@@ -987,8 +988,9 @@ fn told_length(version: IpVersion, start: &[u8]) -> usize {
     }
 }
 
-/// Checks that a buffer that cuts the reply in its IP header or in its ICMP message takes its start, whose header and the
-/// received length both tell the whole length.
+/// Checks that a buffer that cuts the reply in its IP header or ICMP message takes its start and tells the whole length.
+///
+/// Both the given header's total length and the received length tell it.
 pub fn a_short_buffer_keeps_the_whole_length<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     for (to, header, reply) in [
@@ -1124,6 +1126,14 @@ pub const PADDING_HEADER: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
 ///
 /// https://www.rfc-editor.org/rfc/rfc8754#section-2
 pub const TWO_SEGMENTS: u8 = 4;
+/// The segments left and the last entry's index of a routing header of two segments, at its first.
+///
+/// https://www.rfc-editor.org/rfc/rfc8754#section-2
+const AT_THE_FIRST_OF_TWO: [u8; 2] = [1, 1];
+/// The length of a segment routing header's flags and tag.
+///
+/// https://www.rfc-editor.org/rfc/rfc8754#section-2
+const FLAGS_AND_TAG: usize = 3;
 
 /// Returns a segment routing header of two segments, [`FAR_V6_SEGMENT`] last and [`ON_LINK_V6`] next.
 pub fn segment_routing_header() -> Vec<u8> {
@@ -1131,12 +1141,10 @@ pub fn segment_routing_header() -> Vec<u8> {
         u8::MIN,
         TWO_SEGMENTS,
         linux_raw_sys::net::IPV6_SRCRT_TYPE_4 as u8,
-        1,
-        1,
-        u8::MIN,
-        u8::MIN,
-        u8::MIN,
     ];
+    routing.extend_from_slice(&AT_THE_FIRST_OF_TWO);
+    // The flags and the tag, none.
+    routing.extend_from_slice(&[u8::MIN; FLAGS_AND_TAG]);
     routing.extend_from_slice(&FAR_V6_SEGMENT.octets());
     routing.extend_from_slice(&ON_LINK_V6.octets());
     routing
@@ -1195,8 +1203,9 @@ pub fn ipv6_extension_headers_go_out<S: IcmpSockets>(sockets: S) {
     assert!(extension_kinds(&capture.echo_request()).is_empty());
 }
 
-/// Checks that an IPv6 request leaves from the local source address its send gives, or the source is refused; of two
-/// addresses on the link, either is taken when asked for, whichever the host would choose by itself.
+/// Checks that an IPv6 request leaves from the local source its send gives, or that the source is refused.
+///
+/// Of two addresses on the link, either is taken when asked for, whichever the host would choose by itself.
 pub fn an_ipv6_source_goes_out<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1304,10 +1313,11 @@ const OVER_THE_ROUTE: usize = 1400;
 // https://man7.org/linux/man-pages/man7/ip.7.html
 const OVER_THE_LINK: usize = 1600;
 
-/// Returns what each path MTU discovery mode makes of an IP packet over its route's MTU, and of one over its link's too, as
-/// `send` sends one of the length given toward [`NARROW`] or [`NARROW_V6`]: fragments of the route's MTU (dont,
-/// want); too long for the route's (do); whole, then too long for the link's (probe, with the don't-fragment bit
-/// on IPv4, and interface); whole, then fragments of the link's MTU (omit).
+/// Returns what each path MTU discovery mode makes of a packet over its route's MTU and of one over its link's.
+///
+/// `send` sends one of the length given toward [`NARROW`] or [`NARROW_V6`]. Dont and want fragment to the route's MTU;
+/// do is too long for it; probe (with the don't-fragment bit on IPv4) and interface leave it whole and are too long for
+/// the link's; omit leaves it whole and fragments to the link's MTU.
 pub fn path_mtu_modes_take_their_mtu(
     send: impl Fn(IpAddr, PathMtuDiscovery, usize) -> Result<(), SendError>,
 ) {
@@ -1398,8 +1408,7 @@ pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: IcmpSockets>(sockets: S) {
 /// https://man7.org/linux/man-pages/man7/ipv6.7.html
 const FRAGMENT_MTU: u32 = 1320;
 
-/// Checks that a message longer than the link or the fragment MTU is too long where fragmenting is forbidden, and is
-/// fragmented to the link where it is allowed.
+/// Checks that a message over the link or fragment MTU is too long where fragmenting is forbidden, and fragmented where allowed.
 pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1686,11 +1695,11 @@ const MANAGED_TEMPORARY: &str = "address replace fd03::1/64 dev ia nodad mngtmpa
 const TEMPORARY_BUT_PUBLIC_PREFERRED: &str = "1";
 
 /// Gives the dummy link a temporary address beside [`LOCAL_V6`] and answers which source each preference takes.
-pub fn sources_by_preference() -> [(TemporaryAddressPreference, Ipv6Addr); 2] {
+pub fn sources_by_preference() -> Vec<(TemporaryAddressPreference, Ipv6Addr)> {
     write_setting(TEMPORARY_ADDRESSES, TEMPORARY_BUT_PUBLIC_PREFERRED);
     ip6(MANAGED_TEMPORARY);
     let temporary = temporary_address(DUMMY);
-    [
+    vec![
         (TemporaryAddressPreference::Temporary, temporary),
         (TemporaryAddressPreference::Public, LOCAL_V6),
     ]
@@ -1728,8 +1737,7 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Checks that a confirmed send confirms its next hop's neighbour entry; over IPv6, whose ping sockets drop the flag, it may
-/// be refused instead.
+/// Checks that a confirmed send confirms its next hop's neighbour entry, or over IPv6, whose ping sockets drop the flag, is refused.
 pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1818,16 +1826,18 @@ pub fn a_transmit_time_holds_the_send<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A schedule of transmit times on the dummy link, on the international atomic clock in strict mode, that misses
-/// every time it holds (Linux's etf with a delta of 0).
+/// A schedule of transmit times on the dummy link that misses every time it holds: Linux's etf with a delta of 0.
+///
+/// It runs on the international atomic clock in strict mode.
 pub const MISSING_SCHEDULE: &str = "qdisc add dev ia root etf clockid CLOCK_TAI delta 0";
 /// How far a scheduled send is put ahead of now, and how much earlier a past one is.
 ///
 /// https://man7.org/linux/man-pages/man8/tc-etf.8.html
 pub const SCHEDULED_AHEAD: Duration = Duration::from_millis(100);
 
-/// Returns the sends a rejected transmit times check makes: each one's time, whether it asks for errors, and what is
-/// reported; its key is its place.
+/// Returns the sends a rejected transmit times check makes, each with its time, its wish for errors and what is reported.
+///
+/// Each send's key is its place.
 pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Tai);
     let now = Duration::new(
@@ -1915,7 +1925,7 @@ pub fn check_rejections(
                 reported.push((report.key, Some(reason)));
             }
             Ok(Received::Packet(packet)) => panic!("a report, not {packet:?}"),
-            Err(HostError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+            Err(HostError::WouldBlock) => std::thread::sleep(LOOK_AGAIN_SOON),
             Err(error) => panic!("receive: {error:?}"),
         }
         if reported.len() == sends.iter().filter(|send| send.1.is_some()).count() {
@@ -1937,9 +1947,10 @@ pub fn check_rejections(
     assert_eq!(reported, expected);
 }
 
-/// Checks that a transmit time the link's schedule cannot keep is reported with the key of its send and why: a time already
-/// past or a mode other than the schedule's is invalid, and a time the schedule misses is missed, with the packet
-/// as asked; a send that did not ask for errors gets no report.
+/// Checks that a transmit time the link's schedule cannot keep is reported with its send's key and why.
+///
+/// A time already past or a mode other than the schedule's is invalid, and a time the schedule misses is missed, with
+/// the packet as asked; a send that did not ask for errors gets no report.
 pub fn rejected_transmit_times_are_reported_with_their_keys<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1992,9 +2003,10 @@ pub fn transmit_reports_carry_the_key_of_their_send<S: IcmpSockets>(sockets: S) 
 /// The header of a frame on loopback, which a transmit report's packet starts with.
 pub const LOOPBACK_LINK_HEADER: usize = etherparse::Ethernet2Header::LEN;
 
-/// Checks the scheduled and software transmit reports `receive` gives of a send to loopback keyed
-/// [`REPORT_KEY`]: each carries the key, and when the packet was asked for, the loopback link and the length of
-/// the `sent` IP packet's frame.
+/// Checks the scheduled and software transmit reports `receive` gives of a send to loopback keyed [`REPORT_KEY`].
+///
+/// Each carries the key and, when the packet was asked for, the loopback link and the length of the `sent` IP packet's
+/// frame.
 pub fn check_loopback_reports(
     mut receive: impl FnMut(&mut [u8]) -> Received,
     packet: Report,
@@ -2067,8 +2079,9 @@ pub fn receive_timestamps_come_only_when_set<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Returns an ICMP error about a request arrives on its socket, written whole from its IP header as it was on the wire and
-/// quoting the request.
+/// Checks that an ICMP error about a request arrives on its socket whole, from its IP header as on the wire.
+///
+/// It quotes the request.
 fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     ip(NETWORK);
     let version = version_of(to);
@@ -2085,7 +2098,7 @@ fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     let packet = seen(given);
     assert_eq!(packet.protocol, protocol(version));
     assert_eq!(packet.destination, source);
-    assert_eq!(&packet.payload[..2], unreachable(version));
+    assert_eq!(&packet.payload[..TYPE_AND_CODE], unreachable(version));
     assert!(checks_out(packet.payload, &packet));
     let quoted = seen(&packet.payload[ICMP_HEADER..]);
     assert_eq!((quoted.source, quoted.destination), (source, to));
@@ -2098,11 +2111,11 @@ fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
 /// Answers whether a packet is the ICMP error of the version that a host or address is unreachable.
 fn is_unreachable(version: IpVersion, packet: &[u8]) -> bool {
     let seen = seen(packet);
-    seen.protocol == protocol(version) && seen.payload.get(..2) == Some(&unreachable(version)[..])
+    seen.protocol == protocol(version)
+        && seen.payload.get(..TYPE_AND_CODE) == Some(&unreachable(version)[..])
 }
 
-/// Checks that an ICMP error received into a buffer that cuts it in its outer header, its ICMP header or its quoted message
-/// takes its start and tells its whole length.
+/// Checks that an ICMP error cut in its outer header, ICMP header or quoted message keeps its start and tells its whole length.
 pub fn a_short_buffer_keeps_the_start_of_an_icmp_error<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -2256,8 +2269,8 @@ pub fn a_small_receive_buffer_counts_its_drops<S: IcmpSockets>(sockets: S) {
         ping(&sockets, &socket, to, &long).unwrap();
     }
     std::thread::sleep(QUIET);
-    let mut received = 0;
-    let mut dropped = 0;
+    let mut received = usize::MIN;
+    let mut dropped = usize::MIN;
     let mut into = buffer();
     while let Ok(Received::Packet(fields)) = sockets.receive(&socket, &mut into) {
         received += 1;
@@ -2375,18 +2388,18 @@ impl FilteredMembership {
     }
 }
 
-/// Joins the group on the dummy link through `configure` with each kind of source filter, checking that the host
-/// holds each as written, and leaves it.
+/// Joins the group on the dummy link with each kind of source filter through `configure`, checking the host holds each.
+///
+/// It leaves the group after each.
 pub fn source_filters_are_written(
     group: IpAddr,
-    sources: [IpAddr; 2],
+    (first, second): (IpAddr, IpAddr),
     configure: impl Fn(IpSocketSetting<'_>),
 ) {
     // https://man7.org/linux/man-pages/man7/ip.7.html
     const INCLUDED: Option<(u64, u64)> = Some((1, 0));
     // https://man7.org/linux/man-pages/man7/ip.7.html
     const EXCLUDED: Option<(u64, u64)> = Some((0, 1));
-    let [first, second] = sources;
     for (include, given, expected) in [
         (true, &[first][..], [INCLUDED, None]),
         (true, &[first, second][..], [INCLUDED, INCLUDED]),
@@ -2429,11 +2442,11 @@ pub fn multicast_source_filters_are_written<S: IcmpSockets>(sockets: S) {
     for (group, sources) in [
         (
             IpAddr::V4(GROUP),
-            [IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)],
+            (IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)),
         ),
         (
             IpAddr::V6(GROUP_V6),
-            [IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)],
+            (IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)),
         ),
     ] {
         let socket = opened(&sockets, version_of(group));
@@ -2581,7 +2594,7 @@ pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
             );
             during += allocations() - before;
             arrive();
-            assert!(wakes.reach(1), "the wait is woken");
+            assert!(wakes.first_came(), "the wait is woken");
             let before = allocations();
             assert!(finished(poll_with(call.as_mut(), &wakes)).contains(ReadyFor::READABLE));
             during += allocations() - before;
@@ -2602,6 +2615,9 @@ macro_rules! counting_allocator {
     () => {
         struct Counting;
 
+        /// What each allocation adds to its thread's count.
+        const ONE_CALL: usize = 1;
+
         std::thread_local! {
             static ALLOCATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(usize::MIN) };
         }
@@ -2609,7 +2625,7 @@ macro_rules! counting_allocator {
         // SAFETY: every call is passed on to the system's allocator unchanged.
         unsafe impl std::alloc::GlobalAlloc for Counting {
             unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-                ALLOCATIONS.with(|count| count.set(count.get() + 1));
+                ALLOCATIONS.with(|count| count.set(count.get() + ONE_CALL));
                 // SAFETY: as the caller of alloc promised.
                 unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
             }
@@ -2625,7 +2641,7 @@ macro_rules! counting_allocator {
                 layout: std::alloc::Layout,
                 size: usize,
             ) -> *mut u8 {
-                ALLOCATIONS.with(|count| count.set(count.get() + 1));
+                ALLOCATIONS.with(|count| count.set(count.get() + ONE_CALL));
                 // SAFETY: as the caller of realloc promised.
                 unsafe {
                     std::alloc::GlobalAlloc::realloc(&std::alloc::System, pointer, layout, size)
@@ -2666,13 +2682,13 @@ impl Wakes {
     }
 
     /// Tells whether the call has been woken `count` times before the patience of a check ends.
-    pub fn reach(&self, count: usize) -> bool {
+    pub fn first_came(&self) -> bool {
         let wakes = self.count.lock().expect("the wakes");
         let (wakes, _) = self
             .changed
-            .wait_timeout_while(wakes, PATIENCE, |wakes| *wakes < count)
+            .wait_timeout_while(wakes, PATIENCE, |wakes| *wakes == usize::MIN)
             .expect("the wakes");
-        *wakes >= count
+        *wakes != usize::MIN
     }
 }
 
@@ -2682,7 +2698,7 @@ pub fn woken<F: Future<Output = Result<ReadyFor, HostError>>>(
     wakes: &Arc<Wakes>,
     by: &str,
 ) {
-    if !wakes.reach(1) {
+    if !wakes.first_came() {
         let now = poll_with(call, wakes);
         panic!("not woken by {by}; polled again, the wait gives {now:?}");
     }
@@ -2709,7 +2725,7 @@ pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
 ) -> ReadyFor {
     match poll_with(call.as_mut(), wakes) {
         Poll::Pending => {
-            assert!(wakes.reach(1), "the wait is woken");
+            assert!(wakes.first_came(), "the wait is woken");
             finished(poll_with(call, wakes))
         }
         ready => finished(ready),
@@ -2739,7 +2755,7 @@ pub fn waits_on_many_sockets_each_wake_once<S: IcmpSockets>(sockets: S) {
         ping(&sockets, socket, to, PAYLOAD).expect("the request is sent");
     }
     for (wait, wakes) in &mut waits {
-        assert!(wakes.reach(1), "a wait woken when its reply arrives");
+        assert!(wakes.first_came(), "a wait woken when its reply arrives");
         assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
     }
     std::thread::sleep(QUIET);
@@ -2748,8 +2764,13 @@ pub fn waits_on_many_sockets_each_wake_once<S: IcmpSockets>(sockets: S) {
     }
 }
 
+/// The length of an ICMP message's type and code, which it starts with.
+///
+/// https://www.rfc-editor.org/rfc/rfc792
+const TYPE_AND_CODE: usize = 2;
+
 /// Returns the type and code of the ICMP error the checks send: the destination host is unreachable.
-fn unreachable(version: IpVersion) -> [u8; 2] {
+fn unreachable(version: IpVersion) -> [u8; TYPE_AND_CODE] {
     match version {
         IpVersion::V4 => [icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST],
         IpVersion::V6 => [icmpv6::TYPE_DST_UNREACH, icmpv6::CODE_DST_UNREACH_ADDR],
@@ -2972,8 +2993,7 @@ pub fn waiting_for_data_until_an_icmp_error<S: IcmpSockets>(
     }
 }
 
-/// Checks that each setting set twice answers as it did once, by Configurable's own suite.
-/// Returns a socket of a namespace of its own with a membership of an IPv6 group, for Configurable's suite.
+/// Returns a socket with an IPv6 group membership in a namespace of its own, for Configurable's suite to set twice.
 pub fn configurable_value<S: IcmpSockets>(sockets: S) -> (S, S::Socket, IpSocketSetting<'static>) {
     enter_network_namespace();
     ip(NETWORK);
