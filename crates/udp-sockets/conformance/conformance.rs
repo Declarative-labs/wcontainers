@@ -23,7 +23,7 @@
 #![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use core::num::NonZeroU16;
+use core::num::{NonZeroU16, NonZeroU32};
 use std::pin::{Pin, pin};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -33,20 +33,21 @@ use etherparse::checksum::Sum16BitWords;
 use etherparse::{
     IpDscp, IpEcn, IpNumber, IpSlice, Ipv4Options, Ipv6FlowLabel, UdpHeader, UdpHeaderSlice,
 };
+use mitsein::slice1::Slice1;
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, AnycastAddress, BindAddress, BindingSetting, BroadcastPermission, ByteCount,
-    BytesPerSecond, FilterInstruction, FilterJump, FilterOperand, FilterOperation, FragmentSize,
-    InterfaceIndex, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
-    Ipv4RouteSelectors, Ipv6Families, Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding,
-    LocalFragmentation, LocalPort, MaximumTransmissionUnit, Membership, MobileAddressPreference,
-    MulticastGroup, MulticastMembership, NeighbourConfirmation, NonlocalAddresses, PacketMark,
-    PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSharing, ProcessorIndex,
-    PtpHardwareClockIndex, Report, RouteScope, RouteSelectors, SendError, SocketFilter,
-    SourceAddressCheck, SourceFilter, SourcePreferences, TemporaryAddressPreference,
-    TimestampSource, Timestamping, TransmitClock, TransmitEvent, TransmitReportKey,
-    TransmitReportRequest, TransmitStage, TransmitTime, TransmitTimeError, TransmitTimeMode,
-    TransportPorts, UpperLayer, UpperLayerSelector,
+    AddressSharing, AnycastAddress, BindAddress, BindingSetting, BroadcastPermission, BufferSizes,
+    ByteCount, BytesPerSecond, FilterInstruction, FilterJump, FilterOperand, FilterOperation,
+    FragmentSize, InterfaceIndex, InterfaceSelector, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6Families, Ipv6HeaderFields,
+    Ipv6RouteSelectors, LocalBinding, LocalFragmentation, LocalPort, MaximumTransmissionUnit,
+    Membership, MobileAddressPreference, MulticastGroup, MulticastMembership,
+    NeighbourConfirmation, NonlocalAddresses, PacketMark, PacketPriority, PathMtuDiscovery, Port,
+    PortChoice, PortRange, PortSharing, ProcessorIndex, PtpHardwareClockIndex, Report, RouteScope,
+    RouteSelectors, SendError, SocketFilter, SourceAddressCheck, SourceFilter, SourcePreferences,
+    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitClock, TransmitEvent,
+    TransmitReportKey, TransmitReportRequest, TransmitStage, TransmitTime, TransmitTimeError,
+    TransmitTimeMode, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
@@ -399,11 +400,11 @@ fn header_through(
 ) -> IpHeaderFields<'static> {
     match route(UdpProtocol::Udp, from, to) {
         RouteSelectors::V4(mut route) => {
-            route.interface = interface;
+            route.interface = interface.map(InterfaceSelector::Requested);
             ipv4_header(route)
         }
         RouteSelectors::V6(mut route) => {
-            route.interface = interface;
+            route.interface = interface.map(InterfaceSelector::Requested);
             IpHeaderFields::V6(ipv6_header(route))
         }
     }
@@ -746,7 +747,6 @@ pub fn a_datagram_arrives_with_its_ipv4_header<S: UdpSockets>(sockets: S) {
             (seen.protocol, seen.payload),
             (protocol_number(protocol), PAYLOAD)
         );
-        assert_ne!(packet.fields.interface, InterfaceIndex(u32::MIN));
         assert_eq!(packet.segment_size, None);
     }
 }
@@ -1219,6 +1219,7 @@ pub fn a_datagram_over_the_mtu_is_too_long<S: UdpSockets>(sockets: S) {
 
 /// A send that asks for transmit reports gets one per stage asked for, with its key and, if asked, its packet.
 pub fn transmit_reports_carry_the_key_of_their_send<S: UdpSockets>(sockets: S) {
+    let sent_by = loopback_interface(&sockets);
     let (_receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     for (key, packet) in [
@@ -1254,6 +1255,12 @@ pub fn transmit_reports_carry_the_key_of_their_send<S: UdpSockets>(sockets: S) {
             };
             assert_eq!((reported, source), (stage, TimestampSource::Software));
             assert_eq!(report.packet_length.is_some(), packet == Report::Requested);
+            // Linux names the sending interface only beside the packet (`ip_cmsg_recv_pktinfo` of an error entry).
+            assert_eq!(
+                report.interface,
+                (packet == Report::Requested).then_some(sent_by),
+                "{stage:?}"
+            );
         }
     }
 }
@@ -1427,9 +1434,12 @@ pub fn multicast_membership_takes_the_groups_datagrams<S: UdpSockets>(sockets: S
     looped(true);
     let only_source = [source];
     let only_another = [Ipv4Addr::from_bits(source.to_bits() + 1)];
+    let another_then_source = [only_another[0], source];
+    let include = |sources| SourceFilter::Include(Slice1::try_from_slice(sources).unwrap());
     for (filter, takes) in [
-        (SourceFilter::Include(&only_source[..]), true),
-        (SourceFilter::Include(&only_another[..]), false),
+        (include(&only_source[..]), true),
+        (include(&only_another[..]), false),
+        (include(&another_then_source[..]), true),
         (SourceFilter::Exclude(&only_source[..]), false),
         (SourceFilter::Exclude(&only_another[..]), true),
     ] {
@@ -1517,6 +1527,45 @@ fn loopback_interface<S: UdpSockets>(sockets: &S) -> InterfaceIndex {
         .interface
 }
 
+/// The interface a datagram to `to` from a socket bound to no address arrives on.
+fn arrival_interface<S: UdpSockets>(sockets: &S, to: IpAddr) -> InterfaceIndex {
+    let version = version_of(to);
+    let receiver = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+    let port = sockets
+        .bind(&receiver, binding(unspecified(version), u16::MIN))
+        .unwrap()
+        .port();
+    let sender = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
+    let from = sockets
+        .bind(&sender, binding(unspecified(version), u16::MIN))
+        .unwrap();
+    let to = SocketAddr::new(to, port);
+    send(sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    let mut into = buffer();
+    let packet = receive_packet(sockets, &receiver, &mut into);
+    assert_eq!(seen(&into[..packet.fields.length]).destination, to);
+    packet.fields.interface
+}
+
+/// A datagram names the interface holding the address it was sent to (`IP_PKTINFO`, `IPV6_PKTINFO`), though loopback carries it.
+pub fn a_datagram_names_the_interface_holding_its_destination<S: UdpSockets>(sockets: S) {
+    let through_loopback = arrival_interface(&sockets, loopback(IpVersion::V4));
+    assert_eq!(
+        arrival_interface(&sockets, loopback(IpVersion::V6)),
+        through_loopback
+    );
+    let multicast = arrival_interface(&sockets, IpAddr::V4(MULTICAST_INTERFACE_V4));
+    assert_eq!(multicast, multicast_interface(&sockets));
+    let scheduled = arrival_interface(&sockets, IpAddr::V4(SCHEDULED_V4));
+    assert_eq!(
+        arrival_interface(&sockets, IpAddr::V6(PUBLIC_V6)),
+        scheduled
+    );
+    assert_ne!(through_loopback, multicast);
+    assert_ne!(through_loopback, scheduled);
+    assert_ne!(multicast, scheduled);
+}
+
 /// The interface the IPv4 multicast route chooses, from a looped datagram to a group joined on no interface given.
 fn multicast_interface<S: UdpSockets>(sockets: &S) -> InterfaceIndex {
     let group = IpAddr::V4(Ipv4Addr::from_bits(
@@ -1597,7 +1646,7 @@ pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
             .configure(
                 &sender,
                 UdpSocketSetting::Binding(BindingSetting::BoundInterface(Some(InterfaceIndex(
-                    u32::MAX
+                    NonZeroU32::MAX
                 ))))
             )
             .is_err()
@@ -2067,7 +2116,7 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
         );
         let to = SocketAddr::new(IpAddr::V6(group), port);
         let mut route = ipv6_route(UdpProtocol::Udp, from, to);
-        route.interface = interface;
+        route.interface = interface.map(InterfaceSelector::Requested);
         sockets
             .send_to(
                 &sender,
@@ -2137,7 +2186,7 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     );
     let to = SocketAddr::new(IpAddr::V6(anycast), port);
     let mut route = ipv6_route(UdpProtocol::Udp, from, to);
-    route.interface = Some(interface);
+    route.interface = Some(InterfaceSelector::Requested(interface));
     sockets
         .send_to(
             &sender,
@@ -2696,6 +2745,41 @@ pub fn a_wait_for_a_fact_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
 /// The send buffer size the checks of a full send buffer give, of which Linux keeps twice.
 pub const SEND_BUFFER: usize = 16384;
 
+/// A buffer size beyond the exit node's limits, which [Linux sets](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=rmem_max) far lower.
+const BEYOND_BUFFER_LIMITS: usize = 1 << 30;
+
+/// The buffer sizes read back (`SO_SNDBUF`, `SO_RCVBUF`) are those set, doubled, and held to the exit node's limits beyond them.
+pub fn buffer_sizes_read_back_as_set_and_doubled<S: UdpSockets>(sockets: S) {
+    let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let first = sockets.read_buffer_sizes(&socket).unwrap();
+    assert!(first.send.0 > 0 && first.receive.0 > 0, "{first:?}");
+    let sizes = |send, receive| {
+        set(
+            &sockets,
+            &socket,
+            UdpSocketSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(send))),
+        );
+        set(
+            &sockets,
+            &socket,
+            UdpSocketSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(receive))),
+        );
+        sockets.read_buffer_sizes(&socket).unwrap()
+    };
+    let receive_buffer = SEND_BUFFER + SEND_BUFFER / 2;
+    assert_eq!(
+        sizes(SEND_BUFFER, receive_buffer),
+        BufferSizes {
+            send: ByteCount(SEND_BUFFER * 2),
+            receive: ByteCount(receive_buffer * 2),
+        }
+    );
+    let held = sizes(BEYOND_BUFFER_LIMITS, BEYOND_BUFFER_LIMITS);
+    for size in [held.send.0, held.receive.0] {
+        assert!(size < BEYOND_BUFFER_LIMITS * 2 && size % 2 == 0, "{held:?}");
+    }
+}
+
 /// A pacing rate that holds each datagram after a socket's first for a quarter of a second.
 pub const SLOW_PACING_RATE: BytesPerSecond = BytesPerSecond(4000);
 
@@ -3090,7 +3174,7 @@ pub fn configurable_contract_holds_for_a_setting_taken<S: UdpSockets>(sockets: S
 pub fn configurable_contract_holds_for_a_setting_refused<S: UdpSockets>(sockets: S) {
     let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let no_interface = UdpSocketSetting::Binding(BindingSetting::BoundInterface(Some(
-        InterfaceIndex(u32::MAX),
+        InterfaceIndex(NonZeroU32::MAX),
     )));
     assert!(sockets.configure(&socket, no_interface).is_err());
     wcontainers_configurable_conformance::setting_twice_equals_setting_once((
@@ -3190,7 +3274,7 @@ pub fn connect_takes_its_route_selectors<S: UdpSockets>(sockets: S) {
         IpAddr::V4(SCHEDULED_V4)
     );
     let mut through = ipv4_route(UdpProtocol::Udp, from, peer);
-    through.interface = Some(multicast_interface(&sockets));
+    through.interface = Some(InterfaceSelector::Requested(multicast_interface(&sockets)));
     assert_eq!(
         connected(IpVersion::V4, RouteSelectors::V4(through)),
         IpAddr::V4(MULTICAST_INTERFACE_V4)
@@ -3388,6 +3472,8 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(socke
                     panic!("a rejection, not {report:?}")
                 };
                 assert_eq!(report.packet_length.is_some(), with_packet(Some(reason)));
+                // Linux puts the frame's length where a rejection's interface would be.
+                assert_eq!(report.interface, None, "{reason:?}");
                 reported.push((report.key, Some(reason)));
             }
             Ok(UdpReceived::Packet(packet)) => panic!("a report, not {packet:?}"),
@@ -3440,6 +3526,8 @@ macro_rules! tests {
             rejected_transmit_times_are_reported_with_their_keys
             a_datagram_over_the_mtu_is_too_long
             transmit_reports_carry_the_key_of_their_send
+            a_datagram_names_the_interface_holding_its_destination
+            buffer_sizes_read_back_as_set_and_doubled
             receive_timestamps_come_only_when_set
             a_small_receive_buffer_counts_its_drops
             sending_settings_are_taken

@@ -10,11 +10,11 @@ use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::AddressSharing;
 use wcontainers_internet_protocol::{
-    BindAddress, BindingSetting, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields,
-    IpSocketSetting, IpVersion, Ipv4RouteSelectors, Ipv6Families, Ipv6RouteSelectors, LocalBinding,
-    LocalPort, MobileAddressPreference, NonlocalAddresses, PacketMark, PortSharing, ProcessorIndex,
-    Report, RouteScope, RouteSelectors, SendError, SourcePreferences, TemporaryAddressPreference,
-    Timestamping, UpperLayer, UpperLayerSelector,
+    BindAddress, BindingSetting, BroadcastPermission, BufferSizes, ByteCount, IpHeaderFields,
+    IpSendFields, IpSocketSetting, IpVersion, Ipv4RouteSelectors, Ipv6Families, Ipv6RouteSelectors,
+    LocalBinding, LocalPort, MobileAddressPreference, NonlocalAddresses, PacketMark, PortSharing,
+    ProcessorIndex, Report, RouteScope, RouteSelectors, SendError, SourcePreferences,
+    TemporaryAddressPreference, Timestamping, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
@@ -54,6 +54,8 @@ pub const SEND_HEADER: &str =
     "a send's IP header and send fields, which only the Linux build sets on a host socket";
 pub const RECEIVED_HEADER: &str = "a received packet's IP header, which only the Linux build reads from the host's control messages";
 pub const UNSENT_BYTES: &str = "the unsent byte count, which socket2 does not read";
+pub const BUFFER_SIZES: &str =
+    "the buffer sizes Linux reads back, which other systems keep without Linux's doubling";
 pub const INCOMING_PROCESSOR: &str = "a socket's incoming processor, which only Linux keeps";
 pub const NEGATIVE_ROUTE_ADVICE: &str =
     "negative route advice, which only the Linux build gives by connecting again";
@@ -305,6 +307,10 @@ impl UdpSockets for HostUdpSockets {
 
     fn count_unsent_bytes(&self, _socket: &Self::Socket) -> Result<ByteCount, HostError> {
         Err(self.refuse(UNSENT_BYTES))
+    }
+
+    fn read_buffer_sizes(&self, _socket: &Self::Socket) -> Result<BufferSizes, HostError> {
+        Err(self.refuse(BUFFER_SIZES))
     }
 
     fn read_incoming_processor(

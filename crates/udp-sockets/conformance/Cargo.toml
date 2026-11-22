@@ -12,6 +12,7 @@ wcontainers-udp-sockets = { path = ".." }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true
+mitsein.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-configurable-conformance = { path = "../../configurable/conformance" }
 wcontainers-negative-route-advisable-conformance = { path = "../../negative-route-advisable/conformance" }

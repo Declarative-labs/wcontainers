@@ -14,9 +14,9 @@ use socket2::SockAddr;
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BindAddress, BindingSetting, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
-    IpVersion, LocalBinding, LocalPort, NonlocalAddresses, ProcessorIndex, Received, Report,
-    RouteSelectors, SendError, UpperLayer, UpperLayerSelector,
+    BindAddress, BindingSetting, BufferSizes, ByteCount, IpHeaderFields, IpSendFields,
+    IpSocketSetting, IpVersion, LocalBinding, LocalPort, NonlocalAddresses, ProcessorIndex,
+    Received, Report, RouteSelectors, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
@@ -348,7 +348,7 @@ impl HostUdpSocket {
             None => u32::MIN,
         };
         Ok(UdpReceived::Packet(UdpReceivedPacket {
-            fields: ancillary.packet_fields(headers.len() + payload, drops),
+            fields: ancillary.packet_fields(headers.len() + payload, drops)?,
             segment_size: ancillary
                 .segment_size
                 .and_then(core::num::NonZeroU16::new)
@@ -546,6 +546,17 @@ impl UdpSockets for HostUdpSockets {
             return Err(last_host_error());
         }
         Ok(ByteCount(unsent as usize))
+    }
+
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
+        let fd = socket.fd();
+        let host = sock(&fd);
+        let send = host.send_buffer_size();
+        let receive = host.recv_buffer_size();
+        Ok(BufferSizes {
+            send: ByteCount(send.map_err(|error| io_host_error(&error))?),
+            receive: ByteCount(receive.map_err(|error| io_host_error(&error))?),
+        })
     }
 
     fn read_incoming_processor(
