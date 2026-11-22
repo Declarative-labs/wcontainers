@@ -56,6 +56,7 @@ mod lanes;
 pub mod offer;
 #[cfg(feature = "translate")]
 mod vex;
+#[cfg(feature = "translate")]
 mod wide;
 
 pub use offer::{FULL_SPEED, NotBuilt, Offer, V3};
