@@ -148,6 +148,18 @@ side of each is worked around without changing the interface.
   outside reaches (one not published); the test host and the runtime give one that never becomes
   ready and whose accept answers `Closed` (counted "listening outside failed"), as before.
 
+- KA, eighth run: `RandomSource::fill_random_bytes` may fail, but Linux's own randomness
+  (`get_random_bytes`) never does, and the kernel needs it where nothing can carry an error: the
+  16 bytes of `AT_RANDOM` at every exec, the boot id, layout randomization, port choice. So a
+  failed source stops the kernel with a panic naming it (implementation.rs `Context::random`).
+  Example: a browser embedder whose crypto source refuses ends the container at its first exec.
+- KA, eighth run: the kernel's hooks cannot be the interface's `ProcessTracer` without making the
+  whole kernel generic over its executor: each hook takes `P: ProcessOf<ProcessState, Executor>`,
+  a process handle whose kernel is a `ProcessController` with that executor, but the kernel calls
+  its hooks from inside its entry points, which hold the executor as `&mut dyn Cpu` and the kernel
+  without it. Example: `on_thread_starting` fires inside `clone`, where only `&mut Kernel` and
+  `&mut dyn Cpu` exist.
+
 ## For the orchestrator
 
 - Twenty-first run (15:14 UTC on the 20th on): Docker Desktop on the Mac still starts no
@@ -263,6 +275,20 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, eighth run: the seventh run's two open problems are fixed and neither was the kernel's. The
+nonblocking `large_output_to_a_slow_client` failure was the stand-in's client giving output room
+whenever the kernel came back at once to settle a woken wait (`Next::Idle` at time 0), which is not
+idleness; the extra allocations were the client building its list of outputs each turn. The kernel
+now reads its clocks, randomness and task ids through the interfaces' `Clock`, `RandomSource` and
+`TaskIdAllocator`; the abi's `Host` keeps only warnings. Measured against the milestone's start
+(e5d693d2): no more allocations in any of the four waits, name lookup and outside socket within
+the noise, the pipe ping-pong 1 to 3 percent slower (2 percent with thin LTO; see "KA, eighth
+run"). Not done: the hooks as
+the interface's `ProcessTracer` (it needs a kernel generic over its executor), warnings through
+`FallbackObserver` (For the owner), ICMP and raw sockets, the linter findings, the independent
+check, and the guest pipe's 2 percent with thin LTO, which came in the fourth to sixth runs and
+breaks the owner's condition. KA is not complete.
 
 KA, seventh run: the standard streams run on the system's `StreamTransport`: each end is one of
 the system's endpoints, given at start in `Standard<E>`, sent on and received from as far as each
@@ -519,6 +545,90 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, eighth run
+
+Started about 03:35 UTC on 2026-11-22 at f7f0cf17 (branch agents). Builds and lints on the x86
+machine, tests and measurements on the ARM64 machine, the linter on the Mac; scratch kernel/ka8.
+Nothing new had come from main (811fadd5 on main, the owner's async syntax change, is not merged
+into agents yet).
+
+Done:
+- 9854b9b5: streams `large_output_to_a_slow_client`, nonblock mode, passes again. Cause (traced
+  with the client's room and the kernel's sends): after a send the system took short, the kernel
+  starts a stored wait and answers `Next::Idle { until_nanoseconds: Some(0) }` to settle it; the
+  stand-in's client counted that as "the container can go on no other way" and gave 64 KiB of
+  room at once, so the pipe never filled. The client now gives room only on a real idle
+  (`settling` in driver.rs `idle_live`), and the abi's `Next::Idle` says what a time of 0 asks.
+  The same commit makes the client's list of output ends a static slice: it was a `Vec` built
+  twice per turn, which was the whole of the seventh run's extra allocations.
+- fcc62339: the client looks at its waits only after something could make one ready (a wait
+  armed, room given, input sent, an end closed), not at every turn; the wait measurement builds
+  its guest in a folder of its own (the shared `guest` folder made the image, and the root-file
+  listing after each run, vary with whatever other tests had built: 22 ms of a 27 ms run, so the
+  difference of two runs was noisy) and prints whole runs.
+- ca411e59, 65182792 (lock file): the kernel's `System` requires `wcontainers_clock::Clock`,
+  `wcontainers_random_source::RandomSource` and `wcontainers_system::TaskIdAllocator` in place of
+  the abi host's clocks and `random` and its own task id methods; the abi's `Host` is `warn`
+  alone. The kernel takes randomness through `Context::random` (For the owner: a failed source
+  stops it).
+- Changed outside this track's crates, the smallest change that keeps them building:
+  - runtime (single-kernel): its host macro implements `Clock`, `RandomSource` (never fails) and
+    `TaskIdAllocator` beside `Host`; manifest takes the two interfaces.
+  - policy: `Clock` from its own seeded clock, `RandomSource` forwarded to its services (so `H:
+    RandomSource` where the kernel's `System` is implemented), `TaskIdAllocator`; manifest.
+  - hardware-virtualization-inside: `LinkHost` and its test recording implement `Clock` and
+    `RandomSource`; `answer` asks `H: Host + Clock + RandomSource + StreamTransport`, and a failed
+    random source on the monitor's side panics (the link has no error for it); manifest.
+  - hardware-virtualization: tests/container/mod.rs follows (those tests still do not build,
+    from 4ee5def7); manifest.
+  - unicorn (this track's): the test host's `Host` split the same way; tests/embedder.rs calls
+    `TaskIdAllocator::allocate_task_id`.
+
+Tests (ARM64 machine, 03:44 to 04:21 UTC, load 0.3 to 7; scratch ka8/check1.log, subset1.log,
+subset2.log): kernel lib 15, kernel conformance 14, runtime 13, policy 0, abi 1,
+hardware-virtualization-inside 2 passed; unicorn streams 18 (all), embedder 35, saving 1, script
+1, shell 3, repeats 5, round_trips 3 passed; terminal 9 passed and
+`making_pairs` failed, busybox 3 passed, 1 ignored and `system` failed (both the ARM list).
+`cargo check --all-targets` and clippy with warnings denied (`--no-deps`) on the abi, kernel,
+unicorn, runtime, policy, hardware-virtualization-inside, wasmtime and kernel conformance
+packages pass (x86 machine). The workspace-wide check stopped in
+wcontainers-tcp-sockets-conformance, another track's file being edited at the time.
+
+Measurements (scratch ka8/ab2.log: ARM64 machine, release build of tests/waitcost.rs, median of 9
+of 500 and 1000 repetitions; before is a clone at e5d693d2, the milestone's start, with this run's
+waitcost.rs; after is fcc62339 with its working tree; alternately three times, 04:15 to 04:18
+UTC, load 2.4 to 6.2 on 96 cores):
+- pipe ping-pong: before 12381, 11960, 12134 ns; after 12492, 12312, 12329 ns (1 to 3 percent).
+- outside socket read: before 14757, 13952, 13865; after 14855, 16700, 14628 ns (noisy).
+- backend open and read: before 488249, 563535, 471642; after 494801, 550346, 487222 ns (noisy).
+- name lookup: before 137946, 137762, 137372; after 138074, 138369, 138472 ns (under 1 percent).
+- Allocations per repetition (the whole process, test host included): pipe 142 and 142, socket
+  79 and 79, backend 348 before and 341 after, name 711 before and 709 after. So no wait costs
+  an allocation it did not cost at the milestone's start, and the backend and name waits cost
+  fewer.
+- The pipe with `CARGO_PROFILE_RELEASE_LTO=thin` (scratch ka8/pipe-lto.log, 2000 and 4000
+  repetitions, 04:21 to 04:25 UTC, load 8.5 to 15): before 11783, 11752, 11661 ns; after 12057,
+  12004, 11934 ns, 2 percent slower in every round, so this is not only the cross-crate inlining
+  of the third run. Against the sixth run's end, 4b384fd6, the same way (pipe-lto6.log, 04:27 to
+  04:29 UTC, load 6.5 to 13): 11918 and 12011 ns there, 12019 and 12013 ns now. So the seventh
+  and eighth runs add nothing measurable to the pipe; the 2 percent came in between e5d693d2 and
+  4b384fd6 (the fourth to sixth runs: the readiness switch, TCP and UDP on their interfaces). The
+  owner's condition on pipes is not met yet: finding which change of those runs costs a guest
+  pipe 250 ns per round trip is the next run's first job (bisect those commits with
+  scratch ka8/pipe-lto6.sh, then callgrind as in the third run).
+
+The owner's linter (scratch ka8/lint-start.log, at the start of the run): 38614 findings in this
+track's files (crates/kernel/implementation, crates/abi, the stand-in), 21582 of them in the
+generated Linux bindings (`linux/linux/*.rs`: public items, constants without a link); by rule
+13037 public outside an interface, 10064 number constants without a link, 9114 magic literals,
+about 5000 on summaries, 450 constants defined twice. The kernel interface's untested methods are
+the same two (For the owner).
+
+Next, in order: the 2 percent on the guest pipe (above); the hooks as `ProcessTracer`, which first needs the kernel's entry points generic
+over the executor in place of `&mut dyn Cpu` (For the owner has why); warnings through
+`FallbackObserver` once the owner rules on naming the kernel's slow paths; the linter findings,
+the generated bindings first (one change of the generator removes most); the independent check.
 
 ## KA, seventh run
 

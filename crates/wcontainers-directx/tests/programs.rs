@@ -1054,7 +1054,7 @@ fn within_tolerance(want: &str, got: &str) -> bool {
     };
     let word = 2 * size_of::<f32>();
     let floats = |h: &str| -> Option<Vec<f32>> {
-        if h.len() % word != 0 {
+        if !h.len().is_multiple_of(word) {
             return None;
         }
         (0..h.len())
