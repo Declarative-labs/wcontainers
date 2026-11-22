@@ -152,7 +152,7 @@ fn prepare(socket: &Socket) -> Result<(), HostError> {
     Ok(())
 }
 
-/// The flags every send carries: it never blocks and, where the system has the flag, raises no `SIGPIPE`.
+/// Gives the flags every send carries: it never blocks and, where the system has the flag, raises no `SIGPIPE`.
 fn send_flags() -> SendFlags {
     #[cfg(not(target_vendor = "apple"))]
     return SendFlags::DONTWAIT | SendFlags::NOSIGNAL;
@@ -160,7 +160,7 @@ fn send_flags() -> SendFlags {
     return SendFlags::DONTWAIT;
 }
 
-/// An address the host gives, as an internet address with an IPv4 one an IPv6 socket holds unmapped.
+/// Gives an address the host gives, as an internet address with an IPv4 one an IPv6 socket holds unmapped.
 fn internet_address(address: std::io::Result<SockAddr>) -> Result<SocketAddr, HostError> {
     let address = address
         .map_err(|error| io_host_error(&error))?
@@ -177,7 +177,7 @@ fn internet_address(address: std::io::Result<SockAddr>) -> Result<SocketAddr, Ho
     })
 }
 
-/// A peer an IPv6 socket reaches, an IPv4 one mapped.
+/// Gives a peer an IPv6 socket reaches, an IPv4 one mapped.
 fn peer_for(family: IpVersion, peer: SocketAddr) -> SocketAddr {
     match (family, peer) {
         (IpVersion::V6, SocketAddr::V4(v4)) => {
@@ -187,7 +187,7 @@ fn peer_for(family: IpVersion, peer: SocketAddr) -> SocketAddr {
     }
 }
 
-/// The family of the socket a binding asks for.
+/// Gives the family of the socket a binding asks for.
 fn family_of(address: &BindAddress) -> IpVersion {
     match address {
         BindAddress::V4(_) => IpVersion::V4,
@@ -195,7 +195,7 @@ fn family_of(address: &BindAddress) -> IpVersion {
     }
 }
 
-/// Whether a transmit report request asks for any report.
+/// Tells whether a transmit report request asks for any report.
 fn asks_for_reports(request: &TransmitReportRequest) -> bool {
     [
         request.scheduled,

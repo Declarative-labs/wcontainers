@@ -134,7 +134,7 @@ const NO_LISTENER_STATE: &str = "reading a TCP listener's state is not mapped to
 const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow label only as it connects: a listener, an accepted connection or a connected one takes no other";
 
 impl HostTcpSockets {
-    /// The next entry of the error queue, and whether a packet its report carries was cut to the buffer.
+    /// Gives the next entry of the error queue, and whether a packet its report carries was cut to the buffer.
     fn next_error_queue_entry(
         &self,
         connection: &HostTcpConnection,
@@ -300,7 +300,7 @@ impl HeldAddress {
 }
 
 impl InterfaceAddresses {
-    /// The interface that holds the address, or failing that the first whose prefix holds it.
+    /// Gives the interface that holds the address, or failing that the first whose prefix holds it.
     fn holding(&self, address: IpAddr) -> Option<InterfaceIndex> {
         // Subscribed before the first read, so that no change goes unheard.
         let changes = self.changes.get_or_init(address_changes);
@@ -340,7 +340,7 @@ fn address_changes() -> Option<OwnedFd> {
     Some(socket)
 }
 
-/// Whether the subscription heard of a change since it was last read, reading all it holds.
+/// Tells whether the subscription heard of a change since it was last read, reading all it holds.
 fn changed(changes: BorrowedFd<'_>) -> bool {
     let mut message = [0; NETLINK_MESSAGE_ROOM];
     let mut heard = false;
@@ -384,8 +384,9 @@ fn interface_addresses() -> Vec<HeldAddress> {
         .collect()
 }
 
-/// Where the SYN's IP header starts in the headers `TCP_SAVED_SYN` gave: the first place an IP header from the peer to
-/// the local address holds a TCP header between their ports that ends the headers.
+/// Gives where the SYN's IP header starts in the headers `TCP_SAVED_SYN` gave.
+///
+/// The first place an IP header from the peer to the local address holds a TCP header between their ports that ends the headers.
 fn network_header_start(saved: &[u8], local: SocketAddr, peer: SocketAddr) -> Option<usize> {
     (0..saved.len()).find(|&start| {
         etherparse::LaxIpSlice::from_slice(&saved[start..]).is_ok_and(|(ip, _)| {
@@ -413,12 +414,12 @@ struct PacketOptions {
     bytes: [u8; PACKET_OPTIONS_ROOM],
 }
 
-/// The host error of a failed socket2 call.
+/// Gives the host error of a failed socket2 call.
 fn io_host_error(error: std::io::Error) -> HostError {
     host_error(Errno::from_io_error(&error).unwrap_or(Errno::IO))
 }
 
-/// The socket's address as socket2 gives it, which is always an internet one for these sockets.
+/// Gives the socket's address as socket2 gives it, which is always an internet one for these sockets.
 fn internet_address(address: std::io::Result<SockAddr>) -> Result<SocketAddr, HostError> {
     address
         .map_err(io_host_error)?
@@ -426,7 +427,7 @@ fn internet_address(address: std::io::Result<SockAddr>) -> Result<SocketAddr, Ho
         .ok_or(HostError::Errno(libc::EAFNOSUPPORT))
 }
 
-/// A receive buffer as socket2 takes it.
+/// Gives a receive buffer as socket2 takes it.
 fn uninitialised(bytes: &mut [u8]) -> &mut [MaybeUninit<u8>] {
     // SAFETY: MaybeUninit<u8> has u8's layout, and socket2 writes only initialised bytes into it.
     unsafe { &mut *(std::ptr::from_mut(bytes) as *mut [MaybeUninit<u8>]) }
@@ -436,7 +437,7 @@ fn invalid() -> HostError {
     HostError::Errno(libc::EINVAL)
 }
 
-/// A duration as a whole number of the unit that fits a C int, or EINVAL.
+/// Gives a duration as a whole number of the unit that fits a C int, or EINVAL.
 fn whole(duration: Duration, unit: Duration) -> Result<c_int, HostError> {
     if !duration.as_nanos().is_multiple_of(unit.as_nanos()) {
         return Err(invalid());
@@ -462,8 +463,9 @@ fn protocol_of(protocol: TcpProtocol) -> rustix::net::Protocol {
     }
 }
 
-/// Makes the socket hold a flow label to the peer, shared with this process's other sockets, and send the label its
-/// connect address carries: Linux connects with a label only when the socket holds it.
+/// Makes the socket hold a flow label to the peer, shared with this process's other sockets, and send the label its connect address carries.
+///
+/// Linux connects with a label only when the socket holds it.
 fn hold_flow_label(
     socket: BorrowedFd<'_>,
     peer: SocketAddr,
@@ -483,8 +485,9 @@ fn hold_flow_label(
     set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, true)
 }
 
-/// Sets or removes the MD5 signature key of the peers a prefix holds, through `TCP_MD5SIG_EXT`; an IPv4 prefix of an
-/// IPv6 socket is given mapped, as Linux takes it. Removing a key that is not there leaves the socket as asked.
+/// Sets or removes the MD5 signature key of the peers a prefix holds, through `TCP_MD5SIG_EXT`.
+///
+/// An IPv4 prefix of an IPv6 socket is given mapped, as Linux takes it. Removing a key that is not there leaves the socket as asked.
 fn set_md5_key(
     socket: BorrowedFd<'_>,
     family: IpVersion,
@@ -515,7 +518,8 @@ fn set_md5_key(
     }
 }
 
-/// The `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
+/// Gives the `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
+///
 /// A key's peer address as Linux takes it from a socket of the family: an IPv4 one of an IPv6 socket mapped.
 fn key_address(family: IpVersion, address: IpAddr) -> IpAddr {
     match (family, address) {
@@ -555,8 +559,9 @@ fn authentication_key_name(
     })
 }
 
-/// Adds a TCP Authentication Option key through `TCP_AO_ADD_KEY`. Linux refuses a key whose identifiers a held key
-/// of the peer has (`EEXIST`): when the held key is this one, the socket is as asked, with the key put to its use.
+/// Adds a TCP Authentication Option key through `TCP_AO_ADD_KEY`.
+///
+/// Linux refuses a key whose identifiers a held key of the peer has (`EEXIST`): when the held key is this one, the socket is as asked, with the key put to its use.
 fn add_authentication_key(
     socket: BorrowedFd<'_>,
     family: IpVersion,
@@ -614,7 +619,7 @@ fn add_authentication_key(
     }
 }
 
-/// Whether the socket holds the key the request adds, as `TCP_AO_GET_KEYS` gives the key with its name.
+/// Tells whether the socket holds the key the request adds, as `TCP_AO_GET_KEYS` gives the key with its name.
 fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) -> bool {
     // SAFETY: tcp_ao_getsockopt is plain data.
     let mut held: uapi::tcp_ao_getsockopt = unsafe { std::mem::zeroed() };
@@ -640,8 +645,9 @@ fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) 
         && held.key[..usize::from(held.keylen)] == request.key[..usize::from(request.keylen)]
 }
 
-/// Removes a TCP Authentication Option key through `TCP_AO_DEL_KEY`; removing one that is not there leaves the socket
-/// as asked, with the keys named to be used next put to use.
+/// Removes a TCP Authentication Option key through `TCP_AO_DEL_KEY`.
+///
+/// Removing one that is not there leaves the socket as asked, with the keys named to be used next put to use.
 fn remove_authentication_key(
     socket: BorrowedFd<'_>,
     family: IpVersion,
@@ -683,8 +689,9 @@ fn remove_authentication_key(
     }
 }
 
-/// Writes `TCP_AO_INFO` as the socket holds it, with the change: Linux sets the requirement and the ICMP choice at
-/// every write, so they are read first (none held is Linux's defaults, zero).
+/// Writes `TCP_AO_INFO` as the socket holds it, with the change.
+///
+/// Linux sets the requirement and the ICMP choice at every write, so they are read first (none held is Linux's defaults, zero).
 fn change_authentication_options(
     socket: BorrowedFd<'_>,
     change: impl FnOnce(&mut uapi::tcp_ao_info_opt),
@@ -766,7 +773,7 @@ fn record_flags(request: &TransmitReportRequest) -> (u32, u32) {
     (flags, reports)
 }
 
-/// One send with an `SO_TIMESTAMPING` control message carrying the record flags.
+/// Gives one send with an `SO_TIMESTAMPING` control message carrying the record flags.
 fn send_with_record_flags(
     socket: BorrowedFd<'_>,
     bytes: &[u8],
@@ -788,7 +795,7 @@ fn send_with_record_flags(
         .map_err(io_host_error)
 }
 
-/// The statistics of a transmit report from the `TCP_NLA_*` attributes of its `SCM_TIMESTAMPING_OPT_STATS`.
+/// Gives the statistics of a transmit report from the `TCP_NLA_*` attributes of its `SCM_TIMESTAMPING_OPT_STATS`.
 fn transmit_statistics(data: &[u8]) -> Option<TcpTransmitStatistics> {
     let mut values = [None; STATISTICS_ATTRIBUTES];
     for attribute in NlasIterator::new(data) {
@@ -1101,7 +1108,7 @@ impl HostTcpSockets {
         }
     }
 
-    /// The SYN's headers that `TCP_SAVED_SYN` holds, read into the room given or, when longer, into `large`.
+    /// Gives the SYN's headers that `TCP_SAVED_SYN` holds, read into the room given or, when longer, into `large`.
     fn take_saved_synchronize<'b>(
         &self,
         socket: BorrowedFd<'_>,
@@ -1121,8 +1128,9 @@ impl HostTcpSockets {
         }
     }
 
-    /// The interface the SYN came in on, from the packet information the listener's `IP_PKTINFO` or `IPV6_RECVPKTINFO`
-    /// kept, which the accepted connection goes on recording only when the guest asked for its records.
+    /// Gives the interface the SYN came in on, from the packet information the listener's `IP_PKTINFO` kept.
+    ///
+    /// Or `IPV6_RECVPKTINFO`; the accepted connection goes on recording only when the guest asked for its records.
     fn arrival_interface(
         &self,
         socket: BorrowedFd<'_>,
@@ -1409,8 +1417,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
 }
 
 impl HostTcpSockets {
-    /// Makes a TCP listener keep the packet information, with the arrival interface, of what each accepted connection
-    /// came with.
+    /// Makes a TCP listener keep the packet information, with the arrival interface, of what each accepted connection came with.
     fn record_arrival_interfaces(
         &self,
         socket: BorrowedFd<'_>,
@@ -1423,8 +1430,9 @@ impl HostTcpSockets {
         Ok(())
     }
 
-    /// Binds the socket as the binding asks, taking a port the exit node chooses at once: Linux chooses only inside
-    /// the host's own port range, so the shared crate tries the rest of a range port by port.
+    /// Binds the socket as the binding asks, taking a port the exit node chooses at once.
+    ///
+    /// Linux chooses only inside the host's own port range, so the shared crate tries the rest of a range port by port.
     fn bind(&self, socket: BorrowedFd<'_>, local: &LocalBinding<'_>) -> Result<(), HostError> {
         match local.port {
             LocalPort::ChosenByExitNode(choice) => {
@@ -2106,7 +2114,7 @@ mod tests {
     /// How long a wait may take to be woken once its data is sent.
     const DEADLINE: Duration = Duration::from_secs(10);
 
-    /// A listener and the two ends of a connection to it, on IPv4 loopback.
+    /// Gives a listener and the two ends of a connection to it, on IPv4 loopback.
     fn connected(
         sockets: &HostTcpSockets,
     ) -> (HostTcpListener, HostTcpConnection, HostTcpConnection) {
@@ -2178,7 +2186,7 @@ mod tests {
         }
     }
 
-    /// Once a connection has waited, its waits that have to wait allocate nothing on the waiting thread.
+    /// Checks that once a connection has waited, its waits that have to wait allocate nothing on the waiting thread.
     #[test]
     fn a_wait_allocates_nothing_once_warm() {
         let sockets = HostTcpSockets::new().expect("readiness");
@@ -2210,7 +2218,7 @@ mod tests {
         drop(counted);
     }
 
-    /// A receive that brings control messages, a timestamp and the unread byte count, allocates nothing.
+    /// Checks that a receive that brings control messages, a timestamp and the unread byte count allocates nothing.
     #[test]
     fn a_receive_with_control_messages_allocates_nothing() {
         let sockets = HostTcpSockets::new().expect("readiness");
@@ -2289,7 +2297,7 @@ mod tests {
         });
     }
 
-    /// Discarding a transmit report that carries its packet counts no packet cut to a buffer.
+    /// Checks that discarding a transmit report that carries its packet counts no packet cut to a buffer.
     #[test]
     fn discarding_cuts_no_packet() {
         let sockets = HostTcpSockets::new().expect("readiness");

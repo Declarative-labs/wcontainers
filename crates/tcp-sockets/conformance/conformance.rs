@@ -566,7 +566,7 @@ struct AuthenticationOption {
     length: u8,
 }
 
-/// The TCP Authentication Option among a segment's options, walked as RFC 9293 section 3.1 lays them out.
+/// Gives the TCP Authentication Option among a segment's options, walked as RFC 9293 section 3.1 lays them out.
 fn authentication_option(options: &[u8]) -> Option<AuthenticationOption> {
     let mut rest = options;
     loop {
@@ -680,7 +680,7 @@ impl Segment {
         })
     }
 
-    /// The sequence number that follows this segment.
+    /// Gives the sequence number that follows this segment.
     fn end(&self) -> u32 {
         let flags = u32::from(self.synchronize) + u32::from(self.finish);
         self.sequence.wrapping_add(self.payload as u32 + flags)
@@ -691,8 +691,9 @@ impl Segment {
     }
 }
 
-/// The segments to and from one listener, gathered by a thread reading the host's packet socket, which
-/// sees each loopback packet twice: once leaving and once arriving.
+/// The segments to and from one listener, gathered by a thread reading the host's packet socket, which sees each loopback packet twice.
+///
+/// Once leaving and once arriving.
 struct Capture {
     segments: Arc<Mutex<Vec<Segment>>>,
     stop: Arc<AtomicBool>,
@@ -775,7 +776,7 @@ impl Capture {
         segments
     }
 
-    /// The first segment since the start that meets the condition, waiting for it up to the given time.
+    /// Gives the first segment since the start that meets the condition, waiting for it up to the given time.
     fn wait_for(
         &self,
         start: Instant,
@@ -793,7 +794,7 @@ impl Capture {
         }
     }
 
-    /// The first segment captured that meets the condition, waiting for it up to the deadline.
+    /// Gives the first segment captured that meets the condition, waiting for it up to the deadline.
     fn first(&self, condition: impl Fn(&Segment) -> bool) -> Segment {
         let start = Instant::now();
         loop {
@@ -805,7 +806,7 @@ impl Capture {
         }
     }
 
-    /// The sequence number the connection's next segment to the listener takes.
+    /// Gives the sequence number the connection's next segment to the listener takes.
     fn next_to_listener(&self) -> u32 {
         self.first(|segment| segment.to_listener);
         self.segments()
@@ -843,7 +844,7 @@ fn ipv6_loopback() -> BindAddress {
     }
 }
 
-/// A pair on the given loopback address whose segments are captured from the SYN on.
+/// Gives a pair on the given loopback address whose segments are captured from the SYN on.
 fn watched_pair<S: TcpSockets>(
     sockets: &S,
     address: BindAddress,
@@ -904,7 +905,7 @@ fn fill<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
     taken
 }
 
-/// The bytes waiting to be read on the connection.
+/// Gives the bytes waiting to be read on the connection.
 fn unread<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
     let mut buffer = vec![0; CAPTURE_BUFFER];
     sockets
@@ -918,7 +919,7 @@ fn unread<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
         .map_or(0, |got| got.length.0)
 }
 
-/// How long after the send that started it a connection's first acknowledgement of data came.
+/// Gives how long after the send that started it a connection's first acknowledgement of data came.
 fn acknowledgement_delay<S: TcpSockets>(
     sockets: &S,
     pair: &Pair<S>,
@@ -1104,7 +1105,7 @@ pub fn dual_stack_listener_accepts_ipv4<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(listener);
 }
 
-/// Whether the SYN and the SYN-ACK of the first handshake captured since the start offer Multipath TCP.
+/// Tells whether the SYN and the SYN-ACK of the first handshake captured since the start offer Multipath TCP.
 fn handshake_offers_multipath(capture: &Capture, start: Instant) -> (bool, bool) {
     let offers = |to_listener: bool| {
         capture
@@ -1185,7 +1186,7 @@ pub fn requested_port_is_bound<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(listening.listener);
 }
 
-/// The exit node's port comes from its range outside the reserved part, also where the range lies above the host's own.
+/// Checks that the exit node's port comes from its range outside the reserved part, also where the range lies above the host's own.
 pub fn exit_node_chooses_a_port_outside_the_reserved<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     for (first, reserved_last, last) in [
@@ -1519,7 +1520,7 @@ pub fn push_ignoring_neither_sends_data_held_for_more<S: TcpSockets>(sockets: S)
     close(&sockets, pair);
 }
 
-/// Two sends under a cork, the first ending a record: they leave as two segments, not one.
+/// Checks that two sends under a cork, the first ending a record: they leave as two segments, not one.
 pub fn record_end_starts_a_new_segment<S: TcpSockets>(sockets: S) {
     let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &[], &[]);
     sockets
@@ -1577,7 +1578,7 @@ pub fn unread_byte_reports_count_what_is_left<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// A listener asked for unread byte reports gives them to the connections it accepts.
+/// Checks that a listener asked for unread byte reports gives them to the connections it accepts.
 pub fn listener_unread_byte_reports_reach_the_connections_it_accepts<S: TcpSockets>(sockets: S) {
     let pair = pair_with(
         &sockets,
@@ -1787,7 +1788,7 @@ fn take_entry_into<S: TcpSockets>(
     retry(|| sockets.take_error_queue_entry(connection, buffer)).expect("an error queue entry")
 }
 
-/// A raw socket of the host, which the ICMP checks use as the network between the connection and its peer.
+/// Gives a raw socket of the host, which the ICMP checks use as the network between the connection and its peer.
 fn raw_socket(version: IpVersion, protocol: rustix::net::Protocol) -> OwnedFd {
     let family = match version {
         IpVersion::V4 => AddressFamily::INET,
@@ -1832,8 +1833,9 @@ fn capture_synchronize(
     panic!("no SYN from {local} to {peer} arrived");
 }
 
-/// Connects to a listener whose accept queue is full, so that the connection stays in SYN-SENT, and has the
-/// network answer its SYN with a destination unreachable error; checks the error queue entry written whole.
+/// Connects to a full listener and answers the SYN with a destination unreachable error, checking the queued entry.
+///
+/// The full accept queue keeps the connection in SYN-SENT; the error queue entry must hold the error written whole.
 fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, version: IpVersion) {
     let (address, listener_address, loopback) = match version {
         IpVersion::V4 => (
@@ -2178,7 +2180,7 @@ fn fast_open_round<S: TcpSockets>(
     }
 }
 
-/// A fast open listener on its own loopback address, since a client keeps the cookies it is given per address.
+/// Gives a fast open listener on its own loopback address, since a client keeps the cookies it is given per address.
 fn fast_open_listener<S: TcpSockets>(
     sockets: &S,
     address: Ipv4Addr,
@@ -2191,7 +2193,7 @@ fn fast_open_listener<S: TcpSockets>(
     (listener, local, capture)
 }
 
-/// The first connect fetches a cookie; the second puts all its data in the SYN, which the listener takes.
+/// Checks that the first connect fetches a cookie; the second puts all its data in the SYN, which the listener takes.
 pub fn fast_open_with_data_puts_it_in_the_synchronize<S: TcpSockets>(sockets: S) {
     let (listener, local, capture) = fast_open_listener(&sockets, FAST_OPEN_WITH_DATA, &[]);
     let fast_open = TcpFastOpen::WithData(MESSAGE);
@@ -2208,7 +2210,7 @@ pub fn fast_open_with_data_puts_it_in_the_synchronize<S: TcpSockets>(sockets: S)
     sockets.stop_listening(listener);
 }
 
-/// Once a cookie is held, a connect until the first send sends nothing until that send, whose data goes in the SYN.
+/// Checks that once a cookie is held, a connect until the first send sends nothing until that send, whose data goes in the SYN.
 pub fn fast_open_until_first_send_defers_the_synchronize<S: TcpSockets>(sockets: S) {
     let (listener, local, capture) = fast_open_listener(&sockets, FAST_OPEN_UNTIL_FIRST_SEND, &[]);
     let fast_open = TcpFastOpen::UntilFirstSend;
@@ -2220,7 +2222,7 @@ pub fn fast_open_until_first_send_defers_the_synchronize<S: TcpSockets>(sockets:
     sockets.stop_listening(listener);
 }
 
-/// Both ends doing without cookies, the very first connect's data goes in the SYN.
+/// Checks that both ends doing without cookies, the very first connect's data goes in the SYN.
 pub fn fast_open_without_cookie_needs_no_first_connect<S: TcpSockets>(sockets: S) {
     let without = TcpSetting::FastOpenWithoutCookie(true);
     let (listener, local, capture) = fast_open_listener(
@@ -2241,7 +2243,7 @@ pub fn fast_open_without_cookie_needs_no_first_connect<S: TcpSockets>(sockets: S
     sockets.stop_listening(listener);
 }
 
-/// A listener takes SYN data only with a cookie of its primary or backup key, and only while its queue is on.
+/// Checks that a listener takes SYN data only with a cookie of its primary or backup key, and only while its queue is on.
 pub fn fast_open_keys_and_queue_decide_what_the_listener_takes<S: TcpSockets>(sockets: S) {
     let keys = |primary: u8, backup: Option<u8>| {
         TcpListenerSetting::FastOpenKeys(FastOpenKeys {
@@ -2273,7 +2275,7 @@ pub fn fast_open_keys_and_queue_decide_what_the_listener_takes<S: TcpSockets>(so
     sockets.stop_listening(listener);
 }
 
-/// A keep-alive probe: no data, one sequence number below what the connection sends next.
+/// Gives a keep-alive probe: no data, one sequence number below what the connection sends next.
 fn is_probe(segment: &Segment, next: u32) -> bool {
     segment.to_listener
         && segment.payload == 0
@@ -2290,8 +2292,9 @@ fn assert_near(what: &str, measured: Duration, expected: Duration) {
     );
 }
 
-/// The peer answering nothing, the connection probes after the idle time, then an interval apart as many times as
-/// asked, and resets an interval after its last probe.
+/// Checks that keep-alive probes come after the idle time, an interval apart, and end an unanswered connection.
+///
+/// The peer answers nothing; the connection probes as many times as asked and resets an interval after its last probe.
 pub fn keep_alive_probes_end_an_unanswered_connection<S: TcpSockets>(sockets: S) {
     for count in [1, 2] {
         let (pair, capture) = watched_pair(
@@ -2337,8 +2340,9 @@ pub fn keep_alive_probes_end_an_unanswered_connection<S: TcpSockets>(sockets: S)
     }
 }
 
-/// A probe answered by nothing is followed by the next only an interval later, unless the timer is rearmed: then the
-/// next is due at once, the idle time since the last arrival having passed.
+/// Checks that a probe answered by nothing is followed by the next only an interval later, unless the timer is rearmed.
+///
+/// Then the next is due at once, the idle time since the last arrival having passed.
 pub fn rearming_the_keep_alive_timer_sends_a_due_probe<S: TcpSockets>(sockets: S) {
     let (pair, capture) = watched_pair(
         &sockets,
@@ -2368,7 +2372,7 @@ pub fn rearming_the_keep_alive_timer_sends_a_due_probe<S: TcpSockets>(sockets: S
     close(&sockets, pair);
 }
 
-/// The peer answering nothing, a second small send waits for the first to be acknowledged, unless without delay.
+/// Checks that the peer answering nothing, a second small send waits for the first to be acknowledged, unless without delay.
 pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSockets>(sockets: S) {
     for (settings, pushed_first, segments) in [
         (vec![], false, 1),
@@ -2408,8 +2412,7 @@ pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSocke
     }
 }
 
-/// Delaying acknowledgements, the listener's connection acknowledges data late; quick again, at once; and with a
-/// maximum delay, within it.
+/// Checks that delaying acknowledgements, the listener's connection acknowledges data late; quick again, at once; and with a maximum delay, within it.
 pub fn quick_acknowledgement_settings_time_the_acknowledgement<S: TcpSockets>(sockets: S) {
     let delaying = TcpSetting::QuickAcknowledgement(TcpQuickAcknowledgement::Off);
     for (settings, delayed) in [
@@ -2441,7 +2444,7 @@ pub fn quick_acknowledgement_settings_time_the_acknowledgement<S: TcpSockets>(so
     }
 }
 
-/// A delayed acknowledgement of data read is sent on demand, and the mode asked for holds for the next data.
+/// Checks that a delayed acknowledgement of data read is sent on demand, and the mode asked for holds for the next data.
 pub fn delayed_acknowledgement_is_sent_on_demand<S: TcpSockets>(sockets: S) {
     for afterwards in [TcpQuickAcknowledgement::On, TcpQuickAcknowledgement::Off] {
         let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &[], &[]);
@@ -2480,7 +2483,7 @@ pub fn delayed_acknowledgement_is_sent_on_demand<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// Each setting bounds what a connection takes while its peer reads nothing, far below what it takes without.
+/// Checks that each setting bounds what a connection takes while its peer reads nothing, far below what it takes without.
 pub fn send_settings_bound_what_a_connection_takes<S: TcpSockets>(sockets: S) {
     let unbounded = {
         let pair = pair(&sockets);
@@ -2518,8 +2521,9 @@ pub fn send_settings_bound_what_a_connection_takes<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// Each setting of the receiving connection bounds what its peer sends while it reads nothing, or widens it; a locked
-/// receive buffer keeps a low water mark from widening it.
+/// Checks that each setting of the receiving connection bounds what its peer sends while it reads nothing, or widens it.
+///
+/// A locked receive buffer keeps a low water mark from widening it.
 pub fn receive_settings_bound_what_the_peer_sends<S: TcpSockets>(sockets: S) {
     let unread_with = |settings: &[TcpSetting<'_>]| {
         let pair = pair_with(&sockets, settings, &[]);
@@ -2545,7 +2549,7 @@ pub fn receive_settings_bound_what_the_peer_sends<S: TcpSockets>(sockets: S) {
     assert!(!wider(kept), "{kept} of {unbounded}");
 }
 
-/// A window clamp given to connect bounds the window its SYN announces.
+/// Checks that a window clamp given to connect bounds the window its SYN announces.
 pub fn window_clamp_bounds_the_synchronize_window<S: TcpSockets>(sockets: S) {
     let clamp = WindowSize((SETTING_BYTES / BOUND_RATIO) as u32);
     let announced = |settings: &[TcpSetting<'_>]| {
@@ -2566,7 +2570,7 @@ pub fn window_clamp_bounds_the_synchronize_window<S: TcpSockets>(sockets: S) {
     );
 }
 
-/// When a segment the peer never acknowledges left again.
+/// Gives when a segment the peer never acknowledges left again.
 fn transmissions(capture: &Capture, start: Instant) -> Vec<Duration> {
     capture
         .since(start)
@@ -2576,6 +2580,8 @@ fn transmissions(capture: &Capture, start: Instant) -> Vec<Duration> {
         .collect()
 }
 
+/// Checks that the retransmission minimum, maximum and thin linear timeouts each time the retransmissions as asked.
+///
 /// The peer answering nothing, a short minimum makes the first retransmission early, a maximum caps how far the
 /// timeout grows, and thin linear timeouts keep it from growing.
 pub fn retransmission_settings_time_the_retransmissions<S: TcpSockets>(sockets: S) {
@@ -2630,7 +2636,7 @@ pub fn retransmission_settings_time_the_retransmissions<S: TcpSockets>(sockets: 
     }
 }
 
-/// The peer answering nothing, a user timeout ends the connection; lifted, the connection waits on.
+/// Checks that the peer answering nothing, a user timeout ends the connection; lifted, the connection waits on.
 pub fn user_timeout_ends_an_unacknowledged_connection<S: TcpSockets>(sockets: S) {
     let timeout = TcpSetting::UserTimeout(Some(USER_TIMEOUT));
     let timed = pair_with(&sockets, std::slice::from_ref(&timeout), &[]);
@@ -2660,7 +2666,7 @@ pub fn user_timeout_ends_an_unacknowledged_connection<S: TcpSockets>(sockets: S)
     close(&sockets, lifted);
 }
 
-/// A listener dropping every SYN, a connect retries once and then fails.
+/// Checks that a listener dropping every SYN, a connect retries once and then fails.
 pub fn synchronize_retries_end_an_unanswered_connect<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(
         &sockets,
@@ -2697,7 +2703,7 @@ pub fn synchronize_retries_end_an_unanswered_connect<S: TcpSockets>(sockets: S) 
     sockets.stop_listening(listener);
 }
 
-/// A listener deferring accepts gives a connection only once data has come on it; with no deferral, at once.
+/// Checks that a listener deferring accepts gives a connection only once data has come on it; with no deferral, at once.
 pub fn defer_accept_holds_a_connection_until_data<S: TcpSockets>(sockets: S) {
     let deferring = TcpListenerSetting::Socket(TcpSetting::DeferAccept(Some(SETTING_TIME)));
     for (settings, deferred) in [
@@ -2741,8 +2747,9 @@ pub fn defer_accept_holds_a_connection_until_data<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// Closed in order, a connection whose FIN-WAIT-2 resets ends with a reset; one whose FIN-WAIT-2 lasts a second is
-/// gone after it, so the peer's FIN is answered by a reset; one with the system's default still answers it in order.
+/// Checks that closed in order, a connection whose FIN-WAIT-2 resets ends with a reset.
+///
+/// One whose FIN-WAIT-2 lasts a second is gone after it, so the peer's FIN is answered by a reset; one with the system's default still answers it in order.
 pub fn fin_wait_2_settings_decide_how_a_closed_connection_ends<S: TcpSockets>(sockets: S) {
     let resetting = TcpSetting::FinWait2(TcpFinWait2::Reset);
     let ends = [
@@ -2791,7 +2798,7 @@ pub fn fin_wait_2_settings_decide_how_a_closed_connection_ends<S: TcpSockets>(so
     }
 }
 
-/// Each setting that drops arrivals holds the peer's data back until it is lifted.
+/// Checks that each setting that drops arrivals holds the peer's data back until it is lifted.
 pub fn arrival_settings_drop_what_they_refuse<S: TcpSockets>(sockets: S) {
     for (address, refusing, lifting) in [
         (
@@ -2849,7 +2856,7 @@ pub fn arrival_settings_drop_what_they_refuse<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// The hop limit, traffic class, fragmenting and flow label settings show in the headers of what the connection sends.
+/// Checks that the hop limit, traffic class, fragmenting and flow label settings show in the headers of what the connection sends.
 pub fn header_settings_mark_each_segment<S: TcpSockets>(sockets: S) {
     let data_after = |pair: &Pair<S>, capture: &Capture| {
         let start = Instant::now();
@@ -2939,8 +2946,9 @@ fn fixed_flow_label(label: u32) -> TcpSetting<'static> {
     )))
 }
 
-/// A flow label given at connect marks every segment the connection sends, its SYN first; given again it changes
-/// nothing; another label afterwards is either refused, the first kept, or carried from then on.
+/// Checks that a flow label given at connect marks every segment the connection sends, its SYN first.
+///
+/// Given again it changes nothing; another label afterwards is either refused, the first kept, or carried from then on.
 pub fn fixed_flow_label_marks_every_segment<S: TcpSockets>(sockets: S) {
     let automatic = TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Automatic));
     for settings in [
@@ -3001,7 +3009,7 @@ const IPV4_GROUPS: &str = "/proc/net/igmp";
 const IPV6_GROUPS: &str = "/proc/net/igmp6";
 const IPV6_ANYCAST: &str = "/proc/net/anycast6";
 
-/// How many sockets of the host have joined the group on the interface, by its table; none when it is not listed.
+/// Gives how many sockets of the host have joined the group on the interface, by its table; none when it is not listed.
 fn group_users(group: IpAddr, interface: InterfaceIndex) -> Option<usize> {
     match group {
         // Device lines start with the interface's index, its groups follow indented, each the address's bytes as a
@@ -3024,8 +3032,9 @@ fn group_users(group: IpAddr, interface: InterfaceIndex) -> Option<usize> {
     }
 }
 
-/// How many sockets the host's table ([`IPV6_GROUPS`] or [`IPV6_ANYCAST`], a line for each interface's address: index,
-/// name, address and users) counts for the address on the interface; none when it is not listed.
+/// Gives how many sockets [`IPV6_GROUPS`] or [`IPV6_ANYCAST`] counts for the address on the interface, if listed.
+///
+/// Each table has a line for each interface's address: index, name, address and users.
 fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex) -> Option<usize> {
     let wanted: String = address
         .octets()
@@ -3048,8 +3057,7 @@ fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex)
 /// An anycast address no other check joins.
 const ANYCAST_MEMBERSHIP: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x123);
 
-/// A connection joins an anycast address on an interface, which the host's anycast table then lists with one user,
-/// and leaves it, which takes it off, each twice the same as once.
+/// Checks that a connection joins and leaves an anycast address, as the host's anycast table shows, twice as once.
 pub fn anycast_addresses_are_joined_and_left<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     let pair = pair_at(&sockets, ipv6_loopback(), &[], &[]);
@@ -3077,8 +3085,9 @@ pub fn anycast_addresses_are_joined_and_left<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// A connection joins a multicast group on an interface, which the host's group table then lists with one user, and
-/// leaves it, which takes it off; each twice the same as once, and the connection still carries bytes.
+/// Checks that a connection joins and leaves a multicast group, as the host's group table shows, twice as once.
+///
+/// The table lists the group with one user after a join and not after a leave; the connection still carries bytes.
 pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     for (address, group, joined, left) in [
@@ -3142,7 +3151,7 @@ pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
 const MD5_KEY: &[u8] = b"conformance key";
 const OTHER_MD5_KEY: &[u8] = b"another key";
 
-/// An MD5 key for the peers at 127.0.0.1 set, or with none removed.
+/// Gives an MD5 key for the peers at 127.0.0.1 set, or with none removed.
 fn md5_key(key: Option<&'static [u8]>) -> TcpSetting<'static> {
     let peer = TcpMd5Peer {
         prefix: IpPrefix {
@@ -3157,8 +3166,9 @@ fn md5_key(key: Option<&'static [u8]>) -> TcpSetting<'static> {
     })
 }
 
-/// A listener with an MD5 key for its peers takes only connections signed with that key, whose every segment carries
-/// the signature; a key set again replaces the last, and removed (once or twice) it bars no plain connection.
+/// Checks that a listener with an MD5 key for its peers takes only connections signed with that key, whose every segment carries the signature.
+///
+/// A key set again replaces the last, and removed (once or twice) it bars no plain connection.
 pub fn md5_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: S) {
     for (listener_keys, client_keys, admitted) in [
         (vec![Some(MD5_KEY)], vec![Some(MD5_KEY)], true),
@@ -3253,7 +3263,7 @@ const FIRST_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier
 const SECOND_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(2);
 const THIRD_AUTHENTICATION_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(3);
 
-/// A key for the peers at 127.0.0.1 that sends and receives with the one identifier.
+/// Gives a key for the peers at 127.0.0.1 that sends and receives with the one identifier.
 fn authentication_identity(
     identifier: TcpAuthenticationKeyIdentifier,
 ) -> TcpAuthenticationKeyIdentity {
@@ -3291,7 +3301,7 @@ fn authentication_key(
     })
 }
 
-/// A key removed, with another made current and requested next.
+/// Gives a key removed, with another made current and requested next.
 fn authentication_key_removed(
     identifier: TcpAuthenticationKeyIdentifier,
     current: Option<TcpAuthenticationKeyIdentifier>,
@@ -3316,7 +3326,7 @@ fn authentication_options(
     })
 }
 
-/// The option a segment signed with the key carries, asking for the same key next.
+/// Gives the option a segment signed with the key carries, asking for the same key next.
 fn signed_with(key: TcpAuthenticationKeyIdentifier) -> Option<AuthenticationOption> {
     Some(AuthenticationOption {
         key: key.0,
@@ -3325,8 +3335,9 @@ fn signed_with(key: TcpAuthenticationKeyIdentifier) -> Option<AuthenticationOpti
     })
 }
 
-/// Whether a listener with the settings admits a client with its own, and the option the client's SYN carries; for a
-/// connection made, every segment both ways is signed when the SYN is.
+/// Tells whether a listener with the settings admits a client with its own, and the option the client's SYN carries.
+///
+/// For a connection made, every segment both ways is signed when the SYN is.
 fn authentication_round<S: TcpSockets>(
     sockets: &S,
     listener_settings: &[TcpSetting<'static>],
@@ -3392,10 +3403,11 @@ fn authentication_round<S: TcpSockets>(
     }
 }
 
-/// A listener with TCP Authentication Option keys for its peers takes only connections signed with one of them, by the
-/// key, MAC length and option coverage given; keys added twice are added once, the key asked to be current signs the
-/// SYN, a key removed signs nothing, and a listener that requires authentication takes no plain client until it no
-/// longer does.
+/// Checks that a listener with TCP Authentication Option keys takes only connections signed with one of them.
+///
+/// Signed by the key, MAC length and option coverage given; keys added twice are added once, the key asked to be
+/// current signs the SYN, a key removed signs nothing, and a listener that requires authentication takes no plain
+/// client until it no longer does.
 pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: S) {
     use TcpAuthenticationKeyUse::{CurrentAndRequestedNext, Stored};
     use TcpAuthenticationOptionCoverage::{Excluded, Included};
@@ -3532,8 +3544,7 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
     }
 }
 
-/// A connection's authentication options choose the key it signs with and the one it asks its peer for, set twice the
-/// same as once.
+/// Checks that a connection's authentication options choose the key it signs with and the one it asks its peer for, set twice the same as once.
 pub fn authentication_options_choose_the_keys_in_use<S: TcpSockets>(sockets: S) {
     use TcpAuthenticationKeyUse::{CurrentAndRequestedNext, Stored};
     use TcpAuthenticationOptionCoverage::Included;
@@ -3576,7 +3587,7 @@ pub fn authentication_options_choose_the_keys_in_use<S: TcpSockets>(sockets: S) 
     close(&sockets, pair);
 }
 
-/// A congestion control that needs explicit congestion notification marks the data it sends as capable of it.
+/// Checks that a congestion control that needs explicit congestion notification marks the data it sends as capable of it.
 pub fn congestion_control_is_the_one_named<S: TcpSockets>(sockets: S) {
     let control = TcpSetting::CongestionControl(NOTIFYING_CONGESTION_CONTROL);
     let (pair, capture) = watched_pair(
@@ -3594,7 +3605,7 @@ pub fn congestion_control_is_the_one_named<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// A pacing rate spreads a transfer out over time; lifted, the transfer is quick.
+/// Checks that a pacing rate spreads a transfer out over time; lifted, the transfer is quick.
 pub fn pacing_rate_spreads_what_is_sent<S: TcpSockets>(sockets: S) {
     let pacing = |rate| TcpSetting::Ip(IpSocketSetting::MaximumPacingRate(rate));
     let bytes = pattern(PACED_BYTES);
@@ -3614,7 +3625,7 @@ pub fn pacing_rate_spreads_what_is_sent<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// A transmit delay holds each segment back by that long; set to nothing, segments leave at once.
+/// Checks that a transmit delay holds each segment back by that long; set to nothing, segments leave at once.
 pub fn transmit_delay_holds_each_segment<S: TcpSockets>(sockets: S) {
     let pair = pair_with(&sockets, &[TcpSetting::TransmitDelay(TRANSMIT_DELAY)], &[]);
     let timed = |pair: &Pair<S>| {
@@ -3704,7 +3715,7 @@ pub fn port_sharing_lets_listeners_share_a_port<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(second.listener);
 }
 
-/// An address no interface holds can be bound only while nonlocal addresses are bindable.
+/// Checks that an address no interface holds can be bound only while nonlocal addresses are bindable.
 pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S) {
     let address = BindAddress::V4(NONLOCAL);
     let setting = |addresses| {
@@ -3732,7 +3743,7 @@ pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S
     }
 }
 
-/// A listener of backlog 0, from the listen or set later, holds one connection to accept, not the three waiting.
+/// Checks that a listener of backlog 0, from the listen or set later, holds one connection to accept, not the three waiting.
 pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
     let smallest = TcpListenerSetting::Backlog(ListenBacklog(0));
     for later in [false, true] {
@@ -3808,7 +3819,7 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// The flow label of the next data segment, which IPv6 connections carry.
+/// Gives the flow label of the next data segment, which IPv6 connections carry.
 fn data_flow_label<S: TcpSockets>(sockets: &S, pair: &Pair<S>, capture: &Capture) -> u32 {
     let start = Instant::now();
     send_all(sockets, &pair.client, plain(), MESSAGE);
@@ -3818,7 +3829,7 @@ fn data_flow_label<S: TcpSockets>(sockets: &S, pair: &Pair<S>, capture: &Capture
         .expect("an IPv6 data segment")
 }
 
-/// Negative advice makes a connection pick a new flow, which shows in its flow label, unless rehashing is off.
+/// Checks that negative advice makes a connection pick a new flow, which shows in its flow label, unless rehashing is off.
 pub fn negative_route_advice_picks_a_new_flow<S: TcpSockets>(sockets: S) {
     let rehash = TcpSetting::TransmitRehash;
     for (settings, rehashed) in [
@@ -3850,7 +3861,7 @@ pub fn negative_route_advice_picks_a_new_flow<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// A listener reflecting flow labels answers a SYN with the SYN's own flow label.
+/// Checks that a listener reflecting flow labels answers a SYN with the SYN's own flow label.
 pub fn flow_label_reflection_answers_with_the_peers_label<S: TcpSockets>(sockets: S) {
     let reflecting = TcpListenerSetting::FlowLabelReflection(true);
     for (settings, reflected) in [
@@ -3874,8 +3885,9 @@ pub fn flow_label_reflection_answers_with_the_peers_label<S: TcpSockets>(sockets
     }
 }
 
-/// A window probe goes out one sequence number below the next and is answered; the connection keeps sharing its
-/// address and, when in repair mode, stays in it.
+/// Checks that a window probe goes out one sequence number below the next and is answered.
+///
+/// The connection keeps sharing its address and, when in repair mode, stays in it.
 pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S) {
     let shared = [TcpSetting::Port(PortSetting::AddressSharing(
         AddressSharing::Shared,
@@ -3967,9 +3979,9 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
     close(&sockets, pair);
 }
 
-/// How the next data segment's TSval reads after the connection's clock, in repair mode, was set to
-/// [`CLOCK_READING`] in the unit and then ran for [`CLOCK_RUNS`]: how far past the reading, and how long after the
-/// setting the segment was seen.
+/// Gives how far past [`CLOCK_READING`] the next segment's TSval reads, and when it was seen, after a clock setting.
+///
+/// The connection's clock is set in repair mode to the reading in the unit and then runs for [`CLOCK_RUNS`].
 fn clock_run<S: TcpSockets>(
     sockets: &S,
     address: BindAddress,
@@ -4004,8 +4016,7 @@ fn clock_run<S: TcpSockets>(
     run
 }
 
-/// Asserts that a clock set to [`CLOCK_READING`] counted in the unit over at least [`CLOCK_RUNS`] and at most the
-/// time it ran.
+/// Asserts that a clock set to [`CLOCK_READING`] counted in the unit over at least [`CLOCK_RUNS`] and at most the time it ran.
 fn assert_counts_in(unit: TcpTimestampUnit, (since, ran): (u32, Duration)) {
     let (at_least, at_most) = match unit {
         TcpTimestampUnit::Milliseconds => (CLOCK_RUNS.as_millis(), ran.as_millis()),
@@ -4019,8 +4030,9 @@ fn assert_counts_in(unit: TcpTimestampUnit, (since, ran): (u32, Duration)) {
     );
 }
 
-/// Outside repair mode the timestamp clock cannot be set; in it, the value set is what the next segments carry,
-/// counted in milliseconds or, on a route whose segments carry microseconds, in microseconds.
+/// Checks that outside repair mode the timestamp clock cannot be set.
+///
+/// In it, the value set is what the next segments carry, counted in milliseconds or, on a route whose segments carry microseconds, in microseconds.
 pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets: S) {
     let (pair, _capture) = watched_pair(&sockets, ipv4_loopback(), &[], &[]);
     let clock = TcpTimestampClock {
@@ -4048,8 +4060,7 @@ pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets
     }
 }
 
-/// A clock asked to count in the other unit than its route's segments carry either does so or is refused as not
-/// supported.
+/// Checks that a clock asked to count in the other unit than its route's segments carry either does so or is refused as not supported.
 pub fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused<S: TcpSockets>(sockets: S) {
     for (address, unit) in [
         (ipv4_loopback(), TcpTimestampUnit::Microseconds),
@@ -4071,8 +4082,9 @@ const STATISTICS_ROUNDS: usize = 10;
 /// The hop limit of the peer's acknowledgements in the statistics check.
 const STATISTICS_HOP_LIMIT: HopLimit = HopLimit(33);
 
-/// The statistics of each round's acknowledgement report agree with what the connection did: rounds of one small
-/// segment, acknowledged late by a peer with a transmit delay and a hop limit of its own.
+/// Checks that the statistics of each round's acknowledgement report agree with what the connection did.
+///
+/// Rounds of one small segment, acknowledged late by a peer with a transmit delay and a hop limit of its own.
 pub fn transmit_statistics_describe_the_connection<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     for setting in [
@@ -4170,7 +4182,7 @@ pub fn transmit_statistics_describe_the_connection<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// Asked for with none scheduled, the delayed acknowledgement leaves the mode as it was.
+/// Checks that asked for with none scheduled, the delayed acknowledgement leaves the mode as it was.
 pub fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled<S: TcpSockets>(sockets: S) {
     let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &[], &[]);
     sockets
@@ -4187,8 +4199,10 @@ pub fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled<S: TcpSock
     close(&sockets, pair);
 }
 
-/// Accept names the loopback interface a SYN came in on, also to an address loopback's prefix holds and for multipath,
-/// the address it was sent to as the one to reply from (IPv4 only), and the mark its sender gave it (TCP only).
+/// Checks that accept names the interface a SYN came in on, the address to reply from and the sender's mark.
+///
+/// The interface also for an address loopback's prefix holds and for multipath, the address it was sent to as the one
+/// to reply from (IPv4 only), and the mark its sender gave it (TCP only).
 pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     for protocol in [TcpProtocol::Tcp, TcpProtocol::Multipath] {
@@ -4232,15 +4246,16 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
 const CONNECTION_OWNER: UserId = UserId(1001);
 const LISTENER_OWNER: UserId = UserId(1002);
 
-/// The host's tables of TCP sockets, a line for each: slot, local and peer address (each the address and port in
-/// hexadecimal after a colon), state, queues, timer, retransmissions, user and more.
+/// The host's tables of TCP sockets, a line for each.
+///
+/// Slot, local and peer address (each the address and port in hexadecimal after a colon), state, queues, timer, retransmissions, user and more.
 const IPV4_TCP_SOCKETS: &str = "/proc/net/tcp";
 const IPV6_TCP_SOCKETS: &str = "/proc/net/tcp6";
 const ADDRESS_PORT_SEPARATOR: char = ':';
 const TABLE_NUMBER_RADIX: u32 = 16;
 const USER_COLUMN: usize = 7;
 
-/// The user the host's table of TCP sockets names for the socket between the ports, a listener's peer port being 0.
+/// Gives the user the host's table of TCP sockets names for the socket between the ports, a listener's peer port being 0.
 fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
     let table = match version {
         IpVersion::V4 => IPV4_TCP_SOCKETS,
@@ -4266,7 +4281,7 @@ fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
         })
 }
 
-/// A connection and a listener belong to the owners they were made for, over IPv4 and IPv6.
+/// Checks that a connection and a listener belong to the owners they were made for, over IPv4 and IPv6.
 pub fn connect_and_listen_make_sockets_of_their_owner<S: TcpSockets>(sockets: S) {
     for (address, version) in [
         (ipv4_loopback(), IpVersion::V4),
@@ -4315,7 +4330,7 @@ pub fn connect_and_listen_make_sockets_of_their_owner<S: TcpSockets>(sockets: S)
     }
 }
 
-/// A connect in repair mode is established at once and sends nothing.
+/// Checks that a connect in repair mode is established at once and sends nothing.
 pub fn connect_in_repair_mode_is_established_at_once<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     let connected = sockets
@@ -4339,7 +4354,7 @@ pub fn connect_in_repair_mode_is_established_at_once<S: TcpSockets>(sockets: S) 
     sockets.stop_listening(listener);
 }
 
-/// A listener's receive timestamping holds for the connections it accepts.
+/// Checks that a listener's receive timestamping holds for the connections it accepts.
 pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(sockets: S) {
     let timestamping = Timestamping {
         receive_software: Report::Requested,
@@ -4361,10 +4376,11 @@ pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(s
     close(&sockets, pair);
 }
 
-/// A listener asked to save SYNs leaves each accepted connection its SYN's headers, from the IP header or from the
-/// link header before it as asked, kept while the buffer is too small for them and then taken once; a listener not
-/// asked, or asked to stop, leaves none. Accept gives the IP header whichever is saved. A multipath listener may
-/// refuse to save them, and then leaves none either.
+/// Checks that a listener asked to save SYNs leaves each accepted connection its SYN's headers, to be taken once.
+///
+/// From the IP header or from the link header before it as asked, kept while the buffer is too small for them; a
+/// listener not asked, or asked to stop, leaves none. Accept gives the IP header whichever is saved. A multipath
+/// listener may refuse to save them, and then leaves none either.
 pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
     let save = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromNetworkHeader);
     let stop = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::Off);
@@ -4478,8 +4494,9 @@ const AUTHENTICATION_COUNTERS: TcpAuthenticationCounters = TcpAuthenticationCoun
     icmp_errors_ignored: SegmentCount(5),
 };
 
-/// A connection made without authentication has no authentication counters to set; a listener's counters, once set,
-/// are what its state reads, or setting them is refused as not supported.
+/// Checks that a connection made without authentication has no authentication counters to set.
+///
+/// A listener's counters, once set, are what its state reads, or setting them is refused as not supported.
 pub fn authentication_counters_are_set_only_where_authentication_is<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let refused = sockets.set_authentication_counters(&pair.client, AUTHENTICATION_COUNTERS);
@@ -4498,8 +4515,7 @@ pub fn authentication_counters_are_set_only_where_authentication_is<S: TcpSocket
     close(&sockets, pair);
 }
 
-/// A listener's state reads it listening with the congestion control it was given, or reading it is refused as not
-/// supported.
+/// Checks that a listener's state reads it listening with the congestion control it was given, or reading it is refused as not supported.
 pub fn listener_state_reads_a_listener<S: TcpSockets>(sockets: S) {
     let control = TcpSetting::CongestionControl(CONGESTION_CONTROL);
     let (listener, _) = listen(
@@ -4523,7 +4539,7 @@ pub fn listener_state_reads_a_listener<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(listener);
 }
 
-/// IPv4 options and IPv6 extension headers set before connect go out in the SYN, as its saved headers show.
+/// Checks that iPv4 options and IPv6 extension headers set before connect go out in the SYN, as its saved headers show.
 pub fn header_options_go_out_in_the_synchronize<S: TcpSockets>(sockets: S) {
     let options = Ipv4Options::try_from(&IPV4_OPTIONS[..]).expect("IPv4 options");
     let synchronize_header = |address: BindAddress, setting: IpPacketSetting<'_>| {
@@ -4581,7 +4597,7 @@ const ANYCAST_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
 const FLOW_LABEL: u32 = 0xABCDE;
 const MARK: PacketMark = PacketMark(7);
 
-/// The index of the host's loopback interface, the one that says it is loopback.
+/// Gives the index of the host's loopback interface, the one that says it is loopback.
 fn loopback_interface() -> InterfaceIndex {
     let loopback = nix::ifaddrs::getifaddrs()
         .expect("the host's interfaces")
@@ -4597,7 +4613,7 @@ fn padding_header() -> Option<Ipv6RawExtHeaderSlice<'static>> {
     Some(Ipv6RawExtHeaderSlice::from_slice(&PADDING_HEADER).expect("an extension header"))
 }
 
-/// The settings of an IPv4 connection checked for being set idempotently, each taking no privilege.
+/// Gives the settings of an IPv4 connection checked for being set idempotently, each taking no privilege.
 fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<TcpSetting<'_>> {
     vec![
         TcpSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(SETTING_BYTES))),
@@ -4700,8 +4716,7 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
     ]
 }
 
-/// The settings of an IPv6 connection checked for being set idempotently: those only IPv6 has, and the IPv6
-/// variants of those both versions have.
+/// Gives the settings of an IPv6 connection checked for being set idempotently: those only IPv6 has, and the IPv6 variants of those both versions have.
 fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static>> {
     vec![
         TcpSetting::Ip(IpSocketSetting::MulticastAllGroups {
@@ -4756,9 +4771,9 @@ fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static
     ]
 }
 
-/// Each setting given to connect once and twice, where each must be taken, then set once and twice on the established
-/// connections: the outcomes agree (Linux takes some settings only before a connection starts) and the connections
-/// carry bytes.
+/// Gives each setting given to connect once and twice, where each must be taken, then set once and twice on the established connections.
+///
+/// The outcomes agree (Linux takes some settings only before a connection starts) and the connections carry bytes.
 fn settings_set_twice_equal_set_once<S: TcpSockets>(
     sockets: &S,
     address: BindAddress,
@@ -4797,8 +4812,9 @@ pub fn ipv6_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets:
     settings_set_twice_equal_set_once(&sockets, ipv6_loopback(), &settings);
 }
 
-/// Each listener setting set once and twice on fresh listeners: the outcomes agree, every setting an implementation
-/// must have succeeds, and the listeners still accept connections that carry bytes.
+/// Checks that each listener setting set once and twice on fresh listeners.
+///
+/// The outcomes agree, every setting an implementation must have succeeds, and the listeners still accept connections that carry bytes.
 pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     let key = FastOpenKey([u8::MAX; FAST_OPEN_KEY_LENGTH]);
     // Authentication for a peer other than the clients, so that the listener still takes them unsigned.
@@ -4972,9 +4988,10 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// Connection settings an implementation may refuse (or the host may lack the privilege for), each set once and
-/// twice on established connections: the outcomes agree and the connections still carry bytes, but for routing
-/// destination options without a routing header, which Linux counts in each packet's length and never sends.
+/// Checks that settings an implementation may refuse, set once and twice on established connections, agree.
+///
+/// Refused or taken, and the connections still carry bytes, but for routing destination options without a routing
+/// header, which Linux counts in each packet's length and never sends.
 pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     let ipv4 = [
@@ -5135,7 +5152,7 @@ fn finish<F: Future>(mut future: Pin<&mut F>, counter: &CountingWaker, waker: &W
 /// How many connections the check of waits on many connections watches at once.
 const WATCHED_CONNECTIONS: usize = 16;
 
-/// A connection waited on for data, made ready by data its peer sends, for the readiness suite.
+/// Gives a connection waited on for data, made ready by data its peer sends, for the readiness suite.
 pub fn waiting_for_data<S: TcpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Connection, impl FnOnce(&S, &S::Connection)> {
@@ -5157,7 +5174,7 @@ pub fn waiting_for_data<S: TcpSockets>(
     }
 }
 
-/// A send that asks for a software transmit report, which queues an entry on the sender's error queue.
+/// Gives a send that asks for a software transmit report, which queues an entry on the sender's error queue.
 fn software_reported() -> TcpSendRequest {
     TcpSendRequest {
         transmit_reports: TransmitReportRequest {
@@ -5169,7 +5186,7 @@ fn software_reported() -> TcpSendRequest {
     }
 }
 
-/// A connection waited on for urgent data, which a transmit report on its error queue fails with no hang-up.
+/// Gives a connection waited on for urgent data, which a transmit report on its error queue fails with no hang-up.
 pub fn waiting_for_urgent_data_until_a_report<S: TcpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Connection, impl FnOnce(&S, &S::Connection)> {
@@ -5193,7 +5210,7 @@ pub fn waiting_for_urgent_data_until_a_report<S: TcpSockets>(
     }
 }
 
-/// A connection that has shut down writing, waited on for urgent data, which its peer's shutdown hangs up with no error.
+/// Gives a connection that has shut down writing, waited on for urgent data, which its peer's shutdown hangs up with no error.
 pub fn waiting_for_urgent_data_until_both_ways_are_shut<S: TcpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Connection, impl FnOnce(&S, &S::Connection)> {
@@ -5220,7 +5237,7 @@ pub fn waiting_for_urgent_data_until_both_ways_are_shut<S: TcpSockets>(
     }
 }
 
-/// A listener waited on for a connection to accept, made ready by a connection to it, for the readiness suite.
+/// Gives a listener waited on for a connection to accept, made ready by a connection to it, for the readiness suite.
 pub fn waiting_for_a_connection<S: TcpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Listener, impl FnOnce(&S, &S::Listener)> {
@@ -5248,7 +5265,7 @@ pub fn waiting_for_a_connection<S: TcpSockets>(
     }
 }
 
-/// A wait on each of many connections is woken once when its own connection's data comes, and the silent ones not at all.
+/// Checks that a wait on each of many connections is woken once when its own connection's data comes, and the silent ones not at all.
 pub fn waits_on_many_connections_each_wake_once<S: TcpSockets>(sockets: S) {
     let pairs: Vec<_> = (0..WATCHED_CONNECTIONS).map(|_| pair(&sockets)).collect();
     let mut waits: Vec<_> = pairs
@@ -5288,7 +5305,7 @@ pub fn waits_on_many_connections_each_wake_once<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// A wait for room to send finishes when the peer has read enough of what fills the connection.
+/// Checks that a wait for room to send finishes when the peer has read enough of what fills the connection.
 pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let chunk = vec![0; SETTING_BYTES];
@@ -5325,7 +5342,7 @@ pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// A wait on the server, after its own step, finishes when the client's act brings a fact asked for, and not before.
+/// Gives a wait on the server, after its own step, finishes when the client's act brings a fact asked for, and not before.
 fn wait_finishes_when_the_peer_acts<S: TcpSockets>(
     sockets: &S,
     interest: ReadyFor,
@@ -5355,7 +5372,7 @@ fn wait_finishes_when_the_peer_acts<S: TcpSockets>(
     close(sockets, pair);
 }
 
-/// A wait for urgent data finishes when the urgent byte arrives.
+/// Checks that a wait for urgent data finishes when the urgent byte arrives.
 pub fn wait_for_urgent_data_finishes_when_it_arrives<S: TcpSockets>(sockets: S) {
     wait_finishes_when_the_peer_acts(
         &sockets,
@@ -5366,7 +5383,7 @@ pub fn wait_for_urgent_data_finishes_when_it_arrives<S: TcpSockets>(sockets: S) 
     );
 }
 
-/// A wait for the peer to finish sending finishes when it shuts down writing, with no hang-up while this end still writes.
+/// Checks that a wait for the peer to finish sending finishes when it shuts down writing, with no hang-up while this end still writes.
 pub fn wait_for_the_peers_shutdown_finishes_when_it_comes<S: TcpSockets>(sockets: S) {
     wait_finishes_when_the_peer_acts(
         &sockets,
@@ -5383,7 +5400,7 @@ pub fn wait_for_the_peers_shutdown_finishes_when_it_comes<S: TcpSockets>(sockets
     );
 }
 
-/// A wait for a hang-up finishes, with no error, when the peer shuts down writing after this end has.
+/// Checks that a wait for a hang-up finishes, with no error, when the peer shuts down writing after this end has.
 pub fn wait_for_a_hang_up_finishes_when_both_ways_are_shut<S: TcpSockets>(sockets: S) {
     let shut_down_writing = |sockets: &S, connection: &S::Connection| {
         sockets
@@ -5399,7 +5416,7 @@ pub fn wait_for_a_hang_up_finishes_when_both_ways_are_shut<S: TcpSockets>(socket
     );
 }
 
-/// The facts a wait on the handle gives once it finishes.
+/// Gives the facts a wait on the handle gives once it finishes.
 fn facts_once_ready<R: Readiness<H>, H>(readiness: &R, handle: &H, interest: ReadyFor) -> ReadyFor {
     let (counter, waker) = counting_waker();
     finish(
@@ -5410,7 +5427,7 @@ fn facts_once_ready<R: Readiness<H>, H>(readiness: &R, handle: &H, interest: Rea
     .expect("wait")
 }
 
-/// A wait for every fact gives exactly the facts the connection has, in each state that brings a different set.
+/// Checks that a wait for every fact gives exactly the facts the connection has, in each state that brings a different set.
 pub fn a_wait_gives_the_facts_the_connection_has_and_no_others<S: TcpSockets>(sockets: S) {
     let every =
         |connection: &S::Connection| facts_once_ready(&sockets, connection, ReadyFor::all());
@@ -5465,7 +5482,7 @@ pub fn a_wait_gives_the_facts_the_connection_has_and_no_others<S: TcpSockets>(so
     close(&sockets, reported);
 }
 
-/// A wait for every fact on a listener waits while none is queued, and then gives only that it is readable.
+/// Checks that a wait for every fact on a listener waits while none is queued, and then gives only that it is readable.
 pub fn a_wait_gives_the_facts_the_listener_has_and_no_others<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     let (counter, waker) = counting_waker();
@@ -5498,7 +5515,7 @@ pub fn a_wait_gives_the_facts_the_listener_has_and_no_others<S: TcpSockets>(sock
     sockets.stop_listening(listener);
 }
 
-/// A wait for an error finishes when the peer resets the connection, and gives the error with the hang-up.
+/// Checks that a wait for an error finishes when the peer resets the connection, and gives the error with the hang-up.
 pub fn wait_for_an_error_finishes_when_the_peer_resets<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let (counter, waker) = counting_waker();
