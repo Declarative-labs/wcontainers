@@ -33,8 +33,9 @@ float4 ps_evaluate(EvalIo i, uint s : SV_SampleIndex) : SV_Target0 {
     float4 at_centroid = EvaluateAttributeCentroid(i.colour);
     float4 other = EvaluateAttributeAtSample(i.colour, (s + 1) % GetRenderTargetSampleCount());
     float2 from_sample = EvaluateAttributeSnapped(i.at_sample, int2(3, 2));
-    return float4(wave(snapped.x), wave(linear_snapped.y), wave(at_centroid.z + other.w),
-                  wave(from_sample.x + i.position.x / 64.0));
+    // linear_snapped's x: fxc 10.1 compiles a read of its y from its x here.
+    return float4(wave(snapped.x), wave(linear_snapped.x),
+                  wave(at_centroid.z + other.w), wave(from_sample.x + i.position.x / 64.0));
 }
 
 // An input evaluated at the sample being run, less the same value interpolated at that sample: zero
