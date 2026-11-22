@@ -4001,13 +4001,25 @@ pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S
     }
 }
 
+/// Where the backlog check gives a listener its backlog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BacklogGiven {
+    ToListen,
+    AsListenSetting,
+    Later,
+}
+
 /// Checks that a listener of backlog 0, given to listen, as its setting or set later, holds one connection, not three.
 pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
     let smallest = TcpListenerSetting::Backlog(SMALLEST_BACKLOG);
-    for (given, backlog, settings, later) in [
-        ("to listen", SMALLEST_BACKLOG, vec![], false),
-        ("as a setting", BACKLOG, vec![smallest.clone()], false),
-        ("later", BACKLOG, vec![], true),
+    for (given, backlog, settings) in [
+        (BacklogGiven::ToListen, SMALLEST_BACKLOG, vec![]),
+        (
+            BacklogGiven::AsListenSetting,
+            BACKLOG,
+            vec![smallest.clone()],
+        ),
+        (BacklogGiven::Later, BACKLOG, vec![]),
     ] {
         let listening = sockets
             .listen(
@@ -4019,7 +4031,7 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
             )
             .expect("listen on loopback");
         let (listener, local) = (listening.listener, listening.local);
-        if later {
+        if given == BacklogGiven::Later {
             sockets
                 .configure(&listener, smallest.clone())
                 .expect("a smaller backlog");
@@ -4077,7 +4089,7 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
                 break;
             }
         }
-        assert_eq!(accepted.len(), 1, "backlog given {given}");
+        assert_eq!(accepted.len(), 1, "{given:?}");
         for connection in accepted.into_iter().chain(clients) {
             sockets.close(connection, TcpClose::Orderly);
         }
