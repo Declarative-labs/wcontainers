@@ -167,7 +167,101 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
 - X9 (real x86 code at scale): run 1 (2026-11-22) fixed the five findings of the X8 check, measured the nine real
   binaries for x86-64 in both settings, told the default list and told v3, in wasmtime and Chrome, and fixed two
   translator bugs Java's runtime found (a panic, then a stack overflow); Java's runtime for speed still does not
-  finish translating, so X9 is not complete (see "X9, run 1").
+  finish translating, so X9 is not complete (see "X9, run 1"). Run 2 (2026-11-22) found why: a run of rep string
+  instructions doubled the code at each one (a rep string's meaning jumped to its own next instruction, a way
+  out its flow did not name, so the translator placed the rest of the function twice); fixed in x86's meaning,
+  the contract now says so and a debug assertion holds it. Java's runtime translates in 2.9 s for speed and 2.3
+  s for size, and all nine binaries were measured again in both settings, told both lists, in both engines.
+  Every part of X9's bar holds (see "X9, run 2").
+
+## X9, run 2 (2026-11-22)
+
+Every build and test ran on the rented machines and the i7-8750H; the Mac only edited, formatted single files and
+committed. Logs and scripts in scratch `x9r2/`.
+
+The cause of Java's slow translation:
+- A per-round print of the cut loop (diagnostic, never committed; `x9r2/diag.log`) showed one function too
+  large in every round: `_GLOBAL__sub_I_ad_x86.cpp` at 0x2a79e0, 41 blocks and 1,813 instructions emitting
+  21,256,987,952 bytes for size (31.8 GB for speed). Each round cut it in two (one start a round: 1,813, 907,
+  454, 227, 114, 57 instructions) and planned and emitted the whole binary again; the rounds' emitting took 153,
+  71, 32, 13 and 3.4 s for size, nearly all of it that function (the whole binary emits in 0.09 s without it). The 761 cuts the measurement reported were nearly all the block-count
+  cuts (`FUNCTION_BLOCKS`), not these.
+- The function clears HotSpot's register masks with a run of `mov rdi, rsi; mov ecx, 11; rep stosq`. A test of
+  n such units (`x9r2/rep.log`): 5,904, 7,878, 11,834, 19,771, 35,719 ... 269,272 bytes for n = 1 to 8, doubling;
+  an ordinary counted loop the same way grows by about 1,300 bytes a unit.
+- Why: x86's `repeated_string` began with `jump_if(Relative(len))` (count zero: go to the next instruction) and
+  ended falling through to the same place. The instruction's flow names only its jump to itself and its fall
+  through, so the next block has one way in and is not a merge, and the translator places a block that is not a
+  merge where its one way in is: here at both, so the rest of the function twice, at each rep string.
+- Fixed in x86's meaning (b9c46db2): the pass sits in an `if` on the count (ecx with 32-bit addresses), a count of
+  zero does nothing and falls through; `string_advance` takes the `ran` flag so a 32-bit lods with ecx zero
+  leaves rsi's upper half as before. The event of the progress count is now counted at the pass's end instead
+  of at the zero test: once a pass either way, as before. The guest interface's `jump` and `jump_if` now say a
+  relative target is the instruction's `Flow::target`, and the full emitter asserts it in debug builds (no
+  meaning of either guest broke it in the valid tests in a debug build at PROPTEST_CASES=4000, seed 14002). Plan 5.6 states
+  it. New test `a_run_of_repeated_strings_grows_linearly_x86_64` (rep stosq, rep movsb, repe cmpsb, for speed and
+  size: the 17th of a run adds at most twice what the 2nd does). With it: 5,659, 6,413, 7,175 ... 11,448 bytes for
+  n = 1 to 8. ARM64's output is unchanged (only a debug assertion was added to the translator).
+- Java now: plan 1.5 s, emit of the whole binary 0.09 s for size, one round, no function over a limit.
+
+Verdicts on the fix (rented x86-64 machine, `x9r2/check1.log`, load 1 to 30; laptop logs under
+`~/wcontainers-x86/logs/x9r2-*` there):
+- fmt, clippy with warnings denied (the five crates, all targets): pass. Valid in a debug build (the assertion on):
+  14 passed. Programs, checks and smoke for x86: 29 + 6 passed. Lookaheads at 300, seed 14003: pass. Layer 2 at
+  10,000, seed 14004, all on the CPU: 0 failing (3,427 faulted, 1,120 left to an address, 23,596 stacks lost,
+  23,649 pieces forgotten).
+- i7-8750H: layer 1 of the 20 string forms (movs, stos, lods, cmps, scas, each size; rep, repe and repne drawn,
+  counts of zero in 12%) at 5,000 cases a form, seed 14001: 0 failing (302 s, load under 4). The hand cases, 64
+  cases in no form and the Chrome sample (seed 14011): pass. Every form at 100 a form (seed 14012): 2,008 forms,
+  0 failing, the one known `fyl2x` failure (607 s). Its first try failed only with "Too many open files": the
+  laptop's soft limit over SSH is 1,024 and the test holds about 2,983 descriptors at 4 jobs, steady for the
+  whole run (sampled every 15 s, so not a leak); run again with `ulimit -n 65536`.
+- Rented ARM64 machine (`x9r2/arm.log`, 492 s, load 5 to 9): ARM64's programs, output, browser, layer 2, valid,
+  checks and binaries tests: 30 passed, 0 failed.
+
+Measured again, `measure_binaries_x86_64` on the rented x86-64 machine from b9c46db2 (`x9r2/measure.log`, summary
+`x9r2/summary.txt`; RAYON threads 96; load at each binary's start: java 0.6, busybox 29, musl 25, rg 23, git 13,
+python 8, go 11, node 19, bun 62; the clean-build verify ran beside from busybox on). Per binary: for speed / for
+size, WebAssembly bytes (a byte of code), translation time, wasmtime's compile time and machine code, Chrome compiled
+at first call / at once (time, growth of its processes). Told v3 is within 1% of the default list everywhere.
+- java (15,325,433 bytes of code, 3,695,230 instructions): 702,786,200 (45.9) / 296,373,041 (19.3); 2.91 / 2.28 s
+  (were not finished in 10 minutes / 413 s); wasmtime 14.97 s to 1,292.5 MB / 8.38 s to 746.4 MB; Chrome 0.35 s
+  +858 MB, 3.53 s +3,348 MB / 0.15 s +450 MB, 2.19 s +1,742 MB.
+- busybox: 42,577,434 (67.9) / 15,611,301 (24.9); 0.19 / 0.12 s; 0.96 s to 82.5 MB / 0.48 s to 39.3 MB; 0.02 s +72
+  MB, 0.27 s +263 MB / 0.01 s +43 MB, 0.17 s +132 MB.
+- musl: 18,465,751 (51.9) / 8,958,836 (25.2); 0.10 / 0.05 s; 0.53 s to 34.8 MB / 0.35 s to 21.5 MB; 0.01 s +44 MB,
+  0.10 s +138 MB / 0.01 s +35 MB, 0.08 s +95 MB.
+- rg: 132,723,131 (59.2) / 38,202,210 (17.0); 0.65 / 0.34 s; 5.21 s to 261.0 MB / 2.74 s to 95.9 MB; 0.07 s +175
+  MB, 0.82 s +684 MB / 0.02 s +82 MB, 0.36 s +274 MB.
+- git: 130,378,386 (61.6) / 47,342,066 (22.4); 0.55 / 0.37 s; 2.62 s to 239.3 MB / 1.31 s to 112.3 MB; 0.06 s +172
+  MB, 0.86 s +685 MB / 0.02 s +92 MB, 0.51 s +325 MB. (Run 1: 217.5 and 108.2 MB of WebAssembly with 37 and 33
+  cuts. Every rep string placed the rest of its function twice, so every binary is smaller now; git most.)
+- python: 177,519,773 (56.2) / 65,764,556 (20.8); 0.72 / 0.52 s; 4.02 s to 329.5 MB / 2.35 s to 168.3 MB; 0.09 s
+  +236 MB, 0.91 s +895 MB / 0.03 s +123 MB, 0.54 s +440 MB.
+- go: 330,995,377 (48.4) / 138,871,784 (20.3); 1.30 / 0.91 s; 6.51 s to 587.1 MB / 3.55 s to 342.6 MB; 0.17 s +427
+  MB, 1.61 s +1,612 MB / 0.07 s +233 MB, 1.02 s +875 MB.
+- node: 2,847,676,314 in 3 modules (61.0) / 983,070,655 in 1 (21.1); 11.10 / 7.18 s; 61.48 s to 5,147 MB / 33.68 s
+  to 2,430 MB; Chrome at first call 1.31 s +3,378 MB / 0.54 s +1,023 MB; at once the page crashed for speed, and
+  for size it now compiles: 10.32 s, +5,509 MB.
+- bun: 7,276,979,455 in 8 (139.7) / 1,823,936,160 in 2 (35.0); 26.84 / 13.32 s; 180.04 s to 12,973 MB / 60.55 s to
+  4,434 MB; Chrome at first call 3.75 s +7,757 MB / 1.08 s +1,936 MB; at once the page crashed in both.
+- The lookup array and the switch tables are as in run 1 (they do not depend on the meanings).
+
+The clean-build bar at b9c46db2 (`x9r2/verify.sh`, a new build folder `--name x9v2`, `x9r2/verify.log`, 3,210 s,
+load 9 to 83 with the measurements beside it until 14:26): fmt; clippy with warnings denied of the five crates and
+the wasmtime executor, all targets; the browser crate's wasm32 clippy for both guests: pass. Unit tests of the
+translator, guest-cpu, x86 and arm64 crates, the executor's (7 + 4), the test crate's library: pass. Told-feature
+tests: 5 passed. Programs, checks and smoke for x86: 2 + 29 + 6 passed; the v3 programs with `WC_PROBE_ANSWER=1`:
+4 passed. Browser, every x86 test: 4 passed. Valid (40,000, seed 14021; every form seed 14026): 7 passed, the new
+test among them. Lookaheads (500, seed 14022), changes (400 cases, 6 program seeds, seed 14023): pass. Layer 2,
+10,000, seed 14024: 0 failing (3,329 faulted, 1,052 left to an address, 23,889 stacks lost, 23,765 pieces
+forgotten). Layer 3 Csmith, 1,000, seed 14025: 874 compared, 126 did not end in time on Linux, 0 failing.
+Binaries, x86: 2 passed. The literal check: exit 0, marks 0, no change that could add a line, nothing of this
+track's crates among the lines it says may go.
+
+What is left: nothing of X9's bar. Open for the owner (unchanged from run 1, "For the orchestrator"): switch tables
+with 8-byte absolute entries. Chrome compiling everything at once still crashes the page for node (speed) and bun
+(both); compiled at first call every binary loads.
 
 ## X9, run 1 (2026-11-22): partly done
 
@@ -2273,7 +2367,12 @@ wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the 
   rayon threads with 16 MB stacks (one of x86 Java's functions nests about 800 levels, past 2 MB). ARM64's output
   is byte for byte the same for the benchmark set and seven binaries. Also open: translate's "cut in two until
   no function is too large for an engine" loop plans the whole binary again each round (x86 Java: 761 cuts, 413
-  s for size).
+  s for size). X9 run 2: Java's slow rounds were one function made huge by an x86 meaning (fixed there, see "X9,
+  run 2"); no binary of the nine now needs a second round. The loop is left as it is. Added to `full.rs`: a
+  debug assertion that a meaning's relative jump goes to its instruction's `Flow::target` (b9c46db2).
+- X9 run 2, about the laptop: its soft limit of open files over SSH is 1,024, and layer 1's every-form test holds
+  about 2,983 at 4 jobs (steady, not a leak), so that test fails there with "Too many open files" unless the
+  limit is raised (`ulimit -n 65536`; the hard limit is 1,048,576).
 
 - X8 run 1, for the executor's track: `crates/executor/implementation/wasmtime/implementation.rs`'s `Key.offer`
   is now a u64 (it was a u32), because `Guest::offer_key` now carries the program's whole feature list and
@@ -4280,6 +4379,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X9 run 2: the measurement as in run 1 with scratch `x9r2/measure.sh` (`export WC_X9_BINARIES='java busybox ...'`
+  before it), summarised by `x9r1/summary.py`; the clean-build bar `x9r2/verify.sh` (`--name` a new name). On
+  the laptop: `x9r2/laptop-bg.sh <name> '<command>'` (copies the tree to `~/wcontainers-x86/x9r2tree`), the
+  string forms as in `x9r2`'s log `x9r2-strings`, and `~/wcontainers-x86/x9r2-every.sh` (every form at 100 a
+  form, with `ulimit -n 65536`, which the every-form test needs there).
 - X9: the nine real binaries for x86-64, each told the default list and v3, for speed and size, in both engines,
   with the lookup array and switch tables: `x86-run <checkout> --name <name> -- "$(cat <scratch>/x9r1/measure.sh)"`
   (`WC_X9_BINARIES='busybox musl ...'` before it for some; each binary is taken from its Docker image once into
@@ -4585,6 +4689,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X9 run 2: layer 1 on the i7-8750H, the 20 string forms at 5,000 a form (seed 14001), every form at 100 a form
+  (seed 14012), 64 cases in no form, the hand cases and the Chrome sample at 1 a form (seed 14011); on the rented
+  x86-64 machine valid in a debug build at PROPTEST_CASES=4000 (seed 14002), lookaheads 300 (seed 14003), layer 2
+  10,000 (seed 14004), and the clean-build bar's: valid 40,000 (seed 14021, every form seed 14026), lookaheads
+  500 (14022), changes 400 cases and 6 program seeds (14023), layer 2 10,000 (14024), layer 3 Csmith 1,000
+  (14025); ARM64's tests at their defaults on the rented ARM64 machine.
 - X9 run 1 (the clean-build bar, `x9r1/verify.log`): valid at PROPTEST_CASES=40000 seed 13901 and every form
   seed 13906; lookaheads 500 seed 13902; changes 400 cases, 6 program seeds, seed 13903; layer 2 10,000 seed
   13904; layer 3 Csmith 1,000 seed 13905. No layer 1 run on the i7-8750H this run (the only meaning changed,
