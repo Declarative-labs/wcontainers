@@ -36,6 +36,8 @@ spin = { version = "0.10.1", default-features = false, features = ["mutex", "spi
 wcontainers-kernel-conformance = { path = "../../conformance" }
 # The stand-in executor and its test host, which make the kernel the suite runs on.
 wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn" }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
 [[test]]
 name = "conformance"
