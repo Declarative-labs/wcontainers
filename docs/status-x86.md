@@ -1,7 +1,8 @@
 # x86 track status
 
-Plan: docs/phase-2-guest-cpu-and-x86.md. Branch: main, in the one shared checkout (since 2026-11-21; it was
-phase-2-x86). Brief: pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
+Plan: docs/phase-2-guest-cpu-and-x86.md. Branch: agents, in the agents' shared worktree wcontainers-agents
+(since the evening of 2026-11-21; before that main, and before that phase-2-x86). Brief:
+pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
 Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime` is now
 `wcontainers-executor-wasmtime` (crates/executor/implementation/wasmtime), `wcontainers-runtime` is
@@ -126,7 +127,8 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   five findings and built the owner's ruling: the translator takes the program's link address and follows
   absolute immediates through it, with the address in the cache key (see "X6f, run 1"). X6f's check passed.
   Run 2 (2026-11-21, X6f dispatched again after the reorganization) found all of it on main and verified it
-  there (see "X6f, run 2").
+  there (see "X6f, run 2"). Run 3 (2026-11-21, X6f dispatched a third time, on branch agents) verified it again
+  from a clean build after the owner's evening interface changes (see "X6f, run 3").
 - X7 (x87 and MMX): run 1 (2026-11-21) fixed the two findings of the X6f check and built the x87 unit in
   software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
   `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
@@ -151,6 +153,43 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   runner's offer; its tool access ended before it wrote this file, so run 5 records it. Run 5 (2026-11-21) ran
   the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
   it found (see "X8, runs 4 and 5").
+
+## X6f, run 3 (2026-11-21)
+
+X6f was dispatched a third time, on branch agents in the shared worktree, with the same five findings of the X6
+check. All of X6f is already in the tree (runs 1 and 2), so nothing was rebuilt; this run checked it again after
+the owner's evening interface changes (`Readiness`, `PollEvents` as flags, `DomainNameResolver`). None of those
+reaches this track's four crates (no use of them; the crates build and pass unchanged). Machines: the rented
+x86-64 machine (96 processors, kernel 7.0.0-1018-aws, load 0.02 to 25 during the job), the rented ARM64 machine
+(load 0.3 to 2.8 at start), the Mac for git and the literal check. Logs in scratch `x6f3/`.
+- The five findings, checked in the tree: plan 5.7 says X6 measured only a loop writing its own next instruction;
+  plan 12 lists `self_written.c`'s `100 93 90` as seen; `browser.rs` names each stop kind and its signal;
+  `SPIN_TIME_LIMIT` bounds the other-thread test; the X10 list has the write during a system call.
+- The link address: the translator's `translate` family takes `link_address`; the wasmtime executor's `Key`
+  holds it and its cache hash takes it; its one caller still passes `None` (the ELF's type does not reach it),
+  listed for the runtime track under "For the orchestrator".
+- Rented x86-64 machine, a new build folder (`--name x6f3`, clean), agents at 05a2cff4 with other agents'
+  uncommitted edits in the copy (`verify.log`, 36 min in all): `cargo fmt --check` of the five crates; clippy
+  `--no-deps` with warnings denied for them and the wasmtime executor, all targets; the browser crate's wasm32
+  clippy for both guests: pass. Unit tests of the translator, guest-cpu, x86 and arm64 crates and the test
+  crate's library: pass. `--test programs --test checks --test smoke -- x86_64`: 28 + 2 + 6 passed, 0 failed
+  (482 s; `main_is_in_the_full_translation_x86_64` and `code_written_by_another_thread_matches_linux_x86_64`
+  among them, Chrome included). `valid -- x86_64`, PROPTEST_CASES=40000, seed 11213: 6 passed
+  (`absolute_entries_are_valid_x86_64` among them, 29 s). `changes -- x86_64`, 200 cases, seed 11214, 4 program
+  seeds: 3 passed (46 s). Layer 2 x86, seed 11212, 10,000 programs, all on the CPU, 96 at once: 0 failing (109 s;
+  3,403 faulted, 1,088 left to an address at full, 24,290 stacks lost, 24,026 pieces forgotten).
+- The wasmtime executor's own tests in the same job (the runtime track's crate, run because its call of the
+  translator is X6f's): its unit and cache tests pass (including `a_new_compiler_finds_translations_on_disk`);
+  its `surface` test, which runs ARM64 containers against a reference this machine does not have, had 14
+  failures and then sat for 21 minutes, so I stopped it. Not a verdict on X6f.
+- Rented ARM64 machine (`arm.log`): ARM64's programs, output, browser, layer 2, valid and checks tests: 28
+  passed, 0 failed.
+- The literal check (the Mac) exits 1 with 8,275 new findings, none in this track's crates: 8,255 are in the two
+  shader submodules newly initialised in this worktree (dxil-spirv 4,247, dxbc-spirv 4,008), the rest in other
+  tracks' uncommitted edits (OpenGL, NIR, the kernel interface's `signal_information.rs`, two socket suites).
+  Baseline lines of this track's crates: x86 117, guest-cpu 26, the test crate 1,738, the translator 8.
+- The benchmark pairs before and after the link address were not run again: the translator's handling of it is
+  as measured at run 1 (`x6f/pairs.log`).
 
 ## X8, runs 4 and 5 (2026-11-21)
 
