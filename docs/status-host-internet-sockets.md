@@ -8,10 +8,40 @@ findings and checked itself; run 3 answered the I2 check's four findings, below)
 restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. I2 run 4
 (2026-11-22) answered that check's five findings; I2 run 5 answered the next check's four; I2 run 6 found and fixed
 the ICMP wait flake's cause and answered that check's four minor findings; I2 run 7 answered the next check's three
-and cleared 17 literal findings the check script had hidden. Next: the independent check of I2; the linter
-findings left all wait on a ruling (below), and the interface selector's meaning on the owner's (For the owner).
-C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the owner's interfaces merged at
-158b6c62. Next: the independent check of C22. Nothing of this track is in progress.
+and cleared 17 literal findings the check script had hidden; the linter findings left all wait on a ruling
+(below). C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the owner's interfaces merged
+at 158b6c62; C22 run 2 answered its check's five findings. Next: the independent check of C22 run 2. Nothing of
+this track is in progress.
+
+## 2026-11-22: C22 run 2 (the C22 check's findings, each)
+- An IPv6 ping or raw send from a source by a `Bound` interface left by another link (blocking): true. Linux holds a
+  lookup with a source to `IPV6_UNICAST_IF`/`IPV6_PKTINFO`'s interface only as a preference; only a socket bound to
+  the device is held. Fixed in both hosts (96bba442): such a send (ping: the bound address, kept at `bind` unless a
+  link-local scope bound the socket to its link; raw: the route's source) first asks the route resolver host for the
+  same selectors with `Bound`. A route out of the bound interface sends per packet as before (that lookup already
+  leaves by it); the resolver's error (the bound socket's connect error) answers the send; its refusal refuses the
+  send under BOUND_WITH_SOURCE. Each such send is counted as a slow path (BOUND_ROUTE_ASKED, one routing socket
+  exchange). The resolver and the sockets now agree. The lookup asks the calling thread's namespace, which is the
+  socket's in every check; a socket used from a thread in another namespace would be asked about the wrong one.
+  New checks: ICMP a_bound_interface_holds_a_ping_from_a_bound_address (bound to 10.3.0.1 or fd03::1, `Bound` ia
+  must leave by ia, `Bound` ib by ib, IPv6 by ib may be refused; nothing may leave by the other link), the raw
+  route check sends from fd03::1 by each link the same way, and the ICMP counter test
+  a_ping_from_a_bound_address_by_a_bound_interface_is_counted. Broken copies (the hold skipped, or every such send
+  refused, in each host) fail them.
+- Standing sections of this file out of date (blocking): true; corrected below (method coverage, Honoured, Not
+  honoured, Departures, For the owner, Dependencies).
+- The chosen identifier check missed a fixed identifier (minor): true. the_exit_node_chooses_an_identifier_when_asked
+  now binds another socket with a chosen identifier and wants a different one; the 4242 copy fails it.
+- The resolver's bound check accepted a refusal everywhere (minor): true. A refusal is now accepted only for an IPv6
+  lookup from a source whose requested-interface answer leaves by another interface, and a case that leaves by the
+  bound interface anyway was added (fd0a::5 from fd01::1 by da). The always-probed copy now fails it.
+- Run 1 said clippy ran on nine packages (minor): true, c22/final.sh lints eight; corrected below.
+- Runs (`c22-run2/check.sh`, ARM, 19:54 to 19:56 UTC, load 13 to 23): clippy with warnings denied clean on the
+  eight packages; ICMP 65 + 5 counter + 1 wait, raw 53 + 2 + 1, resolver 38 + 1, Configurable 2,
+  NegativeRouteAdvisable 7, all passing; the six broken copies each caught. Final (`CLEAN=1 ROUNDS=3
+  NO_MUTANTS=1`, 19:57 UTC, load 18 to 14, 37 s with the build): clean build folder, clippy clean, three rounds of
+  the same counts, all passing. No interface.rs or data file of this track's crates, internet-protocol or readiness
+  differs from main (`git diff main --`, empty).
 
 ## 2026-11-22: C22 run 1 (the owner's ping, raw and shared IP interface changes, merged at 158b6c62)
 - Ping `bind(EchoBinding) -> EchoIdentifier` replaces bind_identifier: `SO_REUSEADDR` from the sharing choice
@@ -61,7 +91,7 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
   fails a_bound_interface_routes_as_a_bound_socket and the counter test. A diagnostic copy showed one suite case is
   refused (below).
 - Final (`c22/final.sh`, ARM, 19:31 UTC, load 19 to 12): clean build folder, clippy with warnings denied clean on
-  the nine packages, the broken copies above, three rounds each ICMP 64 + 4 counter + 1 wait, raw 53 + 2 + 1,
+  the eight packages (run 1 wrote nine), the broken copies above, three rounds each ICMP 64 + 4 counter + 1 wait, raw 53 + 2 + 1,
   resolver 38 + 1, Configurable 2, NegativeRouteAdvisable 7, all passing (55 s with the build). After a last rename
   (19:33 UTC, load 6): clippy clean and one round, the same counts. No interface.rs or data file differs from main
   (`git diff main --` of every interface file of this track's crates, internet-protocol, readiness, udp, tcp, kernel).
@@ -875,6 +905,9 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
   pyro-parked/wcontainers-scratch/host-internet-sockets, run as
   `./arm-run <checkout> --name host-internet-sockets -- "$(cat <scratch>/<script>)"` from the orchestrator's cloud
   folder:
+  - `c22-run2/check.sh`: clippy with warnings denied on the eight packages, `ROUNDS` (default 1) of every suite,
+    then the six broken copies of C22 run 2 (`NO_MUTANTS=1` skips them; `CLEAN=1` builds in a new folder).
+    `c22/final.sh`: C22 run 1's clean build, its broken copies and three rounds.
   - `lint-and-suites.sh`: clippy with warnings denied on the nine packages, then the ICMP, raw and resolver
     suites and the generic self-tests (`ROUNDS=3` before it for three rounds, `FILTER=<name>` to filter).
   - `i2-run6/check.sh`: broken copies for run 6's counter tests (`NO_MUTANTS=1` skips them), then the raw and ICMP
@@ -981,9 +1014,12 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
 - Run 4 adds: receive (an_echo_reply_arrives_with_its_ipv4_options, icmp_errors_queued_together_each_arrive,
   an_icmp_error_a_send_met_still_arrives; raw drops over two floods), configure (both source filter checks, the
   IPv6 alert turned off and changed, ICMP IPv6 multicast loopback).
-- IcmpSockets: open (every check; owner: owner_selects_the_route), bind_identifier
-  (identifiers_are_shared_only_when_both_ask, the_request_carries_the_bound_identifier), send_to (every sending
-  check; each header and send field its own, below), receive (echo reply, ICMP error, short buffer of a reply or
+- IcmpSockets: open (every check; owner: owner_selects_the_route), bind
+  (identifiers_are_shared_only_when_both_ask, the_request_carries_the_bound_identifier,
+  the_exit_node_chooses_an_identifier_when_asked, a_bound_address_is_the_requests_source,
+  a_link_local_address_binds_the_socket_to_its_link, binding_refuses_what_linux_refuses), send_to (every sending
+  check; each header and send field its own, below; a bound interface from a bound address by
+  a_bound_interface_holds_a_ping_from_a_bound_address), read_buffer_sizes (buffer_sizes_are_read_as_linux_gives_them), receive (echo reply, ICMP error, short buffer of a reply or
   an error, would block,
   transmit report and rejection, drops checks), count_unsent_bytes (pacing_holds_messages_in_the_send_buffer),
   Readiness::wait_until_ready (the readiness suite's six for data and six for writing, a_wait_for_writing_finishes_at_once, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight), close (close_frees_the_identifier), configure (each setting's check and
@@ -991,8 +1027,8 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
 - RawSockets: open (every check, open_takes_each_version_and_protocol), send_to (payload, header included,
   reassembly, route selector, mobility header, path MTU, send field checks), receive (arrival, mark and
   priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), Readiness::wait_until_ready (the readiness suite's six for data and six for writing, a_wait_for_writing_finishes_at_once, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight),
-  close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
-  multicast settings, Configurable's suite).
+  close (close_gives_up_the_sockets_holdings), read_buffer_sizes (buffer_sizes_are_read_as_linux_gives_them),
+  configure (checksum, router alert, IP and multicast settings, Configurable's suite).
 - RouteResolver::resolve_route: 28 suite checks that see answers, each selector its own; 3 see only refusals
   here, and 2 see refusals in their last part (see I1 runs 3 and 4 above). I2 run 4 adds the path MTU cap and the
   per-packet interface checks.
@@ -1016,7 +1052,10 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
   ICMP error's outer header (both suites) is checked with a request or error sent with DSCP EF and ECN.
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
   mobility header is sent by its type, and its type is what a rule sees (a mismatched selector refused);
-  withdrawn reassembly; checksum offset (where it is written, and a wrong checksum dropped on receipt); IPv4 and IPv6 router alerts with isolation, turned off and changed, and a refused change keeps the old alert; multicast routing.
+  withdrawn reassembly; checksum offset (where it is written, and a wrong checksum dropped on receipt); IPv4 and IPv6 router alerts with isolation, turned off and changed, and a refused change keeps the old alert.
+- Interface selectors: `Requested` per packet (`IP_PKTINFO`/`IPV6_PKTINFO`, `IP_UNICAST_IF`/`IPV6_UNICAST_IF`);
+  `Bound` the same where Linux's per-packet lookup is held (IPv4, IPv6 without a source), and for an IPv6 send from
+  a source only after the route resolver said that lookup leaves by the bound interface (else refused, above).
 - Settings: multicast membership, its source filters (as Linux lists them, and IPv4 raw delivery) and loopback
   (both versions), IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
@@ -1051,7 +1090,11 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
 - Link-layer length: Linux gives `SCM_TIMESTAMPING_PKTINFO` only with a hardware receive timestamp
   (__sock_recv_timestamp), which needs a device with a hardware clock; the namespace has none, so it stays None.
 - A transmit report without its packet: Linux gives no `IP_PKTINFO` with it (`SOF_TIMESTAMPING_OPT_TSONLY`), so its
-  interface is told as 0, counted and warned (REPORT_INTERFACE_NOT_GIVEN).
+  interface is None, as the interface's Option allows (checked).
+- An IPv6 ping or raw send from a source by a `Bound` interface whose per-packet lookup leaves by another link:
+  refused, counted and warned (BOUND_WITH_SOURCE); honouring it would need the socket bound to the device for the
+  send, which would also change what it receives meanwhile. Example: fd08::1 from fd03::1 bound to ib, where ia's
+  route has the lower metric. Every such send asks the routing socket first (BOUND_ROUTE_ASKED).
 - Whether reports hold the packet is a socket flag Linux reads when it takes each timestamp: a send that changes
   it while earlier sends wait in the host changes their reports too; counted and warned (PACKET_WISH_CHANGED).
 - IPv6 path MTU modes Probe and Interface send alike here; they differ only in taking learnt path MTUs.
@@ -1096,17 +1139,13 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
   go under crates/configurable/implementation/ and crates/negative-route-advice/implementation/, which this
   track does not own, and no other suite needs one.
 - The shared readiness (the UDP track's file) was changed here, in a commit of its own, for the double wake.
-- Raw multicast routing Disabled on a socket that is not the router answers Ok, from the socket's state, where
-  Linux's `MRT_DONE` answers EACCES: Configurable's rule (setting a value twice equals setting it once) needs a
-  second Disabled after the one that ended routing to answer Ok, and a new socket starts Disabled.
+- The ICMP and raw hosts depend on the route resolver host (an implementation on an implementation, which the
+  layout allows) for the bound-interface lookup above, so that the sockets and the resolver answer alike.
 
 ## For the owner
-- The route selectors' `interface` does not say whether it names the interface per packet (as a send's
-  `IP_PKTINFO`/`IPV6_PKTINFO` and `IP_UNICAST_IF` do) or binds to the device (`SO_BINDTODEVICE`). Over IPv6 with a
-  source they differ. Example: in the resolver suite's network, fd09::5 from fd02::1 naming db is routed by da
-  (path MTU 1400) per packet, and fails with ENETUNREACH for a socket bound to db. The host resolver and the
-  suite take the per-packet meaning, since the same selectors are a send's header route and the socket hosts send
-  them per packet.
+- `InterfaceSelector::Bound` on a send's route: Linux's sockets can honour it per packet only where the lookup is
+  held (IPv4, IPv6 without a source); an IPv6 send from a source by a bound link its route does not prefer is
+  refused and counted (Not honoured). Example: a ping from fd03::1 to fd08::1 bound to ib, ia's route preferred.
 - The linter's public_outside_interface wants every field of a type that fills an associated type pub ("plain
   data"), which the brief's private fields forbid, and on Linux the socket holds a registered descriptor and its
   state, which pub fields would let anyone build or change. Example: crates/icmp-sockets/implementation/host/
@@ -1133,17 +1172,12 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
 - `Readiness::wait_until_ready` with `ReadinessReport` (a00ab267) fits as it stands; nothing found that does not work.
 - `ReceivedPacketFields.mark` and `.priority` are plain values, but Linux gives a ping socket neither: an `Option`
   would say so. Example: a reply that arrived with mark 7 reads mark 0.
-- `MRT_INIT`/`MRT_DONE` (200, 201, linux/mroute.h and mroute6.h) are in no established crate (libc and
-  linux-raw-sys lack them); the raw implementation names them once.
 - RouteKind has no anycast: the subnet-router anycast address of a link that forwards (fd01:: with
   net.ipv6.conf.da.forwarding=1) is `anycast ... dev lo table local` and can only be refused (or called Local).
   Without forwarding fd01:: is an ordinary unicast route and resolves as one.
 - The contract does not say which error a failed source check gives: Linux's IPv4 lookup gives `ENETUNREACH`,
   bind `EADDRNOTAVAIL`, a send with `IP_PKTINFO` `EINVAL`.
 - No way through the interfaces to read the refusal counters; `counters()` is inherent.
-- `TransmitReport.interface` is a plain index, but Linux gives none with a report that does not hold its packet:
-  an `Option` would say so. Example: a ping to 127.0.0.1 with a software report and `packet: NotRequested` reads
-  interface 0 (with the packet, 1).
 - The contract does not say what `TransmitReport.packet_length` counts: Linux's is the frame, link-layer header
   included (58 bytes for a 24-byte echo over IPv4 on loopback, whose IP packet is 44); the suites expect that.
 
@@ -1152,4 +1186,4 @@ C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the 
   MIT) through the shared crate.
 - netlink-packet-core 0.9.0, netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT); rustix 1.1.6 (Apache-2.0 WITH
   LLVM-exception OR Apache-2.0 OR MIT), linux-raw-sys 0.12.1 (same), libc 0.2.191 (MIT OR Apache-2.0), etherparse
-  0.21.0 (MIT OR Apache-2.0). iproute2 and nftables (GPL) are test tools the suites run, never dependencies.
+  0.21.0 (MIT OR Apache-2.0); mitsein 0.10.0 (MIT, its Cargo.toml) in the ICMP suite. iproute2 and nftables (GPL) are test tools the suites run, never dependencies.
