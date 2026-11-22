@@ -163,7 +163,9 @@ Not done:
   built now. Until then the M5 set is expected, not measured (TODO in its file); the suite test for it is
   held back (it would fail without recordings). To make them: run the record tool on the Mac into
   crates/precise-instruction-set/implementation/apple-m5/recordings and add a conformance.rs like the V2's.
-- record.rs and chip.rs use the single step machine, which is not committed yet; they are committed once it is.
+- Recorded twice on the V2, with the old and with the committed input domain: the same 32,277 cases and the
+  same answers, in another order. The generator gives ADD and ADDS 5184 states of which only 2052 differ
+  (the same state comes several times); the recording keeps the repeats as the generator gives them.
 
 ### For the owner (the measured set and the recordings)
 
