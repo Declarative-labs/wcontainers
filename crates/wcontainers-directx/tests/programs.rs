@@ -323,6 +323,23 @@ fn a8_storage_views_store_as_direct3d_does() {
     case("a8_storage");
 }
 
+/// A colour map sampled bilinearly and clamped at a coordinate just below 1 worked out by the
+/// program as atg-simplecomputepc does, and at fixed coordinates around its edges; and that
+/// program's own compute shader run as it runs it, inside the Mandelbrot set; as on the RTX 3080.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn colour_map_sampled_at_its_edges_as_direct3d_samples_it() {
+    case("colour_map_edge");
+}
+
+/// Programs load from and store into storage views of every format of Microsoft's set of typed
+/// storage loads, which both devices claim, and get what the RTX 3080 gives.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn typed_storage_loads_as_direct3d_does() {
+    case("typed_loads");
+}
+
 /// `A8_UNORM`, `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`
 /// textures of each dimension written, read back, loaded and sampled, and the two targets among
 /// them drawn, blended and their mips generated, on 10_0 devices, as on the RTX 3080.
@@ -336,6 +353,14 @@ fn small_formats_read_and_drawn_at_10_0_as_direct3d_does() {
 #[test]
 fn packed_targets_drawn_blended_and_resolved_as_direct3d_does() {
     case("packed_targets");
+}
+
+/// Blends in one pass read what earlier draws left in `B5G5R5A1_UNORM` and `B5G6R5_UNORM`
+/// targets as the format holds it: the 1-bit alpha as a blend factor, and small increments
+/// rounded at each draw, as on the RTX 3080.
+#[test]
+fn packed_targets_read_by_blends_as_direct3d_reads_them() {
+    case("packed_blend_reads");
 }
 
 /// Format support bits of abilities this device reports absent through their own queries, which
@@ -392,12 +417,20 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
     } else {
         0
     };
-    let differences = vec![(
+    let mut differences = vec![(
         DXGI_FORMAT_R32G32B32_FLOAT,
         D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
         0,
         "sampling, optional: served, where the back end filters the format",
     )];
+    if at_11_0 {
+        differences.push((
+            DXGI_FORMAT_A8_UNORM,
+            0,
+            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0,
+            "typed storage loads, optional: absent, the shaders crate stores it only natively",
+        ));
+    }
     differences
 }
 
@@ -408,7 +441,7 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it() {
-    use wcontainers_direct3d_11::required::{self, Required, SAMPLES_4, SAMPLES_8};
+    use wcontainers_direct3d_11::required::{self, Required, SAMPLES_4, SAMPLES_8, SAMPLES_OTHER};
     let mut unmet = Vec::new();
     for (name, level) in ["10_0", "10_1", "11_0"].into_iter().zip(required::LEVELS) {
         let answers = |side: &str| -> Vec<(u32, Required)> {
@@ -429,6 +462,7 @@ fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it()
                     "format" => (by_format[f].0, by_format[f].1) = (hex(w[3]), hex(w[4])),
                     "msq" if w[3] != "0" => by_format[f].2 |= SAMPLES_4,
                     "msq8" if w[3] != "0" => by_format[f].2 |= SAMPLES_8,
+                    "msqo" if w[2] != "-" => by_format[f].2 |= SAMPLES_OTHER,
                     _ => {}
                 }
             }
@@ -1245,7 +1279,7 @@ fn extended_range_swap_chains_show_as_direct3d_shows_them() {
                 c / TEN_BITS
             };
             assert!(
-                (value * EIGHT_BITS - s).abs() <= 1.5,
+                (value * EIGHT_BITS - s).abs() <= 1.0,
                 "{l} (extended {extended})"
             );
         }
