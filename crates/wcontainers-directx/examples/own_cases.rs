@@ -454,13 +454,77 @@ fn main() -> windows::core::Result<()> {
             }
         }
         // Normalised targets the back end may hold as their integer twins: drawn, read back and
-        // their mips generated. The channels that vary are positive: the RTX 3080 averages
-        // R8G8B8A8_SNORM's bytes as unsigned in its mips.
+        // their mips generated, and read by a compute program; and 3D textures of them read by
+        // one. The channels that vary are positive: the RTX 3080 averages R8G8B8A8_SNORM's bytes
+        // as unsigned in its mips.
         "norm_targets" => {
             let full = vs(FULL);
             let shade = ps("float4 main(float4 p : SV_Position) : SV_Target {
                     return float4(0.2 * p.xy + 0.15, -0.6, 1.0);
                 }");
+            let sampler = |filter| {
+                let desc = D3D11_SAMPLER_DESC {
+                    Filter: filter,
+                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    MaxLOD: f32::MAX,
+                    ..Default::default()
+                };
+                let mut s = None;
+                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
+                s
+            };
+            let samplers = [
+                sampler(D3D11_FILTER_MIN_MAG_MIP_POINT),
+                sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR),
+            ];
+            // Linear samples at texel centres, whose weights are exact.
+            let read = cs("Texture2D<float4> t : register(t0);
+                SamplerState p : register(s0);
+                SamplerState l : register(s1);
+                RWTexture2D<float4> o : register(u0);
+                [numthreads(1, 1, 1)]
+                void main() {
+                    o[uint2(0, 0)] = t.Load(int3(1, 2, 0));
+                    o[uint2(1, 0)] = t.Load(int3(3, 3, 0));
+                    o[uint2(2, 0)] = t.SampleLevel(p, float2(0.6, 0.1), 0);
+                    o[uint2(3, 0)] = t.SampleLevel(l, float2(0.375, 0.625), 0);
+                }");
+            let read3 = cs("Texture3D<float4> t : register(t0);
+                SamplerState p : register(s0);
+                SamplerState l : register(s1);
+                RWTexture2D<float4> o : register(u0);
+                [numthreads(1, 1, 1)]
+                void main() {
+                    o[uint2(0, 0)] = t.Load(int4(1, 0, 1, 0));
+                    o[uint2(1, 0)] = t.Load(int4(0, 1, 0, 0));
+                    o[uint2(2, 0)] = t.SampleLevel(p, float3(0.3, 0.9, 0.1), 0);
+                    o[uint2(3, 0)] = t.SampleLevel(l, float3(0.75, 0.25, 0.75), 0);
+                }");
+            let out = make(
+                &Tex {
+                    w: 4,
+                    h: 1,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_UNORDERED_ACCESS,
+                },
+                None,
+            )?;
+            let compute = |what: &str, shader: &Option<ID3D11ComputeShader>, view| {
+                unsafe {
+                    context.CSSetShader(shader.as_ref(), None);
+                    context.CSSetShaderResources(0, Some(&[view]));
+                    context.CSSetSamplers(0, Some(&samplers));
+                    let views = [uav(&out)];
+                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
+                    context.Dispatch(1, 1, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                    context.CSSetShaderResources(0, Some(&[None]));
+                }
+                print(what, &out, 16);
+            };
             for (name, format, texel) in [
                 ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM, 4),
                 ("R8G8_SNORM", DXGI_FORMAT_R8G8_SNORM, 2),
@@ -518,6 +582,35 @@ fn main() -> windows::core::Result<()> {
                     let what = if level == 0 { "drawn" } else { "filtered" };
                     print(&format!("{what} {name} level {level}"), &mip, texel);
                 }
+                compute(&format!("computed {name}"), &read, view);
+                // A 2x2x2 texture whose bytes count up in steps of 37 (crossing -128 and -127).
+                let bytes: Vec<u8> = (0..8 * texel).map(|i| (i * 37 + 11) as u8).collect();
+                let desc = D3D11_TEXTURE3D_DESC {
+                    Width: 2,
+                    Height: 2,
+                    Depth: 2,
+                    MipLevels: 1,
+                    Format: format,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                    ..Default::default()
+                };
+                let data = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: bytes.as_ptr().cast(),
+                    SysMemPitch: 2 * texel,
+                    SysMemSlicePitch: 4 * texel,
+                };
+                let mut volume = None;
+                let mut view = None;
+                unsafe {
+                    device.CreateTexture3D(&desc, Some(&data), Some(&mut volume))?;
+                    device.CreateShaderResourceView(
+                        volume.as_ref().unwrap(),
+                        None,
+                        Some(&mut view),
+                    )?;
+                }
+                compute(&format!("computed 3D {name}"), &read3, view);
             }
         }
         "ms_depth_read" => {
@@ -2262,6 +2355,36 @@ fn main() -> windows::core::Result<()> {
                 context.Draw(3, 0);
             }
             draw_read("after replace");
+            // The same read by a compute program, which also asks an empty slot's size.
+            let computed = make(
+                &Tex {
+                    w: 4,
+                    h: 4,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_UNORDERED_ACCESS,
+                },
+                None,
+            )?;
+            let read = cs("Texture2D<uint4> t : register(t0); Texture2D d : register(t1);
+                Texture2D e : register(t2); RWTexture2D<float4> o : register(u0);
+                [numthreads(4, 4, 1)]
+                void main(uint3 p : SV_DispatchThreadID) {
+                    float2 s; e.GetDimensions(s.x, s.y);
+                    o[p.xy] = float4(t.Load(int3(p.xy, 0)).y, s.x + s.y, d.Load(int3(p.xy, 0)).r, 1);
+                }");
+            unsafe {
+                context.OMSetRenderTargets(None, None);
+                context.CSSetShader(read.as_ref(), None);
+                let views = [stencil.clone(), depth_view.clone(), None];
+                context.CSSetShaderResources(0, Some(&views));
+                let views = [uav(&computed)];
+                context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
+                context.Dispatch(1, 1, 1);
+                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                context.CSSetShaderResources(0, Some(&[None, None]));
+            }
+            print("computed", &computed, 16);
         }
         "msaa_copy" => {
             let ms = |bind| Tex {

@@ -2997,6 +2997,10 @@ impl<B: Backend> Device<B> {
             border_in_shader: cv.border_in_shader,
             mirror_once_in_shader: cv.mirror_once_in_shader,
             filter_in_shader: cv.filter_in_shader,
+            decoded: cv.decoded,
+            decoded_formats: cv.decoded_formats,
+            stencil: cv.stencil,
+            texture_info: cv.texture_info,
             ..StageVariant::default()
         };
         if cv != served {
