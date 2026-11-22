@@ -1763,7 +1763,11 @@ fn main() -> windows::core::Result<()> {
                 unsafe { device.CreateSamplerState(&desc, Some(&mut s))? };
                 s
             };
-            let limits = constants([1280.0, 720.0, 300.0, 0.0]);
+            // atg-simplecomputepc's iteration constant: a point inside the set loops four times
+            // it, 1200 times.
+            const INSIDE_LOOPS: f32 = 1200.0;
+            let iterations = INSIDE_LOOPS / 4.0;
+            let limits = constants([1280.0, 720.0, iterations, 0.0]);
             unsafe {
                 context.CSSetShader(program.as_ref(), None);
                 context.CSSetConstantBuffers(0, Some(&[limits]));
@@ -1835,7 +1839,7 @@ fn main() -> windows::core::Result<()> {
                 CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
                 ..Default::default()
             };
-            let values: [f32; 8] = [w as f32, h as f32, 300.0, 0.0, 4.0, 2.25, -0.65, 0.0];
+            let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
             let mut window = None;
             unsafe {
                 device.CreateBuffer(&desc, None, Some(&mut window))?;
