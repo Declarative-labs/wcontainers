@@ -55,6 +55,20 @@ below): level-of-detail queries (`CalculateLevelOfDetail`) on the DXBC route (th
 (run 93, the section below): samples with a per-sample clamp (`SampleClamp`) on both routes. Not
 complete: the gap list below.
 
+Asked by the Direct3D 11 track (2026-11-22, G4h; it blocks feature level 11_0 on both Direct3D
+fronts, which must not report a level whose requirements are unmet): `B8G8R8X8_UNORM` vertex
+elements, which Direct3D reads as blue, green and red with the fourth component 1. It needs a
+variant `VertexFormat::Bgrx8Unorm` in the interface, which breaks this crate's exhaustive match in
+variant/pull.rs `layout` the moment it lands, so it must land in one commit with this crate's arm.
+Every other crate's arm (interface, WebGPU and WebGL 2 back ends, wcontainers-gpu-test, the
+Direct3D 11 front's element size) is written in
+pyro-parked/wcontainers-scratch/graphics-direct3d-11/g4h/bgrx8-arms.patch, and this crate's arm
+(three bytes of `BGRA_BYTES`, so the fourth reads 1) in g4h/bgrx8-shaders-arm.patch; both apply to
+the tip and build together (cargo check of every graphics crate, and wcontainers-gpu-test's tests,
+on the x86 machine). Please commit both in one commit of your own (or say the Direct3D 11 track may
+commit the arm). Typed buffers of the format then want variant/texel.rs `vertex_format` to map
+`Format::Bgrx8Unorm` to the new variant.
+
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
 Built in run 88 (its G9 run 12 ask, "Requests to other tracks"). `staged::geometry`, `staged::hull`
