@@ -5,8 +5,7 @@
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::fs;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
 use linux_raw_sys::net::{
@@ -14,6 +13,10 @@ use linux_raw_sys::net::{
     IPV6_SRCRT_TYPE_4,
 };
 use wcontainers_abi::HostError;
+use wcontainers_icmp_sockets_conformance::{
+    DEVICE, IP, PACKETS, TRAFFIC_CONTROL, batch, number_after, seconds_since_confirmed,
+    temporary_address,
+};
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, Ipv4RouteSelectors,
     Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, MobilityHeaderType,
@@ -23,6 +26,8 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
+
+pub use wcontainers_icmp_sockets_conformance as icmp_suite;
 
 /// Moves the calling thread into a new, empty network namespace, which needs `CAP_SYS_ADMIN`.
 fn enter_network_namespace() {
@@ -34,8 +39,6 @@ fn enter_network_namespace() {
     panic!("the checks build their routes in a Linux network namespace");
 }
 
-/// The iproute2 tool every check builds its network with.
-const IP: &str = "ip";
 const A: &str = "da";
 const B: &str = "db";
 /// The MTU of da, more than the least IPv6 takes.
@@ -45,7 +48,7 @@ const A_MTU: u32 = 1400;
 /// The MTU of db, less than da's and more than the least IPv6 takes.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-5
-const B_MTU: u32 = 1300;
+const B_MTU: u32 = 1310;
 /// The MTU Linux gives loopback in a new network namespace.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/drivers/net/loopback.c
@@ -57,7 +60,7 @@ link set da up mtu 1400
 address add 10.1.0.1/24 dev da
 address add fd01::1/64 dev da nodad
 link add db type dummy
-link set db up mtu 1300
+link set db up mtu 1310
 address add 10.2.0.1/24 dev db
 address add fd02::1/64 dev db nodad
 route add 10.9.0.0/16 via 10.1.0.2
@@ -124,67 +127,6 @@ fn ip(options: &[&str], commands: &str) {
     batch(IP, options, commands);
 }
 
-/// Runs each line of `commands` as one command of the iproute2 tool, with these options.
-fn batch(tool: &str, options: &[&str], commands: &str) {
-    let mut child = Command::new(tool)
-        .args(options)
-        .args(BATCH)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error| panic!("{tool} runs: {error}"));
-    child
-        .stdin
-        .take()
-        .expect("the tool's input")
-        .write_all(commands.as_bytes())
-        .expect("the tool reads its commands");
-    assert!(
-        child.wait().expect("the tool ends").success(),
-        "{tool} {options:?}: {commands}"
-    );
-    if tool == IP {
-        settle_addresses(commands);
-    }
-}
-
-/// The `ip` commands that give a link an address, and what they are followed by.
-const ADDRESS: &str = "address";
-const ADDING: [&str; 2] = ["add", "replace"];
-const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
-
-/// Waits until each IPv6 address the commands add is local: Linux routes a `nodad` one locally only in its later address work.
-fn settle_addresses(commands: &str) {
-    for line in commands.lines() {
-        let mut words = line.split_whitespace();
-        if words.next() != Some(ADDRESS) || !words.next().is_some_and(|verb| ADDING.contains(&verb))
-        {
-            continue;
-        }
-        let Some(Ok(IpAddr::V6(address))) = words
-            .next()
-            .and_then(|prefix| prefix.split('/').next())
-            .map(str::parse)
-        else {
-            continue;
-        };
-        let local = || {
-            let output = Command::new(IP)
-                .args(LOCAL_ROUTES)
-                .arg(address.to_string())
-                .output()
-                .expect("ip runs");
-            !output.stdout.is_empty()
-        };
-        assert!(
-            (0..PATIENT_TRIES).any(|_| local() || {
-                std::thread::sleep(PATIENT_TRY);
-                false
-            }),
-            "{address} is not local yet"
-        );
-    }
-}
-
 fn write_setting(path: &str, value: impl ToString) {
     fs::write(path, value.to_string()).unwrap_or_else(|error| panic!("{path}: {error}"));
 }
@@ -207,8 +149,6 @@ fn network() -> Network {
     }
 }
 
-/// Reads the commands from the input.
-const BATCH: &[&str] = &["-batch", "-"];
 /// No family option, which makes a rule with no address an IPv4 one.
 const IPV4: &[&str] = &[];
 const IPV6: &[&str] = &["-6"];
@@ -344,27 +284,6 @@ pub fn unspecified_destination_is_loopback<R: RouteResolver>(resolver: R) {
 
 /// The namespace's default IPv4 TTL.
 const DEFAULT_TTL: &str = "/proc/sys/net/ipv4/ip_default_ttl";
-/// The packet count of a statistics object in iproute2's JSON.
-const PACKETS: &str = "\"packets\":";
-
-/// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
-fn number_after(text: &str, after: &str, field: &str) -> u64 {
-    let start = text
-        .find(after)
-        .unwrap_or_else(|| panic!("no {after}: {text}"));
-    let rest = &text[start..];
-    let at = rest
-        .find(field)
-        .unwrap_or_else(|| panic!("no {field}: {text}"))
-        + field.len();
-    rest[at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{text}"))
-}
-
 /// Checks that a route through a gateway gives the link's interface, its address as the source, its MTU and the namespace's TTL.
 pub fn ipv4_route_gives_link_source_and_sizes<R: RouteResolver>(resolver: R) {
     /// A TTL other than Linux's default.
@@ -1037,12 +956,13 @@ pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
     );
 }
 
+/// A flow label a rule selects.
+///
+/// https://www.rfc-editor.org/rfc/rfc6437#section-2
+pub const LABEL: u32 = 0x12345;
+
 /// Checks that a rule on the flow label sends only lookups with that label to the other table.
 pub fn flow_label_selects_the_route<R: RouteResolver>(resolver: R) {
-    /// A flow label the rule selects.
-    ///
-    /// https://www.rfc-editor.org/rfc/rfc6437#section-2
-    const LABEL: u32 = 0x12345;
     /// A flow label the rule does not select.
     ///
     /// https://www.rfc-editor.org/rfc/rfc6437#section-2
@@ -1391,9 +1311,6 @@ filter add dev da egress protocol all flower dst_mac 02:00:00:00:00:02 action pa
     }
 }
 
-/// The iproute2 tool that sets queues and filters.
-const TRAFFIC_CONTROL: &str = "tc";
-
 /// Returns the number of packets da has sent to the gateways' link address, from its egress filter's statistics.
 fn sent_to_gateways() -> u64 {
     /// Shows da's egress filters with their statistics, as JSON.
@@ -1409,24 +1326,6 @@ fn sent_to_gateways() -> u64 {
     number_after(&text, STATISTICS, PACKETS)
 }
 
-/// The word before a link's name in an `ip` command.
-const DEVICE: &str = "dev";
-
-/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds.
-fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
-    const FIELD: &str = "\"confirmed\":";
-    /// Shows the neighbour entries with their times, as JSON.
-    const SHOW: &[&str] = &["-s", "-j", "neigh", "show"];
-    let output = Command::new(IP)
-        .args(SHOW)
-        .arg(address.to_string())
-        .args([DEVICE, link])
-        .output()
-        .expect("ip runs");
-    let text = String::from_utf8(output.stdout).expect("ip writes text");
-    number_after(&text, FIELD, FIELD)
-}
-
 /// Makes da's and db's addresses the sources of temporary addresses, of which Linux makes one each at once.
 const TEMPORARY_ADDRESSES: &[&str] = &[
     "/proc/sys/net/ipv6/conf/da/use_tempaddr",
@@ -1434,40 +1333,6 @@ const TEMPORARY_ADDRESSES: &[&str] = &[
 ];
 const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr
 address replace fd02::1/64 dev db nodad mngtmpaddr";
-
-/// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
-fn temporary_address(link: &str) -> Ipv6Addr {
-    /// Shows the link's temporary addresses that are no longer tentative, as JSON.
-    const SHOW: &[&str] = &["-6", "-j", "address", "show", "temporary", "-tentative"];
-    const LOCAL: &str = "\"local\":\"";
-    for _ in 0..PATIENT_TRIES {
-        let output = Command::new(IP)
-            .args(SHOW)
-            .args([DEVICE, link])
-            .output()
-            .expect("ip runs");
-        let text = String::from_utf8(output.stdout).expect("ip writes text");
-        if let Some(start) = text.find(LOCAL) {
-            let rest = &text[start + LOCAL.len()..];
-            let end = rest.find(JSON_QUOTE).expect("an address ends");
-            return rest[..end].parse().expect("an IPv6 address");
-        }
-        std::thread::sleep(PATIENT_TRY);
-    }
-    panic!("no temporary address on {link}");
-}
-
-/// The mark that ends a string in iproute2's JSON.
-const JSON_QUOTE: char = '"';
-
-/// How often and how long apart a check looks for what Linux makes in the background.
-///
-/// https://www.rfc-editor.org/rfc/rfc4861#section-10
-const PATIENT_TRIES: u32 = 200;
-/// The time between two looks, a hundredth of the time duplicate address detection waits.
-///
-/// https://www.rfc-editor.org/rfc/rfc4861#section-10
-const PATIENT_TRY: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Checks that a temporary or public preference chooses between a link's address and Linux's temporary one, also on a link a mark or owner selects.
 pub fn source_preferences_choose_among_the_link_addresses<R: RouteResolver>(resolver: R) {

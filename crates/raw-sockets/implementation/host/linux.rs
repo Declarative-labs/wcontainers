@@ -249,6 +249,40 @@ fn payload_selector(protocol: IpNumber, ipv6: bool, payload: &[u8]) -> Option<Up
     }
 }
 
+fn write_router_alert(fd: BorrowedFd<'_>, alert: RouterAlert) -> Result<(), HostError> {
+    match alert {
+        RouterAlert::Off => Ok(()),
+        RouterAlert::Ipv4 => set_flag(fd, uapi::SOL_IP, uapi::IP_ROUTER_ALERT, true),
+        RouterAlert::Ipv6 { value, isolation } => {
+            set_flag(
+                fd,
+                uapi::SOL_IPV6,
+                uapi::IPV6_ROUTER_ALERT_ISOLATE,
+                isolation == RouterAlertIsolation::OwnNamespace,
+            )?;
+            set_int(
+                fd,
+                uapi::SOL_IPV6,
+                uapi::IPV6_ROUTER_ALERT,
+                c_int::from(value.0),
+            )
+        }
+    }
+}
+
+fn clear_router_alert(fd: BorrowedFd<'_>, alert: RouterAlert) -> Result<(), HostError> {
+    match alert {
+        RouterAlert::Off => Ok(()),
+        RouterAlert::Ipv4 => set_flag(fd, uapi::SOL_IP, uapi::IP_ROUTER_ALERT, false),
+        RouterAlert::Ipv6 { .. } => set_int(
+            fd,
+            uapi::SOL_IPV6,
+            uapi::IPV6_ROUTER_ALERT,
+            ROUTER_ALERT_OFF,
+        ),
+    }
+}
+
 impl RawSockets for HostRawSockets {
     type Socket = HostRawSocket;
 
@@ -654,34 +688,24 @@ impl HostRawSocket {
             return Ok(());
         }
         let fd = self.fd();
-        match state.router_alert {
-            RouterAlert::Off => {}
-            RouterAlert::Ipv4 => set_flag(fd, uapi::SOL_IP, uapi::IP_ROUTER_ALERT, false)?,
-            RouterAlert::Ipv6 { .. } => set_int(
-                fd,
-                uapi::SOL_IPV6,
-                uapi::IPV6_ROUTER_ALERT,
-                ROUTER_ALERT_OFF,
-            )?,
-        }
-        state.router_alert = RouterAlert::Off;
-        match wanted {
-            RouterAlert::Off => {}
-            RouterAlert::Ipv4 => set_flag(fd, uapi::SOL_IP, uapi::IP_ROUTER_ALERT, true)?,
-            RouterAlert::Ipv6 { value, isolation } => {
-                set_flag(
-                    fd,
-                    uapi::SOL_IPV6,
-                    uapi::IPV6_ROUTER_ALERT_ISOLATE,
-                    isolation == RouterAlertIsolation::OwnNamespace,
-                )?;
-                set_int(
-                    fd,
-                    uapi::SOL_IPV6,
-                    uapi::IPV6_ROUTER_ALERT,
-                    c_int::from(value.0),
-                )?;
+        let old = state.router_alert;
+        if matches!(
+            (old, wanted),
+            (RouterAlert::Ipv6 { .. }, RouterAlert::Ipv6 { .. })
+        ) {
+            // Linux refuses a new IPv6 alert while the socket has one, so the old one goes first.
+            clear_router_alert(fd, old)?;
+            state.router_alert = RouterAlert::Off;
+            if let Err(error) = write_router_alert(fd, wanted) {
+                // Linux keeps a socket's alert when a new one is refused, so the old one is written back.
+                write_router_alert(fd, old)?;
+                state.router_alert = old;
+                return Err(error);
             }
+        } else {
+            // A refused new alert leaves the old one, as Linux does.
+            write_router_alert(fd, wanted)?;
+            clear_router_alert(fd, old)?;
         }
         state.router_alert = wanted;
         Ok(())

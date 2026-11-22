@@ -1,8 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::process::{Command, Stdio};
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel};
 use wcontainers_abi::HostError;
@@ -14,6 +12,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
+use wcontainers_route_resolver_conformance::{LABEL, icmp_suite};
 use wcontainers_route_resolver_host::HostRouteResolver;
 
 /// A link whose prefix's subnet-router anycast address is a route, one whose route a flow label selects over a wider one, and a route over both.
@@ -38,19 +37,7 @@ const FORWARDING: [&str; 2] = [
 ];
 
 fn ip(options: &[&str], commands: &str) {
-    let mut child = Command::new("ip")
-        .args(options)
-        .args(["-batch", "-"])
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("iproute2's ip runs");
-    child
-        .stdin
-        .take()
-        .expect("ip's input")
-        .write_all(commands.as_bytes())
-        .expect("ip reads its commands");
-    assert!(child.wait().expect("ip ends").success(), "{commands}");
+    icmp_suite::batch(icmp_suite::IP, options, commands);
 }
 
 fn v4(options: &Ipv4Options) -> Ipv4RouteSelectors<'_> {
@@ -140,7 +127,7 @@ fn refusals_are_counted_under_their_reasons() {
     };
     // A probe socket takes no flow label, so it connects along the wider route and is told nothing of this one.
     let labelled_with_preferences = Ipv6RouteSelectors {
-        flow_label: Ipv6FlowLabel::try_new(0x12345).expect("a flow label"),
+        flow_label: Ipv6FlowLabel::try_new(LABEL).expect("a flow label"),
         source_preferences: SourcePreferences {
             temporary: TemporaryAddressPreference::Public,
             mobile: MobileAddressPreference::Home,

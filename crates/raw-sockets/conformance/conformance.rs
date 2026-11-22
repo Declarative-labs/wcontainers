@@ -18,7 +18,6 @@ use etherparse::{
     Ipv6RawExtHeaderSlice, icmpv4, icmpv6,
 };
 use wcontainers_abi::HostError;
-use wcontainers_icmp_sockets_conformance::seconds_since_confirmed;
 use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FAR_V6_SEGMENT, FLOW_LABEL, GATEWAY, GATEWAY_V6,
     HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
@@ -28,6 +27,7 @@ use wcontainers_icmp_sockets_conformance::{
     output, plain_fields, poll_with, seen, segment_routing_header, source_filters_are_written, tc,
     version_of, woken, write_setting,
 };
+use wcontainers_icmp_sockets_conformance::{PAD_N, seconds_since_confirmed};
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
     IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
@@ -63,10 +63,6 @@ pub const RAW_PROTOCOL: IpNumber = IpNumber(linux_raw_sys::net::IPPROTO_RAW as u
 ///
 /// https://www.rfc-editor.org/rfc/rfc2711
 const ROUTER_ALERT_HOP_OPTION: [u8; 2] = [5, 2];
-/// The type of the option that pads an extension header by its length and two bytes more.
-///
-/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
-const PAD_N: u8 = 1;
 /// A payload longer than the link of the check that sends one too long.
 ///
 /// https://man7.org/linux/man-pages/man7/ip.7.html
@@ -1151,6 +1147,19 @@ pub fn an_ipv4_router_alert_takes_forwarded_packets<S: RawSockets>(sockets: S) {
     let fields = receive_packet(&sockets, &alerted, &mut into);
     assert_eq!(seen(&into[..fields.length]).payload, PAYLOAD);
     assert_eq!(fields.interface, index(SECOND_OF_PAIR));
+    // A refused change of alert leaves the socket the alert it had, as Linux's socket keeps it.
+    let other_version = RouterAlert::Ipv6 {
+        value: ROUTER_ALERT_VALUE,
+        isolation: RouterAlertIsolation::AllNamespaces,
+    };
+    if sockets
+        .configure(&alerted, RawSocketSetting::RouterAlert(other_version))
+        .is_err()
+    {
+        forward(&sockets);
+        let fields = receive_packet(&sockets, &alerted, &mut into);
+        assert_eq!(seen(&into[..fields.length]).payload, PAYLOAD);
+    }
     set(
         &sockets,
         &alerted,
@@ -1486,14 +1495,16 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
     );
 }
 
-/// Checks that a mobility header sent by its type as the route's selector leaves as given, with the checksum Linux writes.
+/// Checks that a mobility header is routed by its own type, and sent by it as given with the checksum Linux writes.
 pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     // https://www.rfc-editor.org/rfc/rfc6275#section-6.1
     const BINDING_REFRESH: MobilityHeaderType = MobilityHeaderType(0);
+    // https://www.rfc-editor.org/rfc/rfc6275#section-6.1.7
+    const BINDING_UPDATE: MobilityHeaderType = MobilityHeaderType(5);
     /// A binding refresh request: no next header, no length past eight bytes, its type, then checksum and reserved.
     ///
-    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1
+    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1.2
     const BINDING_REFRESH_REQUEST: [u8; 8] = [
         IpNumber::IPV6_NO_NEXT_HEADER.0,
         0,
@@ -1504,32 +1515,78 @@ pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
         0,
         0,
     ];
+    /// A binding update eight bytes longer than the smallest header: its type, checksum, sequence number, flags,
+    /// lifetime, and PadN over the rest.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1.7
+    const BINDING_UPDATE_MESSAGE: [u8; 16] = [
+        IpNumber::IPV6_NO_NEXT_HEADER.0,
+        1,
+        BINDING_UPDATE.0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        MOBILITY_PAD_N,
+        2,
+        0,
+        0,
+    ];
+    /// The mobility option that pads by its length.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.2.2
+    const MOBILITY_PAD_N: u8 = 1;
     // https://www.rfc-editor.org/rfc/rfc6275#section-6.1
     const CHECKSUM: core::ops::Range<usize> = 4..6;
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V6, IpNumber::MOBILITY_HEADER);
     let capture = Capture::on(DUMMY);
-    let route = v6_route(
-        ON_LINK_V6,
-        UpperLayer {
-            protocol: IpNumber::MOBILITY_HEADER,
-            selector: Some(UpperLayerSelector::MobilityHeader(BINDING_REFRESH)),
-        },
-    );
-    send(
-        &sockets,
-        &socket,
-        RawPacket::Payload {
-            header: IpHeaderFields::V6(v6_header(route)),
-            payload: &BINDING_REFRESH_REQUEST,
-        },
-    )
-    .expect("the mobility header is sent");
-    let sent = capture.next(|packet| seen(packet).protocol == IpNumber::MOBILITY_HEADER);
-    let seen = seen(&sent);
+    let sent = |selector: MobilityHeaderType, payload: &[u8]| {
+        let route = v6_route(
+            ON_LINK_V6,
+            UpperLayer {
+                protocol: IpNumber::MOBILITY_HEADER,
+                selector: Some(UpperLayerSelector::MobilityHeader(selector)),
+            },
+        );
+        send(
+            &sockets,
+            &socket,
+            RawPacket::Payload {
+                header: IpHeaderFields::V6(v6_header(route)),
+                payload,
+            },
+        )
+    };
+    sent(BINDING_UPDATE, &BINDING_UPDATE_MESSAGE).expect("the mobility header is sent");
+    let packet = capture.next(|packet| seen(packet).protocol == IpNumber::MOBILITY_HEADER);
+    let seen = seen(&packet);
     let mut without_checksum = seen.payload.to_vec();
     without_checksum[CHECKSUM].fill(u8::MIN);
-    assert_eq!(without_checksum, BINDING_REFRESH_REQUEST);
+    assert_eq!(without_checksum, BINDING_UPDATE_MESSAGE);
+    // Linux matches a rule's destination port against the mobility header type in its first byte.
+    let binding_update_port = u16::from_be_bytes([BINDING_UPDATE.0, u8::MIN]);
+    ip6(&format!(
+        "rule add ipproto {} dport {binding_update_port} prohibit",
+        IpNumber::MOBILITY_HEADER.0
+    ));
+    let prohibited = Err(SendError::Host(HostError::Errno(libc::EACCES)));
+    assert_eq!(
+        sent(BINDING_UPDATE, &BINDING_UPDATE_MESSAGE),
+        prohibited,
+        "a binding update is routed by its type"
+    );
+    unless_refused(sent(BINDING_UPDATE, &BINDING_REFRESH_REQUEST), |sent| {
+        assert_eq!(sent, prohibited, "routed by the type asked for")
+    });
+    unless_refused(sent(BINDING_REFRESH, &BINDING_UPDATE_MESSAGE), |sent| {
+        sent.expect("routed by the type asked for, which no rule prohibits")
+    });
     let (IpAddr::V6(source), IpAddr::V6(destination)) = (seen.source, seen.destination) else {
         panic!("an IPv6 packet");
     };

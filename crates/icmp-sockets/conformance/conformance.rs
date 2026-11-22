@@ -194,7 +194,13 @@ const IPV6: &[&str] = &["-6"];
 /// The packet count of a statistics object in iproute2's JSON.
 pub const PACKETS: &str = "\"packets\":";
 /// The word before a link's name in an `ip` command.
-const DEVICE: &str = "dev";
+pub const DEVICE: &str = "dev";
+/// The option that pads an IPv6 extension header by its length and two bytes more.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
+pub const PAD_N: u8 = 1;
+/// How many bytes PadN pads after its type and length in the smallest extension header.
+pub const PADDED: u8 = 4;
 
 /// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
 pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
@@ -230,7 +236,7 @@ pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
 }
 
 /// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
-fn temporary_address(link: &str) -> Ipv6Addr {
+pub fn temporary_address(link: &str) -> Ipv6Addr {
     /// Shows the link's temporary addresses that are no longer tentative, as JSON.
     const SHOW: &[&str] = &["-6", JSON, "address", "show", "temporary", "-tentative"];
     /// The mark that ends a string in iproute2's JSON.
@@ -281,7 +287,7 @@ pub fn tc(commands: &str) {
 }
 
 /// Runs each line of `commands` as one command of the iproute2 tool, with these options.
-fn batch(tool: &str, options: &[&str], commands: &str) {
+pub fn batch(tool: &str, options: &[&str], commands: &str) {
     let mut child = Command::new(tool)
         .args(options)
         .args(BATCH)
@@ -311,6 +317,8 @@ pub const SETTLING: Duration = Duration::from_secs(10);
 const ADDRESS: &str = "address";
 const ADDING: [&str; 2] = ["add", "replace"];
 const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
+/// What ends an address before its prefix length in an `ip` command.
+const PREFIX_LENGTH: char = '/';
 
 /// Waits until each IPv6 address the commands add is local: Linux routes a `nodad` one locally only in its later address work.
 fn settle_addresses(commands: &str) {
@@ -322,7 +330,7 @@ fn settle_addresses(commands: &str) {
         }
         let Some(Ok(IpAddr::V6(address))) = words
             .next()
-            .and_then(|prefix| prefix.split('/').next())
+            .and_then(|prefix| prefix.split(PREFIX_LENGTH).next())
             .map(str::parse)
         else {
             continue;

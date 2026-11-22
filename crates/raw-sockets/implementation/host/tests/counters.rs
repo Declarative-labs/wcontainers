@@ -8,27 +8,22 @@ use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BroadcastPermission, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpVersion,
-    Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6RouteSelectors, MobileAddressPreference,
-    NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Received, Report,
-    RouteScope, RouterAlertValue, SendError, SourceAddressCheck, SourcePreferences,
-    TemporaryAddressPreference, TransmitReportKey, TransmitReportRequest, UpperLayer,
-    UpperLayerSelector,
+    Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation,
+    MobileAddressPreference, MobilityHeaderType, NeighbourConfirmation, PacketMark, PacketPriority,
+    PathMtuDiscovery, Received, Report, RouteScope, RouterAlertValue, SendError,
+    SourceAddressCheck, SourcePreferences, TemporaryAddressPreference, TransmitReportKey,
+    TransmitReportRequest, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::{
     HeaderIncludedPacket, OutgoingReassembly, RawPacket, RawSocketSetting, RawSockets, RouterAlert,
     RouterAlertIsolation,
 };
-use wcontainers_raw_sockets_conformance::{EXPERIMENT, RAW_PROTOCOL, icmp_suite::PATIENCE};
+use wcontainers_raw_sockets_conformance::icmp_suite::{PAD_N, PADDED, PATIENCE};
+use wcontainers_raw_sockets_conformance::{EXPERIMENT, RAW_PROTOCOL};
 use wcontainers_raw_sockets_host::HostRawSockets;
 
 const PAYLOAD: &[u8] = b"payload";
-/// The option that pads an IPv6 extension header by its length.
-///
-/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
-const PAD_N: u8 = 1;
-/// How many bytes PadN pads after its type and length in the smallest extension header.
-const PADDED: u8 = 4;
 
 /// Returns the plain route to the IPv4 loopback address, under the protocol given.
 fn v4_route(options: &Ipv4Options, protocol: IpNumber) -> Ipv4RouteSelectors<'_> {
@@ -68,6 +63,32 @@ fn plain_fields() -> IpSendFields {
     }
 }
 
+/// A binding update with one more eight bytes than the smallest header, whose type is 5 and length byte 1.
+///
+/// https://www.rfc-editor.org/rfc/rfc6275#section-6.1.7
+const BINDING_UPDATE: [u8; 16] = [
+    IpNumber::IPV6_NO_NEXT_HEADER.0,
+    1,
+    5,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    1,
+    2,
+    0,
+    0,
+];
+/// Where a mobility header's length byte is, just before its type.
+///
+/// https://www.rfc-editor.org/rfc/rfc6275#section-6.1
+const MOBILITY_HEADER_LENGTH: usize = 1;
+
 /// Returns the one reason a value counted once, failing if it counted anything else.
 fn the_one_reason(sockets: &HostRawSockets) -> &'static str {
     match sockets.counters().as_slice() {
@@ -83,6 +104,8 @@ const ICMP_SELECTOR: UpperLayerSelector = UpperLayerSelector::Icmp {
 };
 
 /// Checks that a payload under another protocol, or an upper layer Linux does not route a send by, is refused and counted.
+///
+/// The mobility header's case asks for a type other than its message's, whose length byte is that type.
 #[test]
 fn each_send_refusal_is_counted_under_its_reason() {
     wcontainers_raw_sockets_conformance::enter_network_namespace();
@@ -119,10 +142,20 @@ fn each_send_refusal_is_counted_under_its_reason() {
         routing_header: None,
         upper_layer: selected(EXPERIMENT),
     };
+    let mobility_route = Ipv6RouteSelectors {
+        upper_layer: UpperLayer {
+            protocol: IpNumber::MOBILITY_HEADER,
+            selector: Some(UpperLayerSelector::MobilityHeader(MobilityHeaderType(
+                BINDING_UPDATE[MOBILITY_HEADER_LENGTH],
+            ))),
+        },
+        ..v6_route.clone()
+    };
     let cases = [
         (
             "other protocol",
             IpVersion::V4,
+            EXPERIMENT,
             RawPacket::Payload {
                 header: header(other_protocol),
                 payload: PAYLOAD,
@@ -131,6 +164,7 @@ fn each_send_refusal_is_counted_under_its_reason() {
         (
             "upper layer",
             IpVersion::V4,
+            EXPERIMENT,
             RawPacket::Payload {
                 header: header(selected_payload),
                 payload: PAYLOAD,
@@ -138,7 +172,26 @@ fn each_send_refusal_is_counted_under_its_reason() {
         ),
         (
             "upper layer",
+            IpVersion::V6,
+            IpNumber::MOBILITY_HEADER,
+            RawPacket::Payload {
+                header: IpHeaderFields::V6(Ipv6HeaderFields {
+                    route: mobility_route,
+                    hop_limit: None,
+                    path_mtu_discovery: PathMtuDiscovery::Want,
+                    local_fragmentation: LocalFragmentation::Allowed,
+                    fragment_mtu: None,
+                    hop_by_hop_options: None,
+                    routing_destination_options: None,
+                    destination_options: None,
+                }),
+                payload: &BINDING_UPDATE,
+            },
+        ),
+        (
+            "upper layer",
             IpVersion::V4,
+            EXPERIMENT,
             RawPacket::HeaderIncluded(HeaderIncludedPacket::V4 {
                 route: selected_payload,
                 reassembly: OutgoingReassembly::Allowed,
@@ -148,6 +201,7 @@ fn each_send_refusal_is_counted_under_its_reason() {
         (
             "upper layer",
             IpVersion::V6,
+            EXPERIMENT,
             RawPacket::HeaderIncluded(HeaderIncludedPacket::V6 {
                 route: v6_route,
                 packet: PAYLOAD,
@@ -155,9 +209,9 @@ fn each_send_refusal_is_counted_under_its_reason() {
         ),
     ];
     let mut reasons: Vec<(&str, &str)> = Vec::new();
-    for (kind, version, packet) in cases {
+    for (kind, version, protocol, packet) in cases {
         let sockets = HostRawSockets::new().unwrap();
-        let socket = sockets.open(version, EXPERIMENT, UserId(u32::MIN)).unwrap();
+        let socket = sockets.open(version, protocol, UserId(u32::MIN)).unwrap();
         assert_eq!(
             sockets.send_to(&socket, packet, plain_fields()),
             Err(SendError::Host(HostError::NotSupported)),

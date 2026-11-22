@@ -4,6 +4,7 @@
 use etherparse::IpNumber;
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets::IcmpSockets;
+use wcontainers_icmp_sockets_conformance::{PAD_N, PADDED};
 use wcontainers_icmp_sockets_host::HostIcmpSockets;
 use wcontainers_internet_protocol::{
     IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpVersion, Ipv6HeaderFields,
@@ -30,13 +31,6 @@ fn an_empty_ping_group_range_refuses_the_socket() {
         );
     }
 }
-
-/// The option that pads an IPv6 extension header by its length.
-///
-/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
-const PAD_N: u8 = 1;
-/// How many bytes PadN pads after its type and length in the smallest extension header.
-const PADDED: u8 = 4;
 
 /// Returns the one reason a value counted once, failing if it counted anything else.
 fn the_one_reason(sockets: &HostIcmpSockets) -> &'static str {
