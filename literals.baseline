@@ -22540,37 +22540,24 @@ restated	crates/abi/registers.rs	int	tests::layout_is_fixed	256
 restated	crates/executor/implementation/unicorn/backend/src/main.rs	str	listen	"wc-backend: {error:?}"
 restated	crates/executor/implementation/unicorn/backend/src/main.rs	str	main	"wc-backend [--cached] listen <directory> | mount <directory> <mount point> <command>..."
 restated	crates/executor/implementation/unicorn/backend/src/main.rs	str	mount	"wc-backend: {error:?}"
-restated	crates/executor/implementation/unicorn/ltp.rs	str	tests::results_lines_round_trip	"page residency not tracked"
-restated	crates/executor/implementation/unicorn/ltp.rs	str	tests::results_lines_round_trip	"proc entry not built"
-restated	crates/executor/implementation/unicorn/ltp.rs	str	tests::results_lines_round_trip	"proc entry not built"
-restated	crates/executor/implementation/unicorn/tests/backend.rs	int	backend_notices_are_handled	400
 restated	crates/executor/implementation/unicorn/tests/backend.rs	str	messages_per_call	"none"
 restated	crates/executor/implementation/unicorn/tests/boundary.rs	str	tree	"none"
 restated	crates/executor/implementation/unicorn/tests/busybox.rs	str	system	"env"
 restated	crates/executor/implementation/unicorn/tests/dispatch.rs	int	numbers_above_linux_calls_match_reference	1000
 restated	crates/executor/implementation/unicorn/tests/dispatch.rs	str	numbers_above_linux_calls_match_reference	"1000"
-restated	crates/executor/implementation/unicorn/tests/dispatch.rs	str	numbers_in_gaps_match_reference	"400"
 restated	crates/executor/implementation/unicorn/tests/dispatch.rs	str	program	"syscall"
 restated	crates/executor/implementation/unicorn/tests/faults.rs	str	faults_match_reference	"none"
 restated	crates/executor/implementation/unicorn/tests/filter.rs	str	filters_match_reference	"trap"
 restated	crates/executor/implementation/unicorn/tests/limits.rs	str	limits_match_reference	"memory"
-restated	crates/executor/implementation/unicorn/tests/lockwaits.rs	str	lock_waits_match_reference	"proc fields not tracked"
 restated	crates/executor/implementation/unicorn/tests/memory.rs	str	memory_matches_reference	"memory"
 restated	crates/executor/implementation/unicorn/tests/memory.rs	str	memory_matches_reference	"none"
 restated	crates/executor/implementation/unicorn/tests/outside.rs	int	clients	300
 restated	crates/executor/implementation/unicorn/tests/python.rs	int	system_program_matches_reference	4_000
-restated	crates/executor/implementation/unicorn/tests/script.rs	int	scripts_match_reference	0o755
-restated	crates/executor/implementation/unicorn/tests/splice.rs	str	splicing_matches_reference	"vmsplice pages copied"
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	CODE	0x10000
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	exits_are_exact	1_000_000
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	permissions_change_while_running	0x10000
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	unaligned_exclusive_is_reported_as_unsupported	0x20000
-restated	crates/executor/implementation/unicorn/tests/threads.rs	str	clone_sharing_matches_reference	"proc fields not tracked"
-restated	crates/executor/implementation/unicorn/tests/threads.rs	str	priority_inheriting_futexes_match_reference	"proc fields not tracked"
-restated	crates/executor/implementation/unicorn/tests/threads.rs	str	proc_task_matches_reference	"proc fields not tracked"
-restated	crates/executor/implementation/unicorn/tests/threads.rs	str	thread_credentials_match_reference	"proc fields not tracked"
 restated	crates/executor/implementation/unicorn/tests/timers.rs	int	wall_clock_setting_moves_its_timers::TWO_HOURS	1_000_000_000
-restated	crates/executor/implementation/unicorn/tests/unknown.rs	int	ones_not_built_are_counted	1039
 restated	crates/executor/implementation/wasmtime/implementation.rs	int	tests::a_compiler_copied_by_fork_is_dropped_there	400u32
 restated	crates/executor/implementation/wasmtime/tests/fork.rs	int	HEAP	0x40_0000
 restated	crates/executor/implementation/wasmtime/tests/fork.rs	int	SHOWN	0x80_0000
