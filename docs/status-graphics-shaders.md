@@ -35,7 +35,74 @@ item stays open until one of them comes.
 G6 (the rest of the gap list), given on 2026-11-22 as its run 1 (run 80, the section below):
 G6b's check's findings settled or recorded, A4's `combine` drawn for single-sample targets, and
 subnormal tessellation factors kept on the DXBC route. Run 2 (run 81, the section below): A28's
-first part, `A8Unorm` storage views, built and drawn. Not complete: the gap list below.
+first part, `A8Unorm` storage views, built and drawn. Run 3 (run 82, the section below): A4's
+`SwizzledDepth` measured on real Direct3D 12 and settled where the devices agree, gathers of a
+depth texture's other components on both routes. Not complete: the gap list below.
+
+## G6 run 3 (run 82): mapped depth views measured on Direct3D 12, depth gathers
+
+Logs and scripts in scratch `graphics-shaders/g6-r82` (clone `tip`, `gpu.sh`, `gpu-noclippy.sh`,
+`tree-tar.sh`, `suite-laptop.sh`; jobs `job1.log` to `job6.log`).
+- A4's `SwizzledDepth` (the Direct3D 12 front's ask) measured: tests/shadow_draw.rs now draws real
+  Direct3D 12 (`direct3d12`: an R16 depth resource read through an R16_UNORM view with
+  `Shader4ComponentMapping`, static point samplers) on the RTX 3080 and on WARP, for every program
+  reading a depth view (`MAPPED_SHADERS`: whole, first component, gathers of each component,
+  comparison gathers of each), 12 mappings, `Less` and `Greater`, both routes. What the devices do
+  through a mapping (job4.log, job5.log):
+  - Plain reads and gathers of component c give the mapped c-th component of (depth, 0, 0, 1): the
+    RTX 3080 so, and vkd3d's tests expect so. WARP instead applies the mapping to a gather's four
+    results as if they were one texel (GatherAlpha through `0r00` gives (0, 1, 0, 0)), even for a
+    red gather with red kept; taken as a WARP fault, not followed.
+  - A plain comparison through a mapping whose first component is zero or one gives that constant
+    whatever the function, on both devices. Through green, blue or alpha the RTX 3080 gives their
+    constant (0, 0, 1) while WARP compares the depth: they disagree.
+  - A comparison gather of component c: the RTX 3080 compares the depth whatever c, then maps each
+    result by the mapping's first component (as vkd3d's gather-cmp test says of NVIDIA); vkd3d's
+    expectations compare the mapped c-th component. They agree only where both components are red.
+- Built (src/variant/swizzle.rs, `depth_mapped`): every read the devices agree on converts (a
+  gather or depth-alone read through a constant becomes the constant; a plain comparison through
+  zero or one becomes the constant); the rest is refused by name, `SwizzledDepth` through a
+  mapping, `DepthGatherComponent` for a comparison gather of another component through none.
+- Gathers of a depth texture's green, blue and alpha (refused `DepthGatherComponent` on both routes
+  before) now convert, plain ones to their default constant, comparison ones where the mapping
+  keeps red in both places. The pass runs for such gathers without a mapping too.
+- Found and fixed: the DXIL route converted `GatherCmpGreen`, `Blue` and `Alpha` as red comparison
+  gathers without a word, because dxil-spirv drops the call's channel (its dxil_sampling.cpp,
+  "TextureGatherCmp has a component here"). cpp/dxil.cpp now reads each `TextureGatherCmp` call's
+  channel from the bitcode (`compared_gather_channels`), and src/dxil/depth.rs gives it to the
+  comparison gathers (`compared_gathers`); a program whose calls name different channels, or one
+  not constant, is refused by name (`DepthGatherComponent`; no file of any corpus).
+- Tests: `depth_views_with_component_mappings_read_as_direct3d_12_maps_them` (default seeds 1 to
+  4: 640 drawn comparisons equal to the RTX 3080 in every texel, 704 refusals with the expected
+  name, WARP printed beside), `depth_views_with_component_mappings_read_as_mapped` (now the three
+  red-keeping mappings against Direct3D 11 mapped on the CPU), and in tests/variants.rs
+  `mapped_depth_views_compose_what_they_read` and
+  `depth_gathers_of_other_components_convert_where_exact`. New own programs in
+  tests/own/shadow.hlsl: `ps_shadow_gathers` and `ps_shadow_compared_red` to `_alpha`, fxc and dxc.
+- The test harness binds by register: a DXIL program's slots rank the registers it declares, so a
+  program declaring only `s1` has it at slot 0.
+- Records: own and own DXIL gain the five new programs each (the green, blue and alpha comparison
+  gathers `DepthGatherComponent`, the rest converting, GLSL compiling); runner DXIL's
+  `gather-cmp-3` to `-7` go from a wrong conversion to `DepthGatherComponent`, as on DXBC. Every
+  other record holds.
+
+Runs (code at 5d618f15, from the scratch clone):
+- Desktop (RTX 3080, GPU jobs one at a time, 3 cargo jobs): Windows clippy of this crate with
+  warnings denied clean; `shadow_draw` (the test above, 544 comparisons and 800 refusals at the
+  last rule before blue was added, then 640 and 704 with it at job5 before the green and blue rule
+  was tightened; at job6 on the final rule 544 drawn comparisons 0 failed, 800 refusals named as
+  expected), `variant_draw` (1,358 comparisons, 0 failed, 96 known anisotropic), `filter_draw`,
+  `rewrite`: passed (job6.log; its one variants failure was the new test's own wrong mapping,
+  fixed and passed on the laptop).
+- Laptop (i7-8750H, load 4 to 5): the whole CPU suite with every corpus and glslang 8.13
+  (`suite-laptop.sh`, `--skip mutated --skip damaged_records_decode_without_a_panic`): every test
+  passed but the own and runner DXIL records before they were updated; after: `corpus` 13 passed,
+  `variants` 39 passed, `rewrite` 12 passed (logs/suite-r82b.log, suite-r82c.log there).
+- x86 machine (load 17 to 27, other tracks' jobs beside): rustfmt clean, clippy of this crate and
+  the interface with warnings denied clean, the literal check prints only the line this run's
+  baseline commit deletes (it fails on other tracks' lines); baseline lines of this crate 4,786.
+- Not run: WebAssembly (cpp/dxil.cpp gained a reader using only the bitcode parser it already
+  used), Chrome (no new WGSL beyond the own programs, whose GLSL compiles), the whole GPU suite.
 
 ## G6 run 2 (run 81): `A8Unorm` storage views
 
@@ -265,6 +332,13 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- Run 82: depth views with component mappings measured on real Direct3D 12 (RTX 3080 and WARP)
+  and converted wherever the devices agree; where they disagree (a comparison through a moved red
+  source) it stays refused by name, as the RTX 3080 and WARP give different answers and vkd3d's
+  tests a third. The DXIL route converted comparison gathers of green, blue and alpha as red
+  without a word (dxil-spirv drops the channel); it now reads the channel from the bitcode and
+  converts or refuses as the DXBC route does. No interface change.
+
 - Run 81: `A8Unorm` storage views convert and store as Direct3D 11 does (A28's first part), for
   the Direct3D 11 front. The WebGPU back end still declares no storage use of `A8Unorm`. No
   interface change.
@@ -478,7 +552,7 @@ The pass bar, item by item:
    WebGL 2 track to export). Takes: the constant exported and added to `DIRECTIVES`.
 3. Each variant field and flag of 6.4 has a test showing the rewritten program's result equals the
    unrewritten one's with the native feature, or real Direct3D's picture. Met for every field and
-   flag but three, for `swizzled` but one case, and for `targets_in_shader`'s `combine` but
+   flag but three, for `swizzled` but the comparisons the devices disagree on, and for `targets_in_shader`'s `combine` but
    multisampled targets (gap A4; `combine` drawn since run 80). Where each is tested (drawn on the RTX 3080; test binaries of
    `crates/wcontainers-shaders/tests`):
    - `variant_draw` (`variants_draw_as_the_native_feature_does` unless named): `CLIP_DEPTH_REWRITE`
@@ -619,19 +693,16 @@ The gap list (every item of the pass bar not met):
     (its status: "Blending into integer twins (`BlendInShader`) once the shaders crate builds
     `combine`") and do logic operations ("How the Direct3D fronts call `convert`"). Takes, for
     the rest: every sample's old value from a multisampled copy, and its drawn test.
-  - `swizzled` on a depth texture (`SwizzledDepth`, src/variant/swizzle.rs, `depth_mapped` and
-    `swizzled`): a texture the program compares against, gathers from or reads as its depth alone,
-    whose view's component mapping moves red off the first component (a plain read of such a
-    texture takes any mapping since run 38, and a mapping keeping red first is exact); also any
-    mapping on a texture slot the program declares as neither sampled nor depth. Cause: a
-    comparison, a gather of a depth texture and a read used as its depth alone take the first
-    component; whether Direct3D applies the mapping before comparing was not measured, so no
-    rewrite was chosen. Waits: the Direct3D 12 front, from its shader runner (its status, "Asked of
-    other tracks": "`SwizzledDepth` moving red"; Godot's 3D platformer on Direct3D 12 met it before
-    run 38 took plain reads). Takes: real Direct3D 11 and 12 drawn with a depth view mapped
-    (red to green, red to a constant) and compared and gathered, to learn which value the mapping
-    gives, then that value composed before the comparison (or after it), and a drawn test against
-    it (`shadow_draw`'s `depth_views_with_component_mappings_read_as_mapped` is the place).
+  - `swizzled` on a depth texture (`SwizzledDepth`, src/variant/swizzle.rs `depth_mapped`):
+    measured on real Direct3D 12 in run 82 (its section). Met, drawn equal to the RTX 3080: plain
+    reads, gathers of any component and reads used as the depth alone through any mapping, and
+    comparisons through mappings whose first component is red, zero or one (comparison gathers:
+    red in the first and the gathered component). Refused by name, as the RTX 3080, WARP and
+    vkd3d's tests disagree there: a plain comparison through green, blue or alpha, and a
+    comparison gather otherwise; also any mapping on a texture slot the program declares as
+    neither sampled nor depth. Waits: the Direct3D 12 front's runner (vkd3d's gather-cmp files
+    3 to 7 map `0r00`-like views, refused); no real program seen. Takes: a device that settles
+    the disagreement (an AMD or Intel GPU's Direct3D 12), then the rule it gives.
 - A5. The stage helper on WebGL 2 (plan section 7). Geometry shaders run there since run 52
   (`stage::GeometryReplay`, `SlowPath::GeometryAsReplay`, drawn equal to Direct3D 11 on ANGLE).
   Indexed strips run there since run 54 (listed on the host from their indices read back).
@@ -1349,7 +1420,9 @@ G6a run 5's tip):
   `RenderTargetArrayIndex` 5 and `ViewportArrayIndex` 2 (written by a vertex shader).
 - Converting once the front gives the key its value: `SampleCount` 16 (`samples`),
   `MultisampledArrayTexture` 5 (`texture_layers`), `UnboundedResourceArray` 4 (`register_ranges`).
-- In "Also open": `DepthGatherComponent` 5; `CalculateLevelOfDetail` 4 (DXBC) and the reader's
+- In "Also open": `DepthGatherComponent` 10 (vkd3d's `gather-cmp-3` to `-7`, DXBC and, since
+  run 82, DXIL; A4's `swizzled`) and own 6 (expected: the comparison gathers of green, blue and
+  alpha without a mapping); `CalculateLevelOfDetail` 4 (DXBC) and the reader's
   "unsupported instruction ImageQueryLod" 4 (DXIL); `SparseFeedback` 3 (DXBC) and the reader's
   "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
   `SampleClamp` 2 (DXBC) and the reader's "image sample operand 0x80" 2 (DXIL, the same minimum
@@ -1361,8 +1434,7 @@ G6a run 5's tip):
 ## Next
 
 1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
-   view's width for YUY2), A4's `SwizzledDepth`
-   (the Direct3D 12 front's runner: real Direct3D 12 drawn with mapped depth views first), A5's
+   view's width for YUY2), A5's
    geometry replay streams past the first and A17's aliased lines into multisampled targets (the
    Direct3D 11 front's asks), A4's multisampled `combine`, A9, A7, A1, the DXIL route's
    `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches).
@@ -1529,6 +1601,11 @@ G6a run 5's tip):
 
 ## How the Direct3D fronts call `convert`
 
+- Views of depth textures with a component mapping (Direct3D 12's `Shader4ComponentMapping`; since
+  run 82 measured on real Direct3D 12): name `(slot, mapping)` in `swizzled`. Every read converts
+  but comparisons through a first component of green, blue or alpha and comparison gathers whose
+  gathered or first component is not red, which are `SwizzledDepth` (`DepthGatherComponent`
+  without a mapping). A program's slots on the DXIL route rank the registers it declares.
 - `A8_UNORM` typed unordered access views (since run 81): hold the texture as `Rgba8Unorm` with the
   value in alpha and the colour channels zero (as the WebGPU back end holds `A8Unorm`), bind its
   `Rgba8Unorm` view, and name `(slot, Format::A8Unorm)` in `storage_formats`; stores write alpha
