@@ -221,6 +221,14 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KA, sixteenth run: three test literals in this track's embedders became `restated` findings when
+  other tracks named the same value (docs/literals.md rule 8), and none is the named fact:
+  hardware-virtualization-inside container.rs `"/bin"` (the stand-in's `IMAGE_BINARIES`, which that
+  crate may not depend on, Unicorn being GPL), host.rs `"warn"` (the translator's `HOOK_WARN`), and
+  the stand-in's tests/outside.rs `TOLD_AFTER_RESET` of 300 ms (the system interface's
+  `FIRST_TASK_ID_AFTER_WRAPPING`). Left as they are, not added to the baseline; a ruling is needed
+  on whether such a coincidence is renamed, marked or left.
+
 - KA, eleventh run: of the open items the readiness notice listed, two are settled for this
   track. The tests of wcontainers-executor-hardware-virtualization build again (319a0326, two test
   files, the smallest change; see "KA, eleventh run"). `StreamTransport` has implementations: the
@@ -358,6 +366,14 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, sixteenth run: every finding of KA's second independent check is fixed or answered: an
+outside connection shut for reading still queues and reads what its peer sends (a test that failed
+before), a pull that finds nothing allocates nothing and a queued packet holds only its bytes, the
+saving test counts only the save moments its run reached (12 seeds pass), the hardware embedder's
+inside hears a partial or refused send, and the two suite checks that could not fail now check
+something. The outside socket read is now faster than at the milestone's start. See "KA, sixteenth
+run". KA is complete under the rulings of 2026-11-22 and goes back to its independent check.
 
 KA, fifteenth run: every finding of KA's independent check is dealt with: zero allocations per
 waiting call (answers come back in kept buffers; tests through the real backend and lookup calls),
@@ -701,6 +717,82 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, sixteenth run
+
+Started about 16:15 UTC on 2026-11-22 at c9ad0b71, with the findings of KA's second independent
+check. Everything built and ran on the ARM64 machine; the Mac only edited, formatted single files
+and committed. Scratch kernel/kb1 (check.sh, check2.sh, ab.sh, literals.sh; the whole suite is
+ka11/suite.sh). The task named the milestone K6c, whose bar was met in its twenty-first run; the
+findings were KA's, so this run is KA's.
+
+The check's findings, each dealt with:
+- SHUT_RD on an outside connection (minor): the pull stopped at the guest's own read shutdown, so
+  bytes the peer sent after it were never queued and a read got 0 where Linux reads them. Now it
+  stops only once the peer's end was read (`done`) or the connection is closed, as Linux queues
+  data after SHUT_RD (outside.rs `pull`). Test: stand-in tests/outside.rs
+  `bytes_after_a_read_shutdown_are_read` (guest shutread.c, against an echoing server): failed on
+  the tree before the fix (`ours "echoed after shutdown: 0 "`, `theirs "echoed after shutdown: 2
+  bc"`, scratch kb1/ab.log) and passes after.
+- The pull's buffer (minor): each pass allocated and zero-filled up to 64 KiB, thrown away when
+  the system had nothing, and a queued packet kept that whole capacity. Now every pull receives
+  into one buffer the kernel keeps (`Outside::received`, at most 64 KiB plus a datagram's headers,
+  zero-filled once) and a queued packet is a copy of just the bytes received. A pull that finds
+  nothing allocates nothing.
+- The outside socket read slower than at the milestone's start (minor, a note): measured again
+  with the fix, below; it is now the fastest of the three trees.
+- The saving test's seeds (minor): it asserted all 8 saves while the driver saves only at moments
+  the run reaches, so seed 7 of unixsock, which ends before its eighth moment, failed. The driver
+  now gives the moments (`driver::save_moments`, the one place they are drawn) and the test
+  asserts a save at every moment at or before the run's last turn, and at least one.
+  `SAVING_SEEDS=12` passes (job kernel/20261122-162431-1796866, kb1/check.log).
+- The hardware embedder's inside lost a partial send (minor): the `Output` request now answers
+  `Sent` (bytes taken, or the refusal: would block, closed, not supported, or an error number),
+  which the inside's `send_stream` returns, so the kernel retries or reports as the monitor's host
+  says. The inside's readiness still says writable at once (the link has no wait), so a send the
+  monitor's host takes less of is tried again at once. Test: host.rs
+  `a_send_ends_as_the_monitors_host_says`.
+- The literal lines of the interface's files (minor): unchanged, For the owner. The literal check
+  now runs on the ARM64 machine from a git bundle of branch agents cloned there (kb1/literals.sh),
+  results below.
+- Suite checks that could not fail (minor): `state_stays_in_one_place` is now
+  `state_keeps_what_is_put_in` (the embedder puts a value in the process's state, writes, reads and
+  watches its memory and sends it SIGCONT, and reads the value back; the suite's kernel now holds a
+  `u64` per process), and the memory id is checked to stay the same across a write instead of
+  against itself. `suspend_no_tasks` and `resume_no_tasks` still pass only empty input: a kernel's
+  checks cannot name a task (For the owner).
+- Dropped waiting calls (minor, no fault found): nothing to fix; a restore onto another system is
+  still not exercised (Departures).
+
+Tests at the tip (ARM64 machine): clippy with warnings denied and fmt for wcontainers-abi,
+wcontainers-kernel-linux, wcontainers-kernel-conformance, wcontainers-executor-unicorn and
+wcontainers-executor-hardware-virtualization-inside passed; the inside's host tests 2 passed; the
+kernel lib 17 and its conformance suite 14 passed; the stand-in's round_trips 3 and outside 7
+passed; saving with 12 seeds passed (16:24 to 16:29 UTC, load 4 to 8; and again at a1c69571,
+check2.log). Not run, by the rulings of 2026-11-22: the Mac's part of the suite and the linter.
+
+The literal check at a1c69571 (kb1/literals4.log): exits 1, as it did before this run, on lines
+of other tracks' crates and of the interface's files. In this track's crates three findings are
+left, each a test literal of this track's embedders that now equals a constant another track added
+(docs/literals.md rule 8): hardware-virtualization-inside container.rs `"/bin"` (the stand-in's
+`IMAGE_BINARIES`) and host.rs `"warn"` (the translator's `HOOK_WARN`), and the stand-in's
+tests/outside.rs `TOLD_AFTER_RESET` 300 ms (the system interface's
+`FIRST_TASK_ID_AFTER_WRAPPING`). The baseline lost 13 stand-in lines whose literals are gone
+(ef0a6cb7), and the outside pull's lines keep their function's name.
+
+Measurements (ARM64 machine, kb1/ab.sh and ab.log: tests/waitcost.rs in release, at the
+milestone's start e5d693d2, before this run's fix c9ad0b71 and after it, in turn three times each,
+16:31 to 16:38 UTC, load 1.7 to 7.4 on 96 cores; median of 9 per kind, ns per repetition;
+allocations are the whole test process's per repetition):
+- outside socket read: start 14542, 16268, 15574; before the fix 14415, 16306, 16158; after
+  12771, 15303, 15223. Allocations 79.0 at start and before, 77.0 after.
+- pipe ping-pong: start 11901, 12187, 11877; before 12224, 12030, 12256; after 12394, 12371,
+  12325 (no change in the pipe's code this run; the 2 to 4 percent is the code generation the
+  release-profile ruling accepts). 142 allocations all.
+- backend open and read: start 495475, 510704, 548327; before 513188, 528900, 523198; after
+  499567, 530577, 533140; allocations 348 at start, 294 since.
+- name lookup: start 136956, 136975, 136824; before 139834, 139256, 139314; after 139837,
+  139938, 139730; allocations 711 at start, 708 since.
 
 ## KA, fifteenth run
 
@@ -4597,7 +4689,12 @@ Everything a reviewer should know about what is not compared, in one place.
   drops the backend's (Departures, first item). From the fifteenth run, zero allocations per
   waiting call is shown by the kernel's own tests through the real backend and lookup calls
   (`cargo test -p wcontainers-kernel-linux --lib allocates_nothing`); waitcost's counts are the
-  whole test process's, kernel and test host together, per repetition of a guest program.
+  whole test process's, kernel and test host together, per repetition of a guest program. From the
+  sixteenth run: the literal check needs git history, which arm-run's copy lacks, so scratch
+  kb1/literals.sh sends branch agents as a git bundle and checks a clone of it there (it exits 1
+  on other tracks' lines; this track's are listed in "KA, sixteenth run"); `SAVING_SEEDS` may be
+  raised past 6 (12 pass); the measurements are kb1/ab.sh (start, before the sixteenth run's fix,
+  after).
 
 - K6c: the bar is the LTP verdicts (`ltp ours` then `ltp compare` against
   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv, the reference run once at load 20 to
