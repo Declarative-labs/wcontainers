@@ -113,6 +113,16 @@ ARM64 machine (`arm-run <checkout> --name graphics-shaders`), none on the Mac.
   672, 0 failed; every geometry case 0 texels apart from Direct3D 11.
 - Literals: the new files add no finding of this crate (one `position` name restating a stage
   constant was renamed before the commit).
+- The whole suite at 3565e4bf: desktop (RTX 3080, one GPU job, one test thread, 3 cargo jobs): 25
+  test binaries, 185 passed, 0 failed, 6 ignored as before (gpu-suite.log). Laptop (load 0 to 5.7,
+  4 jobs): `corpus` 13 passed with every corpus and glslang, `fuzz` 3 (the mutation test skipped
+  as before), `glsl_writer` 11 (`logs/suite-r88.log` there); its `out-r88` differs from `out-r87`
+  only in the converter version, the cache keys and the logs' paths, so no converted module of a
+  corpus changed and Chrome had nothing new to compile. WebAssembly not run (no module changed).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip` and `C:\wc\target\shaders-tip`, the laptop's
+  `src/shaders-tip`, `target/shaders-tip` and tar (its `out-r88` and log kept), the scratch clone
+  and tar (logs kept in `g6-r88`). The ARM64 machine's `/work/target/graphics-shaders` is kept
+  (the machine's own build folder for this track).
 
 ## G6 run 8 (run 87): arrays of constant and structured buffers on the DXIL route, dxc's `vs_cull` drawn
 
@@ -3265,6 +3275,15 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 88's scripts in scratch `graphics-shaders/g6-r88` are run 87's with its folder and the clone
+  `tip` (updated with `git fetch <checkout> agents && git reset --hard FETCH_HEAD` inside it):
+  `gpu.sh`, `tree-tar.sh`, `suite-laptop.sh` (copied to `~/wcontainers-graphics/suite-r88.sh`,
+  writing `out-r88`). Builds, clippy and the CPU test binaries ran on the rented ARM64 machine
+  instead of the x86 one: `arm-run <checkout> --name graphics-shaders -- '<cargo command>'`
+  (orchestrator's `cloud/arm-run`; it copies the shared worktree as it is, other tracks' edits
+  included). The literal check needs a git repository: in that copy, `git init` and commit the
+  tree first, then read only this crate's lines (the copy also lists the converters' submodules'
+  insides, which the real checkout does not).
 - Run 79's scripts in scratch `graphics-shaders/g6b-r79` are run 78's with its folder and
   `out-r79`, plus `scenes.sh <n> [scenes]` (the Direct3D 12 rig scenes through the Direct3D 12
   front built from the clone `tip`), `gpu-noclippy.sh` (one GPU job of `geometry_draw` and
