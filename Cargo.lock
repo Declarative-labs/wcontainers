@@ -4535,6 +4535,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-instruction-input-domain"
+version = "0.1.0"
+dependencies = [
+ "itertools 0.14.0",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-instruction-input-domain-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-instruction-input-domain",
+]
+
+[[package]]
 name = "wcontainers-internet-protocol"
 version = "0.1.0"
 dependencies = [
