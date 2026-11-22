@@ -1,7 +1,7 @@
 use core::cell::RefCell;
 use core::cmp::Ordering;
 use core::mem::MaybeUninit;
-use core::num::NonZeroU16;
+use core::num::{NonZeroU16, NonZeroU32};
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -28,8 +28,8 @@ use wcontainers_route_resolver_host::HostRouteResolver;
 use crate::{HostIcmpSocket, HostIcmpSockets};
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
-    ErrorQueue, dropped_packets, note_packet_wish, receive_in_order, reports_requested,
-    send_message, unsent_bytes,
+    ErrorQueue, buffer_sizes, dropped_packets, note_packet_wish, receive_in_order,
+    reports_requested, send_message, unsent_bytes,
 };
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
@@ -79,6 +79,8 @@ pub(crate) struct SocketState {
     owner: UserId,
     /// The address an IPv6 socket is bound to, while it is one and no link-local scope binds the socket to its link.
     bound_source: Option<Ipv6Addr>,
+    /// The link a link-local address's scope binds an IPv6 socket to.
+    bound_link: Option<InterfaceIndex>,
 }
 
 const BOUND_ROUTE_ASKED: &str = "an ipv6 ping from a bound address by a bound interface, which linux's lookup with \
@@ -308,6 +310,7 @@ impl IcmpSockets for HostIcmpSockets {
                 drops: u32::MIN,
                 owner,
                 bound_source: None,
+                bound_link: None,
             }),
         })
     }
@@ -336,9 +339,11 @@ impl IcmpSockets for HostIcmpSockets {
         let bound = local_address(fd)?;
         if let SocketAddr::V6(bound) = bound {
             // Linux gives a scope only to a link-local address, whose link the bind holds the socket to.
-            socket.state.borrow_mut().bound_source = (!bound.ip().is_unspecified()
-                && bound.scope_id() == u32::MIN)
-                .then_some(*bound.ip());
+            let link = NonZeroU32::new(bound.scope_id()).map(InterfaceIndex);
+            let mut state = socket.state.borrow_mut();
+            state.bound_link = link;
+            state.bound_source =
+                (!bound.ip().is_unspecified() && link.is_none()).then_some(*bound.ip());
         }
         NonZeroU16::new(bound.port())
             .map(EchoIdentifier)
@@ -348,7 +353,7 @@ impl IcmpSockets for HostIcmpSockets {
     fn send_to(
         &self,
         socket: &Self::Socket,
-        header: IpHeaderFields<'_>,
+        mut header: IpHeaderFields<'_>,
         fields: IpSendFields,
         message: &[u8],
     ) -> Result<(), SendError> {
@@ -396,6 +401,14 @@ impl IcmpSockets for HostIcmpSockets {
                 header.route.upper_layer
             }
         };
+        // Linux refuses IPV6_UNICAST_IF on a socket bound to a link, which holds every send to that link anyway.
+        if let IpHeaderFields::V6(header) = &mut header
+            && let Some(InterfaceSelector::Bound(index) | InterfaceSelector::Requested(index)) =
+                header.route.interface
+            && socket.state.borrow().bound_link == Some(index)
+        {
+            header.route.interface = None;
+        }
         if !routes_by_the_message(&upper_layer, socket.protocol(), message) {
             return Err(self.refuse(UPPER_LAYER));
         }
@@ -476,17 +489,7 @@ impl IcmpSockets for HostIcmpSockets {
     }
 
     fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
-        let fd = socket.fd();
-        let socket2 = sock(&fd);
-        let send = socket2.send_buffer_size();
-        let receive = socket2.recv_buffer_size();
-        match (send, receive) {
-            (Ok(send), Ok(receive)) => Ok(BufferSizes {
-                send: ByteCount(send),
-                receive: ByteCount(receive),
-            }),
-            (Err(error), _) | (_, Err(error)) => Err(io_host_error(&error)),
-        }
+        buffer_sizes(socket.fd())
     }
 
     fn close(&self, socket: Self::Socket) {

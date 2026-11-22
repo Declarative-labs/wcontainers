@@ -1963,6 +1963,13 @@ pub fn icmp_type_and_code_select_the_route<S: IcmpSockets>(sockets: S) {
     }
 }
 
+pub fn select_interface(header: &mut IpHeaderFields<'_>, selector: InterfaceSelector) {
+    match header {
+        IpHeaderFields::V4(header) => header.route.interface = Some(selector),
+        IpHeaderFields::V6(header) => header.route.interface = Some(selector),
+    }
+}
+
 /// Checks that an interface, bound or requested, chooses among routes to a destination the one out of that link.
 pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
@@ -1981,10 +1988,7 @@ pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
         ] {
             let message = echo(version_of(to), PAYLOAD);
             let mut header = header_to(to, &message);
-            match &mut header {
-                IpHeaderFields::V4(header) => header.route.interface = Some(selector),
-                IpHeaderFields::V6(header) => header.route.interface = Some(selector),
-            }
+            select_interface(&mut header, selector);
             sockets
                 .send_to(&socket, header, plain_fields(), &message)
                 .unwrap_or_else(|error| panic!("{to} by {selector:?}: {error:?}"));
@@ -2034,11 +2038,7 @@ pub fn a_bound_interface_holds_a_ping_from_a_bound_address<S: IcmpSockets>(socke
         ] {
             let message = echo(version, PAYLOAD);
             let mut header = header_to(to, &message);
-            let selector = Some(InterfaceSelector::Bound(bound));
-            match &mut header {
-                IpHeaderFields::V4(header) => header.route.interface = selector,
-                IpHeaderFields::V6(header) => header.route.interface = selector,
-            }
+            select_interface(&mut header, InterfaceSelector::Bound(bound));
             match sockets.send_to(&socket, header, plain_fields(), &message) {
                 Ok(()) => assert_eq!(seen(&capture.echo_request()).destination, to),
                 Err(SendError::Host(HostError::NotSupported))
@@ -2051,6 +2051,116 @@ pub fn a_bound_interface_holds_a_ping_from_a_bound_address<S: IcmpSockets>(socke
             assert_eq!(elsewhere, None, "{to} by {bound:?} left by another link");
         }
     }
+}
+
+/// Checks that a requested interface holds an IPv4 ping from a bound address to its link, and only steers an IPv6 one.
+///
+/// Linux's IPv6 lookup with a source takes the interface a packet asks for only when no better route leaves by another,
+/// so that ping leaves by the preferred link.
+pub fn a_ping_from_a_bound_address_takes_a_requested_interface_as_linux_does<S: IcmpSockets>(
+    sockets: S,
+) {
+    enter_network_namespace();
+    ip(NETWORK);
+    ip(TWO_ROUTES);
+    let second = index(SECOND);
+    let first_capture = Capture::on(DUMMY);
+    let second_capture = Capture::on(SECOND);
+    for (to, address, capture, other) in [
+        (
+            IpAddr::V4(NOWHERE),
+            EchoBindAddress::V4(LOCAL),
+            &second_capture,
+            &first_capture,
+        ),
+        (
+            IpAddr::V6(NOWHERE_V6),
+            EchoBindAddress::V6 {
+                address: LOCAL_V6,
+                scope: None,
+            },
+            &first_capture,
+            &second_capture,
+        ),
+    ] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        let binding = EchoBinding {
+            address,
+            identifier: LocalIdentifier::ChosenByExitNode,
+            sharing: IdentifierSharing::Exclusive,
+        };
+        sockets
+            .bind(&socket, binding)
+            .expect("the socket binds to its address");
+        let message = echo(version, PAYLOAD);
+        let mut header = header_to(to, &message);
+        select_interface(&mut header, InterfaceSelector::Requested(second));
+        sockets
+            .send_to(&socket, header, plain_fields(), &message)
+            .unwrap_or_else(|error| panic!("{to} by the second link: {error:?}"));
+        assert_eq!(seen(&capture.echo_request()).destination, to);
+        let elsewhere = other.within(QUIET, |packet| {
+            is_echo_request(packet) && seen(packet).destination == to
+        });
+        assert_eq!(elsewhere, None, "{to} also left by the other link");
+    }
+}
+
+/// Checks that a socket its scoped link-local address binds to a link sends a ping naming that link, and refuses another.
+pub fn a_link_local_bind_takes_pings_by_its_link_and_refuses_another<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    ip(TWO_ROUTES);
+    ip(LINK_LOCAL_ON_SECOND);
+    let second = index(SECOND);
+    let first_capture = Capture::on(DUMMY);
+    let second_capture = Capture::on(SECOND);
+    let socket = opened(&sockets, IpVersion::V6);
+    let binding = EchoBinding {
+        address: EchoBindAddress::V6 {
+            address: LINK_LOCAL,
+            scope: Some(second),
+        },
+        identifier: LocalIdentifier::ChosenByExitNode,
+        sharing: IdentifierSharing::Exclusive,
+    };
+    sockets
+        .bind(&socket, binding)
+        .expect("the socket binds to its link-local address");
+    let to = IpAddr::V6(NOWHERE_V6);
+    let message = echo(IpVersion::V6, PAYLOAD);
+    let first = index(DUMMY);
+    for selector in [
+        InterfaceSelector::Bound(second),
+        InterfaceSelector::Requested(second),
+    ] {
+        let mut header = header_to(to, &message);
+        select_interface(&mut header, selector);
+        sockets
+            .send_to(&socket, header, plain_fields(), &message)
+            .unwrap_or_else(|error| panic!("by {selector:?}: {error:?}"));
+        let request = second_capture.echo_request();
+        assert_eq!(seen(&request).destination, to);
+        assert_eq!(seen(&request).source, IpAddr::V6(LINK_LOCAL));
+    }
+    // Linux refuses a packet that names another link than the socket's, as `IPV6_PKTINFO` or `IPV6_UNICAST_IF`.
+    for selector in [
+        InterfaceSelector::Bound(first),
+        InterfaceSelector::Requested(first),
+    ] {
+        let mut header = header_to(to, &message);
+        select_interface(&mut header, selector);
+        assert_eq!(
+            sockets.send_to(&socket, header, plain_fields(), &message),
+            Err(SendError::Host(HostError::Errno(libc::EINVAL))),
+            "by {selector:?}"
+        );
+    }
+    let elsewhere = first_capture.within(QUIET, |packet| {
+        is_echo_request(packet) && seen(packet).destination == to
+    });
+    assert_eq!(elsewhere, None, "a ping left by the first link");
 }
 
 /// Checks that a link-scope send takes a destination on the link and refuses one through a gateway.
@@ -3890,6 +4000,16 @@ macro_rules! tests {
         #[test]
         fn a_bound_interface_holds_a_ping_from_a_bound_address() {
             $crate::a_bound_interface_holds_a_ping_from_a_bound_address($value);
+        }
+
+        #[test]
+        fn a_ping_from_a_bound_address_takes_a_requested_interface_as_linux_does() {
+            $crate::a_ping_from_a_bound_address_takes_a_requested_interface_as_linux_does($value);
+        }
+
+        #[test]
+        fn a_link_local_bind_takes_pings_by_its_link_and_refuses_another() {
+            $crate::a_link_local_bind_takes_pings_by_its_link_and_refuses_another($value);
         }
 
         #[test]

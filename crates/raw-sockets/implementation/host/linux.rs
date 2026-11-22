@@ -29,7 +29,8 @@ use wcontainers_route_resolver_host::HostRouteResolver;
 use crate::{HostRawSocket, HostRawSockets};
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
-    ErrorQueue, note_packet_wish, receive_in_order, reports_requested, send_message, unsent_bytes,
+    ErrorQueue, buffer_sizes, note_packet_wish, receive_in_order, reports_requested, send_message,
+    unsent_bytes,
 };
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
@@ -563,17 +564,7 @@ impl RawSockets for HostRawSockets {
     }
 
     fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
-        let fd = socket.fd();
-        let socket2 = sock(&fd);
-        let send = socket2.send_buffer_size();
-        let receive = socket2.recv_buffer_size();
-        match (send, receive) {
-            (Ok(send), Ok(receive)) => Ok(BufferSizes {
-                send: ByteCount(send),
-                receive: ByteCount(receive),
-            }),
-            (Err(error), _) | (_, Err(error)) => Err(io_host_error(&error)),
-        }
+        buffer_sizes(socket.fd())
     }
 
     fn close(&self, socket: Self::Socket) {

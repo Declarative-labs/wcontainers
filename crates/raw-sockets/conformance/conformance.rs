@@ -1455,26 +1455,33 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         .expect("the payload is sent");
         capture.next(|packet| seen(packet).destination == IpAddr::V6(nowhere.destination));
     }
-    // From a source Linux's lookup only prefers a requested interface: a bound one is held, or the send refused.
+    // From a source Linux's lookup only prefers a requested interface, so the first link's better route takes the
+    // payload; a bound one is held, or the send refused.
     let first = index(DUMMY);
-    for (bound, by, other) in [
-        (first, &capture, &second_capture),
-        (second, &second_capture, &capture),
+    for (selector, by, other) in [
+        (
+            InterfaceSelector::Requested(second),
+            &capture,
+            &second_capture,
+        ),
+        (InterfaceSelector::Bound(first), &capture, &second_capture),
+        (InterfaceSelector::Bound(second), &second_capture, &capture),
     ] {
         let to_nowhere =
             |packet: &[u8]| seen(packet).destination == IpAddr::V6(nowhere.destination);
         match sent(Ipv6RouteSelectors {
             source: Some(LOCAL_V6),
-            interface: Some(InterfaceSelector::Bound(bound)),
+            interface: Some(selector),
             ..nowhere.clone()
         }) {
             Ok(()) => {
                 by.next(to_nowhere);
             }
-            Err(SendError::Host(HostError::NotSupported)) if bound == second => {}
-            refused => panic!("from {LOCAL_V6} by {bound:?}: {refused:?}"),
+            Err(SendError::Host(HostError::NotSupported))
+                if selector == InterfaceSelector::Bound(second) => {}
+            refused => panic!("from {LOCAL_V6} by {selector:?}: {refused:?}"),
         }
-        assert_eq!(other.within(QUIET, to_nowhere), None, "by {bound:?}");
+        assert_eq!(other.within(QUIET, to_nowhere), None, "by {selector:?}");
     }
     // https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const ABSENT_V6: Ipv6Addr = Ipv6Addr::new(0xfd99, 0, 0, 0, 0, 0, 0, 1);
