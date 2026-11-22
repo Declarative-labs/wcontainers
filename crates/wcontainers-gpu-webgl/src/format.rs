@@ -99,8 +99,13 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
             SmallFloat,
         ),
         F::Rgb9e5Float => f(RGB9_E5, RGB, UNSIGNED_INT_5_9_9_9_REV, SharedExponent),
-        // Direct3D's B5G6R5 has red in the top bits, as GL's 5_6_5 does.
+        // Direct3D's B5G6R5 has red in the top bits, as GL's 5_6_5 does. Its B5G5R5A1 and
+        // B4G4R4A4 have alpha in the top bits, which GL's 5_5_5_1 and 4_4_4_4 put lowest.
         F::B5g6r5Unorm => f(RGB565, RGB, UNSIGNED_SHORT_5_6_5, norm),
+        F::Bgr5a1Unorm => f(RGB5_A1, RGBA, UNSIGNED_SHORT_5_5_5_1, norm),
+        F::Bgra4Unorm => f(RGBA4, RGBA, UNSIGNED_SHORT_4_4_4_4, norm),
+        // 8-bit alpha as RGBA with zero colour: widened by the host, cleared zero, never drawn.
+        F::A8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
         F::Rg32Uint => f(RG32UI, RG_INTEGER, UNSIGNED_INT, int),
         F::Rg32Sint => f(RG32I, RG_INTEGER, INT, int),
         F::Rg32Float => f(RG32F, RG, FLOAT, Single),
@@ -146,18 +151,87 @@ pub fn swapped(format: Format) -> bool {
     )
 }
 
-/// Whether `format` has no alpha, which its RGBA storage holds as one: host writes and clears write
-/// one, draws leave it, and passes never discard it.
-pub fn alpha_one(format: Format) -> bool {
-    matches!(format, Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb)
+/// The channels of RGBA storage, red, green, blue and alpha.
+pub const CHANNELS: usize = 4;
+
+/// The channels of its RGBA storage that `format` lacks, a bit each from red: a missing alpha held
+/// as one (BGRX), missing colour held as zero (8-bit alpha). Host writes and clears write them,
+/// draws leave them, and passes never discard them.
+pub fn unwritten(format: Format) -> u8 {
+    let held_in_rgba = matches!(
+        format,
+        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb | Format::A8Unorm
+    );
+    let rgba = Format::Rgba8Unorm.components();
+    if held_in_rgba {
+        (rgba & !format.components()) as u8
+    } else {
+        0
+    }
 }
 
 /// A clear colour as a target of `format` keeps it.
 pub fn clear_value(format: Format, mut value: [u32; 4]) -> [u32; 4] {
-    if alpha_one(format) {
-        value[3] = 1f32.to_bits();
+    let missing = unwritten(format);
+    for (c, v) in value.iter_mut().enumerate() {
+        if missing & (1 << c) != 0 {
+            *v = if c == CHANNELS - 1 { 1f32 } else { 0f32 }.to_bits();
+        }
     }
     value
+}
+
+/// The format GL stores texels of `format` as where the host widens them: 8-bit alpha as RGBA.
+pub fn widened(format: Format) -> Option<Format> {
+    (format == Format::A8Unorm).then_some(Format::Rgba8Unorm)
+}
+
+/// The bit widths of a 16-bit packed format's blue, green, red and alpha fields, from its lowest
+/// bits up, as Direct3D packs them (zero for a missing alpha).
+pub type Fields = [u32; CHANNELS];
+
+const B5G6R5_FIELDS: Fields = [5, 6, 5, 0];
+const B5G5R5A1_FIELDS: Fields = [5, 5, 5, 1];
+const B4G4R4A4_FIELDS: Fields = [4, 4, 4, 4];
+
+/// The fields of a 16-bit packed format.
+pub fn packed_fields(format: Format) -> Option<Fields> {
+    match format {
+        Format::B5g6r5Unorm => Some(B5G6R5_FIELDS),
+        Format::Bgr5a1Unorm => Some(B5G5R5A1_FIELDS),
+        Format::Bgra4Unorm => Some(B4G4R4A4_FIELDS),
+        _ => None,
+    }
+}
+
+/// Whether host bytes of `format` are converted before GL takes them ([`stored_texels`]).
+pub fn converts_writes(format: Format) -> bool {
+    swapped(format)
+        || unwritten(format) != 0
+        || packed_fields(format).is_some_and(|[.., alpha]| alpha > 0)
+}
+
+/// Appends the texels GL stores for `texels`, whole texels of `format` that [`converts_writes`]:
+/// red and blue swapped (BGRX's alpha one), 8-bit alpha as (0, 0, 0, a), and a 16-bit packed
+/// format's alpha moved from its highest bits to its lowest, where GL packs it.
+pub fn stored_texels(format: Format, texels: &[u8], out: &mut Vec<u8>) {
+    if format == Format::A8Unorm {
+        return out.extend(texels.iter().flat_map(|&a| [0, 0, 0, a]));
+    }
+    if let Some([.., alpha]) = packed_fields(format) {
+        for t in texels.as_chunks::<2>().0 {
+            out.extend(u16::from_le_bytes(*t).rotate_left(alpha).to_le_bytes());
+        }
+        return;
+    }
+    let at = out.len();
+    out.extend_from_slice(texels);
+    swap_red_blue(&mut out[at..]);
+    if unwritten(format) != 0 {
+        for [.., alpha] in out[at..].as_chunks_mut::<CHANNELS>().0 {
+            *alpha = u8::MAX;
+        }
+    }
 }
 
 /// Swaps red and blue in each 4-byte texel of `texels`.
@@ -204,7 +278,7 @@ pub fn bits_twin(format: Format) -> Option<Format> {
 /// What `format` can be used for on a context with `ext`.
 pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     // Block-compressed formats are sampled natively or decoded, and read back from the host copy.
-    if crate::host::compressed(format).is_some() {
+    if crate::host::decoded(format).is_some() {
         return FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
     }
     let Some(gl) = gl_format(format) else {
@@ -236,6 +310,10 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
             Class::Int { .. } => FormatUse::empty(),
             Class::Depth => FormatUse::DEPTH_STENCIL,
         };
+    // B4G4R4A4 is sampled only, as Direct3D 11 hardware and the WebGPU back end have it.
+    if format == Format::Bgra4Unorm {
+        uses -= target;
+    }
     // Depth and stencil read back by draws into a colour texture; stencil is sampled with
     // WEBGL_stencil_texturing or from a copy filled by draws.
     // Formats GL cannot read back are read from the host copy, which draws into signed normalised
@@ -253,13 +331,11 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     uses
 }
 
-/// The widths of B5G6R5's red, green and blue fields, red in the highest bits.
-const B5G6R5_BITS: [u32; 3] = [5, 6, 5];
-
 /// How `readPixels` reads a format's texels: always four components of `ty` (`comp_read` bytes each),
-/// of which the texel keeps the first `n`, each the low `comp_kept` bytes, red and blue swapped
-/// where `swap` is set; or, where `rgb565` is set, RGBA bytes packed again into B5G6R5's 16 bits
-/// (8 bits keep every 5 and 6-bit value apart, so the packing is exact).
+/// of which the texel keeps `n` from component `first`, each the low `comp_kept` bytes, red and
+/// blue swapped where `swap` is set; or, where `fields` is set, RGBA bytes packed again into a
+/// 16-bit packed format's fields ([`packed_fields`]; 8 bits keep every narrower value apart, so the
+/// packing is exact).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadAs {
     pub format: u32,
@@ -267,8 +343,9 @@ pub struct ReadAs {
     pub comp_read: usize,
     pub comp_kept: usize,
     pub n: usize,
+    pub first: usize,
     pub swap: bool,
-    pub rgb565: bool,
+    pub fields: Option<Fields>,
 }
 
 impl ReadAs {
@@ -288,20 +365,28 @@ impl ReadAs {
     /// Whether the host converts the values read, not only keeps part of each texel's bytes
     /// ([`wcontainers_gpu::SlowPath::FormatConverted`]).
     pub fn converts(self) -> bool {
-        self.swap || self.rgb565
+        self.swap || self.fields.is_some()
     }
 
     /// Keeps each texel's stored bytes of `read`, texels as `readPixels` wrote them, in `kept`.
     pub fn repack(self, read: &[u8], kept: &mut [u8]) {
-        if self.rgb565 {
-            // Each byte rounded to the nearest step of its field, red's field highest.
+        let (r, k) = (self.texel_read(), self.texel_kept());
+        if let Some(fields) = self.fields {
+            // Each byte rounded to the nearest step of its field, blue's field lowest.
             let byte = u32::from(u8::MAX);
-            let (r, k) = (self.texel_read(), self.texel_kept());
             for (from, to) in read.chunks_exact(r).zip(kept.chunks_exact_mut(k)) {
-                let packed = B5G6R5_BITS.iter().zip(from).fold(0, |packed, (&bits, &v)| {
-                    let max = (1 << bits) - 1;
-                    (packed << bits) | ((u32::from(v) * max + byte / 2) / byte)
-                });
+                let &[r, g, b, a] = from else { continue };
+                let bgra = [b, g, r, a];
+                let (packed, _) =
+                    bgra.iter()
+                        .zip(fields)
+                        .fold((0, 0), |(packed, at), (&v, bits)| {
+                            let max = (1 << bits) - 1;
+                            (
+                                packed | ((u32::from(v) * max + byte / 2) / byte) << at,
+                                at + bits,
+                            )
+                        });
                 to.copy_from_slice(&(packed as u16).to_le_bytes());
             }
             return;
@@ -311,12 +396,11 @@ impl ReadAs {
             kept[..n].copy_from_slice(&read[..n]);
             return swap_red_blue(&mut kept[..n]);
         }
-        let (r, k) = (self.texel_read(), self.texel_kept());
         for (from, to) in read.chunks_exact(r).zip(kept.chunks_exact_mut(k)) {
             for c in 0..self.n {
-                to[c * self.comp_kept..(c + 1) * self.comp_kept].copy_from_slice(
-                    &from[c * self.comp_read..c * self.comp_read + self.comp_kept],
-                );
+                let at = (self.first + c) * self.comp_read;
+                to[c * self.comp_kept..(c + 1) * self.comp_kept]
+                    .copy_from_slice(&from[at..at + self.comp_kept]);
             }
         }
     }
@@ -337,20 +421,22 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
             comp_read: 1,
             comp_kept: 1,
             n: 4,
+            first: 0,
             swap: false,
-            rgb565: false,
+            fields: None,
         });
     }
-    // B5G6R5 renders, and reads back as normalised bytes, packed again on the host.
-    if gl.ty == UNSIGNED_SHORT_5_6_5 {
+    // The 16-bit packed formats render, and read back as normalised bytes, packed again on the host.
+    if let Some(fields) = packed_fields(format) {
         return Some(ReadAs {
             format: RGBA,
             ty: UNSIGNED_BYTE,
             comp_read: 1,
             comp_kept: 2,
             n: 1,
+            first: 0,
             swap: false,
-            rgb565: true,
+            fields: Some(fields),
         });
     }
     let comp_kept = match gl.ty {
@@ -378,7 +464,65 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         comp_read,
         comp_kept,
         n: texel as usize / comp_kept,
+        // 8-bit alpha keeps the fourth component alone.
+        first: format.components().trailing_zeros() as usize,
         swap: swapped(format),
-        rgb565: false,
+        fields: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every 16-bit packed texel written as GL stores it, then read as `readPixels` gives GL's
+    /// fields (red highest, alpha lowest, each `v * 255 / max` rounded), packs back to itself.
+    #[test]
+    fn packed_texels_written_and_read_back_keep_their_bits() {
+        let ext = FormatExtensions::default();
+        for format in [Format::B5g6r5Unorm, Format::Bgr5a1Unorm, Format::Bgra4Unorm] {
+            let read = read_as(format, ext).unwrap();
+            let [b, g, r, a] = packed_fields(format).unwrap();
+            for v in 0..=u16::MAX {
+                let mut stored = Vec::new();
+                if converts_writes(format) {
+                    stored_texels(format, &v.to_le_bytes(), &mut stored);
+                } else {
+                    stored.extend(v.to_le_bytes());
+                }
+                let gl = u32::from(u16::from_le_bytes([stored[0], stored[1]]));
+                let (mut bytes, mut at) = ([u8::MAX; 4], 0);
+                for (c, bits) in [(3, a), (2, b), (1, g), (0, r)] {
+                    if bits > 0 {
+                        let max = (1 << bits) - 1;
+                        let x = (gl >> at) & max;
+                        bytes[c] = ((x * 255 + max / 2) / max) as u8;
+                        at += bits;
+                    }
+                }
+                let mut kept = [0; 2];
+                read.repack(&bytes, &mut kept);
+                let used = (1u32 << (b + g + r + a)) - 1;
+                assert_eq!(
+                    u32::from(u16::from_le_bytes(kept)),
+                    u32::from(v) & used,
+                    "{format:?}"
+                );
+            }
+        }
+    }
+
+    /// 8-bit alpha is stored as (0, 0, 0, a), and read back as its alpha alone.
+    #[test]
+    fn alpha_texels_widened_and_read_back() {
+        let mut stored = Vec::new();
+        stored_texels(Format::A8Unorm, &[7, 200], &mut stored);
+        assert_eq!(stored, [0, 0, 0, 7, 0, 0, 0, 200]);
+        let read = read_as(Format::A8Unorm, FormatExtensions::default()).unwrap();
+        let mut kept = [0; 2];
+        read.repack(&[1, 2, 3, 7, 4, 5, 6, 200], &mut kept);
+        assert_eq!(kept, [7, 200]);
+        let clear = clear_value(Format::A8Unorm, [1f32.to_bits(); 4]);
+        assert_eq!(clear, [0, 0, 0, 1f32.to_bits()]);
+    }
 }

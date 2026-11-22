@@ -41,6 +41,9 @@ type Id = u64;
 /// by loads.
 const POINT_SAMPLER: Id = Id::MAX - 1;
 
+/// What a pass drawing into targets whose formats lack different channels needs.
+const MIXED_CHANNELS: &str = "a pass drawing into formats lacking different channels together without OES_draw_buffers_indexed";
+
 /// The instance divisor of a stream that reads one element for every vertex and instance.
 const NEVER_ADVANCES: u32 = 1 << 31;
 
@@ -107,7 +110,8 @@ pub struct TextureObj {
     /// The levels, by bit, whose host copy may hold a signed normalised minimum, which a draw reads
     /// as the value above.
     minimum: Cell<u32>,
-    /// The format a block-compressed texture is stored in when decoded.
+    /// The format the texture's texels are stored in where GL holds them as another: block-compressed
+    /// and two-pixel formats decoded, 8-bit alpha widened to RGBA.
     decoded: Option<Format>,
 }
 
@@ -360,8 +364,9 @@ pub struct Gl {
     stale_buffers: u32,
     /// How many sRGB twins exist, so draws look at their textures only when some do.
     twins: u32,
-    /// The colour targets of the pass, by bit, whose alpha draws leave (`format::alpha_one`).
-    pass_alpha_one: u8,
+    /// The channels draws leave in each colour target of the pass, four bits a target from the
+    /// first (`format::unwritten`).
+    pass_unwritten: u32,
     /// GL's last compile or link log, for tests and bug reports.
     last_log: String,
     surface: Option<SurfaceState>,
@@ -479,7 +484,7 @@ impl Gl {
             pass: None,
             stale_buffers: 0,
             twins: 0,
-            pass_alpha_one: 0,
+            pass_unwritten: 0,
             last_log: String::new(),
             surface: None,
             depth_read: Default::default(),
@@ -1725,8 +1730,9 @@ impl Gl {
             comp_read: 4,
             comp_kept: kept,
             n: 1,
+            first: 0,
             swap: false,
-            rgb565: false,
+            fields: None,
         });
         let at = [region.origin.x as i32, region.origin.y as i32];
         for i in 0..extent.depth_or_layers {
@@ -2293,8 +2299,8 @@ impl Gl {
                 region,
                 extent,
                 Texels::Bytes(&texels),
-                wide as u32 * 4 * texel,
-                high as u32 * 4,
+                wide as u32 * bw * texel,
+                high as u32 * bh,
             );
         }
         let Some(raw) = t.tex() else { return };
@@ -3169,7 +3175,7 @@ impl Gl {
                 &mut self.values,
                 &call.blend.0.1,
                 &self.platform,
-                self.pass_alpha_one,
+                self.pass_unwritten,
             );
             self.applied.blend = call.blend.0.0;
         }
@@ -3443,11 +3449,13 @@ impl Backend for Gl {
                 };
                 (Some(f), None)
             }
-            Some((_, _, decoded)) => {
-                self.slow.hit(SlowPath::BlockDecoded);
-                (format::gl_format(decoded), Some(decoded))
-            }
-            None => (format::gl_format(desc.format), None),
+            _ => match host::decoded(desc.format) {
+                Some(decoded) => {
+                    self.slow.hit(SlowPath::BlockDecoded);
+                    (format::gl_format(decoded), Some(decoded))
+                }
+                None => (format::gl_format(desc.format), format::widened(desc.format)),
+            },
         };
         let gl_format = gl_format.ok_or(GpuError::Invalid(
             "webgl: the format has no capabilities here",
@@ -4088,7 +4096,7 @@ impl Backend for Gl {
                     t.minimum.set(t.minimum.get() & !level);
                 }
             }
-            if host::compressed(region.texture.desc.format).is_some() {
+            if host::decoded(region.texture.desc.format).is_some() {
                 return self.upload_blocks(region, extent);
             }
         }
@@ -4101,28 +4109,26 @@ impl Backend for Gl {
                 rows_per_layer,
             );
         }
-        if format::swapped(region.texture.desc.format) {
+        let format = region.texture.desc.format;
+        if format::converts_writes(format) {
+            // Converted into tightly packed rows of the stored texels.
             self.slow.hit(SlowPath::FormatConverted);
-            let mut swapped = data.to_vec();
-            let (row, rows) = (extent.width as usize * 4, extent.height as usize);
-            let layers = extent.depth_or_layers as usize;
+            let row = extent.width as usize * format.block().2 as usize;
+            let (rows, layers) = (extent.height as usize, extent.depth_or_layers as usize);
+            let mut stored = Vec::new();
             for layer in 0..layers {
                 for r in 0..rows {
                     let at = (layer * rows_per_layer as usize + r) * row_pitch as usize;
-                    format::swap_red_blue(&mut swapped[at..at + row]);
-                    if format::alpha_one(region.texture.desc.format) {
-                        for [.., alpha] in swapped[at..at + row].as_chunks_mut::<4>().0 {
-                            *alpha = u8::MAX;
-                        }
-                    }
+                    format::stored_texels(format, &data[at..at + row], &mut stored);
                 }
             }
+            let texel = t.decoded.unwrap_or(format).block().2;
             return self.upload(
                 region,
                 extent,
-                Texels::Bytes(&swapped),
-                row_pitch,
-                rows_per_layer,
+                Texels::Bytes(&stored),
+                extent.width * texel,
+                extent.height,
             );
         }
         self.upload(
@@ -4185,31 +4191,26 @@ impl Backend for Gl {
             }
             t.drawn.set(t.drawn.get() | 1 << mip);
         }
-        // Targets whose alpha draws leave; slots without a target follow them.
+        // The channels draws leave in each target; slots without a target follow the first.
         let colors = &views[..MAX_COLOR_TARGETS];
-        let kept = |v: &&TextureView| format::alpha_one(v.texture.desc.format);
-        let alpha_one = if colors.iter().flatten().any(kept) {
-            let mut bits = 0u8;
-            for (i, v) in colors.iter().enumerate() {
-                if v.as_ref().is_none_or(kept) {
-                    bits |= 1 << i;
-                }
-            }
-            if colors.iter().flatten().any(|v| !kept(v))
+        let unwritten = |v: &TextureView| format::unwritten(v.texture.desc.format);
+        let first = colors.iter().flatten().next().map_or(0, |v| unwritten(v));
+        let unwritten = if colors.iter().flatten().any(|v| unwritten(v) != 0) {
+            if colors.iter().flatten().any(|v| unwritten(v) != first)
                 && !self.caps.has(Features::INDEPENDENT_BLEND)
             {
-                self.unbuilt(
-                    "a pass drawing into formats with and without alpha together without \
-                     OES_draw_buffers_indexed",
-                );
+                self.unbuilt(MIXED_CHANNELS);
                 return;
             }
-            bits
+            colors.iter().enumerate().fold(0, |bits, (i, v)| {
+                let channels = v.map_or(first, unwritten);
+                bits | u32::from(channels) << (i * format::CHANNELS)
+            })
         } else {
             0
         };
-        if self.pass_alpha_one != alpha_one {
-            self.pass_alpha_one = alpha_one;
+        if self.pass_unwritten != unwritten {
+            self.pass_unwritten = unwritten;
             self.applied.blend = 0;
         }
         let fb = self.framebuffer(key, &views);
@@ -4244,8 +4245,8 @@ impl Backend for Gl {
                 let Some(c) = c else { continue };
                 let point = glow::COLOR_ATTACHMENT0 + i as u32;
                 let format = c.view.texture.desc.format;
-                // A target without alpha keeps its alpha of one, which a discard would lose.
-                let whole = whole(c.view) && !format::alpha_one(format);
+                // A target lacking channels keeps their values, which a discard would lose.
+                let whole = whole(c.view) && format::unwritten(format) == 0;
                 match c.load {
                     LoadOp::Clear(value) => match format.kind() {
                         FormatKind::Uint => {
@@ -4520,7 +4521,10 @@ impl Backend for Gl {
         if from == to && renderable(from) && float && self.float_blits {
             return self.blit_same(src, dst, extent);
         }
-        if from != to || !renderable(from) || float {
+        // Formats `readPixels` reads are colour-renderable in GL, so copyTexSubImage copies them,
+        // also where they are not reported as targets (B4G4R4A4).
+        let attachable = renderable(from) || src.texture.read.is_some();
+        if from != to || !attachable || float {
             let as_stored = src
                 .texture
                 .read
@@ -4601,10 +4605,9 @@ impl Backend for Gl {
         extent: Extent,
     ) {
         self.platform.current();
-        let data = src
-            .buffer
-            .data
-            .filter(|_| dst.texture.host.is_none() && !format::swapped(dst.texture.desc.format));
+        let data = src.buffer.data.filter(|_| {
+            dst.texture.host.is_none() && !format::converts_writes(dst.texture.desc.format)
+        });
         let Some(data) = data else {
             // The buffer's bytes read back, then written as a host write: into textures kept on the
             // host or swapped there, and from index-only buffers, which no unpack buffer can be.

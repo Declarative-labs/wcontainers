@@ -9,6 +9,7 @@ use wcontainers_gpu::{
     StepMode, Topology, VertexFormat, VertexLayoutDesc,
 };
 
+use crate::format;
 use crate::platform::Platform;
 
 /// What GL holds now, for the values blocks and draws set.
@@ -213,22 +214,25 @@ pub fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
     );
 }
 
-/// Applies `b`, leaving alpha unwritten in the targets of the bits of `alpha_one`.
+/// Applies `b`, leaving unwritten the channels of `unwritten`, [`format::CHANNELS`] bits a target
+/// from the first, each from red.
 pub fn blend(
     gl: &glow::Context,
     v: &mut GlValues,
     b: &GlBlend,
     platform: &Platform,
-    alpha_one: u8,
+    unwritten: u32,
 ) {
     let masked;
-    let (targets, same) = if alpha_one == 0 {
+    let (targets, same) = if unwritten == 0 {
         (&b.targets, b.same)
     } else {
         masked = core::array::from_fn::<_, MAX_COLOR_TARGETS, _>(|i| {
             let mut t = b.targets[i];
-            if alpha_one & (1 << i) != 0 {
-                t.mask[3] = false;
+            for (c, on) in t.mask.iter_mut().enumerate() {
+                if unwritten >> (i * format::CHANNELS + c) & 1 != 0 {
+                    *on = false;
+                }
             }
             t
         });

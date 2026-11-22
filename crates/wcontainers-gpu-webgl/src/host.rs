@@ -1,7 +1,7 @@
 //! Textures kept on the host as well (`HostCopyKept`): formats GLES 3.0 cannot read back (RGB9E5,
 //! the three-channel 32-bit ones, the block-compressed and the signed normalised ones), whose read
 //! backs and copies come from the bytes written. Block-compressed textures without their WebGL
-//! extension are stored decoded (`BlockDecoded`).
+//! extension, and the two-pixel formats, are stored decoded (`BlockDecoded`).
 
 use std::cell::RefCell;
 use wcontainers_gpu::{Format, TextureDesc, TextureDimension};
@@ -226,26 +226,44 @@ pub fn compressed(format: Format) -> Option<(u32, &'static str, Format)> {
     })
 }
 
+/// The format textures of `format` are stored in decoded, where they are: block-compressed ones
+/// without their WebGL extension ([`compressed`]), and the two-pixel ones as one RGBA texel a pixel.
+pub fn decoded(format: Format) -> Option<Format> {
+    match format {
+        Format::Rgbg8Unorm | Format::Grgb8Unorm => Some(Format::Rgba8Unorm),
+        _ => compressed(format).map(|(_, _, decoded)| decoded),
+    }
+}
+
 /// Decodes tightly packed blocks of `format`, `blocks_wide` to a row, into texels of the format
-/// [`compressed`] names, tightly packed rows four texels high per row of blocks.
+/// [`decoded`] names, tightly packed rows as many texels high per row of blocks as a block is.
 pub fn decode(format: Format, blocks: &[u8], blocks_wide: usize) -> Vec<u8> {
     use Format as F;
-    let (_, _, block_bytes) = format.block();
-    let block_bytes = block_bytes as usize;
-    let Some((_, _, decoded)) = compressed(format) else {
+    let (bw, bh, block_bytes) = format.block();
+    let (bw, bh, block_bytes) = (bw as usize, bh as usize, block_bytes as usize);
+    let Some(decoded) = decoded(format) else {
         return Vec::new();
     };
     let texel = decoded.block().2 as usize;
-    let pitch = blocks_wide * 4 * texel;
+    let pitch = blocks_wide * bw * texel;
     let rows = blocks.len() / block_bytes / blocks_wide.max(1);
-    let mut out = vec![0u8; rows * 4 * pitch];
+    let mut out = vec![0u8; rows * bh * pitch];
     let mut halves = [0u16; 4 * 4 * 3];
     let mut floats = [0f32; 4 * 4 * 2];
     for (i, block) in blocks.chunks_exact(block_bytes).enumerate() {
         let (bx, by) = (i % blocks_wide, i / blocks_wide);
-        let at = by * 4 * pitch + bx * 4 * texel;
+        let at = by * bh * pitch + bx * bw * texel;
         let dst = &mut out[at..];
         match format {
+            F::Rgbg8Unorm | F::Grgb8Unorm => {
+                // Both pixels take the block's red and blue, each its own green.
+                let &[x0, x1, x2, x3] = block else { continue };
+                let [r, g0, b, g1] = match format {
+                    F::Rgbg8Unorm => [x0, x1, x2, x3],
+                    _ => [x1, x0, x3, x2],
+                };
+                dst[..bw * texel].copy_from_slice(&[r, g0, b, u8::MAX, r, g1, b, u8::MAX]);
+            }
             F::Bc1RgbaUnorm | F::Bc1RgbaUnormSrgb => bcdec_rs::bc1(block, dst, pitch),
             F::Bc2RgbaUnorm | F::Bc2RgbaUnormSrgb => bcdec_rs::bc2(block, dst, pitch),
             F::Bc3RgbaUnorm | F::Bc3RgbaUnormSrgb => bcdec_rs::bc3(block, dst, pitch),
