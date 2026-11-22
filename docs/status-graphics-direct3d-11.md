@@ -46,6 +46,10 @@ G4h run 4 (2026-11-22, from about 11:25 Pacific):
   4667) and test_swapchain_formats (126, real 146) fail no check, each skipping real Direct3D's
   11_1 device (absent, Gap list); d3d10core's two pass. The WebGL 2 build's 10_0 cases: 0 of 6
   pass, each refusing its 10_0 device.
+- Literals: the landed code's five findings are fixed (entry point names and the recorder's
+  sample counts named or derived, 22b0e1a3, ef84f023), and three baseline lines they left are cut
+  (73e218c1). The check at 73e218c1 finds nothing in this track's crates or the infrastructure
+  crate (logs/g4h4b-literals.log; its 98 lines are other tracks').
 
 G4h run 3 (2026-11-22, from about 10:20 Pacific):
 - The shaders track committed `VertexFormat::Bgrx8Unorm` with every crate's arm (02049aeb, this
