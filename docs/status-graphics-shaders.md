@@ -7,94 +7,68 @@ On `main`, in the one checkout, since the reorganization of 2026-11-21 (this cra
 
 Milestone G6a, given again after the reorganization: its third check's findings were settled in
 run 72 (history, "G6a again, run 3"); its fourth check's in run 73 (the section below).
-G6b (gap A6: DXIL geometry, hull and domain shaders), run 6: DXIL geometry, hull and domain
+G6b (gap A6: DXIL geometry, hull and domain shaders), run 7: DXIL geometry, hull and domain
 shaders convert through the passes the DXBC route uses and draw equal to real Direct3D with dxc's
 builds. Of the four Direct3D 12 rig scenes that failed for A6, two draw equal to real Direct3D 12
-(geometry, streamout); raster-fill and tessellation still differ, only in cells drawn as lines. Run
-73 measured why (below, and A6): in the tessellation scene, only the order of triangles sharing an
-edge; in raster-fill, which runs no stage of A6, the Vulkan path's line rule. Not met as G6b
-writes it.
+(geometry, streamout); raster-fill and tessellation still differ on the RTX 3080, only in cells
+drawn as lines. Run 74 measured the tessellation scene's cause to the end: our tessellator's order
+is WARP's word for word, and the scene drawn on WARP through the stage helper equals Direct3D 11 on
+WARP in every texel; the RTX 3080 orders a patch's triangles its own way, which Direct3D leaves to
+the device. Raster-fill runs no stage of A6. Both meet the Vulkan path's line rule, a listed loss
+(plan 15.1). Not met as G6b writes it ("equal on the RTX 3080"), and not reachable by the
+converter: the owner's ruling is asked ("New for the owner").
 
-## G6b run 6 (run 73): the fourth check of G6a, and the scenes' line cells
+## G6b run 7 (run 74): the tessellation scene's order, measured
 
-Run 72's section is in the history file. Logs and scripts in scratch `graphics-shaders/g6b6`
-(How to run). GPU figures from the RTX 3080 through the queue, one job at a time.
+Run 73's section is in the history file. Logs, probes and the mutants in scratch
+`graphics-shaders/g6b7`. GPU figures from the RTX 3080 and WARP through the queue, one job at a
+time.
 
-The fourth check's findings, each:
-1. f32tof16 of an infinity on WebGL 2 (minor): found and fixed. dxbc-spirv's guard tested
-   finiteness as `abs(x) <= FLT_MAX`, which the WebGL 2 route lost (ANGLE's compile folding it, as
-   the check inferred; which step drops it was not measured). dxbc-spirv's `lowerF32toF16`
-   is now off (cpp/dxbc.cpp) and the lowering makes the clamp itself, testing finiteness by the
-   bits (src/lower.rs, `CONVERT_F32TO_PACKED_F16`, as `F_IS_NAN` does; `build::HALF_MAX`). New own
-   shader `ps_half` (signed.hlsl: NaN, both infinities, 65504, 65536 and ordinary values, scaled at
-   run time; fxc and dxc builds, records `ok ; glsl compiles`), a case of
-   `own_shaders_draw_as_direct3d_does`: 0 of 4096 texels apart on webgpu-dxbc, webgl-dxbc,
-   webgpu-dxil and webgl-dxil, and dxc's build on Direct3D 12 equal to fxc's on Direct3D 11
-   (gpu2.log). Mutated copy (dxbc-spirv's guard back, gpu3-mutant.log): webgl-dxbc 1,138 of 4096
-   texels apart, the rest 0.
-2. Empty early scenes (minor): fixed. A case in which Direct3D runs no pixel is still compared but
-   does not count; the seed's next attempt (`seed ^ attempt << 32`, up to 16) is drawn until one
-   runs pixels, and a seed with none fails. Default seed 1, 32 cases: 32 drawn, 20 empty attempts
-   compared besides; the check's seed 8642, 128 cases: 128 drawn, 117 empty attempts besides; 0
-   failed (gpu2.log).
-3. The Direct3D 11 front's two asks and A27's `StorageFormatAbsent` (minor): A28 lists the two asks
-   (a storage form of `A8Unorm`; a helper value for a view's width, YUY2), and A27 now names every
-   place `StorageFormatAbsent` is raised and that it is the refusal those A8 views meet.
-4. The corpus test's rule (minor): both holes it names are closed for what the records can show. A
-   reader verdict is named only as `spirv-reader unsupported ...` (`READER_UNSUPPORTED`; test
-   `only_the_readers_unsupported_refusals_are_named`). A glslang refusal is named only where its
-   recorded error cites a form of one of its record's needs (`CITED_FORMS`: the sample variables
-   and qualifier, `sampler2DMS` and its integer forms, `GL_ANGLE_clip_cull_distance` and the
-   distance built-ins, `gl_PrimitiveID`). Every record of the nine corpora holds under it
-   (laptop, below). Hole (1) of pass bar item 2 (the `sample` qualifier's directive) stays: its
-   constant is still private to the WebGL 2 back end.
-5. The views record kind without a test here (minor): the other track's a8b3ccec added unit tests
-   in src/container.rs (read once through the cache, a record that does not decode, checksums);
-   the cache file's tests (tests/cache.rs) now make entries of every kind, `Views` among them, so
-   round trips, merges and cuts cover it.
-6. A26's drawn test (minor): A26 now says why the test it named cannot reach the gap (fxc writes
-   `!=` as a negated `eq`; wgpu's Direct3D 12 path writes HLSL `!=`) and what can.
-7. New seeds of the geometry and filter tests (information): nothing to do; the figures are the
-   check's.
+- The RTX 3080's order (probe1.log, a probe test not committed): streamed by Direct3D 11 for one
+  patch of fixed factors, the GPU's primitives are ours but in its own order and rotation, and not
+  a simple rule of ours (tri integer 4: the inner ring first, from inside out and not in the
+  reference's order, then the outer ring backwards; points, isolines and quads alike). Direct3D
+  leaves that order to the device; matching it would shape the tessellator around one GPU, so it
+  is not done.
+- WARP's order is ours (probe2.log): every point and index of 32 topologies (every domain,
+  partitioning and output) equal to WARP's streamed output word for word and in order.
+  `tessellator_matches_direct3d` now holds the tessellator to both: each patch's primitives equal
+  to the GPU's as a set, and equal to WARP's in order (default seed 1, 4 seeds: 256 comparisons,
+  0 failed, new1.log).
+- New test `rig_tessellation_scene_draws_as_direct3d_11_on_warp_does`: the rig's tessellation
+  scene as it is (lines but the last patch), through the stage helper on wgpu's Direct3D 12 path
+  on WARP (`common::webgpu_on_warp`), against real Direct3D 11 on WARP running the scene itself:
+  every texel of every cell equal, both builds (new1.log). So with the same rasteriser and the
+  same order, the scene is equal; on the RTX 3080 the difference is the device's order.
+- Mutated copy (mutant-quad-order.patch: each quad of `stitch_regular` emits its two triangles in
+  the other order): the scene on WARP 7 texels apart (cells 1, 3, 4) and the order test 64 of 256
+  comparisons failed, all of them WARP's (mutant4.log). A first mutant reversing each patch's
+  triangles made WARP fault (access violation), so it proves nothing and was dropped.
+- For comparison (probe2.log): WARP's own Direct3D 11 scene against the RTX 3080's differs in 768
+  texels (65 more than 2 apart), as the rig records; ours on the RTX 3080 against the RTX 3080 in
+  191, and ours on the GPU against WARP in 617 (10 more than 2 apart).
+- The Direct3D 12 scenes: the Direct3D 12 front draws through wgpu's Vulkan path (plan 15.1, "A
+  test process must never draw through the API it stands in for"), whose line rule differs from
+  Direct3D's on the RTX 3080, a listed loss there; both remaining scenes' differences are in cells
+  drawn as lines, so both meet that loss besides the device's order. Neither is the converter's
+  to change.
 
-The scenes' line cells (G6b's remaining part, A6), measured:
-- Tessellation: new test `rig_tessellation_scene_draws_as_direct3d_11_does_in_any_order`: the
-  rig's scene with its patches drawn as lines but the last, blended to each channel's largest
-  value (so the order triangles are drawn in does not count), against Direct3D 11 drawing the
-  same: every texel of every cell equal, both builds (gpu3-mutant.log, whose mutation touched only
-  f32tof16; and the whole suite below). So the converter, the tessellator and the domain stage
-  give the same triangles with the same values as the RTX 3080, rasterised alike; the 191 texels
-  of the unblended scene (45, 46, 62, 19, 19 in the five line cells; none missed) are which of two
-  triangles sharing an edge is drawn last. A probe in scratch (order-probe.patch, not committed)
-  drew our triangles reordered: as the reference tessellator emits them 191 texels apart, in
-  reverse 39 (11, 7, 9, 6, 6), half rotated 169 (gpu5-probe.log). The RTX 3080's order is near
-  the reverse of the reference's but is not it.
-- Raster-fill draws no geometry, hull or domain shader: its cells drawn as lines are the wireframe
-  of the WebGPU back end on wgpu's Vulkan path, where the Direct3D 12 front draws; the WebGPU
-  track measured that picture against Direct3D 11: 214 pixels apart on Vulkan, none on wgpu's
-  Direct3D 12 path (its status, "Wireframe on wgpu's Vulkan").
-
-Runs at the tip:
-- Desktop (RTX 3080, one GPU job, 3 cargo jobs) at 3fdd4219: Windows clippy with warnings denied
-  clean; every test binary at its default seeds: 170 passed, 0 failed, 6 ignored (the three
-  corpora, the fuzz test, A16's known failure, `print_geometry_programs`) (gpu4.log).
-- Laptop (i7-8750H, load 0.3 at the start, 4.4 at the end; 4 cargo jobs under choom) at 3fdd4219:
-  the whole suite with every corpus and glslang 8.13, `--include-ignored --skip mutated`: every
-  binary passes but A16's known failure; the corpus test 13 passed, every record of the nine
-  corpora as recorded, own and own DXIL one record more each (`ps_half`). bf466407 changed only
-  `CITED_FORMS` (one form no record cites dropped), not rerun.
-- x86 machine (96 processors, load 15 to 25 with others' jobs, -j 64) at bf466407: rustfmt of every
-  file of this crate clean; clippy of this crate and the interface with warnings denied clean; the
-  literal check prints no line of this crate (at 3fdd4219 it printed one, the corpus test's copy
-  of the WebGL 2 back end's directive name, removed in e051c15b) and fails on 9 lines of other
-  tracks; this crate's baseline lines unchanged (4,820 naming its paths, 389 under src).
-- Not run: Chrome (no new WGSL beyond `ps_half`'s, whose GLSL glslang compiles), WebAssembly, the
-  Direct3D 12 scenes (nothing of the converter changed for them).
-
-The NIR track's ask (brief, 2026-11-19 night): the public entry point for the 15.4 rewrites is
-`wcontainers_shaders::rewrite` (since run 57; "New for the owner"), which that track calls
-(crates/wcontainers-nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point, its
-G9 run 12) is new work, after this milestone's check.
+Runs at 7f291fa6 (only tests changed since run 73's suites; no converter source):
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy with warnings denied clean
+  (new1.log, suite.log). Every test binary at its default seeds (suite.log): 149 passed, 0 failed,
+  6 ignored, but three binaries crashed in ANGLE while their tests ran in parallel threads
+  (`draw`, `geometry_draw`, `variant_draw`: ANGLE's assert `mVertexArray11 == ...` in
+  StateManager11.cpp:1201, an access violation, or exit code 2173), twice (rerun.log). Run 73's
+  suite ran the same binaries in parallel without it, and nothing they build changed since. With
+  `--test-threads 1` all three pass, 22 tests (rerun2.log): 171 passed in all. Not looked into
+  further; the next run should see whether it stays (How to run).
+- `tessellator_matches_direct3d` at seed 8642, 8 seeds: 512 comparisons, 0 failed (seeded.log).
+- x86 machine (load 2 to 5): rustfmt of every file of this crate clean, clippy of this crate and
+  the interface with warnings denied clean, the literal check prints no line of this crate (it
+  fails on others' lines); this crate's baseline lines unchanged (4,820, 389 under src)
+  (x86-checks.log).
+- Not run: the laptop's corpus suite and Chrome (no converter change), the Direct3D 12 scenes
+  (nothing they draw changed).
 
 ## The unfinished combine work (paused 2026-11-20)
 
@@ -112,6 +86,14 @@ target copy, a clear value and a blend constant, with no draw test using them ye
 45 literals it brought (the literal check failed at the tip on them) and changed nothing else of it.
 
 ## New for the owner
+
+- Run 74: G6b's last item cannot be met by the converter as written. The tessellation scene's
+  remaining texels on the RTX 3080 are the GPU's own order of a patch's triangles (Direct3D leaves it
+  to the device); our order is WARP's word for word, and the scene drawn on WARP equals Direct3D on
+  WARP in every texel. Raster-fill runs none of G6b's shaders. Both scenes' lines are also drawn by
+  wgpu's Vulkan path for the Direct3D 12 front, a listed loss. Asked: rule the WARP proof the bar
+  for these line cells, or have the rig allow for them. New test helper `webgpu_on_warp` (tests
+  only). No interface change, no change to the converter.
 
 - Run 73: a DXBC `f32tof16` keeps infinities on WebGL 2 too (the clamp to the half's range is
   made by this crate's lowering with a bit test, dxbc-spirv's own lowering of it turned off). The
@@ -466,22 +448,24 @@ The gap list (every item of the pass bar not met):
   dxc writes as one signature element of several rows), one register a row, on both routes; an array
   of arrays among them is refused by name (`OutputArray`, no file of any corpus has one). Of the four
   Direct3D 12 rig scenes that failed for A6, two (geometry, streamout) draw equal to real Direct3D 12.
-  Not met: raster-fill (64 of 16,384 pixels beyond 1) and tessellation (310 of 32,768 beyond 4) differ,
-  as since run 66 (the fifth check's scenes.log at 8c498a03), only in cells drawn as lines (wireframe,
-  and the isoline patch). Measured in run 73 (its section): the tessellation scene drawn with each
-  channel's largest value kept is equal to Direct3D 11 in every texel on both builds
-  (`rig_tessellation_scene_draws_as_direct3d_11_does_in_any_order`, wgpu's Direct3D 12 path), so its
-  191 texels apart unblended (`rig_tessellation_scene_draws_as_direct3d_11_does`) are only which of
-  two triangles sharing an edge is drawn last: the stage helper draws a patch's triangles in the
-  reference tessellator's order, the RTX 3080 in another (reversed, 39 texels apart; probe, not
-  committed). Raster-fill runs no geometry, hull or domain shader; its line cells are the wireframe
-  of wgpu's Vulkan path, where the Direct3D 12 front draws (the WebGPU track's measurement: 214
-  pixels of that picture apart on Vulkan, none on wgpu's Direct3D 12 path). Waits: nobody (no front
-  program seen depending on it). Takes, for tessellation: the RTX 3080's triangle order within a
-  patch found (a probe drawing each triangle in its own colour would show it) and taken where
-  Direct3D's specification allows it, or the order allowed for in the comparison of line-drawn
-  cells (plan 4.12); for raster-fill, the Direct3D 12 front on a path drawing Direct3D's line rule,
-  or the rig's comparison taking the line tolerance plan 4.12 names (theirs).
+  Not met: raster-fill (64 of 16,384 pixels beyond 1) and tessellation (310 of 32,768 beyond 4) differ
+  on the RTX 3080, as since run 66 (the fifth check's scenes.log at 8c498a03), only in cells drawn as
+  lines (wireframe, and the isoline patch). Tessellation, measured to the end in run 74 (its
+  section): the tessellator's points and indices equal WARP's in order for every topology
+  (`tessellator_matches_direct3d`), and the rig's scene drawn on WARP through the stage helper
+  equals Direct3D 11 on WARP in every texel, both builds
+  (`rig_tessellation_scene_draws_as_direct3d_11_on_warp_does`); on the RTX 3080 the scene with
+  order made irrelevant is equal in every texel (`..._in_any_order`), and its 191 texels apart
+  unblended are which of two triangles sharing an edge is drawn last: the RTX 3080 orders a patch's
+  primitives its own way (inner ring first, the outer backwards; no rule of the reference's), which
+  Direct3D leaves to the device. Raster-fill runs no geometry, hull or domain shader; its line cells
+  are the wireframe of wgpu's Vulkan path, where the Direct3D 12 front draws (the WebGPU track's
+  measurement: 214 pixels of that picture apart on Vulkan, none on wgpu's Direct3D 12 path), the
+  listed loss of plan 15.1, which the Direct3D 12 tessellation scene's lines meet too. Waits:
+  nobody (no front program seen depending on it). Takes: nothing of the converter. Either the
+  owner rules the WARP proof the bar for line cells whose order the device chooses, or the rig's
+  comparison of the Direct3D 12 scenes takes an allowance for line cells (the rig's work; plan
+  15.1's loss); copying the RTX 3080's order is not proposed (one GPU's choice, undocumented).
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
   which Direct3D does not allow; several streams of points convert since run 49); indexed strips
   and triangle strips with adjacency run since run 50; indirect draws through the stages, the
@@ -997,9 +981,8 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6b's check of run 73's state. Its one part not met (A6's two scenes) is measured as triangle
-   order and the Vulkan path's line rule; the next step on it is the probe A6 names (each
-   triangle of a patch drawn in its own colour on the RTX 3080, to read its order).
+1. G6b's check of run 74's state, after the owner's ruling on A6's two scenes (New for the owner):
+   nothing of the converter is left on them.
 2. After it, as the fronts need them: A28 (the Direct3D 11 front's `A8Unorm` storage form and,
    with the interface track, a view's width for YUY2), A4's `combine` drawn against Direct3D 11 (the Direct3D 11
    front), the NIR track's asks under "New for the owner" (the geometry and tessellation entry
@@ -2371,6 +2354,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 74's scripts are run 73's `gpu.sh` and `gpu-noclippy.sh` in scratch `graphics-shaders/g6b7`,
+  from its clone `tip` made as below. The WARP tests need nothing more: `common::webgpu_on_warp`
+  asks wgpu for its software adapter on Direct3D 12, and the rig's `Driver::Warp` gives Direct3D
+  11 on WARP. A mutant is tried by applying its patch (`git -C tip apply ../mutant-....patch`) and
+  running `gpu-noclippy.sh`, then `git -C tip checkout` of the file. Since run 74, run `draw`,
+  `geometry_draw` and `variant_draw` with `-- --test-threads 1` if they crash in ANGLE (run 74's
+  section).
 - Run 73's scripts (scratch `graphics-shaders/g6b6`), all from the scratch clone `tip` (made as
   below, on its branch `shaders-tip`, its remote removed; copy edits not yet committed into it to
   try them): `gpu.sh <log> "<command>"` is one GPU job of Windows clippy with warnings denied,
