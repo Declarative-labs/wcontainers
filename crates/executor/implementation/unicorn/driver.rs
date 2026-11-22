@@ -918,7 +918,7 @@ impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
 /// Each name question is looked up by this machine's resolver (kept in the record) and waited on
 /// until its answer arrives, as the network's answers do.
 impl<H: Send> wcontainers_system::DomainNameResolver for TestHost<H> {
-    type Answer = wcontainers_runtime_single_kernel::names::NameAnswer;
+    type AnswerBytes = Vec<u8>;
 
     async fn resolve_domain(
         &self,
@@ -928,7 +928,7 @@ impl<H: Send> wcontainers_system::DomainNameResolver for TestHost<H> {
         if !self.replaying() {
             lock(&self.network).resolve(number, question);
         }
-        wcontainers_runtime_single_kernel::names::NameAnswer::new(
+        wcontainers_runtime_single_kernel::names::to_name_answer(
             Replies::wait(&self.names, number).await,
         )
     }

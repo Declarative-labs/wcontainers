@@ -666,7 +666,7 @@ impl wcontainers_system::FuseServer for LocalSystem {
 }
 
 impl wcontainers_system::DomainNameResolver for LocalSystem {
-    type Answer = crate::names::NameAnswer;
+    type AnswerBytes = Vec<u8>;
 
     async fn resolve_domain(
         &self,

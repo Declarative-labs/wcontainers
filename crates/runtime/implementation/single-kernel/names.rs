@@ -18,22 +18,10 @@ use crate::arrivals::{Arrival, Arrivals};
 const LOOKUP_THREAD: &str = "wcontainers lookup";
 
 /// A resolver's answer, the message's bytes.
-pub struct NameAnswer(Message<Vec<u8>>);
+pub type NameAnswer = Message<Vec<u8>>;
 
-impl NameAnswer {
-    pub fn new(bytes: Vec<u8>) -> Result<Self, HostError> {
-        Message::from_octets(bytes)
-            .map(Self)
-            .map_err(|_| HostError::Errno(Errno::EBADMSG as i32))
-    }
-}
-
-impl std::ops::Deref for NameAnswer {
-    type Target = Message<[u8]>;
-
-    fn deref(&self) -> &Message<[u8]> {
-        self.0.for_slice()
-    }
+pub fn to_name_answer(bytes: Vec<u8>) -> Result<NameAnswer, HostError> {
+    Message::from_octets(bytes).map_err(|_| HostError::Errno(Errno::EBADMSG as i32))
 }
 
 /// The answer to an address question from the addresses found for its name, of the kind asked
@@ -122,5 +110,5 @@ pub(crate) async fn resolve(
         }
     })
     .await?;
-    NameAnswer::new(bytes)
+    to_name_answer(bytes)
 }

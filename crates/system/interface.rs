@@ -184,16 +184,16 @@ pub trait FallbackObserver {
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
 
-    /// Sends a FUSE request and returns its reply; a request that FUSE gives no reply finishes at once with an empty one.
+    /// Sends a FUSE request and returns its reply; a request FUSE never replies to completes immediately with an empty reply.
     async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>;
 }
 
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 pub trait DomainNameResolver {
-    type Answer: Deref<Target = Message<[u8]>>;
+    type AnswerBytes: AsRef<[u8]>;
 
     async fn resolve_domain(
         &self,
         question: Question<&Name<[u8]>>,
-    ) -> Result<Self::Answer, HostError>;
+    ) -> Result<Message<Self::AnswerBytes>, HostError>;
 }

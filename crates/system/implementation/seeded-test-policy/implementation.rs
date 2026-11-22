@@ -274,12 +274,12 @@ impl<H: Host> wcontainers_system::FuseServer for TestPolicy<H> {
 
 /// Names are refused, as every other request to the outside.
 impl<H: Host> wcontainers_system::DomainNameResolver for TestPolicy<H> {
-    type Answer = &'static domain::base::Message<[u8]>;
+    type AnswerBytes = &'static [u8];
 
     async fn resolve_domain(
         &self,
         question: domain::base::Question<&domain::base::Name<[u8]>>,
-    ) -> Result<Self::Answer, HostError> {
+    ) -> Result<domain::base::Message<Self::AnswerBytes>, HostError> {
         let kind = u64::from(question.qtype().to_int());
         self.refuse(kind)?;
         Err(HostError::NotSupported)
