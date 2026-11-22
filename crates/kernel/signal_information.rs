@@ -5,8 +5,6 @@
     reason = "Linux's siginfo_t for ARM64 and x86-64, which share one layout and one table of codes"
 )]
 
-use bitflags::bitflags;
-
 use crate::signal::Signal;
 use crate::{TaskId, UserId};
 
@@ -176,10 +174,22 @@ pub struct PollBand(PollEvents);
 
 impl PollBand {
     pub const fn new(events: PollEvents) -> Option<Self> {
-        if events.is_empty() {
-            None
-        } else {
+        if events.data_to_read
+            || events.exceptional_condition
+            || events.writing_possible
+            || events.error_condition
+            || events.hang_up
+            || events.descriptor_not_open
+            || events.normal_data_to_read
+            || events.priority_band_data_to_read
+            || events.normal_data_writable
+            || events.priority_data_writable
+            || events.message_available
+            || events.peer_shut_down_writing
+        {
             Some(Self(events))
+        } else {
+            None
         }
     }
     pub const fn get(self) -> PollEvents {
@@ -187,23 +197,33 @@ impl PollBand {
     }
 }
 
-bitflags! {
-    /// The events of a [`poll`](https://man7.org/linux/man-pages/man2/poll.2.html) `revents` mask.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct PollEvents: u16 {
-        const POLLIN = 1 << 0;
-        const POLLPRI = 1 << 1;
-        const POLLOUT = 1 << 2;
-        const POLLERR = 1 << 3;
-        const POLLHUP = 1 << 4;
-        const POLLNVAL = 1 << 5;
-        const POLLRDNORM = 1 << 6;
-        const POLLRDBAND = 1 << 7;
-        const POLLWRNORM = 1 << 8;
-        const POLLWRBAND = 1 << 9;
-        const POLLMSG = 1 << 10;
-        const POLLRDHUP = 1 << 13;
-    }
+/// The events of a [`poll`](https://man7.org/linux/man-pages/man2/poll.2.html) `revents` mask, one field for each bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PollEvents {
+    /// `POLLIN`.
+    pub data_to_read: bool,
+    /// `POLLPRI`.
+    pub exceptional_condition: bool,
+    /// `POLLOUT`.
+    pub writing_possible: bool,
+    /// `POLLERR`.
+    pub error_condition: bool,
+    /// `POLLHUP`.
+    pub hang_up: bool,
+    /// `POLLNVAL`.
+    pub descriptor_not_open: bool,
+    /// `POLLRDNORM`.
+    pub normal_data_to_read: bool,
+    /// `POLLRDBAND`.
+    pub priority_band_data_to_read: bool,
+    /// `POLLWRNORM`.
+    pub normal_data_writable: bool,
+    /// `POLLWRBAND`.
+    pub priority_data_writable: bool,
+    /// `POLLMSG`.
+    pub message_available: bool,
+    /// `POLLRDHUP`.
+    pub peer_shut_down_writing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

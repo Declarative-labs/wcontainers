@@ -10,13 +10,12 @@ use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_kernel::signal_information::SignalInformation;
+use wcontainers_kernel::signal_information::{PollEvents, SignalInformation};
 use wcontainers_kernel::{
     AccessKind, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse, TaskId,
 };
 use wcontainers_random_source::RandomSource;
 use wcontainers_raw_sockets::RawSockets;
-use wcontainers_readiness::Readiness;
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_tcp_sockets::TcpSockets;
 use wcontainers_udp_sockets::UdpSockets;
@@ -166,11 +165,17 @@ pub trait TaskIdAllocator {
 }
 
 /// A transport of byte streams to and from endpoints.
-pub trait StreamTransport: Readiness<Self::Endpoint> {
+pub trait StreamTransport {
     type Endpoint: Ord;
 
     fn send_stream(&self, peer: &Self::Endpoint, bytes: &[u8]) -> Result<usize, HostError>;
     fn receive_stream(&self, peer: &Self::Endpoint, into: &mut [u8]) -> Result<usize, HostError>;
+    /// Waits until the stream has one of the events asked for, and returns the events it has.
+    async fn wait_for_stream_events(
+        &self,
+        peer: &Self::Endpoint,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError>;
     fn close_stream(&self, peer: &Self::Endpoint);
 }
 
@@ -181,20 +186,19 @@ pub trait FallbackObserver {
     fn on_fallback_used(&self, which: &Self::Fallback) {}
 }
 
-/// A [FUSE](https://man7.org/linux/man-pages/man4/fuse.4.html) server.
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
 
-    /// Sends a FUSE request and returns its reply; a request FUSE never replies to completes immediately with an empty reply.
+    /// Sends a FUSE request and returns its reply; a request that FUSE gives no reply finishes at once with an empty one.
     async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>;
 }
 
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 pub trait DomainNameResolver {
-    type AnswerBytes: AsRef<[u8]>;
+    type Answer: Deref<Target = Message<[u8]>>;
 
     async fn resolve_domain(
         &self,
         question: Question<&Name<[u8]>>,
-    ) -> Result<Message<Self::AnswerBytes>, HostError>;
+    ) -> Result<Self::Answer, HostError>;
 }
