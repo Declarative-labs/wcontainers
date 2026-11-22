@@ -59,7 +59,7 @@ mod vex;
 #[cfg(feature = "translate")]
 mod wide;
 
-pub use offer::{FULL_SPEED, NotBuilt, Offer, V3};
+pub use offer::{FULL_SPEED, Offer, Refused, V3};
 
 #[cfg(feature = "translate")]
 pub use decode::{Instruction, claim, decode, told_feature};

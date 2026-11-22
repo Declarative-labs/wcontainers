@@ -9,7 +9,7 @@ use wcontainers_x86::cpuid::{
     MAX_EXTENDED, TIME_STAMP_HZ, VENDOR, answer,
 };
 use wcontainers_x86::offer::{REFERENCE_FAMILY, REFERENCE_MODEL, REFERENCE_STEPPING};
-use wcontainers_x86::{FULL_SPEED, NotBuilt, Offer, V3};
+use wcontainers_x86::{FULL_SPEED, Offer, Refused, V3};
 
 fn cpu(features: X86_64Features) -> CpuId<impl raw_cpuid::CpuIdReader> {
     let offer = Offer::new(features).expect("a list of built features");
@@ -254,18 +254,56 @@ fn a_list_with_an_unbuilt_feature_is_refused() {
         cpuid_01_ecx: FULL_SPEED.cpuid_01_ecx | ecx,
         ..FULL_SPEED
     };
-    assert_eq!(Offer::new(with(Cpuid01Ecx::AES)), Err(NotBuilt("AES")));
+    assert_eq!(
+        Offer::new(with(Cpuid01Ecx::AES)),
+        Err(Refused::NotBuilt("AES"))
+    );
     assert_eq!(
         Offer::new(with(Cpuid01Ecx::RDRAND)),
-        Err(NotBuilt("RDRAND"))
+        Err(Refused::NotBuilt("RDRAND"))
     );
     let avx512 = X86_64Features {
         cpuid_07_ebx: V3.cpuid_07_ebx | Cpuid07Ebx::AVX512F,
         ..V3
     };
-    assert_eq!(Offer::new(avx512), Err(NotBuilt("AVX512F")));
+    assert_eq!(Offer::new(avx512), Err(Refused::NotBuilt("AVX512F")));
     assert!(Offer::new(V3).is_ok());
     assert_eq!(Offer::default().features(), FULL_SPEED);
+}
+
+/// A list no processor could have is refused: AVX without XSAVE, and AVX2, FMA or F16C without AVX.
+#[test]
+fn a_list_without_a_prerequisite_is_refused() {
+    let refused = |feature, prerequisite| {
+        Err(Refused::MissingPrerequisite {
+            feature,
+            prerequisite,
+        })
+    };
+    let without_avx = |ecx: Cpuid01Ecx, ebx: Cpuid07Ebx| X86_64Features {
+        cpuid_01_ecx: (V3.cpuid_01_ecx - Cpuid01Ecx::AVX - Cpuid01Ecx::FMA - Cpuid01Ecx::F16C)
+            | ecx,
+        cpuid_07_ebx: (V3.cpuid_07_ebx - Cpuid07Ebx::AVX2) | ebx,
+        ..V3
+    };
+    assert!(Offer::new(without_avx(Cpuid01Ecx::empty(), Cpuid07Ebx::empty())).is_ok());
+    assert_eq!(
+        Offer::new(without_avx(Cpuid01Ecx::empty(), Cpuid07Ebx::AVX2)),
+        refused("AVX2", "AVX")
+    );
+    assert_eq!(
+        Offer::new(without_avx(Cpuid01Ecx::FMA, Cpuid07Ebx::empty())),
+        refused("FMA", "AVX")
+    );
+    assert_eq!(
+        Offer::new(without_avx(Cpuid01Ecx::F16C, Cpuid07Ebx::empty())),
+        refused("F16C", "AVX")
+    );
+    let avx_without_xsave = X86_64Features {
+        cpuid_01_ecx: V3.cpuid_01_ecx - Cpuid01Ecx::XSAVE,
+        ..V3
+    };
+    assert_eq!(Offer::new(avx_without_xsave), refused("AVX", "XSAVE"));
 }
 
 /// The cache key tells apart lists that differ in one feature or in the signature.

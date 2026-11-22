@@ -15,9 +15,57 @@ pub struct Offer {
     told: u32,
 }
 
-/// A feature in a list that this crate has no meanings for, by the kernel interface's name.
+/// Why a list is not an offer, by the kernel interface's names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotBuilt(pub &'static str);
+pub enum Refused {
+    /// A feature this crate has no meanings for.
+    NotBuilt(&'static str),
+    /// A feature without one that every processor having it also has.
+    MissingPrerequisite {
+        feature: &'static str,
+        prerequisite: &'static str,
+    },
+}
+
+fn leaf_1_name(flag: Cpuid01Ecx) -> &'static str {
+    flag.iter_names()
+        .next()
+        .map_or_else(|| unreachable!(), |(n, _)| n)
+}
+
+fn leaf_7_name(flag: Cpuid07Ebx) -> &'static str {
+    flag.iter_names()
+        .next()
+        .map_or_else(|| unreachable!(), |(n, _)| n)
+}
+
+/// The first feature of the list told without its prerequisite: AVX's registers are enabled through XSAVE's
+/// XCR0, and AVX2, FMA and F16C work on AVX's registers, so a processor without AVX raises illegal instruction
+/// for them (Intel SDM Vol. 1 14.3).
+fn missing_prerequisite(f: &X86_64Features) -> Option<Refused> {
+    let leaf_1 = |flag| (f.cpuid_01_ecx.contains(flag), leaf_1_name(flag));
+    let avx = leaf_1(Cpuid01Ecx::AVX);
+    let needs = [
+        (avx, leaf_1(Cpuid01Ecx::XSAVE)),
+        (
+            (
+                f.cpuid_07_ebx.contains(Cpuid07Ebx::AVX2),
+                leaf_7_name(Cpuid07Ebx::AVX2),
+            ),
+            avx,
+        ),
+        (leaf_1(Cpuid01Ecx::FMA), avx),
+        (leaf_1(Cpuid01Ecx::F16C), avx),
+    ];
+    needs
+        .into_iter()
+        .find_map(|((has, feature), (needed, prerequisite))| {
+            (has && !needed).then_some(Refused::MissingPrerequisite {
+                feature,
+                prerequisite,
+            })
+        })
+}
 
 /// The name of the AVX10 version field, which no meaning here serves.
 const AVX10: &str = "AVX10";
@@ -70,10 +118,11 @@ pub const V3: X86_64Features = X86_64Features {
 };
 
 impl Offer {
-    /// The list as an offer, refused if it holds a feature with no meanings here.
-    pub fn new(features: X86_64Features) -> Result<Self, NotBuilt> {
+    /// The list as an offer, refused if it holds a feature with no meanings here or one without its
+    /// prerequisite.
+    pub fn new(features: X86_64Features) -> Result<Self, Refused> {
         if features.avx10.is_some() {
-            return Err(NotBuilt(AVX10));
+            return Err(Refused::NotBuilt(AVX10));
         }
         let f = features;
         fn name<F>((n, _): (&'static str, F)) -> &'static str {
@@ -93,8 +142,11 @@ impl Offer {
             let at = TOLD_FEATURES
                 .iter()
                 .position(|&n| n == name)
-                .ok_or(NotBuilt(name))?;
+                .ok_or(Refused::NotBuilt(name))?;
             told |= 1 << at;
+        }
+        if let Some(refused) = missing_prerequisite(&features) {
+            return Err(refused);
         }
         Ok(Self { features, told })
     }
