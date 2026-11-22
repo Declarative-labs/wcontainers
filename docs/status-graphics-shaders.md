@@ -38,8 +38,50 @@ subnormal tessellation factors kept on the DXBC route. Run 2 (run 81, the sectio
 first part, `A8Unorm` storage views, built and drawn. Run 3 (run 82, the section below): A4's
 `SwizzledDepth` measured on real Direct3D 12 and settled where the devices agree, gathers of a
 depth texture's other components on both routes. Run 4 (run 83, the section below): A5's
-geometry replay of streams past the first, the Direct3D 11 front's ask. Not complete: the gap
-list below.
+geometry replay of streams past the first, the Direct3D 11 front's ask. Run 5 (run 84, the
+section below): A5's alpha-antialiased lines on WebGL 2. Not complete: the gap list below.
+
+## G6 run 5 (run 84): alpha-antialiased lines on WebGL 2 (A5)
+
+Logs and scripts in scratch `graphics-shaders/g6-r84` (run 83's with its folder; jobs `job1.log`
+to `job3.log`, `gpu-suite.log`; `x86-checks.log`, `x86-tests.log` with `x86-tests.sh`, the CPU
+tests and checks from a bundle of the clone's `x86tip`).
+- Built: `GeometryReplay::antialiased_lines` and `run_antialiased_lines` (src/stage/replay.rs),
+  the Direct3D 11 front's remaining 10_0 need on WebGL 2. Each draw captures the vertex stage
+  (`stage::line_capture_programs`, records as the compute route's), copies the records into the
+  records' texture, then captures `src/stage/line_replay.wgsl` once a corner of each line's two
+  triangles (`lines.wgsl`'s rectangle, written by a vertex program; the corner record's slot count
+  is declared in front of the text, `line_replay_program`), which the line pass-through draws. On
+  a back end without clip depth from zero the records carry `CLIP_DEPTH_REWRITE`'s `2z - w`, and
+  the program cuts lines at z = -w there (`near_w`). How the front calls it: "How the Direct3D
+  fronts call `convert`", alpha-antialiased lines.
+- Fixed on the way, both found by the new test on ANGLE: (1) every stage helper pass-through
+  wrote each value as four components, where GLSL ES links a varying only of the same type, so a
+  pixel shader reading a narrower value (dxc's `ps_line` reads its `ID` as one u32) did not link
+  behind the replay; pass-throughs now write each value at the width the vertex program declares
+  (`DrawnOutputs::passthrough_values`; the geometry shader's pass-through, from its reflection,
+  keeps four). (2) The replay's capture states asked for clip depth from zero, which the WebGL 2
+  back end refuses without EXT_clip_control (`GpuError::Absent(CLIP_DEPTH_ZERO_ONE)`), so every
+  replay route failed on such a context; they now take the back end's convention.
+- Test (tests/stage_draw.rs): `antialiased_lines_draw_as_direct3d_does` draws each case by the
+  compute route on WebGPU, replayed on WebGL 2 (ANGLE on the RTX 3080) and replayed on WebGL 2
+  without EXT_clip_control, fxc and dxc builds, against real Direct3D 11 on the RTX 3080 within
+  the allowance (64) and beside WARP: 144 comparisons, 0 failed, default seeds 1 to 4 (job3.log);
+  each replayed picture differs from the RTX 3080's in exactly as many texels and by as much as
+  the compute route's (for example seed 1's list 508 of 528, largest 28). Every vertex lies at
+  depth 0.5, so no line crosses the near plane: the cut is not exercised by any drawn test, on
+  either route.
+- Runs: x86 machine (load 0.4 to 2): rustfmt clean, clippy of this crate and the interface with
+  warnings denied clean, the CPU test binaries `geometry`, `variants`, `rewrite`, `builtin`,
+  `cache`, `glsl_writer` and `compute`: 99 passed, 2 ignored as before; the literal check prints
+  no line of this crate (x86-tests.log). Desktop (RTX 3080, GPU jobs one at a time, 3 cargo jobs):
+  Windows clippy clean; `geometry_draw` with the width change: 9 passed (job2.log); the whole
+  suite at the committed code (74d7df22, one job, one test thread): 24 test binaries, 175 passed,
+  0 failed, 6 ignored as before (gpu-suite.log).
+- Not run: WebAssembly, Chrome (no converted shader changed; the stage helper's programs are in
+  no corpus record).
+- Clean-up: the desktop's `C:\wc\src\x86tip` and `C:\wc\target\x86tip`, the x86 machine's clone,
+  build folder and bundle, the scratch clone and bundles (logs kept in `g6-r84`).
 
 ## G6 run 4 (run 83): the geometry replay's streams past the first (A5)
 
@@ -663,7 +705,8 @@ The pass bar, item by item:
    test and `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`).
    DXIL since G6b: geometry, hull and domain shaders with dxc's builds (A6 closed); stream output
    from dxc's builds against real Direct3D 12 running them since G6b run 3 (A21, A22).
-   Not met: the rest of WebGL 2 (tessellation, cull distances, lines: gap A5), some topologies and streams (A7), vertex shaders writing storage (A9), single texels on
+   Alpha-antialiased lines on WebGL 2 since run 84 (`stage_draw`, replayed on ANGLE).
+   Not met: the rest of WebGL 2 (tessellation, cull distances, primitive numbers: gap A5), some topologies and streams (A7), vertex shaders writing storage (A9), single texels on
    the edges of clipped triangles and a few of culled lines (A10), clamped depth behind a
    geometry stage at some seeds (A12), geometry shaders taking patches (A13), hull shaders
    giving no control points (A14) and the written count of a stream with no buffer bound (A15).
@@ -759,11 +802,16 @@ The gap list (every item of the pass bar not met):
   (`StreamOutCullDistance`); stream
   output from a geometry shader writing several streams runs since run 83 (the replay form keeps
   the stream `word::STREAM` names, replayed once a stream, stream 0 last; its section);
-  alpha-antialiased lines, cull distances,
-  primitive numbers and tessellation on WebGL 2 (each the vertex stage captured the same way;
-  the tessellator needs compute, so tessellation stays absent there). Waits: the Direct3D 11 front
-  at feature level 10_0 on WebGL 2 (its geometry shaders and their stream output now run; its
-  alpha-antialiased lines remain). Takes: each its route and its drawn test on ANGLE.
+  alpha-antialiased lines run since run 84 (`GeometryReplay::antialiased_lines`: the vertex stage
+  captured, then `line_replay.wgsl` captured once a corner of each line's two triangles, as
+  `lines.wgsl` writes them; its section). Not built: cull distances, primitive numbers and
+  tessellation on WebGL 2 (each the vertex stage captured the same way; the tessellator needs
+  compute, so tessellation stays absent there). Also open on both line routes: a vertex program
+  converted with `VIEWPORT_DEPTH_FLIP` (a swapped depth range) is cut at the wrong plane where a
+  line crosses the near plane, as both line programs take Direct3D's near plane z = 0 (or z = -w
+  under `CLIP_DEPTH_REWRITE` on the replay route); not tested. Waits: nobody (the Direct3D 11
+  front at feature level 10_0 on WebGL 2 now has its geometry shaders, their stream output and
+  its alpha-antialiased lines). Takes: each its route and its drawn test on ANGLE.
 - A6. Converter part closed in G6b (runs 65, 66, 68 and 69): DXIL geometry, hull and domain shaders convert through the
   passes the DXBC route uses and draw equal to real Direct3D with dxc's builds of every program
   (`geometry_draw`, `tessellation_draw`); a DXIL pixel shader reads its layer and viewport. Since
@@ -1476,9 +1524,11 @@ G6a run 5's tip):
 
 1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
-   front's asks, both waiting on the interface track; A5's replayed streams were done in run 83),
-   A5's alpha-antialiased lines on WebGL 2, A4's multisampled `combine`, A9, A7, A1, the DXIL route's
-   `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches).
+   front's asks, both waiting on the interface track; A5's replayed streams were done in run 83
+   and its alpha-antialiased lines on WebGL 2 in run 84), A4's multisampled `combine` (the Direct3D
+   11 front withdraws the multisample bits of the nine formats held as integer twins until then),
+   A9, A7, A1, the DXIL route's `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv
+   patches), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP` (A5).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's asks under "New for the owner" (the geometry and tessellation entry
    point its G9 waits on first), A26 (the unordered not-equal, both routes, with its drawn NaN
@@ -1507,6 +1557,16 @@ G6a run 5's tip):
   float'"). They would not compile where WEBGL_clip_cull_distance is enabled either; each element
   assigned on its own would. The records name the need, so the corpus test counts them as named.
 
+- Answered for the Direct3D 11 front (run 84, its ask "atg-simplecomputepc's division", still
+  listed in its status): measured twice, not the converter's. This track's own `cs_divide` and
+  `cs_escape` (the program's division and its Mandelbrot loop as written, fxc and dxc builds)
+  give real Direct3D 11's bits on the RTX 3080, both routes (runs 41 and 44, history), and the
+  WebGPU track measured real Direct3D 11 itself giving 1200 / 300 = 3.9999998 for a divisor read
+  at run time (its status, `divisions_match_direct3d`). What is left for that program is the colour
+  map's sample at u just below 1 (the front's sampler state and the texture's addressing), which
+  the front can compare with a real run's.
+- Answered for the Direct3D 11 front (run 84, A5): alpha-antialiased lines on WebGL 2 run through
+  `GeometryReplay::antialiased_lines` ("How the Direct3D fronts call `convert`").
 - Answered for the Direct3D 11 front (run 83, its ask "the geometry replay's streams past the
   first"): `GeometryReplay::new` takes a stream output declaration naming several streams, and
   `run` writes every stream; give the filled block `stage::STREAM_FILLED_WORDS` words, as on the
@@ -1732,6 +1792,18 @@ G6a run 5's tip):
   cull distances on the same vertex shader (`AntialiasedLinesCullDistance`), other topologies
   (`AntialiasedLinesTopology`). Indexed strips run (since run 50; pass the index buffer in
   `StageDraw::index`). `tests/stage_draw.rs` does exactly this.
+  On a back end without compute and with `Features::TRANSFORM_FEEDBACK` (WebGL 2; since run 84):
+  convert the vertex shader with its inputs as drawn (`draw_base: Helpers`, the same `linked`) and
+  the pixel shader as above; `GeometryReplay::antialiased_lines(backend, &vertex, &pixel_key)` once
+  per pair; per draw `replay.run_antialiased_lines(backend, ReplayDraw { .. }, [viewport width,
+  viewport height])` (`geometry_sets` all `None`, `stream_output` `None`), then draw the
+  `FinalDraw` through `replay.passthrough()` and `replay.vertex_layout()` with culling off (a
+  triangle list without indices). Make index buffers with `BufferUsage::COPY_SRC`, as indexed
+  strips are read back. Convert that vertex shader without `CLIP_DEPTH_REWRITE` and
+  `VIEWPORT_DEPTH_FLIP` (the line program cuts lines at Direct3D's near plane, z = 0, on both
+  routes); WebGL 2 without EXT_clip_control is then not served by this route. Refused by name
+  besides those above: records wider than one capture target (`GeometryReplayComponents`).
+  `tests/stage_draw.rs` (`ours_replayed`) does exactly this.
 - A pixel shader reading `SV_PrimitiveID` without a geometry or hull stage where the back end lacks
   `Features::PRIMITIVE_INDEX` (WebGPU, `Features::COMPUTE`; since run 45): convert the pixel shader
   with `VariantFlags::PRIMITIVE_ID_FROM_STAGE` and `linked` (as for clip distances), the vertex
