@@ -56,7 +56,9 @@ below): level-of-detail queries (`CalculateLevelOfDetail`) on the DXBC route (th
 (run 94, the section below): inputs evaluated elsewhere in the pixel (`InterpolateAt`) on the DXIL
 route, and DXIL pixel inputs' sampling kept. Run 8 (run 95, the section below): the Direct3D 11
 track's `B8G8R8X8_UNORM` vertex format committed, and A20, a geometry shader after a domain stage
-reading its primitive's number. Not complete: the gap list below.
+reading its primitive's number. Run 9 (run 96, the section below): A14's DXIL part (dxc's domain
+shaders of a patch of no control points), and typed buffers of `B8G8R8X8_UNORM` (the Direct3D 11
+track's ask). Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -66,18 +68,11 @@ commit (every arm, so the shared worktree builds at each commit). Checked on the
 infrastructure, opengl, nir, graphics-test) with no error or warning, clippy of this crate and the
 interface with warnings denied, the WebGPU back end's library tests (7) and this crate's CPU
 tests. Not drawn here (no GPU run of `every_vertex_format_reads_its_element`: the front's to run).
-Not done: typed buffers of the format (variant/texel.rs `vertex_format` has no arm for
-`Format::Bgrx8Unorm`, so such a view is still refused); that mapping is shared with targets in the
-shader and storage clears, so it waits on a drawn typed-buffer test of the X byte.
-Asked again by the Direct3D 11 track (G4h run 3, 2026-11-22): the drawn test exists and passes with
-the arm. The one line `F::Bgrx8Unorm => V::Bgrx8Unorm,` in variant/texel.rs `vertex_format`
-(pyro-parked/wcontainers-scratch/graphics-direct3d-11/g4h/bgrx8-shaders-texel.patch), at a trial
-commit of the tip on the RTX 3080: the front's `b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them`
-(own_cases `bgrx`: a pixel shader loads a `B8G8R8X8_UNORM` typed buffer's element whose X byte is
-0x20, and reads it as real Direct3D does, the fourth component 1) and Wine's test_buffer_srv (234
-checks as real Direct3D) pass. Targets and storage of the format are not served through it by the
-front (it claims no typed storage of `B8G8R8X8_UNORM`, as the RTX 3080 does not). Please commit it
-(it is the last of `BUFFER` for the format, required from 10_0), or say the Direct3D 11 track may.
+Typed buffers of the format (its G4h run 3 ask, 380c3637): committed in run 96, 1958e97b, the
+line it asked for in variant/texel.rs `vertex_format`, with variant/decoded.rs keeping the format
+out of the integer twins as BGRA is (targets and storage clears of it stay refused as before).
+Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
+96's section).
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
@@ -123,6 +118,54 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 9 (run 96): A14's DXIL part, and typed buffers of B8G8R8X8
+
+Logs and scripts in scratch `graphics-shaders/g6-r96` (run 95's with its folder; `arm1.log` to
+`arm9.log`, `job1.log` to `job3.log`, `compile.log`, `chrome.log`, `chrome-in/`, `ds_none.txt`, the
+disassembly of dxil-spirv's SPIR-V of the runner's file). Nothing built on the Mac (rustfmt of
+single files only).
+- A14's DXIL part (ab0ea30f): the refusal `DomainWithoutControlPoints` on the DXIL route is gone.
+  The cause written before was half right: own `ds_tri_none.dxil` declares no patch, and
+  dxil-spirv's SPIR-V of it has no array at all (`ds_none.txt` of run 96's first probe), so it only
+  needed the refusal lifted. The runner's `patch-syntax-11-ds.dxil` declares a patch it never
+  reads, dxc records it as none, and dxil-spirv declares those inputs as input arrays of length 0,
+  which naga's reader refuses ("invalid array size"). `dxil::tessellation::drop_arrays_of_none`
+  drops such variables (and their array and pointer types, names and decorations) when no function
+  reads or writes through them, and refuses by the old name otherwise (not met by any file: dxc
+  refuses to build a read of a patch of none). Own dxc builds of such a domain shader could not be
+  made: fxc and dxc both refuse `OutputPatch<T, 0>`, and dxc records an unread `OutputPatch<T, 3>`
+  as 3 points, so the runner's file (outside the repository) is the only test of the drop, through
+  its record. The NIR route's `staged::domain` keeps the refusal (OpenGL patches hold at least one
+  point).
+- Drawn on the RTX 3080 (job1.log, job2.log): `hulls_giving_no_control_points_stream_as_direct3d_does`
+  now streams fxc's hull shader with both builds of the rest (`Staged::hull_route` names the hull
+  shader's build), against Direct3D 11 on WARP: seeds 1 to 4, 8 comparisons, 0 failed, every
+  patch's primitives equal and in the same order. The whole `tessellation_draw` binary passed in
+  the same job (9 tests).
+- Typed buffers of `B8G8R8X8_UNORM` (1958e97b): `F::Bgrx8Unorm => V::Bgrx8Unorm` in
+  `vertex_format` (blue, green and red from bytes 2, 1 and 0, alpha one), and
+  variant/decoded.rs's BGRA exclusion now names it too, so targets in the shader and storage
+  clears of it are refused as before. Drawn (job2.log): new
+  `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (`cs_texels` with both float views of the
+  format, every other view seeded as before) against real Direct3D 11 on the RTX 3080, seeds 1 to
+  8, both builds: 0 words apart; `typed_buffers_match_direct3d` and its other-kind twin passed in
+  the same job (seeds 1 to 8). Mutant (job3.log: the format read as `Bgra8Unorm`, so the X byte as
+  alpha): 128 result words apart at seed 1, the test fails. CPU: `FLOAT_FORMATS` of tests/compute.rs
+  holds the format (converts through storage).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load under 1): 13 passed. Changed
+  records: own-dxil `ds_tri_none.dxil` and runner-dxil `hlsl+patch-syntax-11-ds.dxil`, both now
+  `ok` (WGSL written; GLSL needs vertex storage, as every domain program). The only written files
+  that differ from run 95's out are those two new WGSL files; Chrome on the desktop compiles both
+  (chrome.log).
+- ARM64 (arm7.log, arm9.log, load 7 to 21): `cargo fmt -p wcontainers-shaders --check` clean,
+  clippy with warnings denied clean, every CPU test binary passed; the literal check prints no line
+  of this crate (it first found `POINTER_STORAGE_CLASS` defined twice; now one, in dxil/staged.rs).
+  Windows clippy clean (job1.log, job2.log).
+- WebAssembly not rerun (no target-dependent code changed).
+- For the Direct3D fronts: nothing to call differently. Direct3D 12's runner file
+  `patch-syntax-11-ds.dxil` converts; typed buffers of `B8G8R8X8_UNORM` convert where they were
+  refused by `TypedBufferFormatAbsent`.
 
 ## G6 run 8 (run 95): the B8G8R8X8 vertex format, and A20
 
@@ -1750,7 +1793,9 @@ The gap list (every item of the pass bar not met):
   as naga's are, which needs the way to carry C++ patches A8 also waits on), then dxc's `gs_patch`
   drawn; for WebGL 2, the replay capturing a patch list as points, as lists with adjacency are,
   and a case of the replayed test.
-- A14. DXBC part closed in run 89 (its section): a hull shader of no output control points and a
+- A14. Closed: the DXIL part in run 96 (its section; the runner's `patch-syntax-11-ds.dxil` and own
+  `ds_tri_none.dxil` convert, the latter drawn equal to Direct3D 11 on WARP; the text below is the
+  entry before it). DXBC part closed in run 89 (its section): a hull shader of no output control points and a
   domain shader of none convert, streamed equal to Direct3D 11 on WARP
   (`hulls_giving_no_control_points_stream_as_direct3d_does`); the runner's
   `hull-shader-attributes-10` converts. Real Direct3D 11 on the RTX 3080 ended the test process
@@ -2159,7 +2204,7 @@ G6a run 5's tip):
   A14's `HullWithoutControlPoints`, gone in run 89);
   `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` 2 (A13; DXIL
   `patch-syntax-12-gs` and own `gs_patch.dxil`; the DXBC 5 convert since run 89);
-  `DomainWithoutControlPoints` 2 (A14; runner `patch-syntax-11-ds.dxil`, own `ds_tri_none.dxil`;
+  `DomainWithoutControlPoints` 0 (A14; both files convert since run 96;
   `HullWithoutControlPoints` gone in run 89); `ComponentPastVector` 1
   (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
@@ -2190,12 +2235,7 @@ G6a run 5's tip):
 
 ## Next
 
-1. The DXIL part of A14 (the Direct3D 12 runner's `patch-syntax-11-ds.dxil`): in
-   src/dxil/tessellation.rs `prepare`, a domain shader of no input control points is refused; drop
-   dxil-spirv's control point input array of none from the SPIR-V before naga reads it (the
-   program reads no control point), then draw own `ds_tri_none.dxil` with `hs_tri_none` in
-   `hulls_giving_no_control_points_stream_as_direct3d_does` (WARP). A20 was done in run 95.
-2. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
+1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
@@ -2204,12 +2244,10 @@ G6a run 5's tip):
    shader), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
-   Direct3D 12 runner items are the DXIL parts of A13 and A14 (dxil-spirv's; A13 and A14's DXBC
-   parts closed in run 89, A7's cull distances from geometry shaders in run 90, A20 in run 95).
-   Typed buffers of `B8G8R8X8_UNORM` (variant/texel.rs, with a drawn test of the X byte against
-   real Direct3D 11) when the Direct3D 11 front asks.
-3. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-4. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
+   Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
+   89, A14 in runs 89 and 96, A7's cull distances from geometry shaders in run 90, A20 in run 95).
+2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
+3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
    the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
    in run 88), A26 (the unordered not-equal, both routes, with its drawn NaN
    test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
@@ -3729,6 +3767,12 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 96's scripts in scratch `graphics-shaders/g6-r96` are run 95's with its folder; `tree-tar.sh`
+  now lists the clone's files (it listed the checkout's). A SPIR-V probe: write dxil-spirv's words to
+  `/work/src/graphics-shaders/target/<name>.spv` from a trial edit in the clone, run through
+  `arm-run <clone> --name graphics-shaders`, then `nix shell nixpkgs#spirv-tools -c spirv-dis` there
+  and `arm-run --fetch`. The literal check and `cargo fmt --check` ran on the ARM64 machine from the
+  checkout itself (arm9.log's command).
 - Run 95's scripts in scratch `graphics-shaders/g6-r95` are run 94's with its folder; a mutant is
   applied to the clone by a script (`mutant-number.sh`), run with `gpu-noclippy.sh`, and undone
   with `git -C tip checkout -- <file>`. The literal check ran on the ARM64 machine as run 88's
