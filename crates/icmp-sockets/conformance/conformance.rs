@@ -113,8 +113,12 @@ const SLOW_RATE: BytesPerSecond = BytesPerSecond(1000);
 /// https://man7.org/linux/man-pages/man7/socket.7.html
 const ATTEMPTS: usize = 64;
 /// Where an echo message keeps its identifier, after its type, code and checksum.
+///
+/// https://www.rfc-editor.org/rfc/rfc792
 const IDENTIFIER_BYTES: core::ops::Range<usize> = 4..6;
 /// Where an ICMP message keeps its checksum.
+///
+/// https://www.rfc-editor.org/rfc/rfc792
 pub const CHECKSUM_BYTES: core::ops::Range<usize> = 2..4;
 // https://man7.org/linux/man-pages/man7/credentials.7.html
 pub const ROOT: UserId = UserId(0);

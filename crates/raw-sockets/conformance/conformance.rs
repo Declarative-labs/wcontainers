@@ -1994,8 +1994,9 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     }
 }
 
-/// Checks that a group's source filter is the host's as written, and an IPv4 raw socket takes the group's packets only from the
-/// sources its filter lets in. (An IPv6 raw socket bound to no address takes every multicast packet of its protocol.)
+/// Checks that a group's source filter is the host's as written, and an IPv4 raw socket takes packets only from what it lets in.
+///
+/// An IPv6 raw socket bound to no address takes every multicast packet of its protocol, so only IPv4 shows the filter.
 pub fn multicast_source_filters_choose_the_senders<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);

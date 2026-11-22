@@ -14,7 +14,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 
-/// Linux makes an echo socket only for a caller whose group is in the namespace's ping group range.
+/// Checks that Linux makes an echo socket only for a caller whose group is in the namespace's ping group range.
 #[test]
 fn an_empty_ping_group_range_refuses_the_socket() {
     wcontainers_icmp_sockets_conformance::enter_network_namespace();
@@ -33,7 +33,7 @@ fn an_empty_ping_group_range_refuses_the_socket() {
     }
 }
 
-/// An IPv6 source Linux's ping socket would not send from is refused and counted under its reason.
+/// Checks that an IPv6 source Linux's ping socket would not send from is refused and counted under its reason.
 #[test]
 fn an_ipv6_source_is_refused_and_counted() {
     wcontainers_icmp_sockets_conformance::enter_network_namespace();
@@ -99,7 +99,7 @@ fn an_ipv6_source_is_refused_and_counted() {
     assert!(matches!(counted.as_slice(), [(_, 1)]), "{counted:?}");
 }
 
-/// Each received packet counts once the fields Linux does not give and the drop count it asks the socket for.
+/// Checks that each received packet counts once the fields Linux does not give and the drop count it asks the socket for.
 #[test]
 fn a_received_packet_counts_what_linux_does_not_give() {
     use wcontainers_icmp_sockets_conformance as suite;
@@ -134,7 +134,7 @@ fn a_received_packet_counts_what_linux_does_not_give() {
     );
 }
 
-/// A transmit report without its packet, which Linux gives with no interface, counts that once.
+/// Checks that a transmit report without its packet, which Linux gives with no interface, counts that once.
 #[test]
 fn a_report_without_its_packet_counts_its_missing_interface() {
     use wcontainers_icmp_sockets_conformance as suite;
@@ -177,7 +177,7 @@ fn a_report_without_its_packet_counts_its_missing_interface() {
     assert_eq!(counted, [1]);
 }
 
-/// A send that changes whether reports hold their packet while the host still holds earlier sends counts that.
+/// Checks that a send that changes whether reports hold their packet while the host still holds earlier sends counts that.
 #[test]
 fn a_packet_wish_changed_while_sends_are_held_is_counted() {
     use wcontainers_configurable::Configurable;
