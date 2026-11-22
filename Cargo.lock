@@ -4256,7 +4256,7 @@ dependencies = [
  "wcontainers-executor",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-recording",
+ "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
@@ -4286,22 +4286,14 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-clock",
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
- "wcontainers-executor-conformance",
  "wcontainers-executor-hardware-virtualization-inside",
  "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
- "wcontainers-instruction-input-domain-arm64",
  "wcontainers-kernel-linux",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-apple-m5",
- "wcontainers-precise-instruction-set-neoverse-v2",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-recording",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
@@ -4383,9 +4375,6 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-apple-m5",
- "wcontainers-precise-instruction-set-neoverse-v2",
  "wcontainers-precise-instruction-set-unicorn",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
@@ -4433,9 +4422,6 @@ dependencies = [
  "wcontainers-executor-conformance",
  "wcontainers-guest-cpu",
  "wcontainers-instruction-input-domain-arm64",
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-apple-m5",
- "wcontainers-precise-instruction-set-neoverse-v2",
  "wcontainers-precise-instruction-set-translator",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
@@ -4799,7 +4785,10 @@ name = "wcontainers-precise-instruction-set-apple-m5"
 version = "0.1.0"
 dependencies = [
  "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-conformance",
+ "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
@@ -4808,7 +4797,7 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-recording",
+ "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
@@ -4818,7 +4807,9 @@ dependencies = [
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
+ "wcontainers-executor-conformance",
  "wcontainers-executor-hardware-virtualization",
+ "wcontainers-executor-hardware-virtualization-inside",
  "wcontainers-executor-simulation",
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set",
@@ -4827,6 +4818,7 @@ dependencies = [
  "wcontainers-precise-instruction-set-neoverse-v2",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-conformance",
  "wcontainers-processor-architecture-recording",
 ]
 
@@ -4836,6 +4828,7 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
+ "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-processor-architecture-recording",
 ]
@@ -4869,6 +4862,7 @@ dependencies = [
  "bitflags 2.13.2",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-conformance",
 ]
@@ -4887,7 +4881,6 @@ dependencies = [
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
- "wcontainers-executor-hardware-virtualization",
  "wcontainers-executor-simulation",
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set-apple-m5",
