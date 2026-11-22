@@ -1858,11 +1858,10 @@ fn format_support_follows_the_feature_level_for_display_and_signed_normalised_bl
         assert!(!has(&l9, f, support::DISPLAY));
         assert!(has(&l10, f, support::DISPLAY));
     }
-    assert!(!has(
-        &l10,
-        dxgi::R10G10B10_XR_BIAS_A2_UNORM,
-        support::DISPLAY
-    ));
+    // The extended-range format is shown from 10_0, by swap chains of the blit model.
+    let xr = dxgi::R10G10B10_XR_BIAS_A2_UNORM;
+    assert!(!has(&l9, xr, support::DISPLAY));
+    assert!(has(&l10, xr, support::DISPLAY) && has(&l10, xr, support::BACK_BUFFER_CAST));
     assert!(!has(&l10, dxgi::R8G8B8A8_SNORM, support::BLENDABLE));
     assert!(has(&l10_1, dxgi::R8G8B8A8_SNORM, support::BLENDABLE));
     // 9_x follows Microsoft's 10Level9 tables for blending, vertex and index buffers.

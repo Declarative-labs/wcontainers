@@ -12,9 +12,11 @@ use crate::desc::level;
 use crate::desc::support::*;
 use crate::desc::support2::*;
 
-/// Sample counts a format's targets must take, each as the bit `1 << count`.
-pub const SAMPLES_4: u32 = 1 << 4;
-pub const SAMPLES_8: u32 = 1 << 8;
+/// The sample counts the tables require of a format's targets.
+pub const SAMPLE_COUNTS: [u32; 2] = [4, 8];
+/// Each required count as the bit `1 << count`.
+pub const SAMPLES_4: u32 = 1 << SAMPLE_COUNTS[0];
+pub const SAMPLES_8: u32 = 1 << SAMPLE_COUNTS[1];
 
 /// What a format must have at one level: the bits of both words, the sample counts, and whether
 /// the tables leave the format itself optional there (the video formats, and the extended-range

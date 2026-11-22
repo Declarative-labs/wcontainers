@@ -287,12 +287,8 @@ fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
 
 /// A vertex shader reads a `B8G8R8X8_UNORM` element's three colours and its fourth component as 1
 /// (on the RTX 3080; Wine's test says AMD's is undefined), and a pixel shader reads the same bytes
-/// as a typed buffer's element. A known failure until the infrastructure crate maps the element
-/// format and the shaders crate reads typed buffers of it (Gap list): ours reports no vertex or
-/// typed buffers of the format and refuses the layout, as Direct3D refuses a format it does not
-/// report.
+/// as a typed buffer's element.
 #[test]
-#[ignore]
 fn b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them() {
     case("bgrx");
 }
@@ -388,38 +384,21 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
     } else {
         0
     };
-    let differences = vec![
-        (
-            DXGI_FORMAT_R32G32B32_FLOAT,
-            D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
-            0,
-            "sampling, optional: served, where the back end filters the format",
-        ),
-        (
-            DXGI_FORMAT_B8G8R8X8_UNORM,
-            D3D11_FORMAT_SUPPORT_BUFFER.0 | D3D11_FORMAT_SUPPORT_IA_VERTEX_BUFFER.0,
-            0,
-            "B8G8R8X8 elements: the interface has no vertex format giving X as 1",
-        ),
-        (
-            DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
-            D3D11_FORMAT_SUPPORT_DISPLAY.0 | D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
-            0,
-            "extended-range swap chains: the infrastructure crate makes none",
-        ),
-    ];
+    let differences = vec![(
+        DXGI_FORMAT_R32G32B32_FLOAT,
+        D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
+        0,
+        "sampling, optional: served, where the back end filters the format",
+    )];
     differences
 }
 
 /// Every ability Microsoft's format tables require at 10_0, 10_1 and 11_0 that real Direct3D
 /// reports on the RTX 3080 at that level, ours reports at it (`required::LEVEL_REQUIRED`, its bits
 /// of both words and its 4- and 8-sample counts). Prints what the tables require that real
-/// Direct3D itself does not report. A known failure until the 16-bit packed formats' targets and
-/// resolves, `B8G8R8X8_UNORM` elements and typed buffers, the extended-range display and the
-/// `R32G32B32` formats' multisample loads and resolves are served (Gap list).
+/// Direct3D itself does not report.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore]
 fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it() {
     use wcontainers_direct3d_11::required::{self, Required, SAMPLES_4, SAMPLES_8};
     let mut unmet = Vec::new();
@@ -524,60 +503,40 @@ fn format_support_and_creations_below_10_0_as_direct3d_reports_them() {
     }
 }
 
-/// The same where the back end lacks the 16-bit normalised formats (a browser without
-/// `texture-formats-tier1`): they are held as their integer twins (`NormAsInteger`) and so not
-/// blended (`BlendInShader` is not built), and claim nothing else Direct3D does not.
+/// Without 16-bit norm (a browser without `texture-formats-tier1`), the 16-bit normalised formats
+/// are held as their integer twins (`NormAsInteger`), neither blended nor multisampled, so no level
+/// above `UNTIERED_LEVEL` is met; there the formats are reported as real Direct3D reports them.
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_shortfalls() {
-    use windows::Win32::Graphics::Dxgi::Common::*;
     let off = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
-    let unblended = |f| {
-        (
-            f,
-            D3D11_FORMAT_SUPPORT_BLENDABLE.0,
-            0,
-            "blending into integer twins",
-        )
-    };
-    let twins = [
-        DXGI_FORMAT_R16G16B16A16_UNORM,
-        DXGI_FORMAT_R16G16B16A16_SNORM,
-        DXGI_FORMAT_R16G16_UNORM,
-        DXGI_FORMAT_R16G16_SNORM,
-        DXGI_FORMAT_R16_UNORM,
-        DXGI_FORMAT_R16_SNORM,
-    ]
-    .map(unblended);
-    format_support_compared("11_0", "ours-no16", &[(FEATURES_OFF, off)], &twins);
+    let env = [(FEATURES_OFF, off)];
+    no_device_above(UNTIERED_LEVEL, "ours-no16", &env);
+    format_support_compared(UNTIERED_LEVEL, "ours-no16", &env, &[]);
 }
 
-/// The 8- and 16-bit normalised formats a back end without `texture-formats-tier1` samples but
-/// does not draw into: drawn into as their integer twins (`NormAsInteger`), so not blended
-/// (`BlendInShader` is not built).
+/// The highest level a back end without `texture-formats-tier1`, 16-bit norm or float32-filterable
+/// meets: 10_0 requires resolves of multisampled 32-bit float and normalised targets that it cannot
+/// draw (Gap list).
 #[cfg(not(feature = "webgl"))]
-fn twin_targets_unblended() -> Vec<(DXGI_FORMAT, i32, i32, &'static str)> {
-    use windows::Win32::Graphics::Dxgi::Common::*;
-    [
-        DXGI_FORMAT_R8G8B8A8_SNORM,
-        DXGI_FORMAT_R8G8_SNORM,
-        DXGI_FORMAT_R8_SNORM,
-        DXGI_FORMAT_R16G16B16A16_UNORM,
-        DXGI_FORMAT_R16G16B16A16_SNORM,
-        DXGI_FORMAT_R16G16_UNORM,
-        DXGI_FORMAT_R16G16_SNORM,
-        DXGI_FORMAT_R16_UNORM,
-        DXGI_FORMAT_R16_SNORM,
-    ]
-    .map(|f| {
-        (
-            f,
-            D3D11_FORMAT_SUPPORT_BLENDABLE.0,
-            0,
-            "blending into integer twins",
-        )
-    })
-    .to_vec()
+const UNTIERED_LEVEL: &str = "9_3";
+
+/// Ours makes no device of a level above `highest` with the features of `env` off, as it does not
+/// meet the level's requirements (`required::LEVEL_REQUIRED`).
+#[cfg(not(feature = "webgl"))]
+fn no_device_above(highest: &str, label: &str, env: &[(&str, &str)]) {
+    for level in ["11_0", "10_1", "10_0"]
+        .into_iter()
+        .take_while(|&l| l != highest)
+    {
+        let (code, got) = run_env(
+            "own_cases",
+            &place(&format!("format_support-{level}-{label}"), true),
+            &["format_support", level],
+            env,
+        );
+        assert_ne!(code, 0, "a device of {level}: {got}");
+    }
 }
 
 /// `WEBGPU_OFF` as a browser without `texture-formats-tier1` has it (natively, the adapter's own
@@ -591,34 +550,41 @@ fn untiered(more: &[wgpu::Features]) -> String {
         .join(" ")
 }
 
-/// The same without `texture-formats-tier1`: the normalised formats the back end does not draw
-/// into are drawn as their integer twins and not blended; depth formats claim no storage views.
+/// The same without `texture-formats-tier1`: no level above `UNTIERED_LEVEL` is met, and there
+/// the formats are reported as real Direct3D reports them.
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn format_support_without_texture_formats_tier1_as_direct3d_reports_it_but_the_named_shortfalls() {
     let off = untiered(&[]);
-    let twins = twin_targets_unblended();
-    format_support_compared("11_0", "ours-untiered", &[(FEATURES_OFF, &off)], &twins);
+    let env = [(FEATURES_OFF, off.as_str())];
+    no_device_above(UNTIERED_LEVEL, "ours-untiered", &env);
+    format_support_compared(UNTIERED_LEVEL, "ours-untiered", &env, &[]);
 }
 
 /// The same where the back end cannot filter the 32-bit float formats either (a browser without
-/// `float32-filterable`, which has no `texture-formats-tier1` either): they are sampled, gathered
-/// and their mips generated by filtering in the program, so nothing else differs.
+/// `float32-filterable`, which has no `texture-formats-tier1` either).
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn format_support_without_float32_filterable_as_direct3d_reports_it_but_the_named_shortfalls() {
     let off = untiered(&[wgpu::Features::FLOAT32_FILTERABLE]);
-    let twins = twin_targets_unblended();
-    format_support_compared("11_0", "ours-unfiltered", &[(FEATURES_OFF, &off)], &twins);
+    let env = [(FEATURES_OFF, off.as_str())];
+    no_device_above(UNTIERED_LEVEL, "ours-unfiltered", &env);
+    format_support_compared(UNTIERED_LEVEL, "ours-unfiltered", &env, &[]);
 }
 
 /// Gathers through point and linear samplers, samples and generated mips of the 32-bit float
-/// formats as real Direct3D reads them, natively and filtered in the program (a browser without
-/// `float32-filterable`).
+/// formats as real Direct3D reads them.
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn float32_textures_gathered_sampled_and_their_mips_generated_as_direct3d_does() {
     case("float32_reads");
+}
+
+/// The same filtered in the program (a browser without `float32-filterable`).
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore = "no 11_0 device without float32-filterable: the level's format requirements are not met (Gap list)"]
+fn float32_textures_filtered_in_the_program_as_direct3d_reads_them() {
     let off = untiered(&[wgpu::Features::FLOAT32_FILTERABLE]);
     let errors = case_env("float32_reads", "unfiltered", &[(FEATURES_OFF, &off)]);
     let route = wcontainers_gpu::SlowPath::FilterInShader.reason();
@@ -626,13 +592,19 @@ fn float32_textures_gathered_sampled_and_their_mips_generated_as_direct3d_does()
 }
 
 /// The 8- and 16-bit normalised formats drawn into, read back, their mips generated and read by
-/// compute programs (2D and 3D) as real Direct3D does: natively, without
-/// `texture-formats-tier1` and without the 16-bit normalised formats, the last two through their
-/// integer twins.
+/// compute programs (2D and 3D) as real Direct3D does.
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does() {
     case("norm_targets");
+}
+
+/// The same without `texture-formats-tier1` and without the 16-bit normalised formats, through
+/// their integer twins.
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore = "no 11_0 device without texture-formats-tier1 or 16-bit norm: the level's format requirements are not met (Gap list)"]
+fn normalised_targets_through_integer_twins_as_direct3d_draws_them() {
     let route = wcontainers_gpu::SlowPath::NormAsInteger.reason();
     let no16 = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
     for (label, off) in [("untiered", untiered(&[])), ("no16", no16.to_string())] {
@@ -642,7 +614,9 @@ fn normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does() {
 }
 
 /// Without a route for a partial sample mask (WebGL 2 without the back end's mask; plan section
-/// 9), no format reports multisampling at 10_0, and so no multisampled texture is made.
+/// 9), no format reports multisampled targets or a sample count at 10_0, and so no multisampled
+/// texture is made; the multisample loads and resolves the 10_0 table requires apply to no texture
+/// and are reported as Direct3D's drivers report them for formats they do not multisample.
 #[cfg(feature = "webgl")]
 #[test]
 fn no_multisampling_without_a_sample_mask_route_at_10_0() {
@@ -660,7 +634,11 @@ fn no_multisampling_without_a_sample_mask_route_at_10_0() {
             let support1 =
                 u32::from_str_radix(rest.split(' ').nth(2).unwrap().trim_start_matches("0x"), 16)
                     .unwrap() as i32;
-            assert_eq!(support1 & MULTISAMPLE_SUPPORT1, 0, "{l}");
+            assert_eq!(
+                support1 & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET.0,
+                0,
+                "{l}"
+            );
         }
     }
 }
@@ -791,11 +769,16 @@ fn depth_clears_outside_the_range_as_direct3d_does() {
 
 /// Comparisons and gathers with comparison through views of `R32_FLOAT` and `R16_UNORM` colour
 /// textures (Microsoft's 11_0 table requires both), read through depth copies of their texels,
-/// as real Direct3D reads them; and the same with 16-bit normalised formats held as their integer
-/// twins.
+/// as real Direct3D reads them.
 #[test]
 fn comparisons_through_colour_views_as_direct3d_does() {
     case("compare_colour");
+}
+
+/// The same with 16-bit normalised formats held as their integer twins.
+#[test]
+#[ignore = "no 11_0 device without 16-bit norm: the level's format requirements are not met (Gap list)"]
+fn comparisons_through_integer_twins_of_colour_views_as_direct3d_does() {
     case_env(
         "compare_colour",
         "no16",
@@ -808,6 +791,7 @@ fn comparisons_through_colour_views_as_direct3d_does() {
 /// clear program, whole or its rectangles.
 #[cfg(not(feature = "webgl"))]
 #[test]
+#[ignore = "no 11_0 device without texture-formats-tier1: the level's format requirements are not met (Gap list)"]
 fn clear_view_without_texture_formats_tier1_as_direct3d_does() {
     let tier1 = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         .as_str()
@@ -837,6 +821,7 @@ fn a_compute_shader_samples_under_minimum_level_clamps_as_direct3d_does() {
 /// WebGPU cannot store into are stored through a buffer of their texels.
 #[cfg(not(feature = "webgl"))]
 #[test]
+#[ignore = "no 11_0 device without texture-formats-tier1: the level's format requirements are not met (Gap list)"]
 fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
     let tier1 = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         .as_str()
@@ -851,6 +836,7 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
 /// (`NormAsInteger`) and stored through a buffer.
 #[cfg(not(feature = "webgl"))]
 #[test]
+#[ignore = "no 11_0 device without texture-formats-tier1 or 16-bit norm: the level's format requirements are not met (Gap list)"]
 fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does() {
     let off = [
         wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
@@ -1207,10 +1193,8 @@ fn a_swap_chain_presents_and_resizes_as_direct3d_does() {
 /// specification decodes them, `(c - 384) / 510` clamped to what an SDR display shows, beside an
 /// `R10G10B10A2_UNORM` chain of the same codes shown as `c / 1023`, within one 8-bit step. Real
 /// Direct3D composes nothing on the hidden desktop the test runs on, so its colours are not read,
-/// and its presents there answer `DXGI_STATUS_OCCLUDED`, which ours never reports (Gap list). A
-/// known failure until the infrastructure crate makes swap chains of the format (Gap list).
+/// and its presents there answer `DXGI_STATUS_OCCLUDED`, which ours never reports (Gap list).
 #[test]
-#[ignore]
 fn extended_range_swap_chains_show_as_direct3d_shows_them() {
     /// The extended-range format's codes of 0 and of the step from 0 to 1, the largest 10-bit
     /// code, and the largest 8-bit one.

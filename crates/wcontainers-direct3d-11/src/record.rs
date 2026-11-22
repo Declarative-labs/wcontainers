@@ -58,7 +58,8 @@ impl Recorder {
     }
 
     /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
-    /// 4.11), with every format able to do everything; `echo` also receives each line.
+    /// 4.11), with every format able to do everything at 1, 4 and 8 samples; `echo` also receives
+    /// each line.
     pub fn new(echo: Option<fn(&str)>) -> Self {
         let limits = Limits {
             max_texture_2d: 16384,
@@ -102,11 +103,12 @@ impl Recorder {
                     | Features::TEXTURE_VIEWS
                     | Features::FRACTIONAL_VIEWPORT
                     | Features::SAMPLE_MASK
+                    | Features::MULTISAMPLE_READ
                     | Features::TEXTURE_LEVEL_QUERY,
                 limits,
                 formats: FormatCaps {
                     uses: [FormatUse::all(); Format::COUNT],
-                    samples: [0b101; Format::COUNT],
+                    samples: [0b1101; Format::COUNT],
                 },
                 adapter: AdapterInfo {
                     name: "wcontainers recording back end (draws nothing)".into(),

@@ -314,19 +314,67 @@ fn makes_cube_arrays<B: Backend>(backend: &mut B) -> bool {
 }
 
 impl<B: Backend> Device<B> {
-    /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves.
+    /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves
+    /// with every format requirement of Microsoft's tables met.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
         let cube_arrays = makes_cube_arrays(&mut backend);
         let top = top_level(backend.caps(), cube_arrays).ok_or(Error::Unsupported)?;
+        let mut device = Self::at_level(backend, top)?;
+        let top = DEFAULT_LEVELS
+            .into_iter()
+            .filter(|&l| l <= top)
+            .find(|&l| {
+                device.level = l;
+                let unmet = device.unmet_format_requirements();
+                for (dxgi, lacks) in &unmet {
+                    eprintln!(
+                        "{WARNING_PREFIX}: feature level {l:#x} not reported: format {dxgi} lacks \
+                         {lacks:x?} (both words, sample counts) of Microsoft's table"
+                    );
+                }
+                unmet.is_empty()
+            })
+            .ok_or(Error::Unsupported)?;
         let asked: &[u32] = if levels.is_empty() {
             &DEFAULT_LEVELS
         } else {
             levels
         };
-        let level = *asked
+        device.level = *asked
             .iter()
             .find(|&&l| l <= top && l >= level::L9_1)
             .ok_or(Error::Unsupported)?;
+        Ok(device)
+    }
+
+    /// What Microsoft's format tables require at the device's level that it lacks
+    /// (`required::LEVEL_REQUIRED`): per format, the missing bits of both words and 4- and 8-sample
+    /// counts, of every format the tables require or the device has.
+    pub fn unmet_format_requirements(&self) -> Vec<(u32, crate::required::Required)> {
+        let Some(rows) = crate::required::at(self.level) else {
+            return Vec::new();
+        };
+        rows.filter_map(|(dxgi, need)| {
+            let has = self.format_support(dxgi);
+            if need.3 && has.support1 == 0 {
+                return None;
+            }
+            let counts = crate::required::SAMPLE_COUNTS
+                .into_iter()
+                .filter(|&n| self.multisample_quality_levels(dxgi, n) > 0)
+                .fold(0, |c, n| c | 1 << n);
+            let lacks = crate::required::Required(
+                need.0 & !has.support1,
+                need.1 & !has.support2,
+                need.2 & !counts,
+                false,
+            );
+            (lacks != crate::required::Required::default()).then_some((dxgi, lacks))
+        })
+        .collect()
+    }
+
+    fn at_level(mut backend: B, level: u32) -> Result<Self> {
         let graveyard = Rc::new(RefCell::new(Graveyard {
             objects: Vec::new(),
             ids: Vec::new(),
@@ -621,12 +669,16 @@ impl<B: Backend> Device<B> {
         if format::back_buffer_cast(dxgi) && s.support1 & DISPLAY != 0 {
             s.support1 |= BACK_BUFFER_CAST;
         }
-        // A format held but neither drawn into nor a depth format has no multisampled textures
-        // (`CheckMultisampleQualityLevels` answers no count of it), so the multisample loads and
-        // resolves Microsoft's tables require of it apply to no texture, and are reported as
-        // Direct3D's drivers report them (the RTX 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`).
+        // A format held but neither drawn into nor a depth format, or any format where no
+        // multisampling is reported, has no multisampled textures (`CheckMultisampleQualityLevels`
+        // answers no count of it), so the multisample loads and resolves Microsoft's tables require
+        // of it apply to no texture, and are reported as Direct3D's drivers report them (the RTX
+        // 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`; the 10_0 table requires resolves without
+        // requiring a sample count).
+        let no_samples = !caps.has(Features::SAMPLE_MASK)
+            || s.support1 & (RENDER_TARGET | crate::desc::support::DEPTH_STENCIL) == 0;
         if s.support1 != 0
-            && s.support1 & (RENDER_TARGET | crate::desc::support::DEPTH_STENCIL) == 0
+            && no_samples
             && let Some((_, row)) =
                 crate::required::at(level).and_then(|mut rows| rows.find(|&(d, _)| d == dxgi))
         {
