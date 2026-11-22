@@ -85,7 +85,7 @@ pub enum TcpReading<'a> {
     IncomingProcessor(Option<ProcessorIndex>),
 }
 
-/// The outcome of taking the SYN headers that [`TCP_SAVED_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html) holds: taken, kept as too long for the buffer, or none.
+/// The outcome of taking the SYN headers that [`TCP_SAVED_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_SAVED_SYN%20%28since) holds: taken, kept as too long for the buffer, or none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpSavedSynchronizeHeader<'a> {
     Taken(&'a [u8]),
@@ -228,7 +228,7 @@ pub enum AccurateEcnOptionSeen {
     FailSeen,
 }
 
-/// The [`TCP_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html) of a socket.
+/// The [`TCP_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_INFO%20%28since) of a socket.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpInformation {
     pub state: TcpState,
@@ -298,7 +298,7 @@ pub struct TcpInformation {
     pub accurate_ecn_option_seen: AccurateEcnOptionSeen,
 }
 
-/// The [`SOF_TIMESTAMPING_OPT_STATS`](https://docs.kernel.org/networking/timestamping.html) of a transmit report.
+/// The [`SOF_TIMESTAMPING_OPT_STATS`](https://docs.kernel.org/networking/timestamping.html#:~:text=SOF_TIMESTAMPING_OPT_STATS) of a transmit report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpTransmitStatistics {
     pub busy: Duration,

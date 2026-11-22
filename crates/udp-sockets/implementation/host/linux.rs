@@ -20,7 +20,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpChecksum, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived,
@@ -820,7 +820,7 @@ impl<'a> Configurable<HostUdpSocket, UdpSocketSetting<'a>> for HostUdpSockets {
     }
 }
 
-impl NegativeRouteAdvice<HostUdpSocket> for HostUdpSockets {
+impl NegativeRouteAdvisable<HostUdpSocket> for HostUdpSockets {
     fn give_negative_route_advice(&self, socket: &HostUdpSocket) -> Result<(), HostError> {
         // Linux has no call for it: connecting again drops the cached route and takes a new flow hash.
         let peer = socket.state.borrow().peer;

@@ -4,7 +4,7 @@
     reason = "Processor identification data: register fields and their checked ranges, as Arm documents them"
 )]
 
-/// The [identification registers](https://docs.kernel.org/arch/arm64/cpu-feature-registers.html) a program reads, by the fields Linux lets it see.
+/// The fields of the [identification registers](https://docs.kernel.org/arch/arm64/cpu-feature-registers.html) that Linux lets a program read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Arm64Features {
     pub midr: MidrEl1,
@@ -19,7 +19,7 @@ pub struct Arm64Features {
     pub mmfr2: IdAa64Mmfr2El1,
 }
 
-/// [MIDR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/MIDR-EL1--Main-ID-Register).
+/// The register [MIDR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/MIDR-EL1--Main-ID-Register).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MidrEl1 {
     pub implementer: Implementer,
@@ -110,7 +110,7 @@ impl Revision {
     }
 }
 
-/// [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register).
+/// The register [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CtrEl0 {
     pub dic: bool,
@@ -119,7 +119,7 @@ pub struct CtrEl0 {
     pub i_min_line: Log2Words,
 }
 
-/// [DCZID_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/DCZID-EL0--Data-Cache-Zero-ID-Register).
+/// The register [DCZID_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/DCZID-EL0--Data-Cache-Zero-ID-Register).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DczidEl0 {
     pub dzp: bool,
@@ -141,7 +141,7 @@ pub enum Log2Words {
     Bytes2048,
 }
 
-/// [ID_AA64ISAR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR0-EL1--AArch64-Instruction-Set-Attribute-Register-0).
+/// The register [ID_AA64ISAR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR0-EL1--AArch64-Instruction-Set-Attribute-Register-0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Isar0El1 {
     pub rndr: bool,
@@ -159,7 +159,7 @@ pub struct IdAa64Isar0El1 {
     pub aes: Option<Aes>,
 }
 
-/// [ID_AA64ISAR1_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR1-EL1--AArch64-Instruction-Set-Attribute-Register-1).
+/// The register [ID_AA64ISAR1_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR1-EL1--AArch64-Instruction-Set-Attribute-Register-1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Isar1El1 {
     pub i8mm: bool,
@@ -173,7 +173,7 @@ pub struct IdAa64Isar1El1 {
     pub dpb: Option<Dpb>,
 }
 
-/// [ID_AA64ISAR2_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR2-EL1--AArch64-Instruction-Set-Attribute-Register-2).
+/// The register [ID_AA64ISAR2_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR2-EL1--AArch64-Instruction-Set-Attribute-Register-2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Isar2El1 {
     pub lut: bool,
@@ -183,7 +183,7 @@ pub struct IdAa64Isar2El1 {
     pub mops: bool,
 }
 
-/// [ID_AA64ISAR3_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR3-EL1--AArch64-Instruction-Set-Attribute-Register-3).
+/// The register [ID_AA64ISAR3_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64ISAR3-EL1--AArch64-Instruction-Set-Attribute-Register-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Isar3El1 {
     pub fprcvt: bool,
@@ -191,20 +191,20 @@ pub struct IdAa64Isar3El1 {
     pub faminmax: bool,
 }
 
-/// [ID_AA64PFR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64PFR0-EL1--AArch64-Processor-Feature-Register-0).
+/// The register [ID_AA64PFR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64PFR0-EL1--AArch64-Processor-Feature-Register-0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Pfr0El1 {
     pub dit: bool,
     pub fp16: bool,
 }
 
-/// [ID_AA64PFR1_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64PFR1-EL1--AArch64-Processor-Feature-Register-1).
+/// The register [ID_AA64PFR1_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64PFR1-EL1--AArch64-Processor-Feature-Register-1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Pfr1El1 {
     pub ssbs: Option<Ssbs>,
 }
 
-/// [ID_AA64MMFR2_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64MMFR2-EL1--AArch64-Memory-Model-Feature-Register-2).
+/// The register [ID_AA64MMFR2_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64MMFR2-EL1--AArch64-Memory-Model-Feature-Register-2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdAa64Mmfr2El1 {
     pub at: bool,

@@ -39,7 +39,7 @@ pub trait IcmpSockets:
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EchoIdentifier(pub NonZeroU16);
 
-/// The sharing of an echo identifier with other sockets that [`SO_REUSEADDR`](https://man7.org/linux/man-pages/man7/socket.7.html) allows.
+/// The sharing of an echo identifier with other sockets that [`SO_REUSEADDR`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_REUSEADDR) allows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentifierSharing {
     Exclusive,

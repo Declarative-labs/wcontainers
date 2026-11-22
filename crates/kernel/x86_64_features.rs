@@ -1,15 +1,12 @@
 #![allow(
     reviewable::interface_item,
     reviewable::magic_literal,
-    reviewable::constant_defined_twice,
-    reviewable::literal_restates_constant,
-    reviewable::number_constant_without_link,
     reason = "Processor identification data: CPUID bit positions, as Intel and AMD document them"
 )]
 
 use bitflags::bitflags;
 
-/// What [CPUID](https://cdrdv2.intel.com/v1/dl/getContent/671368) reports of an x86-64 processor's identity and optional features.
+/// The identity and optional features of an x86-64 processor, as [CPUID](https://cdrdv2.intel.com/v1/dl/getContent/671368) reports them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct X86_64Features {
     pub signature: ProcessorSignature,
@@ -25,7 +22,7 @@ pub struct X86_64Features {
     pub avx10: Option<Avx10Version>,
 }
 
-/// `CPUID.01H:EAX`, as Intel's DisplayFamily, DisplayModel and stepping.
+/// Intel's DisplayFamily, DisplayModel and stepping, from the register `CPUID.01H:EAX`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessorSignature {
     family: u16,
@@ -57,7 +54,7 @@ impl ProcessorSignature {
     }
 }
 
-/// `CPUID.24H.0:EBX[7:0]`.
+/// The field `CPUID.24H.0:EBX[7:0]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Avx10Version {
     V1,

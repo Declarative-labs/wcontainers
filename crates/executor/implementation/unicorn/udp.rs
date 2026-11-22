@@ -10,7 +10,7 @@ use wcontainers_internet_protocol::{
     RouteSelectors, SendError, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_runtime_single_kernel::udp::received;
 use wcontainers_udp_sockets::{
@@ -161,7 +161,7 @@ impl<'a, H: Send> Configurable<UdpHandle, UdpSocketSetting<'a>> for TestHost<H> 
     }
 }
 
-impl<H: Send> NegativeRouteAdvice<UdpHandle> for TestHost<H> {
+impl<H: Send> NegativeRouteAdvisable<UdpHandle> for TestHost<H> {
     fn give_negative_route_advice(&self, _socket: &UdpHandle) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }

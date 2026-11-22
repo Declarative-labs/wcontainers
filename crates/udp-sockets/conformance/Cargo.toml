@@ -14,7 +14,7 @@ wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-configurable-conformance = { path = "../../configurable/conformance" }
-wcontainers-negative-route-advice-conformance = { path = "../../negative-route-advice/conformance" }
+wcontainers-negative-route-advisable-conformance = { path = "../../negative-route-advisable/conformance" }
 wcontainers-readiness = { path = "../../readiness" }
 wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 # The clocks a transmit time is given on, the international atomic one from Linux 4.11, and the processors a thread runs on.

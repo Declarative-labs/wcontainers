@@ -14,8 +14,8 @@ wcontainers-configurable-conformance = { path = "../../configurable/conformance"
 wcontainers-tcp-sockets = { path = ".." }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
-wcontainers-negative-route-advice = { path = "../../negative-route-advice" }
-wcontainers-negative-route-advice-conformance = { path = "../../negative-route-advice/conformance" }
+wcontainers-negative-route-advisable = { path = "../../negative-route-advisable" }
+wcontainers-negative-route-advisable-conformance = { path = "../../negative-route-advisable/conformance" }
 wcontainers-readiness = { path = "../../readiness" }
 wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 # Reads the SYN headers an accept gives.

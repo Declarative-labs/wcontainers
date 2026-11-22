@@ -12,7 +12,7 @@ use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{ByteCount, LocalBinding, LocalPort};
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
@@ -292,7 +292,7 @@ impl<'a> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem {
     }
 }
 
-impl NegativeRouteAdvice<NetworkHandle> for LocalSystem {
+impl NegativeRouteAdvisable<NetworkHandle> for LocalSystem {
     fn give_negative_route_advice(&self, _connection: &NetworkHandle) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }

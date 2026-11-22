@@ -16,7 +16,7 @@ use wcontainers_internet_protocol::{
 use wcontainers_internet_protocol_linux_socket_options::readiness::Watched;
 use wcontainers_internet_protocol_linux_socket_options::{host_error, io_host_error, sock};
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
@@ -528,7 +528,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
     }
 }
 
-impl NegativeRouteAdvice<HostTcpConnection> for HostTcpSockets {
+impl NegativeRouteAdvisable<HostTcpConnection> for HostTcpSockets {
     fn give_negative_route_advice(&self, _connection: &HostTcpConnection) -> Result<(), HostError> {
         Err(refuse(self, NEGATIVE_ROUTE_ADVICE))
     }

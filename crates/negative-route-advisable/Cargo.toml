@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-negative-route-advice"
+name = "wcontainers-negative-route-advisable"
 version = "0.1.0"
 edition = "2024"
 

@@ -37,7 +37,7 @@ use wcontainers_internet_protocol_linux_socket_options::{
     set_flag, set_int, set_option,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_tcp_sockets::authentication::{
     TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
@@ -1532,7 +1532,7 @@ impl HostTcpSockets {
     }
 }
 
-impl NegativeRouteAdvice<HostTcpConnection> for HostTcpSockets {
+impl NegativeRouteAdvisable<HostTcpConnection> for HostTcpSockets {
     fn give_negative_route_advice(&self, connection: &HostTcpConnection) -> Result<(), HostError> {
         set_flag(
             connection.socket.fd(),

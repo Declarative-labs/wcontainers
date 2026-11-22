@@ -20,7 +20,7 @@ wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }
-wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
+wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 # What to run: the OCI runtime configuration, and the OCI image types it is made from.
 oci-spec = { version = "0.10.0", default-features = false, features = ["runtime", "image"], optional = true }
 serde_json = { version = "1.0.154", optional = true }

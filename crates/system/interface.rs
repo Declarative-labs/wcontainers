@@ -120,7 +120,7 @@ pub trait ProcessTracer {
     ) {
     }
 
-    /// Another process is about to read this one's internal state.
+    /// Runs when another process is about to read this one's internal state.
     fn on_inspection_starting<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {
     }
     fn on_inspection_ended<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {}
@@ -147,12 +147,6 @@ pub trait ProcessorInputs: ProcessTracer {
     ) -> u64;
 }
 
-/// The largest [`pid_max`](https://man7.org/linux/man-pages/man5/proc_sys_kernel.5.html) Linux allows on a 64-bit machine.
-pub const TASK_ID_LIMIT: u32 = 4_194_304;
-
-/// The task ID that allocation restarts from after it reaches the limit, as Linux keeps the lower ones for early processes.
-pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
-
 pub trait TaskIdAllocator {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         let next = previous.0 + 1;
@@ -164,6 +158,12 @@ pub trait TaskIdAllocator {
     }
     fn free_task_id(&self, id: TaskId);
 }
+
+/// The largest [`pid_max`](https://man7.org/linux/man-pages/man5/proc_sys_kernel.5.html#:~:text=pid_max%20%28since) Linux allows on a 64-bit machine.
+pub const TASK_ID_LIMIT: u32 = 4_194_304;
+
+/// The task ID that allocation restarts from after it reaches the limit, as Linux [keeps the lower ones](https://github.com/torvalds/linux/blob/v6.18/include/linux/pid.h#L48) for early processes.
+pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
 
 /// A transport of byte streams to and from endpoints.
 pub trait StreamTransport: Readiness<Self::Endpoint> {

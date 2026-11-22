@@ -8,7 +8,7 @@ use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{ByteCount, LocalBinding, LocalPort};
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
@@ -216,7 +216,7 @@ impl<'a, H: Host> Configurable<Infallible, TcpListenerSetting<'a>> for TestPolic
     }
 }
 
-impl<H: Host> NegativeRouteAdvice<Infallible> for TestPolicy<H> {
+impl<H: Host> NegativeRouteAdvisable<Infallible> for TestPolicy<H> {
     fn give_negative_route_advice(&self, connection: &Infallible) -> Result<(), HostError> {
         match *connection {}
     }

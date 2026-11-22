@@ -75,7 +75,7 @@ use wcontainers_tcp_sockets::{
 };
 
 pub use wcontainers_configurable_conformance;
-pub use wcontainers_negative_route_advice_conformance;
+pub use wcontainers_negative_route_advisable_conformance;
 pub use wcontainers_readiness_conformance;
 
 /// The byte the first fast open key is made of.
@@ -5388,7 +5388,7 @@ pub fn configured_listener<S: TcpSockets>(
     (sockets, listener, TcpListenerSetting::Backlog(BACKLOG))
 }
 
-/// Makes a connection to advise, for the suite of `NegativeRouteAdvice`.
+/// Makes a connection to advise, for the suite of `NegativeRouteAdvisable`.
 pub fn advised_connection<S: TcpSockets>(sockets: S) -> (S, S::Connection) {
     let pair = pair(&sockets);
     (sockets, pair.client)
@@ -6350,7 +6350,7 @@ macro_rules! tests {
         }
 
         mod negative_route_advice {
-            $crate::wcontainers_negative_route_advice_conformance::tests!($crate::advised_connection($value));
+            $crate::wcontainers_negative_route_advisable_conformance::tests!($crate::advised_connection($value));
         }
 
         $crate::wcontainers_readiness_conformance::tests!(

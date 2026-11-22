@@ -6,17 +6,17 @@ use core::num::NonZeroU16;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, PortSetting,
+    ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, BindingSetting,
     ProcessorIndex, ReceivedPacketFields, RouteSelectors, SendError, TransmitReport,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::Readiness;
 
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.
 pub trait UdpSockets:
     for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>>
-    + NegativeRouteAdvice<Self::Socket>
+    + NegativeRouteAdvisable<Self::Socket>
     + Readiness<Self::Socket>
 {
     type Socket: Ord;
@@ -57,24 +57,13 @@ pub trait UdpSockets:
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UdpProtocol {
-    Udp,
-    Lite,
+pub enum UdpSocketSetting<'a> {
+    Ip(IpSocketSetting<'a>),
+    Binding(BindingSetting<'a>),
+    ReceiveCoalescing(ReceiveCoalescing),
+    ZeroChecksumReceipt(ZeroChecksumReceipt),
+    MinimumChecksumCoverage(Option<ChecksumCoverage>),
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UdpLocalEnd {
-    Bound(SocketAddr),
-    Unbound,
-}
-
-/// The bytes from the start of a [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagram that its checksum covers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ChecksumCoverage(pub NonZeroU16);
-
-/// The payload length of each datagram that one send makes or one receive gives, [`UDP_SEGMENT`](https://man7.org/linux/man-pages/man7/udp.7.html) and `UDP_GRO`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SegmentSize(pub NonZeroU16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiveCoalescing {
@@ -89,21 +78,20 @@ pub enum ZeroChecksumReceipt {
     Accepted,
 }
 
+/// The bytes from the start of a [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagram that its checksum covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UdpSocketSetting<'a> {
-    Ip(IpSocketSetting<'a>),
-    Port(PortSetting<'a>),
-    ReceiveCoalescing(ReceiveCoalescing),
-    ZeroChecksumReceipt(ZeroChecksumReceipt),
-    MinimumChecksumCoverage(Option<ChecksumCoverage>),
+pub struct ChecksumCoverage(pub NonZeroU16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UdpProtocol {
+    Udp,
+    Lite,
 }
 
-/// The checksum of a datagram sent: whole, left out as `SO_NO_CHECK` and `UDP_NO_CHECK6_TX` ask, or over a UDP-Lite coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UdpChecksum {
-    Computed,
-    Omitted,
-    Partial(ChecksumCoverage),
+pub enum UdpLocalEnd {
+    Bound(SocketAddr),
+    Unbound,
 }
 
 /// One datagram, or one for each segment of the payload, to the ports of its header's upper layer.
@@ -114,15 +102,27 @@ pub struct UdpDatagram<'a> {
     pub payload: &'a [u8],
 }
 
-/// A packet for the socket, whole from its IP header in the buffer: a datagram, several of one segment size, or an ICMP error about one it sent.
+/// The checksum of a datagram sent: whole, left out as `SO_NO_CHECK` and `UDP_NO_CHECK6_TX` ask, or over a UDP-Lite coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UdpReceivedPacket {
-    pub fields: ReceivedPacketFields,
-    pub segment_size: Option<SegmentSize>,
+pub enum UdpChecksum {
+    Computed,
+    Omitted,
+    Partial(ChecksumCoverage),
 }
+
+/// The payload length of each datagram that one send makes or one receive gives, [`UDP_SEGMENT`](https://man7.org/linux/man-pages/man7/udp.7.html#:~:text=UDP_SEGMENT%20%28since) and `UDP_GRO`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SegmentSize(pub NonZeroU16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UdpReceived {
     Packet(UdpReceivedPacket),
     TransmitReport(TransmitReport),
+}
+
+/// A packet for the socket, whole from its IP header in the buffer: a datagram, several of one segment size, or an ICMP error about one it sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UdpReceivedPacket {
+    pub fields: ReceivedPacketFields,
+    pub segment_size: Option<SegmentSize>,
 }

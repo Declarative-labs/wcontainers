@@ -1,5 +1,4 @@
 #![allow(
-    reviewable::magic_literal,
     reviewable::interface_item,
     reason = "Linux's signal numbers for ARM64 and x86-64, which share one table"
 )]
@@ -40,7 +39,7 @@ pub enum Signal {
     SIGIO = 29,
     SIGPWR = 30,
     SIGSYS = 31,
-    /// The first of the [real-time signals](https://man7.org/linux/man-pages/man7/signal.7.html), which have numbers and no names: `SIGRT_1` is the one after it.
+    /// The first of the [real-time signals](https://man7.org/linux/man-pages/man7/signal.7.html#:~:text=Linux%20supports%20real%2Dtime%20signals), which have numbers and no names: `SIGRT_1` is the one after it.
     SIGRTMIN = 32,
     SIGRT_1 = 33,
     SIGRT_2 = 34,
