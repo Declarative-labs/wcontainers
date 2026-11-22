@@ -6,16 +6,42 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 4 (2026-11-22).
+(2026-11-21), G4h runs 1 to 5 (2026-11-22).
 
 ## Where things stand
 
 G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of
-2026-11-22) is in progress. The device now reports the highest level whose every format
-requirement of Microsoft's tables it meets (4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on
-Direct3D 12) is 11_0 with every requirement met and tested. Left: the WebGL 2 build now meets
-9_3 only, because five formats lack what 10_0 requires (What comes next, item 1), so G4's WebGL 2
-10_0 cases fail until they are built.
+2026-11-22) is complete as of run 5, and the G4 bar was run again at its end (Measurements). The
+device reports the highest level whose every format requirement of Microsoft's tables it meets
+(4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on Direct3D 12) is 11_0 with every
+requirement met and tested, and the WebGL 2 build (ANGLE on the RTX 3080) is 10_0 again since
+G4h run 5 built its five missing formats in the WebGL 2 back end. Still differing from real
+Direct3D: the Gap list's absent features, and atg-simplecomputepc, a real difference waiting on
+the shaders track's division (Asked).
+
+G4h run 5 (2026-11-22, from about 11:50 Pacific):
+- The WebGL 2 back end (crates/wcontainers-gpu-webgl, the task allows it for this) holds the five
+  formats 10_0 required of it: `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM` natively as GL's `RGB5_A1`
+  and `RGBA4` (alpha moved from the top bits to the bottom on upload, a 16-bit rotation; read back
+  as RGBA bytes packed again into Direct3D's fields, `format::packed_fields`, which B5G6R5 now
+  shares); `A8_UNORM` in `RGBA8` as (0, 0, 0, a) (widened on upload, alpha alone read back, cleared
+  with zero colour, drawn with colour unwritten through the per-target channel mask that kept
+  BGRX's alpha, now four bits a target, `format::unwritten`); `R8G8_B8G8_UNORM` and
+  `G8R8_G8B8_UNORM` kept on the host and stored decoded, a pixel a texel (`host::decoded`, as the
+  block-compressed formats without their extension). `B4G4R4A4` is sampled only, as the RTX 3080
+  has it; its same-format copies take `copyTexSubImage` (GL attaches it). Every conversion counts
+  `FormatConverted` or `BlockDecoded`, as before.
+- So the WebGL 2 build meets every 10_0 requirement and makes its 10_0 device again; G4's WebGL 2
+  10_0 cases pass (Measurements).
+- Test: programs.rs `small_formats_read_and_drawn_at_10_0_as_direct3d_does` (own_cases
+  `small_formats 10_0`, shader model 4): 1D, 2D (two levels), 3D and cube textures of all five
+  written, read back through staging, loaded and sampled; `A8_UNORM` and `B5G5R5A1_UNORM` cleared,
+  drawn, blended and their mips generated. Against the RTX 3080, both builds (Measurements).
+  The WebGL back end's own unit tests gained two (every 16-bit packed texel written and read back
+  keeps its bits; 8-bit alpha widened and read back).
+- A comparison sample of `A8_UNORM`, first in the case, was dropped: Microsoft's tables do not
+  require it of that format (the Gap list's earlier wording was wrong), neither device claims it,
+  and ours refuses it by name as before.
 
 G4h run 4 (2026-11-22, from about 11:25 Pacific):
 - The two infrastructure-crate pieces are committed (f9ecca97 extended-range swap chains,
@@ -244,19 +270,12 @@ and logs/g4h4-t2-*), each the highest level met, on that back end only:
   resolves none of them) and of the normalised formats held as integer twins, which are not
   multisampled (plan 4.12) nor blended (`BlendInShader` not built for them). A resolve by a
   program averaging the samples would give the 32-bit float ones; not built.
-- The WebGL 2 build: 9_3, NOT MET for G4's bar. At 10_0 it lacks five formats (logs/g4h4-t2-webgl.log):
-  `A8_UNORM` (65: textures, render target, blending, mips and their generation, CPU access,
-  resolve, comparison sampling), `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (68, 69: 1D, 2D, 3D and
-  cube textures, loads, samples, mips, CPU access), `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM` (86,
-  115: the same and resolve). The back end (crates/wcontainers-gpu-webgl, `format::gl_format`)
-  holds none of them. WebGL 2 lacks none of them outright, so each can be built: the two 16-bit
-  packed ones natively as GL ES 3.0's `RGB5_A1` and `RGBA4` with their fields reordered on upload
-  and read back as `B5G6R5` is; `A8_UNORM` and the two-pixel formats in `RGBA8`, widened on upload
-  and packed on read back as the WebGPU back end holds them, `A8_UNORM` drawn with only alpha
-  written and cleared with colour zero (the per-target mask that keeps BGRX's alpha, widened to
-  any channels). Its 10_0 cases on G4's bar fail until then by refusing a 10_0 device (0 of 6
-  pass: the five `_at_10_0_` tests, `no_multisampling_without_a_sample_mask_route_at_10_0` and the
-  NV12 case).
+- The WebGL 2 build: 10_0, every requirement met since G4h run 5 (the five formats it lacked,
+  `A8_UNORM`, `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`, built in
+  the WebGL 2 back end). 10_1 and 11_0 are out of WebGL 2's reach: 10_1 requires 4-sample
+  targets, which need a partial sample mask WebGL 2 has no route for (OES_sample_variables and
+  `SampleMaskInShader`, not built); 11_0 requires compute shaders and storage views, which WebGL 2
+  has not.
 - The library tests that run cases on an 11_0 device with WebGPU features off fail by refusing
   that device, and are marked known failures (G4h run 4): clear_view_without_texture_formats_tier1,
   comparisons_through_integer_twins_of_colour_views,
@@ -301,9 +320,10 @@ Not on Wine's verdicts, against the RTX 3080:
   result). Needs a route the interface does not have; no program measured reaches it.
 
 The WebGL 2 build (10_0; the bar's WebGL 2 cases match real Direct3D through it): what it does
-not give real Direct3D's verdict on (agents run 1: Wine's d3d10core 96 of 111; the rig's scenes
-95 pass, 17 fail, 30 absent), each with its owner:
-- Multisampling: plan section 9 makes it optional at 10_0, and without a route for a partial
+not give real Direct3D's verdict on (G4h run 5: Wine's d3d10core 97 of 111; the rig's scenes 95
+pass, 17 fail, 30 absent), each with its owner:
+- Multisampling: plan section 9 makes it optional at 10_0 (Microsoft's 10_0 table requires no
+  sample count, so the device meets 10_0 without it), and without a route for a partial
   sample mask (WebGL 2's `gl_SampleMask` needs OES_sample_variables and `SampleMaskInShader`,
   which is not built) none is reported, so multisampled textures are refused as Direct3D refuses
   a count it does not report (main run 3; before, 4 samples were reported and a partial mask
@@ -321,13 +341,15 @@ not give real Direct3D's verdict on (agents run 1: Wine's d3d10core 96 of 111; t
 - Cull distances (`CullDistanceAsGeometry` needs compute): test_combined_clip_and_cull_distances.
 - Views in another format of the group (`Features::TEXTURE_VIEWS`, the WebGL 2 back end's):
   test_create_shader_resource_view, the rig's views scene.
-- `A8_UNORM`, which the WebGL 2 back end lacks: test_create_texture2d, test_texture,
-  test_render_a8, test_clear_render_target_view_2d.
-- Abilities Microsoft's 10_0 table requires that the WebGL 2 build reports absent (the fifth
-  check's comparison with a real 10_0 device): render targets of the six 8- and 16-bit signed
-  normalised formats (WebGL 2 draws into none without `EXT_render_snorm`, which the back end does
-  not use); textures of `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM`, `B4G4R4A4_UNORM`
-  and `A8_UNORM`. The WebGL 2 back end's format table (Asked). A probe lost the WebGL 2 device at
+- `A8_UNORM` and the other four formats 10_0 requires are built since G4h run 5. Of the d3d10core
+  tests once listed under `A8_UNORM` (G4h run 5, logs/g4h5-bar-wine10gl.log and the copied Wine
+  logs): test_create_texture2d and test_clear_render_target_view_2d now fail no check and differ
+  only in fewer checks run (116 of 117, 111 of 159), their multisampled parts refused as the
+  first item says; test_texture still crashes after a view in another format of the group is
+  refused (`TEXTURE_VIEWS`, the item above).
+- Render targets of the six 8- and 16-bit signed normalised formats: WebGL 2 draws into none
+  natively without `EXT_render_snorm`, which the back end does not use; the front draws them
+  through their integer twins (`NormAsInteger`), never blended. A probe lost the WebGL 2 device at
   `R16G16B16A16_FLOAT`'s staging read back ("texture copy made through a buffer", then GL error
   0x502); not traced.
 - test_format_compatibility (16 checks): a 16-bit depth texture copied into an `R16_TYPELESS`
@@ -469,9 +491,10 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   does and are read decoded in every stage, compute included (agents run 2).
 - Optional video formats absent altogether: AYUV, Y410, Y416, P010, P016, Y210, Y216, NV11, AI44,
   IA44, P8, A8P8.
-- Shortfalls of the reported level, in the Gap list: `R10G10B10_XR_BIAS_A2_UNORM`'s display and
-  back buffer casts and `B8G8R8X8_UNORM` elements and typed buffers (10_0 and up). `A8_UNORM`
-  storage views are served since G4h run 1, the B5 targets since run 2.
+- Shortfalls of the reported level: none. Every requirement of Microsoft's 10_0, 10_1 and 11_0
+  tables is met at 11_0 on the WebGPU build (G4h runs 1 to 4: `A8_UNORM` storage views, the B5
+  targets, `B8G8R8X8_UNORM` elements and typed buffers, the extended-range display), and of 10_0 on
+  the WebGL 2 build (G4h run 5); the device reports the highest level met.
 - Below 10_0, as the RTX 3080 answers: only the 10Level9 table's bits; no buffers, comparisons,
   gathers or storage; `SHAREABLE` for the 17 formats the RTX 3080 reports it for, and shared
   textures made of them but `R8G8B8A8_UNORM` and its sRGB twin (both refused there, measured in
@@ -498,43 +521,34 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   build and are marked `#[ignore]` with the reason (Gap list); run them with `--include-ignored`.
 - The six tests with WebGPU features off named in the Gap list's truthful-level item, marked
   `#[ignore]` with that reason.
-- On the WebGL 2 build only: every library test fails while the build meets 9_3 (Gap list); the
-  bar's WebGL 2 run takes the 10_0 cases, which pass again once the five formats are built. Of
-  those, `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` (an 11_0 device with a
-  10_1 state) is marked ignored on that build with that reason.
+- On the WebGL 2 build only: the library tests asking for a device above 10_0 fail by refusing
+  it; the bar's WebGL 2 run takes the 10_0 cases. Of those,
+  `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` (an 11_0 device with a 10_1
+  state) is marked ignored on that build with that reason.
 
 ## What comes next
 
-In order (G4h, 11_0 reported truthfully):
-1. The WebGL 2 build's five 10_0 formats, in crates/wcontainers-gpu-webgl (the task allows it
-   for exactly this), as the Gap list's WebGL 2 item says: `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`
-   natively (`RGB5_A1`, `RGBA4`; fields reordered on upload, `ReadAs`'s 565 repack widened to any
-   field order on read back), `A8_UNORM`, `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` in `RGBA8`
-   (widened on upload at lib.rs `write_texture`'s swapped path, packed on read back; `A8_UNORM`
-   drawn through a per-target channel mask, state.rs `blend`'s `alpha_one` widened to channels,
-   and cleared with colour zero, `format::clear_value`); `B4G4R4A4` and the two-pixel formats not
-   drawn into, as the RTX 3080 has them. Test each through the WebGL 2 build against the RTX 3080
-   (own_cases at 10_0), then the bar's WebGL 2 10_0 cases (g4h/t-suite.sh).
-2. Then the whole G4 bar again (main/q5-final.sh) and report the milestone.
-3. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
-4. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
-2. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
+In order:
+1. atg-simplecomputepc: re-run against WARP once the shaders track's division lands (Asked).
+2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
+3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
+4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
    with other usages (Asked), un-ignore the counters test and run it.
-3. Building ahead at a shader's arrival: the measured miss is the tuple (Differences from the RTX
+5. Building ahead at a shader's arrival: the measured miss is the tuple (Differences from the RTX
    3080). What could hit: build again when an input layout arrives (it names its vertex shader's
    signature), and pick tuples by the targets and binding layouts last drawn rather than the most
    drawn tuple; measure with the same trace.
-4. A back buffer kept by the program past its swap chain's release: keep the chain's textures
+6. A back buffer kept by the program past its swap chain's release: keep the chain's textures
    alive while a buffer is held.
-5. Blending into integer twins (`BlendInShader`) once the shaders crate builds `combine`.
-6. Creation refusals of optional abilities ours does not claim as `E_INVALIDARG` at 10_0 and up:
+7. Blending into integer twins (`BlendInShader`) once the shaders crate builds `combine`.
+8. Creation refusals of optional abilities ours does not claim as `E_INVALIDARG` at 10_0 and up:
    needs the per-level requirement table (9_x has it since round 4 run 6).
-7. Run the comparison case and the 9_x tests through the WebGL 2 build (its 9_x fallback of plan
+9. Run the comparison case and the 9_x tests through the WebGL 2 build (its 9_x fallback of plan
    section 9); prove whose the WebGL 2 build's 3D second-level failure of test_generate_mips is.
-8. Replace the cube array probe (`makes_cube_arrays`) with a `Caps` feature once one exists.
-9. Wine's dxgi file: the null-out-pointer crashes, `CreateSurface`, `CreateSubresourceSurface`.
-10. Section 10's joint step with the Direct3D 12 track, after both milestones pass.
-11. The literal fix list, a part per run.
+10. Replace the cube array probe (`makes_cube_arrays`) with a `Caps` feature once one exists.
+11. Wine's dxgi file: the null-out-pointer crashes, `CreateSurface`, `CreateSubresourceSurface`.
+12. Section 10's joint step with the Direct3D 12 track, after both milestones pass.
+13. The literal fix list, a part per run.
 
 ## How to run
 
@@ -639,6 +653,8 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 
 ## Tests
 
+At G4h run 5: programs.rs 70 (8 ignored); new: `small_formats_read_and_drawn_at_10_0_as_direct3d_does`
+(own_cases `small_formats`). The WebGL back end's unit tests 17 (two new, format.rs).
 At G4h run 4: programs.rs 69 (8 ignored, the known failures listed); the infrastructure crate's
 swap chain tests gained two (extended-range buffers held and decoded; flip models refused).
 New in G4h run 4: the three split feature-off tests (Known failures).
@@ -860,6 +876,37 @@ listed case of section 12 has its test against real Direct3D.
   and said a depth attachment holds both aspects".
 
 ## Measurements
+
+G4h run 5 (2026-11-22, Pacific). Logs in scratch logs/g4h5-*; the desktop (i9-9900K, RTX 3080)
+through the queue, not alone, other tracks' jobs queued; the rented x86 machine (96 cores, load 0
+to 5).
+- The WebGL back end's lint (warnings denied) and unit tests, 17 with the two new: pass (x86,
+  g4h5-b). The literal check at the trial: no finding in this track's crates or the WebGL back
+  end; eleven baseline lines its change removed were cut (c59e2d87).
+- Trial fd1cce9b (g4h5-t3): lint of the front, the library and the WebGL back end, both builds,
+  clean; `small_formats_read_and_drawn_at_10_0_as_direct3d_does` passes on the WebGPU build; the
+  WebGL 2 build's 10_0 cases, the new case among them, 7 pass, 1 ignored (the 10_1-state case, as
+  before); the WebGL back end's own suite on ANGLE natively, 105 pass. An earlier trial (g4h5-t1)
+  had the WebGL 2 build's six earlier 10_0 cases passing (0 of 6 at run 4); the new case then
+  failed at `B4G4R4A4_UNORM`'s first texture copy ("copies of these formats" not built: GL copies
+  only formats reported as targets), fixed in fd1cce9b.
+- At beeec184 (the bar, q5-final.sh g4h5-bar): front 60, unit 6, cache 1, infrastructure 11 and
+  clippy pass on x86 (g4h5-front); lint of both builds clean; library com 15 (1 ignored) and
+  programs 62 (8 ignored) pass; the literal check finds nothing in this track's crates, the
+  infrastructure crate or the WebGL back end (its 100 lines are other tracks'). The WebGL 2
+  build's 10_0 cases 7 pass, 1 ignored. Wine d3d11 152 of 166 (the 14 failing are the Gap list's
+  absent features; test_vertex_formats passes since run 4), d3d10core 110 of 111
+  (test_desktop_window). Scenes through the library 137 pass, 0 fail, 2 absent; the WebGL 2
+  build's 95 pass, 17 fail, 30 absent (unchanged). Programs: the same eleven pass; bgfx five of six
+  as before (bgfx-26-occlusion's memory line); atg-simplemsaa_pc frame 10 has 8 pixels beyond
+  (largest 11), 4 beyond their tiles' allowance, as before (WARP: 25, largest 21: passes under the
+  orchestrator's rule); atg-simplecomputepc 154,515 pixels beyond in each frame (largest 255; WARP
+  1,889), the real difference waiting on the shaders track's division.
+- Release modules (the sizes step built at b1302c24, the HEAD then): wcontainers_directx.dll
+  14,573,056 bytes on WebGPU and 10,149,888 on WebGL 2; the Direct3D 12 track's
+  wcontainers_d3d12.dll 13,979,648. Load times (gpu-job, not alone, 13:10), each of the last
+  four runs: the system's d3d11.dll 1,118 to 1,126 us; ours on WebGPU 1,579 to 1,615 us; on
+  WebGL 2 1,036 to 1,112 us; the Direct3D 12 module 1,563 to 1,686 us.
 
 G4h run 3 (2026-11-22, Pacific). Logs in scratch logs/g4h3-*; the desktop through the queue, not
 alone; the rented x86 machine (96 cores, load 0 to 5).
