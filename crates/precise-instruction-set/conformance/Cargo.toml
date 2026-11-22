@@ -9,3 +9,5 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-precise-instruction-set = { path = ".." }
+wcontainers-processor-architecture = { path = "../../processor-architecture" }
+wcontainers-processor-architecture-recording = { path = "../../processor-architecture/implementation/recording" }
