@@ -264,6 +264,15 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KA, seventh run: the standard streams run on the system's `StreamTransport`: each end is one of
+the system's endpoints, given at start in `Standard<E>`, sent on and received from as far as each
+side takes, and waited on through `Readiness::wait_until_ready` as one stored waiting call; the
+abi's `End`, `Host::send_stream`, `credit_stream`, `close_stream` and the three stream events are
+gone. One test now fails that passed before: streams `large_output_to_a_slow_client`, nonblock
+mode, and allocations per measured repetition rose (pipe 142 to 150); both are the next run's
+first job. Not done: those two, the kernel's own `System` trait's removal,
+ICMP and raw sockets, most linter findings. KA is not complete. See "KA, seventh run".
+
 KA, sixth run: UDP to the outside runs on the system's `UdpSockets`: each flow (one per outside
 destination a guest UDP socket sends to) is one of the system's UDP sockets, connected to it and
 waited on through `Readiness::wait_until_ready` as one stored waiting call, as TCP is. The abi's
@@ -510,6 +519,103 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, seventh run
+
+Started about 03:00 UTC on 2026-11-22 at 4b384fd6 (branch agents). Builds and lints on the x86
+machine, tests on the ARM64 machine, the literal check and the linter on the Mac; scratch
+kernel/ka7. Nothing new had come from main.
+
+Done:
+- 47032cb0, c9fe6565: `IPC_NOWAIT` and `MAX_RW_COUNT` are defined once in linux_extra.rs and
+  exported; the stand-in's call generator imports them, and their two baseline lines went.
+- 73b9e266 (with db09631e for the lock file): standard streams on `StreamTransport`.
+  - The kernel's `System` also requires `StreamTransport<Endpoint: 'static>`. `Start<'a, E>` and
+    `Standard<E>` carry the system's endpoints (`start` takes the start by value); the kernel
+    numbers them (`EndNumber`) and keeps each without its type (`Rc<dyn Any>`), as TCP handles.
+  - ends.rs: output is sent from what the pipe holds (left in it until taken: `held_for_end`,
+    `sent_to_end`), or straight from the guest's write when the pipe is empty; a terminal's master
+    output is taken into a per-end outbox sent before more is taken. Input is received into the
+    pipe or terminal only as far as there is space, so the inbox, `promised` and the credit
+    sums are gone. A send that takes less, or `WouldBlock`, waits for WRITABLE; a receive with
+    nothing waits for READABLE; every end's wait also asks HANG_UP. `HANG_UP`, `Closed` or an
+    error means the system's side let go: input still held is taken, then the end goes. The
+    kernel calls `close_stream` once for each end it lets go of. On restore the stream waits are
+    dropped and every end is asked again (`ends_restored`).
+  - The abi: `End`, `Host::send_stream`, `credit_stream`, `close_stream`, `Event::StreamData`,
+    `StreamCredit`, `StreamClosed` are gone; `Event::TerminalResized { columns, rows }` names no
+    end (a kernel has at most one terminal end). The count "stream data past its credit" went.
+- Changed outside this track's crates, the smallest change that keeps them building:
+  - runtime (single-kernel): system.rs implements `StreamTransport` and `Readiness<u32>` on
+    `LocalSystem` (endpoints are its `Named` numbers): output is written at once (a write error
+    is warned and answers `Closed`), input read by the input thread is held until the kernel
+    takes it, the reader reading one page ahead of it; a pipe's input that ended answers
+    `Closed` and HANG_UP, a terminal's stays. The credit owed and closing lists went;
+    `System::standard` returns `Standard<Endpoint>`; container.rs passes the start by value.
+  - policy: forwards `StreamTransport` and `Readiness` to its services (`H: StreamTransport<
+    Endpoint = u32>`); `OUTPUT` and `ERROR` are `u32`; its credit at start and closing list went.
+  - hardware-virtualization-inside: `LinkHost` implements `StreamTransport<Endpoint = u32>`
+    (output over the link, all of it taken; no input, `NotSupported`; a wait for WRITABLE ends at
+    once, any other never); the `CreditStream` request went; `answer` is generic over the host;
+    its test host records the same calls. Manifest takes the system and readiness interfaces.
+  - hardware-virtualization: tests/container/mod.rs and speed.rs follow (those tests already did
+    not build, from 4ee5def7); manifest takes the two interfaces as dev-dependencies.
+  - unicorn (this track's): the test host implements `StreamTransport<Endpoint = streams::End>`,
+    each send and receive kept in the record (`Entry::StreamSent`, `StreamReceived`) and each
+    readiness it gives (`Entry::StreamReady`), as for sockets; the client gives output room
+    instead of credit, makes a piece of input available when the kernel waits for input, and
+    ends a wait whose endpoint is ready at each of its moves. `Step::Credit`, `excess`,
+    `most_input_credit` and the two sent counts went (`most_input_asked` in their place).
+- Departures: two stream tests went with the protocol they tested, which no longer exists (a
+  client can no longer send past what the kernel asks for, nor give credit): streams
+  `a_client_sending_past_its_credit_is_cut_off` and `credit_on_the_input_end_is_counted`.
+  `large_input_to_a_slow_reader_is_held_to_the_credit` is now `..._held_to_the_pipe` and checks
+  that the kernel never asks for more input than the pipe holds.
+
+Known failure (new in this run, not fixed): streams `large_output_to_a_slow_client` in mode
+`nonblock`: ours writes 8 MiB without meeting a full pipe ("would block no"), the reference meets
+one ("would block yes"); the block mode passes. To find: why the guest's nonblocking writes never
+get EAGAIN when the client gives 64 KiB of room only when the container is idle.
+
+Tests (ARM64 machine, 03:20 to 03:31 UTC, load 1 to 6; scratch ka7/subset1.log, subset2.log):
+kernel lib 15, runtime 13, policy 0, abi 1, hardware-virtualization-inside 2 passed; unicorn
+streams 17 passed, 1 failed (above); terminal 9 passed, `making_pairs` failed (ARM list); outside
+5, away 12 (1 ignored), embedder 35, edges 7, taskend 7, procsignals 4, script 1, repeats 5,
+round_trips 3, saving 1, netprograms 3, pollmask 1, sigio 2, splice 2, fifo 1, shell 3 passed;
+inet 23 passed, 3 failed (ARM list); backend 19 passed, 2 failed (ARM list); busybox 3 passed,
+1 ignored, `system` failed (ARM list); kernel conformance 14 passed. The first pass also showed
+the record-and-replay runs losing their output and a client step lost before the kernel's wait
+began; both fixed before the second pass. `cargo check --workspace --all-targets` and clippy with
+warnings denied (`--no-deps`) on every changed crate pass (x86 machine).
+
+Literal check (Mac): no new finding in a changed file; two baseline lines went.
+
+Measurements (scratch ka7/ab.log: ARM64 machine, release build of tests/waitcost.rs, median of 9
+of 500 and 1000 repetitions; before is a clone at e5d693d2, after is 73b9e266; alternately three
+times, 03:32 to 03:37 UTC, load 1.7 to 7.0 on 96 cores):
+- pipe ping-pong: before 11772, 11711, 11789 ns; after 12881, 12584, 11725 ns (the first two
+  after rounds ran at load 7 and 2.8; the third, at load 1.8, equals before).
+- outside socket read: before 14116, 15884, 14248; after 15604, 14415, 14159 ns.
+- backend open and read: before 487934, 532677, 500616; after 520570, 456534, 517607 ns (noisy).
+- name lookup: before 136392, 136931, 136433; after 141801, 140869, 140714 ns (3 percent more;
+  1 percent in the sixth run).
+- Allocations per repetition (the whole process, test host included): pipe 142 before, 150 after;
+  socket 79 before, 83 after; backend 347.99 before, 348.99 after; name 711 before, 747 after. In
+  the sixth run they were 142, 79, 341 and 709: this run's stream code adds 8 per pipe repetition
+  and more per name lookup. Not yet found where; the likely places are the copy each send makes
+  of what a pipe holds (`held_for_end`), the receive buffer made per receive, and the test host's
+  record of each send. The owner's condition (nothing inside the kernel pays more) must be
+  checked against this before KA can pass: first job of the next run, with the nonblock failure.
+
+The owner's linter (scratch ka7/lint-start.log, lint-end.log): 38601 findings in this track's
+files at the start, 38611 at the end (new names and summaries waiting for the model's answers).
+The kernel interface's untested methods are the same two (For the owner). The system suite now
+also reports `StreamTransport::send_stream` and `receive_stream` untested; the system's suite is
+not this track's.
+
+Next, in order: the `large_output_to_a_slow_client` nonblock failure; the kernel's own `System`
+trait replaced by the interface's (every embedder now implements `StreamTransport`); ICMP and raw
+sockets only if the kernel ever carries them outside; linter findings.
 
 ## KA, sixth run
 
