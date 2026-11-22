@@ -32,6 +32,8 @@ use etherparse::{
     icmpv4, icmpv6, tcp_option,
 };
 use linux_raw_sys::if_tun;
+use linux_raw_sys::ioctl::SIOCSIFFLAGS;
+use linux_raw_sys::net::net_device_flags;
 use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
@@ -54,9 +56,8 @@ use wcontainers_tcp_sockets::authentication::{
     SequenceNumberExtension, TcpAuthenticationCounters, TcpAuthenticationIcmpErrors,
     TcpAuthenticationKeyAddition, TcpAuthenticationKeyIdentifier, TcpAuthenticationKeyIdentity,
     TcpAuthenticationKeyRemoval, TcpAuthenticationKeyUse, TcpAuthenticationMacLength,
-    TcpAuthenticationOptionCoverage, TcpAuthenticationOptions, TcpAuthenticationRemovalTiming,
-    TcpAuthenticationRepair, TcpAuthenticationRequirement, TcpAuthenticationStatus,
-    TcpMd5KeyChange, TcpMd5Peer,
+    TcpAuthenticationOptionCoverage, TcpAuthenticationOptions, TcpAuthenticationRepair,
+    TcpAuthenticationRequirement, TcpAuthenticationStatus, TcpKeyVrf, TcpMd5KeyChange, TcpMd5Peer,
 };
 use wcontainers_tcp_sockets::multipath::{
     MultipathInformation, MultipathSubflowIdentifier, MultipathSubflowPosition,
@@ -72,15 +73,15 @@ use wcontainers_tcp_sockets::settings::{
 };
 use wcontainers_tcp_sockets::state::{
     AccurateEcnFailures, AccurateEcnOptionSeen, ByteTotal, CongestionControlInformation,
-    DATA_CENTER_FRACTION_WHOLE, DeliveryRateLimit, EcnByteCounts, EventCount,
-    TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpFastOpenClientFailure, TcpInformation,
-    TcpListenerQuery, TcpQuery, TcpQueues, TcpReading, TcpSavedSynchronizeHeader, TcpState,
-    TcpTuned, UrgentMark,
+    ConnectionCount, DATA_CENTER_FRACTION_WHOLE, DeliveryRateLimit, EcnByteCounts, EcnMode,
+    EventCount, TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpFastOpenClientFailure,
+    TcpInformation, TcpListenerQuery, TcpListenerReading, TcpQuery, TcpQueues, TcpReading,
+    TcpSavedSynchronizeHeader, TcpState, TcpTuned, UrgentMark,
 };
 use wcontainers_tcp_sockets::{
-    ListenBacklog, TcpClose, TcpConnectStart, TcpContinuation, TcpFastOpen, TcpListening,
-    TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpRecordBoundary,
-    TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
+    ListenBacklog, TcpBound, TcpClose, TcpConnectStart, TcpContinuation, TcpFastOpen, TcpListening,
+    TcpLocalEnd, TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
+    TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
 
 pub use wcontainers_configurable_conformance;
@@ -528,6 +529,16 @@ struct Pair<S: TcpSockets> {
     server: S::Connection,
 }
 
+/// Gives the error of a connect or listen of an unbound socket, which never gives a socket back.
+fn unbound<B>(error: TcpLocalEndError<B>) -> HostError {
+    match error {
+        TcpLocalEndError::Unbound(error) => error,
+        TcpLocalEndError::Bound { .. } => {
+            panic!("a connect or listen gave back a socket it did not take")
+        }
+    }
+}
+
 fn listen<S: TcpSockets>(
     sockets: &S,
     address: BindAddress,
@@ -535,12 +546,15 @@ fn listen<S: TcpSockets>(
 ) -> (S::Listener, SocketAddr) {
     let listening = sockets
         .listen(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(address),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(address),
+            },
             BACKLOG,
             settings,
         )
+        .map_err(unbound)
         .expect("listen on loopback");
     (listening.listener, listening.local)
 }
@@ -631,13 +645,16 @@ fn pair_at<S: TcpSockets>(
     let (listener, local) = listen(sockets, address, listener_settings);
     let client = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(any_of(address)),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(any_of(address)),
+            },
             local,
             client_settings,
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect to the listener")
         .connection;
     let server = accept(sockets, &listener);
@@ -1122,13 +1139,16 @@ fn watched_pair<S: TcpSockets>(
     let capture = Capture::start(local);
     let client = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(any_of(address)),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(any_of(address)),
+            },
             local,
             client_settings,
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect to the listener")
         .connection;
     let server = accept(sockets, &listener);
@@ -1225,13 +1245,16 @@ pub fn connect_and_accept_name_both_ends<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     assert_eq!(
         connected.start,
@@ -1264,13 +1287,16 @@ pub fn accept_cuts_the_synchronize_header_to_the_buffer<S: TcpSockets>(sockets: 
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let accepted = accept_with_header(&sockets, &listener, CUT_HEADER);
     assert_eq!(accepted.synchronize_header.len(), CUT_HEADER);
@@ -1285,13 +1311,16 @@ pub fn connect_settings_apply_to_the_synchronize<S: TcpSockets>(sockets: S) {
     let segment = SEGMENT;
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[TcpSetting::MaximumSegmentSize(Some(segment))],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let accepted = accept_with_header(&sockets, &listener, HEADER_ROOM);
     let ipv4 = Ipv4HeaderSlice::from_slice(&accepted.synchronize_header).expect("IPv4 header");
@@ -1347,13 +1376,16 @@ pub fn connects_over_ipv6<S: TcpSockets>(sockets: S) {
     };
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(any),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(any),
+            },
             local,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let server = accept(&sockets, &listener);
     send_all(&sockets, &connected.connection, plain(), MESSAGE);
@@ -1373,13 +1405,16 @@ pub fn dual_stack_listener_accepts_ipv4<S: TcpSockets>(sockets: S) {
     let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), local.port());
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             peer,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let accepted = accept_with_header(&sockets, &listener, NO_HEADER_ROOM);
     assert_eq!(
@@ -1409,12 +1444,15 @@ pub fn multipath_is_negotiated_when_both_ends_ask<S: TcpSockets>(sockets: S) {
     let listen = |protocol| {
         sockets
             .listen(
-                protocol,
-                OWNER,
-                bind_any_port(ipv4_loopback()),
+                TcpLocalEnd::Unbound {
+                    protocol,
+                    owner: OWNER,
+                    local: bind_any_port(ipv4_loopback()),
+                },
                 BACKLOG,
                 &[],
             )
+            .map_err(unbound)
             .expect("listen")
     };
     let multipath = listen(TcpProtocol::Multipath);
@@ -1436,13 +1474,16 @@ pub fn multipath_is_negotiated_when_both_ends_ask<S: TcpSockets>(sockets: S) {
         let start = Instant::now();
         let connected = sockets
             .connect(
-                client,
-                OWNER,
-                bind_any_port(ipv4_any()),
+                TcpLocalEnd::Unbound {
+                    protocol: client,
+                    owner: OWNER,
+                    local: bind_any_port(ipv4_any()),
+                },
                 listening.local,
                 &[],
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect");
         let server = accept(&sockets, &listening.listener);
         assert_eq!(
@@ -1467,7 +1508,16 @@ pub fn requested_port_is_bound<S: TcpSockets>(sockets: S) {
         port: LocalPort::Requested(Port(local.port())),
     };
     let listening = sockets
-        .listen(TcpProtocol::Tcp, OWNER, binding, BACKLOG, &[])
+        .listen(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: binding,
+            },
+            BACKLOG,
+            &[],
+        )
+        .map_err(unbound)
         .expect("listen on the port");
     assert_eq!(listening.local, local);
     sockets.stop_listening(listening.listener);
@@ -1491,16 +1541,19 @@ pub fn exit_node_chooses_a_port_outside_the_reserved<S: TcpSockets>(sockets: S) 
         let allowed = reserved_last.0 + 1..=last.0;
         let connected = sockets
             .connect(
-                TcpProtocol::Tcp,
-                OWNER,
-                LocalBinding {
-                    address: ipv4_any(),
-                    port: LocalPort::ChosenByExitNode(choice),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: LocalBinding {
+                        address: ipv4_any(),
+                        port: LocalPort::ChosenByExitNode(choice),
+                    },
                 },
                 local,
                 &[],
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect");
         let port = connected.local.port();
         assert!(allowed.contains(&port), "port {port}");
@@ -1509,15 +1562,18 @@ pub fn exit_node_chooses_a_port_outside_the_reserved<S: TcpSockets>(sockets: S) 
         sockets.close(connected.connection, TcpClose::Orderly);
         let listening = sockets
             .listen(
-                TcpProtocol::Tcp,
-                OWNER,
-                LocalBinding {
-                    address: ipv4_loopback(),
-                    port: LocalPort::ChosenByExitNode(choice),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: LocalBinding {
+                        address: ipv4_loopback(),
+                        port: LocalPort::ChosenByExitNode(choice),
+                    },
                 },
                 BACKLOG,
                 &[],
             )
+            .map_err(unbound)
             .expect("listen");
         let port = listening.local.port();
         assert!(allowed.contains(&port), "port {port}");
@@ -1531,13 +1587,16 @@ pub fn stopped_listener_refuses_connections<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(listener);
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("start connecting");
     let mut buffer = [u8::MIN; 1];
     let outcome =
@@ -2145,24 +2204,30 @@ fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, vers
     };
     let listening = sockets
         .listen(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(listener_address),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(listener_address),
+            },
             SMALLEST_BACKLOG,
             &[],
         )
+        .map_err(unbound)
         .expect("listen on loopback");
     let peer = listening.local;
     let connect = |settings: &[TcpSetting<'_>]| {
         sockets
             .connect(
-                TcpProtocol::Tcp,
-                OWNER,
-                bind_any_port(address),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: bind_any_port(address),
+                },
                 peer,
                 settings,
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect to the listener")
     };
     let queued = connect(&[]).connection;
@@ -2430,13 +2495,16 @@ fn fast_open_round<S: TcpSockets>(
     let start = Instant::now();
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             settings,
             fast_open,
         )
+        .map_err(unbound)
         .expect("connect with fast open");
     let taken = match connected.start {
         TcpConnectStart::SynchronizeSent {
@@ -2984,13 +3052,16 @@ pub fn synchronize_retries_end_an_unanswered_connect<S: TcpSockets>(sockets: S) 
     let capture = Capture::start(local);
     let client = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[TcpSetting::SynchronizeRetries(ONE_SYNCHRONIZE_RETRY)],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect")
         .connection;
     // With the default retries the connect would last minutes.
@@ -3024,13 +3095,16 @@ pub fn defer_accept_holds_a_connection_until_data<S: TcpSockets>(sockets: S) {
         let (listener, local) = listen(&sockets, ipv4_loopback(), &settings);
         let client = sockets
             .connect(
-                TcpProtocol::Tcp,
-                OWNER,
-                bind_any_port(ipv4_any()),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: bind_any_port(ipv4_any()),
+                },
                 local,
                 &[],
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect")
             .connection;
         if deferred {
@@ -3182,7 +3256,6 @@ pub fn header_settings_mark_each_segment<S: TcpSockets>(sockets: S) {
             TcpSetting::Packet(IpPacketSetting::TrafficClass {
                 version: IpVersion::V4,
                 dscp: IpDscp::AF41,
-                ecn: IpEcn::ZERO,
             }),
             TcpSetting::Packet(IpPacketSetting::PathMtuDiscovery {
                 version: IpVersion::V4,
@@ -3366,7 +3439,7 @@ fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex)
             let mut fields = line.split_whitespace();
             let index = fields.next()?.parse::<u32>().ok()?;
             let _name = fields.next();
-            (index == interface.0 && fields.next() == Some(wanted.as_str()))
+            (index == interface.0.get() && fields.next() == Some(wanted.as_str()))
                 .then(|| fields.next()?.parse().ok())
                 .flatten()
         })
@@ -3478,7 +3551,7 @@ fn md5_key(key: Option<&'static [u8]>) -> TcpSetting<'static> {
             address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             length: PrefixLength(Ipv4Addr::BITS as u8),
         },
-        interface: None,
+        vrf: TcpKeyVrf::Any,
     };
     TcpSetting::Md5Key(match key {
         Some(key) => TcpMd5KeyChange::Set { peer, key },
@@ -3517,13 +3590,16 @@ pub fn md5_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: 
         let capture = Capture::start(local);
         let client = sockets
             .connect(
-                TcpProtocol::Tcp,
-                OWNER,
-                bind_any_port(ipv4_any()),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: bind_any_port(ipv4_any()),
+                },
                 local,
                 &client_settings,
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect")
             .connection;
         let signed = client_keys.last().copied().flatten().is_some();
@@ -3610,7 +3686,7 @@ fn authentication_identity_of(
             address: IpAddr::V4(peer),
             length: PrefixLength(Ipv4Addr::BITS as u8),
         },
-        interface: None,
+        vrf: TcpKeyVrf::Any,
         send_identifier: identifier,
         receive_identifier: identifier,
     }
@@ -3641,7 +3717,6 @@ fn authentication_key_removed(
         identity: authentication_identity(identifier),
         current,
         requested_next: current,
-        timing: TcpAuthenticationRemovalTiming::Now,
     })
 }
 
@@ -3682,13 +3757,16 @@ fn authentication_round<S: TcpSockets>(
     let capture = Capture::start(local);
     let client = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             client_settings,
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect")
         .connection;
     std::thread::sleep(SETTLE);
@@ -3985,17 +4063,21 @@ pub fn address_sharing_lets_connections_leave_from_one_port<S: TcpSockets>(socke
     ))];
     let listeners = [(); SHARING_PEERS].map(|_| listen(&sockets, ipv4_loopback(), &[]));
     let connect = |port: Port, peer: SocketAddr, settings: &[TcpSetting<'_>]| {
-        sockets.connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            LocalBinding {
-                address: ipv4_loopback(),
-                port: LocalPort::Requested(port),
-            },
-            peer,
-            settings,
-            TcpFastOpen::Off,
-        )
+        sockets
+            .connect(
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: LocalBinding {
+                        address: ipv4_loopback(),
+                        port: LocalPort::Requested(port),
+                    },
+                },
+                peer,
+                settings,
+                TcpFastOpen::Off,
+            )
+            .map_err(unbound)
     };
     let first = connect(ANY_PORT, listeners[0].1, &shared).expect("the first connection");
     let port = Port(first.local.port());
@@ -4018,16 +4100,20 @@ fn listen_at<S: TcpSockets>(
     port: Port,
     settings: &[TcpListenerSetting<'_>],
 ) -> Result<TcpListening<S::Listener>, HostError> {
-    sockets.listen(
-        TcpProtocol::Tcp,
-        OWNER,
-        LocalBinding {
-            address,
-            port: LocalPort::Requested(port),
-        },
-        BACKLOG,
-        settings,
-    )
+    sockets
+        .listen(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: LocalBinding {
+                    address,
+                    port: LocalPort::Requested(port),
+                },
+            },
+            BACKLOG,
+            settings,
+        )
+        .map_err(unbound)
 }
 
 /// Listeners sharing their port listen on one; one not sharing cannot.
@@ -4098,12 +4184,15 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
     ] {
         let listening = sockets
             .listen(
-                TcpProtocol::Tcp,
-                OWNER,
-                bind_any_port(ipv4_loopback()),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: bind_any_port(ipv4_loopback()),
+                },
                 backlog,
                 &settings,
             )
+            .map_err(unbound)
             .expect("listen on loopback");
         let (listener, local) = (listening.listener, listening.local);
         if given == BacklogGiven::Later {
@@ -4114,13 +4203,16 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
         let connect = || {
             sockets
                 .connect(
-                    TcpProtocol::Tcp,
-                    OWNER,
-                    bind_any_port(ipv4_any()),
+                    TcpLocalEnd::Unbound {
+                        protocol: TcpProtocol::Tcp,
+                        owner: OWNER,
+                        local: bind_any_port(ipv4_any()),
+                    },
                     local,
                     &[],
                     TcpFastOpen::Off,
                 )
+                .map_err(unbound)
                 .expect("connect")
                 .connection
         };
@@ -4253,13 +4345,16 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
     let capture = Capture::start(local);
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            from_port(ANY_PORT.0),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: from_port(ANY_PORT.0),
+            },
             local,
             &shared,
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let server = accept(&sockets, &listener);
     let pair = Pair {
@@ -4286,13 +4381,16 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
     let (other, peer) = listen(&sockets, ipv4_loopback(), &[]);
     let second = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            from_port(connected.local.port()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: from_port(connected.local.port()),
+            },
             peer,
             &shared,
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("a second connection from the port the probing one shares");
     sockets.close(second.connection, TcpClose::Abort);
     sockets.stop_listening(other);
@@ -4404,25 +4502,25 @@ pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets
             .set_listener_timestamp_clock(&pair.listener, clock)
             .is_err()
     );
-    // A listener taken into repair mode takes the clock; one that refuses repair mode refuses the clock too.
-    let repairing = sockets.configure(
-        &pair.listener,
-        TcpListenerSetting::Socket(TcpSetting::Repair(TcpRepair::On)),
+    // A listener that listened in repair mode is in it, and takes the clock (Linux's `TCP_TIMESTAMP` on it).
+    let (repairing, _) = listen(
+        &sockets,
+        ipv4_loopback(),
+        &[TcpListenerSetting::Socket(TcpSetting::Repair(
+            TcpRepair::On,
+        ))],
     );
-    let set = sockets.set_listener_timestamp_clock(&pair.listener, clock);
-    match repairing {
-        Ok(()) => {
-            set.expect("set the listener's clock");
-            match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Timestamp) {
-                Ok(TcpReading::Timestamp(read)) => assert!(
-                    read.value.0.wrapping_sub(CLOCK_READING) < CLOCK_READING,
-                    "{read:?}"
-                ),
-                other => panic!("the listener's clock read {other:?}"),
-            }
-        }
-        Err(_) => assert!(set.is_err(), "{set:?}"),
+    sockets
+        .set_listener_timestamp_clock(&repairing, clock)
+        .expect("set the clock of a listener in repair mode");
+    match sockets.read_listener_state(&repairing, TcpListenerQuery::Timestamp) {
+        Ok(TcpListenerReading::Timestamp(read)) => assert!(
+            read.value.0.wrapping_sub(CLOCK_READING) < CLOCK_READING,
+            "{read:?}"
+        ),
+        other => panic!("the listener's clock read {other:?}"),
     }
+    sockets.stop_listening(repairing);
     close(&sockets, pair);
     for (address, unit) in [
         (ipv4_loopback(), TcpTimestampUnit::Milliseconds),
@@ -4591,17 +4689,29 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
         ] {
             let case = format!("{protocol:?} to {address:?}");
             let listening = sockets
-                .listen(protocol, OWNER, bind_any_port(address), BACKLOG, &[])
+                .listen(
+                    TcpLocalEnd::Unbound {
+                        protocol,
+                        owner: OWNER,
+                        local: bind_any_port(address),
+                    },
+                    BACKLOG,
+                    &[],
+                )
+                .map_err(unbound)
                 .expect("listen");
             let connected = sockets
                 .connect(
-                    protocol,
-                    OWNER,
-                    bind_any_port(any_of(address)),
+                    TcpLocalEnd::Unbound {
+                        protocol,
+                        owner: OWNER,
+                        local: bind_any_port(any_of(address)),
+                    },
                     listening.local,
                     &[TcpSetting::Packet(IpPacketSetting::Mark(MARK))],
                     TcpFastOpen::Off,
                 )
+                .map_err(unbound)
                 .expect("connect");
             let accepted = accept_with_header(&sockets, &listening.listener, NO_HEADER_ROOM);
             let fields = accepted.synchronize;
@@ -4679,22 +4789,28 @@ pub fn connect_and_listen_make_sockets_of_their_owner<S: TcpSockets>(sockets: S)
     ] {
         let listening = sockets
             .listen(
-                TcpProtocol::Tcp,
-                LISTENER_OWNER,
-                bind_any_port(address),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: LISTENER_OWNER,
+                    local: bind_any_port(address),
+                },
                 BACKLOG,
                 &[],
             )
+            .map_err(unbound)
             .expect("listen");
         let connected = sockets
             .connect(
-                TcpProtocol::Tcp,
-                CONNECTION_OWNER,
-                bind_any_port(any_of(address)),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: CONNECTION_OWNER,
+                    local: bind_any_port(any_of(address)),
+                },
                 listening.local,
                 &[],
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect");
         let server = accept(&sockets, &listening.listener);
         let listener_port = Port(listening.local.port());
@@ -4725,13 +4841,16 @@ pub fn connect_in_repair_mode_is_established_at_once<S: TcpSockets>(sockets: S) 
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[TcpSetting::Repair(TcpRepair::On)],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect in repair mode");
     assert_eq!(connected.start, TcpConnectStart::EstablishedForRepair);
     std::thread::sleep(SETTLE);
@@ -4786,12 +4905,15 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
         ] {
             let listening = sockets
                 .listen(
-                    protocol,
-                    OWNER,
-                    bind_any_port(ipv4_loopback()),
+                    TcpLocalEnd::Unbound {
+                        protocol,
+                        owner: OWNER,
+                        local: bind_any_port(ipv4_loopback()),
+                    },
                     BACKLOG,
                     &[],
                 )
+                .map_err(unbound)
                 .expect("listen");
             let mut saving = TcpSavedSynchronize::Off;
             for setting in &settings {
@@ -4809,13 +4931,16 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
             }
             let connected = sockets
                 .connect(
-                    protocol,
-                    OWNER,
-                    bind_any_port(ipv4_any()),
+                    TcpLocalEnd::Unbound {
+                        protocol,
+                        owner: OWNER,
+                        local: bind_any_port(ipv4_any()),
+                    },
                     listening.local,
                     &[],
                     TcpFastOpen::Off,
                 )
+                .map_err(unbound)
                 .expect("connect");
             let accepted = accept_with_header(&sockets, &listening.listener, HEADER_ROOM);
             let header = &accepted.synchronize_header;
@@ -4914,14 +5039,14 @@ pub fn listener_state_reads_a_listener<S: TcpSockets>(sockets: S) {
         &[TcpListenerSetting::Socket(control)],
     );
     match sockets.read_listener_state(&listener, TcpListenerQuery::Information) {
-        Ok(TcpReading::Information(information)) => {
+        Ok(TcpListenerReading::Information { information, .. }) => {
             assert_eq!(information.state, TcpState::Listen)
         }
         other => panic!("information read {other:?}"),
     }
     let mut name = [u8::MIN; HEADER_ROOM];
     match sockets.read_listener_state(&listener, TcpListenerQuery::CongestionControl(&mut name)) {
-        Ok(TcpReading::CongestionControl { name, information }) => {
+        Ok(TcpListenerReading::CongestionControl { name, information }) => {
             assert_eq!((name, information), (CONGESTION_CONTROL, None))
         }
         other => panic!("congestion control read {other:?}"),
@@ -4936,13 +5061,16 @@ pub fn header_options_go_out_in_the_synchronize<S: TcpSockets>(sockets: S) {
         let (listener, local) = listen(&sockets, address, &[]);
         let connected = sockets
             .connect(
-                TcpProtocol::Tcp,
-                OWNER,
-                bind_any_port(any_of(address)),
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: bind_any_port(any_of(address)),
+                },
                 local,
                 &[TcpSetting::Packet(setting)],
                 TcpFastOpen::Off,
             )
+            .map_err(unbound)
             .expect("connect");
         let accepted = accept_with_header(&sockets, &listener, HEADER_ROOM);
         sockets.close(accepted.connection, TcpClose::Orderly);
@@ -5009,8 +5137,11 @@ fn loopback_interface() -> InterfaceIndex {
         .find(|entry| entry.flags.contains(InterfaceFlags::IFF_LOOPBACK))
         .expect("a loopback interface");
     InterfaceIndex(
-        nix::net::if_::if_nametoindex(loopback.interface_name.as_str())
-            .expect("the loopback interface's index"),
+        NonZeroU32::new(
+            nix::net::if_::if_nametoindex(loopback.interface_name.as_str())
+                .expect("the loopback interface's index"),
+        )
+        .expect("a device index is never zero"),
     )
 }
 
@@ -5048,7 +5179,6 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
         TcpSetting::Packet(IpPacketSetting::TrafficClass {
             version: IpVersion::V4,
             dscp: IpDscp::AF41,
-            ecn: IpEcn::ZERO,
         }),
         TcpSetting::Packet(IpPacketSetting::PathMtuDiscovery {
             version: IpVersion::V4,
@@ -5058,8 +5188,6 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
         TcpSetting::Packet(IpPacketSetting::Priority(PacketPriority(u32::from(
             SETTING_COUNT,
         )))),
-        TcpSetting::Packet(IpPacketSetting::UnicastInterface(Some(interface))),
-        TcpSetting::Packet(IpPacketSetting::UnicastInterface(None)),
         TcpSetting::Packet(IpPacketSetting::RouteScope(RouteScope::Universe)),
         TcpSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared)),
         TcpSetting::Binding(BindingSetting::PortSharing(PortSharing::Shared)),
@@ -5126,7 +5254,7 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
 }
 
 /// Gives the settings of an IPv6 connection checked for being set idempotently: those only IPv6 has, and the IPv6 variants of those both versions have.
-fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static>> {
+fn ipv6_connection_settings() -> Vec<TcpSetting<'static>> {
     vec![
         TcpSetting::Ip(IpSocketSetting::MulticastAllGroups {
             version: IpVersion::V6,
@@ -5143,7 +5271,6 @@ fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static
         TcpSetting::Packet(IpPacketSetting::TrafficClass {
             version: IpVersion::V6,
             dscp: IpDscp::AF41,
-            ecn: IpEcn::ZERO,
         }),
         TcpSetting::Packet(IpPacketSetting::PathMtuDiscovery {
             version: IpVersion::V6,
@@ -5157,8 +5284,6 @@ fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static
         TcpSetting::Packet(IpPacketSetting::DestinationOptions(None)),
         TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Unlabelled)),
         TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Automatic)),
-        TcpSetting::Packet(IpPacketSetting::UnicastInterface(Some(interface))),
-        TcpSetting::Packet(IpPacketSetting::UnicastInterface(None)),
         TcpSetting::Packet(IpPacketSetting::SourcePreferences(SourcePreferences {
             temporary: TemporaryAddressPreference::Public,
             mobile: MobileAddressPreference::Home,
@@ -5227,7 +5352,7 @@ pub fn connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
 }
 
 pub fn ipv6_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
-    let settings = ipv6_connection_settings(loopback_interface());
+    let settings = ipv6_connection_settings();
     settings_set_twice_equal_set_once(&sockets, ipv6_loopback(), &settings);
 }
 
@@ -5254,14 +5379,7 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
             ipv4_loopback(),
         ),
         (
-            TcpListenerSetting::Socket(TcpSetting::RemoveAuthenticationKey(
-                TcpAuthenticationKeyRemoval {
-                    identity: distant,
-                    current: None,
-                    requested_next: None,
-                    timing: TcpAuthenticationRemovalTiming::WhenUnused,
-                },
-            )),
+            TcpListenerSetting::RemoveAuthenticationKeyAsynchronously(distant),
             true,
             ipv4_loopback(),
         ),
@@ -5388,13 +5506,16 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
         for pair in [once, twice] {
             let client = sockets
                 .connect(
-                    TcpProtocol::Tcp,
-                    OWNER,
-                    bind_any_port(any_of(address)),
+                    TcpLocalEnd::Unbound {
+                        protocol: TcpProtocol::Tcp,
+                        owner: OWNER,
+                        local: bind_any_port(any_of(address)),
+                    },
                     pair.local,
                     &[],
                     TcpFastOpen::Off,
                 )
+                .map_err(unbound)
                 .expect("connect after the setting")
                 .connection;
             let server = accept(&sockets, &pair.listener);
@@ -5495,8 +5616,96 @@ pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(soc
 /// Reads the connection's `TCP_INFO`, failing the check on any other answer.
 fn information<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> TcpInformation {
     match sockets.read_state(connection, TcpQuery::Information) {
-        Ok(TcpReading::Information(information)) => information,
+        Ok(TcpReading::Information { information, .. }) => information,
         other => panic!("information read {other:?}"),
+    }
+}
+
+/// Reads the segments the connection's `TCP_INFO` counts as sent and unacknowledged, and selectively acknowledged.
+fn segments_in_flight<S: TcpSockets>(
+    sockets: &S,
+    connection: &S::Connection,
+) -> (SegmentCount, SegmentCount) {
+    match sockets.read_state(connection, TcpQuery::Information) {
+        Ok(TcpReading::Information {
+            unacknowledged,
+            selectively_acknowledged,
+            ..
+        }) => (unacknowledged, selectively_acknowledged),
+        other => panic!("information read {other:?}"),
+    }
+}
+
+/// Runs the body on a thread in a network namespace of its own with its loopback up and its `tcp_ecn` as given.
+///
+/// So that a check that needs another [`tcp_ecn`](https://docs.kernel.org/networking/ip-sysctl.html#:~:text=tcp_ecn%20%2D%20INTEGER) changes no other check's.
+fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                // SAFETY: only the network namespace is unshared, so the thread shares its descriptors as before.
+                unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+                    .expect("a network namespace of the check's own, as root");
+                let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
+                    .expect("a socket to bring the loopback up with");
+                // SAFETY: ifreq is plain data.
+                let mut request: linux_raw_sys::net::ifreq = unsafe { core::mem::zeroed() };
+                // SAFETY: the name is the union's only member.
+                let name = unsafe { &mut request.ifr_ifrn.ifrn_name };
+                for (to, from) in name.iter_mut().zip(LOOPBACK_NAME.bytes()) {
+                    *to = from as core::ffi::c_char;
+                }
+                request.ifr_ifru.ifru_flags = net_device_flags::IFF_UP as core::ffi::c_short;
+                // SAFETY: SIOCSIFFLAGS takes an ifreq that names the device and gives its flags.
+                unsafe {
+                    rustix::ioctl::ioctl(
+                        &socket,
+                        rustix::ioctl::Setter::<{ SIOCSIFFLAGS as rustix::ioctl::Opcode }, _>::new(
+                            request,
+                        ),
+                    )
+                }
+                .expect("bring the loopback up");
+                std::fs::write(TCP_ECN, tcp_ecn).expect("write tcp_ecn");
+                body()
+            })
+            .join()
+            .expect("the check's thread")
+    })
+}
+
+/// The name Linux gives the loopback device of every network namespace.
+///
+/// https://man7.org/linux/man-pages/man7/network_namespaces.7.html#:~:text=loopback
+const LOOPBACK_NAME: &str = "lo";
+/// The `tcp_ecn` of the namespace of the thread that writes it.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html#:~:text=tcp_ecn%20%2D%20INTEGER
+const TCP_ECN: &str = "/proc/sys/net/ipv4/tcp_ecn";
+
+/// Checks that a connection reads the ECN both ends negotiated: none, Classic ECN, or Accurate ECN.
+///
+/// Each end asks for ECN as `tcp_ecn` 0 (never), 1 (Classic) and 3 (Accurate) tell it, in a namespace of its own.
+pub fn ecn_mode_is_what_both_ends_negotiated<S: TcpSockets + Sync>(sockets: S) {
+    for (tcp_ecn, mode) in [
+        ("0", EcnMode::Disabled),
+        ("1", EcnMode::Classic),
+        ("3", EcnMode::Accurate),
+    ] {
+        with_tcp_ecn(tcp_ecn, || {
+            let pair = pair(&sockets);
+            assert_carries_bytes(&sockets, &pair);
+            for end in [&pair.client, &pair.server] {
+                assert_eq!(
+                    information(&sockets, end)
+                        .options
+                        .explicit_congestion_notification,
+                    mode,
+                    "tcp_ecn {tcp_ecn}"
+                );
+            }
+            close(&sockets, pair);
+        });
     }
 }
 
@@ -5553,19 +5762,19 @@ fn listener_authentication_status<S: TcpSockets>(
     sockets
         .read_listener_state(listener, TcpListenerQuery::Authentication)
         .map(|reading| match reading {
-            TcpReading::Authentication(status) => status,
+            TcpListenerReading::Authentication(status) => status,
             other => panic!("authentication read {other:?}"),
         })
 }
 
-/// Reads what the connection recorded of the last packet it received: the fields and the header bytes.
+/// Reads what the connection recorded of the last packet it received: its arrival interface and the header bytes.
 fn last_received_header<S: TcpSockets>(
     sockets: &S,
     connection: &S::Connection,
-) -> (ReceivedPacketFields, Vec<u8>) {
+) -> (Option<InterfaceIndex>, Vec<u8>) {
     let mut room = [u8::MIN; HEADER_ROOM];
     match sockets.read_state(connection, TcpQuery::LastReceivedHeader(&mut room)) {
-        Ok(TcpReading::LastReceivedHeader { fields, header }) => (fields, header.to_vec()),
+        Ok(TcpReading::LastReceivedHeader { interface, header }) => (interface, header.to_vec()),
         other => panic!("last received header read {other:?}"),
     }
 }
@@ -5584,7 +5793,7 @@ fn multipath<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> Multipat
 struct Observed {
     tuned: TcpTuned,
     authentication: Result<TcpAuthenticationStatus, HostError>,
-    last_received: (ReceivedPacketFields, Vec<u8>),
+    last_received: (Option<InterfaceIndex>, Vec<u8>),
 }
 
 fn observed<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> Observed {
@@ -5678,6 +5887,7 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         information(&sockets, &pair.client),
         information(&sockets, &pair.server),
     );
+    let (unacknowledged, selectively_acknowledged) = segments_in_flight(&sockets, &pair.client);
     let transferred = TRANSFER as u64;
     // RFC 4898's count of the bytes acknowledged may count the SYN's sequence number.
     assert!(
@@ -5687,7 +5897,7 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
     assert_eq!(received.bytes_received, ByteTotal(transferred));
     assert!(sent.bytes_sent.0 >= transferred, "{sent:?}");
     assert_eq!(sent.not_sent, NO_BYTES);
-    assert_eq!(sent.unacknowledged, SegmentCount(u64::MIN));
+    assert_eq!(unacknowledged, SegmentCount(u64::MIN));
     let segment = u64::from(sent.send_maximum_segment_size.0);
     assert!(
         sent.data_segments_out.0 >= transferred.div_ceil(segment),
@@ -5740,7 +5950,7 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         [
             sent.lost,
             sent.retransmitted,
-            sent.selectively_acknowledged,
+            selectively_acknowledged,
             sent.forward_acknowledged,
         ],
         [SegmentCount(u64::MIN); 4],
@@ -5805,7 +6015,7 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         "{received:?}"
     );
     // Without ECN there is no Accurate ECN to count.
-    if !sent.options.explicit_congestion_notification {
+    if sent.options.explicit_congestion_notification == EcnMode::Disabled {
         for end in [&sent, &received] {
             assert_eq!(
                 (
@@ -5889,10 +6099,13 @@ pub fn congestion_control_state_names_the_algorithm<S: TcpSockets>(sockets: S) {
                     self::information(&sockets, &pair.client).options,
                     self::information(&sockets, &pair.server).options,
                 );
-                assert!(
-                    client.explicit_congestion_notification
-                        && server.explicit_congestion_notification
-                        && server.explicit_congestion_notification_seen,
+                assert_eq!(
+                    (
+                        client.explicit_congestion_notification,
+                        server.explicit_congestion_notification,
+                        server.explicit_congestion_notification_seen
+                    ),
+                    (EcnMode::Classic, EcnMode::Classic, true),
                     "{client:?} {server:?}"
                 );
             }
@@ -6080,7 +6293,7 @@ pub fn tuned_values_follow_the_settings<S: TcpSockets>(sockets: S) {
         ],
     );
     match sockets.read_listener_state(&listener, TcpListenerQuery::Tuned) {
-        Ok(TcpReading::Tuned(read)) => {
+        Ok(TcpListenerReading::Tuned(read)) => {
             assert!(read.send_buffer.0 >= send_buffer, "{read:?}");
             assert!(
                 (SETTING_BYTES..send_buffer).contains(&read.receive_buffer.0),
@@ -6137,7 +6350,7 @@ pub fn timestamp_reads_the_clock_in_its_unit<S: TcpSockets>(sockets: S) {
     }
     let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
     let read = |listener| match sockets.read_listener_state(listener, TcpListenerQuery::Timestamp) {
-        Ok(TcpReading::Timestamp(clock)) => clock,
+        Ok(TcpListenerReading::Timestamp(clock)) => clock,
         other => panic!("the listener's timestamp read {other:?}"),
     };
     let first = read(&listener);
@@ -6163,15 +6376,18 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
     // server's side would bound the segment size the repaired client sends.
     let connected = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_loopback()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
             local,
             &[TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(
                 SMALL_RECEIVE_BUFFER,
             )))],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let server = accept(&sockets, &listener);
     let pair = Pair {
@@ -6231,11 +6447,13 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
     }
     let restored = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            LocalBinding {
-                address: ipv4_loopback(),
-                port: LocalPort::Requested(Port(connected.local.port())),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: LocalBinding {
+                    address: ipv4_loopback(),
+                    port: LocalPort::Requested(Port(connected.local.port())),
+                },
             },
             local,
             &[
@@ -6249,6 +6467,7 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
             ],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect in repair mode");
     assert_eq!(restored.start, TcpConnectStart::EstablishedForRepair);
     let restored = restored.connection;
@@ -6429,7 +6648,7 @@ pub fn authentication_state_reads_the_keys_and_counters<S: TcpSockets>(sockets: 
             &pair.listener,
             TcpListenerQuery::AuthenticationKey(authentication_identity(FIRST_KEY))
         ),
-        Ok(TcpReading::AuthenticationKey(Some(_)))
+        Ok(TcpListenerReading::AuthenticationKey(Some(_)))
     ));
     sockets
         .set_listener_authentication_counters(&pair.listener, LATER_AUTHENTICATION_COUNTERS)
@@ -6517,23 +6736,29 @@ pub fn authentication_repair_values_are_read_and_written<S: TcpSockets>(sockets:
 fn multipath_pair<S: TcpSockets>(sockets: &S) -> (Pair<S>, SocketAddr, Capture) {
     let listening = sockets
         .listen(
-            TcpProtocol::Multipath,
-            OWNER,
-            bind_any_port(ipv4_loopback()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Multipath,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
             BACKLOG,
             &[],
         )
+        .map_err(unbound)
         .expect("listen");
     let capture = Capture::start(listening.local);
     let connected = sockets
         .connect(
-            TcpProtocol::Multipath,
-            OWNER,
-            bind_any_port(ipv4_loopback()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Multipath,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
             listening.local,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect");
     let server = accept(sockets, &listening.listener);
     let pair = Pair {
@@ -6737,21 +6962,18 @@ pub fn multipath_connection_answers_every_query<S: TcpSockets>(sockets: S) {
         }
     }
     match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Information) {
-        Ok(TcpReading::Information(read)) => assert_eq!(read.state, TcpState::Listen),
+        Ok(TcpListenerReading::Information { information, .. }) => {
+            assert_eq!(information.state, TcpState::Listen)
+        }
         other => panic!("the listener's information read {other:?}"),
     }
     match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Tuned) {
-        Ok(TcpReading::Tuned(read)) => assert!(read.send_buffer.0 > usize::MIN, "{read:?}"),
+        Ok(TcpListenerReading::Tuned(read)) => assert!(read.send_buffer.0 > usize::MIN, "{read:?}"),
         Err(error) => assert_eq!(error, HostError::NotSupported),
         other => panic!("the listener's tuned values read {other:?}"),
     }
     close(&sockets, pair);
 }
-
-/// The interface index that names none.
-///
-/// https://man7.org/linux/man-pages/man3/if_nametoindex.3.html
-const NO_INTERFACE: InterfaceIndex = InterfaceIndex(u32::MIN);
 
 /// Checks that a connection asked to record the last header it received reads the interface and address it came to.
 ///
@@ -6762,9 +6984,9 @@ pub fn last_received_header_records_where_the_last_packet_came<S: TcpSockets>(so
         padding_header(),
     ))];
     // IPv4 carries no options here; the IPv6 client sends a hop-by-hop header with every packet.
-    for (address, destination, client_settings) in [
-        (ipv4_loopback(), Some(Ipv4Addr::LOCALHOST), &[][..]),
-        (ipv6_loopback(), None, &hop_by_hop[..]),
+    for (address, client_settings) in [
+        (ipv4_loopback(), &[][..]),
+        (ipv6_loopback(), &hop_by_hop[..]),
     ] {
         let recorded = pair_at(
             &sockets,
@@ -6775,12 +6997,8 @@ pub fn last_received_header_records_where_the_last_packet_came<S: TcpSockets>(so
         let plain_pair = pair_at(&sockets, address, &[], &[]);
         assert_carries_bytes(&sockets, &recorded);
         assert_carries_bytes(&sockets, &plain_pair);
-        let (fields, recorded_header) = last_received_header(&sockets, &recorded.server);
-        assert_eq!(
-            (fields.interface, fields.specific_destination),
-            (loopback_interface(), destination),
-            "{address:?}"
-        );
+        let (interface, recorded_header) = last_received_header(&sockets, &recorded.server);
+        assert_eq!(interface, Some(loopback_interface()), "{address:?}");
         if client_settings.is_empty() {
             assert!(recorded_header.is_empty(), "{recorded_header:?}");
         } else {
@@ -6797,17 +7015,29 @@ pub fn last_received_header_records_where_the_last_packet_came<S: TcpSockets>(so
             );
             assert!(extension.payload().iter().all(|&byte| byte == u8::MIN));
         }
-        let (fields, header) = last_received_header(&sockets, &plain_pair.server);
-        assert_eq!((fields.interface, header.len()), (NO_INTERFACE, usize::MIN));
+        let (interface, header) = last_received_header(&sockets, &plain_pair.server);
+        assert_eq!((interface, header.len()), (None, usize::MIN));
         sockets
             .configure(&recorded.server, records(Report::NotRequested))
             .expect("records off");
-        assert_eq!(
-            last_received_header(&sockets, &recorded.server).0.interface,
-            NO_INTERFACE
-        );
+        assert_eq!(last_received_header(&sockets, &recorded.server).0, None);
         close(&sockets, recorded);
         close(&sockets, plain_pair);
+    }
+    // Linux keeps the arrival interface of an IPv4 connection from its handshake at accept, so one made by connect
+    // reads none; an IPv6 one reads that of the last packet.
+    for (address, interface) in [
+        (ipv4_loopback(), None),
+        (ipv6_loopback(), Some(loopback_interface())),
+    ] {
+        let connected = pair_at(&sockets, address, &[records(Report::Requested)], &[]);
+        assert_carries_bytes(&sockets, &connected);
+        assert_eq!(
+            last_received_header(&sockets, &connected.client).0,
+            interface,
+            "{address:?}"
+        );
+        close(&sockets, connected);
     }
 }
 
@@ -6832,7 +7062,10 @@ pub fn incoming_processor_is_read_as_received_or_set<S: TcpSockets>(sockets: S) 
     let read =
         |listener| sockets.read_listener_state(listener, TcpListenerQuery::IncomingProcessor);
     let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
-    assert_eq!(read(&listener), Ok(TcpReading::IncomingProcessor(None)));
+    assert_eq!(
+        read(&listener),
+        Ok(TcpListenerReading::IncomingProcessor(None))
+    );
     for processor in [Some(ProcessorIndex(u32::MIN)), Some(SET_PROCESSOR), None] {
         sockets
             .configure(
@@ -6844,11 +7077,612 @@ pub fn incoming_processor_is_read_as_received_or_set<S: TcpSockets>(sockets: S) 
             .expect("set the incoming processor");
         assert_eq!(
             read(&listener),
-            Ok(TcpReading::IncomingProcessor(processor))
+            Ok(TcpListenerReading::IncomingProcessor(processor))
         );
     }
     sockets.stop_listening(listener);
     close(&sockets, pair);
+}
+
+/// The backlog of the listener whose accept queue is read, larger than the connections left waiting.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const SMALL_BACKLOG: ListenBacklog = ListenBacklog(7);
+/// How many connections that listener leaves waiting to be accepted.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const LEFT_WAITING: u32 = 2;
+/// A backlog larger than any the exit node allows, which it holds to its `somaxconn`.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const LARGE_BACKLOG: ListenBacklog = ListenBacklog(100_000);
+/// The most connections Linux lets a listener's queue hold, the bound of every backlog.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html#:~:text=somaxconn%20%2D%20INTEGER
+const SOMAXCONN: &str = "/proc/sys/net/core/somaxconn";
+
+fn bind<S: TcpSockets>(
+    sockets: &S,
+    local: LocalBinding<'_>,
+    settings: &[BindingSetting<'_>],
+) -> Result<TcpBound<S::BoundSocket>, HostError> {
+    sockets.bind(TcpProtocol::Tcp, OWNER, local, settings)
+}
+
+/// Gives a binding to the port on 127.0.0.1, by number.
+fn at_port(port: u16) -> LocalBinding<'static> {
+    LocalBinding {
+        address: ipv4_loopback(),
+        port: LocalPort::Requested(Port(port)),
+    }
+}
+
+/// Gives the error of a connect or listen of a bound socket, the socket it gave back released.
+fn given_back<S: TcpSockets>(
+    sockets: &S,
+) -> impl Fn(TcpLocalEndError<S::BoundSocket>) -> HostError {
+    |error| match error {
+        TcpLocalEndError::Bound {
+            bound_socket,
+            error,
+        } => {
+            sockets.release(bound_socket);
+            error
+        }
+        TcpLocalEndError::Unbound(error) => error,
+    }
+}
+
+/// Binds a socket to 127.0.0.1 at a port by number, one the host chose for another socket released at once.
+fn bound_by_number<S: TcpSockets>(sockets: &S) -> TcpBound<S::BoundSocket> {
+    let shared = [BindingSetting::AddressSharing(AddressSharing::Shared)];
+    let chosen = bind(sockets, bind_any_port(ipv4_loopback()), &shared).expect("bind");
+    let by_number = bind(sockets, at_port(chosen.local.port()), &shared).expect("bind by number");
+    sockets.release(chosen.bound_socket);
+    by_number
+}
+
+/// Takes the connection's pending error, failing the check on any other answer.
+fn pending_error<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> Option<Errno> {
+    match sockets.read_state(connection, TcpQuery::TakePendingError) {
+        Ok(TcpReading::PendingError(error)) => error,
+        other => panic!("pending error read {other:?}"),
+    }
+}
+
+/// Connects from a socket the host binds to the peer, giving the connection whatever came of it.
+fn connect_to<S: TcpSockets>(sockets: &S, peer: SocketAddr) -> S::Connection {
+    sockets
+        .connect(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
+            peer,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(unbound)
+        .expect("connect")
+        .connection
+}
+
+/// Waits until the connection is closed, as one the peer refused is, without taking its pending error.
+fn wait_until_closed<S: TcpSockets>(sockets: &S, connection: &S::Connection) {
+    let start = Instant::now();
+    while information(sockets, connection).state != TcpState::Closed {
+        assert!(start.elapsed() < DEADLINE, "the connection never closed");
+        std::thread::sleep(RETRY_INTERVAL);
+    }
+}
+
+/// Checks that a socket only bound holds its address and port, so that a clash fails the bind, until it is released.
+///
+/// It takes no connection: one to it is refused (Linux's `bind` alone).
+pub fn a_bound_socket_holds_its_port_until_released<S: TcpSockets>(sockets: S) {
+    let first = bind(&sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    assert_eq!(first.local.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    assert_ne!(first.local.port(), ANY_PORT.0);
+    let port = first.local.port();
+    assert_eq!(
+        bind(&sockets, at_port(port), &[]).err(),
+        Some(errno(Errno::EADDRINUSE))
+    );
+    let refused = connect_to(&sockets, first.local);
+    wait_until_closed(&sockets, &refused);
+    assert_eq!(pending_error(&sockets, &refused), Some(Errno::ECONNREFUSED));
+    sockets.close(refused, TcpClose::Orderly);
+    sockets.release(first.bound_socket);
+    let again = bind(&sockets, at_port(port), &[]).expect("bind the released port");
+    sockets.release(again.bound_socket);
+}
+
+/// Checks that a connect and a listen take a bound socket and keep its address and port.
+pub fn connect_and_listen_take_a_bound_socket_and_its_port<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let client = bind(&sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    let connected = sockets
+        .connect(
+            TcpLocalEnd::Bound(client.bound_socket),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(given_back(&sockets))
+        .expect("connect from the bound socket");
+    assert_eq!(connected.local, client.local);
+    let server = accept(&sockets, &listener);
+    let pair = Pair {
+        listener,
+        local,
+        client: connected.connection,
+        server,
+    };
+    assert_carries_bytes(&sockets, &pair);
+    close(&sockets, pair);
+    let server = bind(&sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    let listening = sockets
+        .listen(TcpLocalEnd::Bound(server.bound_socket), BACKLOG, &[])
+        .map_err(given_back(&sockets))
+        .expect("listen on the bound socket");
+    assert_eq!(listening.local, server.local);
+    let client = connect_to(&sockets, listening.local);
+    let server = accept(&sockets, &listening.listener);
+    let pair = Pair {
+        listener: listening.listener,
+        local: listening.local,
+        client,
+        server,
+    };
+    assert_carries_bytes(&sockets, &pair);
+    close(&sockets, pair);
+}
+
+/// Checks that a connect that fails at once (`ENETUNREACH`) and a listen that fails (`EADDRINUSE`) give the socket back.
+///
+/// Still holding its port, so that it can connect or listen at it again.
+pub fn a_failed_connect_or_listen_gives_back_its_bound_socket<S: TcpSockets>(sockets: S) {
+    let bound = bind(&sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    let unreachable = SocketAddr::new(IpAddr::V4(NONLOCAL), bound.local.port());
+    let back = match sockets.connect(
+        TcpLocalEnd::Bound(bound.bound_socket),
+        unreachable,
+        &[],
+        TcpFastOpen::Off,
+    ) {
+        Err(TcpLocalEndError::Bound {
+            bound_socket,
+            error,
+        }) => {
+            assert_eq!(error, errno(Errno::ENETUNREACH));
+            bound_socket
+        }
+        Err(TcpLocalEndError::Unbound(error)) => panic!("the socket was not given back: {error:?}"),
+        Ok(_) => panic!("connected to a peer no route reaches"),
+    };
+    assert_eq!(
+        bind(&sockets, at_port(bound.local.port()), &[]).err(),
+        Some(errno(Errno::EADDRINUSE))
+    );
+    let listening = sockets
+        .listen(TcpLocalEnd::Bound(back), BACKLOG, &[])
+        .map_err(given_back(&sockets))
+        .expect("listen on the socket given back");
+    assert_eq!(listening.local, bound.local);
+    sockets.stop_listening(listening.listener);
+    // Two sockets share a port until one listens; the other's listen fails and gives it back.
+    let shared = [BindingSetting::AddressSharing(AddressSharing::Shared)];
+    let first = bind(&sockets, bind_any_port(ipv4_loopback()), &shared).expect("bind");
+    let second = bind(&sockets, at_port(first.local.port()), &shared).expect("bind beside it");
+    let listening = sockets
+        .listen(TcpLocalEnd::Bound(first.bound_socket), BACKLOG, &[])
+        .map_err(given_back(&sockets))
+        .expect("listen");
+    let back = match sockets.listen(TcpLocalEnd::Bound(second.bound_socket), BACKLOG, &[]) {
+        Err(TcpLocalEndError::Bound {
+            bound_socket,
+            error,
+        }) => {
+            assert_eq!(error, errno(Errno::EADDRINUSE));
+            bound_socket
+        }
+        Err(TcpLocalEndError::Unbound(error)) => panic!("the socket was not given back: {error:?}"),
+        Ok(_) => panic!("two listeners on one port"),
+    };
+    sockets.stop_listening(listening.listener);
+    let listening = sockets
+        .listen(TcpLocalEnd::Bound(back), BACKLOG, &[])
+        .map_err(given_back(&sockets))
+        .expect("listen on the socket given back");
+    assert_eq!(listening.local, second.local);
+    sockets.stop_listening(listening.listener);
+}
+
+/// Checks that a connect whose four addresses and ports clash (`EADDRNOTAVAIL`) gives back a port bound by number.
+///
+/// And frees one bound as 0, giving no socket back.
+pub fn a_clashing_connect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let shared = [BindingSetting::AddressSharing(AddressSharing::Shared)];
+    let as_zero = bind(&sockets, bind_any_port(ipv4_loopback()), &shared).expect("bind");
+    let port = as_zero.local.port();
+    let first = bind(&sockets, at_port(port), &shared).expect("bind by number");
+    let second = bind(&sockets, at_port(port), &shared).expect("bind by number again");
+    let connected = sockets
+        .connect(
+            TcpLocalEnd::Bound(first.bound_socket),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(given_back(&sockets))
+        .expect("connect");
+    let server = accept(&sockets, &listener);
+    match sockets.connect(
+        TcpLocalEnd::Bound(second.bound_socket),
+        local,
+        &[],
+        TcpFastOpen::Off,
+    ) {
+        Err(TcpLocalEndError::Bound {
+            bound_socket,
+            error,
+        }) => {
+            assert_eq!(error, errno(Errno::EADDRNOTAVAIL));
+            sockets.release(bound_socket);
+        }
+        Err(TcpLocalEndError::Unbound(error)) => {
+            panic!("a port bound by number was lost: {error:?}")
+        }
+        Ok(_) => panic!("two connections of the same four addresses and ports"),
+    }
+    match sockets.connect(
+        TcpLocalEnd::Bound(as_zero.bound_socket),
+        local,
+        &[],
+        TcpFastOpen::Off,
+    ) {
+        Err(TcpLocalEndError::Unbound(error)) => assert_eq!(error, errno(Errno::EADDRNOTAVAIL)),
+        Err(TcpLocalEndError::Bound {
+            bound_socket,
+            error,
+        }) => {
+            sockets.release(bound_socket);
+            panic!("a port bound as 0 was given back: {error:?}")
+        }
+        Ok(_) => panic!("two connections of the same four addresses and ports"),
+    }
+    close(
+        &sockets,
+        Pair {
+            listener,
+            local,
+            client: connected.connection,
+            server,
+        },
+    );
+}
+
+/// Checks that a disconnect gives back the socket of a port bound by number, holding it, with the error it left.
+///
+/// That is `ECONNRESET` after an established connection and `ECONNREFUSED` after a refused one; one bound as 0, one
+/// the host bound and an accepted one come back as none, with the port free.
+pub fn disconnect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let by_number = bound_by_number(&sockets);
+    let port = by_number.local.port();
+    let connected = sockets
+        .connect(
+            TcpLocalEnd::Bound(by_number.bound_socket),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(given_back(&sockets))
+        .expect("connect");
+    let pair = Pair {
+        server: accept(&sockets, &listener),
+        listener,
+        local,
+        client: connected.connection,
+    };
+    assert_carries_bytes(&sockets, &pair);
+    let disconnected = sockets.disconnect(pair.client);
+    assert_eq!(disconnected.pending_error, Some(Errno::ECONNRESET));
+    let back = disconnected
+        .bound_socket
+        .expect("the socket of a port bound by number");
+    assert_eq!(
+        bind(&sockets, at_port(port), &[]).err(),
+        Some(errno(Errno::EADDRINUSE))
+    );
+    // An accepted connection's port is never its own.
+    let accepted = sockets.disconnect(pair.server);
+    assert!(accepted.bound_socket.is_none());
+    sockets.stop_listening(pair.listener);
+    // Bound by number again, it connects to a port only bound, which refuses it.
+    let target = bind(&sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    let refused = sockets
+        .connect(
+            TcpLocalEnd::Bound(back),
+            target.local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(given_back(&sockets))
+        .expect("connect again from the socket given back")
+        .connection;
+    wait_until_closed(&sockets, &refused);
+    let disconnected = sockets.disconnect(refused);
+    assert_eq!(disconnected.pending_error, Some(Errno::ECONNREFUSED));
+    let back = disconnected
+        .bound_socket
+        .expect("the socket of a port bound by number");
+    let listening = sockets
+        .listen(TcpLocalEnd::Bound(back), BACKLOG, &[])
+        .map_err(given_back(&sockets))
+        .expect("listen on the socket given back");
+    assert_eq!(listening.local.port(), port);
+    // A connection whose port the host chose, or that was bound as 0, frees it.
+    let as_zero = sockets
+        .connect(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
+            listening.local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(unbound)
+        .expect("connect");
+    let server = accept(&sockets, &listening.listener);
+    let freed = as_zero.local.port();
+    let disconnected = sockets.disconnect(as_zero.connection);
+    assert!(disconnected.bound_socket.is_none());
+    let again = bind(&sockets, at_port(freed), &[]).expect("bind the freed port");
+    sockets.release(again.bound_socket);
+    sockets.close(server, TcpClose::Abort);
+    sockets.stop_listening(listening.listener);
+    sockets.release(target.bound_socket);
+}
+
+/// Checks that a connection's pending error is taken once: a refused connect's `ECONNREFUSED`, then none.
+///
+/// And that a listener with none reads none (Linux's `SO_ERROR`).
+pub fn pending_error_is_taken_once<S: TcpSockets>(sockets: S) {
+    let target = bind(&sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    let refused = connect_to(&sockets, target.local);
+    wait_until_closed(&sockets, &refused);
+    assert_eq!(pending_error(&sockets, &refused), Some(Errno::ECONNREFUSED));
+    assert_eq!(pending_error(&sockets, &refused), None);
+    sockets.close(refused, TcpClose::Orderly);
+    sockets.release(target.bound_socket);
+    let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
+    assert_eq!(
+        sockets.read_listener_state(&listener, TcpListenerQuery::TakePendingError),
+        Ok(TcpListenerReading::PendingError(None))
+    );
+    sockets.stop_listening(listener);
+}
+
+/// Checks that a listener reads how many connections wait to be accepted and its backlog, held to `somaxconn`.
+pub fn listener_reads_its_accept_queue_and_backlog<S: TcpSockets>(sockets: S) {
+    let read = |listener: &S::Listener| match sockets
+        .read_listener_state(listener, TcpListenerQuery::Information)
+    {
+        Ok(TcpListenerReading::Information {
+            waiting_to_be_accepted,
+            backlog,
+            ..
+        }) => (waiting_to_be_accepted, backlog),
+        other => panic!("the listener's information read {other:?}"),
+    };
+    let listening = sockets
+        .listen(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
+            SMALL_BACKLOG,
+            &[],
+        )
+        .map_err(unbound)
+        .expect("listen");
+    assert_eq!(
+        read(&listening.listener),
+        (ConnectionCount(u32::MIN), SMALL_BACKLOG)
+    );
+    let clients: Vec<_> = (u32::MIN..LEFT_WAITING)
+        .map(|_| connect_to(&sockets, listening.local))
+        .collect();
+    let start = Instant::now();
+    while read(&listening.listener).0 != ConnectionCount(LEFT_WAITING) {
+        assert!(
+            start.elapsed() < DEADLINE,
+            "{:?}",
+            read(&listening.listener)
+        );
+        std::thread::sleep(RETRY_INTERVAL);
+    }
+    assert_eq!(
+        read(&listening.listener),
+        (ConnectionCount(LEFT_WAITING), SMALL_BACKLOG)
+    );
+    for client in clients {
+        sockets.close(client, TcpClose::Abort);
+    }
+    sockets.stop_listening(listening.listener);
+    let somaxconn: u32 = std::fs::read_to_string(SOMAXCONN)
+        .expect("somaxconn")
+        .trim()
+        .parse()
+        .expect("somaxconn is a number");
+    let listening = sockets
+        .listen(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
+            LARGE_BACKLOG,
+            &[],
+        )
+        .map_err(unbound)
+        .expect("listen");
+    assert_eq!(
+        read(&listening.listener).1,
+        ListenBacklog(somaxconn.min(LARGE_BACKLOG.0))
+    );
+    sockets.stop_listening(listening.listener);
+}
+
+/// Checks that leaving repair mode without a window probe sends the peer nothing, where leaving it plainly sends one.
+pub fn leaving_repair_without_a_window_probe_sends_none<S: TcpSockets>(sockets: S) {
+    let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &[], &[]);
+    assert_carries_bytes(&sockets, &pair);
+    std::thread::sleep(SETTLE);
+    let next = capture.next_to_listener();
+    let repair = |mode| {
+        sockets
+            .configure(&pair.client, TcpSetting::Repair(mode))
+            .expect("repair mode")
+    };
+    let start = Instant::now();
+    repair(TcpRepair::On);
+    repair(TcpRepair::OffWithoutWindowProbe);
+    assert!(
+        capture
+            .wait_for(start, PUSHED_WITHIN, |segment| segment.to_listener)
+            .is_none(),
+        "a segment left without a window probe"
+    );
+    let start = Instant::now();
+    repair(TcpRepair::On);
+    repair(TcpRepair::Off);
+    capture
+        .wait_for(start, PUSHED_WITHIN, |segment| is_probe(segment, next))
+        .expect("the window probe of a plain leave");
+    assert_carries_bytes(&sockets, &pair);
+    close(&sockets, pair);
+}
+
+/// Checks that a listener removes a key asynchronously: the key is gone, and so is no other.
+pub fn a_listener_removes_a_key_asynchronously<S: TcpSockets>(sockets: S) {
+    let first = authentication_identity_of(NONLOCAL, FIRST_KEY);
+    let second = authentication_identity_of(NONLOCAL, SECOND_KEY);
+    let add = |identity| {
+        TcpListenerSetting::Socket(TcpSetting::AddAuthenticationKey(
+            TcpAuthenticationKeyAddition {
+                identity,
+                algorithm: AUTHENTICATION_ALGORITHM,
+                mac_length: AUTHENTICATION_MAC_LENGTH,
+                other_options: TcpAuthenticationOptionCoverage::Included,
+                secret: AUTHENTICATION_SECRET,
+                key_use: TcpAuthenticationKeyUse::Stored,
+            },
+        ))
+    };
+    let (listener, _) = listen(&sockets, ipv4_loopback(), &[add(first), add(second)]);
+    let held = |identity| match sockets
+        .read_listener_state(&listener, TcpListenerQuery::AuthenticationKey(identity))
+    {
+        Ok(TcpListenerReading::AuthenticationKey(counters)) => counters.is_some(),
+        other => panic!("the key read {other:?}"),
+    };
+    assert!(held(first) && held(second));
+    sockets
+        .configure(
+            &listener,
+            TcpListenerSetting::RemoveAuthenticationKeyAsynchronously(first),
+        )
+        .expect("remove the key asynchronously");
+    let start = Instant::now();
+    while held(first) {
+        assert!(start.elapsed() < DEADLINE, "the key was never removed");
+        std::thread::sleep(RETRY_INTERVAL);
+    }
+    assert!(held(second));
+    sockets.stop_listening(listener);
+}
+
+/// Checks that a key is for the VRF named: one for the default VRF is held under it and removed only under it.
+///
+/// A device that is no VRF, such as loopback, is refused, for TCP-AO and MD5 keys alike (`EINVAL`).
+pub fn keys_are_for_the_vrf_named<S: TcpSockets>(sockets: S) {
+    let identity = |vrf| TcpAuthenticationKeyIdentity {
+        vrf,
+        ..authentication_identity_of(NONLOCAL, FIRST_KEY)
+    };
+    let add = |vrf| {
+        TcpListenerSetting::Socket(TcpSetting::AddAuthenticationKey(
+            TcpAuthenticationKeyAddition {
+                identity: identity(vrf),
+                algorithm: AUTHENTICATION_ALGORITHM,
+                mac_length: AUTHENTICATION_MAC_LENGTH,
+                other_options: TcpAuthenticationOptionCoverage::Included,
+                secret: AUTHENTICATION_SECRET,
+                key_use: TcpAuthenticationKeyUse::Stored,
+            },
+        ))
+    };
+    let remove = |vrf| {
+        TcpListenerSetting::Socket(TcpSetting::RemoveAuthenticationKey(
+            TcpAuthenticationKeyRemoval {
+                identity: identity(vrf),
+                current: None,
+                requested_next: None,
+            },
+        ))
+    };
+    let (listener, _) = listen(&sockets, ipv4_loopback(), &[add(TcpKeyVrf::Default)]);
+    let held = || match sockets.read_listener_state(
+        &listener,
+        TcpListenerQuery::AuthenticationKey(identity(TcpKeyVrf::Default)),
+    ) {
+        Ok(TcpListenerReading::AuthenticationKey(counters)) => counters.is_some(),
+        other => panic!("the key read {other:?}"),
+    };
+    assert!(held());
+    // Removing a key that is not there leaves the listener as asked.
+    sockets
+        .configure(&listener, remove(TcpKeyVrf::Any))
+        .expect("remove a key of no VRF");
+    assert!(held(), "a key of the default VRF was removed as one of any");
+    sockets
+        .configure(&listener, remove(TcpKeyVrf::Default))
+        .expect("remove the key");
+    assert!(!held());
+    let loopback = TcpKeyVrf::Device(loopback_interface());
+    assert_eq!(
+        sockets.configure(&listener, add(loopback)),
+        Err(errno(Errno::EINVAL))
+    );
+    let md5 = |vrf| {
+        TcpListenerSetting::Socket(TcpSetting::Md5Key(TcpMd5KeyChange::Set {
+            peer: TcpMd5Peer {
+                prefix: IpPrefix {
+                    address: IpAddr::V4(NONLOCAL),
+                    length: PrefixLength(Ipv4Addr::BITS as u8),
+                },
+                vrf,
+            },
+            key: AUTHENTICATION_SECRET,
+        }))
+    };
+    let (md5_listener, _) = listen(&sockets, ipv4_loopback(), &[]);
+    assert_eq!(
+        sockets.configure(&md5_listener, md5(loopback)),
+        Err(errno(Errno::EINVAL))
+    );
+    sockets
+        .configure(&md5_listener, md5(TcpKeyVrf::Default))
+        .expect("an MD5 key of the default VRF");
+    sockets.stop_listening(md5_listener);
+    sockets.stop_listening(listener);
 }
 
 /// Makes a connection and a setting it takes, for the suite of `Configurable`.
@@ -7034,13 +7868,16 @@ pub fn waiting_for_a_connection<S: TcpSockets>(
         make_ready: move |sockets: &S, _: &S::Listener| {
             let client = sockets
                 .connect(
-                    TcpProtocol::Tcp,
-                    OWNER,
-                    bind_any_port(ipv4_any()),
+                    TcpLocalEnd::Unbound {
+                        protocol: TcpProtocol::Tcp,
+                        owner: OWNER,
+                        local: bind_any_port(ipv4_any()),
+                    },
                     local,
                     &[],
                     TcpFastOpen::Off,
                 )
+                .map_err(unbound)
                 .expect("connect")
                 .connection;
             // A send is taken only once the handshake is done, so the connection is queued before the client closes.
@@ -7319,13 +8156,16 @@ pub fn a_wait_gives_the_facts_the_listener_has_and_no_others<S: TcpSockets>(sock
     }
     let client = sockets
         .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            bind_any_port(ipv4_any()),
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_any()),
+            },
             local,
             &[],
             TcpFastOpen::Off,
         )
+        .map_err(unbound)
         .expect("connect")
         .connection;
     facts_once_ready(&sockets, &listener, ReadyFor::READABLE);
@@ -7368,6 +8208,61 @@ macro_rules! tests {
         #[test]
         fn connect_and_accept_name_both_ends() {
             $crate::connect_and_accept_name_both_ends($value);
+        }
+
+        #[test]
+        fn a_bound_socket_holds_its_port_until_released() {
+            $crate::a_bound_socket_holds_its_port_until_released($value);
+        }
+
+        #[test]
+        fn connect_and_listen_take_a_bound_socket_and_its_port() {
+            $crate::connect_and_listen_take_a_bound_socket_and_its_port($value);
+        }
+
+        #[test]
+        fn a_failed_connect_or_listen_gives_back_its_bound_socket() {
+            $crate::a_failed_connect_or_listen_gives_back_its_bound_socket($value);
+        }
+
+        #[test]
+        fn a_clashing_connect_gives_back_only_a_port_bound_by_number() {
+            $crate::a_clashing_connect_gives_back_only_a_port_bound_by_number($value);
+        }
+
+        #[test]
+        fn disconnect_gives_back_only_a_port_bound_by_number() {
+            $crate::disconnect_gives_back_only_a_port_bound_by_number($value);
+        }
+
+        #[test]
+        fn pending_error_is_taken_once() {
+            $crate::pending_error_is_taken_once($value);
+        }
+
+        #[test]
+        fn listener_reads_its_accept_queue_and_backlog() {
+            $crate::listener_reads_its_accept_queue_and_backlog($value);
+        }
+
+        #[test]
+        fn leaving_repair_without_a_window_probe_sends_none() {
+            $crate::leaving_repair_without_a_window_probe_sends_none($value);
+        }
+
+        #[test]
+        fn a_listener_removes_a_key_asynchronously() {
+            $crate::a_listener_removes_a_key_asynchronously($value);
+        }
+
+        #[test]
+        fn keys_are_for_the_vrf_named() {
+            $crate::keys_are_for_the_vrf_named($value);
+        }
+
+        #[test]
+        fn ecn_mode_is_what_both_ends_negotiated() {
+            $crate::ecn_mode_is_what_both_ends_negotiated($value);
         }
 
         #[test]

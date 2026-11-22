@@ -4,6 +4,7 @@ use std::ffi::c_int;
 use std::mem::{MaybeUninit, offset_of, size_of};
 use std::net::IpAddr;
 use std::os::fd::{AsRawFd, BorrowedFd};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use libc::socklen_t;
@@ -39,7 +40,7 @@ use wcontainers_tcp_sockets::settings::{
 };
 use wcontainers_tcp_sockets::state::{
     AccurateEcnFailures, AccurateEcnOptionSeen, ByteTotal, CongestionControlInformation,
-    CongestionFraction, CongestionGain, DeliveryRateLimit, EcnByteCounts, EventCount,
+    CongestionFraction, CongestionGain, DeliveryRateLimit, EcnByteCounts, EcnMode, EventCount,
     TcpCongestionAvoidanceState, TcpFastOpenClientFailure, TcpInformation, TcpNegotiatedOptions,
     TcpQueues, TcpReading, TcpState, TcpTuned, UrgentMark,
 };
@@ -53,9 +54,10 @@ const SHORT_MULTIPATH_INFORMATION: &str =
     "the host's MPTCP_INFO is older than the contract's: the fields it lacks are given as zero";
 const UNKNOWN_STATE: &str =
     "the host reported a TCP state or congestion state the contract has no name for";
+const NO_KERNEL_VERSION: &str = "the host's kernel version could not be read, which alone tells how TCP_INFO's last word is laid out";
+const NO_ECN_MODE: &str = "Linux 6.18 and 6.19 report no ECN mode and flag Classic and Accurate ECN alike, so a connection using ECN cannot be read";
 const UNKNOWN_CONGESTION_INFORMATION: &str =
     "the host reported congestion control information of a form the contract does not know";
-const NO_RECORDED_LENGTH: &str = "Linux records no length and no fixed header of the last packet a TCP socket received, only its options and extension headers";
 const NO_RECORDED_IPV4_OPTIONS: &str = "Linux records no IPv4 options of the last packet a TCP socket received, so its header bytes are given as none";
 const RECORDS_FILL_THE_ROOM: &str = "the records of the last packet a TCP socket received filled the room for them, so Linux may have left some out";
 const HEADERS_CUT: &str = "the buffer given for the last packet's extension headers was shorter than the headers Linux recorded";
@@ -66,10 +68,11 @@ const NO_MULTIPATH_URGENT_MARK: &str = "Linux keeps no urgent mark for a multipa
 const NO_MULTIPATH_CLAMP: &str = "Linux reads no window clamp or quick acknowledgement mode of a multipath socket (TCP_WINDOW_CLAMP and TCP_QUICKACK answer EOPNOTSUPP), and the tuned values need both";
 const NO_FULLMESH_LIMIT: &str = "the host's MPTCP_INFO gives the limit of fullmesh endpoints, which the contract's multipath information has no field for";
 
-/// The TCP states in the order Linux numbers them from `TCP_ESTABLISHED`, which is one.
+/// The TCP states in the order Linux numbers them from `TCP_ESTABLISHED`, which is one, less `TCP_NEW_SYN_RECV` and
+/// `TCP_BOUND_INACTIVE`, which no socket a program holds is in.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/net/tcp_states.h
-const STATES: [TcpState; 13] = [
+const STATES: [TcpState; 11] = [
     TcpState::Established,
     TcpState::SynchronizeSent,
     TcpState::SynchronizeReceived,
@@ -81,8 +84,6 @@ const STATES: [TcpState; 13] = [
     TcpState::LastAcknowledgement,
     TcpState::Listen,
     TcpState::Closing,
-    TcpState::NewSynchronizeReceived,
-    TcpState::BoundInactive,
 ];
 
 /// `TCP_ESTABLISHED`, the number of the first of [`STATES`].
@@ -119,7 +120,8 @@ const OPTIONS_SEEN: [AccurateEcnOptionSeen; 4] = [
 
 /// The fields `TCP_INFO` gives after `tcpi_total_rto_time`, which linux-raw-sys does not carry yet.
 ///
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#L337-L346
+/// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L337-L347
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct AccurateEcnInformation {
@@ -130,8 +132,64 @@ struct AccurateEcnInformation {
     received_e1_bytes: u32,
     received_e0_bytes: u32,
     received_ce_bytes: u32,
-    fail_mode: u16,
-    option_seen: u16,
+    /// `tcpi_accecn_fail_mode` then `tcpi_accecn_opt_seen` as two `u16`s on Linux 6.18 and 6.19; from 7.0 one `u32` of
+    /// bit fields from `tcpi_ecn_mode`, which [`AccurateEcnLayout`] tells apart.
+    last: [u8; 4],
+}
+
+/// How the last word of a `TCP_INFO` with the Accurate ECN fields is laid out, which only the kernel's version tells.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AccurateEcnLayout {
+    /// Linux 6.18 and 6.19: two `u16`s and no ECN mode.
+    Halves,
+    /// Linux 7.0 and later: bit fields, the ECN mode first.
+    BitFields,
+}
+
+/// The first Linux whose last `TCP_INFO` word holds `tcpi_ecn_mode`, by major and minor version.
+///
+/// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
+const ECN_MODE_SINCE: (u32, u32) = (7, 0);
+
+/// The bit fields of the last `TCP_INFO` word from Linux 7.0: `tcpi_ecn_mode:2`, `tcpi_accecn_opt_seen:2` and
+/// `tcpi_accecn_fail_mode:4`, from the lowest bit.
+///
+/// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
+const ECN_MODE_BITS: u32 = 2;
+const OPTION_SEEN_BITS: u32 = 2;
+const FAIL_MODE_BITS: u32 = 4;
+
+/// The ECN modes in the order `TCPI_ECN_MODE_*` numbers them from zero.
+///
+/// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L229-L233
+const ECN_MODES: [EcnMode; 4] = [
+    EcnMode::Disabled,
+    EcnMode::Classic,
+    EcnMode::Accurate,
+    EcnMode::Pending,
+];
+
+/// Gives the low `bits` of `word` after shifting `shift` away.
+fn bit_field(word: u32, shift: u32, bits: u32) -> u32 {
+    word >> shift & ((1 << bits) - 1)
+}
+
+/// Tells how the running kernel lays out the last `TCP_INFO` word, none when its version cannot be read.
+fn accurate_ecn_layout() -> Option<AccurateEcnLayout> {
+    static LAYOUT: OnceLock<Option<AccurateEcnLayout>> = OnceLock::new();
+    *LAYOUT.get_or_init(|| {
+        let name = rustix::system::uname();
+        let release = name.release().to_str().ok()?;
+        let mut numbers = release
+            .split(|character: char| !character.is_ascii_digit())
+            .map(str::parse::<u32>);
+        let version = (numbers.next()?.ok()?, numbers.next()?.ok()?);
+        Some(if version >= ECN_MODE_SINCE {
+            AccurateEcnLayout::BitFields
+        } else {
+            AccurateEcnLayout::Halves
+        })
+    })
 }
 
 /// Where the fields linux-raw-sys lacks start in `TCP_INFO`, right after `tcpi_total_rto_time`.
@@ -404,11 +462,13 @@ fn congestion_state(state: u8) -> Option<TcpCongestionAvoidanceState> {
     .find_map(|(linux, ours)| (linux as u32 == u32::from(state)).then_some(ours))
 }
 
-/// Reads `TCP_INFO` into bytes, counting a shorter one, which leaves the fields it lacks zero.
+/// Reads `TCP_INFO` into bytes, counting a shorter one, which leaves the fields it lacks zero, and tells its layout.
+///
+/// One without the Accurate ECN fields is of a Linux before 6.18, which has no Accurate ECN.
 fn information_bytes(
     socket: BorrowedFd<'_>,
     shortfalls: &Shortfalls,
-) -> Result<InformationBytes, HostError> {
+) -> Result<(InformationBytes, Option<AccurateEcnLayout>), HostError> {
     let mut bytes = InformationBytes {
         _aligned: [],
         bytes: [u8::MIN; INFORMATION_LENGTH],
@@ -416,18 +476,44 @@ fn information_bytes(
     let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_INFO, &mut bytes.bytes)?;
     if length < INFORMATION_LENGTH {
         shortfalls.count(SHORT_INFORMATION);
+        return Ok((bytes, None));
     }
-    Ok(bytes)
+    let layout = accurate_ecn_layout().ok_or_else(|| shortfalls.refuse(NO_KERNEL_VERSION))?;
+    Ok((bytes, Some(layout)))
 }
 
 /// Gives the contract's `TCP_INFO` from the bytes Linux wrote.
 fn information_of(
     bytes: &InformationBytes,
+    layout: Option<AccurateEcnLayout>,
     shortfalls: &Shortfalls,
 ) -> Result<TcpInformation, HostError> {
     let info: uapi::tcp_info = view(&bytes.bytes);
     let ecn: AccurateEcnInformation = view(&bytes.bytes[ACCURATE_ECN_AT..]);
     shortfalls.count(UNFILLED_INFORMATION);
+    let classic = u32::from(info.tcpi_options) & uapi::TCPI_OPT_ECN != u32::MIN;
+    let word = u32::from_ne_bytes(ecn.last);
+    let [first, second] = [[ecn.last[0], ecn.last[1]], [ecn.last[2], ecn.last[3]]];
+    let (ecn_mode, fail_mode, option_seen) = match layout {
+        None if classic => (EcnMode::Classic, u16::MIN, u16::MIN),
+        None => (EcnMode::Disabled, u16::MIN, u16::MIN),
+        Some(AccurateEcnLayout::BitFields) => (
+            *ECN_MODES
+                .get(bit_field(word, u32::MIN, ECN_MODE_BITS) as usize)
+                .ok_or_else(|| shortfalls.refuse(UNKNOWN_STATE))?,
+            bit_field(word, ECN_MODE_BITS + OPTION_SEEN_BITS, FAIL_MODE_BITS) as u16,
+            bit_field(word, ECN_MODE_BITS, OPTION_SEEN_BITS) as u16,
+        ),
+        // `TCPI_OPT_ECN` is set for Classic and Accurate ECN alike there.
+        Some(AccurateEcnLayout::Halves) if classic => {
+            return Err(shortfalls.refuse(NO_ECN_MODE));
+        }
+        Some(AccurateEcnLayout::Halves) => (
+            EcnMode::Disabled,
+            u16::from_ne_bytes(first),
+            u16::from_ne_bytes(second),
+        ),
+    };
     let state = info
         .tcpi_state
         .checked_sub(FIRST_STATE)
@@ -466,7 +552,7 @@ fn information_of(
             timestamps: option(uapi::TCPI_OPT_TIMESTAMPS),
             selective_acknowledgements: option(uapi::TCPI_OPT_SACK),
             window_scaling: option(uapi::TCPI_OPT_WSCALE),
-            explicit_congestion_notification: option(uapi::TCPI_OPT_ECN),
+            explicit_congestion_notification: ecn_mode,
             explicit_congestion_notification_seen: option(uapi::TCPI_OPT_ECN_SEEN),
             synchronize_data_acknowledged: option(uapi::TCPI_OPT_SYN_DATA),
             microsecond_timestamps: option(uapi::TCPI_OPT_USEC_TS),
@@ -486,8 +572,6 @@ fn information_of(
         acknowledgement_timeout: microseconds(info.tcpi_ato),
         send_maximum_segment_size: MaximumSegmentSize(narrow(info.tcpi_snd_mss)?),
         receive_maximum_segment_size: MaximumSegmentSize(narrow(info.tcpi_rcv_mss)?),
-        unacknowledged: segments(info.tcpi_unacked),
-        selectively_acknowledged: segments(info.tcpi_sacked),
         lost: segments(info.tcpi_lost),
         retransmitted: segments(info.tcpi_retrans),
         forward_acknowledged: segments(info.tcpi_fackets),
@@ -545,24 +629,30 @@ fn information_of(
             congestion_experienced: bytes_total(ecn.received_ce_bytes),
         },
         accurate_ecn_failures: AccurateEcnFailures {
-            ace_field_sending: ecn.fail_mode & ACE_FAIL_SEND != u16::MIN,
-            ace_field_receiving: ecn.fail_mode & ACE_FAIL_RECEIVE != u16::MIN,
-            option_sending: ecn.fail_mode & OPTION_FAIL_SEND != u16::MIN,
-            option_receiving: ecn.fail_mode & OPTION_FAIL_RECEIVE != u16::MIN,
+            ace_field_sending: fail_mode & ACE_FAIL_SEND != u16::MIN,
+            ace_field_receiving: fail_mode & ACE_FAIL_RECEIVE != u16::MIN,
+            option_sending: fail_mode & OPTION_FAIL_SEND != u16::MIN,
+            option_receiving: fail_mode & OPTION_FAIL_RECEIVE != u16::MIN,
         },
         accurate_ecn_option_seen: OPTIONS_SEEN
-            .get(usize::from(ecn.option_seen))
+            .get(usize::from(option_seen))
             .copied()
             .ok_or_else(|| shortfalls.refuse(UNKNOWN_STATE))?,
     })
 }
 
-/// Reads the socket's `TCP_INFO`.
+/// Reads the socket's `TCP_INFO`, with its `tcpi_unacked` and `tcpi_sacked`, which a listener gives its accept queue in.
 pub(super) fn information(
     socket: BorrowedFd<'_>,
     shortfalls: &Shortfalls,
-) -> Result<TcpInformation, HostError> {
-    information_of(&information_bytes(socket, shortfalls)?, shortfalls)
+) -> Result<(TcpInformation, u32, u32), HostError> {
+    let (bytes, layout) = information_bytes(socket, shortfalls)?;
+    let info: uapi::tcp_info = view(&bytes.bytes);
+    Ok((
+        information_of(&bytes, layout, shortfalls)?,
+        info.tcpi_unacked,
+        info.tcpi_sacked,
+    ))
 }
 
 /// Reads the congestion control's name, cut to the buffer as `TCP_CONGESTION` cuts it, and its `TCP_CC_INFO`.
@@ -570,7 +660,7 @@ pub(super) fn congestion_control<'a>(
     socket: BorrowedFd<'_>,
     into: &'a mut [u8],
     shortfalls: &Shortfalls,
-) -> Result<TcpReading<'a>, HostError> {
+) -> Result<(&'a str, Option<CongestionControlInformation>), HostError> {
     let mut name = [u8::MIN; CONGESTION_NAME_ROOM];
     let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_CONGESTION, &mut name)?;
     let length = name[..length]
@@ -623,7 +713,7 @@ pub(super) fn congestion_control<'a>(
     let cut = length.min(into.len());
     into[..cut].copy_from_slice(&name[..cut]);
     let name = std::str::from_utf8(&into[..cut]).map_err(|_| invalid())?;
-    Ok(TcpReading::CongestionControl { name, information })
+    Ok((name, information))
 }
 
 /// Reads the bytes unread, unacknowledged and unsent (`SIOCINQ`, `SIOCOUTQ`, `SIOCOUTQNSD`) and the urgent mark.
@@ -661,7 +751,7 @@ pub(super) fn tuned(
     shortfalls: &Shortfalls,
 ) -> Result<TcpTuned, HostError> {
     let int = |level, name| get_int(socket, level, name);
-    let information: uapi::tcp_info = view(&information_bytes(socket, shortfalls)?.bytes);
+    let information: uapi::tcp_info = view(&information_bytes(socket, shortfalls)?.0.bytes);
     Ok(TcpTuned {
         send_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_SNDBUF)?)?),
         receive_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_RCVBUF)?)?),
@@ -697,7 +787,7 @@ pub(super) fn timestamp(
     shortfalls: &Shortfalls,
 ) -> Result<TcpTimestampClock, HostError> {
     let value: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;
-    let information: uapi::tcp_info = view(&information_bytes(socket, shortfalls)?.bytes);
+    let information: uapi::tcp_info = view(&information_bytes(socket, shortfalls)?.0.bytes);
     Ok(TcpTimestampClock {
         value: TcpTimestamp(value),
         unit: if u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS != u32::MIN {
@@ -928,7 +1018,7 @@ fn full_information(
     subflows: &mut [MptcpSubflowInfo],
     information: &mut [InformationBytes],
     shortfalls: &Shortfalls,
-) -> Result<u32, HostError> {
+) -> Result<(u32, Option<AccurateEcnLayout>), HostError> {
     let mut full: MptcpFullInfo = zeroed();
     full.size_tcpinfo_user = narrow(size_of::<InformationBytes>() as u64)?;
     full.size_sfinfo_user = narrow(size_of::<MptcpSubflowInfo>() as u64)?;
@@ -943,8 +1033,10 @@ fn full_information(
     )?;
     if usize::try_from(full.size_tcpinfo_kernel).map_err(|_| overflow())? < INFORMATION_LENGTH {
         shortfalls.count(SHORT_INFORMATION);
+        return Ok((full.num_subflows, None));
     }
-    Ok(full.num_subflows)
+    let layout = accurate_ecn_layout().ok_or_else(|| shortfalls.refuse(NO_KERNEL_VERSION))?;
+    Ok((full.num_subflows, Some(layout)))
 }
 
 /// Reads the subflow at the position through `MPTCP_FULL_INFO`, none past the last.
@@ -959,29 +1051,30 @@ pub(super) fn multipath_subflow(
     };
     let mut subflows = [zeroed::<MptcpSubflowInfo>(); SUBFLOW_ROOM];
     let mut information = [empty; SUBFLOW_ROOM];
-    let count = full_information(socket, &mut subflows, &mut information, shortfalls)?;
+    let (count, layout) = full_information(socket, &mut subflows, &mut information, shortfalls)?;
     let index = usize::try_from(position.0).map_err(|_| overflow())?;
     if position.0 >= count {
         return Ok(None);
     }
     if index < SUBFLOW_ROOM {
-        return subflow_of(subflows[index], &information[index], shortfalls).map(Some);
+        return subflow_of(subflows[index], &information[index], layout, shortfalls).map(Some);
     }
     shortfalls.count(SUBFLOWS_PAST_THE_ROOM);
     let length = usize::try_from(count).map_err(|_| overflow())?;
     let mut subflows = vec![zeroed::<MptcpSubflowInfo>(); length];
     let mut information = vec![empty; length];
-    let filled = full_information(socket, &mut subflows, &mut information, shortfalls)?;
+    let (filled, layout) = full_information(socket, &mut subflows, &mut information, shortfalls)?;
     if position.0 >= filled.min(count) {
         return Ok(None);
     }
-    subflow_of(subflows[index], &information[index], shortfalls).map(Some)
+    subflow_of(subflows[index], &information[index], layout, shortfalls).map(Some)
 }
 
 /// Gives one subflow of an `MPTCP_FULL_INFO` read with its `TCP_INFO`.
 fn subflow_of(
     subflow: MptcpSubflowInfo,
     information: &InformationBytes,
+    layout: Option<AccurateEcnLayout>,
     shortfalls: &Shortfalls,
 ) -> Result<MultipathSubflow, HostError> {
     let address = |storage: SocketAddrStorage| {
@@ -995,14 +1088,14 @@ fn subflow_of(
         identifier: MultipathSubflowIdentifier(subflow.id),
         local: address(subflow.local)?,
         peer: address(subflow.remote)?,
-        information: information_of(information, shortfalls)?,
+        information: information_of(information, layout, shortfalls)?,
     })
 }
 
 /// Reads what the socket recorded of the last packet it received in order: its options' records and extension headers.
 ///
-/// IPv4's `IP_PKTOPTIONS` or IPv6's `IPV6_2292PKTOPTIONS` by the peer's family; Linux keeps no length and no fixed header,
-/// and for IPv4 no options.
+/// IPv4's `IP_PKTOPTIONS` or IPv6's `IPV6_2292PKTOPTIONS` by the peer's family; Linux keeps no fixed header, and for IPv4
+/// no options.
 pub(super) fn last_received_header<'a>(
     socket: BorrowedFd<'_>,
     peer: IpAddr,
@@ -1030,7 +1123,6 @@ pub(super) fn last_received_header<'a>(
             &mut control.bytes,
         ),
     }?;
-    shortfalls.count(NO_RECORDED_LENGTH);
     // Linux stops writing at the first record that does not fit, and says nothing of it.
     if LAST_HEADER_ROOM - length < size_of::<libc::cmsghdr>() {
         shortfalls.count(RECORDS_FILL_THE_ROOM);
@@ -1047,7 +1139,7 @@ pub(super) fn last_received_header<'a>(
         written += taken;
     }
     Ok(TcpReading::LastReceivedHeader {
-        fields: Ancillary::parse(records).packet_fields(usize::MIN, u32::MIN),
+        interface: Ancillary::parse(records).interface(),
         header: &into[..written],
     })
 }

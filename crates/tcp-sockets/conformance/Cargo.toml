@@ -21,9 +21,9 @@ wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 # Reads the SYN headers an accept gives.
 etherparse = { workspace = true, features = ["std"] }
 # The raw sockets the ICMP checks capture SYNs and send errors with, as the network between the two ends.
-rustix = { version = "1.1.6", features = ["net"] }
+rustix = { version = "1.1.6", features = ["net", "thread"] }
 
 # Linux's codes of classic BPF and IPv4 options, which the checks write into what they send.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "if_tun", "no_std"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "if_tun", "no_std"] }
 # The host's interfaces, to find the loopback one by its flag.
 nix = { version = "0.31.3", default-features = false, features = ["net"] }

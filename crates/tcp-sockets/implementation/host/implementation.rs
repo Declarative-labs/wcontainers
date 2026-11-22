@@ -10,9 +10,7 @@ mod portable;
 use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::net::{IpAddr, SocketAddr};
-use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 #[cfg(target_os = "linux")]
@@ -28,7 +26,6 @@ use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 #[cfg(target_os = "linux")]
 use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::AnycastMemberships;
 use wcontainers_internet_protocol_linux_socket_options::readiness::{Watched, Watcher};
-#[cfg(target_os = "linux")]
 use wcontainers_tcp_sockets::TcpProtocol;
 
 /// The reason an abort that closed in order is counted under.
@@ -42,9 +39,21 @@ pub struct HostTcpSockets {
     readiness: Watcher,
 }
 
+/// A socket only bound, holding its address and port until a connect or listen takes it or it is released.
+pub struct HostTcpBoundSocket {
+    socket: OwnedFd,
+    family: IpVersion,
+    protocol: TcpProtocol,
+    /// Whether its port was bound by number, which Linux keeps through a disconnect and cannot tell afterwards.
+    bound_by_number: bool,
+}
+
 pub struct HostTcpConnection {
     socket: Watched,
     family: IpVersion,
+    protocol: TcpProtocol,
+    /// Whether its port was bound by number, so that a disconnect gives its socket back.
+    bound_by_number: bool,
     /// The local and peer addresses, kept for the ICMP errors that come after the connection is gone.
     #[cfg(target_os = "linux")]
     addresses: OnceLock<(SocketAddr, SocketAddr)>,
@@ -82,9 +91,6 @@ pub struct HostTcpListener {
     /// The guest's `TCP_SAVE_SYN` value: whether accepted connections keep their SYN's headers, and from which header.
     #[cfg(target_os = "linux")]
     saves_synchronize: AtomicI32,
-    /// Whether the guest asked the listener's sockets to record the last header they received.
-    #[cfg(target_os = "linux")]
-    records_last_received: AtomicBool,
     /// Whether the connections it accepts report the bytes left unread, as Linux's `TCP_INQ` is copied to them.
     #[cfg(target_os = "linux")]
     unread_reports: AtomicBool,
@@ -158,6 +164,23 @@ macro_rules! ordered_by_descriptor {
 }
 ordered_by_descriptor!(HostTcpConnection);
 ordered_by_descriptor!(HostTcpListener);
+
+impl PartialEq for HostTcpBoundSocket {
+    fn eq(&self, other: &Self) -> bool {
+        self.socket.as_raw_fd() == other.socket.as_raw_fd()
+    }
+}
+impl Eq for HostTcpBoundSocket {}
+impl PartialOrd for HostTcpBoundSocket {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for HostTcpBoundSocket {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.socket.as_raw_fd().cmp(&other.socket.as_raw_fd())
+    }
+}
 
 impl HostTcpSockets {
     pub fn new() -> Result<Self, HostError> {

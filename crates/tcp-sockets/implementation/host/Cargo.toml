@@ -25,15 +25,15 @@ wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet
 [target.'cfg(unix)'.dependencies]
 # The basic socket calls and the settings it covers, on the socket's descriptor.
 socket2 = { version = "0.6.5", features = ["all"] }
-rustix = { version = "1.1.6", features = ["net", "process"] }
+rustix = { version = "1.1.6", features = ["net", "process", "system"] }
+# The host's interface addresses, for the interface a SYN came in on.
+nix = { version = "0.31.3", default-features = false, features = ["net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "netlink", "no_std"] }
 libc = "0.2.191"
 # The attributes of a transmit report's statistics.
 netlink-packet-core = "0.9.0"
-# The host's interface addresses, for the interface a SYN came in on.
-nix = { version = "0.31.3", default-features = false, features = ["net"] }
 
 [dev-dependencies]
 wcontainers-tcp-sockets-conformance = { path = "../../conformance" }

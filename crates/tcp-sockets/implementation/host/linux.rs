@@ -19,17 +19,20 @@ use socket2::{MsgHdr, SockAddr, SockRef};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, FrameLength, HopLimit, InterfaceIndex,
-    IpPacketSetting, IpSocketSetting, IpVersion, LocalBinding, LocalPort, PacketMark,
-    PacketPriority, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitEvent, TransmitReport,
-    TransmitReportKey, TransmitReportRequest, WirelessAcknowledgement,
+    BindingSetting, ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, FrameLength, HopLimit,
+    InterfaceIndex, IpPacketSetting, IpSocketSetting, IpVersion, LocalBinding, LocalPort,
+    PacketMark, PacketPriority, Port, ReceiveTimestamps, ReceivedPacketFields, Report,
+    TransmitEvent, TransmitReport, TransmitReportKey, TransmitReportRequest,
+    WirelessAcknowledgement,
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{in6_addr, storage};
+use wcontainers_internet_protocol_linux_socket_options::datagram::exchange::NO_ARRIVAL_INTERFACE;
 use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::{
     AnycastMemberships, set_multicast_group,
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::receive::Ancillary;
 use wcontainers_internet_protocol_linux_socket_options::datagram::send::Control;
+use wcontainers_internet_protocol_linux_socket_options::errno::errno_of;
 use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
 use wcontainers_internet_protocol_linux_socket_options::readiness::Watched;
 use wcontainers_internet_protocol_linux_socket_options::{
@@ -37,13 +40,14 @@ use wcontainers_internet_protocol_linux_socket_options::{
     set_flag, set_int, set_option,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::errno::Errno as KernelErrno;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::{
     TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
     TcpAuthenticationKeyIdentity, TcpAuthenticationKeyRemoval, TcpAuthenticationKeyUse,
-    TcpAuthenticationOptionCoverage, TcpAuthenticationOptions, TcpAuthenticationRemovalTiming,
-    TcpAuthenticationRequirement, TcpMd5KeyChange,
+    TcpAuthenticationOptionCoverage, TcpAuthenticationOptions, TcpAuthenticationRequirement,
+    TcpKeyVrf, TcpMd5KeyChange,
 };
 use wcontainers_tcp_sockets::repair::{
     TcpRepair, TcpRepairQueue, TcpTimestampClock, TcpTimestampUnit,
@@ -53,21 +57,22 @@ use wcontainers_tcp_sockets::settings::{
     TcpQuickAcknowledgement, TcpSavedSynchronize, TcpSetting, TransmitRehash,
 };
 use wcontainers_tcp_sockets::state::{
-    ByteTotal, DeliveryRateLimit, EventCount, TcpCongestionAvoidanceState, TcpErrorQueueEntry,
-    TcpListenerQuery, TcpQuery, TcpReading, TcpSavedSynchronizeHeader, TcpTransmitStatistics,
+    ByteTotal, ConnectionCount, DeliveryRateLimit, EventCount, TcpCongestionAvoidanceState,
+    TcpErrorQueueEntry, TcpListenerQuery, TcpListenerReading, TcpQuery, TcpReading,
+    TcpSavedSynchronizeHeader, TcpTransmitStatistics,
 };
 use wcontainers_tcp_sockets::{
-    ListenBacklog, TcpAccepted, TcpClose, TcpConnectStart, TcpConnected, TcpConnections,
-    TcpContinuation, TcpFastOpen, TcpListeners, TcpListening, TcpProtocol, TcpPushOverride,
-    TcpReceiveRequest, TcpReceived, TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets,
-    TcpUrgency,
+    ListenBacklog, TcpAccepted, TcpBound, TcpClose, TcpConnectStart, TcpConnected, TcpConnections,
+    TcpContinuation, TcpDisconnected, TcpFastOpen, TcpListeners, TcpListening, TcpLocalEnd,
+    TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
+    TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
 
 mod state;
 
 use super::{
-    ABORT_CLOSED_IN_ORDER, HeldAddress, HostTcpConnection, HostTcpListener, HostTcpSockets,
-    InterfaceAddresses, ReportedSend, TransmitReports,
+    ABORT_CLOSED_IN_ORDER, HeldAddress, HostTcpBoundSocket, HostTcpConnection, HostTcpListener,
+    HostTcpSockets, InterfaceAddresses, ReportedSend, TransmitReports,
 };
 
 /// The `SO_TIMESTAMPING` flags kept on a connection once it has asked for a transmit report: keys counted in bytes, software and hardware times.
@@ -83,11 +88,10 @@ const WITH_STATISTICS: u32 = uapi::SOF_TIMESTAMPING_OPT_STATS as u32;
 /// One more than the largest `TCP_NLA_*` attribute of transmit statistics.
 const STATISTICS_ATTRIBUTES: usize = uapi::TCP_NLA_REHASH as usize + 1;
 
-/// The interface index that names no interface, as `if_nametoindex` answers for none.
+/// The index a key flagged for a VRF names the default VRF with.
 ///
-/// https://man7.org/linux/man-pages/man3/if_nametoindex.3.html
-const NO_INTERFACE_INDEX: c_int = 0;
-const NO_INTERFACE: InterfaceIndex = InterfaceIndex(NO_INTERFACE_INDEX.unsigned_abs());
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#L399
+const DEFAULT_VRF_INDEX: c_int = 0;
 
 /// The room `TCP_SAVED_SYN` is first read with: the largest IPv4 and TCP headers after an Ethernet header.
 const SAVED_SYNCHRONIZE_ROOM: usize = etherparse::Ethernet2Header::LEN
@@ -125,6 +129,8 @@ const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
 const ARRIVAL_INTERFACE_OF_THE_HANDSHAKE: &str = "Linux keeps for an IPv4 connection the interface of the segment that completed its handshake, which is given as its SYN's";
 const SYNCHRONIZE_FIELDS_OF_THE_SOCKET: &str = "Linux reports no priority, timestamps or drops for a SYN, and its mark only as the accepted socket's: the accepted socket's mark and priority are given, with no timestamps or drops";
+const NO_SYNCHRONIZE_INTERFACE: &str =
+    "Linux named no arrival interface for a SYN and no host interface holds its local address";
 const NO_SYNCHRONIZE_FRAGMENT_SIZE: &str = "Linux keeps no largest fragment size for a SYN, which is given as a packet that was not reassembled";
 const NO_SYNCHRONIZE_FRAME: &str =
     "no link header was found before a SYN's network header, so its frame length is not given";
@@ -140,6 +146,9 @@ const CUT_REPORT_PACKET: &str = "a transmit report's packet was cut to the buffe
 const NO_STATISTICS: &str = "a transmit report came without the statistics its send asked for";
 const CUT_CONTROL: &str = "the control messages of a receive or an error queue entry did not fit";
 const UNASKED_REPORT: &str = "a transmit report for no send that asked for it";
+const DISCONNECT_REFUSED: &str = "the host refused a connect to AF_UNSPEC, which Linux answers with success: the socket was closed";
+const UNNAMED_ERROR: &str =
+    "a socket's pending error is a number the kernel interface does not name";
 const NO_MICROSECOND_CLOCK: &str =
     "the host's TCP timestamp clock counts only milliseconds (Linux before 6.7 has no tcp_usec_ts)";
 const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow label only as it connects: a listener, an accepted connection or a connected one takes no other";
@@ -190,10 +199,10 @@ impl HostTcpSockets {
                     &[],
                 )
                 .ok_or_else(|| self.shortfalls.refuse(UNWRITABLE_ICMP_ERROR))?;
-                Ok((
-                    TcpErrorQueueEntry::IcmpError(ancillary.packet_fields(length, u32::MIN)),
-                    false,
-                ))
+                let fields = ancillary
+                    .packet_fields(length, u32::MIN)
+                    .map_err(|_| self.shortfalls.refuse(NO_ARRIVAL_INTERFACE))?;
+                Ok((TcpErrorQueueEntry::IcmpError(fields), false))
             }
             libc::SO_EE_ORIGIN_TXSTATUS if wireless.is_some() => {
                 let acknowledged = if wireless.is_some_and(|value| value != 0) {
@@ -206,7 +215,7 @@ impl HostTcpSockets {
                     TcpErrorQueueEntry::TransmitReport {
                         report: TransmitReport {
                             key: TransmitReportKey(error.ee_data),
-                            interface: NO_INTERFACE,
+                            interface: None,
                             event: TransmitEvent::WirelessStatus(acknowledged),
                             packet_length: Some(ByteCount(message.length)),
                         },
@@ -269,10 +278,18 @@ impl HostTcpSockets {
 }
 
 impl HostTcpConnection {
-    fn new(socket: Watched, family: IpVersion, receive_timestamping: u32) -> Self {
+    fn new(
+        socket: Watched,
+        family: IpVersion,
+        protocol: TcpProtocol,
+        bound_by_number: bool,
+        receive_timestamping: u32,
+    ) -> Self {
         Self {
             socket,
             family,
+            protocol,
+            bound_by_number,
             addresses: OnceLock::new(),
             receive_timestamping: AtomicU32::new(receive_timestamping),
             unread_reports: AtomicBool::new(false),
@@ -394,9 +411,9 @@ fn interface_addresses() -> Vec<HeldAddress> {
             Some(HeldAddress {
                 address: ip(entry.address.as_ref()?)?,
                 netmask: entry.netmask.as_ref().and_then(ip),
-                interface: InterfaceIndex(
+                interface: InterfaceIndex(NonZeroU32::new(
                     nix::net::if_::if_nametoindex(entry.interface_name.as_str()).ok()?,
-                ),
+                )?),
             })
         })
         .collect()
@@ -512,6 +529,29 @@ const ONE_KEY: u32 = 1;
 /// The receive timestamping flags of a socket that asked for none.
 const NO_RECEIVE_TIMESTAMPING: u32 = u32::MIN;
 
+/// Turns the packet information on while the socket records the last header or reports ICMP errors, and off otherwise.
+///
+/// An ICMP error names its arrival interface only in packet information; `IP_RECVTTL` stands for every record.
+fn match_packet_information(socket: BorrowedFd<'_>, family: IpVersion) -> Result<(), HostError> {
+    let on = |level: u32, option: u32| get_int(socket, level, option).map(|value| value != UNSET);
+    let records = on(uapi::SOL_IP, uapi::IP_RECVTTL)?;
+    set_flag(
+        socket,
+        uapi::SOL_IP,
+        uapi::IP_PKTINFO,
+        records || on(uapi::SOL_IP, uapi::IP_RECVERR)?,
+    )?;
+    if family == IpVersion::V6 {
+        set_flag(
+            socket,
+            uapi::SOL_IPV6,
+            uapi::IPV6_RECVPKTINFO,
+            records || on(uapi::SOL_IPV6, uapi::IPV6_RECVERR)?,
+        )?;
+    }
+    Ok(())
+}
+
 fn count(value: usize) -> Result<c_int, HostError> {
     c_int::try_from(value).map_err(|_| invalid())
 }
@@ -562,9 +602,9 @@ fn set_md5_key(
     request.tcpm_addr = storage(key_address(family, peer.prefix.address));
     request.tcpm_flags = uapi::TCP_MD5SIG_FLAG_PREFIX as u8;
     request.tcpm_prefixlen = peer.prefix.length.0;
-    if let Some(interface) = peer.interface {
+    if let Some(index) = vrf_index(peer.vrf)? {
         request.tcpm_flags |= uapi::TCP_MD5SIG_FLAG_IFINDEX as u8;
-        request.tcpm_ifindex = c_int::try_from(interface.0).map_err(|_| invalid())?;
+        request.tcpm_ifindex = index;
     }
     request
         .tcpm_key
@@ -588,6 +628,17 @@ fn key_address(family: IpVersion, address: IpAddr) -> IpAddr {
     }
 }
 
+/// Gives the index a key's VRF is flagged with, none for a key of any VRF.
+fn vrf_index(vrf: TcpKeyVrf) -> Result<Option<c_int>, HostError> {
+    match vrf {
+        TcpKeyVrf::Any => Ok(None),
+        TcpKeyVrf::Default => Ok(Some(DEFAULT_VRF_INDEX)),
+        TcpKeyVrf::Device(index) => c_int::try_from(index.0.get())
+            .map(Some)
+            .map_err(|_| invalid()),
+    }
+}
+
 /// The `TCP_AO_*` fields that name a key: its peer, prefix, interface flag and index, and identifiers.
 struct AuthenticationKeyName {
     address: uapi::__kernel_sockaddr_storage,
@@ -602,12 +653,9 @@ fn authentication_key_name(
     family: IpVersion,
     identity: &TcpAuthenticationKeyIdentity,
 ) -> Result<AuthenticationKeyName, HostError> {
-    let (flags, interface) = match identity.interface {
-        Some(interface) => (
-            uapi::TCP_AO_KEYF_IFINDEX as u8,
-            i32::try_from(interface.0).map_err(|_| invalid())?,
-        ),
-        None => (u8::MIN, NO_INTERFACE_INDEX),
+    let (flags, interface) = match vrf_index(identity.vrf)? {
+        Some(index) => (uapi::TCP_AO_KEYF_IFINDEX as u8, index),
+        None => (u8::MIN, DEFAULT_VRF_INDEX),
     };
     Ok(AuthenticationKeyName {
         address: storage(key_address(family, identity.peer.address)),
@@ -705,13 +753,14 @@ fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) 
         && held.key[..usize::from(held.keylen)] == request.key[..usize::from(request.keylen)]
 }
 
-/// Removes a TCP Authentication Option key through `TCP_AO_DEL_KEY`.
+/// Removes a TCP Authentication Option key through `TCP_AO_DEL_KEY`, at once or, on a listener, asynchronously.
 ///
 /// Removing one that is not there leaves the socket as asked, with the keys named to be used next put to use.
 fn remove_authentication_key(
     socket: BorrowedFd<'_>,
     family: IpVersion,
     removal: &TcpAuthenticationKeyRemoval,
+    asynchronously: bool,
 ) -> Result<(), HostError> {
     let name = authentication_key_name(family, &removal.identity)?;
     // SAFETY: tcp_ao_del is plain data.
@@ -730,9 +779,7 @@ fn remove_authentication_key(
         request.set_set_rnext(u32::from(true));
         request.rnext = key.0;
     }
-    request.set_del_async(u32::from(
-        removal.timing == TcpAuthenticationRemovalTiming::WhenUnused,
-    ));
+    request.set_del_async(u32::from(asynchronously));
     match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, &request) {
         Err(HostError::Errno(libc::ENOENT)) => {
             if removal.current.is_none() && removal.requested_next.is_none() {
@@ -985,7 +1032,7 @@ impl HostTcpSockets {
                 options::set_ip_socket_setting(socket, family, ip, report_flags, &self.shortfalls)
             }
             TcpSetting::Packet(ref packet) => {
-                options::set_packet_setting(socket, family, packet, &self.shortfalls)
+                options::set_packet_setting(socket, packet, &self.shortfalls)
             }
             TcpSetting::Binding(ref binding) => {
                 options::set_binding_setting(socket, family, binding)
@@ -1039,14 +1086,15 @@ impl HostTcpSockets {
                         set_flag(socket, uapi::SOL_IPV6, option, on)?;
                     }
                 }
-                Ok(())
+                match_packet_information(socket, family)
             }
             TcpSetting::IcmpErrorReports { version, reports } => {
                 let on = reports == Report::Requested;
                 match version {
                     IpVersion::V4 => set_flag(socket, uapi::SOL_IP, uapi::IP_RECVERR, on),
                     IpVersion::V6 => set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVERR, on),
-                }
+                }?;
+                match_packet_information(socket, family)
             }
             TcpSetting::KeepAlive(on) => SockRef::from(&socket)
                 .set_keepalive(on)
@@ -1139,7 +1187,7 @@ impl HostTcpSockets {
                 add_authentication_key(socket, family, addition)
             }
             TcpSetting::RemoveAuthenticationKey(ref removal) => {
-                remove_authentication_key(socket, family, removal)
+                remove_authentication_key(socket, family, removal, false)
             }
             TcpSetting::AuthenticationOptions(ref choice) => {
                 set_authentication_options(socket, choice)
@@ -1153,9 +1201,10 @@ impl HostTcpSockets {
             TcpSetting::Repair(mode) => tcp(
                 uapi::TCP_REPAIR,
                 match mode {
-                    TcpRepair::Off => uapi::TCP_REPAIR_OFF,
-                    TcpRepair::On => uapi::TCP_REPAIR_ON,
-                } as c_int,
+                    TcpRepair::Off => uapi::TCP_REPAIR_OFF as c_int,
+                    TcpRepair::OffWithoutWindowProbe => uapi::TCP_REPAIR_OFF_NO_WP as c_int,
+                    TcpRepair::On => uapi::TCP_REPAIR_ON as c_int,
+                },
             ),
             TcpSetting::RepairQueue(queue) => tcp(
                 uapi::TCP_REPAIR_QUEUE,
@@ -1195,13 +1244,12 @@ impl HostTcpSockets {
 
     /// Gives the interface the SYN came in on, from the packet information the listener's `IP_PKTINFO` kept.
     ///
-    /// Or `IPV6_RECVPKTINFO`; the accepted connection goes on recording only when the guest asked for its records.
+    /// Or `IPV6_RECVPKTINFO`; the accepted connection goes on with it only as [`match_packet_information`] says.
     fn arrival_interface(
         &self,
         socket: BorrowedFd<'_>,
         family: IpVersion,
         local: IpAddr,
-        records: bool,
     ) -> Option<InterfaceIndex> {
         let mut control = PacketOptions {
             _aligned: [],
@@ -1225,15 +1273,8 @@ impl HostTcpSockets {
             ),
         }
         .ok()?;
-        if !records {
-            set_flag(socket, uapi::SOL_IP, uapi::IP_PKTINFO, false).ok()?;
-            if family == IpVersion::V6 {
-                set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
-            }
-        }
-        Ancillary::parse(&control.bytes[..length])
-            .interface
-            .map(InterfaceIndex)
+        match_packet_information(socket, family).ok()?;
+        Ancillary::parse(&control.bytes[..length]).interface()
     }
 
     fn synchronize_fields(
@@ -1243,7 +1284,6 @@ impl HostTcpSockets {
         link_header: Option<usize>,
         local: SocketAddr,
         family: IpVersion,
-        records: bool,
     ) -> Result<ReceivedPacketFields, HostError> {
         let length = if let Ok(ipv4) = etherparse::Ipv4HeaderSlice::from_slice(header) {
             usize::from(ipv4.total_len())
@@ -1259,12 +1299,12 @@ impl HostTcpSockets {
             IpAddr::V6(_) => None,
         };
         let interface = self
-            .arrival_interface(socket, family, local, records)
+            .arrival_interface(socket, family, local)
             .or_else(|| {
                 self.shortfalls.count(ARRIVAL_INTERFACE_BY_ADDRESS);
                 self.interfaces.holding(local)
             })
-            .unwrap_or(NO_INTERFACE);
+            .ok_or_else(|| self.shortfalls.refuse(NO_SYNCHRONIZE_INTERFACE))?;
         let link_layer_length = link_header
             .filter(|_| length > usize::MIN)
             .and_then(|link| u32::try_from(link + length).ok())
@@ -1419,20 +1459,21 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = timestamping.bound_clock;
                 Ok(())
             }
-            TcpListenerSetting::Socket(TcpSetting::RecordsLastReceivedHeader(report)) => {
+            // A TCP listener keeps its packet information whatever these say, for its SYNs' arrival interfaces.
+            TcpListenerSetting::Socket(
+                ref setting @ (TcpSetting::RecordsLastReceivedHeader(_)
+                | TcpSetting::IcmpErrorReports { .. }),
+            ) => {
                 self.configure_socket(
                     socket,
                     listener.family,
-                    &TcpSetting::RecordsLastReceivedHeader(report),
+                    setting,
                     NO_REPORT_FLAGS,
                     &listener.anycast,
                 )?;
                 if listener.protocol == TcpProtocol::Tcp {
                     self.record_arrival_interfaces(socket, listener.family)?;
                 }
-                listener
-                    .records_last_received
-                    .store(report == Report::Requested, Ordering::Relaxed);
                 Ok(())
             }
             TcpListenerSetting::Socket(TcpSetting::UnreadByteReports(report)) => {
@@ -1486,6 +1527,18 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 set_int(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, saved)?;
                 listener.saves_synchronize.store(value, Ordering::Relaxed);
                 Ok(())
+            }
+            TcpListenerSetting::RemoveAuthenticationKeyAsynchronously(identity) => {
+                remove_authentication_key(
+                    socket,
+                    listener.family,
+                    &TcpAuthenticationKeyRemoval {
+                        identity,
+                        current: None,
+                        requested_next: None,
+                    },
+                    true,
+                )
             }
             TcpListenerSetting::FlowLabelReflection(on) => {
                 // SAFETY: in6_flowlabel_req is plain data.
@@ -1545,27 +1598,45 @@ impl NegativeRouteAdvisable<HostTcpConnection> for HostTcpSockets {
     }
 }
 
-impl TcpConnections for HostTcpSockets {
-    type Connection = HostTcpConnection;
-
-    fn connect(
+impl HostTcpSockets {
+    /// Opens the socket a connect or listen starts from, unbound with the binding it is to take, or as it was bound.
+    fn local_end<'a>(
         &self,
-        protocol: TcpProtocol,
-        owner: UserId,
-        local: LocalBinding<'_>,
+        local: TcpLocalEnd<'a, HostTcpBoundSocket>,
+    ) -> Result<(HostTcpBoundSocket, Option<LocalBinding<'a>>), TcpLocalEndError<HostTcpBoundSocket>>
+    {
+        match local {
+            TcpLocalEnd::Bound(bound) => Ok((bound, None)),
+            TcpLocalEnd::Unbound {
+                protocol,
+                owner,
+                local,
+            } => {
+                let family = family_of(&local.address);
+                let socket = open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)
+                    .map_err(TcpLocalEndError::Unbound)?;
+                Ok((
+                    HostTcpBoundSocket {
+                        socket,
+                        family,
+                        protocol,
+                        bound_by_number: bound_by_number(&local),
+                    },
+                    Some(local),
+                ))
+            }
+        }
+    }
+
+    /// Starts connecting, binding first when a binding is given, and gives the local address and how it started.
+    fn start_connection(
+        &self,
+        connection: &HostTcpConnection,
+        local: Option<&LocalBinding<'_>>,
         peer: SocketAddr,
         settings: &[TcpSetting<'_>],
         fast_open: TcpFastOpen<'_>,
-    ) -> Result<TcpConnected<Self::Connection>, HostError> {
-        let family = family_of(&local.address);
-        let connection = HostTcpConnection::new(
-            self.readiness.watch(
-                open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
-                ReadyFor::all(),
-            )?,
-            family,
-            NO_RECEIVE_TIMESTAMPING,
-        );
+    ) -> Result<(SocketAddr, TcpConnectStart), Failure> {
         let fixed_flow_label = settings
             .iter()
             .rev()
@@ -1583,15 +1654,18 @@ impl TcpConnections for HostTcpSockets {
                 setting,
                 TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Label(_)))
             ) {
-                self.configure(&connection, setting.clone())?;
+                self.configure(connection, setting.clone())
+                    .map_err(Failure::Before)?;
             }
         }
         let socket = connection.socket.fd();
-        self.bind(socket, &local)?;
-        let peer = peer_for(family, peer);
+        if let Some(local) = local {
+            self.bind(socket, local).map_err(Failure::Before)?;
+        }
+        let peer = peer_for(connection.family, peer);
         let mut destination = peer;
         if let Some(label) = fixed_flow_label {
-            hold_flow_label(socket, peer, label)?;
+            hold_flow_label(socket, peer, label).map_err(Failure::Before)?;
             // The standard library keeps `sin6_flowinfo` as it is, which Linux reads in network order.
             if let SocketAddr::V6(ref mut address) = destination {
                 address.set_flowinfo(label.value().to_be());
@@ -1605,14 +1679,16 @@ impl TcpConnections for HostTcpSockets {
         let start = match fast_open {
             TcpFastOpen::Off | TcpFastOpen::UntilFirstSend => {
                 if fast_open == TcpFastOpen::UntilFirstSend {
-                    set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)?;
+                    set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)
+                        .map_err(Failure::Before)?;
                 }
                 let outcome = in_progress(
                     SockRef::from(&socket)
                         .connect(&SockAddr::from(destination))
                         .map(|()| usize::MIN)
                         .map_err(io_host_error),
-                )?;
+                )
+                .map_err(Failure::Before)?;
                 match outcome {
                     None => TcpConnectStart::SynchronizeSent {
                         fast_open_data_taken: ByteCount(usize::MIN),
@@ -1629,19 +1705,169 @@ impl TcpConnections for HostTcpSockets {
                     SockRef::from(&socket)
                         .send_to_with_flags(data, &SockAddr::from(destination), flags)
                         .map_err(io_host_error),
-                )?;
+                )
+                .map_err(Failure::Before)?;
                 TcpConnectStart::SynchronizeSent {
                     fast_open_data_taken: ByteCount(taken.unwrap_or(usize::MIN)),
                 }
             }
         };
-        let local = internet_address(SockRef::from(&socket).local_addr())?;
+        let local =
+            internet_address(SockRef::from(&socket).local_addr()).map_err(Failure::After)?;
         let _ = connection.addresses.set((local, peer));
-        Ok(TcpConnected {
-            connection,
-            local,
-            start,
+        Ok((local, start))
+    }
+
+    /// Ends a socket whose connect or listen failed after it started, giving it back where its port stays held.
+    fn end_after_failure(
+        &self,
+        bound: HostTcpBoundSocket,
+        error: HostError,
+    ) -> TcpLocalEndError<HostTcpBoundSocket> {
+        match self.disconnected(bound).0 {
+            Some(bound_socket) => TcpLocalEndError::Bound {
+                bound_socket,
+                error,
+            },
+            None => TcpLocalEndError::Unbound(error),
+        }
+    }
+
+    /// Disconnects the socket as a connect to `AF_UNSPEC` does, giving it back if its port was bound by number, and its pending error.
+    fn disconnected(
+        &self,
+        bound: HostTcpBoundSocket,
+    ) -> (Option<HostTcpBoundSocket>, Option<KernelErrno>) {
+        // Linux answers it with success in every state.
+        if let Err(error) = rustix::net::connect_unspec(&bound.socket) {
+            self.shortfalls.count(DISCONNECT_REFUSED);
+            return (None, errno_of(error.raw_os_error()));
+        }
+        let pending_error = self
+            .take_pending_error(bound.socket.as_fd())
+            .unwrap_or(None);
+        (bound.bound_by_number.then_some(bound), pending_error)
+    }
+
+    /// Takes the socket's `SO_ERROR`, which Linux clears as it reads it.
+    fn take_pending_error(&self, socket: BorrowedFd<'_>) -> Result<Option<KernelErrno>, HostError> {
+        match SockRef::from(&socket).take_error().map_err(io_host_error)? {
+            None => Ok(None),
+            Some(error) => error
+                .raw_os_error()
+                .and_then(errno_of)
+                .map(Some)
+                .ok_or_else(|| self.shortfalls.refuse(UNNAMED_ERROR)),
+        }
+    }
+}
+
+/// Where a connect or listen failed: before the socket started connecting or listening, or after.
+enum Failure {
+    Before(HostError),
+    After(HostError),
+}
+
+/// Tells whether a binding binds its port by number, which Linux keeps held where it frees a port bound as 0.
+fn bound_by_number(local: &LocalBinding<'_>) -> bool {
+    match local.port {
+        LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port != ANY_PORT,
+        LocalPort::ChosenByExitNode(_) => false,
+    }
+}
+
+/// The port a bind asks the host to choose with, which Linux binds as 0.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html#:~:text=If%20the%20port%20is%20zero
+const ANY_PORT: Port = Port(u16::MIN);
+
+impl HostTcpConnection {
+    /// Gives the connection's socket back as only bound, no longer watched.
+    fn into_bound(self) -> HostTcpBoundSocket {
+        HostTcpBoundSocket {
+            family: self.family,
+            protocol: self.protocol,
+            bound_by_number: self.bound_by_number,
+            socket: self.socket.unwatch(),
+        }
+    }
+}
+
+impl TcpConnections for HostTcpSockets {
+    type Connection = HostTcpConnection;
+    type BoundSocket = HostTcpBoundSocket;
+
+    fn bind(
+        &self,
+        protocol: TcpProtocol,
+        owner: UserId,
+        local: LocalBinding<'_>,
+        settings: &[BindingSetting<'_>],
+    ) -> Result<TcpBound<Self::BoundSocket>, HostError> {
+        let family = family_of(&local.address);
+        let socket = open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?;
+        for setting in settings {
+            options::set_binding_setting(socket.as_fd(), family, setting)?;
+        }
+        self.bind(socket.as_fd(), &local)?;
+        let local_address = internet_address(SockRef::from(&socket).local_addr())?;
+        Ok(TcpBound {
+            bound_socket: HostTcpBoundSocket {
+                socket,
+                family,
+                protocol,
+                bound_by_number: bound_by_number(&local),
+            },
+            local: local_address,
         })
+    }
+
+    fn connect(
+        &self,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
+        peer: SocketAddr,
+        settings: &[TcpSetting<'_>],
+        fast_open: TcpFastOpen<'_>,
+    ) -> Result<TcpConnected<Self::Connection>, TcpLocalEndError<Self::BoundSocket>> {
+        let (bound, binding) = self.local_end(local)?;
+        let HostTcpBoundSocket {
+            socket,
+            family,
+            protocol,
+            bound_by_number,
+        } = bound;
+        let connection = HostTcpConnection::new(
+            self.readiness
+                .watch(socket, ReadyFor::all())
+                .map_err(TcpLocalEndError::Unbound)?,
+            family,
+            protocol,
+            bound_by_number,
+            NO_RECEIVE_TIMESTAMPING,
+        );
+        match self.start_connection(&connection, binding.as_ref(), peer, settings, fast_open) {
+            Ok((local, start)) => Ok(TcpConnected {
+                connection,
+                local,
+                start,
+            }),
+            Err(Failure::Before(error)) => {
+                // A clash of the four addresses and ports frees a port bound as 0.
+                let lost = error == HostError::Errno(libc::EADDRNOTAVAIL) && !bound_by_number;
+                Err(match binding {
+                    Some(_) => TcpLocalEndError::Unbound(error),
+                    None if lost => TcpLocalEndError::Unbound(error),
+                    None => TcpLocalEndError::Bound {
+                        bound_socket: connection.into_bound(),
+                        error,
+                    },
+                })
+            }
+            Err(Failure::After(error)) => Err(match binding {
+                Some(_) => TcpLocalEndError::Unbound(error),
+                None => self.end_after_failure(connection.into_bound(), error),
+            }),
+        }
     }
 
     fn send(
@@ -1835,33 +2061,34 @@ impl TcpConnections for HostTcpSockets {
                 state::multipath_subflow(socket, position, &self.shortfalls)
                     .map(TcpReading::MultipathSubflow)
             }
-            TcpQuery::Information => {
-                self.read_socket_state(socket, connection.family, TcpListenerQuery::Information)
-            }
-            TcpQuery::CongestionControl(into) => self.read_socket_state(
-                socket,
-                connection.family,
-                TcpListenerQuery::CongestionControl(into),
+            TcpQuery::Information => state::information(socket, &self.shortfalls).map(
+                |(information, unacknowledged, selectively_acknowledged)| TcpReading::Information {
+                    information,
+                    unacknowledged: SegmentCount(u64::from(unacknowledged)),
+                    selectively_acknowledged: SegmentCount(u64::from(selectively_acknowledged)),
+                },
             ),
-            TcpQuery::Tuned => {
-                self.read_socket_state(socket, connection.family, TcpListenerQuery::Tuned)
+            TcpQuery::CongestionControl(into) => {
+                state::congestion_control(socket, into, &self.shortfalls)
+                    .map(|(name, information)| TcpReading::CongestionControl { name, information })
             }
+            TcpQuery::Tuned => state::tuned(socket, &self.shortfalls).map(TcpReading::Tuned),
             TcpQuery::Timestamp => {
-                self.read_socket_state(socket, connection.family, TcpListenerQuery::Timestamp)
+                state::timestamp(socket, &self.shortfalls).map(TcpReading::Timestamp)
             }
             TcpQuery::Authentication => {
-                self.read_socket_state(socket, connection.family, TcpListenerQuery::Authentication)
+                state::authentication(socket).map(TcpReading::Authentication)
             }
-            TcpQuery::AuthenticationKey(identity) => self.read_socket_state(
-                socket,
-                connection.family,
-                TcpListenerQuery::AuthenticationKey(identity),
-            ),
-            TcpQuery::IncomingProcessor => self.read_socket_state(
-                socket,
-                connection.family,
-                TcpListenerQuery::IncomingProcessor,
-            ),
+            TcpQuery::AuthenticationKey(identity) => {
+                state::authentication_key(socket, connection.family, &identity)
+                    .map(TcpReading::AuthenticationKey)
+            }
+            TcpQuery::IncomingProcessor => {
+                state::incoming_processor(socket).map(TcpReading::IncomingProcessor)
+            }
+            TcpQuery::TakePendingError => self
+                .take_pending_error(socket)
+                .map(TcpReading::PendingError),
         }
     }
 
@@ -1891,6 +2118,19 @@ impl TcpConnections for HostTcpSockets {
             }
         }
         drop(connection);
+    }
+
+    fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
+        // An accepted connection's port is the listener's, which a disconnect never keeps for it.
+        let (bound_socket, pending_error) = self.disconnected(connection.into_bound());
+        TcpDisconnected {
+            bound_socket,
+            pending_error,
+        }
+    }
+
+    fn release(&self, bound_socket: Self::BoundSocket) {
+        drop(bound_socket);
     }
 
     fn push_queued_data(
@@ -2009,38 +2249,6 @@ impl TcpConnections for HostTcpSockets {
 }
 
 impl HostTcpSockets {
-    /// Reads what a connection and a listener both answer, through the listener's query that names it.
-    fn read_socket_state<'a>(
-        &self,
-        socket: BorrowedFd<'_>,
-        family: IpVersion,
-        query: TcpListenerQuery<'a>,
-    ) -> Result<TcpReading<'a>, HostError> {
-        let shortfalls = &self.shortfalls;
-        match query {
-            TcpListenerQuery::Information => {
-                state::information(socket, shortfalls).map(TcpReading::Information)
-            }
-            TcpListenerQuery::CongestionControl(into) => {
-                state::congestion_control(socket, into, shortfalls)
-            }
-            TcpListenerQuery::Tuned => state::tuned(socket, shortfalls).map(TcpReading::Tuned),
-            TcpListenerQuery::Timestamp => {
-                state::timestamp(socket, shortfalls).map(TcpReading::Timestamp)
-            }
-            TcpListenerQuery::Authentication => {
-                state::authentication(socket).map(TcpReading::Authentication)
-            }
-            TcpListenerQuery::AuthenticationKey(identity) => {
-                state::authentication_key(socket, family, &identity)
-                    .map(TcpReading::AuthenticationKey)
-            }
-            TcpListenerQuery::IncomingProcessor => {
-                state::incoming_processor(socket).map(TcpReading::IncomingProcessor)
-            }
-        }
-    }
-
     /// Sets the clock's value and, from the value's low bit, the unit it counts in from now on, as Linux 6.7 and later do.
     ///
     /// An older kernel counts milliseconds whatever the bit: a clock asked for microseconds there is put back and refused.
@@ -2071,59 +2279,98 @@ impl HostTcpSockets {
     }
 }
 
-impl TcpListeners for HostTcpSockets {
-    type Listener = HostTcpListener;
-
-    fn listen(
+impl HostTcpSockets {
+    /// Starts listening, binding first when a binding is given, and gives the local address.
+    ///
+    /// The backlog is the last one among the settings, else the one given, so that the socket listens once.
+    fn start_listening(
         &self,
-        protocol: TcpProtocol,
-        owner: UserId,
-        local: LocalBinding<'_>,
+        listener: &HostTcpListener,
+        local: Option<&LocalBinding<'_>>,
         backlog: ListenBacklog,
         settings: &[TcpListenerSetting<'_>],
-    ) -> Result<TcpListening<Self::Listener>, HostError> {
-        let family = family_of(&local.address);
-        let listener = HostTcpListener {
-            socket: self.readiness.watch(
-                open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
-                ReadyFor::all(),
-            )?,
-            family,
-            protocol,
-            receive_timestamping: AtomicU32::new(NO_RECEIVE_TIMESTAMPING),
-            bound_clock: Mutex::new(None),
-            saves_synchronize: AtomicI32::new(SAVE_NONE),
-            records_last_received: AtomicBool::new(false),
-            unread_reports: AtomicBool::new(false),
-            anycast: Mutex::default(),
-        };
+    ) -> Result<SocketAddr, Failure> {
         let socket = listener.socket.fd();
         // Multipath sockets have no TCP_SAVE_SYN.
-        if protocol == TcpProtocol::Tcp {
+        if listener.protocol == TcpProtocol::Tcp {
             set_int(
                 socket,
                 uapi::SOL_TCP,
                 uapi::TCP_SAVE_SYN,
                 SAVE_FROM_LINK_HEADER,
-            )?;
-            self.record_arrival_interfaces(socket, family)?;
+            )
+            .and_then(|()| self.record_arrival_interfaces(socket, listener.family))
+            .map_err(Failure::Before)?;
         }
-        let (backlogs, others): (Vec<_>, Vec<_>) = settings
-            .iter()
-            .partition(|setting| matches!(setting, TcpListenerSetting::Backlog(_)));
-        for setting in others {
-            self.configure(&listener, setting.clone())?;
+        let mut backlog = backlog;
+        for setting in settings {
+            match setting {
+                TcpListenerSetting::Backlog(last) => backlog = *last,
+                other => self
+                    .configure(listener, other.clone())
+                    .map_err(Failure::Before)?,
+            }
         }
-        self.bind(socket, &local)?;
+        if let Some(local) = local {
+            self.bind(socket, local).map_err(Failure::Before)?;
+        }
         SockRef::from(&socket)
             .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
-            .map_err(io_host_error)?;
-        // A backlog among the settings is listening again with it.
-        for setting in backlogs {
-            self.configure(&listener, setting.clone())?;
+            .map_err(|error| Failure::Before(io_host_error(error)))?;
+        internet_address(SockRef::from(&socket).local_addr()).map_err(Failure::After)
+    }
+}
+
+impl TcpListeners for HostTcpSockets {
+    type Listener = HostTcpListener;
+
+    fn listen(
+        &self,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
+        backlog: ListenBacklog,
+        settings: &[TcpListenerSetting<'_>],
+    ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>> {
+        let (bound, binding) = self.local_end(local)?;
+        let HostTcpBoundSocket {
+            socket,
+            family,
+            protocol,
+            bound_by_number,
+        } = bound;
+        let listener = HostTcpListener {
+            socket: self
+                .readiness
+                .watch(socket, ReadyFor::all())
+                .map_err(TcpLocalEndError::Unbound)?,
+            family,
+            protocol,
+            receive_timestamping: AtomicU32::new(NO_RECEIVE_TIMESTAMPING),
+            bound_clock: Mutex::new(None),
+            saves_synchronize: AtomicI32::new(SAVE_NONE),
+            unread_reports: AtomicBool::new(false),
+            anycast: Mutex::default(),
+        };
+        let give_back = |listener: HostTcpListener| HostTcpBoundSocket {
+            socket: listener.socket.unwatch(),
+            family,
+            protocol,
+            bound_by_number,
+        };
+        match self.start_listening(&listener, binding.as_ref(), backlog, settings) {
+            Ok(local) => Ok(TcpListening { listener, local }),
+            // A listen that fails keeps the port, even one bound as 0.
+            Err(Failure::Before(error)) => Err(match binding {
+                Some(_) => TcpLocalEndError::Unbound(error),
+                None => TcpLocalEndError::Bound {
+                    bound_socket: give_back(listener),
+                    error,
+                },
+            }),
+            Err(Failure::After(error)) => Err(match binding {
+                Some(_) => TcpLocalEndError::Unbound(error),
+                None => self.end_after_failure(give_back(listener), error),
+            }),
         }
-        let local = internet_address(SockRef::from(&socket).local_addr())?;
-        Ok(TcpListening { listener, local })
     }
 
     fn accept<'a>(
@@ -2139,6 +2386,8 @@ impl TcpListeners for HostTcpSockets {
             self.readiness
                 .watch(OwnedFd::from(socket), ReadyFor::all())?,
             listener.family,
+            listener.protocol,
+            false,
             listener.receive_timestamping.load(Ordering::Relaxed),
         );
         connection.unread_reports.store(
@@ -2175,16 +2424,9 @@ impl TcpListeners for HostTcpSockets {
         if let Some(kept) = kept.filter(|kept| !kept.is_empty()) {
             *locked(&connection.saved_synchronize) = Some(kept.to_vec());
         }
-        let records = listener.records_last_received.load(Ordering::Relaxed);
         let link_header = (!network.is_empty()).then(|| saved.len() - network.len());
-        let synchronize = self.synchronize_fields(
-            socket,
-            network,
-            link_header,
-            local,
-            listener.family,
-            records,
-        )?;
+        let synchronize =
+            self.synchronize_fields(socket, network, link_header, local, listener.family)?;
         let length = network.len().min(synchronize_header.len());
         synchronize_header[..length].copy_from_slice(&network[..length]);
         Ok(TcpAccepted {
@@ -2200,8 +2442,45 @@ impl TcpListeners for HostTcpSockets {
         &self,
         listener: &Self::Listener,
         query: TcpListenerQuery<'a>,
-    ) -> Result<TcpReading<'a>, HostError> {
-        self.read_socket_state(listener.socket.fd(), listener.family, query)
+    ) -> Result<TcpListenerReading<'a>, HostError> {
+        let socket = listener.socket.fd();
+        let shortfalls = &self.shortfalls;
+        match query {
+            // A listener's `tcpi_unacked` is its accept queue's length and `tcpi_sacked` its backlog.
+            TcpListenerQuery::Information => {
+                state::information(socket, shortfalls).map(|(information, waiting, backlog)| {
+                    TcpListenerReading::Information {
+                        information,
+                        waiting_to_be_accepted: ConnectionCount(waiting),
+                        backlog: ListenBacklog(backlog),
+                    }
+                })
+            }
+            TcpListenerQuery::CongestionControl(into) => {
+                state::congestion_control(socket, into, shortfalls).map(|(name, information)| {
+                    TcpListenerReading::CongestionControl { name, information }
+                })
+            }
+            TcpListenerQuery::Tuned => {
+                state::tuned(socket, shortfalls).map(TcpListenerReading::Tuned)
+            }
+            TcpListenerQuery::Timestamp => {
+                state::timestamp(socket, shortfalls).map(TcpListenerReading::Timestamp)
+            }
+            TcpListenerQuery::Authentication => {
+                state::authentication(socket).map(TcpListenerReading::Authentication)
+            }
+            TcpListenerQuery::AuthenticationKey(identity) => {
+                state::authentication_key(socket, listener.family, &identity)
+                    .map(TcpListenerReading::AuthenticationKey)
+            }
+            TcpListenerQuery::IncomingProcessor => {
+                state::incoming_processor(socket).map(TcpListenerReading::IncomingProcessor)
+            }
+            TcpListenerQuery::TakePendingError => self
+                .take_pending_error(socket)
+                .map(TcpListenerReading::PendingError),
+        }
     }
 
     fn set_listener_authentication_counters(
@@ -2311,18 +2590,21 @@ mod tests {
             address: BindAddress::V4(Ipv4Addr::LOCALHOST),
             port: LocalPort::Requested(Port(0)),
         };
+        let local = || TcpLocalEnd::Unbound {
+            protocol: TcpProtocol::Tcp,
+            owner: UserId(0),
+            local: loopback,
+        };
+        let failed = |error: TcpLocalEndError<HostTcpBoundSocket>| match error {
+            TcpLocalEndError::Bound { error, .. } | TcpLocalEndError::Unbound(error) => error,
+        };
         let listening = sockets
-            .listen(TcpProtocol::Tcp, UserId(0), loopback, ListenBacklog(1), &[])
+            .listen(local(), ListenBacklog(1), &[])
+            .map_err(failed)
             .expect("listen");
         let client = sockets
-            .connect(
-                TcpProtocol::Tcp,
-                UserId(0),
-                loopback,
-                listening.local,
-                &[],
-                TcpFastOpen::Off,
-            )
+            .connect(local(), listening.local, &[], TcpFastOpen::Off)
+            .map_err(failed)
             .expect("connect")
             .connection;
         let mut header = [0; 0];
