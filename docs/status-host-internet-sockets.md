@@ -5,8 +5,56 @@ on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the che
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings; a new run 1
 on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared the suites' comment and literal
 findings and checked itself; run 3 answered the I2 check's four findings, below). I1 run 5 (2026-11-22, after the
-restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. Next: the
-independent check of I2; the linter findings left all wait on a ruling (below). Nothing of this track is in progress.
+restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. I2 run 4
+(2026-11-22) answered that check's five findings. Next: the independent check of I2; the linter findings left all
+wait on a ruling (below), and the interface selector's meaning on the owner's (For the owner). Nothing of this
+track is in progress.
+
+## 2026-11-22: I2 run 4 (the check's five findings)
+- IPv6 path MTU not capped (minor): fixed. resolve_v6 caps every IPv6 path MTU at `IP6_MAX_MTU` (65535 plus the
+  40-byte header, `etherparse::Ipv6Header::LEN`), as `ip6_mtu`. New resolver check
+  a_path_mtu_is_capped_at_the_largest_packet_of_its_version: a dummy link dx of MTU 100000 with 10.3.0.1/24 and
+  fd03::1/64; a neighbour on it must resolve with device MTU 100000 and the path MTU a connected socket is told
+  (below 100000) on both versions. Broken copies: the IPv6 cap removed fails it; the IPv4 cap removed fails it,
+  loopback_route_is_local and unspecified_destination_is_loopback.
+- Interface selector with a source (minor): the resolver answers as a send that names the interface per packet
+  does (`IP_PKTINFO`/`IPV6_PKTINFO`, the way the ICMP, raw and UDP hosts send `route.interface`, and as
+  `IP_UNICAST_IF`/`IPV6_UNICAST_IF` do), not as a socket bound to the device. Read in the kernel: over IPv6
+  `ip6_route_output_flags` makes the lookup strict on the interface only for a bound socket or when no source is
+  given, for a per-packet interface and for the routing socket alike; over IPv4 the interface holds the lookup in
+  every case. New check an_interface_routes_as_a_send_that_names_it compares (source, path MTU) or the error with
+  a UDP socket that names the interface with `IP(V6)_UNICAST_IF` and binds the source, in seven cases: IPv4 FAR by
+  db without a source and from db's and da's address (on-link out of db, Linux's fallback); IPv6 fd0a::5 (main
+  routes it by da at metric 1 and db at metric 2) by db without a source (db) and from fd02::1 (da), FAR_V6 by db
+  from fd02::1 (da; a bound socket gets ENETUNREACH), an unreachable route by da (EHOSTUNREACH; bound gets
+  ENETUNREACH). Broken copies: the interface not asked (fails it and interface_selects_the_route), the interface
+  held as a bound device (fails it). The verifier's `IP_UNICAST_IF` failure was the byte order: both versions take
+  the index in network byte order (my first version gave IPv6 the host's and failed the same way). Destination
+  0.0.0.0 is left out: a connect looks up twice (the second time to the source address it chose), a send once,
+  so no socket is a reference for a send there. The meaning is raised under For the owner.
+- Advice suite failed an honest refusal (minor): fixed. advice_is_taken accepts `Ok(())` or
+  `Err(HostError::NotSupported)` and nothing else; advice_is_taken_again wants the second answer equal to the
+  first. Self-tests: a tally and an always-refusing implementor pass both; taking once then refusing, and an
+  answer of `Closed`, are each caught (7 tests). Names kept, since the UDP suite calls advice_is_taken_again by name.
+- UDP claim (minor): qualified. At this run the UDP host and suite still do not build against a00ab267 (55 error
+  lines from `cargo check -p wcontainers-udp-sockets-host --tests`, ARM, 05:36 UTC), so NegativeRouteAdvisable's
+  suite runs on real sockets only in the TCP suite now (3 of 3 with the new suite, 05:36 UTC). The UDP code is the
+  UDP track's.
+- Cost of a lookup (minor): measured, kept. ARM, 05:37 UTC, load 12.8 to 17.6, release, 20000 each, twice: an IPv4
+  loopback lookup 18.2 and 18.3 us; a routing socket opened, connected and closed 2.9 and 2.8 us; a datagram
+  socket opened, `IP_TTL` read and closed (the namespace's default TTL, every IPv4 answer without a route hop
+  limit) 2.4 and 2.4 us. Both are per lookup because the calling thread's namespace and its sysctl may change
+  between lookups; reading `ip_default_ttl` from /proc would cost an open, a read and a close as well. Only a hot
+  path that resolves routes would feel it.
+- Check (`i2-run4/check.sh`, then `check2.sh` after the byte-order fix; logs beside them; ARM, 05:35 to 05:38 UTC,
+  load 11.8 to 35): clean build, clippy with warnings denied clean on the nine packages; three rounds each ICMP 59
+  and 5 crate tests, raw 51 and 1, both allocation tests, the shared readiness test (first script); resolver 37
+  of 37 and its counter test, Configurable 2, NegativeRouteAdvisable 7 (second script, three rounds). Three broken
+  ICMP and raw copies, each caught: ICMP identifier sharing never set (identifiers_are_shared_only_when_both_ask),
+  ICMP wait answering at once (14 checks, ten of them the readiness suite's), raw checksum left off
+  (a_checksum_offset_is_written). cargo tree (normal, build, dev) of the 30 interface and conformance crates: none
+  reaches any of the 17 implementations (control: the raw host's tree names itself and the shared crate). No file
+  of this run is an interface.rs or a data file beside one (`git status` and `git diff` on the Mac).
 
 ## 2026-11-22: I1 run 5 (after the restart and the owner's interfaces of a00ab267)
 - Conformed first: `wait_until_ready` returns `ReadinessReport`; ERROR and HANG_UP are `UnconditionalEvents`. The
@@ -25,7 +73,8 @@ independent check of I2; the linter findings left all wait on a ruling (below). 
 - Which check fails when a method breaks: RouteResolver::resolve_route, as above and in I1 runs 2 to 4;
   Configurable::configure, setting_twice_equals_setting_once (on the ICMP and raw hosts, the copy above); its
   self-test catches a setting taken once; NegativeRouteAdvisable::give_negative_route_advice, advice_is_taken and
-  advice_is_taken_again (self-test likewise; run on real sockets by the UDP and TCP suites). Neither generic trait
+  advice_is_taken_again (self-test likewise; run on real sockets by the TCP suite; the UDP suite also calls it but
+  did not build against a00ab267 at the time, see I2 run 4). Neither generic trait
   reads back, so these see only answers (plan, "The suites").
 - cargo tree (normal, build, dev) of the 16 interface and 14 conformance crates: none reaches any implementation
   crate (control: the resolver's own tree names itself and the shared crate).
@@ -655,6 +704,11 @@ independent check of I2; the linter findings left all wait on a ruling (below). 
   folder:
   - `lint-and-suites.sh`: clippy with warnings denied on the nine packages, then the ICMP, raw and resolver
     suites and the generic self-tests (`ROUNDS=3` before it for three rounds, `FILTER=<name>` to filter).
+  - `i2-run4/check.sh`: clean build of the nine packages with clippy, `ROUNDS` (default 3) of every suite, broken
+    copies of the run's fixes and three of the ICMP and raw hosts, the TCP suite's advice tests, the UDP build
+    state, the lookup cost, cargo tree (`NO_MUTANTS=1` stops after the rounds). `i2-run4/check2.sh`: the same
+    for the resolver and the generic suites only, and the lookup cost (the throwaway crate needs
+    `RUSTC_BOOTSTRAP=1`, which the workspace's .cargo/config.toml sets for itself).
   - `i1-run5/check.sh`: I1's clean build with clippy, three rounds, four broken copies, cargo tree of every interface
     and conformance crate.
   - `independent-check-i2b.sh`: clean build with clippy, three rounds, 24 broken copies, cargo tree.
@@ -756,7 +810,10 @@ independent check of I2; the linter findings left all wait on a ruling (below). 
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
 - RouteResolver::resolve_route: 28 suite checks that see answers, each selector its own; 3 see only refusals
-  here, and 2 see refusals in their last part (see I1 runs 3 and 4 above).
+  here, and 2 see refusals in their last part (see I1 runs 3 and 4 above). I2 run 4 adds the path MTU cap and the
+  per-packet interface checks.
+- NegativeRouteAdvisable::give_negative_route_advice: advice_is_taken (an answer other than Ok or NotSupported)
+  and advice_is_taken_again (a second answer unlike the first).
 
 ## Honoured, and how each is checked
 - Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,
@@ -850,6 +907,12 @@ independent check of I2; the linter findings left all wait on a ruling (below). 
 - The shared readiness (the UDP track's file) was changed here, in a commit of its own, for the double wake.
 
 ## For the owner
+- The route selectors' `interface` does not say whether it names the interface per packet (as a send's
+  `IP_PKTINFO`/`IPV6_PKTINFO` and `IP_UNICAST_IF` do) or binds to the device (`SO_BINDTODEVICE`). Over IPv6 with a
+  source they differ. Example: in the resolver suite's network, fd09::5 from fd02::1 naming db is routed by da
+  (path MTU 1400) per packet, and fails with ENETUNREACH for a socket bound to db. The host resolver and the
+  suite take the per-packet meaning, since the same selectors are a send's header route and the socket hosts send
+  them per packet.
 - The linter's public_outside_interface wants every field of a type that fills an associated type pub ("plain
   data"), which the brief's private fields forbid, and on Linux the socket holds a registered descriptor and its
   state, which pub fields would let anyone build or change. Example: crates/icmp-sockets/implementation/host/

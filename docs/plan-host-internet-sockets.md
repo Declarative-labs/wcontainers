@@ -52,7 +52,8 @@ What each selector maps to:
   the kernel sends from it); interface `RTA_OIF`; device MTU `IFLA_MTU`; path MTU the route's `RTAX_MTU`,
   else the device MTU (IPv4; capped at 576 when the MTU is locked with no value and the route has a
   gateway, as `ip_dst_mtu_maybe_forward`, and every IPv4 one at `IP_MAX_MTU`, 65535, as `ipv4_mtu`) or the
-  device's IPv6 MTU (`mtu6`); hop limit `RTAX_HOPLIMIT`, else
+  device's IPv6 MTU (`mtu6`; every IPv6 one capped at `IP6_MAX_MTU`, 65575, as `ip6_mtu`); hop limit
+  `RTAX_HOPLIMIT`, else
   `ip_default_ttl` (read as an unset socket's `IP_TTL`, socket2's `ttl_v4`) or the device's IPv6 `hop_limit`.
 - the probe: a UDP socket made as the lookup's owner (the shared `open_socket`, filesystem user while it is
   made), with `IP_UNICAST_IF`/`IPV6_UNICAST_IF` the route's interface, the lookup's traffic class, mark (when
@@ -106,11 +107,16 @@ source preferences choose between each link's address and the temporary one Linu
 link a mark or owner selects; a confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`) and sends no frame to
 the gateway's link address (a tc flower filter on the link's egress counts them); a locked MTU with
 no value gives 576 through a gateway; an encapsulating route's path MTU, and loopback's on both versions, are what a connected socket is told; a broadcast
-address without permission is `EACCES`; a source the namespace lacks is refused when the check is required.
+address without permission is `EACCES`; a source the namespace lacks is refused when the check is required; a link
+whose MTU passes the largest packet of each version gives the capped path MTU a connected socket is told; and a
+lookup naming an interface answers what a socket naming it for its unicast sends (`IP_UNICAST_IF`,
+`IPV6_UNICAST_IF`, as a send's `IP_PKTINFO`/`IPV6_PKTINFO` names it) is told, which over IPv6 with a source only
+prefers that interface's routes, unlike a socket bound to the device.
 
 Configurable's suite takes `(implementor, handle, setting)` and checks that setting the same value twice
 gives the same answer as once. NegativeRouteAdvisable's takes `(implementor, handle)` and checks that advice
-is taken, and taken again. Neither trait can read back what it changed, so these suites see only the answers:
+is taken or refused as not supported (by a host that cannot take it), and that advice given again gets the same
+answer. Neither trait can read back what it changed, so these suites see only the answers:
 an implementation whose second call undoes the first, or whose advice does nothing, passes them. The effects
 are the requiring suites' to check (the socket suites check each setting's; UDP's that advised sockets keep
 sending, TCP's that advice picks a new flow).
