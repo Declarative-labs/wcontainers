@@ -319,6 +319,10 @@ fn main() -> windows::core::Result<()> {
                     unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT(format), 4) };
                 let count = levels.as_ref().copied().unwrap_or(0);
                 println!("msq {format} {:#010x} {count}", code(levels.map(|_| ())));
+                let levels =
+                    unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT(format), 8) };
+                let count = levels.as_ref().copied().unwrap_or(0);
+                println!("msq8 {format} {:#010x} {count}", code(levels.map(|_| ())));
             }
             let mut options2 = D3D11_FEATURE_DATA_D3D11_OPTIONS2::default();
             let r = unsafe {
@@ -1593,6 +1597,46 @@ fn main() -> windows::core::Result<()> {
             print("R11G11B10_FLOAT", &a, 4);
             print("R16G16_UNORM", &b, 4);
             print("R16G16B16A16_FLOAT", &c, 8);
+        }
+        // Stores into an `A8_UNORM` storage view keep the fourth component alone; a texture of it
+        // sampled afterwards reads (0, 0, 0, a).
+        "a8_storage" => {
+            let shader = cs("RWTexture2D<float4> a : register(u0);
+                [numthreads(4, 4, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    a[id.xy] = float4(0.75, 0.5, 0.25, (id.x + 4 * id.y) / 15.0);
+                }");
+            let read = cs("Texture2D<float4> t : register(t0);
+                RWTexture2D<float4> o : register(u0);
+                [numthreads(4, 4, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    o[id.xy] = t.Load(int3(id.xy, 0)) + float4(0.125, 0.125, 0.125, 0.0);
+                }");
+            let at = |format, bind| Tex {
+                w: 4,
+                h: 4,
+                format,
+                samples: 1,
+                bind,
+            };
+            let both = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+            let a = make(&at(DXGI_FORMAT_A8_UNORM, both), None)?;
+            let o = make(
+                &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS),
+                None,
+            )?;
+            unsafe {
+                context.CSSetShader(shader.as_ref(), None);
+                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
+                context.Dispatch(1, 1, 1);
+                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                context.CSSetShader(read.as_ref(), None);
+                context.CSSetShaderResources(0, Some(&[srv(&a, DXGI_FORMAT_UNKNOWN)]));
+                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
+                context.Dispatch(1, 1, 1);
+            }
+            print("A8_UNORM", &a, 1);
+            print("read", &o, 4);
         }
         "split" => {
             let target = make(

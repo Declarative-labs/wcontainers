@@ -270,10 +270,10 @@ pub fn storage_viewed(dxgi: u32) -> bool {
         )
 }
 
-/// Whether textures stored as `format` have no storage form in the shaders crate (its storage
-/// formats are WGSL's), so their storage views are not served: `A8_UNORM`, held as `rgba8unorm`
-/// with its value in alpha.
-pub fn no_storage_form(format: Format) -> bool {
+/// Whether storage views of textures stored as `format` are not served through a buffer of their
+/// texels (`StorageFormatThroughBuffer`): `A8_UNORM`, which the shaders crate stores into only
+/// through the `rgba8unorm` the back ends hold it in.
+pub fn not_through_buffer(format: Format) -> bool {
     format == Format::A8Unorm
 }
 

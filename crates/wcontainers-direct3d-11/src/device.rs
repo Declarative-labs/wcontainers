@@ -516,7 +516,8 @@ impl<B: Backend> Device<B> {
             s.support2 = 0;
         }
         if !format::storage_viewed(dxgi)
-            || format::texture_format(dxgi).is_some_and(format::no_storage_form)
+            || format::texture_format(dxgi)
+                .is_some_and(|f| format::not_through_buffer(f) && self.stored_through(f))
         {
             s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
@@ -552,7 +553,7 @@ impl<B: Backend> Device<B> {
         // texels (`StorageFormatThroughBuffer`), which serves loads too.
         let through = texture.is_some_and(|f| {
             format::storage_viewed(dxgi)
-                && !format::no_storage_form(f)
+                && !format::not_through_buffer(f)
                 && (self.stored_through(f) || as_integer.is_some_and(|t| self.through_takes(t)))
         });
         if through {
@@ -1998,7 +1999,7 @@ impl<B: Backend> Device<B> {
         if format::is_srgb(v.desc.format) {
             return Err(Error::InvalidArg("an sRGB unordered access view"));
         }
-        if format::no_storage_form(v.format) {
+        if format::not_through_buffer(v.format) && self.stored_through(v.format) {
             return not_implemented(STORAGE_UNCLAIMED);
         }
         self.check_format(v.format, self.storage_use(v.format))?;

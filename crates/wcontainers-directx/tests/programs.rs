@@ -316,6 +316,14 @@ fn typed_storage_stores_as_direct3d_does() {
     case("typed");
 }
 
+/// Stores into an `A8_UNORM` storage view keep the fourth component alone, and a texture of it
+/// sampled afterwards reads (0, 0, 0, a), as on the RTX 3080.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn a8_storage_views_store_as_direct3d_does() {
+    case("a8_storage");
+}
+
 /// Format support bits of abilities this device reports absent through their own queries, which
 /// real Direct3D may have and ours never claims: video, the first word's bits from
 /// `DECODER_OUTPUT` up (`ID3D11VideoDevice` is not served), logic
@@ -410,15 +418,75 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
             "extended-range swap chains: the infrastructure crate makes none",
         ),
     ];
-    if at_11_0 {
-        differences.push((
-            DXGI_FORMAT_A8_UNORM,
-            D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0,
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0 | D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
-            "A8_UNORM storage views: the shaders crate has no storage form of it",
-        ));
-    }
     differences
+}
+
+/// Every ability Microsoft's format tables require at 10_0, 10_1 and 11_0 that real Direct3D
+/// reports on the RTX 3080 at that level, ours reports at it (`required::LEVEL_REQUIRED`, its bits
+/// of both words and its 4- and 8-sample counts). Prints what the tables require that real
+/// Direct3D itself does not report. A known failure until the B5 targets, `B8G8R8X8_UNORM`
+/// elements and typed buffers and the extended-range display are served (Gap list).
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore]
+fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it() {
+    use wcontainers_direct3d_11::required::{self, Required, SAMPLES_4, SAMPLES_8};
+    let mut unmet = Vec::new();
+    for (name, level) in ["10_0", "10_1", "11_0"].into_iter().zip(required::LEVELS) {
+        let answers = |side: &str| -> Vec<(u32, Required)> {
+            let (code, out) = run_with(
+                "own_cases",
+                &place(&format!("required-{name}-{side}"), side == "ours"),
+                &["format_support", name],
+            );
+            assert_eq!(code, 0, "{out}");
+            let mut by_format = vec![Required::default(); out.lines().count()];
+            for l in out.lines() {
+                let w: Vec<&str> = l.split(' ').collect();
+                let hex = |s: &str| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
+                let Some(f) = w.get(1).and_then(|f| f.parse::<usize>().ok()) else {
+                    continue;
+                };
+                match w[0] {
+                    "format" => (by_format[f].0, by_format[f].1) = (hex(w[3]), hex(w[4])),
+                    "msq" if w[3] != "0" => by_format[f].2 |= SAMPLES_4,
+                    "msq8" if w[3] != "0" => by_format[f].2 |= SAMPLES_8,
+                    _ => {}
+                }
+            }
+            by_format
+                .into_iter()
+                .enumerate()
+                .map(|(f, r)| (f as u32, r))
+                .collect()
+        };
+        let (real, ours) = (answers("system"), answers("ours"));
+        let lacks = |has: Required, need: Required| {
+            Required(need.0 & !has.0, need.1 & !has.1, need.2 & !has.2)
+        };
+        for (format, need) in required::at(level).unwrap() {
+            let real_lacks = lacks(real[format as usize].1, need);
+            let ours_lacks = lacks(ours[format as usize].1, need);
+            if real_lacks != Required::default() {
+                eprintln!(
+                    "{name} format {format}: required, not reported by real Direct3D: {real_lacks:x?}"
+                );
+            }
+            let short = Required(
+                ours_lacks.0 & !real_lacks.0,
+                ours_lacks.1 & !real_lacks.1,
+                ours_lacks.2 & !real_lacks.2,
+            );
+            if short != Required::default() {
+                unmet.push(format!("{name} format {format}: lacks {short:x?}"));
+            }
+        }
+    }
+    assert!(
+        unmet.is_empty(),
+        "unmet requirements:\n{}",
+        unmet.join("\n")
+    );
 }
 
 /// Both words of every format's support, and whether the second query succeeds, as real Direct3D
