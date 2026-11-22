@@ -40,6 +40,10 @@
 - disconnect: the descriptor leaves the readiness watch, `connect` to `AF_UNSPEC` (rustix's `connect_unspec`), then
   `SO_ERROR` for the pending error; the socket comes back only when its port was bound by number (never for an
   accepted connection), else it is closed. A refused `AF_UNSPEC`, which Linux never answers, closes it, counted.
+  A port is bound by number when it is requested or chosen by the program's kernel and not 0; a port the exit node
+  chose is bound as 0 (`IP_LOCAL_PORT_RANGE` with port 0). portable.rs has no `AF_UNSPEC`: it aborts the
+  connection (`ECONNRESET` pending while it had a peer, as Linux's disconnect sets), binds a new socket to a port
+  bound by number again, and counts both (the old socket's settings are lost).
 - connect: `socket(family, SOCK_STREAM, IPPROTO_TCP or IPPROTO_MPTCP)`; the owner by the thread's
   filesystem user around `socket` (EPERM when the host may not act as that user); the settings by `configure`;
   `IPV6_V6ONLY` from the bind address; `bind` for a requested or kernel-chosen port; when the exit node chooses,
@@ -178,8 +182,10 @@
 - Methods that are T2 here (authentication counters, listener state) are checked so that an answer, if one is
   given, is right (the counters set read back, the listener reads as listening with its congestion control), and
   otherwise is the not-supported refusal; a connection without authentication may not accept counters.
-- ICMP errors reach a TCP socket only in SYN-SENT: a check fills a listener of backlog 0, connects again, captures
-  that SYN with a raw socket and answers it with an ICMP error from a raw socket (root), all on loopback.
+- ICMP errors reach a TCP socket's error queue only in SYN-SENT: a check fills a listener of backlog 0, connects
+  again, captures that SYN with a raw socket and answers it with an ICMP error from a raw socket (root), all on
+  loopback. An established connection takes one as its pending error (Linux's soft error) when the segment quoted is
+  the next it would send: the check quotes its captured SYN one sequence number on.
 - Each setting is set once and then twice on fresh pairs, and the observable outcome (what the peer sees, what
   later calls answer) is equal; settings an implementation may refuse are in these lists too, and must answer the
   same twice.
@@ -200,7 +206,8 @@
   admits.
 - The suite needs root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`, `net.ipv6.flowlabel_consistency=0`,
   `net.ipv4.tcp_fwmark_accept=1`, `net.ipv6.conf.lo.forwarding=1` (anycast joins on loopback), `dctcp` and a local route for 127.0.0.7 with the `tcp_usec_ts` feature (its
-  connections' timestamps count microseconds); run-conformance.sh makes that namespace, with the iproute2 of the
+  connections' timestamps count microseconds) and one VRF device, the only master interface (the key checks name it
+  and an MD5 key of it must not hold for loopback); run-conformance.sh makes that namespace, with the iproute2 of the
   checkout's pinned nixpkgs (the machine's 6.1 does not know the feature).
 - `tests!` runs each function as its own test on a value made anew, then the suites of the traits the interface
   requires, as the layout writes them: `Configurable` on a connection and on a listener (`configured_connection`,

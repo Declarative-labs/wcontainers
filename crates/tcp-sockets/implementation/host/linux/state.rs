@@ -151,8 +151,8 @@ enum AccurateEcnLayout {
 /// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
 const ECN_MODE_SINCE: (u32, u32) = (7, 0);
 
-/// The bit fields of the last `TCP_INFO` word from Linux 7.0: `tcpi_ecn_mode:2`, `tcpi_accecn_opt_seen:2` and
-/// `tcpi_accecn_fail_mode:4`, from the lowest bit.
+/// The bit fields of the last `TCP_INFO` word from Linux 7.0, in order: `tcpi_ecn_mode:2`, `tcpi_accecn_opt_seen:2` and
+/// `tcpi_accecn_fail_mode:4`.
 ///
 /// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
 const ECN_MODE_BITS: u32 = 2;
@@ -169,9 +169,15 @@ const ECN_MODES: [EcnMode; 4] = [
     EcnMode::Pending,
 ];
 
-/// Gives the low `bits` of `word` after shifting `shift` away.
+/// Gives the `bits` of a native-endian `word` after the first `shift`, counted as GCC lays out bit fields: from the
+/// lowest bit on a little-endian host, from the highest on a big-endian one.
 fn bit_field(word: u32, shift: u32, bits: u32) -> u32 {
-    word >> shift & ((1 << bits) - 1)
+    let from_lowest = if cfg!(target_endian = "big") {
+        u32::BITS - shift - bits
+    } else {
+        shift
+    };
+    word >> from_lowest & ((1 << bits) - 1)
 }
 
 /// Tells how the running kernel lays out the last `TCP_INFO` word, none when its version cannot be read.

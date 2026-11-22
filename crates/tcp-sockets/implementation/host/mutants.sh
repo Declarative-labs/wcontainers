@@ -225,6 +225,12 @@ mutant send-claims-all "$implementation" $'.send_with_flags(bytes, flags)\n     
 mutant ic-multipath-checksums-on "$state" 'checksums: found.csum_enabled != u8::MIN,' 'checksums: true,'
 mutant disconnect-keeps-every-port "$implementation" '(bound.bound_by_number.then_some(bound), pending_error)' '(Some(bound), pending_error)'
 mutant port-zero-bound-by-number "$implementation" '=> port != ANY_PORT,' '=> { let _ = port; true }'
+mutant chosen-by-kernel-as-zero "$implementation" 'LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port != ANY_PORT,' \
+    'LocalPort::Requested(port) => port != ANY_PORT, LocalPort::ChosenByKernel(_) => false,'
+mutant exit-node-by-number "$implementation" 'LocalPort::ChosenByExitNode(_) => false,' 'LocalPort::ChosenByExitNode(_) => true,'
+mutant md5-default-as-any "$implementation" 'if let Some(index) = vrf_index(peer.vrf)? {' \
+    'if let Some(index) = vrf_index(peer.vrf)?.filter(|index| *index != DEFAULT_VRF_INDEX) {'
+mutant md5-vrf-ignored "$implementation" 'if let Some(index) = vrf_index(peer.vrf)? {' 'if let Some(index) = vrf_index(peer.vrf)?.filter(|_| false) {'
 mutant clash-keeps-every-port "$implementation" 'let lost = error == HostError::Errno(libc::EADDRNOTAVAIL) && !bound_by_number;' 'let lost = false;'
 mutant pending-error-never "$implementation" $'.take_pending_error(socket)\n                .map(TcpReading::PendingError),' $'.take_pending_error(socket)\n                .map(|_| TcpReading::PendingError(None)),'
 mutant listener-queue-and-backlog-swapped "$implementation" $'waiting_to_be_accepted: ConnectionCount(waiting),\n                        backlog: ListenBacklog(backlog),' $'waiting_to_be_accepted: ConnectionCount(backlog),\n                        backlog: ListenBacklog(waiting),'

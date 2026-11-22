@@ -9,8 +9,8 @@
 //! delay), with `net.ipv4.tcp_fastopen` at 3 (fast open for clients and listeners), `net.ipv6.flowlabel_consistency`
 //! at 0 (which flow label reflection needs), `net.ipv4.tcp_fwmark_accept` at 1 (an accepted socket takes its SYN's
 //! mark), `net.ipv6.conf.lo.forwarding` at 1 (loopback may then join any anycast address, not only those its
-//! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available and a local route for 127.0.0.7 with the `tcp_usec_ts`
-//! feature (TCP timestamps in microseconds).
+//! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available, a local route for 127.0.0.7 with the `tcp_usec_ts`
+//! feature (TCP timestamps in microseconds) and one VRF device, the only master interface there.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU32;
@@ -7377,8 +7377,8 @@ pub fn a_clashing_connect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(
 
 /// Checks that a disconnect gives back the socket of a port bound by number, holding it, with the error it left.
 ///
-/// That is `ECONNRESET` after an established connection and `ECONNREFUSED` after a refused one; one bound as 0, one
-/// the host bound and an accepted one come back as none, with the port free.
+/// That is `ECONNRESET` after an established connection and `ECONNREFUSED` after a refused one; one bound as 0 and an
+/// accepted one come back as none, with the port free.
 pub fn disconnect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     let by_number = bound_by_number(&sockets);
@@ -7435,7 +7435,7 @@ pub fn disconnect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(sockets:
         .map_err(given_back(&sockets))
         .expect("listen on the socket given back");
     assert_eq!(listening.local.port(), port);
-    // A connection whose port the host chose, or that was bound as 0, frees it.
+    // A connection bound as 0 frees its port.
     let as_zero = sockets
         .connect(
             TcpLocalEnd::Unbound {
@@ -7460,6 +7460,69 @@ pub fn disconnect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(sockets:
     sockets.release(target.bound_socket);
 }
 
+/// Checks that a disconnect keeps a port the program's kernel chose, which is bound by number, and frees one the
+/// exit node chose, which Linux binds as 0.
+pub fn disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose<S: TcpSockets>(
+    sockets: S,
+) {
+    let (listener, peer) = listen(&sockets, ipv4_loopback(), &[]);
+    let connect = |port| {
+        sockets
+            .connect(
+                TcpLocalEnd::Unbound {
+                    protocol: TcpProtocol::Tcp,
+                    owner: OWNER,
+                    local: LocalBinding {
+                        address: ipv4_loopback(),
+                        port,
+                    },
+                },
+                peer,
+                &[],
+                TcpFastOpen::Off,
+            )
+            .map_err(unbound)
+            .expect("connect")
+    };
+    let by_kernel = free_port(&sockets);
+    let connected = connect(LocalPort::ChosenByKernel(by_kernel));
+    assert_eq!(connected.local.port(), by_kernel.0);
+    let server = accept(&sockets, &listener);
+    let disconnected = sockets.disconnect(connected.connection);
+    let back = disconnected
+        .bound_socket
+        .expect("the socket of a port the kernel chose");
+    assert_eq!(
+        bind(&sockets, at_port(by_kernel.0), &[]).err(),
+        Some(errno(Errno::EADDRINUSE))
+    );
+    sockets.release(back);
+    sockets.close(server, TcpClose::Abort);
+    let by_exit_node = free_port(&sockets);
+    let connected = connect(LocalPort::ChosenByExitNode(PortChoice {
+        range: PortRange {
+            first: by_exit_node,
+            last: by_exit_node,
+        },
+        reserved: &[],
+    }));
+    assert_eq!(connected.local.port(), by_exit_node.0);
+    let server = accept(&sockets, &listener);
+    let disconnected = sockets.disconnect(connected.connection);
+    assert!(disconnected.bound_socket.is_none());
+    let again = bind(&sockets, at_port(by_exit_node.0), &[]).expect("bind the freed port");
+    sockets.release(again.bound_socket);
+    sockets.close(server, TcpClose::Abort);
+    sockets.stop_listening(listener);
+}
+
+/// Gives a loopback port no socket holds, as the host chose it for a bind then released.
+fn free_port<S: TcpSockets>(sockets: &S) -> Port {
+    let chosen = bind(sockets, bind_any_port(ipv4_loopback()), &[]).expect("bind");
+    sockets.release(chosen.bound_socket);
+    Port(chosen.local.port())
+}
+
 /// Checks that a connection's pending error is taken once: a refused connect's `ECONNREFUSED`, then none.
 ///
 /// And that a listener with none reads none (Linux's `SO_ERROR`).
@@ -7476,6 +7539,64 @@ pub fn pending_error_is_taken_once<S: TcpSockets>(sockets: S) {
         sockets.read_listener_state(&listener, TcpListenerQuery::TakePendingError),
         Ok(TcpListenerReading::PendingError(None))
     );
+    sockets.stop_listening(listener);
+}
+
+/// Checks that an established connection that does not report ICMP errors holds a host unreachable one as its
+/// pending error, taken once: Linux's soft error, which `SO_ERROR` gives when no other is pending.
+pub fn pending_error_holds_an_icmp_error_of_an_established_connection<S: TcpSockets>(sockets: S) {
+    let (listener, peer) = listen(&sockets, ipv4_loopback(), &[]);
+    let capture = raw_socket(IpVersion::V4, ipproto::TCP);
+    let connected = sockets
+        .connect(
+            TcpLocalEnd::Unbound {
+                protocol: TcpProtocol::Tcp,
+                owner: OWNER,
+                local: bind_any_port(ipv4_loopback()),
+            },
+            peer,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .map_err(unbound)
+        .expect("connect");
+    let local = connected.local;
+    let synchronize = capture_synchronize(&capture, IpVersion::V4, local, peer);
+    let server = accept(&sockets, &listener);
+    let ip = Ipv4HeaderSlice::from_slice(&synchronize).expect("an IPv4 header");
+    // The segment quoted is the next one the connection would send, as Linux takes only an error within its window.
+    let mut tcp = TcpHeaderSlice::from_slice(&synchronize[ip.slice().len()..])
+        .expect("a TCP header")
+        .to_header();
+    tcp.sequence_number = tcp.sequence_number.wrapping_add(1);
+    tcp.syn = false;
+    let quoted = [ip.slice(), &tcp.to_bytes()].concat();
+    let icmp = Icmpv4Header::with_checksum(
+        Icmpv4Type::DestinationUnreachable(icmpv4::DestUnreachableHeader::Host),
+        &quoted,
+    );
+    rustix::net::sendto(
+        raw_socket(IpVersion::V4, ipproto::ICMP),
+        &[&icmp.to_bytes()[..], &quoted].concat(),
+        SendFlags::empty(),
+        &SocketAddr::new(local.ip(), ANY_PORT.0),
+    )
+    .expect("send the ICMP error");
+    let start = Instant::now();
+    let error = loop {
+        if let Some(error) = pending_error(&sockets, &connected.connection) {
+            break error;
+        }
+        assert!(
+            start.elapsed() < DEADLINE,
+            "the ICMP error was never pending"
+        );
+        std::thread::sleep(RETRY_INTERVAL);
+    };
+    assert_eq!(error, Errno::EHOSTUNREACH);
+    assert_eq!(pending_error(&sockets, &connected.connection), None);
+    sockets.close(connected.connection, TcpClose::Abort);
+    sockets.close(server, TcpClose::Abort);
     sockets.stop_listening(listener);
 }
 
@@ -7672,6 +7793,17 @@ pub fn keys_are_for_the_vrf_named<S: TcpSockets>(sockets: S) {
         sockets.configure(&listener, add(loopback)),
         Err(errno(Errno::EINVAL))
     );
+    let vrf = TcpKeyVrf::Device(vrf_device());
+    sockets
+        .configure(&listener, add(vrf))
+        .expect("a key of a VRF device");
+    match sockets.read_listener_state(
+        &listener,
+        TcpListenerQuery::AuthenticationKey(identity(vrf)),
+    ) {
+        Ok(TcpListenerReading::AuthenticationKey(counters)) => assert!(counters.is_some()),
+        other => panic!("the key read {other:?}"),
+    }
     let md5 = |vrf| {
         TcpListenerSetting::Socket(TcpSetting::Md5Key(TcpMd5KeyChange::Set {
             peer: TcpMd5Peer {
@@ -7692,8 +7824,81 @@ pub fn keys_are_for_the_vrf_named<S: TcpSockets>(sockets: S) {
     sockets
         .configure(&md5_listener, md5(TcpKeyVrf::Default))
         .expect("an MD5 key of the default VRF");
+    sockets
+        .configure(&md5_listener, md5(vrf))
+        .expect("an MD5 key of a VRF device");
     sockets.stop_listening(md5_listener);
     sockets.stop_listening(listener);
+}
+
+/// Checks that an MD5 key signs only the connections of the VRF it names, through an unsigned connect from loopback.
+///
+/// Linux drops a SYN that lacks the key a listener holds for its peer. A key of the default VRF holds for loopback and
+/// is not removed as one of any VRF; a key of a VRF device does not hold for loopback, which is in the default one.
+pub fn an_md5_key_holds_only_in_the_vrf_it_names<S: TcpSockets>(sockets: S) {
+    let key = |vrf: TcpKeyVrf, key: Option<&'static [u8]>| {
+        let peer = TcpMd5Peer {
+            prefix: IpPrefix {
+                address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                length: PrefixLength(Ipv4Addr::BITS as u8),
+            },
+            vrf,
+        };
+        TcpListenerSetting::Socket(TcpSetting::Md5Key(match key {
+            Some(key) => TcpMd5KeyChange::Set { peer, key },
+            None => TcpMd5KeyChange::Removed(peer),
+        }))
+    };
+    let (listener, peer) = listen(&sockets, ipv4_loopback(), &[]);
+    let answered = || {
+        let connection = connect_to(&sockets, peer);
+        std::thread::sleep(SETTLE);
+        let established = information(&sockets, &connection).state == TcpState::Established;
+        sockets.close(connection, TcpClose::Abort);
+        if established {
+            sockets.close(accept(&sockets, &listener), TcpClose::Abort);
+        }
+        established
+    };
+    assert!(answered(), "a listener without a key answers");
+    let configure = |vrf, secret| {
+        sockets
+            .configure(&listener, key(vrf, secret))
+            .expect("change the key");
+    };
+    configure(TcpKeyVrf::Default, Some(AUTHENTICATION_SECRET));
+    assert!(!answered(), "a key of the default VRF holds for loopback");
+    configure(TcpKeyVrf::Any, None);
+    assert!(
+        !answered(),
+        "a key of the default VRF was removed as one of any"
+    );
+    configure(TcpKeyVrf::Default, None);
+    assert!(answered(), "the key of the default VRF was not removed");
+    let vrf = TcpKeyVrf::Device(vrf_device());
+    configure(vrf, Some(AUTHENTICATION_SECRET));
+    assert!(answered(), "a key of a VRF device holds for loopback");
+    configure(vrf, None);
+    sockets.stop_listening(listener);
+}
+
+/// Gives the index of the host's VRF device, the one interface that says it is a master.
+fn vrf_device() -> InterfaceIndex {
+    let vrf = nix::ifaddrs::getifaddrs()
+        .expect("the host's interfaces")
+        .find(|entry| {
+            entry.flags.contains(InterfaceFlags::from_bits_retain(
+                net_device_flags::IFF_MASTER as core::ffi::c_int,
+            ))
+        })
+        .expect("a VRF device");
+    InterfaceIndex(
+        NonZeroU32::new(
+            nix::net::if_::if_nametoindex(vrf.interface_name.as_str())
+                .expect("the VRF device's index"),
+        )
+        .expect("a device index is never zero"),
+    )
 }
 
 /// Makes a connection and a setting it takes, for the suite of `Configurable`.
@@ -8247,8 +8452,25 @@ macro_rules! tests {
         }
 
         #[test]
+        fn disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose() {
+            $crate::disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose(
+                $value,
+            );
+        }
+
+        #[test]
         fn pending_error_is_taken_once() {
             $crate::pending_error_is_taken_once($value);
+        }
+
+        #[test]
+        fn pending_error_holds_an_icmp_error_of_an_established_connection() {
+            $crate::pending_error_holds_an_icmp_error_of_an_established_connection($value);
+        }
+
+        #[test]
+        fn an_md5_key_holds_only_in_the_vrf_it_names() {
+            $crate::an_md5_key_holds_only_in_the_vrf_it_names($value);
         }
 
         #[test]

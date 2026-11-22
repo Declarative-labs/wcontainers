@@ -60,8 +60,9 @@ const REPAIR: &str = "TCP repair, which only Linux has";
 const AUTHENTICATION: &str = "the TCP Authentication Option, which only Linux has";
 const NEGATIVE_ROUTE_ADVICE: &str = "negative route advice, which only Linux's sk_dst_reset gives";
 const SETTING: &str = "a setting that only the Linux build makes";
-const DISCONNECT: &str =
-    "a disconnect, Linux's connect to AF_UNSPEC: the socket is closed, freeing its port";
+const DISCONNECT: &str = "a disconnect, Linux's connect to AF_UNSPEC: the connection is aborted and a port bound by number bound again by a new socket, without the settings of the old";
+const PORT_LOST_AT_DISCONNECT: &str =
+    "a port bound by number that could not be bound again after a disconnect: none is given back";
 const NO_SYNCHRONIZE_INTERFACE: &str = "no host interface holds an accepted connection's local address, the one its SYN is taken to have come in on";
 
 fn refuse(sockets: &HostTcpSockets, reason: &'static str) -> HostError {
@@ -107,6 +108,31 @@ fn local_end(
             .map(|bound| bound.bound_socket)
             .map_err(TcpLocalEndError::Unbound),
     }
+}
+
+/// Binds a new socket to the address and port a disconnected socket held, as Linux keeps a port bound by number.
+fn bind_again(
+    sockets: &HostTcpSockets,
+    family: IpVersion,
+    protocol: TcpProtocol,
+    local: &SockAddr,
+    only_v6: bool,
+) -> Result<HostTcpBoundSocket, HostError> {
+    let owner = UserId(rustix::process::getuid().as_raw());
+    let socket = open(sockets, family, protocol, owner)?;
+    let descriptor = socket.as_fd();
+    let host = sock(&descriptor);
+    if family == IpVersion::V6 {
+        host.set_only_v6(only_v6)
+            .map_err(|error| io_host_error(&error))?;
+    }
+    host.bind(local).map_err(|error| io_host_error(&error))?;
+    Ok(HostTcpBoundSocket {
+        socket,
+        family,
+        protocol,
+        bound_by_number: true,
+    })
 }
 
 /// Gives the error of a connect or listen that failed before it started, with the socket it was given back.
@@ -455,11 +481,33 @@ impl TcpConnections for HostTcpSockets {
     }
 
     fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
-        let pending_error = take_pending_error(connection.socket.fd()).unwrap_or(None);
         self.shortfalls.count(DISCONNECT);
+        let descriptor = connection.socket.fd();
+        let socket = sock(&descriptor);
+        let local = socket.local_addr();
+        let only_v6 = socket.only_v6().unwrap_or(false);
+        // The abort resets a peer that is still there, which Linux reports in place of any other error.
+        let resets = socket.peer_addr().is_ok();
+        let pending_error = take_pending_error(descriptor).unwrap_or(None);
+        let pending_error = if resets {
+            Some(wcontainers_kernel::errno::Errno::ECONNRESET)
+        } else {
+            pending_error
+        };
+        let (family, protocol, bound_by_number) = (
+            connection.family,
+            connection.protocol,
+            connection.bound_by_number,
+        );
         self.close(connection, TcpClose::Abort);
+        let bound_socket = match local {
+            Ok(local) if bound_by_number => bind_again(self, family, protocol, &local, only_v6)
+                .inspect_err(|_| self.shortfalls.count(PORT_LOST_AT_DISCONNECT))
+                .ok(),
+            _ => None,
+        };
         TcpDisconnected {
-            bound_socket: None,
+            bound_socket,
             pending_error,
         }
     }

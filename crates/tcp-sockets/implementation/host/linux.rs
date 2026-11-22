@@ -1738,14 +1738,15 @@ impl HostTcpSockets {
         &self,
         bound: HostTcpBoundSocket,
     ) -> (Option<HostTcpBoundSocket>, Option<KernelErrno>) {
-        // Linux answers it with success in every state.
-        if let Err(error) = rustix::net::connect_unspec(&bound.socket) {
-            self.shortfalls.count(DISCONNECT_REFUSED);
-            return (None, errno_of(error.raw_os_error()));
-        }
+        let unspecified = rustix::net::connect_unspec(&bound.socket);
         let pending_error = self
             .take_pending_error(bound.socket.as_fd())
             .unwrap_or(None);
+        // Linux answers it with success in every state.
+        if unspecified.is_err() {
+            self.shortfalls.count(DISCONNECT_REFUSED);
+            return (None, pending_error);
+        }
         (bound.bound_by_number.then_some(bound), pending_error)
     }
 
