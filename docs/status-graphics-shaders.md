@@ -139,6 +139,10 @@ nothing built on the Mac.
 - For the Direct3D fronts: nothing new to call; a DXIL pixel program with the query reflects the
   same helpers as its DXBC build. The Direct3D 12 runner's `calculate-lod` DXIL files should now pass
   where its sampler state reaches the helpers.
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip` and tar (its
+  `out-r92`, `outw-r92` and logs kept), the scratch clone. The ARM64 machine's
+  `/work/target/graphics-shaders` is kept.
 
 ## G6 run 4 (run 91): level-of-detail queries on the DXBC route
 
