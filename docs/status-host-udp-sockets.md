@@ -18,6 +18,10 @@ Plan: docs/plan-host-udp-sockets.md. Branch: agents, worktree /Users/thomaseaton
   `BoundSocket` of `u8` there fails, so the check does compile them. The test host's udp.rs (it takes the local
   system's crate) only by reading. Build all three once the kernel builds:
   `cargo clippy --all-targets -p wcontainers-runtime-single-kernel -p wcontainers-executor-unicorn -p wcontainers-system-seeded-test-policy`.
+  Run 2 (ARM, load 15 to 19, tree at aff69174): still blocked, the same 64 errors in wcontainers-kernel-linux (no
+  `ProcessController`, `Kernel`'s new items missing, `Send`/`Sync` asked of its `Rc` state); none of the stand-ins'
+  inputs changed since the type check, so it was not repeated. Without `-D warnings` only because
+  crates/kernel/interface.rs has two `type_complexity` findings of clippy (lines 46 and 111), which deny it.
 - `Runtime` with `type Config` and `new`: nothing in the tree implements `Runtime` (single-kernel has no such impl),
   so there was nothing to fold.
 - UDP host (a62b3f64): `read_buffer_sizes` is socket2's `send_buffer_size` and `recv_buffer_size` (`SO_SNDBUF`,
