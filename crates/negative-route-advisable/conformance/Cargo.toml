@@ -8,7 +8,5 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
-wcontainers-negative-route-advisable = { path = ".." }
-
-[dev-dependencies]
 wcontainers-abi.workspace = true
+wcontainers-negative-route-advisable = { path = ".." }
