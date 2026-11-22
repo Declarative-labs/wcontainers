@@ -88,10 +88,10 @@ Logs and scripts in scratch `graphics-shaders/g6-r82` (clone `tip`, `gpu.sh`, `g
 
 Runs (code at 5d618f15, from the scratch clone):
 - Desktop (RTX 3080, GPU jobs one at a time, 3 cargo jobs): Windows clippy of this crate with
-  warnings denied clean; `shadow_draw` (the test above, 544 comparisons and 800 refusals at the
-  last rule before blue was added, then 640 and 704 with it at job5 before the green and blue rule
-  was tightened; at job6 on the final rule 544 drawn comparisons 0 failed, 800 refusals named as
-  expected), `variant_draw` (1,358 comparisons, 0 failed, 96 known anisotropic), `filter_draw`,
+  warnings denied clean; `shadow_draw` on the final rule (job6: 544 drawn comparisons, 0 failed,
+  800 refusals named as expected; job5, before plain comparisons through green and blue were
+  refused, drew 640 equal to the RTX 3080, which is where WARP's disagreement showed),
+  `variant_draw` (1,358 comparisons, 0 failed, 96 known anisotropic), `filter_draw`,
   `rewrite`: passed (job6.log; its one variants failure was the new test's own wrong mapping,
   fixed and passed on the laptop).
 - Laptop (i7-8750H, load 4 to 5): the whole CPU suite with every corpus and glslang 8.13
