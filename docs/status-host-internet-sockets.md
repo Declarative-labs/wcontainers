@@ -4,8 +4,37 @@ Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the 
 on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the checks' findings, below), I2 ICMP and raw sockets (redone in run 1 after the
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings; a new run 1
 on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared the suites' comment and literal
-findings and checked itself; run 3 answered the I2 check's four findings, below). Next: the independent check of
-I2; the linter findings left all wait on a ruling (below). Nothing of this track is in progress.
+findings and checked itself; run 3 answered the I2 check's four findings, below). I1 run 5 (2026-11-22, after the
+restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. Next: the
+independent check of I2; the linter findings left all wait on a ruling (below). Nothing of this track is in progress.
+
+## 2026-11-22: I1 run 5 (after the restart and the owner's interfaces of a00ab267)
+- Conformed first: `wait_until_ready` returns `ReadinessReport`; ERROR and HANG_UP are `UnconditionalEvents`. The
+  ICMP and raw hosts hold a taken-off ICMP error as `ReadinessReport { unconditional: ERROR, .. }` through the
+  shared `Watched::hold`; both suites read `ready_for` for facts and `unconditional` for the error, and a wait for
+  writing must report exactly WRITABLE with no unconditional event (47b28be5). The shared readiness and the readiness
+  suite were conformed by another track in the same minutes (61bb2b6f); this track left them alone. The negative
+  route advisable rename was already applied by the merge; no `PortSetting` is used in this track's crates.
+- Check (`i1-run5/check.sh`, log `i1-run5/check.log`, ARM, 05:16 to 05:17 UTC, load 7.3 to 12.9): clean build of
+  the four I1 packages, clippy with warnings denied clean; three rounds, each resolver 35 of 35 and its counter test,
+  Configurable 2 of 2, NegativeRouteAdvisable 3 of 3 (24 s with the build).
+- Broken copies, each caught: mark always 0 (mark_selects_the_route, source_preferences_choose_among_the_link_addresses),
+  IPv4 path MTU not capped (loopback_route_is_local, unspecified_destination_is_loopback), rules on a protocol ignored
+  (mobility_header_type_selects_the_route, other_protocols_route, the counter test), a second multicast join refused
+  in the shared crate (the ICMP suite's configurable::setting_twice_equals_setting_once).
+- Which check fails when a method breaks: RouteResolver::resolve_route, as above and in I1 runs 2 to 4;
+  Configurable::configure, setting_twice_equals_setting_once (on the ICMP and raw hosts, the copy above); its
+  self-test catches a setting taken once; NegativeRouteAdvisable::give_negative_route_advice, advice_is_taken and
+  advice_is_taken_again (self-test likewise; run on real sockets by the UDP and TCP suites). Neither generic trait
+  reads back, so these see only answers (plan, "The suites").
+- cargo tree (normal, build, dev) of the 16 interface and 14 conformance crates: none reaches any implementation
+  crate (control: the resolver's own tree names itself and the shared crate).
+- Reviewed files: no commit of this run touches an interface.rs or a data file; HEAD's 32 such files differ from
+  origin/main only in crates/abi (exit.rs, host.rs, interface.rs), by the kernel track's commits (ca411e59 and
+  earlier), not this track's.
+- Suites with the conformed readiness (`lint-and-suites.sh`, ARM, 05:15 UTC, load 7.6): clippy clean on the nine
+  packages; ICMP 59 and 5, raw 51 and 1, both allocation tests, resolver 35 and 1, Configurable 2,
+  NegativeRouteAdvisable 3.
 
 ## 2026-11-22: I2 run 3 (the I2 check's four findings)
 - Waits for writing never checked (blocking): true; the readiness switch had dropped the only one. Each suite now
@@ -626,6 +655,8 @@ I2; the linter findings left all wait on a ruling (below). Nothing of this track
   folder:
   - `lint-and-suites.sh`: clippy with warnings denied on the nine packages, then the ICMP, raw and resolver
     suites and the generic self-tests (`ROUNDS=3` before it for three rounds, `FILTER=<name>` to filter).
+  - `i1-run5/check.sh`: I1's clean build with clippy, three rounds, four broken copies, cargo tree of every interface
+    and conformance crate.
   - `independent-check-i2b.sh`: clean build with clippy, three rounds, 24 broken copies, cargo tree.
   - `i1-linter/independent-check-i1b.sh`: I1's clean build with clippy, three rounds, 8 broken copies of the
     resolver, cargo tree, and the lookup cost (a throwaway crate in /work outside the checkout).
@@ -806,8 +837,8 @@ I2; the linter findings left all wait on a ruling (below). Nothing of this track
   `write_whole_icmp_error(into, &entry.data, ...)` writes it from all of the entry. ICMP and raw use it.
 - The ICMP suite's `counting_allocator!` and `wait_allocations` count a waiting call's allocations for any
   socket kind.
-- The ICMP suite exports its wait tools (`Wakes`, `poll_with`, `finished`, `finished_soon`, `only_asked_for`,
-  `READABLE`, `WRITABLE`, `NO_EVENTS`) and the rejected transmit time tools for any suite to use.
+- The ICMP suite exports its wait tools (`Wakes`, `poll_with`, `finished`, `finished_soon`, `woken`, each on
+  `ReadinessReport`) and the rejected transmit time tools for any suite to use.
 
 ## Departures from the plan
 - The plan named I2 ICMP and I3 raw; the task made both one milestone.
@@ -842,7 +873,7 @@ I2; the linter findings left all wait on a ruling (below). Nothing of this track
 - The layout gives no home to test tools two suites share (a conformance crate may export only suite functions, and
   may not be a normal dependency of another), so the ICMP and resolver suites each keep their iproute2 wrappers,
   and `constant_defined_twice` reports seven of their constants. Example: `IP = "ip"` in both.
-- The async ruling's `wait_for_events` fits as it stands; nothing found that does not work.
+- `Readiness::wait_until_ready` with `ReadinessReport` (a00ab267) fits as it stands; nothing found that does not work.
 - `ReceivedPacketFields.mark` and `.priority` are plain values, but Linux gives a ping socket neither: an `Option`
   would say so. Example: a reply that arrived with mark 7 reads mark 0.
 - `MRT_INIT`/`MRT_DONE` (200, 201, linux/mroute.h and mroute6.h) are in no established crate (libc and

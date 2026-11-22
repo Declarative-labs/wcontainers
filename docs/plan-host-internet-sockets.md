@@ -1,7 +1,7 @@
 # Plan: host internet sockets
 
 Host implementations, on Linux, of RouteResolver, IcmpSockets and RawSockets, and the conformance suites of
-those three and of the generic Configurable and NegativeRouteAdvice. Milestones: I1 the route resolver and the
+those three and of the generic Configurable and NegativeRouteAdvisable. Milestones: I1 the route resolver and the
 two generic suites; I2 ICMP and raw sockets.
 
 ## I1: the route resolver
@@ -109,7 +109,7 @@ no value gives 576 through a gateway; an encapsulating route's path MTU, and loo
 address without permission is `EACCES`; a source the namespace lacks is refused when the check is required.
 
 Configurable's suite takes `(implementor, handle, setting)` and checks that setting the same value twice
-gives the same answer as once. NegativeRouteAdvice's takes `(implementor, handle)` and checks that advice
+gives the same answer as once. NegativeRouteAdvisable's takes `(implementor, handle)` and checks that advice
 is taken, and taken again. Neither trait can read back what it changed, so these suites see only the answers:
 an implementation whose second call undoes the first, or whose advice does nothing, passes them. The effects
 are the requiring suites' to check (the socket suites check each setting's; UDP's that advised sockets keep
