@@ -65,7 +65,7 @@ use wcontainers_tcp_sockets::repair::{
 use wcontainers_tcp_sockets::settings::{
     BufferLocks, BufferTuning, FAST_OPEN_KEY_LENGTH, FastOpenKey, FastOpenKeys, MaximumSegmentSize,
     ProbeCount, RetryCount, SegmentCount, TcpFinWait2, TcpListenerSetting, TcpQuickAcknowledgement,
-    TcpSavedSynchronize, TcpSetting, TransmitRehash, WindowSize,
+    TcpSavedSynchronize, TcpSequenceNumber, TcpSetting, TransmitRehash, WindowSize,
 };
 use wcontainers_tcp_sockets::state::{
     ByteTotal, CongestionControlInformation, DATA_CENTER_FRACTION_WHOLE, DeliveryRateLimit,
@@ -5587,11 +5587,9 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
-/// The congestion controls the suite reads besides Reno and DCTCP: Vegas's form of information and BBR's.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/inet_diag.h
+/// The congestion control whose information has Vegas's form.
 const VEGAS: &str = "vegas";
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/inet_diag.h
+/// The congestion control whose information has BBR's form.
 const BOTTLENECK_BANDWIDTH: &str = "bbr";
 
 /// Checks that the congestion control state names the algorithm and gives the information of those that keep one.
@@ -5999,7 +5997,9 @@ const LATER_AUTHENTICATION_COUNTERS: TcpAuthenticationCounters = TcpAuthenticati
 };
 
 /// Gives an authenticated pair whose ends hold the first key, current and requested next, and the initial counters.
-fn authenticated_pair<S: TcpSockets>(sockets: &S) -> Pair<S> {
+///
+/// With the capture of its segments.
+fn authenticated_pair<S: TcpSockets>(sockets: &S) -> (Pair<S>, Capture) {
     let key = authentication_key(
         FIRST_KEY,
         AUTHENTICATION_SECRET,
@@ -6007,10 +6007,13 @@ fn authenticated_pair<S: TcpSockets>(sockets: &S) -> Pair<S> {
         TcpAuthenticationKeyUse::CurrentAndRequestedNext,
     );
     let initial = TcpSetting::InitialAuthenticationCounters(AUTHENTICATION_COUNTERS);
-    let (pair, synchronize, _capture) =
+    let (pair, synchronize, capture) =
         authentication_round(sockets, &[key.clone(), initial.clone()], &[key, initial]);
     assert_eq!(synchronize, signed_with(FIRST_KEY));
-    pair.expect("the keyed listener takes the keyed client")
+    (
+        pair.expect("the keyed listener takes the keyed client"),
+        capture,
+    )
 }
 
 /// Checks that the authentication state reads the keys in use and counters that go on from those given before connect.
@@ -6018,7 +6021,7 @@ fn authenticated_pair<S: TcpSockets>(sockets: &S) -> Pair<S> {
 /// A key held reads its counters and one not held none; counters set are what is read next, for a connection and its
 /// listener.
 pub fn authentication_state_reads_the_keys_and_counters<S: TcpSockets>(sockets: S) {
-    let pair = authenticated_pair(&sockets);
+    let (pair, _capture) = authenticated_pair(&sockets);
     std::thread::sleep(SETTLE);
     let status = authentication_status(&sockets, &pair.client).expect("the client's status");
     assert_eq!(
@@ -6090,18 +6093,28 @@ pub fn authentication_state_reads_the_keys_and_counters<S: TcpSockets>(sockets: 
     close(&sockets, pair);
 }
 
-/// Sequence number extensions an authentication repair check writes, unlike a new connection's zero.
+/// The send sequence number extension an authentication repair check writes, unlike a new connection's zero.
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SEND_EXTENSION: SequenceNumberExtension = SequenceNumberExtension(1);
+/// The receive sequence number extension an authentication repair check writes, unlike the send one.
+///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RECEIVE_EXTENSION: SequenceNumberExtension = SequenceNumberExtension(2);
 
-/// Checks that in repair mode an authenticated connection's initial sequence numbers read as its peer's the other way round.
+/// Checks that in repair mode an authenticated connection's initial sequence numbers are those its SYN and SYN-ACK carried.
 ///
 /// Its extensions start at zero, and repair values written are what is read back.
 pub fn authentication_repair_values_are_read_and_written<S: TcpSockets>(sockets: S) {
-    let pair = authenticated_pair(&sockets);
+    let (pair, capture) = authenticated_pair(&sockets);
+    let initial_sequence = |to_listener| {
+        capture
+            .segments()
+            .iter()
+            .find(|segment| segment.synchronize && segment.to_listener == to_listener)
+            .map(|segment| TcpSequenceNumber(segment.sequence))
+            .expect("the SYN and SYN-ACK")
+    };
     for end in [&pair.client, &pair.server] {
         sockets
             .configure(end, TcpSetting::Repair(TcpRepair::On))
@@ -6115,13 +6128,20 @@ pub fn authentication_repair_values_are_read_and_written<S: TcpSockets>(sockets:
         .expect("the server's repair state")
         .authentication
         .expect("the server's authentication repair values");
+    let (sent, received) = (initial_sequence(true), initial_sequence(false));
     assert_eq!(
-        client.sent_initial_sequence,
-        server.received_initial_sequence
+        (
+            client.sent_initial_sequence,
+            client.received_initial_sequence
+        ),
+        (sent, received)
     );
     assert_eq!(
-        client.received_initial_sequence,
-        server.sent_initial_sequence
+        (
+            server.sent_initial_sequence,
+            server.received_initial_sequence
+        ),
+        (received, sent)
     );
     let fresh = SequenceNumberExtension(u32::MIN);
     assert_eq!(
