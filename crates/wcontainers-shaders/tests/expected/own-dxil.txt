@@ -87,7 +87,8 @@ ps_contend.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Inva
 ps_deriv.dxil	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
 ps_dual.dxil	ok ; glsl compiles
 ps_early.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
-ps_evaluate.dxil	unsupported InterpolateAt
+ps_eval_exact.dxil	unsupported SampleCount
+ps_evaluate.dxil	unsupported SampleCount
 ps_fill.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 ps_filter.dxil	ok ; glsl compiles
 ps_ftoi.dxil	ok ; glsl compiles
@@ -141,6 +142,7 @@ vs_clip_six.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension 
 vs_cull.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_deep.dxil	ok ; glsl compiles
 vs_early.dxil	ok ; glsl compiles
+vs_eval_exact.dxil	ok ; glsl compiles
 vs_evaluate.dxil	ok ; glsl compiles
 vs_filter.dxil	ok ; glsl compiles
 vs_geometry.dxil	ok ; glsl compiles

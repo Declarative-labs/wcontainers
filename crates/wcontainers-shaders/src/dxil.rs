@@ -5,6 +5,7 @@ pub(crate) mod arrays;
 mod buffer_arrays;
 mod components;
 mod depth;
+mod evaluate;
 mod geometry;
 pub(crate) mod images;
 mod lod;
@@ -290,9 +291,6 @@ pub(crate) fn lower(
         ));
     }
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
-    if evaluates_inputs(&spirv) {
-        return Err(ConvertError::Unsupported(crate::refusal::INTERPOLATE_AT));
-    }
     if let Some(name) = absent_extension(&spirv) {
         return Err(ConvertError::Unsupported(name));
     }
@@ -337,6 +335,7 @@ pub(crate) fn lower(
     declared_sizes(dxil, &resources, &mut module)?;
     let images = images::globals(&module, &declared);
     crate::lower::derivatives_anywhere(&mut module);
+    let added = evaluate::inputs(&mut module, variant.samples)?;
     let ep = module
         .entry_points
         .first()
@@ -390,6 +389,10 @@ pub(crate) fn lower(
         stage_values(&module, r.ty, r.binding.as_ref(), &mut reflection.outputs);
     }
     container::place_system_values(&mut reflection.inputs, &inputs);
+    // What the evaluations elsewhere in the pixel read is not the program's.
+    reflection
+        .inputs
+        .retain(|v| !v.system.is_some_and(|s| added.contains(&s)));
     container::place_system_values(&mut reflection.outputs, &outputs);
     for p in &placed {
         let (signature, into) = match p.output {
@@ -1874,36 +1877,6 @@ pub(crate) mod words {
     pub const RESULT_AFTER_TYPE: usize = 2;
     /// An atomic instruction's pointer, after its result type and result.
     pub const ATOMIC_POINTER: usize = 3;
-
-    /// `OpExtInst`'s instruction number (3.32.4), after the result type, result and set.
-    pub const EXT_INSTRUCTION: usize = 4;
-}
-
-/// Whether `spirv` takes an input at another place in the pixel (GLSL.std.450's `InterpolateAt*`),
-/// which naga's reader has no form for.
-fn evaluates_inputs(spirv: &[u32]) -> bool {
-    use spirv::{GlslStd450Op as GLOp, Op};
-    const EVALUATIONS: [GLOp; 3] = [
-        GLOp::InterpolateAtCentroid,
-        GLOp::InterpolateAtSample,
-        GLOp::InterpolateAtOffset,
-    ];
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return false;
-        }
-        let instruction = at + words::EXT_INSTRUCTION;
-        if spirv[at] & words::OPCODE_MASK == Op::ExtInst as u32
-            && instruction < at + count
-            && EVALUATIONS.iter().any(|&e| e as u32 == spirv[instruction])
-        {
-            return true;
-        }
-        at += count;
-    }
-    false
 }
 
 /// The name of the feature WebGPU lacks that `spirv` asks for by a SPIR-V extension: fragment

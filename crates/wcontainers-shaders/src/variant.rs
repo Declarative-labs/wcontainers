@@ -1442,7 +1442,7 @@ fn each_function(module: &mut Module, mut f: impl FnMut(&mut Function)) {
 }
 
 /// The global variable an expression of `f` names, looking through no arguments.
-fn global_of(f: &Function, mut e: Handle<Expression>) -> Option<Handle<GlobalVariable>> {
+pub(crate) fn global_of(f: &Function, mut e: Handle<Expression>) -> Option<Handle<GlobalVariable>> {
     loop {
         match f.expressions[e] {
             Expression::GlobalVariable(g) => return Some(g),

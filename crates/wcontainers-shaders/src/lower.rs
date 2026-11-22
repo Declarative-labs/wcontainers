@@ -32,7 +32,7 @@ use wcontainers_gpu::{
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
 
-mod evaluate;
+pub(crate) mod evaluate;
 pub(crate) mod geometry;
 pub(crate) mod hull;
 

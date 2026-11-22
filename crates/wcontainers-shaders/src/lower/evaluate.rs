@@ -19,6 +19,24 @@ use naga::{
     TypeInner,
 };
 
+/// Where a pixel's centre is from its corner, along each axis.
+pub(crate) const PIXEL_CENTRE: f32 = 0.5;
+
+/// The names of the private values the entry point leaves for the evaluations (both routes): w's
+/// slopes, where the centroid is, the table of sample positions, and per evaluated input its slopes,
+/// its w and its place (followed by the input's number).
+pub(crate) const W_SLOPE: &str = "w_slope";
+pub(crate) const CENTROID: &str = "centroid";
+pub(crate) const SAMPLE_POSITIONS: &str = "sample_positions";
+pub(crate) const SLOPE_X: &str = "slope_x";
+pub(crate) const SLOPE_Y: &str = "slope_y";
+pub(crate) const W_AT: &str = "w_at";
+pub(crate) const PLACE: &str = "evaluated_at";
+
+/// What a malformed program names.
+const EVALUATION_WITHOUT_INPUT: &str = "an evaluation without its input";
+const POSITION_NOT_VECTOR: &str = "the position is not a vector";
+
 /// What the entry point leaves for the evaluations in the program.
 #[derive(Default)]
 pub(super) struct Evaluated {
@@ -58,7 +76,7 @@ impl Lowering<'_> {
             let dcl = *op
                 .refs
                 .first()
-                .ok_or_else(|| malformed("an evaluation without its input".into()))?;
+                .ok_or_else(|| malformed(EVALUATION_WITHOUT_INPUT.into()))?;
             if !dcls.contains(&dcl) {
                 dcls.push(dcl);
             }
@@ -74,9 +92,9 @@ impl Lowering<'_> {
         let vec2 = self.vec_ty(2, Scalar::F32)?;
         let f32_ty = self.scalar_ty(Scalar::F32);
         self.evaluated.w_slope =
-            Some(self.global("w_slope".into(), AddressSpace::Private, None, vec2, None));
+            Some(self.global(W_SLOPE.into(), AddressSpace::Private, None, vec2, None));
         self.evaluated.centroid =
-            Some(self.global("centroid".into(), AddressSpace::Private, None, vec2, None));
+            Some(self.global(CENTROID.into(), AddressSpace::Private, None, vec2, None));
         for dcl in dcls {
             let i = *self
                 .io_index
@@ -93,10 +111,10 @@ impl Lowering<'_> {
                 )
             };
             let companions = Companions {
-                x: companion("slope_x", ty),
-                y: companion("slope_y", ty),
-                w: companion("w_at", f32_ty),
-                place: companion("place", vec2),
+                x: companion(SLOPE_X, ty),
+                y: companion(SLOPE_Y, ty),
+                w: companion(W_AT, f32_ty),
+                place: companion(PLACE, vec2),
             };
             self.evaluated.inputs.push((dcl, companions));
         }
@@ -194,7 +212,7 @@ impl Lowering<'_> {
             Span::UNDEFINED,
         );
         let g = self.global(
-            "sample_positions".into(),
+            SAMPLE_POSITIONS.into(),
             AddressSpace::Private,
             None,
             array,
@@ -216,7 +234,7 @@ impl Lowering<'_> {
             return Ok(());
         };
         let vec2 = self.vec_ty(2, Scalar::F32)?;
-        let vec4 = self.vec_ty(4, Scalar::F32)?;
+        let vec4 = self.vec_ty(naga::VectorSize::Quad as u8, Scalar::F32)?;
         let u32_ty = self.scalar_ty(Scalar::U32);
         let position = argument(
             f,
@@ -227,7 +245,7 @@ impl Lowering<'_> {
         );
         let xy = e.swizzle(f, body, position, 0, 2)?;
         let floor = math(f, body, e, MathFunction::Floor, &[xy]);
-        let half = e.add(f, body, Expression::Literal(Literal::F32(0.5)));
+        let half = e.add(f, body, Expression::Literal(Literal::F32(PIXEL_CENTRE)));
         let half = e.add(
             f,
             body,
@@ -343,7 +361,7 @@ impl Lowering<'_> {
                 .find(|(_, io)| io.builtin == Some(builtin::POSITION))
                 .map(|(_, io)| (io.var, io.interpolation, io.ty.basic()));
             let (var, modes, Some(member)) = io.expect("a moved position is declared") else {
-                return Err(malformed("the position is not a vector".into()));
+                return Err(malformed(POSITION_NOT_VECTOR.into()));
             };
             let target = if modes & interp::CENTROID != 0 {
                 centroid

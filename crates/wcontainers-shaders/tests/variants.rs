@@ -1922,3 +1922,52 @@ fn clamped_samples_take_their_gradients_from_the_library() {
         glsl(&varied).unwrap();
     }
 }
+
+/// Inputs evaluated elsewhere in the pixel convert on both routes at one and four samples: on DXIL the
+/// reader's stand-ins take the slopes the entry point leaves, both routes reflect the same named
+/// inputs, and DXIL's nothing unnamed (none of what the evaluations add). An input a program run per sample reads only at its own sample
+/// is interpolated there on both routes (`ps_eval_exact`).
+#[test]
+fn inputs_evaluated_elsewhere_convert_on_both_routes() {
+    let inputs = |c: &wcontainers_shaders::Converted| {
+        let mut v: Vec<_> = c
+            .reflection
+            .inputs
+            .iter()
+            .filter(|v| !v.semantic.is_empty())
+            .map(|v| format!("{} {} {:?}", v.semantic, v.semantic_index, v.system))
+            .collect();
+        v.sort();
+        v
+    };
+    for samples in [1u8, 4] {
+        let key = VariantKey {
+            samples,
+            ..Default::default()
+        };
+        let [dxbc, dxil] = both(&own_pair("ps_evaluate"), &key);
+        let text = wgsl(&dxil);
+        assert!(text.contains("dpdx("), "{text}");
+        assert_eq!(inputs(&dxbc), inputs(&dxil));
+        assert_eq!(inputs(&dxil).len(), dxil.reflection.inputs.len());
+        let [dxbc, dxil] = both(&own_pair("ps_eval_exact"), &key);
+        assert_eq!(inputs(&dxil).len(), dxil.reflection.inputs.len());
+        let per_sample = |c: &wcontainers_shaders::Converted| {
+            c.modules[0].module.entry_points[0]
+                .function
+                .arguments
+                .iter()
+                .filter(|a| {
+                    matches!(
+                        a.binding,
+                        Some(naga::Binding::Location {
+                            sampling: Some(naga::Sampling::Sample),
+                            ..
+                        })
+                    )
+                })
+                .count()
+        };
+        assert_eq!((per_sample(&dxbc), per_sample(&dxil)), (2, 2));
+    }
+}

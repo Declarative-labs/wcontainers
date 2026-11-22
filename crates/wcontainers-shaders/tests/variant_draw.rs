@@ -1560,8 +1560,7 @@ fn variants_draw_as_the_native_feature_does() {
 
 /// Inputs evaluated at an offset, at a sample and at the centroid, an input interpolated per sample
 /// evaluated at an offset, and the position of a program run per sample, drawn through the WebGPU
-/// back end at one and four samples against real Direct3D 11 (fxc's build; dxc's is refused as
-/// `InterpolateAt`). The shader sends each value through a steep wave, so a place a sixteenth of a
+/// back end at one and four samples against real Direct3D 11, fxc's build and dxc's. The shader sends each value through a steep wave, so a place a sixteenth of a
 /// pixel off moves a texel by several steps; the allowance is the filtering one, for the waves'
 /// rounding and the resolve.
 #[test]
@@ -1574,21 +1573,16 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
     )
     .unwrap();
     let grid = grid();
-    let code = [bytecode("vs_evaluate.dxbc"), bytecode("ps_evaluate.dxbc")];
-    let dxil = convert(
-        Source::Dxil(&bytecode("ps_evaluate.dxil")),
-        &VariantKey::default(),
-        None,
-    );
-    assert!(
-        matches!(
-            dxil,
-            Err(wcontainers_shaders::ConvertError::Unsupported(
-                wcontainers_shaders::refusal::INTERPOLATE_AT
-            ))
+    let builds = [
+        (
+            "dxbc",
+            [bytecode("vs_evaluate.dxbc"), bytecode("ps_evaluate.dxbc")],
         ),
-        "{dxil:?}"
-    );
+        (
+            "dxil",
+            [bytecode("vs_evaluate.dxil"), bytecode("ps_evaluate.dxil")],
+        ),
+    ];
     let mut results = Vec::new();
     for samples in [1u8, LAYER_SAMPLES as u8] {
         let (reference, _) = direct3d_11(
@@ -1603,20 +1597,22 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
                 ..Default::default()
             },
         );
-        let mut ours_draw = grid_draw(&code, false, &grid);
-        ours_draw.setup.samples = samples.into();
-        ours_draw.setup.ps_key.samples = samples;
-        let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
-        results.push(compare(
-            format!("evaluate {samples} samples webgpu against direct3d 11"),
-            &reference,
-            &texels,
-            Format::Rgba8Unorm,
-            (
-                SIZE as usize * SIZE as usize,
-                (FILTER_ALLOWANCE * f32::from(u8::MAX)).ceil() as u64,
-            ),
-        ));
+        for (route, code) in &builds {
+            let mut ours_draw = grid_draw(code, *route == "dxil", &grid);
+            ours_draw.setup.samples = samples.into();
+            ours_draw.setup.ps_key.samples = samples;
+            let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
+            results.push(compare(
+                format!("evaluate {route} {samples} samples webgpu against direct3d 11"),
+                &reference,
+                &texels,
+                Format::Rgba8Unorm,
+                (
+                    SIZE as usize * SIZE as usize,
+                    (FILTER_ALLOWANCE * f32::from(u8::MAX)).ceil() as u64,
+                ),
+            ));
+        }
     }
     let mut failures = Vec::new();
     for r in &results {
@@ -1638,7 +1634,8 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
 
 /// An input evaluated at the sample being run (`ps_eval_exact`, Direct3D 12's
 /// shader_eval_attribute) is exactly the value interpolated there, as on Direct3D 11 at four
-/// samples: the program scales any difference so that the smallest shows, and every texel must match.
+/// samples: the program scales any difference so that the smallest shows, and every texel must match,
+/// fxc's build and dxc's.
 #[test]
 fn an_input_evaluated_at_its_own_sample_is_exact() {
     let mut gpu = webgpu();
@@ -1649,9 +1646,21 @@ fn an_input_evaluated_at_its_own_sample_is_exact() {
     )
     .unwrap();
     let grid = grid();
-    let code = [
-        bytecode("vs_eval_exact.dxbc"),
-        bytecode("ps_eval_exact.dxbc"),
+    let builds = [
+        (
+            "dxbc",
+            [
+                bytecode("vs_eval_exact.dxbc"),
+                bytecode("ps_eval_exact.dxbc"),
+            ],
+        ),
+        (
+            "dxil",
+            [
+                bytecode("vs_eval_exact.dxil"),
+                bytecode("ps_eval_exact.dxil"),
+            ],
+        ),
     ];
     let samples = LAYER_SAMPLES as u8;
     let (reference, _) = direct3d_11(
@@ -1666,25 +1675,33 @@ fn an_input_evaluated_at_its_own_sample_is_exact() {
             ..Default::default()
         },
     );
-    let mut ours_draw = grid_draw(&code, false, &grid);
-    ours_draw.setup.samples = samples.into();
-    ours_draw.setup.ps_key.samples = samples;
-    let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
-    let r = compare(
-        format!("evaluated at its own sample, {samples} samples, webgpu against direct3d 11"),
-        &reference,
-        &texels,
-        Format::Rgba8Unorm,
-        (0, 0),
-    );
-    eprintln!(
-        "{}: {} of {} texels differ, largest difference {}",
-        r.name,
-        r.count,
-        SIZE * SIZE,
-        r.largest
-    );
-    assert_eq!((r.count, r.largest), (0, 0), "{}", r.name);
+    let mut failures = Vec::new();
+    for (route, code) in &builds {
+        let mut ours_draw = grid_draw(code, *route == "dxil", &grid);
+        ours_draw.setup.samples = samples.into();
+        ours_draw.setup.ps_key.samples = samples;
+        let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
+        let r = compare(
+            format!(
+                "evaluated at its own sample, {route}, {samples} samples, webgpu against direct3d 11"
+            ),
+            &reference,
+            &texels,
+            Format::Rgba8Unorm,
+            (0, 0),
+        );
+        eprintln!(
+            "{}: {} of {} texels differ, largest difference {}",
+            r.name,
+            r.count,
+            SIZE * SIZE,
+            r.largest
+        );
+        if (r.count, r.largest) != (0, 0) {
+            failures.push(r.name);
+        }
+    }
+    assert!(failures.is_empty(), "differ: {failures:?}");
 }
 
 /// Formats the typed buffer views of `ps_texels` take: textures of every back end, so both routes
