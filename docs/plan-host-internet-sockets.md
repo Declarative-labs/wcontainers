@@ -141,13 +141,16 @@ Each suite runs every check as root in a network namespace of its own, which the
 test's thread before the value is made, with loopback up and (ICMP) every group in the ping range. Checks see
 what leaves a dummy link on a packet socket of the namespace, and its statistics. Header fields (TTL or hop limit, DSCP and ECN, flow label, options, extension
 headers, path MTU modes, local fragmentation and fragment MTU, source, interface, mark, scope, broadcast) are
-checked by what arrives; send fields by what arrives (priority), the neighbour entry (confirmation), a qdisc
-that holds the packet (transmit time) and the error queue (transmit reports with their key, with and without
-the packet), and an etf schedule that misses every time (rejected transmit times with their keys). ICMP errors
+checked by what arrives; path MTU modes also by what each makes of a packet over a route of smaller MTU than its
+link's, and of one over the link's (fragments of either MTU, whole, or too long for either); send fields by what
+arrives (priority), the neighbour entry (confirmation), a qdisc that holds the packet (transmit time) and the
+error queue (transmit reports with their key, with and without the packet, and with it the loopback link and the
+frame's length), and an etf schedule that misses every time (rejected transmit times with their keys). ICMP errors
 come from a raw ICMP socket of the namespace, quoting what left the dummy link; their outer header must be the
 one on loopback's wire, and a buffer that cuts one in its outer header, ICMP header or quoted packet must hold
 its start (IPv4 and IPv6, both suites). A raw packet sent with a mark and priority arrives with them; a mobility
-header is sent by its type. Several ICMP errors queued before a receive each arrive, also after a ping send that
+header is sent by its type. A reply or packet that came over loopback in fragments (its MTU lowered) tells the
+largest one on the wire, a whole one none. Several ICMP errors queued before a receive each arrive, also after a ping send that
 Linux failed with the error. Settings by their effect; source filters by the namespace's lists of them
 (`/proc/net/mcfilter`, `mcfilter6`) and, for IPv4 raw sockets, by which senders' packets arrive; an IPv6 router alert
 turned off or changed by which sockets take a forwarded packet; drops over two floods;
