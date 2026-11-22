@@ -325,7 +325,7 @@ const DETACH_VALUE: c_int = 0;
 /// The `SO_INCOMING_CPU` value that ties the socket to no processor.
 ///
 /// https://man7.org/linux/man-pages/man7/socket.7.html
-const NO_PROCESSOR: c_int = -1;
+pub const NO_PROCESSOR: c_int = -1;
 
 /// The hop limit value that takes the route's.
 ///

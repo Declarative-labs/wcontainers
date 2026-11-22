@@ -15,7 +15,7 @@ use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::{RawPacket, RawSockets};
 use wcontainers_raw_sockets_host::HostRawSockets;
 
-/// A payload under another protocol than its IPv4 socket's is refused and counted under its reason.
+/// Checks that a payload under another protocol than its IPv4 socket's is refused and counted under its reason.
 #[test]
 fn another_protocol_is_refused_and_counted() {
     wcontainers_raw_sockets_conformance::enter_network_namespace();

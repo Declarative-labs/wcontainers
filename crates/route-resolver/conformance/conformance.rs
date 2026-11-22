@@ -1591,8 +1591,9 @@ pub fn malformed_ipv4_options_are_refused_as_a_send_refuses_them<R: RouteResolve
     pointer_past_its_end[POINTER] = SOURCE_ROUTE_LENGTH + 1;
     let mut length_of_no_address = route.to_vec();
     length_of_no_address[LENGTH] = SOURCE_ROUTE_LENGTH + 1;
-    let mut two_source_routes = route[..usize::from(SOURCE_ROUTE_LENGTH)].repeat(2);
-    two_source_routes.resize(route.len() * 2, u8::MIN);
+    let one_route = &route[..usize::from(SOURCE_ROUTE_LENGTH)];
+    let mut two_source_routes = [one_route, one_route].concat();
+    two_source_routes.resize(route.len() + route.len(), u8::MIN);
     for options in [
         pointer_past_its_end,
         length_of_no_address,

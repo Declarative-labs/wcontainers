@@ -492,7 +492,7 @@ impl Readiness<HostRawSocket> for HostRawSockets {
 }
 
 impl HostRawSockets {
-    /// The next ICMP error or transmit report of the error queue, kept entries first, past entries that give none.
+    /// Takes the next ICMP error or transmit report of the error queue, kept entries first, past entries that give none.
     fn take_error_entry(
         &self,
         socket: &HostRawSocket,
@@ -534,7 +534,7 @@ impl HostRawSockets {
         }
     }
 
-    /// The next packet, IPv6 with its headers written in front.
+    /// Receives the next packet, IPv6 with its headers written in front.
     fn receive_packet(
         &self,
         socket: &HostRawSocket,

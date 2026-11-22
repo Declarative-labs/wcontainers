@@ -9,6 +9,7 @@ implementation=crates/tcp-sockets/implementation/host/linux.rs
 icmp_error=crates/internet-protocol/implementation/linux-socket-options/icmp_error.rs
 readiness=crates/internet-protocol/implementation/linux-socket-options/readiness.rs
 shared_linux=crates/internet-protocol/implementation/linux-socket-options/linux.rs
+state=crates/tcp-sockets/implementation/host/linux/state.rs
 mutants=${CARGO_TARGET_DIR:-$checkout/target}/mutants
 names=() files=() from=() to=()
 # A mutant: its name, the file it breaks, the text it replaces (once, exactly) and what it puts there.
@@ -64,12 +65,6 @@ mutant urgent-wait-unregistered "$readiness" 'event.set_priority(interest.contai
 mutant peer-shutdown-unregistered "$readiness" '(ReadyFor::PEER_FINISHED_SENDING, PollFlags::RDHUP),' '(ReadyFor::empty(), PollFlags::RDHUP),'
 mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut []) {' \
     'match self.take_error_queue_entry(connection, &mut []).map(|entry| (entry, false)) {'
-mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n}' \
-    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS); Ok(())\n    }\n}'
-mutant listener-authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n\n    fn set_listener_timestamp_clock' \
-    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS); Ok(())\n    }\n\n    fn set_listener_timestamp_clock'
-mutant listener-state-fake "$implementation" '        Err(self.shortfalls.refuse(NO_LISTENER_STATE))' \
-    '        let _ = self.shortfalls.refuse(NO_LISTENER_STATE); Ok(TcpReading::IncomingProcessor(None))'
 mutant push-neither-noop "$implementation" 'let corked = socket.tcp_cork().map_err(io_host_error)?;' \
     'return Ok(()); #[allow(unreachable_code)] let corked = socket.tcp_cork().map_err(io_host_error)?;'
 mutant record-end-ignored "$implementation" 'flags |= libc::MSG_EOR;' ';'
@@ -165,6 +160,28 @@ mutant clock-set-outside-repair "$implementation" 'set_option(socket, uapi::SOL_
     'set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value).or(Ok(()))'
 mutant synchronize-frame-is-the-link-header "$implementation" '.and_then(|link| u32::try_from(link + length).ok())' \
     '.and_then(|link| u32::try_from(link).ok())'
+mutant information-state-shifted "$state" '.checked_sub(FIRST_STATE)' '.checked_add(u8::MIN)'
+mutant information-acknowledged-as-received "$state" 'bytes_acknowledged: ByteTotal(info.tcpi_bytes_acked),' 'bytes_acknowledged: ByteTotal(info.tcpi_bytes_received),'
+mutant congestion-information-none "$state" '(_, usize::MIN) => None,' '(_, _) if true => None,'
+mutant congestion-name-cut-short "$state" 'let cut = length.min(into.len());' 'let cut = length.min(into.len()).saturating_sub(1);'
+mutant queues-unsent-unacknowledged "$state" 'unacknowledged: ByteCount(queued.saturating_sub(unsent)),' 'unacknowledged: ByteCount(queued),'
+mutant urgent-mark-never-reached "$state" '== NOT_AT_MARK {' '== NOT_AT_MARK || true {'
+mutant tuned-clamp-is-the-segment "$state" 'uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP)' 'uapi::SOL_TCP, uapi::TCP_MAXSEG)'
+mutant timestamp-unit-milliseconds "$state" 'unit: if u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS != u32::MIN {' 'unit: if false {'
+mutant repair-sequences-one-queue "$state" 'let sequences = sequence_of(uapi::TCP_SEND_QUEUE as c_int)' 'let sequences = sequence_of(uapi::TCP_RECV_QUEUE as c_int)'
+mutant repair-options-noop "$implementation" 'TcpSetting::RepairOptions(repair) => state::set_repair_options(socket, repair),' 'TcpSetting::RepairOptions(repair) => { let _ = repair; Ok(()) }'
+mutant repair-window-noop "$implementation" 'TcpSetting::RepairWindow(ref window) => state::set_repair_window(socket, window),' 'TcpSetting::RepairWindow(ref window) => { let _ = window; Ok(()) }'
+mutant authentication-repair-noop "$implementation" 'state::set_authentication_repair(socket, repair)' '{ let _ = repair; Ok(()) }'
+mutant authentication-repair-host-order "$state" 'sent_initial_sequence: TcpSequenceNumber(u32::from_be(found.snt_isn)),' 'sent_initial_sequence: TcpSequenceNumber(found.snt_isn),'
+mutant authentication-counters-noop "$implementation" 'set_authentication_counters(connection.socket.fd(), &values)' '{ let _ = (connection, values); Ok(()) }'
+mutant listener-authentication-counters-noop "$implementation" 'set_authentication_counters(listener.socket.fd(), &values)' '{ let _ = (listener, values); Ok(()) }'
+mutant authentication-requirement-inverted "$state" 'requirement: if found.ao_required() == u32::MIN {' 'requirement: if found.ao_required() != u32::MIN {'
+mutant authentication-key-never-held "$state" 'Ok(_) if asked.nkeys == ONE_KEY =>' 'Ok(_) if false =>'
+mutant multipath-sent-as-received "$state" 'bytes_sent: ByteTotal(found.bytes_sent),' 'bytes_sent: ByteTotal(found.bytes_received),'
+mutant subflow-addresses-swapped "$state" 'local: address(subflow.local)?,' 'local: address(subflow.remote)?,'
+mutant last-header-ipv4-unread "$state" $'uapi::IP_PKTOPTIONS,\n            &mut control.bytes,' $'uapi::IP_PKTOPTIONS,\n            &mut [],'
+mutant listener-state-refused "$implementation" 'self.read_socket_state(listener.socket.fd(), listener.family, query)' '{ let _ = (listener, query); Err(HostError::NotSupported) }'
+mutant incoming-processor-none "$state" 'NO_PROCESSOR => Ok(None),' 'processor if processor >= NO_PROCESSOR => Ok(None),'
 status=0
 for index in "${!names[@]}"; do
     name=${names[$index]}
@@ -173,7 +190,7 @@ for index in "${!names[@]}"; do
     rm -rf "$copy" && mkdir -p "$copy"
     rsync -a --exclude /target --exclude /.git "$checkout/" "$copy/"
     # The copies share a build folder, so every file any copy breaks is rebuilt in each.
-    touch "$copy/$implementation" "$copy/$icmp_error" "$copy/$readiness" "$copy/$shared_linux"
+    touch "$copy/$implementation" "$copy/$state" "$copy/$icmp_error" "$copy/$readiness" "$copy/$shared_linux"
     if ! python3 -c 'import sys
 path, old, new = sys.argv[1:]
 text = open(path).read()
