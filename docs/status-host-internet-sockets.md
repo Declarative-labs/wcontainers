@@ -10,7 +10,66 @@ restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267
 the ICMP wait flake's cause and answered that check's four minor findings; I2 run 7 answered the next check's three
 and cleared 17 literal findings the check script had hidden. Next: the independent check of I2; the linter
 findings left all wait on a ruling (below), and the interface selector's meaning on the owner's (For the owner).
-Nothing of this track is in progress.
+C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the owner's interfaces merged at
+158b6c62. Next: the independent check of C22. Nothing of this track is in progress.
+
+## 2026-11-22: C22 run 1 (the owner's ping, raw and shared IP interface changes, merged at 158b6c62)
+- Ping `bind(EchoBinding) -> EchoIdentifier` replaces bind_identifier: `SO_REUSEADDR` from the sharing choice
+  (socket2), a bind to `sockaddr_in`, or `sockaddr_in6` with the scope as `sin6_scope_id` (0 for none), port the
+  requested identifier or 0, then `getsockname` (shared `local_address`) for the identifier bound. An address of the
+  other version goes to Linux as its own family, so the answer is Linux's. New ICMP checks, from the probe of
+  networking-fixes/ping-raw-udp: the_exit_node_chooses_an_identifier_when_asked (chosen identifier returned,
+  carried by the request, and taken: a second exclusive bind of it gets EADDRINUSE);
+  a_bound_address_is_the_requests_source (10.3.0.5 and fd03::5); a_link_local_address_binds_the_socket_to_its_link
+  (fe80::5 with ib's scope sends to fd08::1 by ib though ia is preferred; a global address and :: with ib's scope
+  send by ia); binding_refuses_what_linux_refuses (not local and 224.0.0.1 EADDRNOTAVAIL, an absent scope ENODEV,
+  link-local without scope EINVAL and with another link EADDRNOTAVAIL, IPv4-mapped EINVAL, an IPv6 address on an
+  IPv4 socket EAFNOSUPPORT and an IPv4 one on an IPv6 socket EINVAL, a second bind EINVAL: all measured here).
+  The old checks now want the identifier returned.
+- `read_buffer_sizes` (ping and raw) is socket2's `SO_SNDBUF` and `SO_RCVBUF`. New check
+  buffer_sizes_are_read_back (ICMP suite, used by the raw suite): the namespace's wmem_default and rmem_default,
+  then different sizes asked for each, read back doubled, then twice the limits, read back as twice wmem_max and
+  rmem_max. The six lines are in both hosts: the shared crate (the TCP track's) has no read helper; one there would
+  serve UDP too.
+- Raw multicast routing removed: the setting, its `MRT_INIT`/`MRT_DONE` code and constants, its check and its
+  Configurable case. close_gives_up_the_sockets_holdings now joins a group of each version and wants the dummy
+  link to leave it once the socket is closed.
+- `InterfaceIndex(NonZeroU32)`: the suites build indices with `NonZeroU32::new`; the resolver answers an `RTA_OIF`
+  of 0 or none with EPROTO. `TransmitReport.interface` is an Option: check_loopback_reports wants the loopback
+  with the packet and None without it, check_rejections wants None for a rejected transmit time. The ICMP counter
+  test of the missing report interface is gone with the shared crate's count.
+- `SourceFilter::Include(&Slice1)`: the ICMP suite's filtered membership makes it with `Slice1::try_from_slice`,
+  an empty include list becoming `Left` (mitsein added to the suite, MIT, the owner's choice; lock commit 183cbcaa).
+- `InterfaceSelector` (it arrived in the same merge, f4a31828): the ICMP and raw suites send with both a requested
+  and a bound interface (interface_selects_the_link wants both by the second link, then a plain send by the first
+  again; the raw route check sends by both). The resolver gives either as `RTA_OIF`, which holds the lookup as a
+  bound socket's is held except over IPv6 with a source: there, when the routing socket's lookup fails or leaves by
+  another interface, a UDP socket bound to the device (`SO_BINDTOIFINDEX`, socket2 now with its "all" feature) and
+  the source, with the owner, mark and traffic class, connects; its error is the answer, a route it finds is
+  refused under a new reason (also any such lookup under a rule on the upper layer or one netlink-packet-route
+  cannot read). New check a_bound_interface_routes_as_a_bound_socket compares the seven interface cases with a
+  socket bound to the device; interface_selects_the_route runs with both selectors. The resolver counter test has
+  the new reason (seven reasons).
+- `IpPacketSetting::UnicastInterface` and `TrafficClass.ecn` gone: the resolver's helper sockets set
+  `IP_UNICAST_IF`/`IPV6_UNICAST_IF` (network byte order) through the shared `set_option`, and the traffic class
+  with the ECN bits through socket2's `set_tos_v4`/`set_tclass_v6`. The shared `set_packet_setting` lost its
+  version argument and `packet_fields` now answers a Result (the shared crate's commit 04600f02); followed.
+- Broken copies (`c22/check.sh`, logs check2.log and final.log in scratch, ARM): the ping scope ignored fails
+  a_link_local_address_binds_the_socket_to_its_link and binding_refuses_what_linux_refuses; the chosen identifier
+  not read back fails the_exit_node_chooses_an_identifier_when_asked; send and receive buffer sizes swapped fail
+  buffer_sizes_are_read_as_linux_gives_them in the ICMP and in the raw suite; the resolver's bound branch skipped
+  fails a_bound_interface_routes_as_a_bound_socket and the counter test. A diagnostic copy showed one suite case is
+  refused (below).
+- Final (`c22/final.sh`, ARM, 19:31 UTC, load 19 to 12): clean build folder, clippy with warnings denied clean on
+  the nine packages, the broken copies above, three rounds each ICMP 64 + 4 counter + 1 wait, raw 53 + 2 + 1,
+  resolver 38 + 1, Configurable 2, NegativeRouteAdvisable 7, all passing (55 s with the build). After a last rename
+  (19:33 UTC, load 6): clippy clean and one round, the same counts. No interface.rs or data file differs from main
+  (`git diff main --` of every interface file of this track's crates, internet-protocol, readiness, udp, tcp, kernel).
+- Not honoured, new: an IPv6 lookup from a source by a bound interface whose bound socket finds a route the routing
+  socket would not give, for example fd0a::5 (main routes it by da at metric 1 and db at metric 2) from fd02::1
+  bound to db: a bound socket takes db's route, the routing socket (which holds a lookup with a source to an
+  interface only as a preference) takes da's, so the resolver refuses it, counted. Answering it from the probe
+  would need the route's kind, hop limit and gateway (for neighbour confirmation) from a connected socket.
 
 ## 2026-11-22: I2 run 7 (the check's three findings, and the literal check)
 - Mobility header type never really checked (blocking): true. a_mobility_header_is_sent_by_its_type now sends a
