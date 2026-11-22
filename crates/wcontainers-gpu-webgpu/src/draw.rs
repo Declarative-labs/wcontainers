@@ -385,6 +385,10 @@ pub struct Pass {
     pub attached: Vec<crate::Texture>,
     /// Its targets of 16-bit packed formats, rounded to their bits whenever a part of it ends.
     packed: Vec<crate::fill::PackedTarget>,
+    /// The colour slots drawing into a packed format, a bit each.
+    packed_slots: u32,
+    /// Whether a draw wrote those slots since they were last rounded.
+    packed_unrounded: bool,
 }
 
 #[derive(Default)]
@@ -950,6 +954,7 @@ impl WebGpu {
         let mut by_draw = Vec::new();
         let mut attached = Vec::new();
         let mut packed = Vec::new();
+        let mut packed_slots = 0;
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else {
                 colors.push(None);
@@ -974,6 +979,9 @@ impl WebGpu {
                         },
                     });
                 }
+            }
+            if crate::packed::quantised(v.format) {
+                packed_slots |= 1 << i;
             }
             targets.colors[i] = Some(v.format);
             targets.samples = v.samples;
@@ -1103,6 +1111,8 @@ impl WebGpu {
             last: Last::default(),
             attached,
             packed,
+            packed_slots,
+            packed_unrounded: false,
         });
     }
 
@@ -1156,6 +1166,7 @@ impl WebGpu {
         for t in &pass.packed {
             self.quantise(t);
         }
+        pass.packed_unrounded = false;
         between(self);
         let raw = pass.occlusion_set.as_ref().map(|q| q.0.page(pass.page));
         let encoder = self.encoder.as_mut().expect("a pass implies an encoder");
@@ -1231,11 +1242,21 @@ impl WebGpu {
         let Some(shadows) = self.vertex_shadows(call) else {
             return;
         };
+        // A blend reads the target as its format holds it, so what earlier draws left in a packed
+        // target is rounded to its bits first.
+        if self
+            .pass
+            .as_ref()
+            .is_some_and(|p| p.packed_unrounded && reads_target(&call.blend.0.desc, p.packed_slots))
+        {
+            self.split_pass(SlowPath::PackedTargetReadByBlend, |_| {});
+        }
         let Some(mut pass) = self.pass.take() else {
             return;
         };
-        if let Err(why) = self.draw_in(&mut pass, call, &shadows) {
-            self.fail(why);
+        match self.draw_in(&mut pass, call, &shadows) {
+            Ok(()) => pass.packed_unrounded |= pass.packed_slots != 0,
+            Err(why) => self.fail(why),
         }
         self.pass = Some(pass);
     }
@@ -1615,6 +1636,23 @@ impl WebGpu {
             });
         }
     }
+}
+
+/// Whether `blend` reads what a target holds in any of the colour slots of `slots`.
+fn reads_target(blend: &wcontainers_gpu::BlendDesc, slots: u32) -> bool {
+    use wcontainers_gpu::{BlendComponent, BlendFactor as F, BlendOp};
+    let reads = |c: BlendComponent| {
+        c.dst != F::Zero
+            || matches!(c.op, BlendOp::Min | BlendOp::Max)
+            || matches!(
+                c.src,
+                F::Dst | F::OneMinusDst | F::DstAlpha | F::OneMinusDstAlpha | F::SrcAlphaSaturated
+            )
+    };
+    (0..blend.targets.len())
+        .filter(|i| slots & 1 << i != 0)
+        .map(|i| blend.targets[if blend.same_for_all { 0 } else { i }])
+        .any(|t| t.blend.is_some_and(|(c, a)| reads(c) || reads(a)))
 }
 
 fn blend_component(c: wcontainers_gpu::BlendComponent) -> wgpu::BlendComponent {

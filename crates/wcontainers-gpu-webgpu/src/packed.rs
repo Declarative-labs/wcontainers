@@ -2,7 +2,8 @@
 //! with only their own channels written: 8-bit alpha as (0, 0, 0, a), and BGRX as BGRA with alpha
 //! one. The 16-bit packed formats (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`) hold each channel widened to 8
 //! bits; the two 5-bit ones are drawn, blended and resolved at 8 bits, and each channel rounded to
-//! its own bits when the pass or resolve ends (`PackedTargetQuantised`). Sampled and filtered only:
+//! its own bits when the pass or resolve ends (`PackedTargetQuantised`) and before a blend reads
+//! it (`PackedTargetReadByBlend`). Sampled and filtered only:
 //! `B4G4R4A4`, and the two-pixel formats (`R8G8_B8G8`, `G8R8_G8B8`), each pixel its own texel
 //! (`BlockDecoded`'s formats, converted the same way). The three-channel 32-bit formats (`R32G32B32_*`) are held in their
 //! four-channel twins with alpha one, sampled (filtered where the twin is) and copied. Writes are
