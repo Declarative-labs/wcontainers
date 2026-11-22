@@ -19,9 +19,9 @@ wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-readiness = { path = "../../../readiness" }
 etherparse.workspace = true
+wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 # Socket calls and socket addresses.
 rustix = { version = "1.1.6", features = ["net"] }
 # The socket options socket2 covers, on the socket's descriptor.
@@ -30,6 +30,10 @@ socket2 = { version = "0.6.5", features = ["all"] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # getsockopt for SO_MEMINFO and the errno values.
 libc = "0.2.191"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
 
 [dev-dependencies]
 wcontainers-icmp-sockets-conformance = { path = "../../conformance" }
