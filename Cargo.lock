@@ -4585,18 +4585,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-negative-route-advice"
+name = "wcontainers-negative-route-advisable"
 version = "0.1.0"
 dependencies = [
  "wcontainers-abi",
 ]
 
 [[package]]
-name = "wcontainers-negative-route-advice-conformance"
+name = "wcontainers-negative-route-advisable-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-abi",
- "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advisable",
 ]
 
 [[package]]
@@ -4894,7 +4894,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
 ]
 
@@ -4911,8 +4911,8 @@ dependencies = [
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-negative-route-advice",
- "wcontainers-negative-route-advice-conformance",
+ "wcontainers-negative-route-advisable",
+ "wcontainers-negative-route-advisable-conformance",
  "wcontainers-tcp-sockets",
 ]
 
@@ -4932,7 +4932,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
- "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advisable",
  "wcontainers-tcp-sockets",
  "wcontainers-tcp-sockets-conformance",
 ]
@@ -4990,7 +4990,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
 ]
 
@@ -5005,7 +5005,7 @@ dependencies = [
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-negative-route-advice-conformance",
+ "wcontainers-negative-route-advisable-conformance",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-udp-sockets",
@@ -5025,7 +5025,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
- "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
