@@ -6,37 +6,73 @@ use core::net::SocketAddr;
 
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
-use wcontainers_internet_protocol::{ByteCount, LocalBinding, LocalPort};
+use wcontainers_internet_protocol::{BindingSetting, ByteCount, LocalBinding, LocalPort};
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
 use wcontainers_tcp_sockets::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
-use wcontainers_tcp_sockets::state::{TcpErrorQueueEntry, TcpListenerQuery, TcpQuery, TcpReading};
+use wcontainers_tcp_sockets::state::{
+    TcpErrorQueueEntry, TcpListenerQuery, TcpListenerReading, TcpQuery, TcpReading,
+};
 use wcontainers_tcp_sockets::{
-    ListenBacklog, TcpAccepted, TcpClose, TcpConnected, TcpConnections, TcpFastOpen, TcpListeners,
-    TcpListening, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest,
-    TcpShutdown,
+    ListenBacklog, TcpAccepted, TcpBound, TcpClose, TcpConnected, TcpConnections, TcpDisconnected,
+    TcpFastOpen, TcpListeners, TcpListening, TcpLocalEnd, TcpLocalEndError, TcpProtocol,
+    TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest, TcpShutdown,
 };
 
 use crate::TestPolicy;
 use wcontainers_abi::Host;
 
+/// The port a binding asks for, 0 where the exit node chooses it.
+fn port_asked(local: &LocalBinding<'_>) -> u16 {
+    match local.port {
+        LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port.0,
+        LocalPort::ChosenByExitNode(_) => u16::MIN,
+    }
+}
+
+/// Refuses a socket made from `local`, which can only be unbound since no bind succeeds.
+fn refused<H: Host>(
+    policy: &TestPolicy<H>,
+    local: TcpLocalEnd<'_, Infallible>,
+    detail: impl FnOnce(&LocalBinding<'_>) -> u16,
+) -> TcpLocalEndError<Infallible> {
+    match local {
+        TcpLocalEnd::Bound(bound_socket) => match bound_socket {},
+        TcpLocalEnd::Unbound { local, .. } => TcpLocalEndError::Unbound(
+            policy
+                .refuse(u64::from(detail(&local)))
+                .err()
+                .unwrap_or(HostError::NotSupported),
+        ),
+    }
+}
+
 impl<H: Host> TcpConnections for TestPolicy<H> {
     type Connection = Infallible;
+    type BoundSocket = Infallible;
 
-    fn connect(
+    fn bind(
         &self,
         _protocol: TcpProtocol,
         _owner: UserId,
-        _local: LocalBinding<'_>,
+        local: LocalBinding<'_>,
+        _settings: &[BindingSetting<'_>],
+    ) -> Result<TcpBound<Self::BoundSocket>, HostError> {
+        self.refuse(u64::from(port_asked(&local)))?;
+        Err(HostError::NotSupported)
+    }
+
+    fn connect(
+        &self,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
         peer: SocketAddr,
         _settings: &[TcpSetting<'_>],
         _fast_open: TcpFastOpen<'_>,
-    ) -> Result<TcpConnected<Self::Connection>, HostError> {
-        self.refuse(u64::from(peer.port()))?;
-        Err(HostError::NotSupported)
+    ) -> Result<TcpConnected<Self::Connection>, TcpLocalEndError<Self::BoundSocket>> {
+        Err(refused(self, local, |_| peer.port()))
     }
 
     fn send(
@@ -83,6 +119,14 @@ impl<H: Host> TcpConnections for TestPolicy<H> {
 
     fn close(&self, connection: Self::Connection, _manner: TcpClose) {
         match connection {}
+    }
+
+    fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
+        match connection {}
+    }
+
+    fn release(&self, bound_socket: Self::BoundSocket) {
+        match bound_socket {}
     }
 
     fn push_queued_data(
@@ -135,18 +179,11 @@ impl<H: Host> TcpListeners for TestPolicy<H> {
 
     fn listen(
         &self,
-        _protocol: TcpProtocol,
-        _owner: UserId,
-        local: LocalBinding<'_>,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
         _backlog: ListenBacklog,
         _settings: &[TcpListenerSetting<'_>],
-    ) -> Result<TcpListening<Self::Listener>, HostError> {
-        let port = match local.port {
-            LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port.0,
-            LocalPort::ChosenByExitNode(_) => 0,
-        };
-        self.refuse(u64::from(port))?;
-        Err(HostError::NotSupported)
+    ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>> {
+        Err(refused(self, local, port_asked))
     }
 
     fn accept<'a>(
@@ -161,7 +198,7 @@ impl<H: Host> TcpListeners for TestPolicy<H> {
         &self,
         listener: &Self::Listener,
         _query: TcpListenerQuery<'a>,
-    ) -> Result<TcpReading<'a>, HostError> {
+    ) -> Result<TcpListenerReading<'a>, HostError> {
         match *listener {}
     }
 
