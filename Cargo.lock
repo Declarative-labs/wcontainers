@@ -4298,7 +4298,6 @@ dependencies = [
  "wcontainers-executor",
  "wcontainers-executor-wasmtime",
  "wcontainers-kernel",
- "wcontainers-kernel-conformance",
  "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system",
@@ -4570,7 +4569,9 @@ dependencies = [
  "smallvec",
  "wcontainers-abi",
  "wcontainers-executor",
+ "wcontainers-executor-unicorn",
  "wcontainers-kernel",
+ "wcontainers-kernel-conformance",
  "wcontainers-system",
  "zerocopy",
 ]
