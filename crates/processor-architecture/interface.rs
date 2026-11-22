@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::ops::Range;
@@ -27,29 +28,67 @@ pub trait ProcessorArchitecture: Sized {
 pub trait Simulator<Architecture: ProcessorArchitecture> {
     type Error;
 
-    /// Simulates applying this instruction to the before state.
-    fn simulate(
+    /// Simulates applying this instruction to the given processor + memory.
+    ///
+    /// Processor changes are written in place, memory changes are written through the hook.
+    /// On error the processor is left as it was.
+    fn simulate_in_place(
         &self,
-        before: ExecutionState<Architecture>,
-    ) -> Result<ExecutionState<Architecture>, Self::Error>;
+        processor: &mut Architecture::Processor,
+        memory: &[MemoryDelta<'_, Architecture>],
+        on_memory_mutated: impl FnMut(MemoryDelta<'_, Architecture>),
+    ) -> Result<(), Self::Error>;
+
+    /// Simulates applying this instruction to the before state.
+    fn simulate<'memory>(
+        &self,
+        mut before: ExecutionState<'memory, Architecture>,
+    ) -> Result<ExecutionState<'memory, Architecture>, Self::Error> {
+        let mut mutations = Vec::new();
+        self.simulate_in_place(
+            &mut before.processor,
+            &before.memory_mutations,
+            |mutation| mutations.push(mutation.into_owned()),
+        )?;
+        before.memory_mutations.append(&mut mutations);
+        Ok(before)
+    }
 }
 
 /// All state that some instruction might mutate during execution.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ExecutionState<Architecture: ProcessorArchitecture> {
+pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
     pub processor: Architecture::Processor,
     /// The changes that have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
-    pub memory_mutations: Vec<MemoryDelta<Architecture>>,
+    pub memory_mutations: Vec<MemoryDelta<'memory, Architecture>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum MemoryDelta<Architecture: ProcessorArchitecture> {
+pub enum MemoryDelta<'memory, Architecture: ProcessorArchitecture> {
     PermissionAssignment {
         addresses: Range<u64>,
         permission: Architecture::PagePermission,
     },
     ValueAssignment {
         start: u64,
-        bytes: Vec<u8>,
+        bytes: Cow<'memory, [u8]>,
     },
+}
+
+impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
+    pub fn into_owned(self) -> MemoryDelta<'static, Architecture> {
+        match self {
+            Self::PermissionAssignment {
+                addresses,
+                permission,
+            } => MemoryDelta::PermissionAssignment {
+                addresses,
+                permission,
+            },
+            Self::ValueAssignment { start, bytes } => MemoryDelta::ValueAssignment {
+                start,
+                bytes: Cow::Owned(bytes.into_owned()),
+            },
+        }
+    }
 }
