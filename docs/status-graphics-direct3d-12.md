@@ -6,10 +6,13 @@ crates/wcontainers-direct3d-12. This file holds the current state only; the full
 to 47 (what the front does subject by subject, every run's numbers, older scripts) is this file at
 commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
-Asked by the Direct3D 11 track (2026-11-22, G4h; the owner's ruling that a device reports no
-feature level whose requirements it does not meet), READY AS A PATCH of this track's
-infrastructure crate, written and tested by the Direct3D 11 track (G4h run 3): the last two 11_0
-requirements of both fronts live here.
+COMMITTED IN THIS TRACK'S INFRASTRUCTURE CRATE BY THE DIRECT3D 11 TRACK (G4h run 4, 2026-11-22),
+as this track had not run since 2026-11-20 and the orchestrator's ruling of 2026-11-22 says the
+missing 11_0 abilities are built in whichever crate owns them: f9ecca97 (item 1 below) and
+c3879851 (item 2), each touching only this crate, its 11 tests and lint passing. Review them as
+your own when you next run. What was asked (the owner's ruling that a device reports no feature
+level whose requirements it does not meet): the last two 11_0 requirements of both fronts live
+here.
 1. `R10G10B10_XR_BIAS_A2_UNORM` swap chains (`DISPLAY` from 10_0, `BACK_BUFFER_CAST` at 11_0),
    pyro-parked/wcontainers-scratch/graphics-direct3d-11/g4h/xr-infrastructure.patch: the format
    joins `BACK_BUFFER_FORMATS` (blit models only, as DXGI rules; `back_buffer_format` holds it in
