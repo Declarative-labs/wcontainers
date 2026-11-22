@@ -3,10 +3,19 @@
 use core::ops::Range;
 
 use wcontainers_abi::{CpuError, Permissions, ThreadId};
+use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
 
 /// The runner of guest threads.
 pub trait Executor {
+    type Architecture: ProcessorArchitecture;
     type TranslatorConfig: Default;
+
+    /// Executes the one instruction given on the before state.
+    fn execute_single_instruction(
+        &mut self,
+        instruction: <Self::Architecture as ProcessorArchitecture>::Instruction,
+        before: ExecutionState<Self::Architecture>,
+    ) -> ExecutionState<Self::Architecture>;
 }
 
 /// An executor that can watch one thread and not its siblings.

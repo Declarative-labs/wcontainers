@@ -1,5 +1,9 @@
 #![no_std]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::convert::Infallible;
 use core::ops::Range;
 
 /// One processor architecture, as a program running on it sees it.
@@ -32,20 +36,20 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
 
 /// All state that some instruction might mutate during execution.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
+pub struct ExecutionState<Architecture: ProcessorArchitecture> {
     pub processor: Architecture::Processor,
     /// The changes that have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
-    pub memory_mutations: &'memory [MemoryDelta<'memory, Architecture>],
+    pub memory_mutations: Vec<MemoryDelta<Architecture>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum MemoryDelta<'memory, Architecture: ProcessorArchitecture> {
+pub enum MemoryDelta<Architecture: ProcessorArchitecture> {
     PermissionAssignment {
         addresses: Range<u64>,
         permission: Architecture::PagePermission,
     },
     ValueAssignment {
         start: u64,
-        bytes: &'memory [u8],
+        bytes: Vec<u8>,
     },
 }
