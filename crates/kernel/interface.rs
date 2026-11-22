@@ -16,26 +16,32 @@ use core::ops::Range;
 use core::time::Duration;
 
 use arm64_features::Arm64Features;
-use errno::Errno;
+use errno::{Errno, UnknownErrno};
+use signal::Signal;
 use signal_information::SignalInformation;
 use wcontainers_abi::{CpuError, MemoryId};
 use wcontainers_executor::{Executor, PerThreadWatch};
 use x86_64_features::X86_64Features;
 
-pub trait Kernel: ProcessController {}
-
-/// The owner of processes, which suspends and resumes their tasks and their contexts.
-pub trait ProcessController {
+pub trait Kernel: Sync + Sized {
     type Executor: Executor;
+    /// A slow or incomplete path that the kernel can take.
+    type Fallback;
+    type Config;
     type SuspendedTask;
     type ProcessContext;
 
+    fn new(config: Self::Config) -> Self;
+    /// Runs what the kernel decides is next, using the calling host thread's executor.
+    fn run(&self, executor: &mut Self::Executor) -> StopReason;
+    /// Takes the given tasks out of this kernel instance atomically, whichever processes they belong to, returning each one that is still executing on it.
     fn suspend_tasks(
-        &mut self,
+        &self,
         tasks: &[TaskId],
     ) -> impl Iterator<Item = (TaskId, Self::SuspendedTask)>;
+    /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
     fn suspend_process(
-        &mut self,
+        &self,
         process: TaskId,
     ) -> Option<(
         Self::ProcessContext,
@@ -43,14 +49,30 @@ pub trait ProcessController {
     )>;
     fn copy_process_context(&self, process: TaskId) -> Option<Self::ProcessContext>;
     fn resume_process(
-        &mut self,
+        &self,
         context: Self::ProcessContext,
         config: ExecutionConfig<Self::Executor>,
     ) -> Option<Self::ProcessContext>;
     fn resume_tasks(
-        &mut self,
+        &self,
         tasks: impl IntoIterator<Item = Self::SuspendedTask>,
     ) -> impl Iterator<Item = Self::SuspendedTask>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    Interrupted,
+    Suspended,
+    Idle { until: Option<Duration> },
+    Finished(ProcessEnd),
+}
+
+/// The way a container's first process ended: its [wait status](https://man7.org/linux/man-pages/man2/wait.2.html#:~:text=If%20wstatus%20is%20not%20NULL), or the error that kept its program from starting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessEnd {
+    Exited { code: u8 },
+    Signaled { signal: Signal, core_dumped: bool },
+    NotStarted { error: Errno },
 }
 
 /// A handle to one process of a kernel.
@@ -78,12 +100,12 @@ pub trait Process: ProcessInfo {
     fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
 
     fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
-    /// Takes the given tasks out of the kernel atomically, returning each one it could find.
-    fn suspend_tasks(
+    /// Takes the given threads of this process out of this kernel instance atomically, returning each one that is still executing on it.
+    fn suspend_threads(
         &mut self,
-        tasks: &[TaskId],
+        threads: &[TaskId],
     ) -> impl Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>;
-    /// Takes the process off this kernel, returning its context and every task it could find.
+    /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
     fn suspend_process(
         self,
     ) -> (
@@ -93,14 +115,11 @@ pub trait Process: ProcessInfo {
     fn copy_process_context(&self) -> ProcessContextOf<Self::Kernel>;
 }
 
-pub trait ProcessOf<State, E: Executor>:
-    Process<State = State, Kernel: ProcessController<Executor = E>>
-{
-}
+pub trait ProcessOf<State, K: Kernel>: Process<State = State, Kernel = K> {}
 
-pub type ExecutorOf<K> = <K as ProcessController>::Executor;
-pub type SuspendedTaskOf<K> = <K as ProcessController>::SuspendedTask;
-pub type ProcessContextOf<K> = <K as ProcessController>::ProcessContext;
+pub type ExecutorOf<K> = <K as Kernel>::Executor;
+pub type SuspendedTaskOf<K> = <K as Kernel>::SuspendedTask;
+pub type ProcessContextOf<K> = <K as Kernel>::ProcessContext;
 
 pub trait ProcessInfo {
     /// Returns the number of bytes of address space the process has mapped.
@@ -166,7 +185,13 @@ pub enum WriteMemoryError {
     SharedNotWritable,
 }
 
-pub type SystemCallResponse = Result<u64, Errno>;
+pub type SystemCallResponse = Result<u64, SystemCallError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SystemCallError {
+    WellKnown(Errno),
+    Unknown(UnknownErrno),
+}
 
 /// A [process or thread ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=pid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -150,3 +150,23 @@ impl Errno {
     pub const EWOULDBLOCK: Self = Self::EAGAIN;
     pub const EDEADLOCK: Self = Self::EDEADLK;
 }
+
+/// An error number that Linux passes to a program without naming, which `strerror` calls an unknown error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UnknownErrno(u16);
+
+impl UnknownErrno {
+    /// The largest error number that [a FUSE server may answer](https://github.com/torvalds/linux/blob/v6.18/fs/fuse/dev.c#L2209).
+    pub const LARGEST: u16 = 511;
+
+    pub const fn new(number: u16) -> Option<Self> {
+        if number > Errno::EHWPOISON as u16 && number <= Self::LARGEST {
+            Some(Self(number))
+        } else {
+            None
+        }
+    }
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}

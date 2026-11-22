@@ -4532,6 +4532,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-instruction-set"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-instruction-set-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-instruction-set",
+]
+
+[[package]]
 name = "wcontainers-internet-protocol"
 version = "0.1.0"
 dependencies = [
@@ -4663,6 +4677,17 @@ dependencies = [
  "wcontainers-shaders",
  "wgpu",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wcontainers-processor-architecture"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-processor-architecture-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
 ]
 
 [[package]]

@@ -8,11 +8,11 @@ use core::ops::{ControlFlow, Deref, Range};
 use domain::base::{Message, Name, Question};
 use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
-use wcontainers_executor::Executor;
 use wcontainers_icmp_sockets::IcmpSockets;
+use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
-    AccessKind, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse, TaskId,
+    AccessKind, Kernel, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse, TaskId,
 };
 use wcontainers_random_source::RandomSource;
 use wcontainers_raw_sockets::RawSockets;
@@ -28,7 +28,7 @@ pub trait System:
     + StreamTransport
     + Clock
     + RandomSource
-    + FallbackObserver
+    + FallbackObserver<<<Self as ProcessTracer>::Kernel as Kernel>::Fallback>
     + FuseServer
     + TcpSockets
     + UdpSockets
@@ -43,9 +43,9 @@ pub trait System:
 /// The observer and controller of a process's execution.
 pub trait ProcessTracer {
     type ProcessState: Clone + Send;
-    type Executor: Executor;
+    type Kernel: Kernel;
 
-    fn intercept_system_call_request<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn intercept_system_call_request<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
@@ -53,7 +53,7 @@ pub trait ProcessTracer {
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
         ControlFlow::Continue(request)
     }
-    fn intercept_system_call_response<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn intercept_system_call_response<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
@@ -63,23 +63,23 @@ pub trait ProcessTracer {
         response
     }
 
-    fn on_process_starting<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {}
-    fn on_program_starting<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {}
-    fn on_thread_starting<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_process_starting<P: ProcessOf<Self::ProcessState, Self::Kernel>>(&self, process: P) {}
+    fn on_program_starting<P: ProcessOf<Self::ProcessState, Self::Kernel>>(&self, process: P) {}
+    fn on_thread_starting<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
     ) {
     }
-    fn on_process_exiting<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {}
-    fn on_process_outgrown<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_process_exiting<P: ProcessOf<Self::ProcessState, Self::Kernel>>(&self, process: P) {}
+    fn on_process_outgrown<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         bytes: u64,
     ) {
     }
 
-    fn on_watched_memory_accessing<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_watched_memory_accessing<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
@@ -87,7 +87,7 @@ pub trait ProcessTracer {
         kind: AccessKind,
     ) {
     }
-    fn on_memory_written_by_kernel<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_memory_written_by_kernel<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
@@ -95,7 +95,7 @@ pub trait ProcessTracer {
     ) {
     }
 
-    fn on_shared_memory_mapping<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_shared_memory_mapping<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         source: MemoryObject,
@@ -103,7 +103,7 @@ pub trait ProcessTracer {
         range: Range<u64>,
     ) {
     }
-    fn on_shared_memory_unmapped<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_shared_memory_unmapped<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         source: MemoryObject,
@@ -112,7 +112,7 @@ pub trait ProcessTracer {
     ) {
     }
 
-    fn on_signal_delivering<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn on_signal_delivering<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
@@ -121,26 +121,25 @@ pub trait ProcessTracer {
     }
 
     /// Runs when another process is about to read this one's internal state.
-    fn on_inspection_starting<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {
-    }
-    fn on_inspection_ended<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {}
+    fn on_inspection_starting<P: ProcessOf<Self::ProcessState, Self::Kernel>>(&self, process: P) {}
+    fn on_inspection_ended<P: ProcessOf<Self::ProcessState, Self::Kernel>>(&self, process: P) {}
 }
 
 /// The answers to what a program reads from its processor directly (without a [system call](https://man7.org/linux/man-pages/man2/syscalls.2.html)).
 pub trait ProcessorInputs: ProcessTracer {
-    fn choose_processor_features<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn choose_processor_features<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         supported: &ProcessorFeatures,
     ) -> ProcessorFeatures {
         *supported
     }
-    fn read_monotonic_nanoseconds<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn read_monotonic_nanoseconds<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
     ) -> u64;
-    fn read_random_number<P: ProcessOf<Self::ProcessState, Self::Executor>>(
+    fn read_random_number<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
         &self,
         process: P,
         thread: TaskId,
@@ -175,18 +174,26 @@ pub trait StreamTransport: Readiness<Self::Endpoint> {
 }
 
 // When a fallback implementation is used internally somewhere, this will fire.
-pub trait FallbackObserver {
-    type Fallback;
-
-    fn on_fallback_used(&self, which: &Self::Fallback) {}
+pub trait FallbackObserver<Fallback> {
+    fn on_fallback_used(&self, which: &Fallback) {}
 }
 
 /// A [FUSE](https://man7.org/linux/man-pages/man4/fuse.4.html) server.
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
+    type Notice: Deref<Target = [u8]>;
 
     /// Sends a FUSE request and returns its reply; a request FUSE never replies to completes immediately with an empty reply.
+    ///
+    /// The reply completes only after every notice the server sent before it has been applied.
     async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>;
+    /// Waits for the next [notice](https://libfuse.github.io/doxygen/fuse__lowlevel_8h.html#a9cb974af9745294ff446d11cba2422f1) the server sends unasked.
+    ///
+    /// Calling it again tells the server that the notice before was applied, and with what result.
+    async fn receive_notice(
+        &self,
+        applied: Option<Result<(), Errno>>,
+    ) -> Result<Self::Notice, HostError>;
 }
 
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).

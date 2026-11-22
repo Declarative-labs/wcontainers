@@ -1,7 +1,13 @@
 {
-  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
+  // TEMPORARY (2026-11-22): the full `cargo reviewable check` on every save is too slow until it is incremental.
+  // Until then a save checks only the crate being edited with plain cargo. To put the linter back, delete the
+  // next line and uncomment the one after it.
+  "rust-analyzer.check.workspace": false,
+  // "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
   "rust-analyzer.vfs.extraIncludes": [
     "${workspaceFolder}"
   ],
-  "cmake.sourceDirectory": "/Users/thomaseaton/Documents/GitHub/wcontainers/crates/wcontainers-shaders/dxil-spirv"
+  "cmake.sourceDirectory": "/Users/thomaseaton/Documents/GitHub/wcontainers/crates/wcontainers-shaders/dxil-spirv",
+  "rust-analyzer.rustfmt.overrideCommand": ["cargo", "reviewable", "format"],
+  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"]
 }
