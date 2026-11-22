@@ -5,6 +5,7 @@
 //! use it: each describes its program's stage values ([`GeometryValue`]) and its main function, which
 //! calls the emit and cut functions this pass fills in.
 
+use super::hull::PATCH_MAX_POINTS;
 use super::{Lowering, Result, malformed, unsupported};
 use crate::build::{self, Builder, Expr};
 use crate::ir::{self, Basic, Ty, builtin, code, primitive, scalar};
@@ -267,8 +268,10 @@ fn input_vertices(input: u64) -> Result<u32> {
         primitive::LINES_ADJ => 4,
         primitive::TRIANGLES => 3,
         primitive::TRIANGLES_ADJ => 6,
-        // Patches as a geometry shader's input (without tessellation): not built.
-        p if p > primitive::PATCH => return Err(unsupported(crate::refusal::GEOMETRY_PATCH_INPUT)),
+        // A patch drawn without tessellation: its control points are the primitive's vertices.
+        p if p > primitive::PATCH && p - primitive::PATCH <= u64::from(PATCH_MAX_POINTS) => {
+            (p - primitive::PATCH) as u32
+        }
         _ => return Err(malformed("geometry input primitive".into())),
     })
 }

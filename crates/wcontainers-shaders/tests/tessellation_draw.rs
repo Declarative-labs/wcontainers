@@ -1373,6 +1373,80 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// A hull shader handing the domain shader no control points (`hs_tri_none`, `outputcontrolpoints(0)`)
+/// and a domain shader taking none (`ds_tri_none`), streamed through the whole stage helper on the
+/// RTX 3080 against Direct3D 11 on WARP streaming the same draw (the RTX 3080's Direct3D 11 ends the
+/// process dividing by zero there), compared as [`stream_output_after_the_domain_stage_matches_direct3d`]
+/// compares. fxc's builds; dxc's domain shader is refused by name, as dxil-spirv declares its patch
+/// an array of none.
+#[test]
+fn hulls_giving_no_control_points_stream_as_direct3d_does() {
+    let refused = wcontainers_shaders::convert(
+        Route::Dxil.source(&bytecode("ds_tri_none.dxil")),
+        &wcontainers_gpu::VariantKey::default(),
+        None,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(wcontainers_shaders::ConvertError::Unsupported(
+                wcontainers_shaders::refusal::DOMAIN_WITHOUT_CONTROL_POINTS
+            ))
+        ),
+        "{:?}",
+        refused.err()
+    );
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Warp,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
+    let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_TESSELLATION_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let (hs, ds) = ("hs_tri_none", "ds_tri_none");
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let factors = factors(&mut rng);
+        let bound = PATCHES * tess::patch_bounds(64.0).1 as usize;
+        let (reference, written) = direct3d(&gpu, hs, ds, None, 1, bound, &factors);
+        eprintln!("seed {seed}: direct3d streamed {written} primitives");
+        let reference = &reference[..written as usize * 3];
+        let programs = Staged {
+            hs,
+            ds,
+            gs: None,
+            route: Route::Dxbc,
+            from_module: false,
+        };
+        let (streamed, counted) = ours_staged(&mut backend, &programs, 1, bound, &factors, None);
+        let name = format!("seed {seed} {hs}");
+        let counts = match counted == [written as u32; 2] {
+            true => Ok(()),
+            false => Err(format!(
+                "primitives written and made {counted:?}, direct3d {written}"
+            )),
+        };
+        match (counts, compare(reference, &streamed, 3)) {
+            (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+            (counts, shape) => {
+                let why: Vec<String> = [counts.err(), shape.err()].into_iter().flatten().collect();
+                eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
+                failures.push(name);
+            }
+        }
+    }
+    eprintln!("{seeds} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// Hull and domain programs handed over as naga modules (`wcontainers_shaders::staged::hull` and
 /// `domain`, the NIR route's entry) stream as Direct3D 11 streams fxc's builds of the same programs,
 /// directly and through a geometry shader: each domain, partitioning and output, compared as

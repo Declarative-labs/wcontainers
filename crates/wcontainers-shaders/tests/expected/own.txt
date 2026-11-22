@@ -18,6 +18,7 @@ ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga coul
 ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_rows_gap.dxbc	unsupported ComponentPastVector
 ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_tri_none.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_values.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 gs_adjacent.dxbc	ok ; glsl absent compute
 gs_clip.dxbc	ok ; glsl absent compute
@@ -26,6 +27,7 @@ gs_instances.dxbc	ok ; glsl absent compute
 gs_layers.dxbc	ok ; glsl absent compute
 gs_line_adjacent.dxbc	ok ; glsl absent compute
 gs_lines.dxbc	ok ; glsl absent compute
+gs_patch.dxbc	ok ; glsl absent compute
 gs_points.dxbc	ok ; glsl absent compute
 gs_quads.dxbc	ok ; glsl absent compute
 gs_rows_lines.dxbc	ok ; glsl absent compute
@@ -64,6 +66,7 @@ hs_tri_even_point.dxbc	ok ; glsl absent compute
 hs_tri_integer_ccw.dxbc	ok ; glsl absent compute
 hs_tri_integer_cw.dxbc	ok ; glsl absent compute
 hs_tri_integer_point.dxbc	ok ; glsl absent compute
+hs_tri_none.dxbc	ok ; glsl absent compute
 hs_tri_odd_ccw.dxbc	ok ; glsl absent compute
 hs_tri_odd_cw.dxbc	ok ; glsl absent compute
 hs_tri_odd_point.dxbc	ok ; glsl absent compute

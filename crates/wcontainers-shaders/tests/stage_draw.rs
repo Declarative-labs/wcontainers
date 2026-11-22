@@ -184,6 +184,9 @@ fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
         InputTopology::LineList => D3D11_PRIMITIVE_TOPOLOGY_LINELIST,
         InputTopology::LineStrip => D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP,
         InputTopology::TriangleList => D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        InputTopology::PatchList(n) => D3D_PRIMITIVE_TOPOLOGY(
+            D3D11_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST.0 + i32::from(n) - 1,
+        ),
         _ => D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
     }
 }
@@ -1580,11 +1583,17 @@ fn triangle_cases() -> impl Iterator<Item = &'static Case> {
     })
 }
 
-/// `vs_line`, `gs_typed` reading [`OFFSETS`] and `ps_line` drawn by real Direct3D 11, unblended.
-fn direct3d_typed(gpu: &Gpu, case: &Case, (vertices, indices): (&[f32], &[u8])) -> Vec<u8> {
+/// `vs_line`, the named geometry shader (with [`OFFSETS`] bound for `gs_typed`) and `ps_line` drawn
+/// by real Direct3D 11, unblended.
+fn direct3d_geometry(
+    gpu: &Gpu,
+    geometry: &str,
+    case: &Case,
+    (vertices, indices): (&[f32], &[u8]),
+) -> Vec<u8> {
     let (vs, gs, ps) = (
         bytecode("vs_line.dxbc"),
-        bytecode("gs_typed.dxbc"),
+        bytecode(&format!("{geometry}.dxbc")),
         bytecode("ps_line.dxbc"),
     );
     let elements = [
@@ -1649,17 +1658,18 @@ fn direct3d_typed(gpu: &Gpu, case: &Case, (vertices, indices): (&[f32], &[u8])) 
     read(gpu, &target, Format::Rgba8Unorm)
 }
 
-/// The same through the stage helper on the WebGPU back end, the typed buffer read through a storage
+/// The same through the stage helper on the WebGPU back end, a typed buffer read through a storage
 /// buffer (`TexelBufferRoute::Storage`), from the fxc or the dxc build.
-fn ours_typed<B: Backend>(
+fn ours_geometry<B: Backend>(
     b: &mut B,
+    geometry: &str,
     case: &Case,
     (vertices, indices): (&[f32], &[u8]),
     dxil: bool,
 ) -> Vec<u8> {
     let kind = if dxil { "dxil" } else { "dxbc" };
     let code = |name: &str| bytecode(&format!("{name}.{kind}"));
-    let (vs_code, gs_code, ps_code) = (code("vs_line"), code("gs_typed"), code("ps_line"));
+    let (vs_code, gs_code, ps_code) = (code("vs_line"), code(geometry), code("ps_line"));
     let source = |c| match dxil {
         true => Source::Dxil(c),
         false => Source::Dxbc(c),
@@ -1756,7 +1766,8 @@ fn ours_typed<B: Backend>(
             }
         })
         .collect();
-    let geometry_set = b.create_binding_set(&geometry_entries).unwrap();
+    let geometry_set =
+        (!geometry_entries.is_empty()).then(|| b.create_binding_set(&geometry_entries).unwrap());
     let mut gs_helpers = vec![0u8; gs.reflection.helper_size as usize];
     for h in &gs.reflection.helpers {
         let HelperValue::TexelBufferView { .. } = h.value else {
@@ -1766,24 +1777,26 @@ fn ours_typed<B: Backend>(
         gs_helpers[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
         gs_helpers[at + 4..at + 8].copy_from_slice(&(OFFSETS.len() as u32).to_le_bytes());
     }
-    let gs_helper_buffer = buffer(b, &gs_helpers, BufferUsage::UNIFORM);
-    let geometry_helpers = b
-        .create_binding_set(&[BindingEntry {
+    let gs_helper_buffer =
+        (!gs_helpers.is_empty()).then(|| buffer(b, &gs_helpers, BufferUsage::UNIFORM));
+    let geometry_helpers = gs_helper_buffer.as_ref().map(|helper_buffer| {
+        b.create_binding_set(&[BindingEntry {
             binding: helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
-                buffer: &gs_helper_buffer,
+                buffer: helper_buffer,
                 offset: 0,
                 size: gs_helpers.len() as u64,
             }),
         }])
-        .unwrap();
+        .unwrap()
+    });
     let index_buffer = case
         .indexed
         .then(|| buffer(b, indices, BufferUsage::INDEX | BufferUsage::STORAGE));
     let draw = StageDraw {
         vertex_sets: [Some(&vertex_set), None, None, Some(&vertex_helpers)],
-        geometry_sets: [Some(&geometry_set), None, None, Some(&geometry_helpers)],
+        geometry_sets: [geometry_set.as_ref(), None, None, geometry_helpers.as_ref()],
         index: index_buffer.as_ref().map(|buffer| StageIndex {
             buffer,
             size: indices.len() as u64,
@@ -1843,11 +1856,12 @@ fn typed_buffers_in_geometry_shaders_draw_as_direct3d_does() {
             let Ok((indices, reference)) = scene(
                 case.indexed,
                 |attempt| indices(seed, case, attempt),
-                |indices| direct3d_typed(&gpu, case, (&vertices, indices)),
+                |indices| direct3d_geometry(&gpu, "gs_typed", case, (&vertices, indices)),
                 |reference| drawn_texels(reference) != 0,
                 |indices, _| {
                     [false, true].into_iter().all(|dxil| {
-                        drawn_texels(&ours_typed(&mut backend, case, (&vertices, indices), dxil))
+                        let data = (vertices.as_slice(), indices);
+                        drawn_texels(&ours_geometry(&mut backend, "gs_typed", case, data, dxil))
                             == 0
                     })
                 },
@@ -1857,7 +1871,8 @@ fn typed_buffers_in_geometry_shaders_draw_as_direct3d_does() {
             };
             for dxil in [false, true] {
                 let name = format!("{name} {}", if dxil { "dxil" } else { "dxbc" });
-                let picture = ours_typed(&mut backend, case, (&vertices, &indices), dxil);
+                let data = (vertices.as_slice(), indices.as_slice());
+                let picture = ours_geometry(&mut backend, "gs_typed", case, data, dxil);
                 let d = apart(&reference, &picture);
                 let count = d.iter().filter(|x| **x != 0).count();
                 let drawn = drawn_texels(&reference);
@@ -1875,6 +1890,115 @@ fn typed_buffers_in_geometry_shaders_draw_as_direct3d_does() {
                     }
                     failures.push(name);
                 }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The patch cases: patches of four control points, lists and indexed, one to three instances, the
+/// last two cutting a patch short (Direct3D draws no partial patch).
+const PATCH_CASES: [Case; 4] = [
+    Case {
+        topology: InputTopology::PatchList(4),
+        count: VERTICES as u32,
+        instances: 1,
+        indexed: false,
+    },
+    Case {
+        topology: InputTopology::PatchList(4),
+        count: 22,
+        instances: 2,
+        indexed: false,
+    },
+    Case {
+        topology: InputTopology::PatchList(4),
+        count: 16,
+        instances: 3,
+        indexed: true,
+    },
+    Case {
+        topology: InputTopology::PatchList(4),
+        count: 18,
+        instances: 1,
+        indexed: true,
+    },
+];
+
+/// Seeded 16-bit indices of a list (no restart index: a list has none), an even number of them.
+fn list_indices(seed: u64, count: u32) -> Vec<u8> {
+    let mut rng = fastrand::Rng::with_seed(seed ^ 0x9a7c);
+    (0..count.next_multiple_of(2))
+        .flat_map(|_| rng.u16(..VERTICES as u16).to_le_bytes())
+        .collect()
+}
+
+/// A geometry shader taking patches of four control points, drawn without tessellation (`gs_patch`:
+/// each patch a quadrilateral, its points picked at run time, its colour by the patch's number), run
+/// as compute by the stage helper on WebGPU: every texel equal to real Direct3D 11's on the RTX 3080.
+/// fxc's build; dxc's is refused by name, as dxil-spirv converts no geometry shader taking patches.
+#[test]
+fn geometry_shaders_taking_patches_draw_as_direct3d_does() {
+    let refused = convert(
+        Source::Dxil(&bytecode("gs_patch.dxil")),
+        &VariantKey::default(),
+        None,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(wcontainers_shaders::ConvertError::Unsupported(
+                wcontainers_shaders::refusal::GEOMETRY_PATCH_INPUT
+            ))
+        ),
+        "{:?}",
+        refused.err()
+    );
+    let mut backend = webgpu();
+    let gpu = d3d11::create(Driver::Hardware, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
+    eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
+    let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_LINE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &PATCH_CASES {
+            let name = format!(
+                "seed {seed} {:?} {} x{}{}",
+                case.topology,
+                case.count,
+                case.instances,
+                if case.indexed { " indexed" } else { "" }
+            );
+            let indices = match case.indexed {
+                true => list_indices(seed, case.count),
+                false => Vec::new(),
+            };
+            let data = (vertices.as_slice(), indices.as_slice());
+            let reference = direct3d_geometry(&gpu, "gs_patch", case, data);
+            let picture = ours_geometry(&mut backend, "gs_patch", case, data, false);
+            let d = apart(&reference, &picture);
+            let count = d.iter().filter(|x| **x != 0).count();
+            let drawn = drawn_texels(&reference);
+            compared += 1;
+            eprintln!("{name}: {drawn} texels drawn by direct3d, {count} differ");
+            if drawn == 0 || count != 0 {
+                for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
+                    let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
+                    let at = t * 4;
+                    eprintln!(
+                        "  ({px}, {py}): direct3d {:?}, ours {:?}",
+                        &reference[at..at + 4],
+                        &picture[at..at + 4]
+                    );
+                }
+                failures.push(name);
             }
         }
     }

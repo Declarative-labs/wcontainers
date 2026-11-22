@@ -98,6 +98,42 @@ fn geometry_shaders_declare_what_they_are() {
     }
 }
 
+/// A geometry shader taking patches of four control points (`gs_patch`) takes them as primitives of
+/// four vertices, in the compute and the replay form; dxc's build is refused by name, as dxil-spirv
+/// converts no such input.
+#[test]
+fn geometry_shaders_take_patches_as_primitives() {
+    let replay = VariantKey {
+        flags: VariantFlags::GEOMETRY_REPLAY,
+        ..Default::default()
+    };
+    for key in [VariantKey::default(), replay] {
+        let c = convert(Source::Dxbc(&own("gs_patch.dxbc")), &key, None).unwrap();
+        assert_eq!(
+            c.reflection.extras,
+            StageExtras::Geometry {
+                input_vertices: 4,
+                max_output_vertices: 4,
+                output_vertices: 3,
+                instances: 1,
+                streams: 1,
+            }
+        );
+        c.modules.iter().for_each(|m| drop(wgsl(m)));
+    }
+    assert_eq!(
+        convert(
+            Source::Dxil(&own("gs_patch.dxil")),
+            &VariantKey::default(),
+            None
+        )
+        .err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::GEOMETRY_PATCH_INPUT
+        ))
+    );
+}
+
 /// The replay form (`GEOMETRY_REPLAY`, for back ends without compute) is a vertex program writing a
 /// record a slot per location, the same records the compute form writes, which the same pass-through
 /// draws; WebGL 2's back end writes it and the vertex program it captures.
@@ -615,6 +651,51 @@ fn hull_and_domain_shaders_declare_what_they_are() {
             wgsl(&c.modules[0]);
         }
     }
+}
+
+/// A hull shader handing the domain shader no control points (`hs_tri_none`, which dxc refuses to
+/// build) and a domain shader taking none (`ds_tri_none`) convert on the DXBC route; dxc's build of
+/// the domain shader is refused by name, as dxil-spirv declares its patch an array of none.
+#[test]
+fn hulls_may_give_no_control_points() {
+    let c = converted_own("hs_tri_none", "dxbc");
+    assert!(
+        matches!(
+            c.reflection.extras,
+            StageExtras::Hull {
+                input_control_points: 1,
+                output_control_points: 0,
+                domain: 0,
+                partitioning: 2,
+                output_primitive: 2,
+                point_locations: 0,
+                ..
+            }
+        ),
+        "{:?}",
+        c.reflection.extras
+    );
+    wgsl(&c.modules[0]);
+    let c = converted_own("ds_tri_none", "dxbc");
+    assert_eq!(
+        c.reflection.extras,
+        StageExtras::Domain {
+            domain: 0,
+            input_control_points: 0,
+        }
+    );
+    wgsl(&c.modules[0]);
+    assert_eq!(
+        convert(
+            Source::Dxil(&own("ds_tri_none.dxil")),
+            &VariantKey::default(),
+            None
+        )
+        .err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::DOMAIN_WITHOUT_CONTROL_POINTS
+        ))
+    );
 }
 
 /// An own shader as fxc (`dxbc`) or dxc (`dxil`) builds it, converted under the default key.

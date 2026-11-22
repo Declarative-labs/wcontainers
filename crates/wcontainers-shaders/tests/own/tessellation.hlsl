@@ -125,6 +125,16 @@ Streamed ds_line(LineFactors f, float2 uv : SV_DomainLocation, uint p : SV_Primi
     return s;
 }
 
+// A domain shader taking no control points, after hull_none.hlsl's hull shader.
+[domain("tri")]
+Streamed ds_tri_none(TriFactors f, float3 uvw : SV_DomainLocation, uint p : SV_PrimitiveID) {
+    Streamed s;
+    s.position = float4(uvw, 1.0);
+    s.location = uvw;
+    s.primitive = p;
+    return s;
+}
+
 // Geometry shaders after the domain stage, one per tessellator output: each passes its primitive on
 // in reverse order with the location's components turned, then (lines and triangles) a second
 // primitive of its edges' midpoints; the patch's number is kept.

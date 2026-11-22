@@ -373,12 +373,17 @@ impl HullPass<'_> {
     ) -> Result<StageExtras> {
         let t = self.tessellation;
         let (points_in, points_out) = (t.points_in, t.points_out);
-        if points_out == 0 {
-            // A patch handing the domain shader no control points: not built.
-            return Err(unsupported(crate::refusal::HULL_WITHOUT_CONTROL_POINTS));
-        }
         if points_in == 0 || points_in > PATCH_MAX_POINTS || points_out > PATCH_MAX_POINTS {
             return Err(malformed(POINT_COUNTS.into()));
+        }
+        if points_out == 0 {
+            // No control point is made, so the control point function never runs; its outputs are
+            // arrays of none, which its body would index.
+            let f = &mut self.module.functions[main];
+            *f = naga::Function {
+                name: f.name.take(),
+                ..Default::default()
+            };
         }
         // Inputs: the vertex records' slots, in order of location.
         let mut inputs = Vec::new();

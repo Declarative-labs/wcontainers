@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, geometry_rows.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, tessellation_values.hlsl, domain_rows.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl, geometry_typed.hlsl and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, geometry_rows.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, tessellation_values.hlsl, domain_rows.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl, geometry_typed.hlsl, geometry_patch.hlsl, hull_none.hlsl (fxc only) and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -133,7 +133,8 @@ for %%m in (integer pow2 odd even) do for %%o in (point line) do (
   "%FXC%" /nologo /T hs_5_0 /E hs_line_%%m_%%o /Fo hs_line_%%m_%%o.dxbc tessellation.hlsl || exit /b 1
   "%DXC%" -nologo -T hs_6_0 -E hs_line_%%m_%%o -Gis -Fo hs_line_%%m_%%o.dxil tessellation.hlsl || exit /b 1
 )
-for %%e in (ds_tri ds_quad ds_line) do (
+"%FXC%" /nologo /T hs_5_0 /E hs_tri_none /Fo hs_tri_none.dxbc hull_none.hlsl || exit /b 1
+for %%e in (ds_tri ds_quad ds_line ds_tri_none) do (
   "%FXC%" /nologo /T ds_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
   "%DXC%" -nologo -T ds_6_0 -E %%e -Gis -Fo %%e.dxil tessellation.hlsl || exit /b 1
 )
@@ -212,4 +213,6 @@ for %%e in (vs_store_texture vs_store_typed vs_store_raw) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_store_drawn -Gis -Fo vs_store_drawn.dxil vertex_storage.hlsl || exit /b 1
 "%FXC%" /nologo /T gs_5_0 /E gs_typed /Fo gs_typed.dxbc geometry_typed.hlsl || exit /b 1
 "%DXC%" -nologo -T gs_6_0 -E gs_typed -Gis -Fo gs_typed.dxil geometry_typed.hlsl || exit /b 1
+"%FXC%" /nologo /T gs_5_0 /E gs_patch /Fo gs_patch.dxbc geometry_patch.hlsl || exit /b 1
+"%DXC%" -nologo -T gs_6_0 -E gs_patch -Gis -Fo gs_patch.dxil geometry_patch.hlsl || exit /b 1
 echo %FXC% %DXC%

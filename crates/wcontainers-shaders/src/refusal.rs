@@ -45,6 +45,7 @@ pub const FLOAT_TO_INT_WIDTH: &str = "FloatToIntWidth";
 pub const GEOMETRY_INPUT: &str = "GeometryInput";
 pub const GEOMETRY_INPUT_SHAPE: &str = "GeometryInputShape";
 pub const GEOMETRY_OUTPUT: &str = "GeometryOutput";
+/// A DXIL geometry shader taking patches: dxil-spirv converts no such input primitive.
 pub const GEOMETRY_PATCH_INPUT: &str = "GeometryPatchInput";
 pub const GEOMETRY_STREAMS: &str = "GeometryStreams";
 pub const GEOMETRY_VARIANT: &str = "GeometryVariant";
@@ -55,7 +56,6 @@ pub const HULL_INPUT: &str = "HullInput";
 pub const HULL_INPUT_SHAPE: &str = "HullInputShape";
 pub const HULL_OUTPUT: &str = "HullOutput";
 pub const HULL_OUTPUT_LOCATION: &str = "HullOutputLocation";
-pub const HULL_WITHOUT_CONTROL_POINTS: &str = "HullWithoutControlPoints";
 pub const INNER_COVERAGE: &str = "InnerCoverage";
 pub const INPUT_ARRAY: &str = "InputArray";
 pub const INPUT_TARGET: &str = "InputTarget";

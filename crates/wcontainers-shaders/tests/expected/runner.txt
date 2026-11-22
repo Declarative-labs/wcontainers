@@ -544,7 +544,7 @@ hlsl+geometry-2-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-3-ps.dxbc	ok ; glsl compiles
 hlsl+geometry-4-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-1-gs.dxbc	ok ; glsl absent compute
-hlsl+geometry-shader-syntax-10-gs.dxbc	unsupported GeometryPatchInput
+hlsl+geometry-shader-syntax-10-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-11-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-12-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-13-gs.dxbc	ok ; glsl absent compute
@@ -562,9 +562,9 @@ hlsl+geometry-shader-syntax-23-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-3-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-4-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-5-gs.dxbc	ok ; glsl absent compute
-hlsl+geometry-shader-syntax-6-gs.dxbc	unsupported GeometryPatchInput
-hlsl+geometry-shader-syntax-7-gs.dxbc	unsupported GeometryPatchInput
-hlsl+geometry-shader-syntax-8-gs.dxbc	unsupported GeometryPatchInput
+hlsl+geometry-shader-syntax-6-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-7-gs.dxbc	ok ; glsl absent compute
+hlsl+geometry-shader-syntax-8-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-9-gs.dxbc	ok ; glsl absent compute
 hlsl+get-sample-pos-1-ps.dxbc	ok ; glsl compiles
 hlsl+getdimensions-1-ps.dxbc	ok ; glsl compiles
@@ -582,7 +582,7 @@ hlsl+hard-copy-prop-6-ps.dxbc	ok ; glsl compiles
 hlsl+hard-copy-prop-7-ps.dxbc	ok ; glsl compiles
 hlsl+hard-copy-prop-8-ps.dxbc	ok ; glsl compiles
 hlsl+hull-shader-attributes-1-hs.dxbc	ok ; glsl absent compute
-hlsl+hull-shader-attributes-10-hs.dxbc	unsupported HullWithoutControlPoints
+hlsl+hull-shader-attributes-10-hs.dxbc	ok ; glsl absent compute
 hlsl+hull-shader-attributes-11-hs.dxbc	ok ; glsl absent compute
 hlsl+hull-shader-attributes-2-hs.dxbc	ok ; glsl absent compute
 hlsl+hull-shader-attributes-3-hs.dxbc	ok ; glsl absent compute
@@ -890,7 +890,7 @@ hlsl+object-references-8-ps.dxbc	ok ; glsl compiles
 hlsl+object-references-9-ps.dxbc	ok ; glsl compiles
 hlsl+patch-syntax-1-ps.dxbc	ok ; glsl compiles
 hlsl+patch-syntax-10-hs.dxbc	ok ; glsl absent compute
-hlsl+patch-syntax-12-gs.dxbc	unsupported GeometryPatchInput
+hlsl+patch-syntax-12-gs.dxbc	ok ; glsl absent compute
 hlsl+patch-syntax-13-hs.dxbc	ok ; glsl absent compute
 hlsl+patch-syntax-14-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+patch-syntax-15-hs.dxbc	ok ; glsl absent compute

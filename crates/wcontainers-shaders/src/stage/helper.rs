@@ -1068,7 +1068,8 @@ impl<B: Backend> Stages<B> {
             (_, Some(h)) if !patches || n < h.input_points => {
                 return Err(StageError::TopologyMismatch);
             }
-            (_, None) if patches => return Err(StageError::TopologyMismatch),
+            (None, None) if patches => return Err(StageError::TopologyMismatch),
+            // Patches without a hull stage reach a geometry shader taking them, as lists.
             (Some(g), None) if n != g.input_vertices => return Err(StageError::TopologyMismatch),
             (None, None)
                 if self.lines.is_some() && !matches!(draw.topology, T::LineList | T::LineStrip) =>
