@@ -73,7 +73,7 @@ Logs and scripts in scratch `graphics-shaders/g6-r82` (clone `tip`, `gpu.sh`, `g
   comparison gathers (`compared_gathers`); a program whose calls name different channels, or one
   not constant, is refused by name (`DepthGatherComponent`; no file of any corpus).
 - Tests: `depth_views_with_component_mappings_read_as_direct3d_12_maps_them` (default seeds 1 to
-  4: 640 drawn comparisons equal to the RTX 3080 in every texel, 704 refusals with the expected
+  4: 544 drawn comparisons equal to the RTX 3080 in every texel, 800 refusals with the expected
   name, WARP printed beside), `depth_views_with_component_mappings_read_as_mapped` (now the three
   red-keeping mappings against Direct3D 11 mapped on the CPU), and in tests/variants.rs
   `mapped_depth_views_compose_what_they_read` and
@@ -101,6 +101,8 @@ Runs (code at 5d618f15, from the scratch clone):
 - x86 machine (load 17 to 27, other tracks' jobs beside): rustfmt clean, clippy of this crate and
   the interface with warnings denied clean, the literal check prints only the line this run's
   baseline commit deletes (it fails on other tracks' lines); baseline lines of this crate 4,786.
+- Clean-up: build folders on the desktop, the x86 machine and the laptop, the scratch clone and
+  bundle (logs kept in scratch `g6-r82`).
 - Not run: WebAssembly (cpp/dxil.cpp gained a reader using only the bitcode parser it already
   used), Chrome (no new WGSL beyond the own programs, whose GLSL compiles), the whole GPU suite.
 
