@@ -63,8 +63,8 @@ use wcontainers_tcp_sockets::{
 };
 
 use super::{
-    HeldAddress, HostTcpConnection, HostTcpListener, HostTcpSockets, InterfaceAddresses,
-    ReportedSend, TransmitReports,
+    ABORT_CLOSED_IN_ORDER, HeldAddress, HostTcpConnection, HostTcpListener, HostTcpSockets,
+    InterfaceAddresses, ReportedSend, TransmitReports,
 };
 
 /// The `SO_TIMESTAMPING` flags kept on a connection once it has asked for a transmit report: keys counted in bytes, software and hardware times.
@@ -128,7 +128,6 @@ const NO_STATISTICS: &str = "a transmit report came without the statistics its s
 const CUT_CONTROL: &str = "the control messages of a receive or an error queue entry did not fit";
 const UNASKED_REPORT: &str = "a transmit report for no send that asked for it";
 const NO_CONNECTION_STATE: &str = "reading a TCP connection's state is not mapped to the host yet";
-const ABORT_CLOSED_IN_ORDER: &str = "an abort closed in order: the host refused a linger of zero";
 const CLOCK_UNIT_OF_THE_ROUTE: &str = "a TCP timestamp clock counts in the unit its route gives (the tcp_usec_ts route feature), which Linux cannot change";
 const NO_LISTENER_STATE: &str = "reading a TCP listener's state is not mapped to the host yet";
 const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow label only as it connects: a listener, an accepted connection or a connected one takes no other";

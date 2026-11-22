@@ -1,5 +1,4 @@
-//! TCP connections and listeners made of the sockets of the machine it runs on: on Linux every call, request and
-//! setting, elsewhere what socket2 covers.
+//! TCP connections and listeners made of the host's sockets: on Linux every call and setting, elsewhere socket2's.
 #![cfg(unix)]
 
 #[cfg(target_os = "linux")]
@@ -31,6 +30,9 @@ use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::A
 use wcontainers_internet_protocol_linux_socket_options::readiness::{Watched, Watcher};
 #[cfg(target_os = "linux")]
 use wcontainers_tcp_sockets::TcpProtocol;
+
+/// The reason an abort that closed in order is counted under.
+const ABORT_CLOSED_IN_ORDER: &str = "an abort closed in order: the host refused a linger of zero";
 
 /// The host's TCP sockets as the exit node's TCP connections and listeners, with a count of each refusal by its reason.
 pub struct HostTcpSockets {

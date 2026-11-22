@@ -29,7 +29,7 @@ use wcontainers_tcp_sockets::{
     TcpUrgency,
 };
 
-use super::{HostTcpConnection, HostTcpListener, HostTcpSockets};
+use super::{ABORT_CLOSED_IN_ORDER, HostTcpConnection, HostTcpListener, HostTcpSockets};
 
 /// The reasons the host could not honour a request, each counted.
 const MULTIPATH: &str = "a Multipath TCP socket, which only Linux has";
@@ -54,90 +54,87 @@ const KEEP_ALIVE_REARM: &str =
 const REPAIR: &str = "TCP repair, which only Linux has";
 const AUTHENTICATION: &str = "the TCP Authentication Option, which only Linux has";
 const NEGATIVE_ROUTE_ADVICE: &str = "negative route advice, which only Linux's sk_dst_reset gives";
-const ABORT_CLOSED_IN_ORDER: &str = "an abort closed in order: the host refused a linger of zero";
 const SETTING: &str = "a setting that only the Linux build makes";
 
-impl HostTcpSockets {
-    fn refuse(&self, reason: &'static str) -> HostError {
-        self.shortfalls.refuse(reason)
-    }
+fn refuse(sockets: &HostTcpSockets, reason: &'static str) -> HostError {
+    sockets.shortfalls.refuse(reason)
+}
 
-    /// Opens a non-blocking TCP socket of the family, watched for every fact, as the owner the process runs as.
-    fn open(
-        &self,
-        family: IpVersion,
-        protocol: TcpProtocol,
-        owner: UserId,
-    ) -> Result<Watched, HostError> {
-        if protocol == TcpProtocol::Multipath {
-            return Err(self.refuse(MULTIPATH));
+/// Opens a non-blocking TCP socket of the family, watched for every fact, as the owner the process runs as.
+fn open(
+    sockets: &HostTcpSockets,
+    family: IpVersion,
+    protocol: TcpProtocol,
+    owner: UserId,
+) -> Result<Watched, HostError> {
+    if protocol == TcpProtocol::Multipath {
+        return Err(refuse(sockets, MULTIPATH));
+    }
+    if owner.0 != rustix::process::getuid().as_raw() {
+        return Err(refuse(sockets, OWNER_NOT_THE_PROCESS));
+    }
+    let domain = match family {
+        IpVersion::V4 => Domain::IPV4,
+        IpVersion::V6 => Domain::IPV6,
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
+        .map_err(|error| io_host_error(&error))?;
+    prepare(&socket)?;
+    sockets
+        .readiness
+        .watch(OwnedFd::from(socket), ReadyFor::all())
+}
+
+/// Binds the socket to the local binding's address and port.
+fn bind(
+    sockets: &HostTcpSockets,
+    socket: BorrowedFd<'_>,
+    local: &LocalBinding<'_>,
+) -> Result<(), HostError> {
+    let host = sock(&socket);
+    let address = match local.address {
+        BindAddress::V4(address) => IpAddr::V4(address),
+        BindAddress::V6 { address, families } => {
+            host.set_only_v6(families == Ipv6Families::V6Only)
+                .map_err(|error| io_host_error(&error))?;
+            IpAddr::V6(address)
         }
-        if owner.0 != rustix::process::getuid().as_raw() {
-            return Err(self.refuse(OWNER_NOT_THE_PROCESS));
+    };
+    let port = match local.port {
+        LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port.0,
+        LocalPort::ChosenByExitNode(_) => return Err(refuse(sockets, PORT_CHOSEN_BY_EXIT_NODE)),
+    };
+    host.bind(&SockAddr::from(SocketAddr::new(address, port)))
+        .map_err(|error| io_host_error(&error))
+}
+
+/// Sets a setting of either kind of socket on the host socket.
+fn set(
+    sockets: &HostTcpSockets,
+    socket: BorrowedFd<'_>,
+    family: IpVersion,
+    setting: TcpSetting<'_>,
+) -> Result<(), HostError> {
+    let host = sock(&socket);
+    let set = match setting {
+        TcpSetting::Ip(IpSocketSetting::SendBuffer(bytes)) => host.set_send_buffer_size(bytes.0),
+        TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(bytes)) => host.set_recv_buffer_size(bytes.0),
+        TcpSetting::Ip(IpSocketSetting::MulticastLoopback(on)) if family == IpVersion::V6 => {
+            host.set_multicast_loop_v6(on)
         }
-        let domain = match family {
-            IpVersion::V4 => Domain::IPV4,
-            IpVersion::V6 => Domain::IPV6,
-        };
-        let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
-            .map_err(|error| io_host_error(&error))?;
-        prepare(&socket)?;
-        self.readiness.watch(OwnedFd::from(socket), ReadyFor::all())
-    }
-
-    /// Binds the socket to the local binding's address and port.
-    fn bind(&self, socket: BorrowedFd<'_>, local: &LocalBinding<'_>) -> Result<(), HostError> {
-        let host = sock(&socket);
-        let address = match local.address {
-            BindAddress::V4(address) => IpAddr::V4(address),
-            BindAddress::V6 { address, families } => {
-                host.set_only_v6(families == Ipv6Families::V6Only)
-                    .map_err(|error| io_host_error(&error))?;
-                IpAddr::V6(address)
-            }
-        };
-        let port = match local.port {
-            LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port.0,
-            LocalPort::ChosenByExitNode(_) => return Err(self.refuse(PORT_CHOSEN_BY_EXIT_NODE)),
-        };
-        host.bind(&SockAddr::from(SocketAddr::new(address, port)))
-            .map_err(|error| io_host_error(&error))
-    }
-
-    /// Sets a setting of either kind of socket on the host socket.
-    fn set(
-        &self,
-        socket: BorrowedFd<'_>,
-        family: IpVersion,
-        setting: TcpSetting<'_>,
-    ) -> Result<(), HostError> {
-        let host = sock(&socket);
-        let set = match setting {
-            TcpSetting::Ip(IpSocketSetting::SendBuffer(bytes)) => {
-                host.set_send_buffer_size(bytes.0)
-            }
-            TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(bytes)) => {
-                host.set_recv_buffer_size(bytes.0)
-            }
-            TcpSetting::Ip(IpSocketSetting::MulticastLoopback(on)) if family == IpVersion::V6 => {
-                host.set_multicast_loop_v6(on)
-            }
-            TcpSetting::Ip(IpSocketSetting::MulticastLoopback(on)) => {
-                host.set_multicast_loop_v4(on)
-            }
-            TcpSetting::Port(PortSetting::AddressSharing(sharing)) => {
-                host.set_reuse_address(sharing == AddressSharing::Shared)
-            }
-            TcpSetting::Port(PortSetting::PortSharing(sharing)) => {
-                host.set_reuse_port(sharing == PortSharing::Shared)
-            }
-            TcpSetting::KeepAlive(on) => host.set_keepalive(on),
-            TcpSetting::NoDelay(on) => host.set_tcp_nodelay(on),
-            TcpSetting::UrgentInline(on) => host.set_out_of_band_inline(on),
-            _ => return Err(self.refuse(SETTING)),
-        };
-        set.map_err(|error| io_host_error(&error))
-    }
+        TcpSetting::Ip(IpSocketSetting::MulticastLoopback(on)) => host.set_multicast_loop_v4(on),
+        TcpSetting::Port(PortSetting::AddressSharing(sharing)) => {
+            host.set_reuse_address(sharing == AddressSharing::Shared)
+        }
+        TcpSetting::Port(PortSetting::PortSharing(sharing)) => {
+            host.set_reuse_port(sharing == PortSharing::Shared)
+        }
+        TcpSetting::KeepAlive(on) => host.set_keepalive(on),
+        TcpSetting::NoDelay(on) => host.set_tcp_nodelay(on),
+        TcpSetting::UrgentInline(on) => host.set_out_of_band_inline(on),
+        _ => return Err(refuse(sockets, SETTING)),
+    };
+    set.map_err(|error| io_host_error(&error))
 }
 
 /// Makes a host socket non-blocking and, where the system has no `MSG_NOSIGNAL`, free of `SIGPIPE`.
@@ -222,18 +219,18 @@ impl TcpConnections for HostTcpSockets {
         fast_open: TcpFastOpen<'_>,
     ) -> Result<TcpConnected<Self::Connection>, HostError> {
         if fast_open != TcpFastOpen::Off {
-            return Err(self.refuse(FAST_OPEN));
+            return Err(refuse(self, FAST_OPEN));
         }
         let family = family_of(&local.address);
         let connection = HostTcpConnection {
-            socket: self.open(family, protocol, owner)?,
+            socket: open(self, family, protocol, owner)?,
             family,
         };
         for setting in settings {
             self.configure(&connection, setting.clone())?;
         }
         let socket = connection.socket.fd();
-        self.bind(socket, &local)?;
+        bind(self, socket, &local)?;
         match sock(&socket).connect(&SockAddr::from(peer_for(family, peer))) {
             Ok(()) => {}
             Err(error)
@@ -257,12 +254,12 @@ impl TcpConnections for HostTcpSockets {
         bytes: &[u8],
     ) -> Result<ByteCount, HostError> {
         if request.continuation == TcpContinuation::MoreToCome {
-            return Err(self.refuse(MORE_TO_COME));
+            return Err(refuse(self, MORE_TO_COME));
         }
         if asks_for_reports(&request.transmit_reports)
             || request.transmit_statistics == Report::Requested
         {
-            return Err(self.refuse(TRANSMIT_REPORTS));
+            return Err(refuse(self, TRANSMIT_REPORTS));
         }
         let mut flags = send_flags();
         if request.urgency == TcpUrgency::Urgent {
@@ -287,7 +284,7 @@ impl TcpConnections for HostTcpSockets {
             TcpReceiveRequest::Peek { offset } if offset.0 == usize::MIN => {
                 RecvFlags::DONTWAIT | RecvFlags::PEEK
             }
-            TcpReceiveRequest::Peek { .. } => return Err(self.refuse(PEEK_AT_AN_OFFSET)),
+            TcpReceiveRequest::Peek { .. } => return Err(refuse(self, PEEK_AT_AN_OFFSET)),
             TcpReceiveRequest::ReadUrgentByte => RecvFlags::DONTWAIT | RecvFlags::OOB,
             TcpReceiveRequest::PeekUrgentByte => {
                 RecvFlags::DONTWAIT | RecvFlags::OOB | RecvFlags::PEEK
@@ -310,7 +307,7 @@ impl TcpConnections for HostTcpSockets {
         _connection: &Self::Connection,
         _into: &mut [u8],
     ) -> Result<TcpErrorQueueEntry, HostError> {
-        Err(self.refuse(ERROR_QUEUE))
+        Err(refuse(self, ERROR_QUEUE))
     }
 
     fn read_state<'a>(
@@ -318,7 +315,7 @@ impl TcpConnections for HostTcpSockets {
         _connection: &Self::Connection,
         _query: TcpQuery<'a>,
     ) -> Result<TcpReading<'a>, HostError> {
-        Err(self.refuse(STATE))
+        Err(refuse(self, STATE))
     }
 
     fn shut_down(
@@ -355,7 +352,7 @@ impl TcpConnections for HostTcpSockets {
         // Without a cork or more-to-come on this system, the host already sends what windows and Nagle allow.
         match ignoring {
             TcpPushOverride::Neither => Ok(()),
-            TcpPushOverride::CorkAndNagle => Err(self.refuse(PUSH_PAST_CORK_AND_NAGLE)),
+            TcpPushOverride::CorkAndNagle => Err(refuse(self, PUSH_PAST_CORK_AND_NAGLE)),
         }
     }
 
@@ -364,19 +361,19 @@ impl TcpConnections for HostTcpSockets {
         _connection: &Self::Connection,
         _afterwards: TcpQuickAcknowledgement,
     ) -> Result<(), HostError> {
-        Err(self.refuse(DELAYED_ACKNOWLEDGEMENT))
+        Err(refuse(self, DELAYED_ACKNOWLEDGEMENT))
     }
 
     fn rearm_keep_alive_timer(&self, _connection: &Self::Connection) -> Result<(), HostError> {
-        Err(self.refuse(KEEP_ALIVE_REARM))
+        Err(refuse(self, KEEP_ALIVE_REARM))
     }
 
     fn discard_error_queue_entries(&self, _connection: &Self::Connection) -> Result<(), HostError> {
-        Err(self.refuse(ERROR_QUEUE))
+        Err(refuse(self, ERROR_QUEUE))
     }
 
     fn send_window_probe(&self, _connection: &Self::Connection) -> Result<(), HostError> {
-        Err(self.refuse(REPAIR))
+        Err(refuse(self, REPAIR))
     }
 
     fn set_timestamp_clock(
@@ -384,7 +381,7 @@ impl TcpConnections for HostTcpSockets {
         _connection: &Self::Connection,
         _reading: TcpTimestampClock,
     ) -> Result<(), HostError> {
-        Err(self.refuse(REPAIR))
+        Err(refuse(self, REPAIR))
     }
 
     fn set_authentication_counters(
@@ -392,7 +389,7 @@ impl TcpConnections for HostTcpSockets {
         _connection: &Self::Connection,
         _values: TcpAuthenticationCounters,
     ) -> Result<(), HostError> {
-        Err(self.refuse(AUTHENTICATION))
+        Err(refuse(self, AUTHENTICATION))
     }
 }
 
@@ -409,7 +406,7 @@ impl TcpListeners for HostTcpSockets {
     ) -> Result<TcpListening<Self::Listener>, HostError> {
         let family = family_of(&local.address);
         let listener = HostTcpListener {
-            socket: self.open(family, protocol, owner)?,
+            socket: open(self, family, protocol, owner)?,
             family,
         };
         let (backlogs, others): (Vec<_>, Vec<_>) = settings
@@ -419,7 +416,7 @@ impl TcpListeners for HostTcpSockets {
             self.configure(&listener, setting.clone())?;
         }
         let socket = listener.socket.fd();
-        self.bind(socket, &local)?;
+        bind(self, socket, &local)?;
         sock(&socket)
             .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
             .map_err(|error| io_host_error(&error))?;
@@ -480,7 +477,7 @@ impl TcpListeners for HostTcpSockets {
         _listener: &Self::Listener,
         _query: TcpListenerQuery<'a>,
     ) -> Result<TcpReading<'a>, HostError> {
-        Err(self.refuse(STATE))
+        Err(refuse(self, STATE))
     }
 
     fn set_listener_authentication_counters(
@@ -488,7 +485,7 @@ impl TcpListeners for HostTcpSockets {
         _listener: &Self::Listener,
         _values: TcpAuthenticationCounters,
     ) -> Result<(), HostError> {
-        Err(self.refuse(AUTHENTICATION))
+        Err(refuse(self, AUTHENTICATION))
     }
 
     fn set_listener_timestamp_clock(
@@ -496,7 +493,7 @@ impl TcpListeners for HostTcpSockets {
         _listener: &Self::Listener,
         _reading: TcpTimestampClock,
     ) -> Result<(), HostError> {
-        Err(self.refuse(REPAIR))
+        Err(refuse(self, REPAIR))
     }
 
     fn stop_listening(&self, listener: Self::Listener) {
@@ -510,7 +507,7 @@ impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets {
         connection: &HostTcpConnection,
         setting: TcpSetting<'a>,
     ) -> Result<(), HostError> {
-        self.set(connection.socket.fd(), connection.family, setting)
+        set(self, connection.socket.fd(), connection.family, setting)
     }
 }
 
@@ -522,18 +519,18 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
     ) -> Result<(), HostError> {
         let socket = listener.socket.fd();
         match setting {
-            TcpListenerSetting::Socket(setting) => self.set(socket, listener.family, setting),
+            TcpListenerSetting::Socket(setting) => set(self, socket, listener.family, setting),
             TcpListenerSetting::Backlog(backlog) => sock(&socket)
                 .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
                 .map_err(|error| io_host_error(&error)),
-            _ => Err(self.refuse(SETTING)),
+            _ => Err(refuse(self, SETTING)),
         }
     }
 }
 
 impl NegativeRouteAdvice<HostTcpConnection> for HostTcpSockets {
     fn give_negative_route_advice(&self, _connection: &HostTcpConnection) -> Result<(), HostError> {
-        Err(self.refuse(NEGATIVE_ROUTE_ADVICE))
+        Err(refuse(self, NEGATIVE_ROUTE_ADVICE))
     }
 }
 

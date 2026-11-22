@@ -36,6 +36,18 @@ readings, repair, authentication, multipath state, the privileged settings).
   readiness modules are not the layout's one line: the readiness suite takes a `Waiting` bundle with a closure that
   makes the handle ready, which a `(T, T::Connection)` tuple cannot carry (For the owner). Findings in the shared
   crate linux-socket-options (made by this track, edited by three) are not touched yet.
+- Linter run once before finishing (01:53, log reviewable-end.log in scratch), this track's two crates: 113 + 48
+  `magic_literal`, 86 + 11 `number_constant_without_link`, 7 `conformance_not_run` (the readiness bundles and modules,
+  above), 2 `grammar_unclear` (`end`, `unread`: the model's confidence was low; nothing to change in the names), the
+  constructor and counters (above), and two the layout and the brief disagree on, both under For the owner: the
+  fields of `HostTcpConnection` and `HostTcpListener` must be `pub` (a type that fills an associated type is plain
+  data), and the impls in linux.rs of `Configurable`, `NegativeRouteAdvice` and `Readiness` are reported as
+  `implementation_folder` (the linter reads the Mac's build, where linux.rs is only tokens; portable.rs's same impls
+  pass). After that run, fixed: the crate summary on one line, the abort reason defined once (implementation.rs),
+  portable.rs's own impl block made free functions; 113 + 4 pass again on the ARM machine (01:54, load 1.7).
+  `conformance_untested_method` reports nothing on the TCP interface.
+- Next: the literals (each 0 or 1 given to a name as the type's `MIN` or a named constant; each numeric constant
+  derived from a named one or linked to a page that writes the choice down), then the shared crate's findings.
 - Independent check: see Measurements, run 10.
 
 ## 2026-11-21: waiting is the Readiness trait
@@ -361,6 +373,21 @@ readings, repair, authentication, multipath state, the privileged settings).
   T2 settings (the authentication repair values, repair options and windows) are not in T1.
 
 ## Measurements
+- Run 10, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22 01:48, load 4.8 to 5.1: after the split, clippy
+  with warnings denied clean (tcp host, suite, shared crate); suite 113 passed, the implementation's own 4 passed.
+- Run 10 independent check, job host-tcp-sockets-clean (01:52 to 01:53, load 1.2 to 2.3; log clean-check-run10.log
+  in scratch): build folder deleted first, clippy with warnings denied clean (9.3 s), 113 + 4 passed (7.26 s);
+  `cargo tree` (normal, build, dev) of tcp-sockets, internet-protocol, configurable, negative-route-advice,
+  readiness, kernel, abi and the suite names only abi, configurable, executor, internet-protocol, kernel,
+  negative-route-advice, readiness, tcp-sockets and the four conformance crates. Broken copies: more-to-come-ignored
+  (more_to_come_holds_data_until_pushed, push_ignoring_neither_sends_data_held_for_more), abort-closes-in-order
+  (abort_resets_the_peer, wait_for_an_error_finishes_when_the_peer_resets), peek-offset-ignored
+  (peek_at_an_offset_skips_bytes and the implementation's peeks_from_two_threads_each_start_where_asked) each failed.
+  `git diff ae9c53ca HEAD` of the .rs files beside the tcp-sockets, internet-protocol, configurable,
+  negative-route-advice, readiness and kernel interfaces shows only the owner's commits b15e307a and 9ce79c65; this
+  run's commits touch only this track's folders, its docs and one line of Cargo.lock.
+- On the Mac (macOS, 2026-11-22): both crates, the conformance target included, build and lint clean; nothing runs
+  there.
 - Run 9, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22 00:04 to 00:12, load 1.2 to 2.6: clippy with
   warnings denied clean (tcp host, suite, shared crate); 106 passed, 0 failed, six runs, each 7.2 to 7.3 s (the
   keep-alive check now waits about 4 s for its second count). The first run failed only in
@@ -569,6 +596,13 @@ readings, repair, authentication, multipath state, the privileged settings).
   0.9.1: MIT.
 
 ## For the owner
+- The brief says an implementation's fields are private; the linter's `public_outside_interface` says a type that
+  fills an associated type is plain data with every field `pub`. Example: `HostTcpConnection` holds its socket's
+  descriptor and registration (`socket: Watched`); made public, any caller could take the descriptor out. Kept
+  private.
+- The linter reads the Mac's build, so a Linux-only file is read as tokens: its impls of the required traits
+  (`impl Readiness<HostTcpConnection> for HostTcpSockets` in linux.rs) are reported as `implementation_folder`,
+  while the same impls in portable.rs pass. Example: linux.rs:2039.
 - The readiness suite cannot be run as the layout writes a required suite (`tests!($crate::f($value))` with
   `f` giving `(T, T::Connection)`): its checks need a way to make the handle ready, so it takes a `Waiting` bundle
   with a closure. Example: `a_wait_finishes_when_the_handle_becomes_ready` must send data to the connection while a
