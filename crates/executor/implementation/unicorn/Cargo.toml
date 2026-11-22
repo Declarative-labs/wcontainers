@@ -40,7 +40,10 @@ wcontainers-negative-route-advisable = { path = "../../../negative-route-advisab
 wcontainers-executor = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
-wcontainers-executor-wasmtime = { path = "../wasmtime", optional = true }
+# Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
+wcontainers-executor-wasmtime = { path = "../wasmtime" }
+wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
+wcontainers-precise-instruction-set-unicorn = { path = "../../../precise-instruction-set/implementation/unicorn" }
 wcontainers-arm64 = { path = "../../../wcontainers-arm64", optional = true }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
@@ -58,6 +61,10 @@ coarsetime = "0.1.38"
 
 [dev-dependencies]
 wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
+wcontainers-precise-instruction-set-neoverse-v2 = { path = "../../../precise-instruction-set/implementation/neoverse-v2" }
 
 [[test]]
 name = "conformance"
@@ -66,7 +73,7 @@ path = "conformance.rs"
 [features]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)
 # instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
-runtime = ["dep:wcontainers-executor-wasmtime", "dep:wcontainers-arm64"]
+runtime = ["dep:wcontainers-arm64"]
 
 [lints]
 workspace = true
