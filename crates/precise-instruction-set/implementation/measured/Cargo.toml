@@ -1,0 +1,34 @@
+[package]
+name = "wcontainers-precise-instruction-set-measured"
+description = "The precise instruction set of a chip, found by running it and comparing with the behaviors already known."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-precise-instruction-set = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
+wcontainers-executor = { path = "../../../executor" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+
+[dev-dependencies]
+wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
+wcontainers-precise-instruction-set-apple-m5 = { path = "../apple-m5" }
+wcontainers-precise-instruction-set-neoverse-v2 = { path = "../neoverse-v2" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-executor-simulation = { path = "../../../executor/implementation/simulation" }
+
+[lints]
+workspace = true
