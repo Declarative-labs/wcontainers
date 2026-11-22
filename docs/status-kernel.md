@@ -120,6 +120,16 @@ side of each is worked around without changing the interface.
   addresses (A and AAAA of class IN) and answers others "not implemented", counted, as before,
   so that the suite's results stay the same. Example: an MX question is not asked.
 
+- KA, sixth run: `UdpSockets::receive` gives the whole packet from its IP header, so a system
+  whose host gives only the payload (std's `UdpSocket`, socket2, every non-Linux host) must make
+  up headers it does not know, and the kernel then parses them to take the payload out again.
+  Example: the test host and the runtime write a 20-byte IPv4 header with etherparse's default
+  time to live (0) and a UDP header without a checksum around each datagram
+  (crates/runtime/implementation/single-kernel/udp.rs `receive_packet`).
+- KA, sixth run: `UdpSockets::open` takes no destination, so a system that refuses everything
+  outside (the test policy) refuses at open with no number to name; its warning's detail was the
+  flow's number and is now 0.
+
 - KA, fifth run: the TCP interfaces have no call that gives a failed connect's error (Linux's
   `SO_ERROR`). The kernel takes it from a one-byte peek (`TcpReceiveRequest::Peek`) after the wait
   says ERROR, and the test host and the runtime answer that peek with `HostError::Errno` of the
@@ -253,6 +263,15 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, sixth run: UDP to the outside runs on the system's `UdpSockets`: each flow (one per outside
+destination a guest UDP socket sends to) is one of the system's UDP sockets, connected to it and
+waited on through `Readiness::wait_until_ready` as one stored waiting call, as TCP is. The abi's
+`ConnectionId`, `Host::connect`, `send`, `receive`, `close` and `Event::ConnectionReady` are gone,
+so the abi host now carries only clocks, randomness, warnings and stream ends. Not done: ICMP and
+raw sockets (the kernel carries neither outside), standard streams on `StreamTransport`, the
+kernel's own `System` trait's removal, most linter findings. KA is not complete. See "KA, sixth
+run".
 
 KA, fifth run: TCP to the outside runs on the system's `TcpConnections` and `TcpListeners`, each
 connection and listener waited on through `Readiness::wait_until_ready` as one stored waiting
@@ -491,6 +510,101 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, sixth run
+
+Started about 02:30 UTC on 2026-11-22 at 70de6ce7 (branch agents, worktree wcontainers-agents).
+Builds and lints on the x86 machine, tests and measurements on the ARM64 machine, the literal
+check and the linter on the Mac (load 7 to 27); scratch kernel/ka6. Nothing new had come from main.
+
+Done (357bd107, cd640582, 64ed95f1, a030fbaa, 91de2648):
+- The kernel's `System` also requires `UdpSockets<Socket: 'static>`. syscall/socket/outside.rs: a
+  flow is `UdpSockets::open` then `connect` with route selectors that ask only for the destination
+  and its port (`flow_route`), kept as a third kind of the type-erased handle beside TCP's
+  connections and listeners. It waits for READABLE from the start (as the host's flow was armed
+  to read at once) and for WRITABLE once a send gave `WouldBlock`. A send is `send_to` with a plain
+  header (`plain_header`: no options, path MTU discovery `Want`) and no transmit reports; a
+  receive takes the whole packet into a buffer with room for the headers (`HEADROOM`) and takes
+  the payload out with etherparse's lax slices (`payload_of`); a transmit report or a packet that
+  does not parse is passed over, as Linux drops a malformed datagram. Errors are mapped as
+  before: `Closed` on send forgets the flow, a receive's `Closed` or error number is the
+  destination's refusal. Every link now has a handle, so `Closing` is just the handle.
+- The abi: `ConnectionId`, `Host::connect`, `send`, `receive`, `close` and
+  `Event::ConnectionReady` are gone. Every event the kernel's `event` takes now has its handler, so
+  its "event with no waiter" count at that entry went with the last arm that could reach it.
+- etherparse (MIT or Apache-2.0, already a workspace dependency of the interfaces) is now a
+  dependency of the kernel and of the runtime.
+
+Changed outside this track's crates, the smallest change that keeps them building and passing:
+- crates/runtime/implementation/single-kernel: udp.rs (new) implements `UdpSockets` on
+  `LocalSystem` (open binds a socket of the version, connect, send_to as a plain send, receive as
+  the whole packet, close; the rest `NotSupported`), handle `NetworkHandle` (its field is now
+  `pub(crate)`), and has the two helpers the test host also uses: `receive_packet` (receives the
+  payload behind room for the headers and writes the IPv4 or IPv6 and UDP headers before it) and
+  `received`. net.rs keeps UDP sockets numbered by itself with the readiness the poller reported
+  and the waker of their wait, as TCP's; every socket's poller key is now its number, and an
+  arrival never makes an event. system.rs loses the host's four flow calls; the manifest takes the
+  UDP interface and etherparse.
+- crates/system/implementation/seeded-test-policy: udp.rs (new) refuses at open (For the owner),
+  socket type `Infallible`; the host loses its flow calls.
+- crates/executor/implementation/hardware-virtualization-inside: the link's Connect, SendBytes,
+  Receive and Close requests and the `Outcome` words only they used go; its test
+  `every_error_comes_back`, which checked only those calls' errors, went with them, and
+  `every_call_arrives_whole` loses their lines.
+- crates/executor/implementation/hardware-virtualization: tests/container/mod.rs loses the four
+  flow calls (that test file still names `BackendRequestId`, which an earlier commit removed).
+- In the unicorn crate (this track's): udp.rs (new) implements `UdpSockets` on the test host,
+  handle `UdpHandle`, numbered from the same counter as TCP (`last_socket`); connect is kept in
+  the record as `Entry::Connected`, sends as `Entry::Sent`, receives as `Entry::Received` with the
+  whole packet; readiness is kept as TCP's (`Entry::TcpReady` and `TcpMade` are renamed
+  `SocketReady` and `SocketMade`, `Owed::TcpReady` is `Owed::Ready`). network.rs keeps UDP sockets
+  by its numbers, armed only by a wait.
+- Cargo.lock: the new edges only. literals.baseline: the seven lines of the test network's old
+  flow code, which is gone.
+
+Tests run (ARM64 machine, 02:47 to 02:53 UTC, load 2 to 5; scratch ka6/subset.log): abi 1,
+hardware-virtualization-inside 2, kernel lib 15, runtime 13, policy 0 passed; unicorn outside 5,
+away 12 (1 ignored), embedder 35, edges 7, streams 20, taskend 7, procsignals 4, script 1, repeats
+5, round_trips 3, conformance 0, saving 1, netprograms 3, pollmask 1, sigio 2, shell 3 passed;
+kernel conformance 14 passed; inet 23 passed and 3 failed (proc_net, route_questions_and_rules,
+socket_edges: the ARM list); backend 19 passed and 2 failed (file_capabilities, special_files: the
+ARM list); busybox 3 passed, 1 ignored and `system` failed on its two reference differences of
+that machine's kernel (/proc/config.gz and /proc/sys values; rerun alone, scratch
+ka6/busybox-system.log), as in the third run. Clippy with warnings denied (`--no-deps`) clean for
+every changed crate, and `cargo check --workspace --all-targets` builds (x86 machine).
+
+The literal check (Mac): the seven baseline lines above went; no new finding in a changed file
+(the link host's test name "warn" restating the translator's HOOK_WARN was already reported in
+the fifth run). The check fails on other tracks' new lines (tcp-sockets suite, opengl, route
+resolver suite, wasmtime) and on the interface's PollEvents and the two kernel lines the fifth
+run listed.
+
+Measurements of the four waits (scratch ka6/ab.log: ARM64 machine, release build of
+tests/waitcost.rs, median of 9 of 500 and 1000 repetitions; before is the milestone's start
+e5d693d2, after is this run's tree; alternately three times, 02:54 to 02:58 UTC, load 3.3 to 5.5
+on 96 cores):
+- pipe ping-pong: before 11740, 11915, 11777 ns; after 11869, 12098, 12224 ns (1 to 4 percent
+  more, as in the second to fifth runs; nothing a pipe runs changed; For the owner, thin LTO).
+- outside socket read (TCP): before 14682, 16338, 13963; after 14208, 14171, 14340 ns.
+- backend open and read: before 524284, 484254, 432249; after 520656, 493724, 470216 ns (the
+  rounds' single times include negative values, so this one is noisy).
+- name lookup: before 136961, 136936, 136788; after 138527, 138218, 138153 ns (1 percent more,
+  as before).
+- Allocations per repetition: pipe 142.00 both; socket 79.00 to 79.03 before, 78.94 to 79.06
+  after; backend 347.99 before, 340.99 after; name 711.00 before, 709.00 after. A UDP flow's wait
+  reuses its cell as TCP's does.
+
+The owner's linter (start and end, scratch ka6/lint-start.log and lint-end.log): 38597 findings
+in this track's files at the start, 38604 at the end (the new code's names and summaries waiting
+for the model's answers, and the stand-in's `implementation_folder` for its UDP impls); the new
+UDP files' own summary and literal findings were then cleared (a030fbaa, 91de2648). The kernel
+interface's untested methods are the same two as before (For the owner).
+
+Next, in order: standard streams on `StreamTransport` (the kernel's start would take the system's
+`Endpoint` for each stream instead of the abi's `End`, which changes the runtime, the policy and
+the hypervisor link, and the record must keep what was received); then the kernel's own `System`
+trait replaced by the interface's; ICMP and raw sockets only if the kernel ever carries them
+outside.
 
 ## KA, fifth run
 
