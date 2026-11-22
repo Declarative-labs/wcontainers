@@ -94,6 +94,10 @@ corpus verdicts in `verdicts/`).
   own records (both convert); Chrome compiles both (chrome2.log).
 - Not run: WebAssembly (no converted module of any other shader changed; the corpus's new
   conversions are not compared with a WebAssembly build).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the x86 machine's clone, build folder and bundle, the laptop's
+  `src/shaders-tip`, `target/shaders-tip` and tar (its `out-r86` and `logs/suite-r86*.log` kept),
+  the scratch clone, tar and bundle (logs kept in `g6-r86`).
 
 ## G6 run 6 (run 85): cull distances and primitive numbers on WebGL 2 (A5)
 
