@@ -3075,14 +3075,14 @@ pub fn waiting_for_data_until_an_icmp_error<S: UdpSockets>(
     }
 }
 
-/// The contract of `NegativeRouteAdvice` on a connected socket, by its own suite.
+/// The contract of `NegativeRouteAdvisable` on a connected socket, by its own suite.
 pub fn negative_route_advice_contract_holds<S: UdpSockets>(sockets: S) {
     let (socket, local) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
     let (_peer, peer_address) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
     sockets
         .connect(&socket, route(UdpProtocol::Udp, local, peer_address))
         .unwrap();
-    wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, socket));
+    wcontainers_negative_route_advisable_conformance::advice_is_taken_again((sockets, socket));
 }
 
 /// The time now on a clock, since its epoch.

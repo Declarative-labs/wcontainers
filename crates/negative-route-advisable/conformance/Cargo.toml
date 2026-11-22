@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-negative-route-advice-conformance"
+name = "wcontainers-negative-route-advisable-conformance"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -8,7 +8,7 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
-wcontainers-negative-route-advice = { path = ".." }
+wcontainers-negative-route-advisable = { path = ".." }
 
 [dev-dependencies]
 wcontainers-abi.workspace = true

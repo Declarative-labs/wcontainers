@@ -1,14 +1,14 @@
-//! The tests every implementation of wcontainers-negative-route-advice runs, written against its traits alone.
+//! The tests every implementation of wcontainers-negative-route-advisable runs, written against its traits alone.
 //!
 //! Each takes the implementor with a handle to advise, made by the suite of a trait that requires
-//! `NegativeRouteAdvice`, which checks the advice's effect on the route itself.
+//! `NegativeRouteAdvisable`, which checks the advice's effect on the route itself.
 
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 
 /// Advice about a handle's route is taken.
 pub fn advice_is_taken<A, Handle>((advice, handle): (A, Handle))
 where
-    A: NegativeRouteAdvice<Handle>,
+    A: NegativeRouteAdvisable<Handle>,
 {
     assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
 }
@@ -16,7 +16,7 @@ where
 /// Advice is taken again when the new route fails too.
 pub fn advice_is_taken_again<A, Handle>((advice, handle): (A, Handle))
 where
-    A: NegativeRouteAdvice<Handle>,
+    A: NegativeRouteAdvisable<Handle>,
 {
     assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
     assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
@@ -43,12 +43,12 @@ mod suite {
     use core::cell::Cell;
 
     use wcontainers_abi::HostError;
-    use wcontainers_negative_route_advice::NegativeRouteAdvice;
+    use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 
     /// Counts the advice it takes, as a correct implementation may.
     struct Counts(Cell<u32>);
 
-    impl NegativeRouteAdvice<()> for Counts {
+    impl NegativeRouteAdvisable<()> for Counts {
         fn give_negative_route_advice(&self, _handle: &()) -> Result<(), HostError> {
             self.0.set(self.0.get() + 1);
             Ok(())
@@ -58,7 +58,7 @@ mod suite {
     /// Takes advice once and refuses it after, which the suite must catch.
     struct TakesOnce(Cell<bool>);
 
-    impl NegativeRouteAdvice<()> for TakesOnce {
+    impl NegativeRouteAdvisable<()> for TakesOnce {
         fn give_negative_route_advice(&self, _handle: &()) -> Result<(), HostError> {
             if self.0.replace(true) {
                 Err(HostError::NotSupported)

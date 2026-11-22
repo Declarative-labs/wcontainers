@@ -5053,10 +5053,10 @@ pub fn listener_configurable_contract_holds<S: TcpSockets>(sockets: S) {
     ));
 }
 
-/// The contract of `NegativeRouteAdvice` on a connection, by its own suite.
+/// The contract of `NegativeRouteAdvisable` on a connection, by its own suite.
 pub fn negative_route_advice_contract_holds<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, pair.client));
+    wcontainers_negative_route_advisable_conformance::advice_is_taken_again((sockets, pair.client));
 }
 
 /// A waker that counts its wakes and unparks the thread that made it.

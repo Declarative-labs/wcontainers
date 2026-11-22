@@ -19,7 +19,7 @@ use wcontainers_internet_protocol::{
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived, UdpSocketSetting,
@@ -381,7 +381,7 @@ impl Readiness<HostUdpSocket> for HostUdpSockets {
     }
 }
 
-impl NegativeRouteAdvice<HostUdpSocket> for HostUdpSockets {
+impl NegativeRouteAdvisable<HostUdpSocket> for HostUdpSockets {
     fn give_negative_route_advice(&self, _socket: &HostUdpSocket) -> Result<(), HostError> {
         Err(self.refuse(NEGATIVE_ROUTE_ADVICE))
     }
