@@ -102,8 +102,9 @@ fn mount(server: Arc<Server<Arc<Announcing>>>, at: &Path, command: &[String]) {
     std::fs::remove_file("/dev/fuse").expect("removing /dev/fuse");
     std::thread::spawn(move || {
         while let Ok(Some((reader, writer))) = channel.get_request() {
-            if let Err(error) = server.handle_message(reader, writer.into(), None, None) {
-                eprintln!("wc-backend: {error:?}");
+            match server.handle_message(reader, writer.into(), None, None) {
+                Err(error) if !interrupted(&error) => eprintln!("wc-backend: {error:?}"),
+                _ => {}
             }
         }
     });
@@ -138,4 +139,15 @@ fn mount(server: Arc<Server<Arc<Announcing>>>, at: &Path, command: &[String]) {
     };
     let _ = session.umount();
     std::process::exit(code);
+}
+
+/// Whether Linux refused a reply because its request was interrupted and no longer waits for it
+/// (ENOENT, which libfuse ignores: [fuse_lowlevel.c](https://github.com/libfuse/libfuse/blob/master/lib/fuse_lowlevel.c#:~:text=ENOENT%20means%20the%20operation%20was%20interrupted)).
+/// fuse-backend-rs keeps only the error's text.
+fn interrupted(error: &fuse_backend_rs::Error) -> bool {
+    matches!(
+        error,
+        fuse_backend_rs::Error::EncodeMessage(written)
+            if written.to_string() == nix::errno::Errno::ENOENT.to_string()
+    )
 }

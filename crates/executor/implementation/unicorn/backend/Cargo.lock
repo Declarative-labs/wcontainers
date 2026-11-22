@@ -241,6 +241,7 @@ dependencies = [
  "caps",
  "fuse-backend-rs",
  "libc",
+ "nix",
 ]
 
 [[package]]
