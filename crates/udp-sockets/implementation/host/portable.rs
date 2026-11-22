@@ -10,17 +10,17 @@ use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::AddressSharing;
 use wcontainers_internet_protocol::{
-    BindAddress, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
-    IpVersion, Ipv4RouteSelectors, Ipv6Families, Ipv6RouteSelectors, LocalBinding, LocalPort,
-    MobileAddressPreference, NonlocalAddresses, PacketMark, PortSetting, PortSharing,
-    ProcessorIndex, Report, RouteScope, RouteSelectors, SendError, SourcePreferences,
-    TemporaryAddressPreference, Timestamping, UpperLayer, UpperLayerSelector,
+    BindAddress, BindingSetting, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields,
+    IpSocketSetting, IpVersion, Ipv4RouteSelectors, Ipv6Families, Ipv6RouteSelectors, LocalBinding,
+    LocalPort, MobileAddressPreference, NonlocalAddresses, PacketMark, PortSharing, ProcessorIndex,
+    Report, RouteScope, RouteSelectors, SendError, SourcePreferences, TemporaryAddressPreference,
+    Timestamping, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived, UdpSocketSetting,
     UdpSockets, ZeroChecksumReceipt,
@@ -340,19 +340,19 @@ impl<'a> Configurable<HostUdpSocket, UdpSocketSetting<'a>> for HostUdpSockets {
             UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(on)) => {
                 host.set_multicast_loop_v4(on)
             }
-            UdpSocketSetting::Port(PortSetting::AddressSharing(sharing)) => {
+            UdpSocketSetting::Binding(BindingSetting::AddressSharing(sharing)) => {
                 host.set_reuse_address(sharing == AddressSharing::Shared)
             }
-            UdpSocketSetting::Port(PortSetting::PortSharing(sharing)) => {
+            UdpSocketSetting::Binding(BindingSetting::PortSharing(sharing)) => {
                 host.set_reuse_port(sharing == PortSharing::Shared)
             }
             // What every socket here has and cannot be changed from.
             UdpSocketSetting::Ip(IpSocketSetting::MaximumPacingRate(None))
-            | UdpSocketSetting::Port(
-                PortSetting::NonlocalAddresses(NonlocalAddresses::Refused)
-                | PortSetting::BoundInterface(None)
-                | PortSetting::GroupFilter(None)
-                | PortSetting::IncomingProcessor(None),
+            | UdpSocketSetting::Binding(
+                BindingSetting::NonlocalAddresses(NonlocalAddresses::Refused)
+                | BindingSetting::BoundInterface(None)
+                | BindingSetting::GroupFilter(None)
+                | BindingSetting::IncomingProcessor(None),
             )
             | UdpSocketSetting::ReceiveCoalescing(ReceiveCoalescing::Separate)
             | UdpSocketSetting::ZeroChecksumReceipt(ZeroChecksumReceipt::Dropped) => Ok(()),
@@ -376,7 +376,7 @@ impl Readiness<HostUdpSocket> for HostUdpSockets {
         &self,
         socket: &HostUdpSocket,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         socket.watched.wait_until_ready(interest).await
     }
 }

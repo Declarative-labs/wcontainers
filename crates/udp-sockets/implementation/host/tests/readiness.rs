@@ -188,7 +188,7 @@ fn wait_and_take(
     sender.send(PAYLOAD).expect("send");
     assert!(wakes.reach(woken), "woken by the datagram");
     match poll_with(wait.as_mut(), wakes) {
-        Poll::Ready(Ok(events)) => assert!(events.contains(ReadyFor::READABLE)),
+        Poll::Ready(Ok(events)) => assert!(events.ready_for.contains(ReadyFor::READABLE)),
         other => panic!("the wait did not finish: {other:?}"),
     }
     assert!(sockets.receive(socket, into).is_ok());
@@ -337,6 +337,6 @@ fn a_woken_wait_costs_the_watcher_nothing_until_it_is_polled() {
     );
     assert!(matches!(
         poll_with(wait, &wakes),
-        Poll::Ready(Ok(events)) if events.contains(ReadyFor::READABLE)
+        Poll::Ready(Ok(events)) if events.ready_for.contains(ReadyFor::READABLE)
     ));
 }

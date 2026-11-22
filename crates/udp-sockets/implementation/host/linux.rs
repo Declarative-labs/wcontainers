@@ -14,14 +14,14 @@ use socket2::SockAddr;
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BindAddress, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding,
-    LocalPort, NonlocalAddresses, PortSetting, ProcessorIndex, Received, Report, RouteSelectors,
-    SendError, UpperLayer, UpperLayerSelector,
+    BindAddress, BindingSetting, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, LocalBinding, LocalPort, NonlocalAddresses, ProcessorIndex, Received, Report,
+    RouteSelectors, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpChecksum, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived,
     UdpReceivedPacket, UdpSocketSetting, UdpSockets, ZeroChecksumReceipt,
@@ -155,10 +155,13 @@ impl HostUdpSocket {
         let holds = state.errors.holds_entries();
         if holds != state.held_errors {
             state.held_errors = holds;
-            self.watched.hold(if holds {
-                ReadyFor::ERROR
-            } else {
-                ReadyFor::empty()
+            self.watched.hold(ReadinessReport {
+                ready_for: ReadyFor::empty(),
+                unconditional: if holds {
+                    UnconditionalEvents::ERROR
+                } else {
+                    UnconditionalEvents::empty()
+                },
             });
         }
     }
@@ -566,7 +569,7 @@ impl Readiness<HostUdpSocket> for HostUdpSockets {
         &self,
         socket: &HostUdpSocket,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         socket.watched.wait_until_ready(interest).await
     }
 }
@@ -780,9 +783,9 @@ impl<'a> Configurable<HostUdpSocket, UdpSocketSetting<'a>> for HostUdpSockets {
                 u32::MIN,
                 &self.shortfalls,
             ),
-            UdpSocketSetting::Port(setting) => {
-                shared::set_port_setting(fd, socket.version(), &setting)?;
-                if let PortSetting::NonlocalAddresses(nonlocal) = setting {
+            UdpSocketSetting::Binding(setting) => {
+                shared::set_binding_setting(fd, socket.version(), &setting)?;
+                if let BindingSetting::NonlocalAddresses(nonlocal) = setting {
                     state.nonlocal = nonlocal;
                     for slot in [
                         Slot::Ipv4Freebind,

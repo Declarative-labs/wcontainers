@@ -35,13 +35,13 @@ use etherparse::{
 };
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, AnycastAddress, BindAddress, BroadcastPermission, ByteCount, BytesPerSecond,
-    FilterInstruction, FilterJump, FilterOperand, FilterOperation, FragmentSize, InterfaceIndex,
-    IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
-    Ipv6Families, Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding, LocalFragmentation,
-    LocalPort, MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
-    MulticastMembership, NeighbourConfirmation, NonlocalAddresses, PacketMark, PacketPriority,
-    PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing, ProcessorIndex,
+    AddressSharing, AnycastAddress, BindAddress, BindingSetting, BroadcastPermission, ByteCount,
+    BytesPerSecond, FilterInstruction, FilterJump, FilterOperand, FilterOperation, FragmentSize,
+    InterfaceIndex, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
+    Ipv4RouteSelectors, Ipv6Families, Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding,
+    LocalFragmentation, LocalPort, MaximumTransmissionUnit, Membership, MobileAddressPreference,
+    MulticastGroup, MulticastMembership, NeighbourConfirmation, NonlocalAddresses, PacketMark,
+    PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSharing, ProcessorIndex,
     PtpHardwareClockIndex, Report, RouteScope, RouteSelectors, SendError, SocketFilter,
     SourceAddressCheck, SourceFilter, SourcePreferences, TemporaryAddressPreference,
     TimestampSource, Timestamping, TransmitClock, TransmitEvent, TransmitReportKey,
@@ -49,7 +49,7 @@ use wcontainers_internet_protocol::{
     TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::Waiting;
 
 pub use wcontainers_readiness_conformance as readiness_conformance;
@@ -594,7 +594,7 @@ pub fn address_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S)
     set(
         &sockets,
         &first,
-        UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared)),
     );
     let address = sockets
         .bind(&first, binding(loopback(IpVersion::V4), u16::MIN))
@@ -605,7 +605,7 @@ pub fn address_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S)
     set(
         &sockets,
         &second,
-        UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared)),
     );
     assert_eq!(
         sockets.bind(&second, binding(address.ip(), address.port())),
@@ -617,7 +617,7 @@ pub fn address_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S)
     set(
         &sockets,
         &third,
-        UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Exclusive)),
+        UdpSocketSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Exclusive)),
     );
     assert!(
         sockets
@@ -634,7 +634,7 @@ pub fn port_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &first,
-        UdpSocketSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::PortSharing(PortSharing::Shared)),
     );
     let address = sockets
         .bind(&first, binding(loopback(IpVersion::V4), u16::MIN))
@@ -645,7 +645,7 @@ pub fn port_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &second,
-        UdpSocketSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::PortSharing(PortSharing::Shared)),
     );
     assert_eq!(
         sockets.bind(&second, binding(address.ip(), address.port())),
@@ -1464,7 +1464,8 @@ pub fn all_groups_decides_whether_other_sockets_memberships_count<S: UdpSockets>
     );
     for (group, interface, sender_address) in [ipv4, ipv6] {
         let version = version_of(group);
-        let sharing = UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared));
+        let sharing =
+            UdpSocketSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared));
         let member = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
         set(&sockets, &member, sharing);
         let port = sockets
@@ -1556,7 +1557,7 @@ pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &sender,
-        UdpSocketSetting::Port(PortSetting::BoundInterface(Some(interface))),
+        UdpSocketSetting::Binding(BindingSetting::BoundInterface(Some(interface))),
     );
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
     assert_eq!(
@@ -1568,14 +1569,14 @@ pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &sender,
-        UdpSocketSetting::Port(PortSetting::BoundInterface(None)),
+        UdpSocketSetting::Binding(BindingSetting::BoundInterface(None)),
     );
     let elsewhere = multicast_interface(&sockets);
     assert_ne!(elsewhere, interface);
     set(
         &sockets,
         &receiver,
-        UdpSocketSetting::Port(PortSetting::BoundInterface(Some(elsewhere))),
+        UdpSocketSetting::Binding(BindingSetting::BoundInterface(Some(elsewhere))),
     );
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
     assert!(
@@ -1587,7 +1588,7 @@ pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &receiver,
-        UdpSocketSetting::Port(PortSetting::BoundInterface(None)),
+        UdpSocketSetting::Binding(BindingSetting::BoundInterface(None)),
     );
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
     assert!(arrives(&sockets, &receiver));
@@ -1595,7 +1596,9 @@ pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
         sockets
             .configure(
                 &sender,
-                UdpSocketSetting::Port(PortSetting::BoundInterface(Some(InterfaceIndex(u32::MAX))))
+                UdpSocketSetting::Binding(BindingSetting::BoundInterface(Some(InterfaceIndex(
+                    u32::MAX
+                ))))
             )
             .is_err()
     );
@@ -1611,7 +1614,9 @@ pub fn nonlocal_addresses_can_be_bound_when_allowed<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &refused,
-        UdpSocketSetting::Port(PortSetting::NonlocalAddresses(NonlocalAddresses::Refused)),
+        UdpSocketSetting::Binding(BindingSetting::NonlocalAddresses(
+            NonlocalAddresses::Refused,
+        )),
     );
     assert!(sockets.bind(&refused, binding(absent, u16::MIN)).is_err());
     let allowed = sockets
@@ -1620,7 +1625,9 @@ pub fn nonlocal_addresses_can_be_bound_when_allowed<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &allowed,
-        UdpSocketSetting::Port(PortSetting::NonlocalAddresses(NonlocalAddresses::Bindable)),
+        UdpSocketSetting::Binding(BindingSetting::NonlocalAddresses(
+            NonlocalAddresses::Bindable,
+        )),
     );
     assert_eq!(
         sockets
@@ -1663,7 +1670,7 @@ pub fn the_incoming_processor_is_read_back<S: UdpSockets>(sockets: S) {
         set(
             &sockets,
             &socket,
-            UdpSocketSetting::Port(PortSetting::IncomingProcessor(Some(processor))),
+            UdpSocketSetting::Binding(BindingSetting::IncomingProcessor(Some(processor))),
         );
         assert_eq!(
             sockets.read_incoming_processor(&socket),
@@ -1673,7 +1680,7 @@ pub fn the_incoming_processor_is_read_back<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &socket,
-        UdpSocketSetting::Port(PortSetting::IncomingProcessor(None)),
+        UdpSocketSetting::Binding(BindingSetting::IncomingProcessor(None)),
     );
     assert_eq!(sockets.read_incoming_processor(&socket), Ok(None));
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -1912,7 +1919,7 @@ pub fn a_waived_source_check_sends_from_an_absent_address<S: UdpSockets>(sockets
     set(
         &sockets,
         &sender,
-        UdpSocketSetting::Port(PortSetting::NonlocalAddresses(
+        UdpSocketSetting::Binding(BindingSetting::NonlocalAddresses(
             NonlocalAddresses::Transparent,
         )),
     );
@@ -1969,7 +1976,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &first,
-        UdpSocketSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::PortSharing(PortSharing::Shared)),
     );
     let address = sockets
         .bind(&first, binding(loopback(IpVersion::V4), u16::MIN))
@@ -1980,7 +1987,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &second,
-        UdpSocketSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::PortSharing(PortSharing::Shared)),
     );
     sockets
         .bind(&second, binding(address.ip(), address.port()))
@@ -1988,7 +1995,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &first,
-        UdpSocketSetting::Port(PortSetting::GroupFilter(Some(SocketFilter(&program)))),
+        UdpSocketSetting::Binding(BindingSetting::GroupFilter(Some(SocketFilter(&program)))),
     );
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let mut into = buffer();
@@ -2003,7 +2010,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
     set(
         &sockets,
         &first,
-        UdpSocketSetting::Port(PortSetting::GroupFilter(None)),
+        UdpSocketSetting::Binding(BindingSetting::GroupFilter(None)),
     );
     // Detached, the group chooses by each sender's addresses again, so some of many senders reach the first.
     for _ in 0..SENDERS {
@@ -2342,7 +2349,7 @@ pub fn loopback_has_no_hardware_clock<S: UdpSockets>(sockets: S) {
         set(
             &sockets,
             &receiver,
-            UdpSocketSetting::Port(PortSetting::BoundInterface(bound_interface)),
+            UdpSocketSetting::Binding(BindingSetting::BoundInterface(bound_interface)),
         );
         assert!(
             sockets
@@ -2414,8 +2421,16 @@ fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output
     call.poll(&mut Context::from_waker(&waker))
 }
 
+/// A report of these facts and events.
+fn report(ready_for: ReadyFor, unconditional: UnconditionalEvents) -> ReadinessReport {
+    ReadinessReport {
+        ready_for,
+        unconditional,
+    }
+}
+
 /// The facts a finished wait gave.
-fn finished(poll: Poll<Result<ReadyFor, HostError>>) -> ReadyFor {
+fn finished(poll: Poll<Result<ReadinessReport, HostError>>) -> ReadinessReport {
     match poll {
         Poll::Ready(facts) => facts.expect("the wait succeeds"),
         Poll::Pending => panic!("the wait did not finish"),
@@ -2423,9 +2438,9 @@ fn finished(poll: Poll<Result<ReadyFor, HostError>>) -> ReadyFor {
 }
 
 /// The facts of a wait polled until it finishes, within the patience of a check.
-fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
+fn finished_soon<F: Future<Output = Result<ReadinessReport, HostError>>>(
     mut call: Pin<&mut F>,
-) -> ReadyFor {
+) -> ReadinessReport {
     let wakes = Arc::new(Wakes::default());
     match poll_with(call.as_mut(), &wakes) {
         Poll::Pending => {
@@ -2467,7 +2482,11 @@ pub fn waits_on_many_sockets_each_wake_once<S: UdpSockets>(sockets: S) {
     std::thread::sleep(SILENCE);
     for (wait, wakes) in &mut waits {
         assert_eq!(wakes.count(), 1, "a wait woken more than once");
-        assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
+        assert!(
+            finished(poll_with(wait.as_mut(), wakes))
+                .ready_for
+                .contains(ReadyFor::READABLE)
+        );
     }
 }
 
@@ -2486,7 +2505,10 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: UdpSockets>(sockets: S) {
             }
             ready => finished(ready),
         };
-        assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
+        assert!(
+            facts.unconditional.contains(UnconditionalEvents::ERROR),
+            "{facts:?}"
+        );
     }
     let mtu = MaximumTransmissionUnit(u32::from(u16::MAX / 2));
     let mut fields = ipv6_header(ipv6_route(UdpProtocol::Udp, from, closed));
@@ -2509,7 +2531,10 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: UdpSockets>(sockets: S) {
         pin!(sockets.wait_until_ready(&sender, ReadyFor::READABLE)),
         &wakes,
     ));
-    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
+    assert!(
+        facts.unconditional.contains(UnconditionalEvents::ERROR),
+        "{facts:?}"
+    );
     let mut into = buffer();
     let packet = receive_packet(&sockets, &sender, &mut into);
     let ip = IpSlice::from_slice(&into[..packet.fields.length]).expect("a whole ICMP packet");
@@ -2527,7 +2552,11 @@ pub fn a_wait_polled_again_wakes_its_newest_waker<S: UdpSockets>(sockets: S) {
     assert!(poll_with(wait.as_mut(), &newest).is_pending());
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
     assert!(newest.reach(1), "the newest waker woken");
-    assert!(finished(poll_with(wait.as_mut(), &newest)).contains(ReadyFor::READABLE));
+    assert!(
+        finished(poll_with(wait.as_mut(), &newest))
+            .ready_for
+            .contains(ReadyFor::READABLE)
+    );
 }
 
 /// A wait woken whose fact is gone by the time it is polled again waits on, and is woken by the next one.
@@ -2547,7 +2576,11 @@ pub fn a_wait_whose_fact_went_waits_for_the_next<S: UdpSockets>(sockets: S) {
     );
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
     assert!(wakes.reach(2), "woken again by the second datagram");
-    assert!(finished(poll_with(wait.as_mut(), &wakes)).contains(ReadyFor::READABLE));
+    assert!(
+        finished(poll_with(wait.as_mut(), &wakes))
+            .ready_for
+            .contains(ReadyFor::READABLE)
+    );
 }
 
 /// Two waits on one socket finish each by its own facts: the wait for writing at once, the wait for data when a
@@ -2564,14 +2597,19 @@ pub fn two_waits_on_one_socket_finish_by_their_own_facts<S: UdpSockets>(sockets:
         &writing,
     ));
     assert!(
-        facts.contains(ReadyFor::WRITABLE) && !facts.contains(ReadyFor::READABLE),
+        facts.ready_for.contains(ReadyFor::WRITABLE)
+            && !facts.ready_for.contains(ReadyFor::READABLE),
         "{facts:?}"
     );
     std::thread::sleep(SILENCE);
     assert_eq!(reading.count(), 0, "the wait for data woken with no data");
     send(&sockets, &sender, UdpProtocol::Lite, from, to, PAYLOAD);
     assert!(reading.reach(1), "the wait for data woken by its datagram");
-    assert!(finished(poll_with(read.as_mut(), &reading)).contains(ReadyFor::READABLE));
+    assert!(
+        finished(poll_with(read.as_mut(), &reading))
+            .ready_for
+            .contains(ReadyFor::READABLE)
+    );
 }
 
 /// A wait for every fact gives exactly the facts the socket has: room to send, then data to read, then an error.
@@ -2584,7 +2622,7 @@ pub fn a_wait_gives_the_facts_the_socket_has_and_no_others<S: UdpSockets>(socket
         };
         assert_eq!(
             every(&receiver),
-            ReadyFor::WRITABLE,
+            report(ReadyFor::WRITABLE, UnconditionalEvents::empty()),
             "{version:?}: nothing to read"
         );
         send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
@@ -2593,7 +2631,10 @@ pub fn a_wait_gives_the_facts_the_socket_has_and_no_others<S: UdpSockets>(socket
         ));
         assert_eq!(
             every(&receiver),
-            ReadyFor::READABLE | ReadyFor::WRITABLE,
+            report(
+                ReadyFor::READABLE | ReadyFor::WRITABLE,
+                UnconditionalEvents::empty()
+            ),
             "{version:?}: a datagram queued"
         );
         let closed = closed_port(&sockets, version);
@@ -2601,7 +2642,7 @@ pub fn a_wait_gives_the_facts_the_socket_has_and_no_others<S: UdpSockets>(socket
         finished_soon(pin!(sockets.wait_until_ready(&sender, ReadyFor::empty())));
         assert_eq!(
             every(&sender),
-            ReadyFor::ERROR | ReadyFor::WRITABLE,
+            report(ReadyFor::WRITABLE, UnconditionalEvents::ERROR),
             "{version:?}: an ICMP error queued"
         );
     }
@@ -2641,7 +2682,10 @@ pub fn a_wait_for_a_fact_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
         );
         assert_eq!(
             finished(poll_with(wait.as_mut(), wakes)),
-            ReadyFor::READABLE | ReadyFor::WRITABLE | ReadyFor::ERROR,
+            report(
+                ReadyFor::READABLE | ReadyFor::WRITABLE,
+                UnconditionalEvents::ERROR
+            ),
             "{interest:?}"
         );
     }
@@ -2744,13 +2788,21 @@ pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) 
     );
     send(&sockets, &receiver, UdpProtocol::Udp, to, from, PAYLOAD);
     assert!(reading.reach(1), "the wait for data woken by its datagram");
-    assert!(finished(poll_with(read.as_mut(), &reading)).contains(ReadyFor::READABLE));
+    assert!(
+        finished(poll_with(read.as_mut(), &reading))
+            .ready_for
+            .contains(ReadyFor::READABLE)
+    );
     assert_eq!(wakes.count(), 0, "the wait for writing woken with no room");
     assert!(
         wakes.reach_within(1, ROOM_PATIENCE),
         "woken when room is made"
     );
-    assert!(finished(poll_with(wait.as_mut(), &wakes)).contains(ReadyFor::WRITABLE));
+    assert!(
+        finished(poll_with(wait.as_mut(), &wakes))
+            .ready_for
+            .contains(ReadyFor::WRITABLE)
+    );
     assert_eq!(
         sockets.send_to(
             &sender,
@@ -2782,7 +2834,10 @@ pub fn a_wait_for_data_or_writing_finishes_when_room_is_made<S: UdpSockets>(sock
         wakes.reach_within(1, ROOM_PATIENCE),
         "woken when room is made"
     );
-    assert_eq!(finished(poll_with(wait, &wakes)), ReadyFor::WRITABLE);
+    assert_eq!(
+        finished(poll_with(wait, &wakes)),
+        report(ReadyFor::WRITABLE, UnconditionalEvents::empty())
+    );
     assert_eq!(reading.count(), 0, "the wait for data woken with no data");
     assert!(poll_with(read, &reading).is_pending());
 }
@@ -2845,7 +2900,10 @@ pub fn an_icmp_error_waits_for_a_receive_after_later_sends<S: UdpSockets>(socket
         let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
         send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
         let facts = finished_soon(pin!(sockets.wait_until_ready(&sender, ReadyFor::empty())));
-        assert!(facts.contains(ReadyFor::ERROR), "{version:?}: {facts:?}");
+        assert!(
+            facts.unconditional.contains(UnconditionalEvents::ERROR),
+            "{version:?}: {facts:?}"
+        );
         let later = sockets.send_to(
             &sender,
             header(UdpProtocol::Udp, from, closed),
@@ -3024,15 +3082,16 @@ pub fn configurable_contract_holds_for_a_setting_taken<S: UdpSockets>(sockets: S
     wcontainers_configurable_conformance::setting_twice_equals_setting_once((
         sockets,
         socket,
-        UdpSocketSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
+        UdpSocketSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared)),
     ));
 }
 
 /// The contract of `Configurable` on a socket, by its own suite, for a setting refused.
 pub fn configurable_contract_holds_for_a_setting_refused<S: UdpSockets>(sockets: S) {
     let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
-    let no_interface =
-        UdpSocketSetting::Port(PortSetting::BoundInterface(Some(InterfaceIndex(u32::MAX))));
+    let no_interface = UdpSocketSetting::Binding(BindingSetting::BoundInterface(Some(
+        InterfaceIndex(u32::MAX),
+    )));
     assert!(sockets.configure(&socket, no_interface).is_err());
     wcontainers_configurable_conformance::setting_twice_equals_setting_once((
         sockets,
