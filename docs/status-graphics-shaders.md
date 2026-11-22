@@ -155,6 +155,10 @@ Nothing built on the Mac.
   and 9's absent lists), so a front never takes such a shader as valid; the refusal stays.
 - For the Direct3D fronts: nothing new to call; a pixel program with a clamped sample reflects the
   same helpers as a level-of-detail query (`SamplerState`, `LodBias`).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip` and tar (its
+  `out-r93`, `outw-r93` and logs kept), the scratch clone. The ARM64 machine's
+  `/work/target/graphics-shaders` is kept.
 
 ## G6 run 5 (run 92): level-of-detail queries on the DXIL route
 
