@@ -7,6 +7,7 @@ pub const BLEND_IN_SHADER_MULTISAMPLED: &str = "BlendInShaderMultisampled";
 pub const BUILT_IN: &str = "BuiltIn";
 pub const BUILT_IN_ARRAY: &str = "BuiltInArray";
 pub const CALCULATE_LEVEL_OF_DETAIL: &str = "CalculateLevelOfDetail";
+pub const CALCULATE_LEVEL_OF_DETAIL_CUBE: &str = "CalculateLevelOfDetailCube";
 pub const CLEAR_DIMENSION: &str = "ClearDimension";
 pub const CLIP_DISTANCE: &str = "ClipDistance";
 pub const CLIP_DISTANCE_PER_SAMPLE: &str = "ClipDistancePerSample";

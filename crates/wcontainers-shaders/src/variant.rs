@@ -23,6 +23,7 @@ mod decoded;
 mod early;
 mod filter;
 mod layers;
+pub(crate) mod lod;
 pub(crate) mod offset;
 pub(crate) mod pull;
 mod swizzle;
@@ -2082,7 +2083,7 @@ fn samples(
                     let value = HelperValue::LodBias {
                         sampler: site.sampler,
                     };
-                    let h = helper(module, reflection, stage, value, f32_ty);
+                    let h = helper_once(module, reflection, stage, value, f32_ty);
                     biases.push((site.sampler, h));
                     h
                 }
@@ -2351,22 +2352,43 @@ fn sampler_state_helper(
     if let Some((_, h)) = states.iter().find(|(s, _)| *s == sampler) {
         return *h;
     }
-    let uvec4 = vector(module, 4, Scalar::U32);
+    let h = sampler_state(module, reflection, stage, sampler);
+    states.push((sampler, h));
+    h
+}
+
+/// The rows of four words `HelperValue::SamplerState` is read as.
+pub(crate) const SAMPLER_STATE_ROWS: u32 = 3;
+type SamplerStateRow = [u32; VectorSize::Quad as usize];
+
+/// The helper member holding sampler `sampler`'s state, made when it is not there yet.
+pub(crate) fn sampler_state(
+    module: &mut Module,
+    reflection: &mut Reflection,
+    stage: ShaderStage,
+    sampler: u32,
+) -> HelperMember {
+    let row = vector(module, VectorSize::Quad as u8, Scalar::U32);
     let ty = module.types.insert(
         Type {
             name: None,
             inner: TypeInner::Array {
-                base: uvec4,
-                size: naga::ArraySize::Constant(core::num::NonZeroU32::new(3).unwrap()),
-                stride: 16,
+                base: row,
+                size: naga::ArraySize::Constant(
+                    core::num::NonZeroU32::new(SAMPLER_STATE_ROWS).unwrap(),
+                ),
+                stride: size_of::<SamplerStateRow>() as u32,
             },
         },
         Span::UNDEFINED,
     );
-    let value = HelperValue::SamplerState { sampler };
-    let h = helper(module, reflection, stage, value, ty);
-    states.push((sampler, h));
-    h
+    helper_once(
+        module,
+        reflection,
+        stage,
+        HelperValue::SamplerState { sampler },
+        ty,
+    )
 }
 
 /// `AddressMode::MirrorOnce`'s code in `HelperValue::SamplerState`.
@@ -2479,7 +2501,7 @@ fn min_lod_helper(
         return *at;
     }
     let vec2 = vector(module, 2, Scalar::U32);
-    let at = helper(
+    let at = helper_once(
         module,
         reflection,
         stage,

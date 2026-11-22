@@ -8,6 +8,10 @@
 //! the variant), an RGBA8 one, and normalised ones the back ends hold as the integer format of the
 //! same bits, read through `VariantKey::decoded` (`NormAsInteger`).
 //!
+//! `ps_lod` asks the level of detail an implicit sample takes (`CalculateLevelOfDetail` and its
+//! unclamped form, which the program computes from its derivatives and the sampler's state) over the
+//! same plane, at its coordinate and at the coordinate scaled.
+//!
 //! Each case is a seeded sampler state: filters, address modes, border colour, bias, level range and
 //! anisotropy (`WCONTAINERS_FILTER_SEED`, default 1; `WCONTAINERS_FILTER_CASES` draws that many seeds
 //! from it, default 8). Windows only, and needs a GPU: run as a GPU job (docs/status-graphics-shaders.md).
@@ -33,6 +37,8 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::Interface;
 
 const TEX: u32 = 16;
+const FILTER: &str = "ps_filter";
+const LOD: &str = "ps_lod";
 const LEVELS: u32 = 5;
 const LEVEL_MODE: &str = "level";
 const GATHER_MODE: &str = "gather";
@@ -202,10 +208,18 @@ fn levels(format: Format, seed: u64) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn direct3d_11(d3d: &Gpu, format: Format, texels: &[Vec<u8>], case: &Case, mode: u32) -> Vec<u8> {
+/// Real Direct3D 11 drawing pixel program `pixel` (fxc's build) over the plane.
+fn direct3d_11(
+    d3d: &Gpu,
+    pixel: &str,
+    format: Format,
+    texels: &[Vec<u8>],
+    case: &Case,
+    mode: u32,
+) -> Vec<u8> {
     d3d.program(
         &bytecode("vs_filter.dxbc"),
-        &bytecode("ps_filter.dxbc"),
+        &bytecode(&format!("{pixel}.dxbc")),
         &[],
     )
     .unwrap();
@@ -249,11 +263,12 @@ fn source(c: &[u8], dxil: bool) -> Source<'_> {
     }
 }
 
-/// Draws through a back end: with `key` the variant (its helper values from `case`), without it the
+/// Draws pixel program `pixel` through a back end: with `key` the variant (its helper values from `case`), without it the
 /// plain program through the back end's own sampler.
 #[allow(clippy::too_many_arguments)]
 fn ours<B: Backend>(
     b: &mut B,
+    pixel: &str,
     route: &str,
     format: Format,
     texels: &[Vec<u8>],
@@ -263,7 +278,7 @@ fn ours<B: Backend>(
     native: Option<SamplerDesc>,
 ) -> Vec<u8> {
     let dxil = route == "dxil";
-    let ps_code = bytecode(&format!("ps_filter.{route}"));
+    let ps_code = bytecode(&format!("{pixel}.{route}"));
     let vs_code = bytecode(&format!("vs_filter.{route}"));
     let ps = convert(source(&ps_code, dxil), key, None).unwrap();
     let vs = convert(source(&vs_code, dxil), &VariantKey::default(), None).unwrap();
@@ -567,8 +582,8 @@ fn filtering_in_the_program_matches_direct3d() {
             let stored = stored.unwrap_or(format);
             for (mode, name) in MODES.iter().enumerate() {
                 let mode = mode as u32;
-                let reference = direct3d_11(&d3d, format, &texels, &case, mode);
-                let software = direct3d_11(&warp, format, &texels, &case, mode);
+                let reference = direct3d_11(&d3d, FILTER, format, &texels, &case, mode);
+                let software = direct3d_11(&warp, FILTER, format, &texels, &case, mode);
                 let between = differences(&reference, &software);
                 let (apart, largest) = count(&between, FILTER_ALLOWANCE);
                 println!(
@@ -590,9 +605,15 @@ fn filtering_in_the_program_matches_direct3d() {
                                 ..case.clone()
                             };
                             if back_end == "webgpu" {
-                                ours(&mut gpu, route, stored, &texels, &moved, mode, &key, None)
+                                ours(
+                                    &mut gpu, FILTER, route, stored, &texels, &moved, mode, &key,
+                                    None,
+                                )
                             } else {
-                                ours(&mut gl, route, stored, &texels, &moved, mode, &gl_key, None)
+                                ours(
+                                    &mut gl, FILTER, route, stored, &texels, &moved, mode, &gl_key,
+                                    None,
+                                )
                             }
                         };
                         let picture = draw(0.0);
@@ -681,6 +702,7 @@ fn filtering_in_the_program_matches_direct3d() {
                         let plain = VariantKey::default();
                         let own = ours(
                             &mut gpu,
+                            FILTER,
                             route,
                             format,
                             &texels,
@@ -726,6 +748,145 @@ fn filtering_in_the_program_matches_direct3d() {
                 );
             }
         }
+    }
+    println!(
+        "{compared} comparisons, {} failed, {} known failures (anisotropic): {known:?}",
+        failed.len(),
+        known.len()
+    );
+    assert!(failed.is_empty(), "differ: {failed:?}");
+}
+
+/// How far a level of detail may lie from Direct3D's: one and a half steps of the 8 fraction bits
+/// the GPU gives levels of detail in (its values lie 1/256 apart), half a step for its rounding and
+/// one for derivatives rounded apart.
+const LOD_ALLOWANCE: f32 = 1.5 / (1u32 << LOD_FRACTION_BITS) as f32;
+const LOD_FRACTION_BITS: u32 = 8;
+
+#[test]
+fn levels_of_detail_match_direct3d() {
+    let seed: u64 = std::env::var("WCONTAINERS_FILTER_SEED").map_or(1, |s| s.parse().unwrap());
+    let cases: u64 = std::env::var("WCONTAINERS_FILTER_CASES").map_or(8, |s| s.parse().unwrap());
+    let mut gpu = webgpu();
+    let mut gl = webgl();
+    let device = |driver| {
+        d3d11::create(
+            driver,
+            false,
+            &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+        )
+        .unwrap()
+    };
+    let d3d = device(wcontainers_graphics_test::Driver::Hardware);
+    let warp = device(wcontainers_graphics_test::Driver::Warp);
+    let format = Format::Rgba8Unorm;
+    let mut failed = Vec::new();
+    let mut known = Vec::new();
+    let mut compared = 0;
+    for case_seed in seed..seed + cases {
+        let case = Case::new(case_seed);
+        println!("case {case_seed}: {case:?}");
+        let texels = levels(format, case_seed);
+        let reference = direct3d_11(&d3d, LOD, format, &texels, &case, 0);
+        let software = direct3d_11(&warp, LOD, format, &texels, &case, 0);
+        let (apart, largest) = count(&differences(&reference, &software), LOD_ALLOWANCE);
+        println!(
+            "  direct3d on the gpu against warp: {apart} of {} texels past {LOD_ALLOWANCE}, largest {largest}",
+            SIZE * SIZE
+        );
+        // The DXIL route refuses the query by name (the carried SPIR-V reader's, gap list).
+        let dxil = bytecode(&format!("{LOD}.dxil"));
+        let refused = convert(Source::Dxil(&dxil), &VariantKey::default(), None).err();
+        println!("  dxil: {refused:?}");
+        assert!(
+            matches!(
+                &refused,
+                Some(wcontainers_shaders::ConvertError::Reader(s)) if s.contains("ImageQueryLod")
+            ),
+            "{refused:?}"
+        );
+        for back_end in ["webgpu", "webgl"] {
+            let key = VariantKey {
+                flags: if back_end == "webgl" {
+                    wcontainers_gpu::VariantFlags::TEXTURE_INFO
+                } else {
+                    wcontainers_gpu::VariantFlags::empty()
+                },
+                ..Default::default()
+            };
+            let picture = if back_end == "webgpu" {
+                ours(&mut gpu, LOD, "dxbc", format, &texels, &case, 0, &key, None)
+            } else {
+                ours(&mut gl, LOD, "dxbc", format, &texels, &case, 0, &key, None)
+            };
+            let gpu_apart = differences(&reference, &picture);
+            let soft_apart = differences(&software, &picture);
+            // A texel with a value past the allowance from both devices' (each value apart: the
+            // devices round a level a point mip filter picks halfway differently, and the GPU's
+            // level of detail is an approximation of its own).
+            let value =
+                |t: &[u8], n: usize| f32::from_le_bytes(t[n * 4..n * 4 + 4].try_into().unwrap());
+            let mut neither: Vec<usize> = (0..gpu_apart.len())
+                .filter(|&n| {
+                    (n * 4..n * 4 + 4).any(|v| {
+                        let ours = value(&picture, v);
+                        (ours - value(&reference, v)).abs() > LOD_ALLOWANCE
+                            && (ours - value(&software, v)).abs() > LOD_ALLOWANCE
+                    })
+                })
+                .collect();
+            // The farthest first.
+            neither.sort_by(|&m, &n| soft_apart[n].total_cmp(&soft_apart[m]));
+            let (gpu_count, gpu_largest) = count(&gpu_apart, LOD_ALLOWANCE);
+            let (soft_count, soft_largest) = count(&soft_apart, LOD_ALLOWANCE);
+            println!(
+                "  dxbc {back_end}: {} of {} texels past {LOD_ALLOWANCE} from both; from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
+                neither.len(),
+                SIZE * SIZE
+            );
+            let floats = |t: &[u8], n: usize| -> Vec<f32> {
+                t[n * 16..n * 16 + 16]
+                    .chunks(4)
+                    .map(|w| f32::from_le_bytes(w.try_into().unwrap()))
+                    .collect()
+            };
+            for &n in neither.iter().take(3) {
+                println!(
+                    "    ({}, {}) {:?}, gpu {:?}, warp {:?}",
+                    n as u32 % SIZE,
+                    n as u32 / SIZE,
+                    floats(&picture, n),
+                    floats(&reference, n),
+                    floats(&software, n)
+                );
+            }
+            keep(
+                &format!("lod_{case_seed}_{back_end}"),
+                &picture,
+                Format::Rgba32Float,
+            );
+            compared += 1;
+            if !neither.is_empty() {
+                let what = format!("{case_seed} {back_end}");
+                // Known failure: an anisotropic footprint's level of detail is the implementation's
+                // own (the GPU's and warp's differ from each other), as for sampling above.
+                if case.anisotropy > 1 {
+                    known.push(what);
+                } else {
+                    failed.push(what);
+                }
+            }
+        }
+        keep(
+            &format!("lod_{case_seed}_direct3d"),
+            &reference,
+            Format::Rgba32Float,
+        );
+        keep(
+            &format!("lod_{case_seed}_warp"),
+            &software,
+            Format::Rgba32Float,
+        );
     }
     println!(
         "{compared} comparisons, {} failed, {} known failures (anisotropic): {known:?}",

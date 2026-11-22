@@ -153,10 +153,10 @@ hlsl+bool-cast-3-ps.dxbc	ok ; glsl compiles
 hlsl+bool-cast-4-ps.dxbc	ok ; glsl compiles
 hlsl+bool-semantics-1-vs.dxbc	ok ; glsl compiles
 hlsl+bool-semantics-2-ps.dxbc	ok ; glsl compiles
-hlsl+calculate-lod-1-ps.dxbc	unsupported CalculateLevelOfDetail
-hlsl+calculate-lod-2-ps.dxbc	unsupported CalculateLevelOfDetail
-hlsl+calculate-lod-3-ps.dxbc	unsupported CalculateLevelOfDetail
-hlsl+calculate-lod-4-ps.dxbc	unsupported CalculateLevelOfDetail
+hlsl+calculate-lod-1-ps.dxbc	ok ; glsl compiles
+hlsl+calculate-lod-2-ps.dxbc	ok ; glsl compiles
+hlsl+calculate-lod-3-ps.dxbc	ok ; glsl compiles
+hlsl+calculate-lod-4-ps.dxbc	ok ; glsl compiles
 hlsl+cast-64-bit-1-ps.dxbc	unsupported Float64
 hlsl+cast-64-bit-10-ps.dxbc	unsupported Float64
 hlsl+cast-64-bit-2-ps.dxbc	ok ; glsl compiles

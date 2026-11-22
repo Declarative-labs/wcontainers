@@ -49,3 +49,11 @@ float4 ps_filter(FilterOut i) : SV_Target {
     t.GetDimensions(width, height);
     return t.Load(int3(int2(frac(i.uv) * float2(width, height)), 0));
 }
+
+// The level of detail an implicit sample takes, clamped and unclamped, at the coordinate and at the
+// coordinate scaled by `scale` (an anisotropic footprint where the two scales differ).
+float4 ps_lod(FilterOut i) : SV_Target {
+    float2 scaled = i.uv * scale;
+    return float4(t.CalculateLevelOfDetail(s, i.uv), t.CalculateLevelOfDetailUnclamped(s, i.uv),
+                  t.CalculateLevelOfDetail(s, scaled), t.CalculateLevelOfDetailUnclamped(s, scaled));
+}
