@@ -11,6 +11,8 @@ readiness=crates/internet-protocol/implementation/linux-socket-options/readiness
 shared_linux=crates/internet-protocol/implementation/linux-socket-options/linux.rs
 state=crates/tcp-sockets/implementation/host/linux/state.rs
 mutants=${CARGO_TARGET_DIR:-$checkout/target}/mutants
+# run-conformance.sh's exit status when the test binaries do not build.
+did_not_build=2
 names=() files=() from=() to=()
 # A mutant: its name, the file it breaks, the text it replaces (once, exactly) and what it puts there.
 mutant() { names+=("$1"); files+=("$2"); from+=("$3"); to+=("$4"); }
@@ -144,9 +146,9 @@ for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::Receiv
     'Packet(wcontainers_internet_protocol::IpPacketSetting::HopByHopOptions(..))' \
     'Packet(wcontainers_internet_protocol::IpPacketSetting::DestinationOptions(..))' \
     'Packet(wcontainers_internet_protocol::IpPacketSetting::Mark(..))' \
-    'Port(wcontainers_internet_protocol::PortSetting::AddressSharing(..))' \
-    'Port(wcontainers_internet_protocol::PortSetting::PortSharing(..))' \
-    'Port(wcontainers_internet_protocol::PortSetting::NonlocalAddresses(..))' \
+    'Binding(wcontainers_internet_protocol::BindingSetting::AddressSharing(..))' \
+    'Binding(wcontainers_internet_protocol::BindingSetting::PortSharing(..))' \
+    'Binding(wcontainers_internet_protocol::BindingSetting::NonlocalAddresses(..))' \
     'BufferLocks(..)' 'ReceiveLowWater(..)' 'Filter(..)' 'TransmitRehash(..)' 'MinimumHopLimit { .. }' \
     'IcmpErrorReports { .. }' 'KeepAlive(..)' 'KeepAliveIdle(..)' 'KeepAliveInterval(..)' 'KeepAliveProbes(..)' \
     'NoDelay(..)' 'Cork(..)' 'UrgentInline(..)' 'QuickAcknowledgement(..)' 'MaximumSegmentSize(..)' 'WindowClamp(..)' \
@@ -217,6 +219,8 @@ mutant ic-segments-in-is-out "$state" 'segments_in: segments(info.tcpi_segs_in),
 mutant ic-authentication-icmp-inverted "$state" 'icmp_errors: if found.accept_icmps() == u32::MIN {' 'icmp_errors: if found.accept_icmps() != u32::MIN {'
 mutant ic-repair-timestamps-as-sack "$state" 'TcpRepairOption::Timestamps => (KIND_TIMESTAMP, NO_OPTION_VALUE),' 'TcpRepairOption::Timestamps => (KIND_SELECTIVE_ACK_PERMITTED, NO_OPTION_VALUE),'
 mutant ic-repair-max-window-is-send "$state" 'max_window: window.maximum_window.0,' 'max_window: window.send_window.0,'
+mutant send-claims-all "$implementation" $'.send_with_flags(bytes, flags)\n                .map(ByteCount)' \
+    $'.send_with_flags(bytes, flags)\n                .map(|_| ByteCount(bytes.len()))'
 mutant ic-multipath-checksums-on "$state" 'checksums: found.csum_enabled != u8::MIN,' 'checksums: true,'
 status=0
 for index in "${!names[@]}"; do
@@ -237,8 +241,13 @@ open(path, "w").write(text.replace(old, new))' "$copy/${files[$index]}" "${from[
     fi
     echo "== $name"
     output=$(CARGO_TARGET_DIR=$mutants/target "$copy/crates/tcp-sockets/implementation/host/run-conformance.sh" 2>&1)
-    grep -E '^test .* FAILED$|^test result|^error' <<<"$output"
-    grep -q '^test result: FAILED' <<<"$output" || { echo "$name: the suite did not fail"; status=1; }
+    outcome=$?
+    grep -E '^test .* FAILED$|^test result|^error|^the test binaries did not build' <<<"$output"
+    if [ $outcome -eq "$did_not_build" ]; then
+        echo "$name: the copy did not build"; status=1
+    elif ! grep -q '^test result: FAILED' <<<"$output"; then
+        echo "$name: the suite did not fail"; status=1
+    fi
     rm -rf "$copy"
 done
 exit $status

@@ -11,9 +11,14 @@ microsecond_clock=127.0.0.7
 cd "$(dirname "$0")/../../../.."
 # An ip that knows the tcp_usec_ts route feature (iproute2 6.7 and later), from the checkout's pinned nixpkgs.
 ip=$(nix build --inputs-from . --no-link --print-out-paths nixpkgs#iproute2^out)/bin/ip
-binaries=$(cargo test -p wcontainers-tcp-sockets-host --no-run --message-format=json 2>/dev/null |
-    sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')
-[ -n "$binaries" ] || { echo "the test binaries did not build" >&2; exit 1; }
+# Exit status when the test binaries do not build, apart from a suite that fails (1).
+did_not_build=2
+# The build's diagnostics go to standard error as cargo renders them; its JSON gives the binaries' paths.
+if ! built=$(cargo test -p wcontainers-tcp-sockets-host --no-run --message-format=json-render-diagnostics); then
+    echo "the test binaries did not build" >&2; exit $did_not_build
+fi
+binaries=$(sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' <<<"$built")
+[ -n "$binaries" ] || { echo "the test binaries did not build" >&2; exit $did_not_build; }
 setup="$ip"' link set lo up && '"$ip"' route add local '"$microsecond_clock"' dev lo table local features tcp_usec_ts && tc qdisc replace dev lo root fq && sysctl -qw net.ipv4.tcp_fastopen='"$fast_open_for_both"' net.ipv6.flowlabel_consistency=0 net.ipv4.tcp_fwmark_accept=1 net.ipv6.conf.lo.forwarding=1'
 # The congestion controls the suite reads besides the built-in ones, loaded for the whole host (namespaces share them).
 sudo modprobe -a tcp_dctcp tcp_vegas tcp_bbr
