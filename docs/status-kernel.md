@@ -616,8 +616,12 @@ wasmtime and kernel conformance packages passed (x86 machine, 05:15 UTC). The ei
 suite (job kernel/20261122-042926-4046149, at fcc62339) was still running at this run's start; it
 was stopped at 05:47 in the python tests, its results so far are ka9/ka8-suite-partial.log (167
 passed, 15 failed, every failure on the ARM list but `instances_are_limited_per_user`, not yet
-looked at). The whole suite at this run's tip runs as ka9/suite.sh (log ka9/suite.log; on the
-machine, job name kernel: `arm-run --attach kernel` follows it).
+looked at; likely the reference's per-user inotify count shared with other tracks' containers on
+that machine, as the per-user signal count was in K6b). The whole suite at 05c95620 (ka9/suite.sh,
+job kernel/20261122-055108-3455272, still running when this run ended: `arm-run --attach kernel`
+follows it; log so far ka9/suite.log): through tests/limits.rs 147 passed, 14 failed, 80 ignored,
+and the failures are the same 14 tests as the eighth run's suite at fcc62339 to that point (the
+ARM list and inotify's `instances_are_limited_per_user`).
 
 The guest pipe (pipe ping-pong of tests/waitcost.rs, per round trip; before is the clone at
 e5d693d2, the milestone's start; ARM64 machine, load 7 to 22 on 96 cores, 05:15 to 05:46 UTC):
