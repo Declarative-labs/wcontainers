@@ -51,6 +51,18 @@ crates/runtime/implementation/single-kernel.
   keeps every socket option in its own model), so nothing of them applies yet.
 - The K6c independent-check findings repeated in this run's brief were answered in K6c's
   fourteenth run (see there); ADSP038 is under "Waiting for the owner".
+- Measured on the ARM64 machine at 0ce16ef9 plus the response test (scratch kernel/kc): the whole
+  workspace's `cargo check --all-targets` gives no error or warning; clippy on this track's crates
+  gives nothing in them (the kernel interface's own two `type_complexity` findings aside); the
+  kernel suite 16 passed, the kernel's unit tests 18, round_trips 4. The whole suite (kc/whole.sh,
+  19:47 to 21:16 UTC, load 5 to 12): 380 passed, 36 failed: the fifteenth run's 35 (the ARM
+  list) and backend `listings_match_reference`, which then passed alone 3 times and in the whole
+  backend file twice (8 threads); its failing output was cut by the job's filter, so which side
+  differed is not known.
+- The ARM64 machine's disk was full (5 GB free at 21:48 UTC) while the LTP comparison ran: this
+  track removed its old measurement build (kernel-kd, 18 GB), its incremental caches and build
+  outputs older than five hours from /work/target/kernel (140 GB); 135 GB were free after.
+  /work/target/kc-pre (52 GB) is not this track's and was left.
 
 ## 2026-11-22: a wait gives a readiness report
 
