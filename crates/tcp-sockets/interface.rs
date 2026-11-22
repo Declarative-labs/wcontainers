@@ -15,6 +15,7 @@ use wcontainers_internet_protocol::{
     TransmitReportRequest,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::errno::Errno;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::Readiness;
 
@@ -50,7 +51,7 @@ pub trait TcpConnections:
         peer: SocketAddr,
         settings: &[TcpSetting<'_>],
         fast_open: TcpFastOpen<'_>,
-    ) -> Result<TcpConnected<Self::Connection>, HostError>;
+    ) -> Result<TcpConnected<Self::Connection>, TcpLocalEndError<Self::BoundSocket>>;
     fn send(
         &self,
         connection: &Self::Connection,
@@ -80,7 +81,9 @@ pub trait TcpConnections:
         directions: TcpShutdown,
     ) -> Result<(), HostError>;
     fn close(&self, connection: Self::Connection, manner: TcpClose);
-    /// Frees the socket's address and port, unless a connect or listen took the socket.
+    /// Ends the connection as a [connect to `AF_UNSPEC`](https://man7.org/linux/man-pages/man2/connect.2.html#:~:text=AF_UNSPEC%3B%20thereafter) does, giving back its socket only if that keeps its port, as a port bound by number does.
+    fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket>;
+    /// Closes the socket, freeing its address and port at once.
     fn release(&self, bound_socket: Self::BoundSocket);
     /// Sends now what of the connection's queued data its windows, its [cork](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_CORK%20%28since) and [Nagle's algorithm](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.7.4) allow.
     ///
@@ -130,7 +133,7 @@ pub trait TcpListeners:
         local: TcpLocalEnd<'_, Self::BoundSocket>,
         backlog: ListenBacklog,
         settings: &[TcpListenerSetting<'_>],
-    ) -> Result<TcpListening<Self::Listener>, HostError>;
+    ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>>;
     fn accept<'a>(
         &self,
         listener: &Self::Listener,
@@ -199,15 +202,29 @@ pub struct TcpBound<B> {
     pub local: SocketAddr,
 }
 
-/// The socket a connect or listen starts from: one bound before, which stays bound if the call fails, or a new one the call binds.
+/// The socket a connect or listen starts from: one bound before, which the call takes, or a new one the call binds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpLocalEnd<'a, B> {
-    Bound(&'a B),
+    Bound(B),
     Unbound {
         protocol: TcpProtocol,
         owner: UserId,
         local: LocalBinding<'a>,
     },
+}
+
+/// The error of a connect or listen, giving back the socket it was given if that still holds its port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpLocalEndError<B> {
+    Bound { bound_socket: B, error: HostError },
+    Unbound(HostError),
+}
+
+/// A connection's socket after a disconnect, with the error left pending on it, such as the `ECONNRESET` of a disconnect that reset the connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpDisconnected<B> {
+    pub bound_socket: Option<B>,
+    pub pending_error: Option<Errno>,
 }
 
 /// A connection taken from a listener, with the IP header of its SYN cut to the buffer given.

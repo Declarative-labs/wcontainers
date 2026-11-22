@@ -1,7 +1,7 @@
 use core::time::Duration;
 
 use wcontainers_internet_protocol::{
-    ByteCount, BytesPerSecond, HopLimit, MaximumTransmissionUnit, ProcessorIndex,
+    ByteCount, BytesPerSecond, HopLimit, InterfaceIndex, MaximumTransmissionUnit, ProcessorIndex,
     ReceivedPacketFields, TransmitReport,
 };
 use wcontainers_kernel::errno::Errno;
@@ -92,7 +92,8 @@ pub enum TcpReading<'a> {
     Multipath(MultipathInformation),
     MultipathSubflow(Option<MultipathSubflow>),
     LastReceivedHeader {
-        fields: ReceivedPacketFields,
+        /// None where Linux has recorded no arrival interface, as [`IP_PKTOPTIONS`](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/ip_sockglue.c#L1666) for a connection made by connect.
+        interface: Option<InterfaceIndex>,
         header: &'a [u8],
     },
     IncomingProcessor(Option<ProcessorIndex>),

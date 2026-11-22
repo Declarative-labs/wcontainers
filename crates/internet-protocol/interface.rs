@@ -1,6 +1,7 @@
 #![no_std]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::num::NonZeroU32;
 use core::time::Duration;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
@@ -42,7 +43,7 @@ pub struct DropCount(pub u32);
 
 /// A [network interface](https://man7.org/linux/man-pages/man7/netdevice.7.html) of the exit node, by its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InterfaceIndex(pub u32);
+pub struct InterfaceIndex(pub NonZeroU32);
 
 /// A [PTP hardware clock](https://docs.kernel.org/driver-api/ptp.html) of the exit node, by its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -563,7 +564,8 @@ pub enum TransmitEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransmitReport {
     pub key: TransmitReportKey,
-    pub interface: InterfaceIndex,
+    /// None where Linux [gives no sending interface](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/ip_sockglue.c#L507-L509): a report without its packet, of an acknowledgement, of a wireless status or of a rejected transmit time.
+    pub interface: Option<InterfaceIndex>,
     pub event: TransmitEvent,
     pub packet_length: Option<ByteCount>,
 }
