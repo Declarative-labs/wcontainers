@@ -22,6 +22,8 @@ pub const TRANSMIT_TIME_REJECTION_WITHOUT_KEY: &str =
     "linux reports a rejected transmit time with the time, not the key of its send";
 pub const ERROR_OF_NO_REPORT: &str =
     "an error queue entry of an origin the contract has no report for";
+pub const REPORT_INTERFACE_NOT_GIVEN: &str = "linux gives no interface with a transmit report \
+     that holds no packet (SOF_TIMESTAMPING_OPT_TSONLY): told as interface 0";
 
 /// The most an error queue entry is read of: a whole IP packet.
 const LARGEST_ENTRY: usize = u16::MAX as usize;
@@ -189,6 +191,9 @@ impl ErrorQueue {
             into[..copied].copy_from_slice(&entry.data[..copied]);
             ByteCount(entry.data.len())
         });
+        if ancillary.interface.is_none() {
+            shortfalls.count(REPORT_INTERFACE_NOT_GIVEN);
+        }
         Some(Received::TransmitReport(TransmitReport {
             key: send.key,
             interface: InterfaceIndex(ancillary.interface.unwrap_or(u32::MIN)),
@@ -306,8 +311,12 @@ pub fn error_entry(
         libc::SO_EE_ORIGIN_TIMESTAMPING => {
             let packet = (!entry.data.is_empty()).then_some(entry.data.len());
             let report = ancillary.transmit_report(&error, packet);
-            if report.is_none() {
-                shortfalls.count(ERROR_OF_NO_REPORT);
+            match report {
+                None => shortfalls.count(ERROR_OF_NO_REPORT),
+                Some(_) if ancillary.interface.is_none() => {
+                    shortfalls.count(REPORT_INTERFACE_NOT_GIVEN)
+                }
+                Some(_) => {}
             }
             report.map(Received::TransmitReport)
         }

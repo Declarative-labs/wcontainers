@@ -65,6 +65,8 @@ struct SocketState {
 pub const UPPER_LAYER: &str = "an upper layer other than the one linux routes a raw send by: the message's ICMP type and code or mobility header type, else none";
 pub const OTHER_PROTOCOL: &str =
     "a payload under another protocol than its raw socket's, which linux sends under the socket's";
+pub const FORWARDED_BY_ITS_BYTES: &str = "linux does not tell a packet it forwards to an ipv6 router \
+     alert socket of ipproto_raw from a local one: taken as forwarded, and given whole, by its bytes";
 pub const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a raw socket an icmp error without the identification and \
      fragment flags of an ipv4 one, nor under a payload the quoted header's fields but its addresses: written as zero";
 
@@ -540,9 +542,12 @@ impl HostRawSockets {
         }
         let ancillary = Ancillary::parse(message.control);
         let given = &into[..message.length.min(into.len())];
-        let length = if socket.ipv6
-            && !socket.is_forwarded_whole(state.router_alert, given, &message, &ancillary)
-        {
+        let forwarded = socket.ipv6
+            && socket.is_forwarded_whole(state.router_alert, given, &message, &ancillary);
+        if forwarded {
+            self.shortfalls.count(FORWARDED_BY_ITS_BYTES);
+        }
+        let length = if socket.ipv6 && !forwarded {
             // Linux gives an IPv6 raw socket the packet after its headers, which are written here in front.
             let invalid = HostError::Errno(libc::EINVAL);
             let IpAddr::V6(source) = message.source.ok_or(invalid)?.ip() else {
