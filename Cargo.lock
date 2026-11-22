@@ -4791,7 +4791,9 @@ name = "wcontainers-precise-instruction-set-neoverse-v2"
 version = "0.1.0"
 dependencies = [
  "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
