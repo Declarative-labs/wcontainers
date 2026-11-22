@@ -4534,6 +4534,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-readiness",
 ]
 
 [[package]]
@@ -4730,6 +4731,7 @@ dependencies = [
 name = "wcontainers-readiness-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-abi",
  "wcontainers-readiness",
 ]
 
