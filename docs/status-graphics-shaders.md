@@ -86,6 +86,9 @@ Runs at b93b4888:
   difference from the tip is the WebAssembly-only global and two test constants), the Direct3D 12
   scenes (A6's figures from run 74 and the fifth check). Gap A29 not met again: the GPU suite ran
   with one test thread.
+- Clean-up: this run's build folders deleted (laptop `target/shaders-tip`, 7.0 GB, its source
+  copy, `out-r76` and `outw-r76`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
+  `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
 ## The unfinished combine work (paused 2026-11-20)
 
