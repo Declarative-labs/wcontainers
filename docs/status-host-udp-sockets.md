@@ -10,8 +10,13 @@ Plan: docs/plan-host-udp-sockets.md. Branch: agents, worktree /Users/thomaseaton
   loopback, `InterfaceIndex(NonZeroU32::MIN)`, where they named 0. A stand-in's `disconnect` closes the connection and
   leaves `ECONNRESET` pending, what Linux leaves on a connecting or connected socket it resets; it gives no socket back.
   None of the three stand-ins implements an ICMP socket, so the ping bind is nothing of theirs.
-- NOT BUILT: the three stand-ins depend on wcontainers-kernel-linux, which does not build at 158b6c62 (64 errors, the
-  kernel interface's new `Kernel`; the kernel track's). Checked by reading only. Build them once it does:
+- The three stand-in crates cannot be built: they depend on wcontainers-kernel-linux, which does not build at
+  158b6c62 (64 errors from the kernel interface's new `Kernel`; the kernel track's). Their socket files were instead
+  type-checked with clippy, each in a crate of its own whose root stubs what the file takes from its crate
+  (pyro-parked/wcontainers-scratch/host-udp-sockets/standin-typecheck.sh, run as the arm-run command): the policy's
+  tcp.rs and udp.rs, the local system's tcp.rs and udp.rs and the test host's tcp.rs compile with no finding; a
+  `BoundSocket` of `u8` there fails, so the check does compile them. The test host's udp.rs (it takes the local
+  system's crate) only by reading. Build all three once the kernel builds:
   `cargo clippy --all-targets -p wcontainers-runtime-single-kernel -p wcontainers-executor-unicorn -p wcontainers-system-seeded-test-policy`.
 - `Runtime` with `type Config` and `new`: nothing in the tree implements `Runtime` (single-kernel has no such impl),
   so there was nothing to fold.
