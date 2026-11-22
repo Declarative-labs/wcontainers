@@ -21,6 +21,7 @@ fn main() {
 
 #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
 mod measured {
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     use std::time::{Duration, Instant};
 
     use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
@@ -56,65 +57,88 @@ mod measured {
 
         let mut executor = SingleStepMachine::new().expect("making the single step executor");
         let mut states = 0;
-        let mut batch_time = Duration::ZERO;
         let mut disagreeing = Vec::new();
-        for instruction in Arm64::list_instructions() {
-            let befores: Vec<ExecutionState<'static, Arm64>> =
-                DistinguishingStateGenerator::<Arm64>::generate_states(&GENERATOR, instruction)
-                    .collect();
-            let started = Instant::now();
-            let afters = executor.execute_each_single_instruction(befores.iter().cloned());
-            batch_time += started.elapsed();
-            states += befores.len();
-            let precise = ThisChip.to_precise(instruction);
-            let disagree = befores
-                .into_iter()
-                .zip(&afters)
-                .filter(|(before, executed)| {
-                    let Ok(simulated) = precise.simulate(before.clone());
-                    let start = before.memory_mutations.len();
-                    simulated.processor != executed.processor
-                        || !leave_same_memory(
-                            &before.memory_mutations,
-                            &simulated.memory_mutations[start..],
-                            &executed.memory_mutations[start..],
-                        )
-                })
-                .count();
-            if disagree > 0 {
-                disagreeing.push(format!("{instruction:?}: {disagree}"));
+        // The first pass touches the guest's memory for the first time; the second shows the steady cost.
+        for pass in ["first", "second"] {
+            states = 0;
+            disagreeing.clear();
+            let mut batch_time = Duration::ZERO;
+            let guest_time_before = executor.time_in_guest();
+            for instruction in Arm64::list_instructions() {
+                let befores: Vec<ExecutionState<'static, Arm64>> =
+                    DistinguishingStateGenerator::<Arm64>::generate_states(&GENERATOR, instruction)
+                        .collect();
+                let guest_time_before_instruction = executor.time_in_guest();
+                let started = Instant::now();
+                let afters = executor.execute_each_single_instruction(befores.iter().cloned());
+                let elapsed = started.elapsed();
+                batch_time += elapsed;
+                states += befores.len();
+                println!(
+                    "  {instruction:?}: {} states, {:.3} us per state, {:.3} us of it in the guest",
+                    befores.len(),
+                    to_microseconds_per_state(elapsed, befores.len()),
+                    to_microseconds_per_state(
+                        executor.time_in_guest() - guest_time_before_instruction,
+                        befores.len()
+                    ),
+                );
+                let precise = ThisChip.to_precise(instruction);
+                let disagree = befores
+                    .into_iter()
+                    .zip(&afters)
+                    .filter(|(before, executed)| {
+                        let Ok(simulated) = precise.simulate(before.clone());
+                        let start = before.memory_mutations.len();
+                        simulated.processor != executed.processor
+                            || !leave_same_memory(
+                                &before.memory_mutations,
+                                &simulated.memory_mutations[start..],
+                                &executed.memory_mutations[start..],
+                            )
+                    })
+                    .count();
+                if disagree > 0 {
+                    disagreeing.push(format!("{instruction:?}: {disagree}"));
+                }
             }
+            println!(
+                "batch, {pass} pass: {states} states, {:.3} us per state, {:.3} us of it in the guest; load after: {}",
+                to_microseconds_per_state(batch_time, states),
+                to_microseconds_per_state(executor.time_in_guest() - guest_time_before, states),
+                load_average(),
+            );
         }
-        println!(
-            "batch: {states} states, {:.3} us per state, {:.3} us of it in the guest; load after: {}",
-            to_microseconds_per_state(batch_time, states),
-            to_microseconds_per_state(executor.time_in_guest(), states),
-            load_average(),
-        );
         drop(executor);
 
         let executor = SingleStepMachine::new().expect("making the single step executor");
         let started = Instant::now();
-        agrees_with_precise_instruction_set(executor, ThisChip, GENERATOR);
+        let this_chip = catch_unwind(AssertUnwindSafe(|| {
+            agrees_with_precise_instruction_set(executor, ThisChip, GENERATOR)
+        }));
         println!(
             "one at a time: {:.3} us per state; load after: {}",
             to_microseconds_per_state(started.elapsed(), states),
             load_average(),
         );
+
+        // The suite must catch a chip that is not the one the set describes: the two chips differ in RDVL.
+        let executor = SingleStepMachine::new().expect("making the single step executor");
+        let other_chip = catch_unwind(AssertUnwindSafe(|| {
+            agrees_with_precise_instruction_set(executor, OtherChip, GENERATOR)
+        }));
+        assert!(
+            other_chip.is_err(),
+            "the suite found this chip agreeing with the other chip's set"
+        );
+        println!("the other chip's set disagrees, as it must");
+
+        if let Err(panic) = this_chip {
+            resume_unwind(panic);
+        }
         assert!(
             disagreeing.is_empty(),
             "the batch disagrees with this chip's set on states of {disagreeing:?}"
         );
-
-        // The suite must catch a chip that is not the one the set describes: the two chips differ in RDVL.
-        let executor = SingleStepMachine::new().expect("making the single step executor");
-        let other = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            agrees_with_precise_instruction_set(executor, OtherChip, GENERATOR)
-        }));
-        assert!(
-            other.is_err(),
-            "the suite found this chip agreeing with the other chip's set"
-        );
-        println!("the other chip's set disagrees, as it must");
     }
 }
