@@ -25,7 +25,7 @@
 
 /// The steps of a filter weight: the specification's least fractional precision, 8 bits.
 #[cfg(windows)]
-const WEIGHT_STEPS: f32 = 256.0;
+const WEIGHT_STEPS: f32 = (1 << 8) as f32;
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
