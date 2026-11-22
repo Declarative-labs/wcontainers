@@ -80,6 +80,9 @@ enum wc_builtin {
    WC_BUILTIN_CLIP_DISTANCE,
    WC_BUILTIN_FRAG_DEPTH,
    WC_BUILTIN_SAMPLE_MASK,
+   WC_BUILTIN_LAYER,
+   WC_BUILTIN_VIEWPORT_INDEX,
+   WC_BUILTIN_PRIMITIVE_ID,
    WC_BUILTIN_OTHER,
 };
 
@@ -144,6 +147,8 @@ struct wc_flat_var {
    enum wc_storage_format format;
    /* A constant initialiser's values (32-bit, flattened), or none. */
    uint32_t initialised;
+   /* A geometry program's output stream. */
+   uint32_t stream;
 };
 
 enum wc_flat_kind {
@@ -190,7 +195,8 @@ enum wc_flat_kind {
    X(TERMINATE) X(DEMOTE_IF) X(TERMINATE_IF) X(BARRIER) X(DEREF_BUFFER_ARRAY_LENGTH) \
    X(DDX) X(DDY) X(DDX_FINE) X(DDY_FINE) X(DDX_COARSE) X(DDY_COARSE) X(LOAD_POINT_COORD)        \
    X(IMAGE_DEREF_LOAD) X(IMAGE_DEREF_STORE) X(IMAGE_DEREF_SIZE) X(DEREF_ATOMIC)                 \
-   X(DEREF_ATOMIC_SWAP) X(LOAD_STAGE) X(STORE_STAGE) X(DEMOTE_SAMPLES) X(LOAD_SAMPLE_MASK_IN)
+   X(DEREF_ATOMIC_SWAP) X(LOAD_STAGE) X(STORE_STAGE) X(DEMOTE_SAMPLES) X(LOAD_SAMPLE_MASK_IN)   \
+   X(LOAD_PRIMITIVE_ID) X(LOAD_INVOCATION_ID) X(EMIT_VERTEX) X(END_PRIMITIVE)
 
 #define WC_ENUM_ENTRY(name) WC_ALU_##name,
 enum wc_alu_op { WC_ALU_OPS(WC_ENUM_ENTRY) WC_ALU_UNSUPPORTED };
@@ -273,7 +279,34 @@ struct wc_flat_instr {
    const char *name;
 };
 
-enum wc_stage_kind { WC_FLAT_VERTEX, WC_FLAT_FRAGMENT, WC_FLAT_COMPUTE };
+enum wc_stage_kind { WC_FLAT_VERTEX, WC_FLAT_FRAGMENT, WC_FLAT_COMPUTE, WC_FLAT_GEOMETRY };
+
+/* A geometry program's primitives, in wcontainers_shaders::staged's order. */
+enum wc_geometry_input {
+   WC_GEOMETRY_IN_POINTS,
+   WC_GEOMETRY_IN_LINES,
+   WC_GEOMETRY_IN_LINES_ADJACENCY,
+   WC_GEOMETRY_IN_TRIANGLES,
+   WC_GEOMETRY_IN_TRIANGLES_ADJACENCY,
+   WC_GEOMETRY_IN_OTHER,
+};
+enum wc_geometry_output {
+   WC_GEOMETRY_OUT_POINTS,
+   WC_GEOMETRY_OUT_LINE_STRIP,
+   WC_GEOMETRY_OUT_TRIANGLE_STRIP,
+   WC_GEOMETRY_OUT_OTHER,
+};
+
+/* A geometry program's declarations: its primitives, the vertices of its input primitive, the most
+ * it emits, its instances, and one past its last stream. */
+struct wc_flat_geometry {
+   enum wc_geometry_input input;
+   enum wc_geometry_output output;
+   uint32_t vertices_in;
+   uint32_t max_vertices;
+   uint32_t invocations;
+   uint32_t streams;
+};
 
 struct wc_flat {
    enum wc_stage_kind stage;
@@ -290,6 +323,7 @@ struct wc_flat {
    uint32_t initialiser_count;
    struct wc_flat_instr *instrs;
    uint32_t instr_count;
+   struct wc_flat_geometry geometry;
 };
 
 /* Candidate B's preparation (out of SSA, values used outside their block in registers) and the

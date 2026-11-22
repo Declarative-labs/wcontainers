@@ -32,6 +32,9 @@
  * slot, its type and interpolation gathered from the intrinsics that reach it. */
 struct io_slot {
    bool output;
+   /* One value a vertex of the input primitive: an array of them. */
+   bool per_vertex;
+   unsigned stream;
    unsigned location;
    nir_alu_type base;
    unsigned components;
@@ -339,6 +342,12 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
       return WC_BUILTIN_POINT_SIZE;
    case VARYING_SLOT_CLIP_DIST0:
       return WC_BUILTIN_CLIP_DISTANCE;
+   case VARYING_SLOT_LAYER:
+      return WC_BUILTIN_LAYER;
+   case VARYING_SLOT_VIEWPORT:
+      return WC_BUILTIN_VIEWPORT_INDEX;
+   case VARYING_SLOT_PRIMITIVE_ID:
+      return WC_BUILTIN_PRIMITIVE_ID;
    case VARYING_SLOT_COL0:
    case VARYING_SLOT_COL1:
    case VARYING_SLOT_BFC0:
@@ -411,10 +420,18 @@ add_var(struct flattening *f, nir_variable *var)
    return true;
 }
 
+/* The bits of one component's stream in nir_io_semantics.gs_streams. */
+#define WC_STREAM_BITS 2
+#define WC_STREAM_MASK ((1u << WC_STREAM_BITS) - 1)
+
 /* What an IO intrinsic reaches: its slot (the clip distances folded into one array) and its first
  * component, or the reason it is refused. */
 struct io_access {
    bool output;
+   /* One value a vertex of the input primitive, its vertex the intrinsic's first source. */
+   bool per_vertex;
+   /* A geometry program's output stream. */
+   unsigned stream;
    unsigned location;
    unsigned first;
    unsigned count;
@@ -429,6 +446,7 @@ io_access(const nir_shader *nir, nir_intrinsic_instr *intr, struct io_access *a)
    switch (intr->intrinsic) {
    case nir_intrinsic_load_input:
    case nir_intrinsic_load_interpolated_input:
+   case nir_intrinsic_load_per_vertex_input:
       output = false;
       break;
    case nir_intrinsic_store_output:
@@ -442,12 +460,21 @@ io_access(const nir_shader *nir, nir_intrinsic_instr *intr, struct io_access *a)
    const nir_def *value = output ? intr->src[0].ssa : &intr->def;
    *a = (struct io_access){
       .output = output,
+      .per_vertex = intr->intrinsic == nir_intrinsic_load_per_vertex_input,
       .location = semantics.location,
       .first = nir_intrinsic_component(intr),
       .count = value->num_components,
       .base = nir_alu_type_get_base_type(output ? nir_intrinsic_src_type(intr)
                                                 : nir_intrinsic_dest_type(intr)),
    };
+   if (output && nir->info.stage == MESA_SHADER_GEOMETRY) {
+      unsigned streams = semantics.gs_streams;
+      a->stream = streams & WC_STREAM_MASK;
+      for (unsigned c = 1; c < a->count; c++) {
+         if (((streams >> (c * WC_STREAM_BITS)) & WC_STREAM_MASK) != a->stream)
+            a->refused = "a stage value whose components go to different streams";
+      }
+   }
    if (nir_src_is_const(*offset))
       a->location += nir_src_as_uint(*offset);
    else
@@ -509,6 +536,8 @@ gather_slots(struct flattening *f, nir_function_impl *impl)
             s = &f->slots[f->slot_count++];
             *s = (struct io_slot){
                .output = a.output,
+               .per_vertex = a.per_vertex,
+               .stream = a.stream,
                .location = a.location,
                .base = a.base,
                .load = nir_num_intrinsics,
@@ -516,6 +545,10 @@ gather_slots(struct flattening *f, nir_function_impl *impl)
          }
          if (s->base != a.base)
             s->base = nir_type_uint;
+         if (s->per_vertex != a.per_vertex)
+            s->refused = "a stage value read both for one vertex and for the primitive";
+         if (s->stream != a.stream)
+            s->refused = "a stage value written to two streams";
          s->components = MAX2(s->components, a.first + a.count);
          if (a.output || f->nir->info.stage != MESA_SHADER_FRAGMENT)
             continue;
@@ -573,7 +606,12 @@ add_slots(struct flattening *f)
          : v.builtin == WC_BUILTIN_SAMPLE_MASK ? glsl_uint_type()
          : v.builtin == WC_BUILTIN_FRAG_DEPTH || v.builtin == WC_BUILTIN_POINT_SIZE
             ? glsl_float_type()
-            : glsl_vector_type(base_type_of(s->base), s->components);
+            : v.builtin == WC_BUILTIN_LAYER || v.builtin == WC_BUILTIN_VIEWPORT_INDEX ||
+                  v.builtin == WC_BUILTIN_PRIMITIVE_ID
+               ? glsl_uint_type()
+               : glsl_vector_type(base_type_of(s->base), s->components);
+      if (s->per_vertex)
+         type = glsl_array_type(type, f->out->geometry.vertices_in, 0);
       if (!type_index(f, type, &v.type))
          return false;
       /* Lowered IO keeps the interpolation only where a fragment input is loaded; an output takes
@@ -585,6 +623,7 @@ add_slots(struct flattening *f)
          v.interpolation = s->interp == INTERP_MODE_NOPERSPECTIVE ? WC_INTERP_LINEAR
                            : s->interp == INTERP_MODE_FLAT        ? WC_INTERP_FLAT
                                                                   : WC_INTERP_PERSPECTIVE;
+      v.stream = s->stream;
       v.centroid = s->load == nir_intrinsic_load_barycentric_centroid;
       v.sample = s->load == nir_intrinsic_load_barycentric_sample;
       GROW(f->out->vars, f->out->var_count, f->var_capacity);
@@ -722,6 +761,16 @@ intrinsic_of(nir_intrinsic_op op)
       return WC_INTRINSIC_DEMOTE_SAMPLES;
    case nir_intrinsic_load_sample_mask_in:
       return WC_INTRINSIC_LOAD_SAMPLE_MASK_IN;
+   case nir_intrinsic_load_primitive_id:
+      return WC_INTRINSIC_LOAD_PRIMITIVE_ID;
+   case nir_intrinsic_load_invocation_id:
+      return WC_INTRINSIC_LOAD_INVOCATION_ID;
+   case nir_intrinsic_emit_vertex:
+   case nir_intrinsic_emit_vertex_with_counter:
+      return WC_INTRINSIC_EMIT_VERTEX;
+   case nir_intrinsic_end_primitive:
+   case nir_intrinsic_end_primitive_with_counter:
+      return WC_INTRINSIC_END_PRIMITIVE;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
    }
@@ -857,6 +906,9 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
    /* A barycentric is read only as the interpolation of its loads (gather_slots). */
    if (is_barycentric(intr->intrinsic))
       return true;
+   /* The counts a geometry program's lowering keeps are the stage helper's own. */
+   if (intr->intrinsic == nir_intrinsic_set_vertex_and_primitive_count)
+      return true;
    struct wc_flat_instr *i = next_instr(f, WC_FLAT_INTRINSIC);
    if (!i)
       return false;
@@ -883,6 +935,8 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
    }
    if (nir_intrinsic_has_atomic_op(intr))
       i->value[WC_COMPONENTS - 1] = atomic_of(nir_intrinsic_atomic_op(intr));
+   if (nir_intrinsic_has_stream_id(intr))
+      i->value[0] = nir_intrinsic_stream_id(intr);
    if (intr->intrinsic == nir_intrinsic_barrier) {
       i->value[0] = nir_intrinsic_execution_scope(intr) == SCOPE_WORKGROUP;
       i->value[1] = (nir_intrinsic_memory_modes(intr) & nir_var_mem_shared) != 0;
@@ -900,6 +954,7 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
       i->op = a.output ? WC_INTRINSIC_STORE_STAGE : WC_INTRINSIC_LOAD_STAGE;
       i->value[0] = f->first_slot_var + (uint32_t)(s - f->slots);
       i->component = a.first;
+      i->arrayed = a.per_vertex;
    }
    return true;
 }
@@ -1129,6 +1184,52 @@ value_to_register(nir_def *def, void *data)
    return true;
 }
 
+static struct wc_flat_geometry
+geometry_of(const nir_shader *nir)
+{
+   struct wc_flat_geometry g = {
+      .input = WC_GEOMETRY_IN_OTHER,
+      .output = WC_GEOMETRY_OUT_OTHER,
+      .vertices_in = nir->info.gs.vertices_in,
+      .max_vertices = nir->info.gs.vertices_out,
+      .invocations = MAX2(nir->info.gs.invocations, 1),
+      .streams = util_last_bit(nir->info.gs.active_stream_mask),
+   };
+   switch (nir->info.gs.input_primitive) {
+   case MESA_PRIM_POINTS:
+      g.input = WC_GEOMETRY_IN_POINTS;
+      break;
+   case MESA_PRIM_LINES:
+      g.input = WC_GEOMETRY_IN_LINES;
+      break;
+   case MESA_PRIM_LINES_ADJACENCY:
+      g.input = WC_GEOMETRY_IN_LINES_ADJACENCY;
+      break;
+   case MESA_PRIM_TRIANGLES:
+      g.input = WC_GEOMETRY_IN_TRIANGLES;
+      break;
+   case MESA_PRIM_TRIANGLES_ADJACENCY:
+      g.input = WC_GEOMETRY_IN_TRIANGLES_ADJACENCY;
+      break;
+   default:
+      break;
+   }
+   switch (nir->info.gs.output_primitive) {
+   case MESA_PRIM_POINTS:
+      g.output = WC_GEOMETRY_OUT_POINTS;
+      break;
+   case MESA_PRIM_LINE_STRIP:
+      g.output = WC_GEOMETRY_OUT_LINE_STRIP;
+      break;
+   case MESA_PRIM_TRIANGLE_STRIP:
+      g.output = WC_GEOMETRY_OUT_TRIANGLE_STRIP;
+      break;
+   default:
+      break;
+   }
+   return g;
+}
+
 bool
 wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
 {
@@ -1149,7 +1250,10 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
 
    out->stage = nir->info.stage == MESA_SHADER_VERTEX     ? WC_FLAT_VERTEX
                 : nir->info.stage == MESA_SHADER_FRAGMENT ? WC_FLAT_FRAGMENT
+                : nir->info.stage == MESA_SHADER_GEOMETRY ? WC_FLAT_GEOMETRY
                                                           : WC_FLAT_COMPUTE;
+   if (nir->info.stage == MESA_SHADER_GEOMETRY)
+      out->geometry = geometry_of(nir);
    for (unsigned d = 0; d < ARRAY_SIZE(out->workgroup_size); d++)
       out->workgroup_size[d] = nir->info.workgroup_size[d];
    out->early_fragment_tests =

@@ -522,7 +522,7 @@ transform_position(nir_builder *b, nir_intrinsic_instr *intr, void *transform)
 void
 wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform)
 {
-   if (nir->info.stage != MESA_SHADER_VERTEX)
+   if (nir->info.stage != MESA_SHADER_VERTEX && nir->info.stage != MESA_SHADER_GEOMETRY)
       return;
    wc_nir_lower_io(nir);
    if (nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform) &&

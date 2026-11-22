@@ -8,15 +8,19 @@ use crate::ConvertError;
 use crate::mesa::{Nir, NirShader};
 use naga::{
     AddressSpace, BinaryOperator, Binding, Block, BuiltIn, Expression, Function, FunctionArgument,
-    Handle, ImageClass, ImageDimension, Interpolation, Literal, LocalVariable, MathFunction,
-    Module, RelationalFunction, SampleLevel, Sampling, Scalar, ScalarKind, ShaderStage, Span,
-    Statement, StorageAccess, StorageFormat, Type, TypeInner, UnaryOperator, VectorSize,
+    GlobalVariable, Handle, ImageClass, ImageDimension, Interpolation, Literal, LocalVariable,
+    MathFunction, Module, RelationalFunction, SampleLevel, Sampling, Scalar, ScalarKind,
+    ShaderStage, Span, Statement, StorageAccess, StorageFormat, Type, TypeInner, UnaryOperator,
+    VectorSize,
 };
 use std::ffi::{CStr, c_char};
 use wcontainers_gpu::{
     ReflectedBinding, Reflection, ShaderModule, SlotKind, SourceStage, StageExtras, VariantKey,
 };
 use wcontainers_shaders::cache;
+use wcontainers_shaders::staged::{
+    BuiltIn as StagedBuiltIn, GeometryInput, GeometryOutput, GeometryProgram, Place, StageVariable,
+};
 
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
@@ -125,6 +129,9 @@ enum FlatBuiltIn {
     ClipDistance,
     FragDepth,
     SampleMask,
+    Layer,
+    ViewportIndex,
+    PrimitiveId,
     Other,
 }
 
@@ -200,6 +207,7 @@ struct FlatVar {
     writable: u32,
     format: Format,
     initialised: u32,
+    stream: u32,
 }
 
 #[repr(C)]
@@ -382,6 +390,10 @@ enum Intrinsic {
     StoreStage,
     DemoteSamples,
     LoadSampleMaskIn,
+    LoadPrimitiveId,
+    LoadInvocationId,
+    EmitVertex,
+    EndPrimitive,
     Unsupported,
 }
 
@@ -477,6 +489,42 @@ enum FlatStage {
     Vertex,
     Fragment,
     Compute,
+    Geometry,
+}
+
+/// `enum wc_geometry_input`, in `staged::GeometryInput`'s order.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum FlatGeometryInput {
+    Points,
+    Lines,
+    LinesAdjacency,
+    Triangles,
+    TrianglesAdjacency,
+    Other,
+}
+
+/// `enum wc_geometry_output`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum FlatGeometryOutput {
+    Points,
+    LineStrip,
+    TriangleStrip,
+    Other,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct FlatGeometry {
+    input: FlatGeometryInput,
+    output: FlatGeometryOutput,
+    vertices_in: u32,
+    max_vertices: u32,
+    invocations: u32,
+    streams: u32,
 }
 
 #[repr(C)]
@@ -495,6 +543,7 @@ struct Flat {
     initialiser_count: u32,
     instrs: *const FlatInstr,
     instr_count: u32,
+    geometry: FlatGeometry,
 }
 
 unsafe extern "C" {
@@ -592,6 +641,20 @@ struct Builder<'a> {
     kept_samples: Option<Handle<LocalVariable>>,
     /// What only the shaders crate's rewrites make fit for the common form.
     rewrites: Rewrites,
+    /// A geometry program's stage values and the functions its emits and ends call.
+    staged: Option<Staged>,
+}
+
+/// A geometry program's stage values (private variables) and the empty functions its emits, one a
+/// stream, and its strips' ends call, which the shaders crate fills (`wcontainers_shaders::staged`).
+struct Staged {
+    values: Vec<StageVariable>,
+    emit: Vec<Handle<Function>>,
+    cut: Handle<Function>,
+    /// The position output, whose y each emit negates as a vertex program's return does.
+    position: Option<Handle<GlobalVariable>>,
+    /// The built-in inputs read so far.
+    inputs: Vec<(StagedBuiltIn, Handle<Expression>)>,
 }
 
 /// What route B leaves for the shaders crate's rewrites (plan 15.4): each storage slot declared
@@ -603,16 +666,27 @@ pub struct Rewrites {
     pub runtime_gather_offsets: bool,
 }
 
-/// Route B's module and what it needs of the rewrites.
+/// Route B's module and what it needs of the rewrites; a geometry program's declarations, for
+/// [`geometry`], where the program is one.
 pub struct Routed {
     pub module: Module,
     pub rewrites: Rewrites,
+    pub geometry: Option<GeometryProgram>,
 }
 
 /// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
 /// shaders crate's rewrites (refused by name otherwise). The shader is changed by the preparation.
 pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
-    let Routed { module, rewrites } = route(nir)?;
+    let Routed {
+        module,
+        rewrites,
+        geometry,
+    } = route(nir)?;
+    if geometry.is_some() {
+        return Err(unsupported(format_args!(
+            "a geometry program outside the stage helper"
+        )));
+    }
     if !rewrites.formatless.is_empty() {
         return Err(unsupported(format_args!(
             "a storage image without a format"
@@ -644,6 +718,14 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         initialiser_count: 0,
         instrs: std::ptr::null(),
         instr_count: 0,
+        geometry: FlatGeometry {
+            input: FlatGeometryInput::Other,
+            output: FlatGeometryOutput::Other,
+            vertices_in: 0,
+            max_vertices: 0,
+            invocations: 0,
+            streams: 0,
+        },
     });
     // SAFETY: the shader is live; the bridge fills `flat` with arrays it owns.
     if !unsafe { wc_nir_flatten(nir.raw(), &mut flat.0) } {
@@ -653,7 +735,8 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
     let stage = match f.stage {
         FlatStage::Vertex => ShaderStage::Vertex,
         FlatStage::Fragment => ShaderStage::Fragment,
-        FlatStage::Compute => ShaderStage::Compute,
+        // A geometry program becomes the stage helper's compute work.
+        FlatStage::Compute | FlatStage::Geometry => ShaderStage::Compute,
     };
     let mut b = Builder {
         stage,
@@ -679,7 +762,11 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         signed_derefs: std::collections::HashSet::new(),
         kept_samples: None,
         rewrites: Rewrites::default(),
+        staged: None,
     };
+    if f.stage == FlatStage::Geometry {
+        b.staged = Some(b.staged_functions(f.geometry.streams));
+    }
     let instrs = slice(f.instrs, f.instr_count);
     b.mark_atomics(instrs);
     b.emitter.start(&b.function.expressions);
@@ -694,9 +781,11 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         b.instr(instr)?;
     }
     let rewrites = std::mem::take(&mut b.rewrites);
+    let (module, geometry) = b.finish(f)?;
     Ok(Routed {
-        module: b.finish(f)?,
+        module,
         rewrites,
+        geometry,
     })
 }
 
@@ -1252,6 +1341,12 @@ impl Builder<'_> {
                     var.location
                 )));
             }
+            FlatBuiltIn::Layer | FlatBuiltIn::ViewportIndex | FlatBuiltIn::PrimitiveId => {
+                return Err(unsupported(format_args!(
+                    "a stage value of the built-in {:?} outside a geometry program",
+                    var.builtin
+                )));
+            }
         })
     }
 
@@ -1259,6 +1354,9 @@ impl Builder<'_> {
     fn variables(&mut self) -> Result<(), ConvertError> {
         for (index, var) in self.vars.iter().enumerate() {
             let place = match var.mode {
+                VarMode::Input | VarMode::Output if self.staged.is_some() => {
+                    self.staged_value(var)?
+                }
                 VarMode::Input | VarMode::Output => {
                     let t = self.types[var.ty as usize];
                     if !matches!(t.kind, TypeKind::Scalar | TypeKind::Vector)
@@ -2485,7 +2583,7 @@ impl Builder<'_> {
         self.statement(Statement::Store { pointer, value });
     }
 
-    fn finish(mut self, f: &Flat) -> Result<Module, ConvertError> {
+    fn finish(mut self, f: &Flat) -> Result<(Module, Option<GeometryProgram>), ConvertError> {
         if !self.open.is_empty() {
             return Err(unsupported(format_args!(
                 "control flow the walk did not close"
@@ -2494,6 +2592,11 @@ impl Builder<'_> {
         self.ret();
         let _ = self.emitter.finish(&self.function.expressions);
         self.function.body = self.blocks.pop().expect("the body");
+        if let Some(staged) = self.staged.take() {
+            let main = self.module.functions.append(self.function, Span::UNDEFINED);
+            let program = geometry_program(&f.geometry, staged, main)?;
+            return Ok((self.module, Some(program)));
+        }
         self.module.entry_points.push(naga::EntryPoint {
             name: wcontainers_shaders::ENTRY_POINT.into(),
             stage: self.stage,
@@ -2509,7 +2612,7 @@ impl Builder<'_> {
             task_payload: None,
             incoming_ray_payload: None,
         });
-        Ok(self.module)
+        Ok((self.module, None))
     }
 }
 
@@ -2902,7 +3005,15 @@ impl Builder<'_> {
             }
             Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap => self.atomic(i)?,
             Intrinsic::LoadStage => {
-                let (pointer, ty) = self.stage_value(i)?;
+                let (mut pointer, mut ty) = self.stage_value(i)?;
+                if i.arrayed != 0 {
+                    let index = self.src(i, 0, 1, Uint)?;
+                    pointer = self.add(Expression::Access {
+                        base: pointer,
+                        index,
+                    });
+                    ty = self.types[ty as usize].element;
+                }
                 let whole = self.add(Expression::Load { pointer });
                 let e = self.part(whole, ty, i.component, i.components)?;
                 self.set(i, Value::Expr(e, self.kind_of(ty)));
@@ -2947,6 +3058,34 @@ impl Builder<'_> {
                     right,
                 });
                 self.statement(Statement::Store { pointer, value });
+            }
+            Intrinsic::LoadPrimitiveId => self.staged_input(i, StagedBuiltIn::PrimitiveId)?,
+            Intrinsic::LoadInvocationId => self.staged_input(i, StagedBuiltIn::GeometryInstance)?,
+            Intrinsic::EmitVertex => {
+                let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
+                let function = *staged.emit.get(i.value[0] as usize).ok_or_else(|| {
+                    unsupported(format_args!(
+                        "an emit to a stream the program does not declare"
+                    ))
+                })?;
+                if let Some(position) = staged.position {
+                    let pointer = self.add(Expression::GlobalVariable(position));
+                    self.flip_y(pointer);
+                }
+                self.statement(Statement::Call {
+                    function,
+                    arguments: Vec::new(),
+                    result: None,
+                });
+            }
+            Intrinsic::EndPrimitive => {
+                let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
+                let function = staged.cut;
+                self.statement(Statement::Call {
+                    function,
+                    arguments: Vec::new(),
+                    result: None,
+                });
             }
             Intrinsic::Unsupported => return Err(unsupported(name(i))),
         }
@@ -3452,6 +3591,194 @@ impl Builder<'_> {
         );
         Ok(self.add(Expression::Constant(constant)))
     }
+}
+
+impl Builder<'_> {
+    /// The empty functions a geometry program's emits (one a stream, at least one) and ends call,
+    /// placed before the program's own.
+    fn staged_functions(&mut self, streams: u32) -> Staged {
+        let mut empty = || {
+            self.module
+                .functions
+                .append(Function::default(), Span::UNDEFINED)
+        };
+        let emit = (0..streams.max(1)).map(|_| empty()).collect();
+        Staged {
+            values: Vec::new(),
+            emit,
+            cut: empty(),
+            position: None,
+            inputs: Vec::new(),
+        }
+    }
+
+    /// A geometry program's stage value as a private variable the shaders crate fills or reads. The
+    /// vertex stage's positions come with y negated (its return's), which is undone here.
+    fn staged_value(&mut self, var: &FlatVar) -> Result<Handle<Expression>, ConvertError> {
+        let output = var.mode == VarMode::Output;
+        let place = match var.builtin {
+            FlatBuiltIn::None => Place::Location {
+                location: var.location,
+                component: 0,
+            },
+            FlatBuiltIn::Position => Place::BuiltIn(StagedBuiltIn::Position),
+            FlatBuiltIn::ClipDistance if output => Place::BuiltIn(StagedBuiltIn::ClipDistance),
+            FlatBuiltIn::Layer if output => Place::BuiltIn(StagedBuiltIn::Layer),
+            FlatBuiltIn::ViewportIndex if output => Place::BuiltIn(StagedBuiltIn::ViewportIndex),
+            other => {
+                return Err(unsupported(format_args!(
+                    "a geometry program's {} of the built-in {other:?}",
+                    if output { "output" } else { "input" }
+                )));
+            }
+        };
+        let ty = self.ty(var.ty)?;
+        let variable = self.module.global_variables.append(
+            GlobalVariable {
+                name: None,
+                space: AddressSpace::Private,
+                binding: None,
+                ty,
+                init: None,
+                memory_decorations: naga::MemoryDecorations::empty(),
+            },
+            Span::UNDEFINED,
+        );
+        let staged = self.staged.as_mut().expect("a geometry program");
+        staged.values.push(StageVariable {
+            variable,
+            output,
+            place,
+            stream: var.stream,
+            patch: false,
+        });
+        if output && var.builtin == FlatBuiltIn::Position {
+            staged.position = Some(variable);
+        }
+        let pointer = self.add(Expression::GlobalVariable(variable));
+        if !output && var.builtin == FlatBuiltIn::Position {
+            for vertex in 0..self.types[var.ty as usize].length {
+                let at = self.add(Expression::AccessIndex {
+                    base: pointer,
+                    index: vertex,
+                });
+                self.flip_y(at);
+            }
+        }
+        Ok(pointer)
+    }
+
+    /// A geometry program's built-in input, an unsigned integer.
+    fn staged_input(&mut self, i: &FlatInstr, builtin: StagedBuiltIn) -> Result<(), ConvertError> {
+        let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
+        let pointer = match staged.inputs.iter().find(|(b, _)| *b == builtin) {
+            Some(&(_, pointer)) => pointer,
+            None => {
+                let ty = self.add_type(TypeInner::Scalar(Scalar::U32));
+                let variable = self.module.global_variables.append(
+                    GlobalVariable {
+                        name: None,
+                        space: AddressSpace::Private,
+                        binding: None,
+                        ty,
+                        init: None,
+                        memory_decorations: naga::MemoryDecorations::empty(),
+                    },
+                    Span::UNDEFINED,
+                );
+                let pointer = self.add(Expression::GlobalVariable(variable));
+                let staged = self.staged.as_mut().expect("a geometry program");
+                staged.values.push(StageVariable {
+                    variable,
+                    output: false,
+                    place: Place::BuiltIn(builtin),
+                    stream: 0,
+                    patch: false,
+                });
+                staged.inputs.push((builtin, pointer));
+                pointer
+            }
+        };
+        let e = self.add(Expression::Load { pointer });
+        self.set(i, Value::Expr(e, ScalarKind::Uint));
+        Ok(())
+    }
+}
+
+/// A geometry program's declarations in the shaders crate's terms, `main` its function.
+fn geometry_program(
+    g: &FlatGeometry,
+    staged: Staged,
+    main: Handle<Function>,
+) -> Result<GeometryProgram, ConvertError> {
+    let input = match g.input {
+        FlatGeometryInput::Points => GeometryInput::Points,
+        FlatGeometryInput::Lines => GeometryInput::Lines,
+        FlatGeometryInput::LinesAdjacency => GeometryInput::LinesAdjacency,
+        FlatGeometryInput::Triangles => GeometryInput::Triangles,
+        FlatGeometryInput::TrianglesAdjacency => GeometryInput::TrianglesAdjacency,
+        FlatGeometryInput::Other => {
+            return Err(unsupported(format_args!(
+                "a geometry program's input primitive of another kind"
+            )));
+        }
+    };
+    let output = match g.output {
+        FlatGeometryOutput::Points => GeometryOutput::Points,
+        FlatGeometryOutput::LineStrip => GeometryOutput::LineStrip,
+        FlatGeometryOutput::TriangleStrip => GeometryOutput::TriangleStrip,
+        FlatGeometryOutput::Other => {
+            return Err(unsupported(format_args!(
+                "a geometry program's output primitive of another kind"
+            )));
+        }
+    };
+    Ok(GeometryProgram {
+        main,
+        emit: staged.emit,
+        cut: staged.cut,
+        input,
+        output,
+        max_vertices: g.max_vertices,
+        instances: g.invocations,
+        values: staged.values,
+    })
+}
+
+/// A geometry program of route B (`routed.geometry`) in the stage helper's forms: its compute
+/// form (or replay form, as `variant` asks) and the vertex program drawing its output, as
+/// `wcontainers_shaders::staged::geometry` makes them; otherwise as [`rewrite`].
+pub fn geometry(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<wcontainers_shaders::Converted, ConvertError> {
+    let Routed {
+        module,
+        rewrites,
+        geometry,
+    } = routed;
+    let program = geometry.ok_or_else(|| unsupported(format_args!("no geometry program")))?;
+    let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
+    if !rewrites.formatless.iter().all(named) {
+        return Err(unsupported(format_args!(
+            "a storage image without a format the variant does not name"
+        )));
+    }
+    let reflection = Reflection {
+        stage: SourceStage::Geometry,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        bindings,
+        helpers: Vec::new(),
+        helper_size: 0,
+        sampled_pairs: Vec::new(),
+        extras: StageExtras::None,
+        slow_paths: Vec::new(),
+    };
+    wcontainers_shaders::staged::geometry(module, &program, reflection, variant, route_key)
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))
 }
 
 /// Why [`rewrite`] failed where the shaders crate gave no module.
