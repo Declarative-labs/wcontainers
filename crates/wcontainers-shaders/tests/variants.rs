@@ -1838,46 +1838,46 @@ fn textures_of_another_kind_are_read_by_their_bits() {
 /// A level-of-detail query reads its sampler's state and bias (and its texture's per-resource clamp
 /// where the key asks for one) from the helper block, each once also where the variant filters
 /// through the same sampler in the program; the GLSL ES 3.00 writer takes it with the level count
-/// from the helpers (`TEXTURE_INFO`, as WebGL 2's fronts give it). The DXIL route refuses it by name.
+/// from the helpers (`TEXTURE_INFO`, as WebGL 2's fronts give it). Both routes alike, the DXIL
+/// route's reader stand-ins gone.
 #[test]
 fn level_of_detail_queries_read_the_samplers_state_from_the_helpers() {
     let code = own_pair("ps_lod");
     let values = |c: &wcontainers_shaders::Converted| -> Vec<HelperValue> {
         c.reflection.helpers.iter().map(|h| h.value).collect()
     };
-    let plain = convert(Source::Dxbc(&code[0]), &VariantKey::default(), None).unwrap();
-    assert_eq!(
-        values(&plain),
-        [
-            HelperValue::SamplerState { sampler: 0 },
-            HelperValue::LodBias { sampler: 0 }
-        ]
-    );
-    let text = wgsl(&plain);
-    assert_eq!(text.matches("fn level_of_detail(").count(), 1, "{text}");
+    for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
+        let plain = convert(source, &VariantKey::default(), None).unwrap();
+        assert_eq!(
+            values(&plain),
+            [
+                HelperValue::SamplerState { sampler: 0 },
+                HelperValue::LodBias { sampler: 0 }
+            ]
+        );
+        let text = wgsl(&plain);
+        assert_eq!(text.matches("fn level_of_detail(").count(), 1, "{text}");
+        assert!(!text.contains("image_query_lod"), "{text}");
+        let key = VariantKey {
+            filter_in_shader: 1,
+            lod_bias: 1,
+            min_lod_clamped: 1,
+            flags: VariantFlags::TEXTURE_INFO,
+            ..Default::default()
+        };
+        let varied = convert(source, &key, None).unwrap();
+        let mut found = values(&varied);
+        found.sort_by_key(|v| format!("{v:?}"));
+        let before = found.len();
+        found.dedup();
+        assert_eq!(found.len(), before, "{found:?}");
+        assert!(
+            found.contains(&HelperValue::MinLod { texture: 0 }),
+            "{found:?}"
+        );
+        glsl(&varied).unwrap();
+    }
     // One query a coordinate gives both values.
+    let text = wgsl(&convert(Source::Dxbc(&code[0]), &VariantKey::default(), None).unwrap());
     assert_eq!(text.matches("level_of_detail(").count(), 3, "{text}");
-    let key = VariantKey {
-        filter_in_shader: 1,
-        lod_bias: 1,
-        min_lod_clamped: 1,
-        flags: VariantFlags::TEXTURE_INFO,
-        ..Default::default()
-    };
-    let varied = convert(Source::Dxbc(&code[0]), &key, None).unwrap();
-    let mut found = values(&varied);
-    found.sort_by_key(|v| format!("{v:?}"));
-    let before = found.len();
-    found.dedup();
-    assert_eq!(found.len(), before, "{found:?}");
-    assert!(
-        found.contains(&HelperValue::MinLod { texture: 0 }),
-        "{found:?}"
-    );
-    glsl(&varied).unwrap();
-    let refused = convert(Source::Dxil(&code[1]), &VariantKey::default(), None).err();
-    assert!(
-        matches!(&refused, Some(ConvertError::Reader(s)) if s.contains("ImageQueryLod")),
-        "{refused:?}"
-    );
 }

@@ -4350,133 +4350,34 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let sampler = self.slot_of(r[1])?;
         let coordinate = self.coords(b, k, r[2], true)?;
         let image = self.add(b, Expression::GlobalVariable(res.var));
-        let size = self.add(
-            b,
-            Expression::ImageQuery {
-                image,
-                query: ImageQuery::Size { level: None },
-            },
-        );
-        let size = self.add(
-            b,
-            Expression::As {
-                expr: size,
-                kind: ScalarKind::Float,
-                convert: Some(Scalar::F32.width),
-            },
-        );
-        let levels = self.add(
-            b,
-            Expression::ImageQuery {
-                image,
-                query: ImageQuery::NumLevels,
-            },
-        );
-        let mut axes = Vec::new();
-        for axis in [naga::DerivativeAxis::X, naga::DerivativeAxis::Y] {
-            axes.push(self.add(
-                b,
-                Expression::Derivative {
-                    axis,
-                    ctrl: naga::DerivativeControl::None,
-                    expr: coordinate,
-                },
-            ));
-        }
-        // Two-dimensional values padded to the library's three axes.
-        let three = self.l.vec_ty(VEC3_SIZE, Scalar::F32)?;
-        let mut padded = Vec::new();
-        for v in [size, axes[0], axes[1]] {
-            padded.push(if k == kind::IMAGE_3D {
-                v
-            } else {
-                let zero = self.lit(b, Literal::F32(0.0));
-                self.add(
-                    b,
-                    Expression::Compose {
-                        ty: three,
-                        components: vec![v, zero],
-                    },
-                )
-            });
-        }
-        let stage = ShaderStage::Fragment;
+        let n = if k == kind::IMAGE_3D {
+            VectorSize::Tri
+        } else {
+            VectorSize::Bi
+        } as u8;
+        let q = crate::variant::lod::Query {
+            image,
+            dimensions: n,
+            texture,
+            sampler,
+            coordinate,
+            coordinate_size: n,
+        };
+        // The query emits its own expressions.
+        self.e.flush(&self.f, b);
         let l = &mut *self.l;
-        let state = crate::variant::sampler_state(&mut l.module, &mut l.reflection, stage, sampler);
-        let f32_ty = l.scalar_ty(Scalar::F32);
-        let bias = crate::variant::helper_once(
+        let result = crate::variant::lod::call(
             &mut l.module,
             &mut l.reflection,
-            stage,
-            HelperValue::LodBias { sampler },
-            f32_ty,
-        );
-        let clamped = texture < u128::BITS && self.l.variant.min_lod_clamped & (1 << texture) != 0;
-        let min_lod = if clamped {
-            let pair = self.l.vec_ty(2, Scalar::U32)?;
-            let l = &mut *self.l;
-            Some(crate::variant::helper_once(
-                &mut l.module,
-                &mut l.reflection,
-                stage,
-                HelperValue::MinLod { texture },
-                pair,
-            ))
-        } else {
-            None
-        };
-        let function = crate::variant::lod::function(&mut self.l.module)?;
-        let state = self.load_member(b, state);
-        let mut rows = Vec::new();
-        for index in 0..crate::variant::SAMPLER_STATE_ROWS {
-            rows.push(self.add(b, Expression::AccessIndex { base: state, index }));
-        }
-        let bias = self.load_member(b, bias);
-        let min_lod = match min_lod {
-            Some(at) => {
-                let pair = self.load_member(b, at);
-                let bits = self.add(
-                    b,
-                    Expression::AccessIndex {
-                        base: pair,
-                        index: 0,
-                    },
-                );
-                self.add(
-                    b,
-                    Expression::As {
-                        expr: bits,
-                        kind: ScalarKind::Float,
-                        convert: None,
-                    },
-                )
-            }
-            None => self.lit(b, Literal::F32(0.0)),
-        };
-        let result = self.add(b, Expression::CallResult(function));
-        self.stmt(
+            l.variant,
+            crate::variant::lod::function,
+            &mut self.f,
             b,
-            Statement::Call {
-                function,
-                arguments: vec![
-                    padded[0], padded[1], padded[2], levels, rows[0], rows[1], rows[2], bias,
-                    min_lod,
-                ],
-                result: Some(result),
-            },
-        );
+            &q,
+            None,
+        )?;
+        self.e.start = self.f.expressions.len();
         Ok(result)
-    }
-
-    /// The value of a helper block member.
-    fn load_member(
-        &mut self,
-        b: &mut Block,
-        (var, index): (Handle<GlobalVariable>, u32),
-    ) -> Handle<Expression> {
-        let block = self.add(b, Expression::GlobalVariable(var));
-        let pointer = self.add(b, Expression::AccessIndex { base: block, index });
-        self.add(b, Expression::Load { pointer })
     }
 
     fn layer(&mut self, b: &mut Block, id: u32) -> Result<Option<Handle<Expression>>> {

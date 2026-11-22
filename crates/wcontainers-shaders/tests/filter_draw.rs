@@ -794,18 +794,10 @@ fn levels_of_detail_match_direct3d() {
             "  direct3d on the gpu against warp: {apart} of {} texels past {LOD_ALLOWANCE}, largest {largest}",
             SIZE * SIZE
         );
-        // The DXIL route refuses the query by name (the carried SPIR-V reader's, gap list).
-        let dxil = bytecode(&format!("{LOD}.dxil"));
-        let refused = convert(Source::Dxil(&dxil), &VariantKey::default(), None).err();
-        println!("  dxil: {refused:?}");
-        assert!(
-            matches!(
-                &refused,
-                Some(wcontainers_shaders::ConvertError::Reader(s)) if s.contains("ImageQueryLod")
-            ),
-            "{refused:?}"
-        );
-        for back_end in ["webgpu", "webgl"] {
+        for (build, back_end) in ["dxbc", "dxil"]
+            .into_iter()
+            .flat_map(|b| [(b, "webgpu"), (b, "webgl")])
+        {
             let key = VariantKey {
                 flags: if back_end == "webgl" {
                     wcontainers_gpu::VariantFlags::TEXTURE_INFO
@@ -815,9 +807,9 @@ fn levels_of_detail_match_direct3d() {
                 ..Default::default()
             };
             let picture = if back_end == "webgpu" {
-                ours(&mut gpu, LOD, "dxbc", format, &texels, &case, 0, &key, None)
+                ours(&mut gpu, LOD, build, format, &texels, &case, 0, &key, None)
             } else {
-                ours(&mut gl, LOD, "dxbc", format, &texels, &case, 0, &key, None)
+                ours(&mut gl, LOD, build, format, &texels, &case, 0, &key, None)
             };
             let gpu_apart = differences(&reference, &picture);
             let soft_apart = differences(&software, &picture);
@@ -840,7 +832,7 @@ fn levels_of_detail_match_direct3d() {
             let (gpu_count, gpu_largest) = count(&gpu_apart, LOD_ALLOWANCE);
             let (soft_count, soft_largest) = count(&soft_apart, LOD_ALLOWANCE);
             println!(
-                "  dxbc {back_end}: {} of {} texels past {LOD_ALLOWANCE} from both; from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
+                "  {build} {back_end}: {} of {} texels past {LOD_ALLOWANCE} from both; from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
                 neither.len(),
                 SIZE * SIZE
             );
@@ -861,13 +853,13 @@ fn levels_of_detail_match_direct3d() {
                 );
             }
             keep(
-                &format!("lod_{case_seed}_{back_end}"),
+                &format!("lod_{case_seed}_{build}_{back_end}"),
                 &picture,
                 Format::Rgba32Float,
             );
             compared += 1;
             if !neither.is_empty() {
-                let what = format!("{case_seed} {back_end}");
+                let what = format!("{case_seed} {build} {back_end}");
                 // Known failure: an anisotropic footprint's level of detail is the implementation's
                 // own (the GPU's and warp's differ from each other), as for sampling above.
                 if case.anisotropy > 1 {

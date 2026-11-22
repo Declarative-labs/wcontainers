@@ -168,10 +168,10 @@ hlsl+bool-cast-3-ps.dxil	ok ; glsl compiles
 hlsl+bool-cast-4-ps.dxil	ok ; glsl compiles
 hlsl+bool-semantics-1-vs.dxil	ok ; glsl compiles
 hlsl+bool-semantics-2-ps.dxil	ok ; glsl compiles
-hlsl+calculate-lod-1-ps.dxil	spirv-reader unsupported instruction ImageQueryLod at Function
-hlsl+calculate-lod-2-ps.dxil	spirv-reader unsupported instruction ImageQueryLod at Function
-hlsl+calculate-lod-3-ps.dxil	spirv-reader unsupported instruction ImageQueryLod at Function
-hlsl+calculate-lod-4-ps.dxil	spirv-reader unsupported instruction ImageQueryLod at Function
+hlsl+calculate-lod-1-ps.dxil	ok ; glsl compiles
+hlsl+calculate-lod-2-ps.dxil	ok ; glsl compiles
+hlsl+calculate-lod-3-ps.dxil	ok ; glsl compiles
+hlsl+calculate-lod-4-ps.dxil	ok ; glsl compiles
 hlsl+cast-64-bit-1-ps.dxil	unsupported Float64
 hlsl+cast-64-bit-10-ps.dxil	unsupported Float64
 hlsl+cast-64-bit-2-ps.dxil	unsupported Float64

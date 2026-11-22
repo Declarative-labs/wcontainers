@@ -7,6 +7,7 @@ mod components;
 mod depth;
 mod geometry;
 pub(crate) mod images;
+mod lod;
 mod nonfinite;
 mod one_d;
 mod registers;
@@ -405,6 +406,7 @@ pub(crate) fn lower(
         &mut reflection,
     )?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
+    lod::queries(&mut module, stage, variant, &slots, &mut reflection)?;
     draw_bases(&mut module, variant, &mut reflection)?;
     images::finish(
         &mut module,
