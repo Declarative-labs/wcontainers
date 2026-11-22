@@ -1,7 +1,8 @@
 //! Internet sockets whose other end is outside the container (plan section 9): a TCP connection
-//! or listener is one of the system's, waited on through its readiness, and a UDP socket has one
-//! host connection for each outside destination it sends to. Bytes that arrive are pulled into
-//! the socket's queue when the system says they are there, so readiness is the kernel's to give.
+//! or listener is one of the system's, and a UDP socket has one of the system's UDP sockets for
+//! each outside destination it sends to, each waited on through its readiness. Bytes that arrive
+//! are pulled into the socket's queue when the system says they are there, so readiness is the
+//! kernel's to give.
 //! Name queries sent to the container's name server are answered here through the system's
 //! resolver.
 
@@ -12,11 +13,20 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::RefCell;
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use core::ops::Range;
 
-use wcontainers_abi::{ConnectionId, HostError};
+use etherparse::{
+    IpDscp, IpEcn, IpNumber, Ipv4Header, Ipv4Options, Ipv6FlowLabel, LaxIpSlice, UdpHeader,
+    UdpSlice,
+};
+use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    BindAddress, Ipv6Families, LocalBinding, LocalPort, Port, PortChoice, PortRange, Report,
-    TransmitReportKey, TransmitReportRequest,
+    BindAddress, BroadcastPermission, IpHeaderFields, IpSendFields, IpVersion, Ipv4HeaderFields,
+    Ipv4RouteSelectors, Ipv6Families, Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding,
+    LocalFragmentation, LocalPort, MobileAddressPreference, NeighbourConfirmation, PacketMark,
+    PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, Report, RouteScope,
+    RouteSelectors, SendError, SourceAddressCheck, SourcePreferences, TemporaryAddressPreference,
+    TransmitReportKey, TransmitReportRequest, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{Readiness, ReadyFor};
@@ -24,6 +34,7 @@ use wcontainers_tcp_sockets::{
     ListenBacklog, TcpClose, TcpConnections, TcpContinuation, TcpFastOpen, TcpListeners,
     TcpProtocol, TcpReceiveRequest, TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpUrgency,
 };
+use wcontainers_udp_sockets::{UdpChecksum, UdpDatagram, UdpProtocol, UdpReceived, UdpSockets};
 
 use super::inet::{Endpoint, mapped, v4_of};
 use super::{Packet, RCV_SHUTDOWN, SHUTDOWN_MASK, Socket, SocketRef, State, channel};
@@ -35,47 +46,55 @@ use crate::{Context, Errno, Kernel, network};
 /// The most bytes pulled from the host at once.
 const PIECE: usize = 65536;
 
-/// A TCP connection or listener of the system.
-enum Handle<C, L> {
+/// Room before a datagram's payload for the IP and UDP headers the system gives with it.
+const HEADROOM: usize = Ipv4Header::MAX_LEN + UdpHeader::LEN;
+
+/// A TCP connection or listener, or a UDP socket, of the system.
+enum Handle<C, L, U> {
     Connection(C),
     Listener(L),
+    Datagram(U),
 }
 
-type HandleOf<S> = Handle<<S as TcpConnections>::Connection, <S as TcpListeners>::Listener>;
+type HandleOf<S> = Handle<
+    <S as TcpConnections>::Connection,
+    <S as TcpListeners>::Listener,
+    <S as UdpSockets>::Socket,
+>;
 
-/// One connection or listener to the outside.
+/// One connection, listener or UDP flow to the outside.
 struct Link {
     socket: Weak<RefCell<Socket>>,
     /// The destination a UDP flow carries; none for TCP.
     flow: Option<Endpoint>,
     /// The system's `HandleOf<S>`, kept without its type as the kernel is not generic over its
-    /// system; none for a UDP flow, which the abi's host carries.
-    handle: Option<Rc<dyn Any>>,
+    /// system.
+    handle: Rc<dyn Any>,
+    /// The local port the system's UDP socket of a flow is bound to.
+    local_port: u16,
     /// What the wait kept for it asks; empty when none is kept.
     asked: ReadyFor,
     /// A receive or accept found nothing waiting.
     drained: bool,
     /// A TCP connect not finished yet.
     connecting: bool,
+    /// A UDP flow's send found no room.
+    blocked: bool,
 }
 
 impl Link {
-    fn new(socket: &SocketRef, flow: Option<Endpoint>, handle: Option<Rc<dyn Any>>) -> Self {
+    fn new(socket: &SocketRef, flow: Option<Endpoint>, handle: Rc<dyn Any>) -> Self {
         Self {
             socket: Rc::downgrade(socket),
             flow,
             handle,
+            local_port: u16::MIN,
             asked: ReadyFor::empty(),
             drained: false,
             connecting: false,
+            blocked: false,
         }
     }
-}
-
-/// What is let go and not yet handed back to the system.
-enum Closing {
-    Flow(u32),
-    Handle(Rc<dyn Any>),
 }
 
 /// The connections to the outside and the name lookups under way.
@@ -87,8 +106,8 @@ pub(crate) struct Outside {
     listeners: BTreeMap<u32, Link>,
     last_lookup: u64,
     lookups: BTreeMap<u64, Lookup>,
-    /// Connections let go where no system was at hand, closed at the next flush.
-    closing: Vec<Closing>,
+    /// The system's handles let go, closed at the next flush once no wait holds them.
+    closing: Vec<Rc<dyn Any>>,
 }
 
 /// A name query waiting for the system's resolver, which is asked as a waiting call of its number.
@@ -97,14 +116,6 @@ struct Lookup {
     /// The server's address it asked at.
     server: Endpoint,
     query: Vec<u8>,
-}
-
-/// The address bytes the host is given: 4 for IPv4, else 16.
-fn host_address(endpoint: &Endpoint) -> Vec<u8> {
-    match v4_of(&endpoint.address) {
-        Some(v4) => v4.to_vec(),
-        None => endpoint.address.to_vec(),
-    }
 }
 
 /// An endpoint as the system takes it.
@@ -154,8 +165,8 @@ fn next_id(outside: &mut Outside) -> u32 {
 }
 
 /// The system's handle kept for a link.
-fn handle_of<S: crate::System>(handle: &Option<Rc<dyn Any>>) -> Option<&HandleOf<S>> {
-    handle.as_deref()?.downcast_ref::<HandleOf<S>>()
+fn handle_of<S: crate::System>(handle: &Rc<dyn Any>) -> Option<&HandleOf<S>> {
+    handle.downcast_ref::<HandleOf<S>>()
 }
 
 /// The system's handle of connection `id`, if it is one.
@@ -166,7 +177,16 @@ fn connection_of<S: crate::System>(
     let link = kernel.sockets.inet.outside.connections.get(&id)?;
     match handle_of::<S>(&link.handle)? {
         Handle::Connection(connection) => Some(connection),
-        Handle::Listener(_) => None,
+        Handle::Listener(_) | Handle::Datagram(_) => None,
+    }
+}
+
+/// The system's UDP socket of flow `id`, if it is one.
+fn datagram_of<S: crate::System>(kernel: &Kernel, id: u32) -> Option<&<S as UdpSockets>::Socket> {
+    let link = kernel.sockets.inet.outside.connections.get(&id)?;
+    match handle_of::<S>(&link.handle)? {
+        Handle::Datagram(socket) => Some(socket),
+        Handle::Connection(_) | Handle::Listener(_) => None,
     }
 }
 
@@ -180,25 +200,111 @@ fn close_handle<S: crate::System>(system: &S, handle: Rc<dyn Any>) {
             TcpConnections::close(system, connection, TcpClose::Orderly);
         }
         Ok(Handle::Listener(listener)) => TcpListeners::stop_listening(system, listener),
+        Ok(Handle::Datagram(socket)) => UdpSockets::close(system, socket),
         Err(_) => debug_assert!(false, "a handle let go while a wait holds it"),
     }
 }
 
-/// Starts a host connection for a UDP `socket` to `to`; its number.
+/// Source address preferences that ask for nothing, as a socket has before any is set.
+const NO_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
+    temporary: TemporaryAddressPreference::SystemDefault,
+    mobile: MobileAddressPreference::Home,
+};
+
+/// The route of a UDP flow to `to` from `source_port`, asking for nothing more.
+fn flow_route(to: SocketAddr, source_port: u16, options: &Ipv4Options) -> RouteSelectors<'_> {
+    let upper_layer = UpperLayer {
+        protocol: IpNumber::UDP,
+        selector: Some(UpperLayerSelector::Ports(TransportPorts {
+            source: Port(source_port),
+            destination: Port(to.port()),
+        })),
+    };
+    match to {
+        SocketAddr::V4(to) => RouteSelectors::V4(Ipv4RouteSelectors {
+            destination: *to.ip(),
+            source: None,
+            source_address_check: SourceAddressCheck::Required,
+            interface: None,
+            dscp: IpDscp::ZERO,
+            ecn: IpEcn::NotEct,
+            mark: PacketMark(u32::MIN),
+            scope: RouteScope::Universe,
+            broadcast: BroadcastPermission::Refused,
+            options,
+            upper_layer,
+        }),
+        SocketAddr::V6(to) => RouteSelectors::V6(Ipv6RouteSelectors {
+            destination: *to.ip(),
+            source: None,
+            source_address_check: SourceAddressCheck::Required,
+            interface: None,
+            dscp: IpDscp::ZERO,
+            ecn: IpEcn::NotEct,
+            flow_label: Ipv6FlowLabel::ZERO,
+            mark: PacketMark(u32::MIN),
+            source_preferences: NO_SOURCE_PREFERENCES,
+            routing_header: None,
+            upper_layer,
+        }),
+    }
+}
+
+/// The header of a plain datagram on a route, as a socket with no options sends it.
+fn plain_header(route: RouteSelectors<'_>) -> IpHeaderFields<'_> {
+    match route {
+        RouteSelectors::V4(route) => IpHeaderFields::V4(Ipv4HeaderFields {
+            route,
+            time_to_live: None,
+            path_mtu_discovery: PathMtuDiscovery::Want,
+        }),
+        RouteSelectors::V6(route) => IpHeaderFields::V6(Ipv6HeaderFields {
+            route,
+            hop_limit: None,
+            path_mtu_discovery: PathMtuDiscovery::Want,
+            local_fragmentation: LocalFragmentation::Allowed,
+            fragment_mtu: None,
+            hop_by_hop_options: None,
+            routing_destination_options: None,
+            destination_options: None,
+        }),
+    }
+}
+
+/// Opens the system's UDP socket for a UDP `socket`'s flow to `to`, connected to it; its number.
+/// It waits to read from the start, so what arrives is pulled.
 fn open_flow<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     socket: &SocketRef,
     to: Endpoint,
 ) -> Result<u32, Errno> {
+    let address = socket_address(&to);
+    let version = match address {
+        SocketAddr::V4(_) => IpVersion::V4,
+        SocketAddr::V6(_) => IpVersion::V6,
+    };
+    let owner = UserId(socket.borrow().uid);
+    let opened = match UdpSockets::open(&**cx.system, version, UdpProtocol::Udp, owner) {
+        Ok(opened) => opened,
+        Err(error) => return Err(refusal(kernel, cx, error)),
+    };
+    let options = Ipv4Options::new();
+    let route = flow_route(address, u16::MIN, &options);
+    let local = match UdpSockets::connect(&**cx.system, &opened, route) {
+        Ok(local) => local,
+        Err(error) => {
+            UdpSockets::close(&**cx.system, opened);
+            return Err(refusal(kernel, cx, error));
+        }
+    };
     let id = next_id(&mut kernel.sockets.inet.outside);
-    let address = host_address(&to);
-    if let Err(error) = wcontainers_abi::Host::connect(cx.host, ConnectionId(id), &address, to.port)
-    {
-        return Err(refusal(kernel, cx, error));
-    }
-    let link = Link::new(socket, Some(to), None);
+    let handle: HandleOf<S> = Handle::Datagram(opened);
+    let mut link = Link::new(socket, Some(to), Rc::new(handle));
+    link.local_port = local.port();
+    link.drained = true;
     kernel.sockets.inet.outside.connections.insert(id, link);
+    watch(kernel, cx, id);
     Ok(id)
 }
 
@@ -241,7 +347,7 @@ pub(super) fn open<S: crate::System>(
     };
     let id = next_id(&mut kernel.sockets.inet.outside);
     let handle: HandleOf<S> = Handle::Connection(connected.connection);
-    let mut link = Link::new(socket, None, Some(Rc::new(handle)));
+    let mut link = Link::new(socket, None, Rc::new(handle));
     link.connecting = true;
     kernel.sockets.inet.outside.connections.insert(id, link);
     watch(kernel, cx, id);
@@ -253,11 +359,7 @@ fn let_go(kernel: &mut Kernel, id: u32, link: Link) {
     kernel
         .waiting
         .drop_where(|about| *about == WaitFor::Ready(id));
-    let closing = match link.handle {
-        Some(handle) => Closing::Handle(handle),
-        None => Closing::Flow(id),
-    };
-    kernel.sockets.inet.outside.closing.push(closing);
+    kernel.sockets.inet.outside.closing.push(link.handle);
 }
 
 /// Ends every host connection of a socket whose last descriptor went.
@@ -322,7 +424,7 @@ fn ask_listen<S: crate::System>(
     match listening {
         Ok(listening) => {
             let handle: HandleOf<S> = Handle::Listener(listening.listener);
-            let mut link = Link::new(socket, None, Some(Rc::new(handle)));
+            let mut link = Link::new(socket, None, Rc::new(handle));
             link.drained = true;
             kernel.sockets.inet.outside.listeners.insert(id, link);
             watch(kernel, cx, id);
@@ -424,7 +526,7 @@ pub(super) fn take<S: crate::System>(
         }
         super::inet::made_outside(kernel, &embryo, false);
         let handle: HandleOf<S> = Handle::Connection(accepted);
-        let link = Link::new(&embryo, None, Some(Rc::new(handle)));
+        let link = Link::new(&embryo, None, Rc::new(handle));
         kernel.sockets.inet.outside.connections.insert(id, link);
         pull_and_wait(kernel, cx, &embryo, id);
         listener.borrow_mut().backlog.push_back(embryo);
@@ -434,11 +536,8 @@ pub(super) fn take<S: crate::System>(
 
 /// Hands the system the connections and listeners released since the last call.
 pub(super) fn flush<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
-    for closing in core::mem::take(&mut kernel.sockets.inet.outside.closing) {
-        match closing {
-            Closing::Flow(id) => wcontainers_abi::Host::close(cx.host, ConnectionId(id)),
-            Closing::Handle(handle) => close_handle(&**cx.system, handle),
-        }
+    for handle in core::mem::take(&mut kernel.sockets.inet.outside.closing) {
+        close_handle(&**cx.system, handle);
     }
 }
 
@@ -455,7 +554,10 @@ fn interest(link: &Link) -> ReadyFor {
     if link.drained {
         interest |= ReadyFor::READABLE;
     }
-    let room = socket.borrow().inet.as_deref().is_none_or(|inet| inet.room);
+    let room = match link.flow {
+        Some(_) => !link.blocked,
+        None => socket.borrow().inet.as_deref().is_none_or(|inet| inet.room),
+    };
     if !room {
         interest |= ReadyFor::WRITABLE;
     }
@@ -473,9 +575,7 @@ fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32
     else {
         return;
     };
-    let Some(handle) = link.handle.clone() else {
-        return;
-    };
+    let handle = link.handle.clone();
     let wanted = interest(link);
     if wanted == link.asked {
         return;
@@ -517,6 +617,10 @@ async fn ready_of<S: crate::System>(
                 &*system, listener, interest,
             )
             .await
+        }
+        Some(Handle::Datagram(socket)) => {
+            Readiness::<<S as UdpSockets>::Socket>::wait_until_ready(&*system, socket, interest)
+                .await
         }
         None => Err(HostError::NotSupported),
     };
@@ -560,6 +664,9 @@ pub(super) fn ready<S: crate::System>(
     };
     link.asked = ReadyFor::empty();
     let connecting = core::mem::take(&mut link.connecting);
+    if ready.intersects(ReadyFor::WRITABLE | ReadyFor::ERROR | ReadyFor::HANG_UP) {
+        link.blocked = false;
+    }
     let Some(socket) = owner(kernel, id) else {
         return;
     };
@@ -614,20 +721,40 @@ pub(super) fn pull_and_wait<S: crate::System>(
     watch(kernel, cx, id);
 }
 
-/// Receives from connection `id`: the system's TCP connection, or the host's UDP flow.
+/// Receives from connection `id`, the system's TCP connection or a flow's UDP socket: where the
+/// bytes or the datagram's payload lie in `into`.
 fn receive<S: crate::System>(
     kernel: &Kernel,
     cx: &Context<'_, S>,
     id: u32,
     into: &mut [u8],
-) -> Result<usize, HostError> {
-    match connection_of::<S>(kernel, id) {
-        Some(connection) => {
-            TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, into)
-                .map(|received| received.length.0)
-        }
-        None => wcontainers_abi::Host::receive(cx.host, ConnectionId(id), into),
+) -> Result<Range<usize>, HostError> {
+    if let Some(connection) = connection_of::<S>(kernel, id) {
+        return TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, into)
+            .map(|received| 0..received.length.0);
     }
+    let Some(socket) = datagram_of::<S>(kernel, id) else {
+        return Err(HostError::Closed);
+    };
+    loop {
+        // The flow asks for no transmit reports, and a packet that does not parse is dropped, as
+        // Linux drops a malformed datagram.
+        if let UdpReceived::Packet(packet) = UdpSockets::receive(&**cx.system, socket, into)?
+            && let Some(payload) = payload_of(&into[..packet.fields.length.min(into.len())])
+        {
+            return Ok(payload);
+        }
+    }
+}
+
+/// Where the UDP payload of a whole packet from its IP header lies in it, cut short if the packet
+/// was.
+fn payload_of(packet: &[u8]) -> Option<Range<usize>> {
+    let (ip, _) = LaxIpSlice::from_slice(packet).ok()?;
+    let udp = UdpSlice::from_slice_lax(ip.payload().payload).ok()?;
+    let payload = udp.payload();
+    let start = payload.as_ptr() as usize - packet.as_ptr() as usize;
+    Some(start..start + payload.len())
 }
 
 /// What [`pull_and_wait`] takes now, without waiting.
@@ -663,11 +790,11 @@ fn pull<S: crate::System>(
         let size = if stream {
             ((room - held) as usize).min(PIECE)
         } else {
-            PIECE
+            PIECE + HEADROOM
         };
         let mut buffer = alloc::vec![0u8; size];
         match receive(kernel, cx, id, &mut buffer) {
-            Ok(0) if stream => {
+            Ok(bytes) if stream && bytes.is_empty() => {
                 super::inet::carry_outside(kernel, socket, 0, true, false);
                 let mut own = socket.borrow_mut();
                 own.shutdown |= RCV_SHUTDOWN;
@@ -683,7 +810,9 @@ fn pull<S: crate::System>(
                 super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
                 return;
             }
-            Ok(count) => {
+            Ok(bytes) => {
+                let count = bytes.len();
+                buffer.copy_within(bytes, 0);
                 buffer.truncate(count);
                 let truesize = if stream {
                     count as u64
@@ -825,22 +954,33 @@ fn reset<S: crate::System>(
     super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_ERR);
 }
 
+/// A send's transmit reports, none asked for.
+const NO_TRANSMIT_REPORTS: TransmitReportRequest = TransmitReportRequest {
+    key: TransmitReportKey(0),
+    scheduled: Report::NotRequested,
+    software: Report::NotRequested,
+    hardware: Report::NotRequested,
+    acknowledgement: Report::NotRequested,
+    completion: Report::NotRequested,
+    wireless_status: Report::NotRequested,
+    packet: Report::NotRequested,
+};
+
 /// The flags of a plain send, with nothing reported.
 const PLAIN_SEND: TcpSendRequest = TcpSendRequest {
     urgency: TcpUrgency::Normal,
     continuation: TcpContinuation::Push,
     record: TcpRecordBoundary::Open,
-    transmit_reports: TransmitReportRequest {
-        key: TransmitReportKey(0),
-        scheduled: Report::NotRequested,
-        software: Report::NotRequested,
-        hardware: Report::NotRequested,
-        acknowledgement: Report::NotRequested,
-        completion: Report::NotRequested,
-        wireless_status: Report::NotRequested,
-        packet: Report::NotRequested,
-    },
+    transmit_reports: NO_TRANSMIT_REPORTS,
     transmit_statistics: Report::NotRequested,
+};
+
+/// The fields of a plain datagram's send, with nothing reported.
+const PLAIN_DATAGRAM: IpSendFields = IpSendFields {
+    neighbour: NeighbourConfirmation::Unconfirmed,
+    priority: PacketPriority(0),
+    transmit_time: None,
+    transmit_reports: NO_TRANSMIT_REPORTS,
 };
 
 /// Sends bytes of a TCP connection to the outside, as much as the system takes now; once it
@@ -883,7 +1023,8 @@ pub(super) fn send<S: crate::System>(
     }
 }
 
-/// Sends one datagram to an outside destination through the socket's host connection for it.
+/// Sends one datagram to an outside destination through the system's UDP socket of the socket's
+/// flow to it; one that finds no room waits for it.
 pub(super) fn send_datagram<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
@@ -906,14 +1047,46 @@ pub(super) fn send_datagram<S: crate::System>(
             id
         }
     };
-    match wcontainers_abi::Host::send(cx.host, ConnectionId(id), data) {
-        Ok(_) => Ok(()),
-        Err(HostError::WouldBlock) => Err(Errno::EAGAIN),
-        Err(HostError::Closed) => {
+    let (Some(system_socket), Some(local_port)) = (
+        datagram_of::<S>(kernel, id),
+        kernel
+            .sockets
+            .inet
+            .outside
+            .connections
+            .get(&id)
+            .map(|link| link.local_port),
+    ) else {
+        return Err(Errno::ECONNREFUSED);
+    };
+    let options = Ipv4Options::new();
+    let header = plain_header(flow_route(socket_address(&to), local_port, &options));
+    let datagram = UdpDatagram {
+        checksum: UdpChecksum::Computed,
+        segment_size: None,
+        payload: data,
+    };
+    match UdpSockets::send_to(
+        &**cx.system,
+        system_socket,
+        header,
+        PLAIN_DATAGRAM,
+        datagram,
+    ) {
+        Ok(()) => Ok(()),
+        Err(SendError::Host(HostError::WouldBlock)) => {
+            if let Some(link) = kernel.sockets.inet.outside.connections.get_mut(&id) {
+                link.blocked = true;
+            }
+            watch(kernel, cx, id);
+            Err(Errno::EAGAIN)
+        }
+        Err(SendError::Host(HostError::Closed)) => {
             forget_flow(kernel, socket, id);
             Err(Errno::ECONNREFUSED)
         }
-        Err(error) => Err(refusal(kernel, cx, error)),
+        Err(SendError::Host(error)) => Err(refusal(kernel, cx, error)),
+        Err(SendError::MessageTooLong { .. }) => Err(Errno::EMSGSIZE),
     }
 }
 
@@ -924,26 +1097,6 @@ pub(super) fn finish<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_,
     {
         refusal(kernel, cx, error);
     }
-}
-
-/// Hands an event about a UDP flow to its socket. Returns false for one nothing waits for.
-pub(crate) fn event<S: crate::System>(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
-    event: &wcontainers_abi::Event<'_>,
-) -> bool {
-    let wcontainers_abi::Event::ConnectionReady { connection } = *event else {
-        return false;
-    };
-    let Some(socket) = owner(kernel, connection.0) else {
-        return false;
-    };
-    if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
-        inet.room = true;
-    }
-    pull_and_wait(kernel, cx, &socket, connection.0);
-    super::write_space(kernel, cx, &socket);
-    true
 }
 
 fn owner(kernel: &Kernel, id: u32) -> Option<SocketRef> {

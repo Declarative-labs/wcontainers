@@ -372,15 +372,6 @@ pub(crate) fn flush_outside<S: crate::System>(kernel: &mut Kernel, cx: &mut Cont
     outside::flush(kernel, cx);
 }
 
-/// Hands a network event to the socket or lookup it is for; false if none waits for it.
-pub(crate) fn outside_event<S: crate::System>(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
-    event: &wcontainers_abi::Event<'_>,
-) -> bool {
-    outside::event(kernel, cx, event)
-}
-
 /// The system's resolver answered the container's name server's lookup `number`.
 pub(crate) fn name_answered<S: crate::System>(
     kernel: &mut Kernel,

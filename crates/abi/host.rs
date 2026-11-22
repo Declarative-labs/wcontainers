@@ -6,10 +6,6 @@
 /// The host's clocks count nanoseconds: how many make a second.
 pub const NANOSECONDS_PER_SECOND: u64 = core::time::Duration::from_secs(1).as_nanos() as u64;
 
-/// One UDP flow to the world outside the container.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ConnectionId(pub u32);
-
 /// One end of a byte stream between the kernel and the embedder: a handle local to one kernel,
 /// whose other side the embedder holds. Each direction carries data, credit and closing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,10 +52,6 @@ pub enum Event<'a> {
     Timer,
     /// The backend sent a FUSE notice that was not asked for, such as "this file changed".
     BackendNotice { notice: &'a [u8] },
-    /// A UDP flow has a datagram to receive or room to send: try again. Sent once after a
-    /// [`Host::receive`] or [`Host::send`] answered [`HostError::WouldBlock`], or after
-    /// connecting, when that changes.
-    ConnectionReady { connection: ConnectionId },
     /// Bytes for an end, never more than the credit the kernel gave on it.
     StreamData { end: End, bytes: &'a [u8] },
     /// The kernel may send this many more bytes on an end.
@@ -88,16 +80,4 @@ pub trait Host: Sync {
     fn credit_stream(&self, end: End, bytes: u64);
     /// The kernel sends nothing more on an end, data or credit; the embedder frees it by closing it.
     fn close_stream(&self, end: End);
-
-    /// Starts a UDP flow to an outside address (4 or 16 bytes) and port. It may be sent on and
-    /// received from at once; each send is one datagram and each receive gives one (what does not
-    /// fit is lost).
-    fn connect(&self, connection: ConnectionId, address: &[u8], port: u16)
-    -> Result<(), HostError>;
-    /// Send one datagram; returns how many bytes were taken.
-    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError>;
-    /// Receive one datagram; returns how many bytes arrived. [`HostError::Closed`] means the
-    /// destination refused.
-    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError>;
-    fn close(&self, connection: ConnectionId);
 }

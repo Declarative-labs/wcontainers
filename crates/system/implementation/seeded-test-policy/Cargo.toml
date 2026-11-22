@@ -17,6 +17,7 @@ wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-system = { path = "../.." }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
+wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }

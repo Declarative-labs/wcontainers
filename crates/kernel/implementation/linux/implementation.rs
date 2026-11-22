@@ -540,55 +540,28 @@ impl Kernel {
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };
-        let detail = match event {
+        self.entry_now = cx.monotonic();
+        match event {
             Event::Timer => {
-                self.entry_now = cx.monotonic();
                 self.wake_due();
                 syscall::timer::fire_due(self, &mut cx);
-                self.settle(&mut cx);
-                return;
             }
             Event::BackendNotice { notice } => {
-                self.entry_now = cx.monotonic();
                 self.backend_notice(&mut cx, notice);
-                self.settle(&mut cx);
-                return;
-            }
-            Event::ConnectionReady { connection } => {
-                self.entry_now = cx.monotonic();
-                if syscall::socket::outside_event(self, &mut cx, &event) {
-                    self.settle(&mut cx);
-                    return;
-                }
-                u64::from(connection.0)
             }
             Event::StreamData { end, bytes } => {
-                self.entry_now = cx.monotonic();
                 self.stream_data(&mut cx, end, bytes);
-                self.settle(&mut cx);
-                return;
             }
             Event::StreamCredit { end, bytes } => {
-                self.entry_now = cx.monotonic();
                 self.credit_stream(&mut cx, end, bytes);
-                self.settle(&mut cx);
-                return;
             }
             Event::StreamClosed { end } => {
-                self.entry_now = cx.monotonic();
                 self.stream_closed(&mut cx, end);
-                self.settle(&mut cx);
-                return;
             }
             Event::TerminalResized { end, columns, rows } => {
-                self.entry_now = cx.monotonic();
                 self.terminal_resized(&mut cx, end, columns, rows);
-                self.settle(&mut cx);
-                return;
             }
-        };
-        self.counters
-            .count(cx.host, reason::EVENT_UNEXPECTED, detail);
+        }
         self.settle(&mut cx);
     }
 

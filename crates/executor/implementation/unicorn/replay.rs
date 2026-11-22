@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hasher};
 
-use wcontainers_abi::{ConnectionId, End, Event, HostError, MemoryId};
+use wcontainers_abi::{End, Event, HostError, MemoryId};
 use wcontainers_runtime_single_kernel::Turn;
 
 /// One thing the host gave, in the order the kernel took it.
@@ -30,11 +30,10 @@ pub enum Entry {
     /// The backend's reply to a request a call of the kernel's waits on, by its number.
     BackendAnswered(u64, Vec<u8>),
     NameAnswered(u64, Vec<u8>),
-    /// What a TCP connection or listener a wait of the kernel's is on became ready for, by its
-    /// number.
-    TcpReady(u32, wcontainers_readiness::ReadyFor),
+    /// What a socket a wait of the kernel's is on became ready for, by its number.
+    SocketReady(u32, wcontainers_readiness::ReadyFor),
     /// A TCP connect, listen or accept, and the number it gave.
-    TcpMade(Result<u32, HostError>),
+    SocketMade(Result<u32, HostError>),
     /// A signal the outside sent to the first process.
     Kill(wcontainers_kernel::signal::Signal),
     /// The ends of what the outside did at a point of the driver loop, with what it answered.
@@ -50,7 +49,6 @@ pub enum Entry {
 pub enum OwnedEvent {
     Timer,
     BackendNotice(Vec<u8>),
-    ConnectionReady(ConnectionId),
     StreamData { end: End, bytes: Vec<u8> },
     StreamCredit { end: End, bytes: u64 },
     StreamClosed(End),
@@ -62,7 +60,6 @@ impl OwnedEvent {
         match *event {
             Event::Timer => Self::Timer,
             Event::BackendNotice { notice } => Self::BackendNotice(notice.to_vec()),
-            Event::ConnectionReady { connection } => Self::ConnectionReady(connection),
             Event::StreamData { end, bytes } => Self::StreamData {
                 end,
                 bytes: bytes.to_vec(),
@@ -79,9 +76,6 @@ impl OwnedEvent {
         match self {
             Self::Timer => Event::Timer,
             Self::BackendNotice(notice) => Event::BackendNotice { notice },
-            Self::ConnectionReady(connection) => Event::ConnectionReady {
-                connection: *connection,
-            },
             Self::StreamData { end, bytes } => Event::StreamData { end: *end, bytes },
             Self::StreamCredit { end, bytes } => Event::StreamCredit {
                 end: *end,

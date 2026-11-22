@@ -6,6 +6,7 @@
 extern crate alloc;
 
 mod tcp;
+mod udp;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -17,7 +18,7 @@ use alloc::sync::Arc;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
-use wcontainers_abi::{ConnectionId, Cpu, End, Event, Host, HostError, Warning};
+use wcontainers_abi::{Cpu, End, Event, Host, HostError, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
 use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
 
@@ -228,27 +229,6 @@ impl<H: Host> Host for TestPolicy<H> {
     fn close_stream(&self, end: End) {
         self.services.close_stream(end);
         self.state.lock().closing.push(end);
-    }
-
-    fn connect(
-        &self,
-        connection: ConnectionId,
-        _address: &[u8],
-        _port: u16,
-    ) -> Result<(), HostError> {
-        self.refuse(connection.0.into())
-    }
-
-    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.services.send(connection, bytes)
-    }
-
-    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        self.services.receive(connection, into)
-    }
-
-    fn close(&self, connection: ConnectionId) {
-        self.services.close(connection);
     }
 }
 

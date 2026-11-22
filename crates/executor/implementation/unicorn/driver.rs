@@ -10,8 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE, SystemCallRequest,
-    Warning,
+    CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE, SystemCallRequest, Warning,
 };
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal::Signal;
@@ -32,6 +31,8 @@ use crate::{image, reference, streams};
 
 #[path = "tcp.rs"]
 mod tcp;
+#[path = "udp.rs"]
+mod udp;
 use tcp::Readied;
 
 /// Why a run on our kernel gave no outcome.
@@ -267,10 +268,10 @@ pub struct TestHost<H = NoHooks> {
     names: Mutex<Replies>,
     /// The number of the last name question.
     last_name: AtomicU64,
-    /// What the TCP connections and listeners became ready for, for the kernel's waits on them.
+    /// What the sockets became ready for, for the kernel's waits on them.
     ready: Mutex<Readied>,
-    /// The number of the last TCP connection or listener.
-    last_tcp: AtomicU32,
+    /// The number of the last socket: a TCP connection or listener, or a UDP socket.
+    last_socket: AtomicU32,
     /// Connections to the outside and lookups.
     network: Mutex<crate::network::Network>,
     /// The CPU side's own slow paths.
@@ -346,7 +347,7 @@ impl TestHost {
             names: Mutex::default(),
             last_name: AtomicU64::default(),
             ready: Mutex::default(),
-            last_tcp: AtomicU32::default(),
+            last_socket: AtomicU32::default(),
             network: Default::default(),
             cpu_warnings: Mutex::default(),
             injecting: Mutex::default(),
@@ -386,7 +387,7 @@ impl TestHost {
             names: self.names,
             last_name: self.last_name,
             ready: self.ready,
-            last_tcp: self.last_tcp,
+            last_socket: self.last_socket,
             network: self.network,
             cpu_warnings: self.cpu_warnings,
             injecting: self.injecting,
@@ -660,7 +661,7 @@ where
                     Entry::Kill(signal) => kernel.kill(cpu, self, signal),
                     Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
                     Entry::NameAnswered(number, answer) => self.name_arrived(number, answer),
-                    Entry::TcpReady(number, ready) => self.tcp_ready(number, ready),
+                    Entry::SocketReady(number, ready) => self.socket_ready(number, ready),
                     other => match ended(&other) {
                         Some(value) => return value,
                         None if other == Entry::Delivered => {}
@@ -805,57 +806,6 @@ impl<H: Send> Host for TestHost<H> {
     fn close_stream(&self, end: End) {
         lock(&self.streams).close(end);
     }
-
-    fn connect(
-        &self,
-        connection: ConnectionId,
-        address: &[u8],
-        port: u16,
-    ) -> Result<(), HostError> {
-        self.answer(
-            Entry::Connected,
-            |entry| match entry {
-                Entry::Connected(result) => Ok(result),
-                other => Err(other),
-            },
-            || lock(&self.network).connect(connection.0, address, port),
-        )
-    }
-
-    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.answer(
-            Entry::Sent,
-            |entry| match entry {
-                Entry::Sent(result) => Ok(result),
-                other => Err(other),
-            },
-            || lock(&self.network).send(connection.0, bytes),
-        )
-    }
-
-    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        let (result, bytes) = self.answer(
-            |(result, bytes)| Entry::Received(result, bytes),
-            |entry| match entry {
-                Entry::Received(result, bytes) if bytes.len() <= into.len() => Ok((result, bytes)),
-                other => Err(other),
-            },
-            || {
-                let mut bytes = vec![0; into.len()];
-                let result = lock(&self.network).receive(connection.0, &mut bytes);
-                bytes.truncate(*result.as_ref().unwrap_or(&0));
-                (result, bytes)
-            },
-        );
-        into[..bytes.len()].copy_from_slice(&bytes);
-        result
-    }
-
-    fn close(&self, connection: ConnectionId) {
-        if !self.replaying() {
-            lock(&self.network).close(connection.0);
-        }
-    }
 }
 
 /// The backend's messages, each sent (kept in the record) and waited on until its reply arrives:
@@ -969,8 +919,8 @@ impl<H> TestHost<H> {
         Replies::arrived(&self.names, number, answer);
     }
 
-    /// TCP connection or listener `number` became ready: the wait on it is woken.
-    fn tcp_ready(&self, number: u32, ready: wcontainers_readiness::ReadyFor) {
+    /// Socket `number` became ready: the wait on it is woken.
+    pub(crate) fn socket_ready(&self, number: u32, ready: wcontainers_readiness::ReadyFor) {
         let waiting = {
             let mut readied = lock(&self.ready);
             let arrived = readied.arrived.entry(number).or_insert(ready);
@@ -1851,14 +1801,13 @@ where
                 host.name_arrived(*number, answer.clone());
                 host.hand(kernel, cpu, Event::Timer);
             }
-            crate::network::Owed::TcpReady(number, ready) => {
+            crate::network::Owed::Ready(number, ready) => {
                 if host.taped_run() {
-                    host.kept_in_step(Entry::TcpReady(*number, *ready));
+                    host.kept_in_step(Entry::SocketReady(*number, *ready));
                 }
-                host.tcp_ready(*number, *ready);
+                host.socket_ready(*number, *ready);
                 host.hand(kernel, cpu, Event::Timer);
             }
-            event => event.with(|event| host.hand(kernel, cpu, event)),
         }
     }
     !owed.is_empty()

@@ -4,7 +4,7 @@
 use alloc::vec::Vec;
 
 use spin::Mutex;
-use wcontainers_abi::{ConnectionId, End, Host, HostError, Warning};
+use wcontainers_abi::{End, Host, Warning};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{Link, Ring};
@@ -19,12 +19,6 @@ crate::requests! {
     Warn { count, detail } -> ();
     /// The bytes the kernel sends on the end numbered `stream`.
     Output { stream } -> ();
-    /// A UDP flow to the address in the bytes.
-    Connect { connection, port } -> Outcome;
-    SendBytes { connection } -> Outcome;
-    /// Up to `length` bytes, in the answer's bytes.
-    Receive { connection, length } -> Outcome;
-    Close { connection } -> ();
     /// The kernel may take `bytes` more on the end numbered `stream`.
     CreditStream { stream, bytes } -> ();
     /// The kernel let go of the end numbered `stream`.
@@ -36,57 +30,6 @@ crate::requests! {
 #[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct Value {
     pub value: u64,
-}
-
-/// A `Result<usize, HostError>` as words.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
-pub struct Outcome {
-    /// An [`OutcomeKind`]'s word.
-    pub kind: u64,
-    /// The count when done, the error number for [`HostError::Errno`].
-    pub value: u64,
-}
-
-/// What an [`Outcome`] says.
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OutcomeKind {
-    Done,
-    NotSupported,
-    WouldBlock,
-    Closed,
-    Errno,
-}
-
-impl Outcome {
-    pub fn of(result: Result<usize, HostError>) -> Outcome {
-        let (kind, value) = match result {
-            Ok(count) => (OutcomeKind::Done, count as u64),
-            Err(HostError::NotSupported) => (OutcomeKind::NotSupported, 0),
-            Err(HostError::WouldBlock) => (OutcomeKind::WouldBlock, 0),
-            Err(HostError::Closed) => (OutcomeKind::Closed, 0),
-            Err(HostError::Errno(errno)) => (OutcomeKind::Errno, i64::from(errno) as u64),
-        };
-        Outcome {
-            kind: kind as u64,
-            value,
-        }
-    }
-
-    pub fn result(self) -> Result<usize, HostError> {
-        match self.kind {
-            k if k == OutcomeKind::Done as u64 => Ok(self.value as usize),
-            k if k == OutcomeKind::WouldBlock as u64 => Err(HostError::WouldBlock),
-            k if k == OutcomeKind::Closed as u64 => Err(HostError::Closed),
-            k if k == OutcomeKind::Errno as u64 => Err(HostError::Errno(self.value as i64 as i32)),
-            _ => Err(HostError::NotSupported),
-        }
-    }
-
-    fn unit(self) -> Result<(), HostError> {
-        self.result().map(drop)
-    }
 }
 
 /// The kernel's [`Host`] whose services are the monitor's, through a link, which one call holds at a time.
@@ -157,76 +100,27 @@ impl<R: Ring + Send> Host for LinkHost<R> {
             &[],
         );
     }
-
-    fn connect(
-        &self,
-        connection: ConnectionId,
-        address: &[u8],
-        port: u16,
-    ) -> Result<(), HostError> {
-        let message = Connect {
-            connection: connection.0.into(),
-            port: port.into(),
-        };
-        self.ring.lock().ask(&message, address).unit()
-    }
-
-    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        let message = SendBytes {
-            connection: connection.0.into(),
-        };
-        self.ring.lock().ask(&message, bytes).result()
-    }
-
-    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        let message = Receive {
-            connection: connection.0.into(),
-            length: into.len() as u64,
-        };
-        let mut ring = self.ring.lock();
-        let received = ring.ask(&message, &[]).result()?;
-        let length = received.min(into.len());
-        ring.take(&mut into[..length]);
-        Ok(received)
-    }
-
-    fn close(&self, connection: ConnectionId) {
-        self.ring.lock().ask(
-            &Close {
-                connection: connection.0.into(),
-            },
-            &[],
-        );
-    }
-}
-
-/// A connection's number as the link carries it.
-fn connection(word: u64) -> ConnectionId {
-    ConnectionId(word as u32)
 }
 
 /// The monitor's half: answers `request`, whose whole bytes are `bytes`, by calling `host`; gives the answer's
 /// bytes.
 pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) -> Vec<u8> {
     let mut answer = Vec::new();
-    let outcome = match request {
+    match request {
         Request::MonotonicNanoseconds => {
             link.put(&Value {
                 value: host.monotonic_nanoseconds(),
             });
-            None
         }
         Request::RealtimeNanoseconds => {
             link.put(&Value {
                 value: host.realtime_nanoseconds(),
             });
-            None
         }
         Request::Random => {
             let Random { length } = link.get();
             answer.resize(length as usize, 0);
             host.random(&mut answer);
-            None
         }
         Request::Warn => {
             let Warn { count, detail } = link.get();
@@ -236,53 +130,19 @@ pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) 
                 count,
                 detail,
             });
-            None
         }
         Request::Output => {
             let Output { stream } = link.get();
             host.send_stream(End(stream as u32), bytes);
-            None
         }
         Request::CreditStream => {
             let CreditStream { stream, bytes } = link.get();
             host.credit_stream(End(stream as u32), bytes);
-            None
         }
         Request::CloseStream => {
             let CloseStream { stream } = link.get();
             host.close_stream(End(stream as u32));
-            None
         }
-        Request::Connect => {
-            let Connect {
-                connection: id,
-                port,
-            } = link.get();
-            let result = host.connect(connection(id), bytes, port as u16);
-            Some(result.map(|()| 0))
-        }
-        Request::SendBytes => {
-            let SendBytes { connection: id } = link.get();
-            Some(host.send(connection(id), bytes))
-        }
-        Request::Receive => {
-            let Receive {
-                connection: id,
-                length,
-            } = link.get();
-            answer.resize(length as usize, 0);
-            let result = host.receive(connection(id), &mut answer);
-            answer.truncate(*result.as_ref().unwrap_or(&0));
-            Some(result)
-        }
-        Request::Close => {
-            let Close { connection: id } = link.get();
-            host.close(connection(id));
-            None
-        }
-    };
-    if let Some(result) = outcome {
-        link.put(&Outcome::of(result));
     }
     answer
 }
@@ -298,7 +158,7 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use wcontainers_abi::{ConnectionId, End, Host, HostError, Warning};
+    use wcontainers_abi::{End, Host, Warning};
     use zerocopy::FromZeros;
 
     use super::{LinkHost, Request};
@@ -308,8 +168,7 @@ mod tests {
     #[derive(Default)]
     struct Recording {
         calls: Mutex<Vec<(String, Vec<u8>)>>,
-        error: Option<HostError>,
-        /// What a receive or a random request gives.
+        /// What a random request gives.
         given: Vec<u8>,
     }
 
@@ -319,10 +178,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((call.into(), bytes.to_vec()));
-        }
-
-        fn outcome(&self, count: usize) -> Result<usize, HostError> {
-            self.error.map_or(Ok(count), Err)
         }
     }
 
@@ -334,10 +189,6 @@ mod tests {
     const OUTPUT: &str = "output";
     const CREDIT: &str = "credit";
     const CLOSE_STREAM: &str = "close stream";
-    const CONNECT: &str = "connect";
-    const SEND: &str = "send";
-    const RECEIVE: &str = "receive";
-    const CLOSE: &str = "close";
 
     /// The clocks' readings.
     const MONOTONIC_NANOSECONDS: u64 = 123_456_789;
@@ -374,33 +225,6 @@ mod tests {
         }
         fn close_stream(&self, end: End) {
             self.record(CLOSE_STREAM, &end.0.to_le_bytes());
-        }
-        fn connect(
-            &self,
-            connection: ConnectionId,
-            address: &[u8],
-            port: u16,
-        ) -> Result<(), HostError> {
-            let mut bytes = connection.0.to_le_bytes().to_vec();
-            bytes.extend_from_slice(&port.to_le_bytes());
-            bytes.extend_from_slice(address);
-            self.record(CONNECT, &bytes);
-            self.outcome(0).map(drop)
-        }
-        fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-            let mut all = connection.0.to_le_bytes().to_vec();
-            all.extend_from_slice(bytes);
-            self.record(SEND, &all);
-            self.outcome(bytes.len())
-        }
-        fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-            self.record(RECEIVE, &connection.0.to_le_bytes());
-            let count = self.given.len().min(into.len());
-            into[..count].copy_from_slice(&self.given[..count]);
-            self.outcome(count)
-        }
-        fn close(&self, connection: ConnectionId) {
-            self.record(CLOSE, &connection.0.to_le_bytes());
         }
     }
 
@@ -480,21 +304,12 @@ mod tests {
             let mut expected = ERROR_END.0.to_le_bytes().to_vec();
             expected.extend_from_slice(&bytes);
             assert_eq!(last(&host), (OUTPUT.into(), expected), "output of {length}");
-            let id = ConnectionId(length as u32);
-            assert_eq!(host.send(id, &bytes), Ok(length));
-            let mut expected = id.0.to_le_bytes().to_vec();
-            expected.extend_from_slice(&bytes);
-            assert_eq!(last(&host), (SEND.into(), expected));
 
             let given: Vec<u8> = long(length).into_iter().rev().collect();
             host.ring.lock().host.given = given.clone();
             let mut into = vec![0; length];
             host.random(&mut into);
             assert_eq!(into, given, "random of {length}");
-            let mut into = vec![0; length + 1];
-            assert_eq!(host.receive(id, &mut into), Ok(length));
-            assert_eq!(into[..length], given[..], "received {length}");
-            assert_eq!(into[length], 0);
         }
         host.warn(Warning {
             reason: "a reason",
@@ -505,14 +320,6 @@ mod tests {
         expected.extend_from_slice(&7u64.to_le_bytes());
         expected.extend_from_slice(&0x40_1000u64.to_le_bytes());
         assert_eq!(last(&host), (WARN.into(), expected));
-        let address = [10, 0, 0, 1];
-        assert_eq!(host.connect(ConnectionId(3), &address, 8080), Ok(()));
-        let mut expected = 3u32.to_le_bytes().to_vec();
-        expected.extend_from_slice(&8080u16.to_le_bytes());
-        expected.extend_from_slice(&address);
-        assert_eq!(last(&host), (CONNECT.into(), expected));
-        host.close(ConnectionId(6));
-        assert_eq!(last(&host), (CLOSE.into(), 6u32.to_le_bytes().to_vec()));
         host.credit_stream(ERROR_END, wcontainers_abi::PAGE_SIZE);
         let mut expected = ERROR_END.0.to_le_bytes().to_vec();
         expected.extend_from_slice(&wcontainers_abi::PAGE_SIZE.to_le_bytes());
@@ -522,24 +329,5 @@ mod tests {
             last(&host),
             (CLOSE_STREAM.into(), ERROR_END.0.to_le_bytes().to_vec())
         );
-    }
-
-    #[test]
-    fn every_error_comes_back() {
-        let errors = [
-            HostError::NotSupported,
-            HostError::WouldBlock,
-            HostError::Closed,
-            HostError::Errno(i32::MIN),
-            HostError::Errno(i32::MAX),
-        ];
-        let host = host();
-        for error in errors {
-            host.ring.lock().host.error = Some(error);
-            let id = ConnectionId(1);
-            assert_eq!(host.send(id, b"x"), Err(error));
-            assert_eq!(host.receive(id, &mut [0; 4]), Err(error));
-            assert_eq!(host.connect(id, &[0; 16], 1), Err(error));
-        }
     }
 }

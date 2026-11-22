@@ -7,7 +7,7 @@
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use std::sync::{Mutex, PoisonError};
 
-use wcontainers_abi::{BackendRequestId, ConnectionId, End, Host, HostError, Warning};
+use wcontainers_abi::{BackendRequestId, End, Host, HostError, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_executor_hardware_virtualization::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
@@ -136,25 +136,6 @@ impl Host for Recording {
     }
     fn close_stream(&self, end: End) {
         self.call(format!("close stream {end:?}"));
-    }
-    fn connect(
-        &self,
-        connection: ConnectionId,
-        address: &[u8],
-        port: u16,
-    ) -> Result<(), HostError> {
-        self.absent(format!("connect {connection:?} {address:?} {port}"))
-    }
-    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.absent(format!("send {connection:?} {bytes:02x?}"))
-            .map(|()| 0)
-    }
-    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        self.absent(format!("receive {connection:?} {}", into.len()))
-            .map(|()| 0)
-    }
-    fn close(&self, connection: ConnectionId) {
-        self.call(format!("close {connection:?}"));
     }
 }
 

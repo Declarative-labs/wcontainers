@@ -16,9 +16,11 @@ wcontainers-kernel = { path = "../.." }
 wcontainers-executor = { path = "../../../executor" }
 wcontainers-system = { path = "../../../system" }
 wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
+wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 zerocopy.workspace = true
+etherparse.workspace = true
 object = { version = "0.41", default-features = false, features = ["read_core", "elf", "unaligned"] }
 siphasher = { version = "1.0.1", default-features = false }
 smallvec = { version = "1.13", default-features = false }

@@ -44,7 +44,7 @@ pub(super) struct Readied {
 
 impl Readied {
     /// Waits until the network says what `number` is ready for, forgetting it if let go.
-    async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadyFor {
+    pub(super) async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadyFor {
         /// Forgets the readiness waited for, when the wait is let go.
         struct Forget<'a>(&'a Mutex<Readied>, u32);
         impl Drop for Forget<'_> {
@@ -89,11 +89,11 @@ impl<H: Send> TcpConnections for TestHost<H> {
         _settings: &[TcpSetting<'_>],
         _fast_open: TcpFastOpen<'_>,
     ) -> Result<TcpConnected<Self::Connection>, HostError> {
-        let number = self.last_tcp.fetch_add(1, Ordering::Relaxed) + 1;
+        let number = self.last_socket.fetch_add(1, Ordering::Relaxed) + 1;
         let number = self.answer(
-            Entry::TcpMade,
+            Entry::SocketMade,
             |entry| match entry {
-                Entry::TcpMade(result) => Ok(result),
+                Entry::SocketMade(result) => Ok(result),
                 other => Err(other),
             },
             || {
@@ -256,11 +256,11 @@ impl<H: Send> TcpListeners for TestHost<H> {
         let LocalPort::Requested(port) = local.port else {
             return Err(HostError::NotSupported);
         };
-        let number = self.last_tcp.fetch_add(1, Ordering::Relaxed) + 1;
+        let number = self.last_socket.fetch_add(1, Ordering::Relaxed) + 1;
         let number = self.answer(
-            Entry::TcpMade,
+            Entry::SocketMade,
             |entry| match entry {
-                Entry::TcpMade(result) => Ok(result),
+                Entry::SocketMade(result) => Ok(result),
                 other => Err(other),
             },
             || lock(&self.network).listen(number, port.0).map(|()| number),
@@ -276,11 +276,11 @@ impl<H: Send> TcpListeners for TestHost<H> {
         listener: &Self::Listener,
         synchronize_header: &'a mut [u8],
     ) -> Result<TcpAccepted<'a, Self::Connection>, HostError> {
-        let number = self.last_tcp.fetch_add(1, Ordering::Relaxed) + 1;
+        let number = self.last_socket.fetch_add(1, Ordering::Relaxed) + 1;
         let number = self.answer(
-            Entry::TcpMade,
+            Entry::SocketMade,
             |entry| match entry {
-                Entry::TcpMade(result) => Ok(result),
+                Entry::SocketMade(result) => Ok(result),
                 other => Err(other),
             },
             || {

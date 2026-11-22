@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 
 use polling::{Event as Interest, Events, Poller};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
-use wcontainers_abi::{ConnectionId, Event, HostError};
+use wcontainers_abi::{Event, HostError};
 use wcontainers_kernel::errno::Errno;
 use wcontainers_readiness::ReadyFor;
 
@@ -24,12 +24,14 @@ use crate::errno;
 /// The names of the network's threads.
 const NETWORK_THREAD: &str = "wcontainers network";
 
-/// A UDP flow, numbered by the kernel.
-struct Flow {
+/// A UDP socket, numbered here.
+struct Datagram {
     socket: UdpSocket,
-    /// A receive or send answered "would block", so the next change is told.
-    read_armed: bool,
-    write_armed: bool,
+    /// The address it is connected to.
+    peer: Option<SocketAddr>,
+    /// What the poller said it is ready for, not yet given to a wait.
+    ready: ReadyFor,
+    waker: Option<Waker>,
 }
 
 /// A TCP connection, numbered here.
@@ -57,38 +59,23 @@ pub(crate) struct Network {
     poller: Arc<Poller>,
     thread: Option<JoinHandle<()>>,
     gone: Arc<AtomicBool>,
-    flows: HashMap<u32, Flow>,
+    datagrams: HashMap<u32, Datagram>,
     streams: HashMap<u32, Stream>,
     listeners: HashMap<u32, Listener>,
-    /// The number of the last TCP connection or listener made.
+    /// The number of the last socket made: a TCP connection or listener, or a UDP socket.
     last: u32,
     /// Where on the host each published container port is reached.
     published: HashMap<u16, SocketAddr>,
 }
 
-/// The poller's key of a UDP flow and of a TCP connection or listener.
-fn flow_key(id: u32) -> usize {
-    (id as usize) << 1
-}
-
-fn stream_key(id: u32) -> usize {
-    flow_key(id) | 1
+/// The poller's key of a socket.
+fn key(id: u32) -> usize {
+    id as usize
 }
 
 /// Linux's number for a host error, or `otherwise` when Linux has none.
 fn linux_error(error: &std::io::Error, otherwise: u32) -> i32 {
     errno::of_io(error).unwrap_or(otherwise) as i32
-}
-
-/// The address a guest names, as the host takes it.
-fn address(bytes: &[u8], port: u16) -> Option<SocketAddr> {
-    let ip = match bytes.len() {
-        len if len == size_of::<std::net::Ipv4Addr>() => {
-            IpAddr::from(<[u8; size_of::<std::net::Ipv4Addr>()]>::try_from(bytes).ok()?)
-        }
-        _ => IpAddr::from(<[u8; size_of::<Ipv6Addr>()]>::try_from(bytes).ok()?),
-    };
-    Some(SocketAddr::new(ip, port))
 }
 
 /// Waits for the sockets armed, and tells of each change.
@@ -131,7 +118,7 @@ impl Network {
             poller,
             thread: Some(thread),
             gone,
-            flows: HashMap::new(),
+            datagrams: HashMap::new(),
             streams: HashMap::new(),
             listeners: HashMap::new(),
             last: 0,
@@ -143,77 +130,78 @@ impl Network {
         self.published.insert(port, at);
     }
 
-    /// Asks the poller for the next change of a flow, as it is armed now.
-    fn arm_flow(&self, id: u32) {
-        if let Some(flow) = self.flows.get(&id) {
-            let interest = Interest::new(flow_key(id), flow.read_armed, flow.write_armed);
-            let _ = self.poller.modify(flow.socket.as_fd(), interest);
-        }
-    }
-
     fn next_number(&mut self) -> u32 {
         self.last = self.last.wrapping_add(1);
         self.last
     }
 
-    /// Starts a UDP flow to an outside address.
-    pub(crate) fn connect(&mut self, id: u32, bytes: &[u8], port: u16) -> Result<(), HostError> {
-        let to = address(bytes, port).ok_or(HostError::Errno(Errno::EINVAL as i32))?;
-        let socket = UdpSocket::bind(match to {
-            SocketAddr::V4(_) => SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), 0),
-            SocketAddr::V6(_) => SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
-        })
-        .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
-        .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
-        socket
+    /// Opens a UDP socket of IPv6 or IPv4, bound to a port the host chooses; its number.
+    pub(crate) fn udp_open(&mut self, ipv6: bool) -> Result<u32, HostError> {
+        let any = if ipv6 {
+            SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), u16::MIN)
+        } else {
+            SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), u16::MIN)
+        };
+        let socket = UdpSocket::bind(any)
+            .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
+        let id = self.next_number();
+        // SAFETY: the socket stays registered only while it is held here; closing deletes it first.
+        let _ = unsafe { self.poller.add(&socket.as_fd(), Interest::none(key(id))) };
+        let datagram = Datagram {
+            socket,
+            peer: None,
+            ready: ReadyFor::empty(),
+            waker: None,
+        };
+        self.datagrams.insert(id, datagram);
+        Ok(id)
+    }
+
+    /// Connects a UDP socket to an outside address; its local address.
+    pub(crate) fn udp_connect(&mut self, id: u32, to: SocketAddr) -> Result<SocketAddr, HostError> {
+        let datagram = self.datagrams.get_mut(&id).ok_or(HostError::Closed)?;
+        datagram
+            .socket
             .connect(to)
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNREFUSED as u32)))?;
-        // SAFETY: the socket stays registered only while it is held here; `close` deletes it first.
-        let _ = unsafe {
-            self.poller
-                .add(&socket.as_fd(), Interest::none(flow_key(id)))
-        };
-        self.flows.insert(
-            id,
-            Flow {
-                socket,
-                read_armed: true,
-                write_armed: false,
-            },
-        );
-        self.arm_flow(id);
-        Ok(())
+        datagram.peer = Some(to);
+        datagram
+            .socket
+            .local_addr()
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENOTCONN as u32)))
     }
 
-    pub(crate) fn send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
-        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
-        match flow.socket.send(bytes) {
+    pub(crate) fn udp_send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
+        let datagram = self.datagrams.get_mut(&id).ok_or(HostError::Closed)?;
+        match datagram.socket.send(bytes) {
             Ok(count) => Ok(count),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                flow.write_armed = true;
-                self.arm_flow(id);
-                Err(HostError::WouldBlock)
-            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
             Err(_) => Err(HostError::Closed),
         }
     }
 
-    pub(crate) fn receive(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
-        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
-        match flow.socket.recv(into) {
+    /// Receives one datagram as the whole packet from its IP header; the packet's length.
+    pub(crate) fn udp_receive(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
+        let datagram = self.datagrams.get_mut(&id).ok_or(HostError::Closed)?;
+        let peer = datagram
+            .peer
+            .ok_or(HostError::Errno(Errno::ENOTCONN as i32))?;
+        let local = datagram
+            .socket
+            .local_addr()
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENOTCONN as u32)))?;
+        let socket = &datagram.socket;
+        crate::udp::receive_packet(peer, local, into, |payload| match socket.recv(payload) {
             Ok(count) => Ok(count),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                flow.read_armed = true;
-                self.arm_flow(id);
-                Err(HostError::WouldBlock)
-            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
             Err(_) => Err(HostError::Closed),
-        }
+        })
     }
 
-    pub(crate) fn close(&mut self, id: u32) {
-        if let Some(flow) = self.flows.remove(&id) {
-            let _ = self.poller.delete(flow.socket.as_fd());
+    pub(crate) fn udp_close(&mut self, id: u32) {
+        if let Some(datagram) = self.datagrams.remove(&id) {
+            let _ = self.poller.delete(datagram.socket.as_fd());
         }
     }
 
@@ -248,10 +236,7 @@ impl Network {
         }
         let socket: TcpStream = socket.into();
         // SAFETY: as in `connect`.
-        let _ = unsafe {
-            self.poller
-                .add(&socket.as_fd(), Interest::none(stream_key(id)))
-        };
+        let _ = unsafe { self.poller.add(&socket.as_fd(), Interest::none(key(id))) };
         stream.socket = Some(socket);
         self.streams.insert(id, stream);
         Ok(id)
@@ -327,7 +312,7 @@ impl Network {
         let id = self.next_number();
         if let Some(socket) = &socket {
             // SAFETY: as in `connect`.
-            let _ = unsafe { self.poller.add(socket, Interest::none(stream_key(id))) };
+            let _ = unsafe { self.poller.add(socket, Interest::none(key(id))) };
         }
         let listener = Listener {
             socket,
@@ -364,10 +349,7 @@ impl Network {
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNABORTED as u32)))?;
         let id = self.next_number();
         // SAFETY: as in `connect`.
-        let _ = unsafe {
-            self.poller
-                .add(&stream.as_fd(), Interest::none(stream_key(id)))
-        };
+        let _ = unsafe { self.poller.add(&stream.as_fd(), Interest::none(key(id))) };
         self.streams.insert(
             id,
             Stream {
@@ -381,8 +363,8 @@ impl Network {
         Ok(id)
     }
 
-    /// What a TCP connection or listener is ready for, once it is ready for something asked
-    /// (an error or a hang-up always counts); until then the poller is asked and `waker` kept.
+    /// What a socket is ready for, once it is ready for something asked (an error or a hang-up
+    /// always counts); until then the poller is asked and `waker` kept.
     pub(crate) fn poll_ready(
         &mut self,
         id: u32,
@@ -390,6 +372,21 @@ impl Network {
         waker: &Waker,
     ) -> Poll<Result<ReadyFor, HostError>> {
         let counted = interest | ReadyFor::ERROR | ReadyFor::HANG_UP;
+        if let Some(datagram) = self.datagrams.get_mut(&id) {
+            if datagram.ready.intersects(counted) {
+                return Poll::Ready(Ok(core::mem::replace(
+                    &mut datagram.ready,
+                    ReadyFor::empty(),
+                )));
+            }
+            keep_waker(&mut datagram.waker, waker);
+            let read = interest.contains(ReadyFor::READABLE);
+            let write = interest.contains(ReadyFor::WRITABLE);
+            let _ = self
+                .poller
+                .modify(datagram.socket.as_fd(), Interest::new(key(id), read, write));
+            return Poll::Pending;
+        }
         if let Some(stream) = self.streams.get_mut(&id) {
             if stream.ready.intersects(counted) {
                 return Poll::Ready(Ok(core::mem::replace(&mut stream.ready, ReadyFor::empty())));
@@ -400,7 +397,7 @@ impl Network {
                 let write = interest.contains(ReadyFor::WRITABLE) || stream.connecting;
                 let _ = self
                     .poller
-                    .modify(socket.as_fd(), Interest::new(stream_key(id), read, write));
+                    .modify(socket.as_fd(), Interest::new(key(id), read, write));
             }
             return Poll::Pending;
         }
@@ -413,14 +410,26 @@ impl Network {
         }
         keep_waker(&mut listener.waker, waker);
         if let Some(socket) = &listener.socket {
-            let interest = Interest::new(stream_key(id), true, false);
+            let interest = Interest::new(key(id), true, false);
             let _ = self.poller.modify(socket, interest);
         }
         Poll::Pending
     }
 
-    /// Wakes the wait on a TCP connection or listener the poller says changed.
-    fn stream_ready(&mut self, id: u32, readable: bool, writable: bool) {
+    /// Wakes the wait on a socket the poller says changed.
+    fn ready(&mut self, id: u32, readable: bool, writable: bool) {
+        if let Some(datagram) = self.datagrams.get_mut(&id) {
+            if readable {
+                datagram.ready |= ReadyFor::READABLE;
+            }
+            if writable {
+                datagram.ready |= ReadyFor::WRITABLE;
+            }
+            if let Some(waker) = datagram.waker.take() {
+                waker.wake();
+            }
+            return;
+        }
         if let Some(listener) = self.listeners.get_mut(&id) {
             listener.ready = true;
             if let Some(waker) = listener.waker.take() {
@@ -456,30 +465,19 @@ impl Network {
         }
     }
 
-    /// The event the kernel is told for one arrival; none when it tells nothing new, or when it
-    /// wakes a wait, whose answer the kernel takes when it next settles.
+    /// The event the kernel is told for one arrival: none, as the standard input's are handed
+    /// over by the system and a socket's wakes its wait, whose answer the kernel takes when it
+    /// next settles.
     pub(crate) fn event<'a>(&mut self, arrival: &'a Arrival) -> Option<Event<'a>> {
         match *arrival {
-            // The standard input's, which the system hands over itself.
-            Arrival::Input(_) | Arrival::InputEnded(_) => None,
-            Arrival::Answered => None,
+            Arrival::Input(_) | Arrival::InputEnded(_) | Arrival::Answered => None,
             Arrival::Ready {
                 key,
                 readable,
                 writable,
             } => {
-                let id = (key >> 1) as u32;
-                if key == stream_key(id) {
-                    self.stream_ready(id, readable, writable);
-                    return None;
-                }
-                let flow = self.flows.get_mut(&id)?;
-                flow.read_armed &= !readable;
-                flow.write_armed &= !writable;
-                self.arm_flow(id);
-                Some(Event::ConnectionReady {
-                    connection: ConnectionId(id),
-                })
+                self.ready(key as u32, readable, writable);
+                None
             }
         }
     }

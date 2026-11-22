@@ -16,6 +16,7 @@ wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-system = { path = "../../../system" }
 wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
+wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }
@@ -43,6 +44,8 @@ domain = { version = "0.12.3", default-features = false, features = ["alloc"], o
 # The local system's network: sockets connected without waiting, and the host's readiness of them.
 socket2 = { version = "0.6.5", optional = true }
 polling = { version = "3.11.0", optional = true }
+# The IP and UDP headers of a datagram received, which the kernel takes whole.
+etherparse = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
@@ -63,6 +66,7 @@ std = [
     "dep:libc",
     "dep:socket2",
     "dep:polling",
+    "dep:etherparse",
     "dep:domain",
 ]
 

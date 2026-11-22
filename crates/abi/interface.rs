@@ -27,9 +27,7 @@ pub use exit::{
     Access, Exit, Next, Resume, SIGNALLED_EXIT_BASE, SYSTEM_CALL_ARGUMENT_COUNT,
     SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber, SystemCallRequest,
 };
-pub use host::{
-    ConnectionId, CounterReading, End, Event, Host, HostError, NANOSECONDS_PER_SECOND, Warning,
-};
+pub use host::{CounterReading, End, Event, Host, HostError, NANOSECONDS_PER_SECOND, Warning};
 pub use machine::{HWCAP, HWCAP2, hwcap};
 pub use memory::{
     AddressSpace, KIB, LOWEST_ADDRESS, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, Permissions, WORD,

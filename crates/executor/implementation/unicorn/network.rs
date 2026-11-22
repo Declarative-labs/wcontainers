@@ -13,7 +13,7 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use domain::base::{Name, Question};
-use wcontainers_abi::{ConnectionId, Event, HostError};
+use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_readiness::ReadyFor;
 
@@ -21,10 +21,12 @@ use wcontainers_readiness::ReadyFor;
 pub const DOCKER_HOST_NAME: &str = "host.docker.internal";
 pub const DOCKER_HOST: Ipv4Addr = Ipv4Addr::new(192, 168, 65, 254);
 
-/// A UDP flow, by the kernel's number of it.
+/// A UDP socket, by this host's number of it, connected to one outside address.
 struct Flow {
     socket: UdpSocket,
-    /// A receive or send answered "would block", so the next change is told.
+    /// The address it is connected to, as the guest names it.
+    peer: SocketAddr,
+    /// A wait asks for this, so the next change is told.
     read_armed: bool,
     write_armed: bool,
 }
@@ -40,24 +42,11 @@ struct Stream {
     write_armed: bool,
 }
 
-/// An event owed to the kernel, the answer to the name question of a number, or what a TCP
-/// connection or listener of a number became ready for.
+/// What is owed to the kernel's waits: the answer to the name question of a number, or what a
+/// socket of a number became ready for.
 pub enum Owed {
-    Ready(u32),
     Answered(u64, Vec<u8>),
-    TcpReady(u32, ReadyFor),
-}
-
-impl Owed {
-    /// Hands the event to `deliver` in the boundary's form; none for an answer.
-    pub fn with(&self, deliver: impl FnOnce(Event<'_>)) {
-        match self {
-            Owed::Ready(id) => deliver(Event::ConnectionReady {
-                connection: ConnectionId(*id),
-            }),
-            Owed::Answered(..) | Owed::TcpReady(..) => {}
-        }
-    }
+    Ready(u32, ReadyFor),
 }
 
 /// A container port this machine accepts connections for.
@@ -92,18 +81,6 @@ fn seen_here(address: SocketAddr) -> SocketAddr {
     }
 }
 
-/// The address a guest names as 4 or 16 bytes, as this machine sees it.
-fn local(address: &[u8], port: u16) -> SocketAddr {
-    let ip = match <[u8; size_of::<Ipv4Addr>()]>::try_from(address) {
-        Ok(v4) => IpAddr::V4(Ipv4Addr::from(v4)),
-        Err(_) => {
-            let bytes: [u8; size_of::<Ipv6Addr>()] = address.try_into().expect("16 bytes");
-            IpAddr::V6(Ipv6Addr::from(bytes))
-        }
-    };
-    seen_here(SocketAddr::new(ip, port))
-}
-
 fn errno(error: &std::io::Error) -> i32 {
     match error.kind() {
         ErrorKind::ConnectionRefused => Errno::ECONNREFUSED as i32,
@@ -112,6 +89,31 @@ fn errno(error: &std::io::Error) -> i32 {
         ErrorKind::HostUnreachable => Errno::EHOSTUNREACH as i32,
         _ => Errno::ECONNREFUSED as i32,
     }
+}
+
+/// The unspecified address of an address's family, port 0, for a local address the machine
+/// chooses.
+fn unspecified_of(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), u16::MIN),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN),
+    }
+}
+
+/// What a socket is ready for, from the events `poll` gave for it.
+fn ready_for(revents: i16) -> ReadyFor {
+    let mut ready = ReadyFor::empty();
+    for (bit, flag) in [
+        (libc::POLLIN, ReadyFor::READABLE),
+        (libc::POLLOUT, ReadyFor::WRITABLE),
+        (libc::POLLERR, ReadyFor::ERROR),
+        (libc::POLLHUP, ReadyFor::HANG_UP),
+    ] {
+        if revents & bit != 0 {
+            ready |= flag;
+        }
+    }
+    ready
 }
 
 /// How long a connect to the outside may take.
@@ -193,7 +195,7 @@ impl Network {
             }
         };
         self.streams.insert(number, stream);
-        self.owed.push_back(Owed::TcpReady(number, ready));
+        self.owed.push_back(Owed::Ready(number, ready));
     }
 
     pub fn tcp_send(&mut self, number: u32, bytes: &[u8]) -> Result<usize, HostError> {
@@ -245,9 +247,12 @@ impl Network {
         self.listeners.remove(&number);
     }
 
-    /// Tells the next change a wait on TCP connection or listener `number` asks for.
+    /// Tells the next change a wait on socket `number` asks for.
     pub fn arm(&mut self, number: u32, interest: ReadyFor) {
-        if let Some(stream) = self.streams.get_mut(&number) {
+        if let Some(flow) = self.flows.get_mut(&number) {
+            flow.read_armed = interest.contains(ReadyFor::READABLE);
+            flow.write_armed = interest.contains(ReadyFor::WRITABLE);
+        } else if let Some(stream) = self.streams.get_mut(&number) {
             stream.read_armed = interest.contains(ReadyFor::READABLE);
             stream.write_armed = interest.contains(ReadyFor::WRITABLE);
         } else if let Some(listener) = self.listeners.get_mut(&number) {
@@ -255,51 +260,53 @@ impl Network {
         }
     }
 
-    /// Starts UDP flow `id` to an outside address.
-    pub fn connect(&mut self, id: u32, address: &[u8], port: u16) -> Result<(), HostError> {
-        let to = local(address, port);
-        let bind = if to.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+    /// Opens UDP socket `number` connected to `to`, an outside address as the guest names it.
+    pub fn udp_connect(&mut self, number: u32, to: SocketAddr) -> Result<(), HostError> {
+        let here = seen_here(to);
+        let any = unspecified_of(here);
         let socket =
-            UdpSocket::bind(bind).map_err(|_| HostError::Errno(Errno::ENETUNREACH as i32))?;
+            UdpSocket::bind(any).map_err(|_| HostError::Errno(Errno::ENETUNREACH as i32))?;
         socket
-            .connect(to)
+            .connect(here)
             .map_err(|error| HostError::Errno(errno(&error)))?;
         socket.set_nonblocking(true).expect("nonblocking");
         let flow = Flow {
             socket,
-            read_armed: true,
+            peer: to,
+            read_armed: false,
             write_armed: false,
         };
-        self.flows.insert(id, flow);
+        self.flows.insert(number, flow);
         Ok(())
     }
 
-    pub fn send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
-        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
+    pub fn udp_send(&mut self, number: u32, bytes: &[u8]) -> Result<usize, HostError> {
+        let flow = self.flows.get_mut(&number).ok_or(HostError::Closed)?;
         match flow.socket.send(bytes) {
             Ok(count) => Ok(count),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                flow.write_armed = true;
-                Err(HostError::WouldBlock)
-            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
             Err(_) => Err(HostError::Closed),
         }
     }
 
-    pub fn receive(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
-        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
-        match flow.socket.recv(into) {
-            Ok(count) => Ok(count),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                flow.read_armed = true;
-                Err(HostError::WouldBlock)
+    /// Receives one datagram as the whole packet from its IP header; the packet's length.
+    pub fn udp_receive(&mut self, number: u32, into: &mut [u8]) -> Result<usize, HostError> {
+        let flow = self.flows.get_mut(&number).ok_or(HostError::Closed)?;
+        let local = flow
+            .socket
+            .local_addr()
+            .unwrap_or_else(|_| unspecified_of(flow.peer));
+        wcontainers_runtime_single_kernel::udp::receive_packet(flow.peer, local, into, |payload| {
+            match flow.socket.recv(payload) {
+                Ok(count) => Ok(count),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
+                Err(_) => Err(HostError::Closed),
             }
-            Err(_) => Err(HostError::Closed),
-        }
+        })
     }
 
-    pub fn close(&mut self, id: u32) {
-        self.flows.remove(&id);
+    pub fn udp_close(&mut self, number: u32) {
+        self.flows.remove(&number);
     }
 
     /// Looks up the name of question `number` with this machine's resolver; its answer is owed.
@@ -318,8 +325,8 @@ impl Network {
         self.owed.push_back(Owed::Answered(number, answer));
     }
 
-    /// Whether anything may still come: an event owed, or a flow, connection or listener waiting
-    /// for a change.
+    /// Whether anything may still come: an answer or readiness owed, or a socket waiting for a
+    /// change.
     pub fn waiting(&self) -> bool {
         !self.owed.is_empty()
             || self
@@ -333,7 +340,7 @@ impl Network {
             || self.listeners.values().any(|listener| listener.armed)
     }
 
-    /// The events owed, after waiting up to `timeout` for a socket to change when none is.
+    /// What is owed, after waiting up to `timeout` for a socket to change when nothing is.
     pub fn take(&mut self, timeout: Duration) -> Vec<Owed> {
         /// What a socket watched is.
         #[derive(Clone, Copy)]
@@ -402,35 +409,19 @@ impl Network {
                     if let Some(listener) = self.listeners.get_mut(&number) {
                         listener.armed = false;
                     }
-                    self.owed
-                        .push_back(Owed::TcpReady(number, ReadyFor::READABLE));
+                    self.owed.push_back(Owed::Ready(number, ReadyFor::READABLE));
                 }
                 Watched::Stream(number) => {
                     let stream = self.streams.get_mut(&number).expect("an armed connection");
                     stream.read_armed = false;
                     stream.write_armed = false;
-                    let mut ready = ReadyFor::empty();
-                    for (bit, flag) in [
-                        (libc::POLLIN, ReadyFor::READABLE),
-                        (libc::POLLOUT, ReadyFor::WRITABLE),
-                        (libc::POLLERR, ReadyFor::ERROR),
-                        (libc::POLLHUP, ReadyFor::HANG_UP),
-                    ] {
-                        if revents & bit != 0 {
-                            ready |= flag;
-                        }
-                    }
-                    self.owed.push_back(Owed::TcpReady(number, ready));
+                    self.owed.push_back(Owed::Ready(number, ready_for(revents)));
                 }
-                Watched::Flow(id) => {
-                    let flow = self.flows.get_mut(&id).expect("an armed flow");
-                    if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-                        flow.read_armed = false;
-                    }
-                    if revents & (libc::POLLOUT | libc::POLLHUP | libc::POLLERR) != 0 {
-                        flow.write_armed = false;
-                    }
-                    self.owed.push_back(Owed::Ready(id));
+                Watched::Flow(number) => {
+                    let flow = self.flows.get_mut(&number).expect("an armed flow");
+                    flow.read_armed = false;
+                    flow.write_armed = false;
+                    self.owed.push_back(Owed::Ready(number, ready_for(revents)));
                 }
             }
         }

@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use wcontainers_abi::{ConnectionId, Cpu, End, Event, Host, HostError, PAGE_SIZE, Warning};
+use wcontainers_abi::{Cpu, End, Event, Host, HostError, PAGE_SIZE, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard};
 
 use crate::arrivals::{Arrival, Arrivals};
@@ -519,27 +519,6 @@ impl LocalState {
         }
         self.closing.push(end);
     }
-
-    fn connect(
-        &mut self,
-        connection: ConnectionId,
-        address: &[u8],
-        port: u16,
-    ) -> Result<(), HostError> {
-        self.network().connect(connection.0, address, port)
-    }
-
-    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.network().send(connection.0, bytes)
-    }
-
-    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        self.network().receive(connection.0, into)
-    }
-
-    fn close(&mut self, connection: ConnectionId) {
-        self.network().close(connection.0);
-    }
 }
 
 /// The kernel's calls, each made on the state held for it.
@@ -579,35 +558,6 @@ macro_rules! host_on_state {
             fn close_stream(&self, end: End) {
                 let $this = self;
                 $state.close_stream(end);
-            }
-
-            fn connect(
-                &self,
-                connection: ConnectionId,
-                address: &[u8],
-                port: u16,
-            ) -> Result<(), HostError> {
-                let $this = self;
-                $state.connect(connection, address, port)
-            }
-
-            fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-                let $this = self;
-                $state.send(connection, bytes)
-            }
-
-            fn receive(
-                &self,
-                connection: ConnectionId,
-                into: &mut [u8],
-            ) -> Result<usize, HostError> {
-                let $this = self;
-                $state.receive(connection, into)
-            }
-
-            fn close(&self, connection: ConnectionId) {
-                let $this = self;
-                $state.close(connection);
             }
         }
 

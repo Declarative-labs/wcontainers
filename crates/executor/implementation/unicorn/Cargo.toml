@@ -30,6 +30,7 @@ wcontainers-docker = { path = "../../../wcontainers-docker" }
 wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
 wcontainers-system = { path = "../../../system" }
 wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
+wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }

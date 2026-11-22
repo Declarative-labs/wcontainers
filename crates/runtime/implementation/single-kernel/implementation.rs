@@ -34,11 +34,13 @@ pub mod names;
 #[cfg(feature = "std")]
 mod net;
 #[cfg(feature = "std")]
-mod tcp;
-#[cfg(feature = "std")]
 mod spec;
 #[cfg(feature = "std")]
 mod system;
+#[cfg(feature = "std")]
+mod tcp;
+#[cfg(feature = "std")]
+pub mod udp;
 
 #[cfg(feature = "std")]
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeConfig};

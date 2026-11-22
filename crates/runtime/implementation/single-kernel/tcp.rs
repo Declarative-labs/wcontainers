@@ -26,9 +26,10 @@ use wcontainers_tcp_sockets::{
 
 use crate::LocalSystem;
 
-/// A TCP connection or listener of the local system, by the network's number of it.
+/// A TCP connection or listener, or a UDP socket, of the local system, by the network's number
+/// of it.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NetworkHandle(u32);
+pub struct NetworkHandle(pub(crate) u32);
 
 /// Gives the unspecified address of a peer's family, for a local address the host chooses.
 fn unspecified(peer: SocketAddr) -> SocketAddr {
