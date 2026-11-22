@@ -11,8 +11,8 @@ use linux_raw_sys::net as uapi;
 use socket2::{MsgHdr, SockAddr};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    ByteCount, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent, TransmitReport,
-    TransmitReportKey, TransmitReportRequest, TransmitTimeError,
+    BufferSizes, ByteCount, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent,
+    TransmitReport, TransmitReportKey, TransmitReportRequest, TransmitTimeError,
 };
 
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
@@ -369,6 +369,17 @@ fn memory_information(fd: BorrowedFd<'_>, count: c_int) -> Result<u32, HostError
 /// The bytes the socket's sends hold in the host until they leave, which is what `SIOCOUTQ` gives a UDP socket.
 pub fn unsent_bytes(fd: BorrowedFd<'_>) -> Result<ByteCount, HostError> {
     memory_information(fd, libc::SK_MEMINFO_WMEM_ALLOC).map(|bytes| ByteCount(bytes as usize))
+}
+
+/// The socket's send and receive buffer sizes as `SO_SNDBUF` and `SO_RCVBUF` give them.
+pub fn buffer_sizes(fd: BorrowedFd<'_>) -> Result<BufferSizes, HostError> {
+    let socket = sock(&fd);
+    let send = socket.send_buffer_size();
+    let receive = socket.recv_buffer_size();
+    Ok(BufferSizes {
+        send: ByteCount(send.map_err(|error| io_host_error(&error))?),
+        receive: ByteCount(receive.map_err(|error| io_host_error(&error))?),
+    })
 }
 
 /// The packets the socket has dropped since it was made, for a socket Linux gives no `SO_RXQ_OVFL` count.
