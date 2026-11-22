@@ -4652,9 +4652,20 @@ fn run_ours_on(
     crate::streams::begin(&mut kernel, cpu, &host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
-    let thread = match kernel.next() {
-        Next::Run { thread, .. } => thread,
-        other => panic!("the runner did not start: {other:?}"),
+    let thread = loop {
+        match kernel.next() {
+            Next::Run { thread, .. } => break thread,
+            Next::Idle { .. } if host.backend_waiting() => {
+                crate::driver::deliver(&mut kernel, cpu, &host);
+            }
+            // A wait woken at the start (the standard ends') settles before anything runs.
+            Next::Idle {
+                until_nanoseconds: Some(until),
+            } if until <= wcontainers_clock::Clock::monotonic_nanoseconds(&*host) => {
+                kernel.event(cpu, &host, Event::Timer);
+            }
+            other => panic!("the runner did not start: {other:?}"),
+        }
     };
     // Makes one call, as if the running thread had reached it, and waits for its value; the process's
     // wait status if it ended.
