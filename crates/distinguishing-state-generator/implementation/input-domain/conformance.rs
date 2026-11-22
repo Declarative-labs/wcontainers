@@ -1,4 +1,5 @@
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
+use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadIntoBaseWithWriteback, PreciseInstruction, StorePairAcrossFault,
@@ -45,6 +46,6 @@ fn candidates() -> Vec<(Instruction, Vec<PreciseInstruction>)> {
 
 wcontainers_distinguishing_state_generator_conformance::tests!(
     Arm64,
-    CriticalValueProduct,
+    CriticalValueProduct::new(Arm64InputDomain),
     candidates()
 );

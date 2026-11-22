@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-instruction-input-domain-arm64"
+description = "The inputs of the ARM64 instructions and their critical values."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-instruction-input-domain = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[dev-dependencies]
+wcontainers-instruction-input-domain-conformance = { path = "../../conformance" }
+itertools.workspace = true
+
+[lints]
+workspace = true

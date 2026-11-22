@@ -17,11 +17,13 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-distinguishing-state-generator = { path = "../.." }
+wcontainers-instruction-input-domain = { path = "../../../instruction-input-domain" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
-wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
 [dev-dependencies]
 wcontainers-distinguishing-state-generator-conformance = { path = "../../conformance" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
 [lints]
 workspace = true

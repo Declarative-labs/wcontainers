@@ -4,11 +4,16 @@
 //! two data pages right above it whose permissions are operands. Each data byte holds the complement of its
 //! address's low byte, so that no loaded value equals an address near it.
 
+#![no_std]
+
+extern crate alloc;
+
 use alloc::borrow::Cow;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::array;
 
+use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::encoding::{
     COND, Field, IMM7, IMM9, IMM12, IMM16, RD, RDVL_IMM6, RM, RN, RT, RT2, SHIFT, SHIFT_IMM6,
@@ -18,7 +23,8 @@ use wcontainers_processor_architecture_arm64::{
     PagePermission, Processor, VECTOR_REGISTERS,
 };
 
-use crate::InstructionInputDomain;
+#[cfg(test)]
+mod tests;
 
 /// The 4 KiB translation granule the executors use.
 const PAGE_BYTES: u64 = 1 << 12;
@@ -30,8 +36,11 @@ const REGISTER_BYTES: u64 = size_of::<u64>() as u64;
 /// A field this narrow gets every value it can hold.
 const EXHAUSTIVE_FIELD_BITS: u32 = 4;
 
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Arm64InputDomain;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Arm64Operand {
+pub enum OperandType {
     /// The register an encoding field names.
     Register(Field),
     /// The value of the register an encoding field names.
@@ -59,8 +68,8 @@ pub enum AccessPlacement {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Arm64OperandValue {
-    Register(u32),
+pub enum OperandValue {
+    RegisterNumber(u32),
     /// A register's value, or an immediate's bits.
     Integer(u64),
     ConditionFlags(ConditionFlags),
@@ -68,20 +77,21 @@ pub enum Arm64OperandValue {
     PagePermission(PagePermission),
 }
 
-impl InstructionInputDomain for Arm64 {
-    type Operand = Arm64Operand;
-    type OperandValue = Arm64OperandValue;
+impl InstructionInputDomain<Arm64> for Arm64InputDomain {
+    type OperandType = OperandType;
+    type OperandValue = OperandValue;
 
-    fn list_operands(instruction: Instruction) -> impl Iterator<Item = Arm64Operand> {
-        use Arm64Operand::{
+    /// The operands of the assembly syntax in its order, then the state the instruction reads besides them.
+    fn list_operand_types(&self, instruction: Instruction) -> impl Iterator<Item = OperandType> {
+        use OperandType::{
             AccessPlacement, ConditionFlags, DataPagePermission, Register, RegisterValue,
             SignedImmediate, UnsignedImmediate,
         };
-        const PAGES: [Arm64Operand; 2] = [
+        const PAGES: [OperandType; 2] = [
             DataPagePermission(DataPage::Lower),
             DataPagePermission(DataPage::Upper),
         ];
-        let operands: &[Arm64Operand] = match instruction {
+        let operand_types: &[OperandType] = match instruction {
             Instruction::AddShiftedRegister64 | Instruction::AddsShiftedRegister64 => &[
                 Register(RD),
                 Register(RN),
@@ -128,38 +138,39 @@ impl InstructionInputDomain for Arm64 {
             Instruction::Rdvl => &[Register(RD), SignedImmediate(RDVL_IMM6)],
             Instruction::MrsCtrEl0 => &[Register(RT)],
         };
-        operands.iter().copied()
+        operand_types.iter().copied()
     }
 
-    fn generate_values(operand: Arm64Operand) -> impl Iterator<Item = Arm64OperandValue> {
-        let values: Vec<Arm64OperandValue> = match operand {
+    fn generate_critical_values(
+        &self,
+        operand_type: OperandType,
+    ) -> impl Iterator<Item = OperandValue> {
+        let values: Vec<OperandValue> = match operand_type {
             // Two ordinary registers, so that one can appear twice, and the zero register or stack pointer.
-            Arm64Operand::Register(_) => [0, 1, GENERAL_PURPOSE_REGISTERS as u32]
-                .map(Arm64OperandValue::Register)
+            OperandType::Register(_) => [0, 1, GENERAL_PURPOSE_REGISTERS as u32]
+                .map(OperandValue::RegisterNumber)
                 .to_vec(),
-            Arm64Operand::RegisterValue(_) => [0, 1, i64::MIN as u64, u64::MAX]
-                .map(Arm64OperandValue::Integer)
+            OperandType::RegisterValue(_) => [0, 1, i64::MIN as u64, u64::MAX]
+                .map(OperandValue::Integer)
                 .to_vec(),
-            Arm64Operand::UnsignedImmediate(field) | Arm64Operand::SignedImmediate(field)
+            OperandType::UnsignedImmediate(field) | OperandType::SignedImmediate(field)
                 if field.width <= EXHAUSTIVE_FIELD_BITS =>
             {
-                (0..1 << field.width)
-                    .map(Arm64OperandValue::Integer)
-                    .collect()
+                (0..1 << field.width).map(OperandValue::Integer).collect()
             }
-            Arm64Operand::UnsignedImmediate(field) => {
+            OperandType::UnsignedImmediate(field) => {
                 [0, 1, u64::from(field.to_mask() >> field.lowest_bit)]
-                    .map(Arm64OperandValue::Integer)
+                    .map(OperandValue::Integer)
                     .to_vec()
             }
-            Arm64Operand::SignedImmediate(field) => {
+            OperandType::SignedImmediate(field) => {
                 let all_ones = u64::from(field.to_mask() >> field.lowest_bit);
                 let sign_bit = 1 << (field.width - 1);
                 [0, 1, all_ones, sign_bit - 1, sign_bit]
-                    .map(Arm64OperandValue::Integer)
+                    .map(OperandValue::Integer)
                     .to_vec()
             }
-            Arm64Operand::ConditionFlags => {
+            OperandType::ConditionFlags => {
                 let flags: Vec<ConditionFlags> = ConditionFlags::all().iter().collect();
                 (0..1_u32 << flags.len())
                     .map(|subset| {
@@ -169,18 +180,18 @@ impl InstructionInputDomain for Arm64 {
                             .filter(|(index, _)| subset >> index & 1 == 1);
                         chosen.fold(ConditionFlags::empty(), |union, (_, flag)| union | *flag)
                     })
-                    .map(Arm64OperandValue::ConditionFlags)
+                    .map(OperandValue::ConditionFlags)
                     .collect()
             }
-            Arm64Operand::AccessPlacement => [
+            OperandType::AccessPlacement => [
                 AccessPlacement::LowerPageStart,
                 AccessPlacement::EndsAtBoundary,
                 AccessPlacement::StraddlesBoundary,
                 AccessPlacement::UpperPageStart,
             ]
-            .map(Arm64OperandValue::AccessPlacement)
+            .map(OperandValue::AccessPlacement)
             .to_vec(),
-            Arm64Operand::DataPagePermission(_) => {
+            OperandType::DataPagePermission(_) => {
                 let mapped = |data_access| PagePermission::Mapped {
                     data_access,
                     instruction_fetch: InstructionFetch::Forbidden,
@@ -191,24 +202,32 @@ impl InstructionInputDomain for Arm64 {
                     mapped(DataAccess::ReadOnly),
                     mapped(DataAccess::ReadWrite),
                 ]
-                .map(Arm64OperandValue::PagePermission)
+                .map(OperandValue::PagePermission)
                 .to_vec()
             }
         };
         values.into_iter()
     }
 
-    /// Every register not named by an operand holds the complement of its number, so that none holds zero.
-    fn to_state(
+    /// Every register no operand names holds the complement of its number, so that none holds zero.
+    ///
+    /// A register named twice holds the value of its last register value operand; the zero register holds none.
+    ///
+    /// # Panics
+    ///
+    /// When the operands are not one value of each operand type the instruction lists, in its order.
+    fn build_state(
+        &self,
         instruction: Instruction,
-        values: &[Arm64OperandValue],
+        operands: &[OperandValue],
     ) -> ExecutionState<'static, Arm64> {
-        let operands: Vec<(Arm64Operand, Arm64OperandValue)> = Self::list_operands(instruction)
-            .zip(values.iter().copied())
+        let typed: Vec<(OperandType, OperandValue)> = self
+            .list_operand_types(instruction)
+            .zip(operands.iter().copied())
             .collect();
         assert_eq!(
+            typed.len(),
             operands.len(),
-            values.len(),
             "one value for each operand of {instruction:?}"
         );
         let mut word = instruction.to_fixed_bits().value;
@@ -226,41 +245,57 @@ impl InstructionInputDomain for Arm64 {
         let mut placement = None;
         let mut lower = PagePermission::Unmapped;
         let mut upper = PagePermission::Unmapped;
-        for (operand, value) in &operands {
-            match (*operand, *value) {
-                (Arm64Operand::Register(field), Arm64OperandValue::Register(number)) => {
-                    word |= field.to_bits(number)
+        let mut register_values = Vec::new();
+        for (operand_type, operand) in typed {
+            match operand_type {
+                OperandType::Register(field) => {
+                    let OperandValue::RegisterNumber(number) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    word |= field.to_bits(number);
                 }
-                (
-                    Arm64Operand::UnsignedImmediate(field) | Arm64Operand::SignedImmediate(field),
-                    Arm64OperandValue::Integer(bits),
-                ) => word |= field.to_bits(bits as u32),
-                (Arm64Operand::RegisterValue(_), Arm64OperandValue::Integer(_)) => {}
-                (Arm64Operand::ConditionFlags, Arm64OperandValue::ConditionFlags(flags)) => {
-                    processor.condition_flags = flags
+                OperandType::UnsignedImmediate(field) | OperandType::SignedImmediate(field) => {
+                    let OperandValue::Integer(bits) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    word |= field.to_bits(bits as u32);
                 }
-                (Arm64Operand::AccessPlacement, Arm64OperandValue::AccessPlacement(chosen)) => {
-                    placement = Some(chosen)
+                OperandType::RegisterValue(field) => {
+                    let OperandValue::Integer(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    register_values.push((field, value));
                 }
-                (
-                    Arm64Operand::DataPagePermission(page),
-                    Arm64OperandValue::PagePermission(permission),
-                ) => match page {
-                    DataPage::Lower => lower = permission,
-                    DataPage::Upper => upper = permission,
-                },
-                (operand, value) => panic!("{value:?} is no value of {operand:?}"),
+                OperandType::ConditionFlags => {
+                    let OperandValue::ConditionFlags(flags) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    processor.condition_flags = flags;
+                }
+                OperandType::AccessPlacement => {
+                    let OperandValue::AccessPlacement(chosen) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    placement = Some(chosen);
+                }
+                OperandType::DataPagePermission(page) => {
+                    let OperandValue::PagePermission(permission) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    match page {
+                        DataPage::Lower => lower = permission,
+                        DataPage::Upper => upper = permission,
+                    }
+                }
             }
         }
         // Register values go in once every register field is encoded.
-        for (operand, value) in &operands {
-            if let (Arm64Operand::RegisterValue(field), Arm64OperandValue::Integer(integer)) =
-                (*operand, *value)
-                && let Some(register) = processor
-                    .general_purpose_registers
-                    .get_mut(field.read(word) as usize)
+        for (field, value) in register_values {
+            if let Some(register) = processor
+                .general_purpose_registers
+                .get_mut(field.read(word) as usize)
             {
-                *register = integer;
+                *register = value;
             }
         }
         let readable_and_executable = PagePermission::Mapped {
@@ -309,6 +344,10 @@ impl InstructionInputDomain for Arm64 {
             memory_mutations,
         }
     }
+}
+
+fn reject_mismatch(operand_type: OperandType, operand: OperandValue) -> ! {
+    panic!("{operand:?} is no value of {operand_type:?}")
 }
 
 /// How an instruction that reads or writes memory finds its first byte.
