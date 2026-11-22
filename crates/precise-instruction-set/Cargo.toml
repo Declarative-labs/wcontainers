@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-instruction-set"
+name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 edition = "2024"
 

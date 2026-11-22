@@ -11,18 +11,23 @@ pub trait ProcessorArchitecture: Sized {
     /// An instruction as the architecture's manual documents it.
     type Instruction: Copy + Eq;
     /// An instruction with a specific pinned behaviour that should be expected of it.
-    type PreciseInstruction: Simulator<Self> + Copy + Eq;
+    type PreciseInstruction: Simulator<Self, Error = Infallible> + Copy + Eq;
 
     /// The addresses a program can use.
     const ADDRESSABLE: Range<u64>;
+
+    /// The order means nothing.
+    fn list_instructions() -> impl Iterator<Item = Self::Instruction>;
 }
 
 pub trait Simulator<Architecture: ProcessorArchitecture> {
+    type Error;
+
     /// Simulates applying this instruction to the before state.
-    fn simulate<'memory>(
+    fn simulate(
         &self,
-        before: ExecutionState<'memory, Architecture>,
-    ) -> ExecutionState<'memory, Architecture>;
+        before: ExecutionState<Architecture>,
+    ) -> Result<ExecutionState<Architecture>, Self::Error>;
 }
 
 /// All state that some instruction might mutate during execution.
