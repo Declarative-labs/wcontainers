@@ -5,6 +5,70 @@ suite's design and its own numbers). Milestones: T1 (connections, listeners, set
 authentication, repair, multipath) are both done; what is left waits on the owner (For the owner, at the end).
 Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -p docs/status-host-tcp-sockets.md`).
 
+## Run 17 (2026-11-22): C22 run 1, the owner's TCP interface changes of 2026-11-22 (merge 158b6c62)
+- Bind on its own: `type BoundSocket = HostTcpBoundSocket` (descriptor, family, protocol, and whether its port was
+  bound by number: a requested or kernel-chosen port other than 0, which Linux cannot report later). `bind` is
+  `socket`, the `BindingSetting`s, `bind`, `getsockname`; `release` closes it.
+- connect and listen take `TcpLocalEnd` by value and fail with `TcpLocalEndError`: an `Unbound` input always fails
+  `Unbound`; a `Bound` input that failed before connecting or listening comes back `Bound`, except a connect's
+  `EADDRNOTAVAIL` on a port bound as 0 (closed, `Unbound`), as Linux frees that port. listen now listens once, with
+  the last `Backlog` among its settings, so nothing can fail after `listen` but `getsockname`, which disconnects first.
+- `disconnect`: the watch is dropped (`Watched::unwatch`, new in the shared crate), `connect(AF_UNSPEC)` (rustix
+  `connect_unspec`), then `SO_ERROR`; the socket comes back only for a port bound by number, never for an accepted
+  connection. portable.rs closes the socket with an abort, counted (no `AF_UNSPEC` there).
+- `TakePendingError` on connections and listeners: `SO_ERROR` through socket2's `take_error`, named by the shared
+  crate's new `errno::errno_of` (every name of the kernel interface's `Errno`; a number it does not name is a counted
+  refusal).
+- `TcpListenerReading`: `tcpi_unacked` and `tcpi_sacked` are a listener's accept queue and backlog and a connection's
+  `unacknowledged` and `selectively_acknowledged`.
+- `EcnMode`: Linux 7.0's last `TCP_INFO` word is bit fields (`tcpi_ecn_mode:2`, `tcpi_accecn_opt_seen:2`,
+  `tcpi_accecn_fail_mode:4`), 6.18 and 6.19 have two `u16`s there, same length, so the layout comes from the kernel's
+  release (`uname`, read once). This also fixed a misreading on 7.0: the fail mode and option-seen fields were read
+  in the 6.18 layout. A `TCP_INFO` without the Accurate ECN fields (before 6.18) gives Classic or Disabled from
+  `TCPI_OPT_ECN`. On 6.18 and 6.19 there is no guess: Disabled when the flag is clear, else the reading is refused
+  with the counted reason NO_ECN_MODE (For the owner). No such kernel was available to run.
+- `TcpKeyVrf` for MD5 and TCP-AO keys: Any is no flag, Default the flag with index 0, Device the flag and its index.
+  `TcpListenerSetting::RemoveAuthenticationKeyAsynchronously` is `TCP_AO_DEL_KEY` with `del_async`; a connection's
+  removal always sends `del_async` 0. `TcpRepair::OffWithoutWindowProbe` is `TCP_REPAIR_OFF_NO_WP`.
+- The two removed `TcpState`s are gone from the state table: Linux's 12 and 13 are now an unknown state, refused.
+- `LastReceivedHeader { interface, header }`: the interface from the packet information record, None when missing.
+  A connection now keeps `IP_PKTINFO`/`IPV6_RECVPKTINFO` on while it records the last header or reports ICMP errors
+  (read back from `IP_RECVTTL` and `IP_RECVERR`), since an ICMP error names its arrival interface only there and its
+  `ReceivedPacketFields.interface` can no longer be 0; a listener keeps it on always, as before. An accepted SYN with no
+  interface found is refused, counted. Wireless status reports have no interface.
+- `IpPacketSetting`: `UnicastInterface` is gone and `TrafficClass` writes the DSCP alone (shared crate).
+- Corrected: a listener can be in repair mode: one that listened with `Repair(On)` among its settings stays in it and
+  takes `TCP_TIMESTAMP`. timestamp_clock_set_in_repair_mode_stamps_segments now demands that.
+- Shared crate (commit 04600f02; read by the UDP, ICMP and raw tracks, see their section below): non-zero
+  `InterfaceIndex`, `InterfaceSelector`, `Slice1` include filters, no `UnicastInterface`, no ECN bits in
+  `TrafficClass`, optional report interfaces, `Watched::unwatch`, `errno::errno_of`; `set_packet_setting` lost its
+  unused `family` argument (only this track calls it).
+- New checks (11), each with the Linux call it covers and measured Linux behaviour from the probes:
+  a_bound_socket_holds_its_port_until_released (`bind` alone holds the port: a second bind EADDRINUSE, a connect to
+  it ECONNREFUSED, free after `release`), connect_and_listen_take_a_bound_socket_and_its_port,
+  a_failed_connect_or_listen_gives_back_its_bound_socket (`connect` ENETUNREACH and `listen` EADDRINUSE keep the
+  port), a_clashing_connect_gives_back_only_a_port_bound_by_number (`connect` EADDRNOTAVAIL),
+  disconnect_gives_back_only_a_port_bound_by_number (`connect(AF_UNSPEC)`: ECONNRESET after an established
+  connection, ECONNREFUSED after a refused one, the port held only when bound by number), pending_error_is_taken_once
+  (`SO_ERROR` once, then none; a fresh listener none), listener_reads_its_accept_queue_and_backlog (backlog 7 with 2
+  waiting; 100 000 held to `somaxconn`), leaving_repair_without_a_window_probe_sends_none (`TCP_REPAIR_OFF_NO_WP`
+  sends nothing, `TCP_REPAIR_OFF` a probe), a_listener_removes_a_key_asynchronously (`del_async` 1),
+  keys_are_for_the_vrf_named (`TCP_AO_KEYF_IFINDEX`/`TCP_MD5SIG_FLAG_IFINDEX`: a default-VRF key survives removal as
+  any VRF and goes as the default one; loopback, no VRF, EINVAL for both kinds), ecn_mode_is_what_both_ends_negotiated
+  (`tcpi_ecn_mode`: `tcp_ecn` 0, 1 and 3 at both ends give Disabled, Classic, Accurate, each on a thread in a network
+  namespace of its own, `unshare(CLONE_NEWNET)`, loopback up by `SIOCSIFFLAGS`, so no other check sees the sysctl).
+  Changed: last_received_header_records_where_the_last_packet_came reads `Some(loopback)` or None and adds a
+  connection made by connect (IPv4 None, IPv6 loopback); the DCTCP check wants Classic at both ends; the information
+  check reads the two segment counts from the connection reading; the setting lists lost `UnicastInterface` and `ecn`.
+- mutants.sh: 189 copies; five whose text had moved follow the code, and nine new ones break the new calls
+  (disconnect-keeps-every-port, port-zero-bound-by-number, clash-keeps-every-port, pending-error-never,
+  listener-queue-and-backlog-swapped, repair-off-probes-always, vrf-default-as-any, ecn-accurate-as-classic,
+  last-header-interface-none). All 15 run failed the suite (ARM, 19:40 to 19:43, load 6 to 11; log
+  c22/mutants.log in scratch); which check each failed is in Which check fails.
+- Not checked by behaviour: that the listener's removal is asynchronous (a synchronous one on a listener looks the same
+  from outside), and a listener's pending error other than none (Linux sets one only when the socket is destroyed from
+  outside, `ss -K`).
+
 ## Run 16 (2026-11-22): T2 run 1, the independent check of run 15 answered
 - mutants.sh's three setting copies used the names removed at a00ab267: now `Binding(BindingSetting::...)`; each
   fails its check (AddressSharing: address_sharing_lets_connections_leave_from_one_port and
@@ -52,15 +116,33 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
 - Shared crate `crates/internet-protocol/implementation/linux-socket-options` (made by this track, used by the UDP,
   ICMP and raw hosts): errno mapping, raw option calls, `Shortfalls` (counted refusals, warned once), the internet
   protocol settings, binding and port ranges, `open_socket`, control messages, `write_icmp_error`, `readiness`.
-- Suite `crates/tcp-sockets/conformance`: 110 checks that each take one value, against the traits alone, plus 7
+- Suite `crates/tcp-sockets/conformance`: 121 checks that each take one value, against the traits alone, plus 7
   functions that build values for the required suites (Configurable on a connection and a listener,
-  NegativeRouteAdvisable, four Readiness bundles); `tests!` runs 126 tests, and the implementation's own 4 run beside
+  NegativeRouteAdvisable, four Readiness bundles); `tests!` runs 137 tests, and the implementation's own 4 run beside
   them (allocation checks, discarding_cuts_no_packet, the two-thread peeks). It runs on Linux only (a capture thread
   reads the host's packet socket on loopback) as root in a namespace run-conformance.sh makes.
-- mutants.sh: 180 broken copies, each breaking one method, request, query, setting or field; every one has failed
-  the suite in some run (the latest full run of all is the checker's of run 15; the fixes above since).
+- mutants.sh: 189 broken copies, each breaking one method, request, query, setting or field; every one has failed
+  the suite in some run (the latest full run of all is the checker's of run 15; the 15 changed or new of run 17 ran
+  then).
 
 ## Which check fails when a method breaks
+- Run 17's copies: listen-backlog-argument-ignored listener_reads_its_accept_queue_and_backlog,
+  listener_backlog_bounds_the_accept_queue and the two ICMP checks of a synchronizing connection; listener-state-refused
+  12 listener checks; disconnect-keeps-every-port disconnect_gives_back_only_a_port_bound_by_number;
+  port-zero-bound-by-number that and a_clashing_connect_gives_back_only_a_port_bound_by_number; clash-keeps-every-port
+  the clash check; pending-error-never a_bound_socket_holds_its_port_until_released and pending_error_is_taken_once;
+  listener-queue-and-backlog-swapped listener_reads_its_accept_queue_and_backlog; repair-off-probes-always
+  leaving_repair_without_a_window_probe_sends_none; vrf-default-as-any keys_are_for_the_vrf_named;
+  ecn-accurate-as-classic ecn_mode_is_what_both_ends_negotiated; last-header-interface-none
+  last_received_header_records_where_the_last_packet_came; fixed-flow-label-not-held, fast-open-connect-ignored,
+  accept-interface-none and subflow-information-zeroed their checks as before.
+- bind and release: a_bound_socket_holds_its_port_until_released and every check below that binds first. connect and
+  listen from a bound socket: connect_and_listen_take_a_bound_socket_and_its_port and the failure, clash and
+  disconnect checks. disconnect: disconnect_gives_back_only_a_port_bound_by_number. TakePendingError (both):
+  pending_error_is_taken_once. Listener Information: listener_reads_its_accept_queue_and_backlog. Repair
+  OffWithoutWindowProbe: leaving_repair_without_a_window_probe_sends_none. RemoveAuthenticationKeyAsynchronously:
+  a_listener_removes_a_key_asynchronously. Key VRF: keys_are_for_the_vrf_named. ECN mode:
+  ecn_mode_is_what_both_ends_negotiated and the DCTCP case of congestion_control_state_names_the_algorithm.
 - connect, listen, accept: every check. listen's backlog argument: listener_backlog_bounds_the_accept_queue and the
   two ICMP checks of a synchronizing connection. The owner: connect_and_listen_make_sockets_of_their_owner. The
   protocol: multipath_is_negotiated_when_both_ends_ask. Accept's frame length: connect_and_accept_name_both_ends.
@@ -124,7 +206,7 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   `tcp_bbr` modules for those congestion controls. The test machine (Linux 7.0.0-1018-aws) has all.
 - Linux's own refusals pass through: repair reads out of repair mode (EPERM, EINVAL), `TCP_AO_INFO` without
   authentication (ENOENT), `MPTCP_INFO` on TCP or a fallen-back connection (EOPNOTSUPP), `TCP_TIMESTAMP` on MPTCP
-  (EOPNOTSUPP), a listener's timestamp clock (EPERM: no listener enters repair mode), a fixed flow label after
+  (EOPNOTSUPP), the timestamp clock of a listener that did not listen in repair mode (EPERM), a fixed flow label after
   connect (FLOW_LABEL_FIXED_AT_CONNECT).
 - What Linux does not record, given as the nearest truth and counted: a SYN's priority, timestamps, own mark and
   fragment size, its IPv4 arrival interface, and everything of a multipath SYN (SYNCHRONIZE_FIELDS_OF_THE_SOCKET,
@@ -135,6 +217,14 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   statistics (PACKET_OR_STATISTICS).
 
 ## Measurements
+- Run 17, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22: clippy with warnings denied (`--no-deps
+  --tests`) clean on the TCP host, its suite and the shared crate after `cargo clean` (35 crates built; job
+  host-tcp-sockets-clean, 19:45, load 5 to 8); then 10 full runs at `RUST_TEST_THREADS=12`, each 137 + 4 passed in
+  about 7.3 s (19:45 to 19:47, load 7 to 9; log c22/clean2.log in scratch). Before that 3 more full runs, all passed
+  (19:44, load 6). Mac (macOS, `nice -n 19`, 19:42, load 6.8): clippy of the host (portable.rs) and suite clean.
+- Interface files: no file of the tcp-sockets, internet-protocol, kernel, readiness, configurable,
+  negative-route-advisable or abi interfaces changed since merge 158b6c62, and all but abi's equal the main it merged
+  (3731f877); abi's exit.rs, host.rs and interface.rs differed from that main before this run (not this track's).
 - Run 16, ARM machine (Graviton4, 96 cores, Linux 7.0.0-1018-aws), 2026-11-22: clippy with warnings denied
   (`--no-deps --tests`) clean on the TCP host and suite (06:23, load 14). Full suite at `RUST_TEST_THREADS=12`:
   06:23 (load 13 to 14) 125 passed, 1 failed (congestion_control_state_names_the_algorithm), 4 passed; then 30 lone
@@ -210,6 +300,9 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
 - Nothing of T1 or T2 is open but the owner's rulings below. Run the owner's linter once when it may be used again.
 
 ## Departures from the plan
+- Run 17: listen listens once with the last `Backlog` among its settings (was: listen, then listen again), so that
+  a failure after listening cannot leave a bound socket listening. A connection's packet information follows its
+  records and ICMP error reports (was: only its records), for the ICMP error's arrival interface. The plan says both.
 - Run 16: `TIMESTAMP_SLACK` 3 ticks and the out-of-order relation of the information check (above), each a
   measured tolerance of the host, not of the implementation.
 - Tuned's path MTU is `tcpi_pmtu` for connections and listeners alike (`IP_MTU` is ENOTCONN on a listener); the
@@ -237,6 +330,15 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
 ## For the UDP, ICMP and raw tracks
 - The shared readiness answers `ReadinessReport`; `Watched::hold` takes one; `readiness::NOTHING` is a report of no
   fact; `DATAGRAM_FACTS` is READABLE | WRITABLE. The shared `set_port_setting` is `set_binding_setting`.
+- 2026-11-22 (04600f02), for the interface changes: `Ancillary::packet_fields` returns `Result` and refuses a packet
+  without packet information or with index 0 (`EPROTO`; Every host turns it on at open, so this should not happen):
+  add `?`. `Ancillary::interface()` gives the optional index. `transmit_report` gives `interface: None` when Linux
+  names none; a rejected transmit time always None; `REPORT_INTERFACE_NOT_GIVEN` is gone (its check in the ICMP
+  host's tests/counters.rs must go too), `NO_ARRIVAL_INTERFACE` counts an ICMP error without packet information.
+  Datagram sends name a route's interface per packet alike for `InterfaceSelector::Bound` and `Requested` (a socket
+  bound to the device is strict already through its `BoundInterface` setting): yours to refine if your probes say
+  otherwise. `SourceFilter::Include` takes `Slice1`. `Watched::unwatch` gives the descriptor back unwatched;
+  `errno::errno_of` names a Linux error number.
 - `receive_message` allocates nothing: `ReceivedMessage` has `length`, `flags` and `control`, and `messages()` walks
   them in place (`ControlMessages`). `icmp_error::write_icmp_error` writes an error queue entry's ICMP error whole.
 - `Shortfalls` counts without a lock (64 slots; reasons past them counted under one overflow reason, warned at
@@ -275,15 +377,13 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   to 127.0.0.2 is accepted with mark 0.
 - A multipath accept has no SYN to give (no `TCP_SAVED_SYN` on MPTCP): `synchronize_header` is empty and its length
   0, counted. The contract has no way to say the SYN is unknown (an `Option` would).
-- `TransmitReport::interface` is required, but Linux names an interface in a report only with `IP_PKTINFO` on:
-  otherwise index 0, Linux's own "none". `TcpTransmitStatistics::received_hop_limit` is required, but Linux gives
+- `TcpTransmitStatistics::received_hop_limit` is required, but Linux gives
   `TCP_NLA_TTL` only in a report an acknowledgement brought: 0 otherwise. A wireless status report names no send on
   Linux (`ee_data` 0): key 0. Linux gives a TCP socket's transmit reports the packet or statistics, never both.
   `TransmitReportKey` cannot be passed to Linux for TCP (`SCM_TS_OPT_ID` refused): kept by byte offset.
-- `RecordsLastReceivedHeader` and `TcpReading::LastReceivedHeader` ask for the header and fields of the last
-  packet, but Linux keeps for a TCP socket only records: no length, no fixed header, and for IPv4 no options. The
-  implementation gives length 0 and the IPv6 extension headers recorded as the header bytes, none for IPv4, all
-  counted. Example: an IPv6 segment with an 8-byte hop-by-hop header reads `[6, 0, 0, 0, 0, 0, 0, 0]`.
+- `TcpReading::LastReceivedHeader` asks for the header of the last packet, but Linux keeps for a TCP socket only
+  records: no fixed header, and for IPv4 no options. The implementation gives the IPv6 extension headers recorded as
+  the header bytes, none for IPv4, counted. Example: an IPv6 segment with an 8-byte hop-by-hop header reads `[6, 0, 0, 0, 0, 0, 0, 0]`.
 - Linux 7.0 does not keep a `TCP_WINDOW_CLAMP` set before connect beyond the handshake (measured: a clamp of 8192
   bounds the SYN's window, then the windows grow and the clamp reads 104 960); the suite checks the SYN's window.
 - The Vegas form of `CongestionControlInformation` names Linux's fields the other way round: `tcpv_rtt` is Vegas's
@@ -294,8 +394,16 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
 - `TcpQuery::CongestionControl` with a buffer shorter than the name: Linux cuts it ("reno" into 3 bytes reads
   "ren"); the contract does not say.
 - `TcpInformation::bytes_acknowledged` counts the SYN on Linux: 1 048 577 after 1 MiB acknowledged.
-- `set_listener_timestamp_clock` asks for a listener "in repair mode", but Linux never lets a listener into repair
-  mode (`tcp_can_repair_sock` refuses `TCP_LISTEN`): always EPERM. Neither clock call names its error outside repair
-  mode, so the suite takes any refusal.
+- Neither clock call names its error outside repair mode, so the suite takes any refusal. (A listener enters repair
+  mode only by listening in it: `tcp_can_repair_sock` refuses `TCP_LISTEN`.)
+- `EcnMode` on Linux 6.18 and 6.19: `TCP_INFO` has no `tcpi_ecn_mode` and `TCPI_OPT_ECN` is set for Classic and
+  Accurate ECN alike, so the host refuses the whole Information reading of a connection using ECN there (counted,
+  NO_ECN_MODE) rather than guess. Example: two 6.18 ends with `tcp_ecn` 3 cannot read their `TCP_INFO`. Your ruling
+  is wanted: refuse those kernels as exit nodes, or keep failing the reading.
+- `TcpLocalEnd::Unbound` with `LocalPort::Requested(Port(0))` is a bind to port 0, which Linux treats as bound as 0
+  (freed by a disconnect or a clash), so the host counts only a requested or kernel-chosen port other than 0 as bound
+  by number. The contract's wording ("a port bound by number") does not say which side port 0 falls on.
+- `RemoveAuthenticationKeyAsynchronously` cannot be told apart from a plain removal on a listener from outside: both
+  leave the key gone. The suite checks the key goes and no other does.
 - `FlowLabelReflection` on Linux reflects the SYN's flow label in the SYN-ACK only; the contract does not say which
   segments reflect it.
