@@ -12457,7 +12457,6 @@ code	crates/wcontainers-shaders/src/cache.rs	str	<LoadError as core::fmt::Displa
 code	crates/wcontainers-shaders/src/cache.rs	str	Cache::insert_raw	"a cache payload under 4 GiB"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
-code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a binding past the resource list"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of another class"
 code	crates/wcontainers-shaders/src/dxil.rs	str	draw_bases	"shader"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftoi"
@@ -12468,7 +12467,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	str	lower	"no entry point"
 code	crates/wcontainers-shaders/src/dxil.rs	str	reason	"dxil-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"no entry point"
 code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"the sample mask stays an array"
-code	crates/wcontainers-shaders/src/dxil/arrays.rs	str	split	"a binding past the resource list"
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	components	3
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	finish	64
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
