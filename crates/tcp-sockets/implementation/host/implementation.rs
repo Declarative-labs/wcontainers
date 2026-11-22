@@ -106,7 +106,8 @@ const IPV6_RECORDS: [u32; 6] = [
 
 /// The reasons the host could not honour a request, each counted by [`Shortfalls`].
 const NO_AUTHENTICATION_COUNTERS: &str = "setting the TCP Authentication Option counters of a connection or listener is not mapped to the host yet";
-const NO_AUTHENTICATION_REPAIR: &str = "the TCP Authentication Option repair values are not mapped to the host yet";
+const NO_AUTHENTICATION_REPAIR: &str =
+    "the TCP Authentication Option repair values are not mapped to the host yet";
 const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
@@ -804,14 +805,16 @@ fn change_authentication_options(
     socket: BorrowedFd<'_>,
     change: impl FnOnce(&mut uapi::tcp_ao_info_opt),
 ) -> Result<(), HostError> {
-    let mut options =
-        match options::get_option::<uapi::tcp_ao_info_opt>(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO)
-        {
-            Ok(held) => held,
-            // SAFETY: tcp_ao_info_opt is plain data.
-            Err(HostError::Errno(libc::ENOENT)) => unsafe { std::mem::zeroed() },
-            Err(error) => return Err(error),
-        };
+    let mut options = match options::get_option::<uapi::tcp_ao_info_opt>(
+        socket,
+        uapi::SOL_TCP,
+        uapi::TCP_AO_INFO,
+    ) {
+        Ok(held) => held,
+        // SAFETY: tcp_ao_info_opt is plain data.
+        Err(HostError::Errno(libc::ENOENT)) => unsafe { std::mem::zeroed() },
+        Err(error) => return Err(error),
+    };
     options.set_set_current(0);
     options.set_set_rnext(0);
     options.set_set_counters(0);

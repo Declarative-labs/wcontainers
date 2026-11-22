@@ -8,6 +8,7 @@ checkout=$(cd "$(dirname "$0")/../../../.." && pwd)
 implementation=crates/tcp-sockets/implementation/host/implementation.rs
 icmp_error=crates/internet-protocol/implementation/linux-socket-options/icmp_error.rs
 readiness=crates/internet-protocol/implementation/linux-socket-options/readiness.rs
+shared_linux=crates/internet-protocol/implementation/linux-socket-options/linux.rs
 mutants=${CARGO_TARGET_DIR:-$checkout/target}/mutants
 names=() files=() from=() to=()
 # A mutant: its name, the file it breaks, the text it replaces (once, exactly) and what it puts there.
@@ -64,10 +65,10 @@ mutant peer-shutdown-unregistered "$readiness" $'    .union(PollFlags::RDHUP)\n 
     $'    .union(PollFlags::from_bits_retain('
 mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut scratch) {' \
     'match self.take_error_queue_entry(connection, &mut scratch).map(|entry| (entry, false)) {'
-mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION))\n    }\n}' \
-    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION); Ok(())\n    }\n}'
-mutant listener-authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION))\n    }\n\n    fn set_listener_timestamp_clock' \
-    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION); Ok(())\n    }\n\n    fn set_listener_timestamp_clock'
+mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n}' \
+    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS); Ok(())\n    }\n}'
+mutant listener-authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n\n    fn set_listener_timestamp_clock' \
+    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS); Ok(())\n    }\n\n    fn set_listener_timestamp_clock'
 mutant listener-state-fake "$implementation" '        Err(self.shortfalls.refuse(NO_LISTENER_STATE))' \
     '        let _ = self.shortfalls.refuse(NO_LISTENER_STATE); Ok(TcpReading::IncomingProcessor(None))'
 mutant push-neither-noop "$implementation" 'let corked = socket.tcp_cork().map_err(io_host_error)?;' \
@@ -110,6 +111,26 @@ mutant readiness-withdraw-noop "$readiness" '    fn withdraw(&mut self) {' '    
 mutant readiness-wakes-nothing "$readiness" '        waker.wake();' '        drop(waker);'
 mutant plain-sends-uncounted-once-armed "$implementation" '&& !connection.reports_armed.load(Ordering::Relaxed)' ''
 # Each setting doing nothing, one at a time.
+mutant multicast-noop "$implementation" '            TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group(' \
+    '            TcpSetting::Ip(IpSocketSetting::MulticastV4(_) | IpSocketSetting::MulticastV6(_)) => Ok(()), TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group('
+mutant anycast-noop "$implementation" 'locked(anycast).set(socket, address)' '{ let _ = (anycast, address); Ok(()) }'
+mutant owner-ignored "$shared_linux" 'if previous == owner.0 {' 'if true {'
+mutant listener-unread-reports-kept "$implementation" $'connection.unread_reports.store(\n            listener.unread_reports.load(Ordering::Relaxed),' \
+    $'connection.unread_reports.store(\n            false,'
+mutant keep-alive-probes-always-one "$implementation" 'tcp(uapi::TCP_KEEPCNT, c_int::from(probes.0))' 'tcp(uapi::TCP_KEEPCNT, { let _ = probes; 1 })'
+mutant authentication-mac-length-ignored "$implementation" 'request.maclen = addition.mac_length.0;' 'request.maclen = 0;'
+mutant authentication-coverage-ignored "$implementation" 'if addition.other_options == TcpAuthenticationOptionCoverage::Excluded {' 'if false {'
+mutant authentication-key-use-ignored "$implementation" 'request.set_set_current(u32::from(current));' 'request.set_set_current(0);'
+mutant authentication-held-key-use-ignored "$implementation" 'if current || next {' 'if false {'
+mutant authentication-held-key-refused "$implementation" 'Err(HostError::Errno(libc::EEXIST)) if holds_authentication_key(socket, &request) => {' \
+    'Err(HostError::Errno(libc::EEXIST)) if false && holds_authentication_key(socket, &request) => {'
+mutant authentication-removal-current-ignored "$implementation" $'        request.set_set_current(1);\n        request.current_key = key.0;\n    }\n    if let Some(key) = removal.requested_next {' \
+    $'        let _ = key;\n    }\n    if let Some(key) = removal.requested_next {'
+mutant authentication-absent-removal-refused "$implementation" 'if removal.current.is_none() && removal.requested_next.is_none() {' \
+    'if removal.current.is_none() && removal.requested_next.is_none() { return Err(HostError::Errno(libc::ENOENT)); }  if false {'
+mutant authentication-options-current-ignored "$implementation" $'        if let Some(key) = choice.current {\n            options.set_set_current(1);' \
+    $'        if let Some(key) = choice.current.filter(|_| false) {\n            options.set_set_current(1);'
+mutant authentication-requirement-ignored "$implementation" 'choice.requirement == TcpAuthenticationRequirement::Required,' 'false,'
 for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::ReceiveBuffer(..))' \
     'Ip(IpSocketSetting::MaximumPacingRate(..))' \
     'Packet(wcontainers_internet_protocol::IpPacketSetting::HopLimit { .. })' \
@@ -129,7 +150,8 @@ for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::Receiv
     'SynchronizeRetries(..)' 'UserTimeout(..)' 'DeferAccept(..)' 'FinWait2(..)' 'RetransmissionTimeoutMinimum(..)' \
     'RetransmissionTimeoutMaximum(..)' 'DelayedAcknowledgementMaximum(..)' 'TransmitDelay(..)' \
     'ThinLinearTimeouts(..)' 'CongestionControl(..)' 'NotSentLowWater(..)' 'FastOpenWithoutCookie(..)' \
-    'UnreadByteReports(..)' 'Repair(..)'; do
+    'UnreadByteReports(..)' 'Repair(..)' 'AddAuthenticationKey(..)' 'RemoveAuthenticationKey(..)' \
+    'AuthenticationOptions(..)'; do
     name=$(grep -oE '[A-Za-z0-9]+(\(\.\.\)| \{ \.\. \})' <<<"$pattern" | sed 's/[({ ].*//')
     mutant "setting-$name-noop" "$implementation" 'let refuse = |reason| Err(self.shortfalls.refuse(reason));' \
         "if matches!(*setting, TcpSetting::$pattern) { return Ok(()); } let refuse = |reason| Err(self.shortfalls.refuse(reason));"
@@ -146,7 +168,7 @@ for index in "${!names[@]}"; do
     rm -rf "$copy" && mkdir -p "$copy"
     rsync -a --exclude /target --exclude /.git "$checkout/" "$copy/"
     # The copies share a build folder, so every file any copy breaks is rebuilt in each.
-    touch "$copy/$implementation" "$copy/$icmp_error" "$copy/$readiness"
+    touch "$copy/$implementation" "$copy/$icmp_error" "$copy/$readiness" "$copy/$shared_linux"
     if ! python3 -c 'import sys
 path, old, new = sys.argv[1:]
 text = open(path).read()

@@ -8,8 +8,9 @@
 //! network namespace of their own whose loopback is up with the `fq` queueing discipline (which honours a transmit
 //! delay), with `net.ipv4.tcp_fastopen` at 3 (fast open for clients and listeners), `net.ipv6.flowlabel_consistency`
 //! at 0 (which flow label reflection needs), `net.ipv4.tcp_fwmark_accept` at 1 (an accepted socket takes its SYN's
-//! mark), the `dctcp` congestion control available and a local route for 127.0.0.7 with the `tcp_usec_ts` feature
-//! (TCP timestamps in microseconds).
+//! mark), `net.ipv6.conf.lo.forwarding` at 1 (loopback may then join any anycast address, not only those its
+//! prefixes hold), the `dctcp` congestion control available and a local route for 127.0.0.7 with the `tcp_usec_ts`
+//! feature (TCP timestamps in microseconds).
 #![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -2975,7 +2976,6 @@ const MEMBERSHIP_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x123);
 
 /// How many sockets of the host have joined the group on the interface, by `/proc/net/igmp` or `/proc/net/igmp6`.
 fn group_users(group: IpAddr, interface: InterfaceIndex) -> usize {
-    let users = |field: Option<&str>| field.and_then(|users| users.parse().ok()).unwrap_or(0);
     match group {
         // Device lines start with the interface's index, its groups follow indented, each the address's bytes as a
         // number of this host's byte order.
@@ -2988,26 +2988,70 @@ fn group_users(group: IpAddr, interface: InterfaceIndex) -> usize {
                 if !line.starts_with(char::is_whitespace) {
                     device = fields.next().and_then(|index| index.parse().ok());
                 } else if device == Some(interface.0) && fields.next() == Some(wanted.as_str()) {
-                    return users(fields.next());
+                    return fields
+                        .next()
+                        .and_then(|users| users.parse().ok())
+                        .unwrap_or(0);
                 }
             }
             0
         }
-        IpAddr::V6(group) => {
-            let wanted: String = group.octets().iter().map(|byte| format!("{byte:02x}")).collect();
-            let table = std::fs::read_to_string("/proc/net/igmp6").expect("the IPv6 group table");
-            table
-                .lines()
-                .find_map(|line| {
-                    let mut fields = line.split_whitespace();
-                    let index = fields.next()?.parse::<u32>().ok()?;
-                    let _name = fields.next();
-                    (index == interface.0 && fields.next() == Some(wanted.as_str()))
-                        .then(|| users(fields.next()))
-                })
-                .unwrap_or(0)
-        }
+        IpAddr::V6(group) => ipv6_address_users("/proc/net/igmp6", group, interface),
     }
+}
+
+/// How many sockets the host's table (`/proc/net/igmp6` or `/proc/net/anycast6`, a line for each interface's address:
+/// index, name, address and users) counts for the address on the interface.
+fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex) -> usize {
+    let wanted: String = address
+        .octets()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    std::fs::read_to_string(table)
+        .expect("the host's IPv6 address table")
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let index = fields.next()?.parse::<u32>().ok()?;
+            let _name = fields.next();
+            (index == interface.0 && fields.next() == Some(wanted.as_str()))
+                .then(|| fields.next()?.parse().ok())
+                .flatten()
+        })
+        .unwrap_or(0)
+}
+
+/// An anycast address no other check joins.
+const ANYCAST_MEMBERSHIP: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x123);
+
+/// A connection joins an anycast address on an interface, which the host's anycast table then lists with one user,
+/// and leaves it, which takes it off, each twice the same as once.
+pub fn anycast_addresses_are_joined_and_left<S: TcpSockets>(sockets: S) {
+    let interface = loopback_interface();
+    let pair = pair_at(&sockets, ipv6_loopback(), &[], &[]);
+    let users = || ipv6_address_users("/proc/net/anycast6", ANYCAST_MEMBERSHIP, interface);
+    assert_eq!(users(), 0, "before");
+    for (membership, expected) in [
+        (Membership::Joined, 1),
+        (Membership::Joined, 1),
+        (Membership::Left, 0),
+        (Membership::Left, 0),
+    ] {
+        let setting = TcpSetting::Ip(IpSocketSetting::Anycast(AnycastAddress {
+            address: ANYCAST_MEMBERSHIP,
+            interface: Some(interface),
+            membership,
+        }));
+        assert_eq!(
+            sockets.configure(&pair.client, setting.clone()),
+            Ok(()),
+            "{setting:?}"
+        );
+        assert_eq!(users(), expected, "{setting:?}");
+    }
+    assert_carries_bytes(&sockets, &pair);
+    close(&sockets, pair);
 }
 
 /// A connection joins a multicast group on an interface, which the host's group table then lists with one user, and
@@ -3177,7 +3221,9 @@ const FIRST_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier
 const SECOND_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(2);
 
 /// A key for the peers at 127.0.0.1 that sends and receives with the one identifier.
-fn authentication_identity(identifier: TcpAuthenticationKeyIdentifier) -> TcpAuthenticationKeyIdentity {
+fn authentication_identity(
+    identifier: TcpAuthenticationKeyIdentifier,
+) -> TcpAuthenticationKeyIdentity {
     authentication_identity_of(Ipv4Addr::LOCALHOST, identifier)
 }
 
@@ -3322,14 +3368,23 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
     use TcpAuthenticationRequirement::{Optional, Required};
     let first = authentication_key(FIRST_KEY, AUTHENTICATION_SECRET, Included, Stored);
     let second = authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, Stored);
-    let second_current =
-        authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, CurrentAndRequestedNext);
+    let second_current = authentication_key(
+        SECOND_KEY,
+        AUTHENTICATION_SECRET,
+        Included,
+        CurrentAndRequestedNext,
+    );
     let other = authentication_key(FIRST_KEY, OTHER_AUTHENTICATION_SECRET, Included, Stored);
     let excluding = authentication_key(FIRST_KEY, AUTHENTICATION_SECRET, Excluded, Stored);
     let first_removed = authentication_key_removed(FIRST_KEY, None);
     let first_removed_for_second = authentication_key_removed(FIRST_KEY, Some(SECOND_KEY));
     for (listener_settings, client_settings, admitted, synchronize) in [
-        (vec![first.clone()], vec![first.clone()], true, signed_with(FIRST_KEY)),
+        (
+            vec![first.clone()],
+            vec![first.clone()],
+            true,
+            signed_with(FIRST_KEY),
+        ),
         (
             vec![first.clone()],
             vec![first.clone(), first.clone()],
@@ -3338,7 +3393,11 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
         ),
         (
             vec![first.clone(), second.clone()],
-            vec![first.clone(), second_current.clone(), second_current.clone()],
+            vec![
+                first.clone(),
+                second_current.clone(),
+                second_current.clone(),
+            ],
             true,
             signed_with(SECOND_KEY),
         ),
@@ -3353,7 +3412,12 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
             true,
             signed_with(SECOND_KEY),
         ),
-        (vec![first.clone()], vec![other], false, signed_with(FIRST_KEY)),
+        (
+            vec![first.clone()],
+            vec![other],
+            false,
+            signed_with(FIRST_KEY),
+        ),
         (vec![first.clone()], vec![], false, None),
         (
             vec![first.clone(), first_removed.clone(), first_removed],
@@ -3361,7 +3425,12 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
             true,
             None,
         ),
-        (vec![authentication_options(None, Required)], vec![], false, None),
+        (
+            vec![authentication_options(None, Required)],
+            vec![],
+            false,
+            None,
+        ),
         (
             vec![
                 authentication_options(None, Required),
@@ -3371,11 +3440,22 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
             true,
             None,
         ),
-        (vec![excluding.clone()], vec![first], false, signed_with(FIRST_KEY)),
-        (vec![excluding.clone()], vec![excluding], true, signed_with(FIRST_KEY)),
+        (
+            vec![excluding.clone()],
+            vec![first],
+            false,
+            signed_with(FIRST_KEY),
+        ),
+        (
+            vec![excluding.clone()],
+            vec![excluding],
+            true,
+            signed_with(FIRST_KEY),
+        ),
     ] {
         let case = format!("listener {listener_settings:?}, client {client_settings:?}");
-        let (pair, signed, _) = authentication_round(&sockets, &listener_settings, &client_settings);
+        let (pair, signed, _) =
+            authentication_round(&sockets, &listener_settings, &client_settings);
         assert_eq!(signed, synchronize, "{case}");
         assert_eq!(pair.is_some(), admitted, "{case}");
         if let Some(pair) = pair {
@@ -3395,7 +3475,12 @@ pub fn authentication_options_choose_the_keys_in_use<S: TcpSockets>(sockets: S) 
     ];
     let client_keys = [
         keys[0].clone(),
-        authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, CurrentAndRequestedNext),
+        authentication_key(
+            SECOND_KEY,
+            AUTHENTICATION_SECRET,
+            Included,
+            CurrentAndRequestedNext,
+        ),
     ];
     let (pair, signed, capture) = authentication_round(&sockets, &keys, &client_keys);
     assert_eq!(signed, signed_with(SECOND_KEY));
@@ -3414,7 +3499,11 @@ pub fn authentication_options_choose_the_keys_in_use<S: TcpSockets>(sockets: S) 
         .collect();
     assert!(!sent.is_empty(), "the client's data");
     for segment in sent {
-        assert_eq!(segment.authentication, signed_with(FIRST_KEY), "{segment:?}");
+        assert_eq!(
+            segment.authentication,
+            signed_with(FIRST_KEY),
+            "{segment:?}"
+        );
     }
     close(&sockets, pair);
 }
@@ -4031,7 +4120,7 @@ pub fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled<S: TcpSock
 }
 
 /// Accept names the loopback interface a SYN came in on, also to an address loopback's prefix holds and for multipath,
-/// the address it was sent to as the one to reply from (IPv4 only), and the mark its sender gave it.
+/// the address it was sent to as the one to reply from (IPv4 only), and the mark its sender gave it (TCP only).
 pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     for protocol in [TcpProtocol::Tcp, TcpProtocol::Multipath] {
@@ -4060,7 +4149,10 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
                 fields.specific_destination, specific_destination,
                 "{case}: {fields:?}"
             );
-            assert_eq!(fields.mark, MARK, "{case}: {fields:?}");
+            // Linux gives a SYN's mark only to a TCP socket it accepts, not to a multipath one.
+            if protocol == TcpProtocol::Tcp {
+                assert_eq!(fields.mark, MARK, "{case}: {fields:?}");
+            }
             sockets.close(accepted.connection, TcpClose::Orderly);
             sockets.close(connected.connection, TcpClose::Orderly);
             sockets.stop_listening(listening.listener);
@@ -4091,7 +4183,8 @@ fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
         .skip(1)
         .find_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
-            let wanted = port(fields.get(1)?) == Some(local.0) && port(fields.get(2)?) == Some(peer.0);
+            let wanted =
+                port(fields.get(1)?) == Some(local.0) && port(fields.get(2)?) == Some(peer.0);
             wanted.then(|| fields.get(7)?.parse().ok()).flatten()
         })
 }
@@ -5369,6 +5462,7 @@ macro_rules! tests {
             header_settings_mark_each_segment,
             fixed_flow_label_marks_every_segment,
             multicast_groups_are_joined_and_left,
+            anycast_addresses_are_joined_and_left,
             md5_keys_admit_only_connections_signed_with_them,
             authentication_keys_admit_only_connections_signed_with_them,
             authentication_options_choose_the_keys_in_use,
