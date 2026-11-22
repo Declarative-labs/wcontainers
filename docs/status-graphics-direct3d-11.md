@@ -123,9 +123,10 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
 3080 through the queue, not alone, rigfix/wine.sh, agents run 3 at 3b1cd4f3 (logs/a3b-wine*.log):
 - d3d11: 151 pass of 166, the same 15 failing as since round 4 run 3; the failing tests are in the
-  Gap list. test_format_support's 7 checks are the B5 targets (6; built in G4h run 2, Wine not
-  yet run again) and XR_BIAS's display (1).
-- d3d10core: 110 of 111: test_desktop_window (Gap list).
+  Gap list. test_format_support fails 1 check, XR_BIAS's display (the B5 targets' 6 pass since
+  G4h run 2; logs/g4h2-wine.log).
+- d3d10core: 110 of 111: test_desktop_window (Gap list). Its test_format_support passes since
+  G4h run 2 (it failed on the B5 targets' blending).
 - d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/a3b-wine10gl.log): the 13 failing
   since round 2 run 12 and, since main run 3 reports no multisampling there,
   test_alpha_to_coverage and test_check_multisample_quality_levels; all are under the WebGL 2
@@ -449,8 +450,7 @@ In order (G4h, 11_0 reported truthfully):
    requirement test without texture-formats-tier1, 16-bit norm and float32-filterable too:
    browsers lacking them must then report a lower level unless the abilities are built another
    way (the nine integer twins' blending through the shaders crate's `combine`, built for
-   single-sample targets in its run 80). Then Wine's test_format_support (the 6 B5 checks should
-   now pass; not yet run) and the whole G4 bar again (`q5-final.sh`), and re-judge
+   single-sample targets in its run 80). Then the whole G4 bar again (`q5-final.sh`), and re-judge
    atg-simplemsaa_pc against WARP (own_cases takes `OWN_CASES_DRIVER=warp`; the rig's programs
    would need the same).
 4. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
@@ -767,6 +767,21 @@ g4h/tree.sh (HEAD plus this track's working files, in a private index), then com
   the seven format support comparisons and the requirement test (ignored, run with
   `--include-ignored`): 8 passed, the requirement test failing on formats 88 and 89 alone
   (g4h2-b).
+- The bar at 27ffc315 (q5-final.sh literals lib bar; logs/g4h2-bar-*), desktop
+  through the queue, not alone: the library suite passes; Wine d3d11 151 of 166 (the same 15
+  failing; test_format_support down from 7 failing checks to 1), d3d10core 110 of 111; scenes
+  through the library 137 pass, 0 fail, 2 absent (135 and 4 absent before); the WebGL 2 build's
+  scenes 95 pass, 17 fail, 30 absent (unchanged); programs: the same eleven pass and
+  atg-simplecomputepc and atg-simplemsaa_pc differ as before. The literal check at f67240a3: no
+  finding in this track's crates or the WebGPU back end (one stale baseline line of the WebGPU
+  copy program dropped, 9c7ade41).
+- After the rounding program's literal fix, at 97a4ac55: lint of the WebGPU back end, the front
+  and the library, warnings denied, clean; the packed targets case and the seven format support
+  comparisons (8 passed) and the back end's converted-formats tests (3 passed) on the RTX 3080
+  (logs/g4h2-e.log).
+- Wine through ours at 27ffc315: d3d11 test_format_support 1 check failing (XR_BIAS display),
+  test_generate_mips 410, test_render_target_views 240 and test_multisample_resolve 172 checks
+  passing; d3d10core test_format_support 382 and test_multisample_resolve 172 passing.
 - own_cases `packed_targets`, 1,232 channel codes (two formats; cleared, drawn, blended twice,
   4 and 8 samples resolved, mip level 1; g4h/packed-*.txt, g4h/codes-diff.py): RTX 3080 against
   WARP 94 differ, largest 1 code (drawn 12, blended 12, resolves 60, mips 10); ours against the
