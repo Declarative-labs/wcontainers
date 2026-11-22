@@ -184,6 +184,9 @@ the Mac (rustfmt of single files only).
   (`out-r98b`); records unchanged but the four new own builds. WGSL files that differ from run
   97's `out-r97b` or are new: 103 (74 games-dxil, 20 runner-dxil, 4 games, 1 runner, the four new
   own); Chrome on the desktop compiles all 103 (chrome.log).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip`, tar and
+  `chrome-r98` (its `out-r98`, `out-r98b` and logs kept), the scratch clones `tip` and `tip-arm`.
 
 ## G6 run 10 (run 97): geometry shaders writing their primitive numbers (A7), the reader's array layer
 
