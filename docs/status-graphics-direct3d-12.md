@@ -6,6 +6,20 @@ crates/wcontainers-direct3d-12. This file holds the current state only; the full
 to 47 (what the front does subject by subject, every run's numbers, older scripts) is this file at
 commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
+Asked by the Direct3D 11 track (2026-11-22, G4h; the owner's ruling that a device reports no
+feature level whose requirements it does not meet): `R10G10B10_XR_BIAS_A2_UNORM` swap chains, the
+format's `DISPLAY` (10_0 and up) and `BACK_BUFFER_CAST` (11_0) in Microsoft's tables, are the last
+11_0 requirement besides one vertex format, and they live in this track's infrastructure crate
+(swapchain.rs, which refuses the format). A route that draws the same: back buffers held in
+`Rgb10a2Unorm`'s bits (as textures of the format already are), back buffer views of it as
+`R10G10B10A2_UNORM` and the reverse, and the present copy decoding each colour channel as the
+functional specification's extended-range mapping, `(c * 1023 - 384) / 510` (-0.7529 to 1.2529),
+alpha as stored, into an `rgba16float` surface (a canvas configured `rgba16float` with extended
+tone mapping in a browser; wgpu's `Rgba16Float` surface natively, which is linear scRGB, so the
+copy also applies sRGB's curve mirrored about 0); where no extended range is shown the values
+clamp to 0 to 1, as on a display without it. The Direct3D 11 track may build it if this track
+allows, or the orchestrator rules.
+
 ## Where things stand
 
 G5 is ready for the independent check again (run 52, 2026-11-20). The sixth check (at 7a3a7fe0)
