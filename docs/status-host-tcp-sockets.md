@@ -3,6 +3,37 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## Run 12 (2026-11-22): the independent check of run 11 answered
+- record_end_starts_a_new_segment was flaky (the checker: 123 of 150 lone runs failed): it read the capture as soon
+  as the data was read, before the capture thread had recorded the segments. It now waits (up to DEADLINE) until the
+  captured data segments hold every byte sent, then asserts the same two lengths. ARM machine, clean build, load 3 to
+  9: 0 of 150 lone runs failed, 0 of 20 full runs at 12 threads.
+- listener_backlog_bounds_the_accept_queue now gives the backlog of 0 three ways: to `listen` (the argument, no
+  setting), as a listen setting, and set later. New broken copy listen-backlog-argument-ignored fails it (and the
+  two ICMP checks of a synchronizing connection).
+- timestamp_clock_set_in_repair_mode_stamps_segments takes any refusal outside repair mode (the contract names no
+  error), for the connection and the listener. New broken copy clock-set-outside-repair fails it.
+- Accept gives the SYN's frame length: every TCP listener now saves its SYNs from the link header (`TCP_SAVE_SYN`
+  2), so `link_layer_length` is the link header found before the IP header plus the IP length (counted
+  `NO_SYNCHRONIZE_FRAME` when no IP header is found). `largest_fragment` stays None, now under its own counted reason
+  `NO_SYNCHRONIZE_FRAGMENT_SIZE` (For the owner). connect_and_accept_name_both_ends checks that a frame length, when
+  given, holds the whole packet; new broken copy synchronize-frame-is-the-link-header fails it.
+- The T1 section below is rewritten to match the suite as it is (99 checks, 113 tests, the readiness checks in the
+  method map).
+- Linter at the start (Mac, load 9 to 21; log reviewable-run12-start.log in scratch): in this track's crates only
+  what run 11 left (7 `conformance_not_run`, 7 `public_outside_interface`, 5 `implementation_folder`, 2
+  `grammar_unclear`) and the orchestrator's `name_unanswered` and `summary_unanswered` (no key on this Mac).
+- Linter at the end (Mac; log reviewable-run12-end.log): the same, plus three `magic_literal` for the backlog check's
+  case names written as strings, fixed after it by an enum (`BacklogGiven`); not run again.
+- Checks (ARM machine, Graviton4, Linux 7.0.0-1018-aws, 02:43 to 02:55, load 0.1 to 9.4): clippy on both crates, no
+  warning in this track's files (two in crates/kernel/interface.rs, not this track's), also on the Mac; 113 + 4
+  pass. Clean build (job host-tcp-sockets-clean, build folder emptied): 113 + 4 pass; `cargo tree` (normal, build,
+  dev) of tcp-sockets, internet-protocol, configurable, negative-route-advice, readiness and the suite names only
+  interface and conformance crates (abi, configurable, executor, internet-protocol, kernel, negative-route-advice,
+  readiness, tcp-sockets and their suites). No reviewed file changed since 5ec01130.
+- Broken copies (mutants.sh, ARM machine, 02:53 to 03:20, load 1 to 4; log mutants-run12.log in scratch): all 133
+  texts found once, and every copy fails the suite.
+
 ## Run 11 (2026-11-22): the linter's literal findings
 - Linter at the start (Mac, 2 min 37 s, load 133; log reviewable-run11-start.log in scratch): in this track's two
   crates 113 + 48 `magic_literal` and 86 + 11 `number_constant_without_link`, as run 10 left them.
@@ -325,86 +356,67 @@ readings, repair, authentication, multipath state, the privileged settings).
   and receives with control messages (socket2 passes raw control bytes only; the shared crate parses them), and
   every Linux-only option. Creating the socket stays in the shared `open_socket` (see above).
 
-## Done (T1, 2026-11-21)
-- `crates/tcp-sockets/implementation/host` (package `wcontainers-tcp-sockets-host`, type
-  `HostTcpSockets`, connection `HostTcpConnection`, listener `HostTcpListener`, all fields
-  private; public beyond the traits: `new()` and `counters()`). Real non-blocking Linux TCP and MPTCP
-  sockets: connect (settings, bindings, exit-node port choice, fast open with data by `MSG_FASTOPEN`, until first
-  send by `TCP_FASTOPEN_CONNECT`), listen (backlogs among its settings applied after `listen`), accept (SYN
-  header from `TCP_SAVED_SYN`), send and receive with every request, shut_down, close, stop_listening, the error
-  queue (transmit reports with packet, statistics or wireless status; ICMP errors written whole), every plain
-  setting of settings.rs, and the action methods. read_state, read_listener_state, authentication and the repair
-  queues are T2 (counted refusals now).
-- Suite `crates/tcp-sockets/conformance`: 102 checks against the traits alone since run 9 (and four of the
-  implementation's own: the wait and receive allocation checks, discarding_cuts_no_packet and the two-thread peeks;
-  106 tests in one binary), each on a value made anew. The body
-  is `cfg(target_os = "linux")`: the checks watch the wire. A capture thread reads the host's packet socket
-  (`AF_PACKET`, every loopback packet seen twice, counted once) filtered to one listener's port, and the checks
-  read headers, sequence numbers, windows, TCP timestamps and times from it; since run 9 the host's tables in /proc too. Timer checks make the peer drop
-  everything with a minimum hop limit of 255. Buffer checks measure what a connection takes, or what a peer
-  sends, while nothing is read. The namespace the suite needs (root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`,
-  `net.ipv6.flowlabel_consistency=0`, `dctcp`) is written at the top of the suite and made by run-conformance.sh.
-- Run 3 (2026-11-21 evening) answered the independent check of run 2:
-  - Every plain setting now has a check of its effect, not only of being set twice: see the list below.
-  - Fast open is exercised for real: the namespace turns the listener side on, each fast open check has a loopback
-    address of its own (a client keeps cookies per address), and the checks read the SYN's payload and whether the
-    SYN-ACK acknowledges it. They cover data in the SYN once a cookie is held, a deferred connect sending nothing
-    until its first send, doing without cookies, the listener's keys (a stale key's cookie refused, the backup
-    key's taken) and its queue turned off.
-  - The action methods: push ignoring neither sends data held by more-to-come; a record end makes the next send a
-    new segment; the delayed acknowledgement is sent at once on demand and the mode asked for holds for the next
-    data; rearming sends a due keep-alive probe at once; the window probe is captured one sequence number below the
-    next and answered; the timestamp clock set in repair mode is what the next segment's TSval reads; negative
-    advice gives an IPv6 connection a new flow label (not with transmit rehash off).
-  - send_window_probe no longer clears `SO_REUSEADDR` or repair mode (both put back, with the repair queue);
-    checked by window_probe_is_answered_and_changes_no_setting.
-  - `TCP_QUICKACK`'s value 2 is the named `QUICK_ACKNOWLEDGEMENT_THEN_DELAYING` (Linux names none); the suite's
-    BPF return comes from libc's `BPF_RET | BPF_K`.
-  - A port the exit node chooses is now bound at once, for connections too, through the shared
-    `bind_chosen_by_exit_node`: Linux ignores a socket's `IP_LOCAL_PORT_RANGE` outside the host's own range (the
-    UDP track's finding), so a range above 60999 gave a port outside it. exit_node_chooses_a_port_outside_the_reserved
-    now also takes a range of 61000 to 61020.
-  - The host's interface addresses are read with nix's `getifaddrs` instead of unsafe libc, cached until a netlink
-    notice of an address change; since run 7 only multipath accepts use them (see run 7).
-- wait_for_events: wait_for_events_finishes_when_data_arrives, wait_for_events_answers_at_once_when_ready,
-  dropping_a_wait_cancels_it, many_waits_each_wake_once, wait_for_room_finishes_when_the_peer_reads,
-  wait_for_urgent_data_finishes_when_it_arrives, wait_for_the_peers_shutdown_finishes_when_it_comes,
-  wait_ends_with_the_errors_always_reported. wait_for_listener_events: listener_wait_finishes_when_a_connection_comes,
-  dropping_a_listener_wait_cancels_it.
-- Which check fails when a method or setting breaks, each one run as a broken copy by mutants.sh (results under
-  Measurements): connect, listen, accept: every check; their owner: connect_and_listen_make_sockets_of_their_owner;
-  their protocol: multipath_is_negotiated_when_both_ends_ask. send and receive: bytes_arrive_in_order_both_ways and the
-  request checks (urgent_*, peek_*, more_to_come_*, record_end_starts_a_new_segment, unread_byte_reports_*,
-  receive_software_timestamps_*, the transmit report checks). shut_down: the three shutdown checks (ReadAndWrite as Write fails
-  shutdown_of_both_directions_ends_both). close:
-  orderly_close_*, abort_resets_the_peer. stop_listening: stopped_listener_refuses_connections.
-  take_error_queue_entry and discard_error_queue_entries: the report, ICMP and discarding checks.
-  push_queued_data: more_to_come_holds_data_until_pushed, push_ignoring_neither_*. send_delayed_acknowledgement:
+## T1 as it stands (rewritten in run 12, 2026-11-22)
+- `crates/tcp-sockets/implementation/host` (package `wcontainers-tcp-sockets-host`, type `HostTcpSockets`,
+  connection `HostTcpConnection`, listener `HostTcpListener`, all fields private; public beyond the traits: `new()`
+  and `counters()`). On Linux (linux.rs) real non-blocking TCP and MPTCP sockets: connect (settings, bindings,
+  exit-node port choice, fast open with data by `MSG_FASTOPEN`, until first send by `TCP_FASTOPEN_CONNECT`), listen
+  (backlogs among its settings applied after `listen`), accept (SYN header from `TCP_SAVED_SYN`, saved from the link
+  header so the frame length is known), send and receive with every request, shut_down, close, stop_listening, the
+  error queue (transmit reports with packet, statistics or wireless status; ICMP errors written whole), every plain
+  setting of settings.rs, the action methods, and `Readiness` for connections and listeners. read_state,
+  read_listener_state, authentication repair and the repair queues are T2 (counted refusals). On other unix systems
+  (portable.rs) the basic calls only, everything else a counted refusal; built and linted on the Mac, never run.
+- Suite `crates/tcp-sockets/conformance`: 99 checks that each take one value, against the traits alone, plus five
+  functions that build values for the required suites (Configurable twice, NegativeRouteAdvice, Readiness three
+  times); `tests!` runs them as 113 tests, and the implementation's own four (allocation checks,
+  discarding_cuts_no_packet, the two-thread peeks) run beside it. The suite builds on every unix system and runs on
+  Linux only: a capture thread reads the host's packet socket (`AF_PACKET`, every loopback packet seen twice, counted
+  once) filtered to one listener's port, and the checks read headers, sequence numbers, windows, TCP timestamps,
+  times and the host's tables in /proc. The namespace it needs (root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`,
+  `net.ipv6.flowlabel_consistency=0`, a microsecond-clock route, loopback forwarding) is written at the top of the
+  suite and made by run-conformance.sh.
+- Which check fails when a method or setting breaks (broken copies in mutants.sh; results under Measurements):
+  connect, listen, accept: every check; listen's backlog argument: listener_backlog_bounds_the_accept_queue and the
+  two ICMP checks for a synchronizing connection; their owner: connect_and_listen_make_sockets_of_their_owner; their
+  protocol: multipath_is_negotiated_when_both_ends_ask; accept's frame length: connect_and_accept_name_both_ends.
+  send and receive: bytes_arrive_in_order_both_ways and the request checks (urgent_*, peek_*, more_to_come_*,
+  record_end_starts_a_new_segment, unread_byte_reports_*, receive_software_timestamps_*, the transmit report
+  checks). shut_down: the three shutdown checks (ReadAndWrite as Write fails shutdown_of_both_directions_ends_both).
+  close: orderly_close_*, abort_resets_the_peer. stop_listening: stopped_listener_refuses_connections.
+  take_error_queue_entry and discard_error_queue_entries: the report, ICMP and discarding checks. push_queued_data:
+  more_to_come_holds_data_until_pushed, push_ignoring_neither_*. send_delayed_acknowledgement:
   delayed_acknowledgement_is_sent_on_demand. rearm_keep_alive_timer: rearming_the_keep_alive_timer_sends_a_due_probe.
   send_window_probe: window_probe_is_answered_and_changes_no_setting. set_timestamp_clock:
-  timestamp_clock_set_in_repair_mode_stamps_segments and timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused
-  (the listener's: only its refusal, see For the owner). set_authentication_counters and the listener's:
-  authentication_counters_are_set_only_where_authentication_is. read_listener_state: listener_state_reads_a_listener.
-  read_state: saved_synchronize_is_taken_once (TakeSavedSynchronize only; the rest is T2). receive's lock: the
-  implementation's own peeks_from_two_threads_each_start_where_asked.
-  give_negative_route_advice: negative_route_advice_picks_a_new_flow. Settings: send and receive buffers, buffer
-  locks, low waters (send_settings_*, receive_settings_*); window clamp (window_clamp_bounds_the_synchronize_window);
-  pacing rate, transmit delay (their checks); hop limit, traffic class, path MTU discovery, flow label
-  (header_settings_mark_each_segment); filter, minimum hop limit (arrival_settings_*); keep-alive and its idle,
-  interval and probes (keep_alive_probes_end_an_unanswered_connection); no-delay, quick acknowledgement, delayed
-  acknowledgement maximum, retransmission minimum and maximum, thin linear timeouts, user timeout, SYN retries,
-  defer accept, FIN-WAIT-2, congestion control, address and port sharing, nonlocal addresses, transmit rehash,
-  repair (their checks); cork, urgent inline, unread byte reports, maximum segment size, ICMP error reports (as
-  before); listener backlog, fast open queue and keys, flow label reflection (their checks).
+  timestamp_clock_set_in_repair_mode_stamps_segments (any refusal outside repair mode, the unit counted in it) and
+  timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused (the listener's: only its refusal, see For the
+  owner). set_authentication_counters and the listener's: authentication_counters_are_set_only_where_authentication_is.
+  read_listener_state: listener_state_reads_a_listener. read_state: saved_synchronize_is_taken_once
+  (TakeSavedSynchronize only; the rest is T2). give_negative_route_advice: negative_route_advice_picks_a_new_flow and
+  the module negative_route_advice. wait_until_ready on a connection: the modules readiness_tcp_connections and
+  readiness_tcp_connections_hanging_up, waits_on_many_connections_each_wake_once,
+  wait_for_room_finishes_when_the_peer_reads, wait_for_urgent_data_finishes_when_it_arrives,
+  wait_for_the_peers_shutdown_finishes_when_it_comes, wait_for_a_hang_up_finishes_when_both_ways_are_shut,
+  wait_for_an_error_finishes_when_the_peer_resets, a_wait_gives_the_facts_the_connection_has_and_no_others; on a
+  listener: the module readiness_tcp_listeners and a_wait_gives_the_facts_the_listener_has_and_no_others. configure
+  (both traits): the modules configurable_tcp_connections and configurable_tcp_listeners, and each setting's check:
+  send and receive buffers, buffer locks, low waters (send_settings_*, receive_settings_*); window clamp
+  (window_clamp_bounds_the_synchronize_window); pacing rate, transmit delay (their checks); hop limit, traffic class,
+  path MTU discovery, flow label (header_settings_mark_each_segment); filter, minimum hop limit (arrival_settings_*);
+  keep-alive and its idle, interval and probes (keep_alive_probes_end_an_unanswered_connection); no-delay, quick
+  acknowledgement, delayed acknowledgement maximum, retransmission minimum and maximum, thin linear timeouts, user
+  timeout, SYN retries, defer accept, FIN-WAIT-2, congestion control, address and port sharing, nonlocal addresses,
+  transmit rehash, repair, memberships, MD5 and authentication keys (their checks); cork, urgent inline, unread byte
+  reports, maximum segment size, ICMP error reports; listener backlog (given to listen, as a setting or later), fast
+  open queue and keys, flow label reflection (their checks).
 - Settings still checked only for being set twice the same, since loopback or the traits cannot show them yet:
   multicast loopback and all-groups (no effect on TCP traffic), packet priority (not on the wire), unicast
   interface, route scope, source preferences, bound interface, incoming processor (one interface, no read-back
   before T2), IPv4 options and IPv6 extension headers, the IPv6 variants of traffic class and path MTU discovery,
   `RecordsLastReceivedHeader` (shows only in `TcpQuery::LastReceivedHeader`, T2), `InitialAuthenticationCounters`
-  (shows only in read_state, T2) and the authentication options' ICMP choice (would need an ICMP error to an
-  authenticated connection; not attempted). The mark is checked by accept_names_where_the_synchronize_arrived.
-  `SaveSynchronize` with all three values is checked through `TakeSavedSynchronize` (saved_synchronize_is_taken_once).
-  T2 settings (the authentication repair values, repair options and windows) are not in T1.
+  (shows only in read_state, T2) and the authentication options' ICMP choice. The mark is checked by
+  accept_names_where_the_synchronize_arrived; `SaveSynchronize` with all three values through `TakeSavedSynchronize`
+  (saved_synchronize_is_taken_once).
 
 ## Measurements
 - Run 10, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22 01:48, load 4.8 to 5.1: after the split, clippy
@@ -672,7 +684,10 @@ readings, repair, authentication, multipath state, the privileged settings).
   therefore runs as root.
 - `TcpAccepted::synchronize` asks for fields Linux never reports for a SYN: for IPv4 the arrival interface (Linux
   keeps that of the segment that completed the handshake, given in its place and counted), and the SYN's own mark,
-  priority and timestamps (it gives the accepted socket's mark and priority and no timestamps).
+  priority and timestamps (it gives the accepted socket's mark and priority and no timestamps). Its
+  `largest_fragment` is always None (counted): Linux keeps no fragment size for a SYN, and `ReceivedPacketFields`
+  does not say whether None means "not reassembled" or "not known". Example: a SYN that came in two fragments is
+  reported exactly like one that did not.
 - Linux gives an accepted multipath socket mark 0 whatever its SYN's mark (`tcp_fwmark_accept` marks only the
   subflow), so `TcpAccepted::synchronize.mark` of a multipath accept is the socket's 0 (counted with the other
   fields of the socket). Example: a multipath client with mark 7 to 127.0.0.2 is accepted with mark 0.
@@ -699,7 +714,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   `WindowClamp` is honoured as Linux honours it, and the suite checks the SYN's window only.
 - `set_listener_timestamp_clock` asks for a listener "in repair mode", but Linux never lets a listener into repair
   mode (`tcp_can_repair_sock` refuses `TCP_LISTEN`): the call is always EPERM on Linux, and the suite checks only
-  that refusal.
+  that it is refused. Neither clock call names its error outside repair mode, so the suite takes any refusal
+  (Linux: EPERM; example: an implementation answering NotSupported passes too).
 - `FlowLabelReflection` on Linux reflects the SYN's flow label in the SYN-ACK only (measured: the accepted
   connection's data then carries a label of its own); the contract does not say which segments reflect it.
 
