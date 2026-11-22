@@ -25,7 +25,12 @@ converter: the owner's ruling is asked ("New for the owner").
 
 Every figure here is from runs at 05a2cff4 (the tip of `agents` when the run started; this crate
 unchanged since run 74's 7f291fa6, and the commits after 05a2cff4 touch only this file and the
-history). Logs in scratch `graphics-shaders/g6a-r75`. No code changed in this run.
+history). The pushed tip after this run (982208db) differs from 05a2cff4 in nothing this crate
+builds (other tracks' socket crates and their lock lines). Logs and the written files Chrome
+compiled (`out`, 50 MB) in scratch `graphics-shaders/g6a-r75`. No code changed in this run.
+Clean-up: this run's build folders deleted (laptop `target/shaders-tip`, 4.9 GB, its source copy
+and `out-r75`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
+`C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clones).
 
 The carried findings, each against the tip:
 - Four corpus record tests failing (eb202617 wrote GLSL under the WebGL 2 key without new
