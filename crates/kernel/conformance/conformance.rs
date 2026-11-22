@@ -13,8 +13,8 @@ use wcontainers_kernel::{
 /// An id no kernel hands out: past the largest a task can have.
 const ABSENT: TaskId = TaskId(u32::MAX);
 
-/// The bytes a process's checks write.
-const WRITTEN: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+/// The bytes a process's checks write, a word's worth of distinct values.
+const WRITTEN: [u8; size_of::<u64>()] = [1, 2, 3, 4, 5, 6, 7, 8];
 
 /// Checks that suspending an empty batch takes no task.
 pub fn suspend_no_tasks<K: Kernel>(mut kernel: K) {
@@ -26,8 +26,7 @@ pub fn resume_no_tasks<K: Kernel>(mut kernel: K) {
     assert!(kernel.resume_tasks(core::iter::empty()).next().is_none());
 }
 
-/// Checks that a process the kernel does not hold is neither copied nor suspended, and its task
-/// not taken.
+/// Checks that a process the kernel does not hold is not copied or suspended, nor its task taken.
 pub fn absent_process_is_not_found<K: Kernel>(mut kernel: K) {
     assert!(kernel.copy_process_context(ABSENT).is_none());
     assert!(kernel.suspend_process(ABSENT).is_none());
@@ -66,8 +65,7 @@ pub fn bad_reads_are_refused<P: Process>(mut process: P) {
     ));
 }
 
-/// Checks that a process suspended through its handle leaves with its one thread, whose id is the
-/// process's.
+/// Checks that a process suspended through its handle leaves with its one thread, of its own id.
 pub fn process_suspends_itself<P: Process>(process: P) {
     let id = process.id();
     let (_, tasks) = process.suspend_process();
@@ -146,7 +144,7 @@ pub fn watched_memory_is_read_and_written<P: Process>(mut process: P) {
     }
 }
 
-/// The range of [`WRITTEN`]'s length at the start of the process's first writable page.
+/// Returns the range of [`WRITTEN`]'s length at the start of the process's first writable page.
 fn first_writable<P: Process>(process: &mut P) -> core::ops::Range<u64> {
     let writable = process.take_dirty_memory();
     let first = writable
@@ -156,7 +154,7 @@ fn first_writable<P: Process>(process: &mut P) -> core::ops::Range<u64> {
     first..first + WRITTEN.len() as u64
 }
 
-/// The bytes of a range of the process's memory, which must be readable.
+/// Returns the bytes of a range of the process's memory, which must be readable.
 fn read<P: Process>(process: &mut P, range: core::ops::Range<u64>) -> Vec<u8> {
     process
         .read_memory(range)
