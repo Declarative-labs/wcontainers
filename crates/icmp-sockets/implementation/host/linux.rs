@@ -83,7 +83,7 @@ const UPPER_LAYER: &str =
 const RECEIVED_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket a packet without its mark, priority or preferred \
      source, and an ipv4 one without its identification and fragment flags: each is written as zero or none";
 const DROPS_ASKED: &str = "linux gives a ping socket's packets no drop count, so each receive asks the socket \
-     for its count, one more system call";
+     for its count, one more system call, and tells every drop so far with the packet, even those after it came";
 const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket an icmp error without the identification and \
      fragment flags of an ipv4 one or the quoted header's fields but its addresses: each is written as zero";
 

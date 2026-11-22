@@ -142,6 +142,47 @@ fn batch(tool: &str, options: &[&str], commands: &str) {
         child.wait().expect("the tool ends").success(),
         "{tool} {options:?}: {commands}"
     );
+    if tool == IP {
+        settle_addresses(commands);
+    }
+}
+
+/// The `ip` commands that give a link an address, and what they are followed by.
+const ADDRESS: &str = "address";
+const ADDING: [&str; 2] = ["add", "replace"];
+const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
+
+/// Waits until each IPv6 address the commands add is local: Linux routes a `nodad` one locally only in its later address work.
+fn settle_addresses(commands: &str) {
+    for line in commands.lines() {
+        let mut words = line.split_whitespace();
+        if words.next() != Some(ADDRESS) || !words.next().is_some_and(|verb| ADDING.contains(&verb))
+        {
+            continue;
+        }
+        let Some(Ok(IpAddr::V6(address))) = words
+            .next()
+            .and_then(|prefix| prefix.split('/').next())
+            .map(str::parse)
+        else {
+            continue;
+        };
+        let local = || {
+            let output = Command::new(IP)
+                .args(LOCAL_ROUTES)
+                .arg(address.to_string())
+                .output()
+                .expect("ip runs");
+            !output.stdout.is_empty()
+        };
+        assert!(
+            (0..PATIENT_TRIES).any(|_| local() || {
+                std::thread::sleep(PATIENT_TRY);
+                false
+            }),
+            "{address} is not local yet"
+        );
+    }
 }
 
 fn write_setting(path: &str, value: impl ToString) {

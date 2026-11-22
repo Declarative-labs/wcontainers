@@ -7,9 +7,7 @@ use wcontainers_icmp_sockets::IcmpSockets;
 use wcontainers_icmp_sockets_host::HostIcmpSockets;
 use wcontainers_internet_protocol::{
     IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpVersion, Ipv6HeaderFields,
-    Ipv6RouteSelectors, LocalFragmentation, MobileAddressPreference, NeighbourConfirmation,
-    PacketMark, PacketPriority, PathMtuDiscovery, Report, SendError, SourceAddressCheck,
-    SourcePreferences, TemporaryAddressPreference, TransmitReportKey, TransmitReportRequest,
+    Ipv6RouteSelectors, NeighbourConfirmation, Report, SendError, TransmitReportRequest,
     UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
@@ -33,70 +31,142 @@ fn an_empty_ping_group_range_refuses_the_socket() {
     }
 }
 
-/// Checks that an IPv6 source Linux's ping socket would not send from is refused and counted under its reason.
+/// The option that pads an IPv6 extension header by its length.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
+const PAD_N: u8 = 1;
+/// How many bytes PadN pads after its type and length in the smallest extension header.
+const PADDED: u8 = 4;
+
+/// Returns the one reason a value counted once, failing if it counted anything else.
+fn the_one_reason(sockets: &HostIcmpSockets) -> &'static str {
+    match sockets.counters().as_slice() {
+        [reading] if reading.count == 1 => reading.reason,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Checks that each send Linux's ping sockets would not honour is refused and counted once under a reason of its own.
 #[test]
-fn an_ipv6_source_is_refused_and_counted() {
-    wcontainers_icmp_sockets_conformance::enter_network_namespace();
-    let sockets = HostIcmpSockets::new().unwrap();
-    let socket = sockets.open(IpVersion::V6, UserId(u32::MIN)).unwrap();
-    let message = [IcmpType(128).0, u8::MIN, 0, 0, 0, 0, 0, 0];
-    let route = Ipv6RouteSelectors {
-        destination: std::net::Ipv6Addr::LOCALHOST,
+fn each_send_refusal_is_counted_under_its_reason() {
+    use wcontainers_icmp_sockets_conformance as suite;
+    suite::enter_network_namespace();
+    let message = suite::echo(IpVersion::V6, suite::PAYLOAD);
+    let to = std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+    let IpHeaderFields::V6(plain) = suite::header_to(to, &message) else {
+        unreachable!("an IPv6 destination has an IPv6 header");
+    };
+    // A header of padding alone: next header, length in eight-byte units after the first, and PadN over the rest.
+    let padding = [
+        u8::MIN,
+        u8::MIN,
+        PAD_N,
+        PADDED,
+        u8::MIN,
+        u8::MIN,
+        u8::MIN,
+        u8::MIN,
+    ];
+    let padding = etherparse::Ipv6RawExtHeaderSlice::from_slice(&padding).unwrap();
+    let with_route = |route| Ipv6HeaderFields {
+        route,
+        ..plain.clone()
+    };
+    let source = with_route(Ipv6RouteSelectors {
         source: Some(std::net::Ipv6Addr::LOCALHOST),
-        source_address_check: SourceAddressCheck::Required,
-        interface: None,
-        dscp: etherparse::IpDscp::ZERO,
-        ecn: etherparse::IpEcn::NotEct,
-        flow_label: etherparse::Ipv6FlowLabel::ZERO,
-        mark: PacketMark(u32::MIN),
-        source_preferences: SourcePreferences {
-            temporary: TemporaryAddressPreference::SystemDefault,
-            mobile: MobileAddressPreference::Home,
-        },
-        routing_header: None,
+        ..plain.route.clone()
+    });
+    let routing_header = with_route(Ipv6RouteSelectors {
+        routing_header: Some(padding.clone()),
+        ..plain.route.clone()
+    });
+    let other_code = with_route(Ipv6RouteSelectors {
         upper_layer: UpperLayer {
             protocol: IpNumber::IPV6_ICMP,
             selector: Some(UpperLayerSelector::Icmp {
                 message_type: IcmpType(message[0]),
-                code: IcmpCode(message[1]),
+                code: IcmpCode(message[1] + 1),
             }),
         },
-    };
-    let header = IpHeaderFields::V6(Ipv6HeaderFields {
-        route,
-        hop_limit: None,
-        path_mtu_discovery: PathMtuDiscovery::Want,
-        local_fragmentation: LocalFragmentation::Allowed,
-        fragment_mtu: None,
-        hop_by_hop_options: None,
-        routing_destination_options: None,
-        destination_options: None,
+        ..plain.route.clone()
     });
-    let fields = IpSendFields {
-        neighbour: NeighbourConfirmation::Unconfirmed,
-        priority: PacketPriority(u32::MIN),
-        transmit_time: None,
-        transmit_reports: TransmitReportRequest {
-            key: TransmitReportKey(u32::MIN),
-            scheduled: Report::NotRequested,
-            software: Report::NotRequested,
-            hardware: Report::NotRequested,
-            acknowledgement: Report::NotRequested,
-            completion: Report::NotRequested,
-            wireless_status: Report::NotRequested,
-            packet: Report::NotRequested,
-        },
+    let confirmed = IpSendFields {
+        neighbour: NeighbourConfirmation::Confirmed,
+        ..suite::plain_fields()
     };
+    let cases = [
+        ("source", source, suite::plain_fields()),
+        ("extension", routing_header, suite::plain_fields()),
+        (
+            "extension",
+            Ipv6HeaderFields {
+                hop_by_hop_options: Some(padding.clone()),
+                ..plain.clone()
+            },
+            suite::plain_fields(),
+        ),
+        (
+            "extension",
+            Ipv6HeaderFields {
+                routing_destination_options: Some(padding.clone()),
+                ..plain.clone()
+            },
+            suite::plain_fields(),
+        ),
+        (
+            "extension",
+            Ipv6HeaderFields {
+                destination_options: Some(padding.clone()),
+                ..plain.clone()
+            },
+            suite::plain_fields(),
+        ),
+        ("neighbour", plain.clone(), confirmed),
+        ("upper layer", other_code, suite::plain_fields()),
+    ];
+    let mut reasons: Vec<(&str, &str)> = Vec::new();
+    for (kind, header, fields) in cases {
+        let sockets = HostIcmpSockets::new().unwrap();
+        let socket = sockets.open(IpVersion::V6, UserId(u32::MIN)).unwrap();
+        assert_eq!(
+            sockets.send_to(&socket, IpHeaderFields::V6(header), fields, &message),
+            Err(SendError::Host(HostError::NotSupported)),
+            "{kind}"
+        );
+        reasons.push((kind, the_one_reason(&sockets)));
+    }
+    // One reason for each kind of refusal, and a different one for each other kind.
+    for (kind, reason) in &reasons {
+        for (other_kind, other_reason) in &reasons {
+            assert_eq!(
+                kind == other_kind,
+                reason == other_reason,
+                "{kind}: {reason}; {other_kind}: {other_reason}"
+            );
+        }
+    }
+    // The upper layer of an IPv4 ping too, under the same reason as over IPv6.
+    let sockets = HostIcmpSockets::new().unwrap();
+    let socket = sockets.open(IpVersion::V4, UserId(u32::MIN)).unwrap();
+    let message = suite::echo(IpVersion::V4, suite::PAYLOAD);
+    let to = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let IpHeaderFields::V4(mut header) = suite::header_to(to, &message) else {
+        unreachable!("an IPv4 destination has an IPv4 header");
+    };
+    header.route.upper_layer.selector = None;
     assert_eq!(
-        sockets.send_to(&socket, header, fields, &message),
+        sockets.send_to(
+            &socket,
+            IpHeaderFields::V4(header),
+            suite::plain_fields(),
+            &message
+        ),
         Err(SendError::Host(HostError::NotSupported))
     );
-    let counted: Vec<_> = sockets
-        .counters()
-        .into_iter()
-        .map(|reading| (reading.reason, reading.count))
-        .collect();
-    assert!(matches!(counted.as_slice(), [(_, 1)]), "{counted:?}");
+    assert_eq!(
+        Some(the_one_reason(&sockets)),
+        reasons.last().map(|(_, reason)| *reason)
+    );
 }
 
 /// Checks that each received packet counts once the fields Linux does not give and the drop count it asks the socket for.

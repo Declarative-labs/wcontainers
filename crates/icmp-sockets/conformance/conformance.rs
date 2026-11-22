@@ -298,6 +298,41 @@ fn batch(tool: &str, options: &[&str], commands: &str) {
         child.wait().expect("the tool ends").success(),
         "{tool}: {commands}"
     );
+    if tool == IP {
+        settle_addresses(commands);
+    }
+}
+
+/// How long a check waits for Linux to finish what an `ip` command began, which its work behind the routing lock delays.
+///
+/// https://man7.org/linux/man-pages/man8/ip-address.8.html#:~:text=nodad
+pub const SETTLING: Duration = Duration::from_secs(10);
+/// The `ip` commands that give a link an address, and what they are followed by.
+const ADDRESS: &str = "address";
+const ADDING: [&str; 2] = ["add", "replace"];
+const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
+
+/// Waits until each IPv6 address the commands add is local: Linux routes a `nodad` one locally only in its later address work.
+fn settle_addresses(commands: &str) {
+    for line in commands.lines() {
+        let mut words = line.split_whitespace();
+        if words.next() != Some(ADDRESS) || !words.next().is_some_and(|verb| ADDING.contains(&verb))
+        {
+            continue;
+        }
+        let Some(Ok(IpAddr::V6(address))) = words
+            .next()
+            .and_then(|prefix| prefix.split('/').next())
+            .map(str::parse)
+        else {
+            continue;
+        };
+        let start = Instant::now();
+        while output(IP, &[LOCAL_ROUTES, &[&address.to_string()]].concat()).is_empty() {
+            assert!(start.elapsed() < SETTLING, "{address} is not local yet");
+            std::thread::sleep(LOOK_AGAIN_SOON);
+        }
+    }
 }
 
 pub fn output(tool: &str, arguments: &[&str]) -> String {
@@ -1713,15 +1748,71 @@ const MANAGED_TEMPORARY: &str = "address replace fd03::1/64 dev ia nodad mngtmpa
 /// The `use_tempaddr` value that makes temporary addresses but prefers public ones as sources.
 const TEMPORARY_BUT_PUBLIC_PREFERRED: &str = "1";
 
+/// The discard port, which a connect that only chooses a source names.
+///
+/// https://www.rfc-editor.org/rfc/rfc863
+const DISCARD_PORT: u16 = 9;
+
+/// Returns the source the host's own UDP socket takes to an address with the preferences' flags set.
+pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
+    let temporary = match preferences.temporary {
+        TemporaryAddressPreference::SystemDefault => libc::IPV6_PREFER_SRC_PUBTMP_DEFAULT,
+        TemporaryAddressPreference::Temporary => libc::IPV6_PREFER_SRC_TMP,
+        TemporaryAddressPreference::Public => libc::IPV6_PREFER_SRC_PUBLIC,
+    };
+    let mobile = match preferences.mobile {
+        MobileAddressPreference::Home => libc::IPV6_PREFER_SRC_HOME,
+        MobileAddressPreference::CareOf => libc::IPV6_PREFER_SRC_COA,
+    };
+    let socket =
+        std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, u16::MIN)).expect("a UDP socket");
+    let flags: libc::c_int = temporary | mobile;
+    // SAFETY: the value is a c_int of its own size.
+    let set = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IPV6,
+            libc::IPV6_ADDR_PREFERENCES,
+            (&flags as *const libc::c_int).cast(),
+            size_of::<libc::c_int>() as u32,
+        )
+    };
+    assert!(!set.is_negative(), "the source preferences are set");
+    socket
+        .connect((to, DISCARD_PORT))
+        .expect("the socket connects");
+    match socket.local_addr().expect("the source").ip() {
+        IpAddr::V6(source) => source,
+        other => panic!("{other}"),
+    }
+}
+
 /// Gives the dummy link a temporary address beside [`LOCAL_V6`] and answers which source each preference takes.
-pub fn sources_by_preference() -> Vec<(TemporaryAddressPreference, Ipv6Addr)> {
+///
+/// A care-of preference chooses as the host's own socket does: Linux prefers a care-of address only over a Mobile IPv6
+/// home address, which no link here has.
+pub fn sources_by_preference() -> Vec<(SourcePreferences, Ipv6Addr)> {
     write_setting(TEMPORARY_ADDRESSES, TEMPORARY_BUT_PUBLIC_PREFERRED);
     ip6(MANAGED_TEMPORARY);
     let temporary = temporary_address(DUMMY);
-    vec![
+    let mut sources = Vec::new();
+    for (preference, source) in [
         (TemporaryAddressPreference::Temporary, temporary),
         (TemporaryAddressPreference::Public, LOCAL_V6),
-    ]
+    ] {
+        let home = SourcePreferences {
+            temporary: preference,
+            mobile: MobileAddressPreference::Home,
+        };
+        assert_eq!(host_source(ON_LINK_V6, home), source, "{home:?}");
+        let care_of = SourcePreferences {
+            mobile: MobileAddressPreference::CareOf,
+            ..home
+        };
+        sources.push((home, source));
+        sources.push((care_of, host_source(ON_LINK_V6, care_of)));
+    }
+    sources
 }
 
 /// Checks that IPv6 source preferences choose between the link's public address and a temporary one.
@@ -1732,12 +1823,9 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
     let socket = opened(&sockets, IpVersion::V6);
     let capture = Capture::on(DUMMY);
     let message = echo(IpVersion::V6, PAYLOAD);
-    for (temporary, source) in sources {
+    for (preferences, source) in sources {
         let route = Ipv6RouteSelectors {
-            source_preferences: SourcePreferences {
-                temporary,
-                mobile: MobileAddressPreference::Home,
-            },
+            source_preferences: preferences,
             ..v6_route(ON_LINK_V6, &message)
         };
         sockets
@@ -1751,7 +1839,7 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
         assert_eq!(
             seen(&capture.echo_request()).source,
             IpAddr::V6(source),
-            "{temporary:?}"
+            "{preferences:?}"
         );
     }
 }

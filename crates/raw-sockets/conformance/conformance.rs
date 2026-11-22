@@ -1549,12 +1549,9 @@ pub fn ipv6_source_preferences_choose_the_source<S: RawSockets>(sockets: S) {
     let sources = wcontainers_icmp_sockets_conformance::sources_by_preference();
     let capture = Capture::on(DUMMY);
     let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
-    for (temporary, source) in sources {
+    for (preferences, source) in sources {
         let route = Ipv6RouteSelectors {
-            source_preferences: SourcePreferences {
-                temporary,
-                mobile: MobileAddressPreference::Home,
-            },
+            source_preferences: preferences,
             ..v6_route(ON_LINK_V6, under(EXPERIMENT))
         };
         send(
@@ -1570,7 +1567,7 @@ pub fn ipv6_source_preferences_choose_the_source<S: RawSockets>(sockets: S) {
             seen(packet).protocol == EXPERIMENT
                 && seen(packet).destination == IpAddr::V6(ON_LINK_V6)
         });
-        assert_eq!(seen(&packet).source, IpAddr::V6(source), "{temporary:?}");
+        assert_eq!(seen(&packet).source, IpAddr::V6(source), "{preferences:?}");
     }
 }
 
