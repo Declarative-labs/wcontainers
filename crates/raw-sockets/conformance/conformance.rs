@@ -2075,8 +2075,7 @@ fn provoke_icmp_error<S: RawSockets>(
     send_icmp_error_about(&sent)
 }
 
-/// A wait for a fact no raw socket has waits on, unwoken, while the socket has a packet to read and room to send,
-/// until an ICMP error ends it, never with a fact the socket cannot have.
+/// A wait for a fact no raw socket has waits on while it is readable and writable, until an ICMP error ends it.
 pub fn a_wait_for_a_fact_a_raw_socket_never_has_waits_on<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     let capture = Capture::on(DUMMY);

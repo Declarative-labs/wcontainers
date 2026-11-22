@@ -77,8 +77,7 @@ const APART: Duration = Duration::from_millis(10);
 /// caller's network routes through a gateway.
 const BEYOND_A_GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
 
-/// Local addresses the caller's network routes with an MTU of ROUTE_MTU, Ethernet's: 127.0.0.2 and 2001:db8::2 (of
-/// the documentation prefix, [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849)).
+/// Local addresses the caller's network routes with an MTU of ROUTE_MTU; the IPv6 one is of the documentation prefix.
 const NARROW_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
 const ROUTE_MTU: u16 = linux_raw_sys::if_ether::ETH_DATA_LEN as u16;
@@ -2608,8 +2607,7 @@ pub fn a_wait_gives_the_facts_the_socket_has_and_no_others<S: UdpSockets>(socket
     }
 }
 
-/// A wait for a fact no UDP socket has waits on, unwoken, while the socket has data to read and room to send, until an
-/// error ends it with every fact the socket has.
+/// A wait for a fact no UDP socket has waits on while the socket is readable and writable, until an error ends it.
 pub fn a_wait_for_a_fact_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);

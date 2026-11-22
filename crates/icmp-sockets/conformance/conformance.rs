@@ -2364,9 +2364,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
 /// How many waits [`wait_allocations`] counts, after as many that warm the socket.
 pub const COUNTED_WAITS: usize = 100;
 
-/// The allocations `allocations` counts in [`COUNTED_WAITS`] waits that each have to wait, after as many that warm
-/// the socket: each is made and polled, `arrive` makes its fact hold, and it is polled to its end and dropped
-/// before `take` takes what came.
+/// The allocations counted in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
 pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
@@ -2481,8 +2479,7 @@ impl Wakes {
     }
 }
 
-/// Checks that the wait is woken within the patience of a check; if not, tells whether polled again it has its
-/// facts by now, a wake lost, or not, a fact that never came.
+/// Checks that the wait is woken in time, and if not, whether its facts came anyway, telling a lost wake from a lost fact.
 pub fn woken<F: Future<Output = Result<ReadyFor, HostError>>>(
     call: Pin<&mut F>,
     wakes: &Arc<Wakes>,
@@ -2695,8 +2692,7 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
 pub const NEVER_ON_DATAGRAMS: [ReadyFor; 2] =
     [ReadyFor::URGENT_DATA, ReadyFor::PEER_FINISHED_SENDING];
 
-/// A wait for a fact no echo socket has waits on, unwoken, while the socket has a reply to read and room to send,
-/// until an ICMP error ends it, never with a fact the socket cannot have.
+/// A wait for a fact no echo socket has waits on while it is readable and writable, until an ICMP error ends it.
 pub fn a_wait_for_a_fact_icmp_never_has_waits_on<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
     let to = IpAddr::V4(ON_LINK);

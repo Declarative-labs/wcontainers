@@ -1,7 +1,4 @@
-//! The tests every implementation of wcontainers-readiness runs, written against its trait alone.
-//!
-//! Each takes a [`Waiting`]: the implementor with a handle, the facts to wait for and a way to make the handle
-//! ready, made by the suite of a trait that requires `Readiness`, which alone knows how to make its handle ready.
+//! The tests every implementation of wcontainers-readiness runs, each on a [`Waiting`] that a requiring trait's suite makes.
 
 use core::fmt::Debug;
 use core::future::Future;
@@ -256,9 +253,7 @@ pub fn a_failure_ends_a_wait_that_did_not_ask_for_it<R, Handle, MakeReady>(
     assert!(facts.intersects(ALWAYS_REPORTED), "{facts:?}");
 }
 
-/// Runs each suite function above as its own test in a module of the name given, on the values a requiring suite
-/// gives, made anew for every test: `ready` makes its handle ready for its interest, `failing` makes an error or a
-/// hang-up.
+/// Runs each check above as a test in the module named, on a new `ready` bundle, or `failing` (an error or hang-up).
 #[macro_export]
 macro_rules! tests {
     ($module:ident, ready: $ready:expr, failing: $failing:expr) => {
