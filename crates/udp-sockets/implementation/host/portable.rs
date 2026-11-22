@@ -19,20 +19,20 @@ use wcontainers_internet_protocol::{
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived, UdpSocketSetting,
     UdpSockets, ZeroChecksumReceipt,
 };
 
-use shared::readiness::{Readiness, Watched};
+use shared::readiness::{DATAGRAM_FACTS, Watched, Watcher};
 use shared::{Shortfalls, io_host_error, sock};
 
 /// UDP sockets of the system this runs on, with a count of each refusal by its reason.
 pub struct HostUdpSockets {
     shortfalls: Shortfalls,
-    readiness: Readiness,
+    watcher: Watcher,
 }
 
 pub struct HostUdpSocket {
@@ -63,7 +63,7 @@ impl HostUdpSockets {
     pub fn new() -> Result<Self, HostError> {
         Ok(Self {
             shortfalls: Shortfalls::default(),
-            readiness: Readiness::new()?,
+            watcher: Watcher::new()?,
         })
     }
 
@@ -204,7 +204,7 @@ impl UdpSockets for HostUdpSockets {
             .set_nonblocking(true)
             .map_err(|error| io_host_error(&error))?;
         Ok(HostUdpSocket {
-            watched: self.readiness.watch(OwnedFd::from(socket))?,
+            watched: self.watcher.watch(OwnedFd::from(socket), DATAGRAM_FACTS)?,
             ipv6,
         })
     }
@@ -314,14 +314,6 @@ impl UdpSockets for HostUdpSockets {
         Err(self.refuse(INCOMING_PROCESSOR))
     }
 
-    async fn wait_for_events(
-        &self,
-        socket: &Self::Socket,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError> {
-        socket.watched.wait_for_events(interest).await
-    }
-
     fn close(&self, socket: Self::Socket) {
         drop(socket);
     }
@@ -376,6 +368,16 @@ impl<'a> Configurable<HostUdpSocket, UdpSocketSetting<'a>> for HostUdpSockets {
             _ => return Err(self.refuse(SETTING)),
         };
         set.map_err(|error| io_host_error(&error))
+    }
+}
+
+impl Readiness<HostUdpSocket> for HostUdpSockets {
+    async fn wait_until_ready(
+        &self,
+        socket: &HostUdpSocket,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        socket.watched.wait_until_ready(interest).await
     }
 }
 

@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{BindAddress, IpVersion, LocalBinding, LocalPort, Port};
-use wcontainers_internet_protocol_linux_socket_options::readiness::{NO_EVENTS, WATCHER};
+use wcontainers_internet_protocol_linux_socket_options::readiness::WATCHER_THREAD;
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
+use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_udp_sockets::{UdpProtocol, UdpSockets};
 use wcontainers_udp_sockets_host::{HostUdpSocket, HostUdpSockets};
 
@@ -81,11 +81,6 @@ const LOOKING: Duration = Duration::from_millis(15);
 
 const PAYLOAD: &[u8] = b"a datagram waited for";
 
-const READABLE: PollEvents = PollEvents {
-    data_to_read: true,
-    ..NO_EVENTS
-};
-
 #[derive(Default)]
 struct Wakes {
     count: Mutex<usize>,
@@ -120,7 +115,8 @@ fn watchers() -> impl Iterator<Item = std::path::PathBuf> {
         .expect("this process's threads")
         .map(|task| task.expect("a thread").path())
         .filter(|task| {
-            std::fs::read_to_string(task.join("comm")).is_ok_and(|name| name.trim_end() == WATCHER)
+            std::fs::read_to_string(task.join("comm"))
+                .is_ok_and(|name| name.trim_end() == WATCHER_THREAD)
         })
 }
 
@@ -187,12 +183,12 @@ fn wait_and_take(
     woken: usize,
     into: &mut [u8],
 ) {
-    let mut wait = pin!(sockets.wait_for_events(socket, READABLE));
+    let mut wait = pin!(sockets.wait_until_ready(socket, ReadyFor::READABLE));
     assert!(poll_with(wait.as_mut(), wakes).is_pending());
     sender.send(PAYLOAD).expect("send");
     assert!(wakes.reach(woken), "woken by the datagram");
     match poll_with(wait.as_mut(), wakes) {
-        Poll::Ready(Ok(events)) => assert!(events.data_to_read),
+        Poll::Ready(Ok(events)) => assert!(events.contains(ReadyFor::READABLE)),
         other => panic!("the wait did not finish: {other:?}"),
     }
     assert!(sockets.receive(socket, into).is_ok());
@@ -263,8 +259,8 @@ fn a_wait_allocates_nothing_once_warm() {
     assert_eq!(allocated, 0, "allocations over {DATAGRAMS} waits");
 }
 
-/// A wait for an event the poller can only approximate, priority band data by the socket being readable, costs
-/// the watcher a look at each change of the socket and does not keep it running while the socket has data.
+/// A wait for facts UDP never has asks the host for nothing but errors and hang-ups, so it does not keep the watcher
+/// running while the socket has data.
 #[test]
 fn a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still() {
     let _alone = ALONE
@@ -273,17 +269,13 @@ fn a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still() {
     let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
     let (socket, sender) = pair(&sockets);
     let wakes = Arc::new(Wakes::default());
-    let mut readable = pin!(sockets.wait_for_events(&socket, READABLE));
+    let mut readable = pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE));
     assert!(poll_with(readable.as_mut(), &wakes).is_pending());
     sender.send(PAYLOAD).expect("send");
     assert!(wakes.reach(1), "woken by the datagram");
-    let lacking = PollEvents {
-        priority_band_data_to_read: true,
-        peer_shut_down_writing: true,
-        ..NO_EVENTS
-    };
+    let lacking = ReadyFor::URGENT_DATA | ReadyFor::PEER_FINISHED_SENDING;
     let before = watcher_time();
-    let mut wait = pin!(sockets.wait_for_events(&socket, lacking));
+    let mut wait = pin!(sockets.wait_until_ready(&socket, lacking));
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     std::thread::sleep(LACKING);
     let taken = watcher_time() - before;
@@ -328,7 +320,7 @@ fn a_woken_wait_costs_the_watcher_nothing_until_it_is_polled() {
     let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
     let (socket, sender) = pair(&sockets);
     let wakes = Arc::new(Wakes::default());
-    let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
+    let mut wait = pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE));
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     sender.send(PAYLOAD).expect("send");
     assert!(wakes.reach(1), "woken by the datagram");
@@ -345,6 +337,6 @@ fn a_woken_wait_costs_the_watcher_nothing_until_it_is_polled() {
     );
     assert!(matches!(
         poll_with(wait, &wakes),
-        Poll::Ready(Ok(events)) if events.data_to_read
+        Poll::Ready(Ok(events)) if events.contains(ReadyFor::READABLE)
     ));
 }

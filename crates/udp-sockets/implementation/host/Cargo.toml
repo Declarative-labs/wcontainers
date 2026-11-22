@@ -17,6 +17,7 @@ wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
+wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-udp-sockets = { path = "../.." }
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 etherparse.workspace = true
