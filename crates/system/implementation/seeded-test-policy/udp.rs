@@ -7,7 +7,7 @@ use core::net::SocketAddr;
 use wcontainers_abi::{Host, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, IpHeaderFields, IpSendFields, IpVersion, LocalBinding, ProcessorIndex,
+    BufferSizes, ByteCount, IpHeaderFields, IpSendFields, IpVersion, LocalBinding, ProcessorIndex,
     RouteSelectors, SendError,
 };
 use wcontainers_kernel::UserId;
@@ -66,6 +66,10 @@ impl<H: Host> UdpSockets for TestPolicy<H> {
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
+        match *socket {}
+    }
+
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
         match *socket {}
     }
 
