@@ -14,26 +14,13 @@ pub(super) const fn map_binary_operator(word: spirv::Op) -> Result<crate::Binary
         Op::UDiv | Op::SDiv | Op::FDiv => Ok(BinaryOperator::Divide),
         Op::SRem => Ok(BinaryOperator::Modulo),
         // Relational and Logical Instructions
-        Op::IEqual | Op::FOrdEqual | Op::FUnordEqual | Op::LogicalEqual => {
-            Ok(BinaryOperator::Equal)
-        }
-        Op::INotEqual | Op::FOrdNotEqual | Op::FUnordNotEqual | Op::LogicalNotEqual => {
-            Ok(BinaryOperator::NotEqual)
-        }
-        Op::ULessThan | Op::SLessThan | Op::FOrdLessThan | Op::FUnordLessThan => {
-            Ok(BinaryOperator::Less)
-        }
-        Op::ULessThanEqual
-        | Op::SLessThanEqual
-        | Op::FOrdLessThanEqual
-        | Op::FUnordLessThanEqual => Ok(BinaryOperator::LessEqual),
-        Op::UGreaterThan | Op::SGreaterThan | Op::FOrdGreaterThan | Op::FUnordGreaterThan => {
-            Ok(BinaryOperator::Greater)
-        }
-        Op::UGreaterThanEqual
-        | Op::SGreaterThanEqual
-        | Op::FOrdGreaterThanEqual
-        | Op::FUnordGreaterThanEqual => Ok(BinaryOperator::GreaterEqual),
+        // Float comparisons are read by `parse_expr_float_comparison`, by their NaN rule.
+        Op::IEqual | Op::LogicalEqual => Ok(BinaryOperator::Equal),
+        Op::INotEqual | Op::LogicalNotEqual => Ok(BinaryOperator::NotEqual),
+        Op::ULessThan | Op::SLessThan => Ok(BinaryOperator::Less),
+        Op::ULessThanEqual | Op::SLessThanEqual => Ok(BinaryOperator::LessEqual),
+        Op::UGreaterThan | Op::SGreaterThan => Ok(BinaryOperator::Greater),
+        Op::UGreaterThanEqual | Op::SGreaterThanEqual => Ok(BinaryOperator::GreaterEqual),
         Op::BitwiseOr => Ok(BinaryOperator::InclusiveOr),
         Op::BitwiseXor => Ok(BinaryOperator::ExclusiveOr),
         Op::BitwiseAnd => Ok(BinaryOperator::And),

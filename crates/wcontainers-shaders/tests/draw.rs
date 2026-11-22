@@ -42,7 +42,7 @@ struct Case {
     dxil_against_11: bool,
 }
 
-const CASES: [Case; 29] = [
+const CASES: [Case; 30] = [
     Case {
         vs: "vs_transform",
         ps: "ps_twospaces",
@@ -194,6 +194,20 @@ const CASES: [Case; 29] = [
         grid: true,
         not_on_webgl: [None, None],
         known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_compare",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: Some(
+            "the DXIL build's negated ordered comparisons (unordered ones) give the ordered result \
+             for a NaN through ANGLE (gap A26)",
+        ),
         dxil: true,
         dxil_against_11: false,
     },

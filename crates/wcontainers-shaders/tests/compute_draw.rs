@@ -1,5 +1,5 @@
 //! Compute shaders with atomic operations, append, consume and counter views, storage textures
-//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
+//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`), NaN rules (`compare.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
 //! running the same shaders on the same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
@@ -624,18 +624,96 @@ fn lcm(a: u64, b: u64) -> u64 {
 
 #[test]
 fn atomics_and_counters_match_direct3d() {
-    compare_compute(cases);
+    compare_compute(cases, &mut webgpu());
 }
 
 /// The same shaders with every view starting at a seeded element past the start of its buffer,
 /// read through `VariantFlags::STORAGE_OFFSET` (Direct3D's views at any first element).
 #[test]
 fn storage_views_at_any_first_element_match_direct3d() {
-    compare_compute(offset_cases);
+    compare_compute(offset_cases, &mut webgpu());
 }
 
-fn compare_compute(cases: fn(u64) -> Vec<Case>) {
-    let mut backend = webgpu();
+/// Float comparisons, minimum, maximum and saturate of NaNs, infinities and signed zeros
+/// (`cs_compare`) give Direct3D's results on wgpu's Direct3D 12 and Vulkan paths, whose compilers
+/// read an operator's NaN rule differently (SPIR-V names ordered and unordered comparisons).
+#[test]
+fn nan_rules_match_direct3d() {
+    eprintln!("wgpu on direct3d 12:");
+    let mut failures = compute_failures(compare_cases, &mut webgpu());
+    eprintln!("wgpu on vulkan:");
+    let vulkan = compute_failures(compare_cases, &mut webgpu_on(wgpu::Backends::VULKAN));
+    failures.extend(vulkan.into_iter().map(|f| format!("vulkan {f}")));
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// `cs_compare`'s workgroups and their size.
+const COMPARE_GROUPS: u32 = 4;
+const COMPARE_GROUP_SIZE: u32 = 64;
+
+/// `cs_compare`'s operand pairs: every pair of the special values first, then seeded pairs of
+/// special values and seeded floats of any bits.
+fn compare_cases(seed: u64) -> Vec<Case> {
+    const SPECIAL: [u32; 11] = [
+        f32::NAN.to_bits(),
+        0xffc0_0001, // NaN, sign and payload set
+        0x7f80_0001, // signalling NaN
+        f32::INFINITY.to_bits(),
+        f32::NEG_INFINITY.to_bits(),
+        0f32.to_bits(),
+        (-0f32).to_bits(),
+        1f32.to_bits(),
+        (-1f32).to_bits(),
+        0.5f32.to_bits(),
+        1, // the least subnormal
+    ];
+    let mut next = rng(seed);
+    let n = SPECIAL.len();
+    let pick = |next: &mut dyn FnMut() -> u32| match next() % 3 {
+        0 => SPECIAL[next() as usize % n],
+        _ => next(),
+    };
+    let operands: Vec<u32> = (0..(COMPARE_GROUPS * COMPARE_GROUP_SIZE) as usize)
+        .flat_map(|i| {
+            if i < n * n {
+                [SPECIAL[i % n], SPECIAL[i / n]]
+            } else {
+                [pick(&mut next), pick(&mut next)]
+            }
+        })
+        .collect();
+    vec![Case {
+        shader: "cs_compare",
+        views: vec![
+            View {
+                bytes: vec![0; 2 * size_of_val(operands.as_slice())],
+                raw: false,
+                counter: None,
+                append: false,
+                read: false,
+                first: 0,
+            },
+            View {
+                bytes: words(&operands),
+                raw: false,
+                counter: None,
+                append: false,
+                read: true,
+                first: 0,
+            },
+        ],
+        groups: COMPARE_GROUPS,
+    }]
+}
+
+fn compare_compute<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
+    let failures = compute_failures(cases, backend);
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The cases run by Direct3D 11 and by `backend` from both builds, at each seed; the names of those
+/// that differ.
+fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) -> Vec<String> {
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
@@ -658,7 +736,7 @@ fn compare_compute(cases: fn(u64) -> Vec<Case>) {
             let build = if dxil { "dxil" } else { "dxbc" };
             let name = format!("seed {seed} {} {build}", case.shader);
             let mut reference = direct3d(&gpu, &case);
-            let mut made = match ours(&mut backend, &case, dxil) {
+            let mut made = match ours(backend, &case, dxil) {
                 Ok(made) => made,
                 Err(e) => {
                     let refused = DXIL_REFUSED.iter().find(|r| r.0 == case.shader);
@@ -701,7 +779,7 @@ fn compare_compute(cases: fn(u64) -> Vec<Case>) {
         }
     }
     eprintln!("{compared} comparisons, {} failed", failures.len());
-    assert!(failures.is_empty(), "{failures:#?}");
+    failures
 }
 
 /// One of `cs_images`' storage textures: slot, format, its Direct3D format, layers, and whether it

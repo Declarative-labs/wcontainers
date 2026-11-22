@@ -4898,7 +4898,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         }
         Ok(match op.code {
             c::F_EQ => bin(self, b, B::Equal, Scalar::F32)?,
-            c::F_NE => bin(self, b, B::NotEqual, Scalar::F32)?,
+            c::F_NE => {
+                // Direct3D's `ne` is unordered (true where an operand is NaN): the negated ordered
+                // equality is so on every back end, where `!=` is ordered in SPIR-V.
+                let equal = bin(self, b, B::Equal, Scalar::F32)?;
+                self.add(
+                    b,
+                    Expression::Unary {
+                        op: UnaryOperator::LogicalNot,
+                        expr: equal,
+                    },
+                )
+            }
             c::F_LT => bin(self, b, B::Less, Scalar::F32)?,
             c::F_LE => bin(self, b, B::LessEqual, Scalar::F32)?,
             c::F_GT => bin(self, b, B::Greater, Scalar::F32)?,

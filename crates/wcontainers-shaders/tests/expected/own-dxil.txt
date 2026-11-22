@@ -1,5 +1,6 @@
 cs_atomics.dxil	ok ; glsl absent compute
 cs_buffer_array.dxil	unsupported UnboundedResourceArray
+cs_compare.dxil	ok ; glsl absent compute
 cs_decrement.dxil	ok ; glsl absent compute
 cs_divide.dxil	ok ; glsl absent compute
 cs_escape.dxil	ok ; glsl absent compute
@@ -84,6 +85,7 @@ ps_cases.dxil	ok ; glsl compiles
 ps_clamp.dxil	ok ; glsl compiles
 ps_clip.dxil	ok ; glsl compiles
 ps_coarse.dxil	ok ; glsl compiles
+ps_compare.dxil	ok ; glsl compiles
 ps_component.dxil	ok ; glsl compiles
 ps_contend.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ps_deriv.dxil	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)

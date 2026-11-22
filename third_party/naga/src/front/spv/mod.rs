@@ -1091,6 +1091,86 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         Ok(())
     }
 
+    /// A float comparison from naga's operators, which are ordered (false where an operand is
+    /// NaN) on every back end: an unordered one as the negated ordered opposite, and ordered
+    /// not-equal as less or greater.
+    fn parse_expr_float_comparison(
+        &mut self,
+        ctx: &mut BlockContext,
+        emitter: &mut crate::proc::Emitter,
+        block: &mut crate::Block,
+        block_id: spirv::Word,
+        body_idx: usize,
+        op: spirv::Op,
+    ) -> Result<(), Error> {
+        use crate::BinaryOperator as Bo;
+        use spirv::Op;
+        // The ordered comparisons whose union is the result, and whether it is negated.
+        let (ordered, negated): (&[Bo], bool) = match op {
+            Op::FOrdEqual => (&[Bo::Equal], false),
+            Op::FOrdNotEqual => (&[Bo::Less, Bo::Greater], false),
+            Op::FOrdLessThan => (&[Bo::Less], false),
+            Op::FOrdLessThanEqual => (&[Bo::LessEqual], false),
+            Op::FOrdGreaterThan => (&[Bo::Greater], false),
+            Op::FOrdGreaterThanEqual => (&[Bo::GreaterEqual], false),
+            Op::FUnordEqual => (&[Bo::Less, Bo::Greater], true),
+            Op::FUnordNotEqual => (&[Bo::Equal], true),
+            Op::FUnordLessThan => (&[Bo::GreaterEqual], true),
+            Op::FUnordLessThanEqual => (&[Bo::Greater], true),
+            Op::FUnordGreaterThan => (&[Bo::LessEqual], true),
+            Op::FUnordGreaterThanEqual => (&[Bo::Less], true),
+            _ => return Err(Error::UnknownBinaryOperator(op)),
+        };
+        let start = self.data_offset;
+        let result_type_id = self.next()?;
+        let result_id = self.next()?;
+        let p1_id = self.next()?;
+        let p2_id = self.next()?;
+        let span = self.span_from_with_op(start);
+
+        let p1_lexp = self.lookup_expression.lookup(p1_id)?;
+        let left = self.get_expr_handle(p1_id, p1_lexp, ctx, emitter, block, body_idx);
+        let p2_lexp = self.lookup_expression.lookup(p2_id)?;
+        let right = self.get_expr_handle(p2_id, p2_lexp, ctx, emitter, block, body_idx);
+
+        let mut handle = None;
+        for &op in ordered {
+            let compared = ctx
+                .expressions
+                .append(crate::Expression::Binary { op, left, right }, span);
+            handle = Some(match handle {
+                None => compared,
+                Some(earlier) => ctx.expressions.append(
+                    crate::Expression::Binary {
+                        op: Bo::InclusiveOr,
+                        left: earlier,
+                        right: compared,
+                    },
+                    span,
+                ),
+            });
+        }
+        let mut handle = handle.ok_or(Error::UnknownBinaryOperator(op))?;
+        if negated {
+            handle = ctx.expressions.append(
+                crate::Expression::Unary {
+                    op: crate::UnaryOperator::LogicalNot,
+                    expr: handle,
+                },
+                span,
+            );
+        }
+        self.lookup_expression.insert(
+            result_id,
+            LookupExpression {
+                handle,
+                type_id: result_type_id,
+                block_id,
+            },
+        );
+        Ok(())
+    }
+
     /// A more complicated version of the unary op,
     /// where we force the operand to have the same type as the result.
     fn parse_expr_unary_op_sign_adjusted(

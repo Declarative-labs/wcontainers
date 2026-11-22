@@ -2037,8 +2037,19 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 | Op::LogicalEqual
                 | Op::LogicalNotEqual => {
                     inst.expect(5)?;
-                    let operator = map_binary_operator(inst.op)?;
-                    parse_expr_op!(operator, BINARY)?;
+                    if matches!(inst.op, Op::LogicalEqual | Op::LogicalNotEqual) {
+                        let operator = map_binary_operator(inst.op)?;
+                        parse_expr_op!(operator, BINARY)?;
+                    } else {
+                        self.parse_expr_float_comparison(
+                            ctx,
+                            &mut emitter,
+                            &mut block,
+                            block_id,
+                            body_idx,
+                            inst.op,
+                        )?;
+                    }
                 }
                 Op::Any | Op::All | Op::IsNan | Op::IsInf | Op::IsFinite | Op::IsNormal => {
                     inst.expect(4)?;

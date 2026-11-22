@@ -1,5 +1,6 @@
 cs_atomics.dxbc	ok ; glsl absent compute
 cs_buffer_array.dxbc	unsupported UnboundedResourceArray
+cs_compare.dxbc	ok ; glsl absent compute
 cs_decrement.dxbc	ok ; glsl absent compute
 cs_divide.dxbc	ok ; glsl absent compute
 cs_escape.dxbc	ok ; glsl absent compute
@@ -86,6 +87,7 @@ ps_cases.dxbc	ok ; glsl compiles
 ps_clamp.dxbc	ok ; glsl compiles
 ps_clip.dxbc	ok ; glsl compiles
 ps_coarse.dxbc	ok ; glsl compiles
+ps_compare.dxbc	ok ; glsl compiles
 ps_component.dxbc	ok ; glsl compiles
 ps_contend.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ps_depth.dxbc	ok ; glsl compiles
