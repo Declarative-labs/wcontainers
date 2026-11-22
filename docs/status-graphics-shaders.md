@@ -52,8 +52,9 @@ drawn without tessellation, and A14, hull shaders giving no control points, both
 written by geometry shaders (the Direct3D 12 runner's eight files). Run 4 (run 91, the section
 below): level-of-detail queries (`CalculateLevelOfDetail`) on the DXBC route (the runner's four
 `calculate-lod` files). Run 5 (run 92, the section below): the same on the DXIL route. Run 6
-(run 93, the section below): samples with a per-sample clamp (`SampleClamp`) on both routes. Not
-complete: the gap list below.
+(run 93, the section below): samples with a per-sample clamp (`SampleClamp`) on both routes. Run 7
+(run 94, the section below): inputs evaluated elsewhere in the pixel (`InterpolateAt`) on the DXIL
+route, and DXIL pixel inputs' sampling kept. Not complete: the gap list below.
 
 Asked by the Direct3D 11 track (2026-11-22, G4h; it blocks feature level 11_0 on both Direct3D
 fronts, which must not report a level whose requirements are unmet): `B8G8R8X8_UNORM` vertex
@@ -113,6 +114,70 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 7 (run 94): inputs evaluated elsewhere in the pixel on the DXIL route
+
+Logs and scripts in scratch `graphics-shaders/g6-r94` (run 93's with its folder: clone `tip`,
+`gpu.sh`, `gpu-noclippy.sh`, `tree-tar.sh`, `suite-laptop.sh` as `~/wcontainers-graphics/suite-r94.sh`
+writing `out-r94`, `wasm.sh` as `wasm-r94.sh` writing `outw-r94`; `compile.log`, `job1.log` to
+`job6.log`, `gpu-suite.log`, `arm1.log` to `arm13.log`, `chrome.log`, `chrome-in/`, `changed.txt`).
+Nothing built on the Mac.
+- Chosen as "Next" 1 of run 93: the Direct3D 12 runner's `eval-attrib-13` and `-14` and own
+  `ps_evaluate.dxil` were refused as `InterpolateAt`.
+- Built: the carried SPIR-V reader reads GLSL.std.450's `InterpolateAtCentroid`, `AtSample` and
+  `AtOffset` as calls of stand-in functions (`front::spv::INTERPOLATE_AT_*`, one per signature,
+  made by run 93's maker) taking the input's value loaded through the instruction's pointer;
+  `src/dxil/evaluate.rs` does what `lower/evaluate.rs` does on DXBC: the reader's entry point, once
+  the inputs are stored, takes each evaluated input's slopes by derivatives (times w where
+  perspective-correct, element by element for an array) and its place (the centre, or its sample
+  where interpolated per sample), w's slopes, the centroid (Direct3D's rule from the coverage) and
+  the sample table; each stand-in becomes a function moving the value by its slopes from its place
+  to the one asked for (one copy per signature, as run 92's). Flat inputs give the value. An input a
+  program run per sample reads only at samples, alone in its register, is interpolated at its
+  sample, as on DXBC. The position, coverage or sample index the evaluations add to the entry point
+  are left out of the reflection. Refusals as on DXBC: `EvaluatedCentroidInput`, `SampleCount`;
+  `InterpolateAt` stays for an evaluation of something not an input. The DXBC route's names and its
+  pixel centre are now named once in `lower/evaluate.rs` and shared (its 11 baseline lines gone; the
+  place's name is `evaluated_at`, as "place" restated a literal of the NIR track's tests).
+- Found and fixed beside it (DXIL pixel inputs, every program): (1) naga's default interpolation
+  (`front/interpolator.rs`, which every reader uses) replaced a sampling given without an
+  interpolation by the centre, so SPIR-V's `Sample` and `Centroid` on a perspective-correct input
+  (dxil-spirv writes no decoration for perspective) were lost: a DXIL `sample` or `centroid` input
+  was interpolated at the centre; now kept ("naga as carried"); `registers.rs` keeps it too for
+  arrays. (2) A non-perspective DXIL input had no sampling where its vertex output has the
+  centre, which WebGPU refuses to link ("Input sampling doesn't match"); now the centre.
+  Corpus files changed by these: the runner's DXIL `eval-attrib-6`, `-8`, `-12`, `-13` and
+  `nointerpolation-10` (no game or rig shader).
+- fxc 10.1 compiles `EvaluateAttributeSnapped(i.uv, ..).y` in own `ps_evaluate` as the x (its
+  disassembly reads r0.x after `eval_snapped r0.xy, v2.xyxx`, and the same for `.x + .y`), so
+  Direct3D 11 and the DXBC route drew the x and dxc's build the y; the shader now reads the x
+  (`evaluate.hlsl`, both builds recompiled; fxc's bytes unchanged).
+- Drawn on the RTX 3080 (job5.log): `inputs_evaluated_elsewhere_match_direct3d` now draws dxc's
+  build too: 1 sample 3 texels apart by 1, 4 samples 4 by 1, the same as fxc's; with the moved value
+  replaced by the value itself (mutant, job6.log) dxc's differs in 2,591 and 2,644 texels by 158.
+  `an_input_evaluated_at_its_own_sample_is_exact` draws dxc's builds of `vs_eval_exact` and
+  `ps_eval_exact` (new): 0 texels apart. CPU test
+  `inputs_evaluated_elsewhere_convert_on_both_routes` (tests/variants.rs).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 0.1 to 3.5): runner DXIL
+  `eval-attrib-13` now `ok ; glsl needs SAMPLE_SHADING ..` as its DXBC build, `-14` `SampleCount` as
+  its DXBC build; own `ps_evaluate.dxil` and `ps_eval_exact.dxil` `SampleCount` (the records take no
+  sample count), `vs_eval_exact.dxil` ok; every other verdict holds (logs/suite-r94b.log). Chrome on
+  the desktop compiles every written file that changed, WGSL and GLSL ES (14 files, chrome.log).
+  WebAssembly (laptop, every corpus, logs/wasm-r94.log): 12 tests pass, the WGSL files equal the
+  native ones (the differing counts are GLSL and logs only the native build writes).
+- Runs: ARM64 machine (load 2 to 20): clippy with warnings denied and rustfmt clean, every CPU test
+  binary passed (arm12.log, arm13.log); the literal check prints no line of this crate or of naga
+  but the 11 removed ones (arm11.log). Desktop (RTX 3080, 3 cargo jobs): Windows clippy clean; the
+  whole suite (one job, one test thread, gpu-suite.log): 25 binaries, every test passed but the
+  evaluation draw, which then failed only on fxc's miscompile above and passes in job5.log.
+- For the Direct3D fronts: nothing new to call. A DXIL pixel program's `sample` and `centroid`
+  inputs now reflect `PerspectiveSample` and `PerspectiveCentroid` (were `Perspective`), so the
+  vertex stage's `output_interpolation` taken from that reflection now asks for them.
+- For the NIR track: naga's GLSL reader shares the default interpolation, so a GLSL `sample in` or
+  `centroid in` without `smooth` keeps its sampling now.
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip` and tar (its
+  `out-r94`, `outw-r94` and logs kept), the scratch clone.
 
 ## G6 run 6 (run 93): samples with a per-sample clamp on both routes
 
@@ -2018,8 +2083,8 @@ The gap list (every item of the pass bar not met):
   structured buffers on the DXIL route convert since run 87, its section): `rewrite` refusing
   arrays of buffers (its input's binding arrays of blocks; `src/dxil/buffer_arrays.rs` would serve
   it with the elements numbered as `common::split_arrays` numbers images; no front has asked),
-  `InterpolateAt` on the DXIL route, `SampleClamp` of a comparison, a depth texture or a cube
-  (since run 93 the others convert, its section), `globallycoherent` views (refused by name on both
+  `SampleClamp` of a comparison, a depth texture or a cube
+  (since run 93 the others convert, its section; `InterpolateAt` on the DXIL route since run 94), `globallycoherent` views (refused by name on both
   routes: on DXBC `GloballyCoherent` since G6a run 5, before which the flag was dropped without a
   word; on DXIL the reader's "unsupported memory operand .. at scope .."; no shader of any corpus
   declares one), DXIL signed atomic minimum
@@ -2067,7 +2132,9 @@ G6a run 5's tip):
   run 82, DXIL; A4's `swizzled`) and own 6 (expected: the comparison gathers of green, blue and
   alpha without a mapping); `CalculateLevelOfDetail` 0 (the DXBC 4 convert since run 91, the DXIL 4
   and own `ps_lod.dxil` since run 92); absent by plan (tiled resources, run 93): `SparseFeedback` 3 (DXBC) and the reader's
-  "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
+  "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 0 (since run
+  94: runner `eval-attrib-13` converts, `-14` and own `ps_evaluate.dxil` are `SampleCount` as their
+  DXBC builds);
   `SampleClamp` 0 (the runner's `sampler-13` and `-15`, both builds, convert since run 93);
   `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
   since run 87, recorded `UnboundedResourceArray` as the corpus has no ranges); a clip or cull distance read as an input
@@ -2077,10 +2144,8 @@ G6a run 5's tip):
 
 ## Next
 
-1. `InterpolateAt` on the DXIL route (runner `eval-attrib-13` and `-14`, own `ps_evaluate.dxil`),
-   the Direct3D 12 runner's next refusal: a DXIL pass doing what `lower/evaluate.rs` does on DXBC
-   (the slopes of each evaluated input taken by derivatives in the entry point, the value moved by
-   them), the reader reading GLSL.std.450's `InterpolateAt*` as stand-ins; then A20 (below).
+1. A20 (the plan in 2 below), the Direct3D 12 runner's next item (`InterpolateAt` on the DXIL
+   route was done in run 94).
 2. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
@@ -3606,9 +3671,22 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   through one shared maker (`Frontend::stand_in`). The module's user replaces each call
   (`dxil/lod.rs`). Before, the reader refused the operand ("image sample operand 0x80"). Not for
   upstream as it stands.
+- SPIR-V reader (run 94), GLSL.std.450's `InterpolateAtCentroid`, `InterpolateAtSample` and
+  `InterpolateAtOffset` read as calls of `front::spv::INTERPOLATE_AT_CENTROID`, `_SAMPLE`,
+  `_OFFSET`, one per signature (arguments the input's value loaded through the instruction's
+  pointer, and the sample or offset; result the value there), made by the same maker. The module's
+  user replaces each call (`dxil/evaluate.rs`). Before, the reader refused them. Not for upstream as
+  it stands.
+- Default interpolation (run 94, `front/interpolator.rs`, every reader), a sampling given without
+  an interpolation is kept instead of replaced by the centre (SPIR-V's `Sample` or `Centroid` on a
+  perspective-correct input, GLSL's `sample in` without `smooth`). For upstream as it stands.
 
 ## How to run
 
+- Run 94's scripts in scratch `graphics-shaders/g6-r94` are run 93's with its folder, plus
+  `gpu-noclippy.sh` (one GPU job without Windows clippy, for a mutant in the clone). Own shaders
+  compiled one at a time on the desktop from the clone: `tools/graphics-rig/remote "cd
+  crates\wcontainers-shaders\tests\own && <fxc or dxc command>"`, then `rig_scp` of the file back.
 - Run 88's scripts in scratch `graphics-shaders/g6-r88` are run 87's with its folder and the clone
   `tip` (updated with `git fetch <checkout> agents && git reset --hard FETCH_HEAD` inside it):
   `gpu.sh`, `tree-tar.sh`, `suite-laptop.sh` (copied to `~/wcontainers-graphics/suite-r88.sh`,
