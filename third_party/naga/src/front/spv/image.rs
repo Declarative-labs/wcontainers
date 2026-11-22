@@ -139,6 +139,21 @@ fn extract_image_coordinates(
                 }
             };
             let array_index_f32 = ctx.expressions.append(extra_expr, base_span);
+            // A float layer is rounded to the nearest integer, ties to even, as Vulkan's
+            // array layer selection does, before it is made an integer.
+            let array_index_f32 = match kind {
+                crate::ScalarKind::Float => ctx.expressions.append(
+                    crate::Expression::Math {
+                        fun: crate::MathFunction::Round,
+                        arg: array_index_f32,
+                        arg1: None,
+                        arg2: None,
+                        arg3: None,
+                    },
+                    base_span,
+                ),
+                _ => array_index_f32,
+            };
             let array_index = ctx.expressions.append(
                 crate::Expression::As {
                     kind: crate::ScalarKind::Sint,

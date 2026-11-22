@@ -1758,7 +1758,9 @@ fn storage_bindings_give_their_stride_and_offsets() {
 }
 
 /// 1D textures and arrays (`cs_one_d`: loads, samples with an offset and gradients, sizes and stores)
-/// are 2D textures one texel high by both routes; atomic operations on one are refused by name.
+/// are 2D textures one texel high by both routes; atomic operations on one are refused by name. The
+/// array's float layer is rounded (to the nearest, ties to even, as Direct3D does) before it becomes an
+/// integer by both routes.
 #[test]
 fn one_d_textures_are_2d_textures_one_texel_high() {
     let key = VariantKey {
@@ -1771,6 +1773,7 @@ fn one_d_textures_are_2d_textures_one_texel_high() {
     {
         let text = wgsl(&c);
         assert!(!text.contains("_1d"), "{route}: {text}");
+        assert!(text.contains("round("), "{route}: {text}");
         for declared in [
             "texture_2d<f32>",
             "texture_2d_array<f32>",

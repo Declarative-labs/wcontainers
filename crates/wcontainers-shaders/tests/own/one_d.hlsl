@@ -1,5 +1,6 @@
-// 1D textures and 1D arrays loaded, sampled (with an offset and gradients), sized and stored, which
-// the fronts hold as 2D textures one texel high.
+// 1D textures and 1D arrays loaded, sampled (with an offset and gradients; the array at layers
+// between whole numbers, which Direct3D rounds to the nearest, ties to even), sized and stored,
+// which the fronts hold as 2D textures one texel high.
 Texture1D<float> row : register(t0);
 Texture1DArray<float> rows : register(t1);
 SamplerState linear_clamp : register(s0);
@@ -13,7 +14,7 @@ void cs_one_d(uint3 id : SV_DispatchThreadID) {
     rows.GetDimensions(array_width, layers);
     float u = (id.x + 0.25) / width;
     row_out[id.x] = row.Load(int2(id.x, 0)) + row.SampleLevel(linear_clamp, u, 0, 1) * 2.0
-        + rows.SampleLevel(linear_clamp, float2(u, id.x % layers), 0) * 4.0
+        + rows.SampleLevel(linear_clamp, float2(u, (id.x % 10) * 0.25), 0) * 4.0
         + row.SampleGrad(linear_clamp, u, 0.5 / width, 0.25 / width) * 8.0;
     uint stored_out, stored_layers;
     rows_out.GetDimensions(stored_out, stored_layers);
