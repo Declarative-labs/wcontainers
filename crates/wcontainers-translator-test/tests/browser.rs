@@ -112,8 +112,8 @@ fn mmx_and_x87_state_match_linux_in_chrome_x86_64() {
     );
 }
 
-/// `xsave` and `xrstor`, AVX2's integer work with BMI2, and FMA, F16C and AVX's floating point, for programs told
-/// the x86-64-v3 list, every way.
+/// `xsave` and `xrstor`, AVX2's integer work with BMI2, and FMA, F16C and AVX's floating point (also in MXCSR's
+/// default mode alone), for programs told the x86-64-v3 list, every way.
 #[test]
 fn x86_64_v3_programs_match_linux_in_chrome_x86_64() {
     let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
@@ -122,6 +122,7 @@ fn x86_64_v3_programs_match_linux_in_chrome_x86_64() {
             ("xstate", Library::C),
             ("avx2_integer", Library::C),
             ("fma_f16c", Library::C),
+            ("fma_fast", Library::C),
         ],
         &EVERY_WAY,
         Some(v3.key()),

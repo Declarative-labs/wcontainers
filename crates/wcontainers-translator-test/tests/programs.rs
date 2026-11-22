@@ -1051,6 +1051,40 @@ fn avx2_fma_and_f16c_match_linux_x86_64() {
     );
 }
 
+/// FMA and F16C in MXCSR's default mode, which the program never touches, for programs told the x86-64-v3 list,
+/// at every look-ahead: the fast path, with the multiply-add in software, counted, only where the host's does not
+/// fuse, and half precision rounding in software, counted.
+#[test]
+fn fma_and_f16c_in_the_default_mode_match_linux_x86_64() {
+    use wcontainers_guest_cpu::Guest;
+    use wcontainers_guest_cpu::reason::EXACT_FLOATING_POINT_REQUESTED;
+    let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
+    let fuses = wcontainers_translator_test::runner::probe::<X86_64>().fused_multiply_add;
+    let (_, half) = X86_64::REASONS
+        .iter()
+        .find(|(reason, _)| *reason == wcontainers_x86::Reason::HalfPrecisionInSoftware)
+        .expect("a named reason");
+    for optimisation in LEVELS {
+        let mut blob = build::<X86_64>("fma_fast", optimisation, Library::C);
+        blob.offer = Some(v3.key());
+        let theirs = native::<X86_64>(&blob);
+        for how in every_unit_look_ahead() {
+            let (ours, machine, _) = translated_for::<X86_64>(&blob, how);
+            let what = format!("fma_fast at {optimisation}, {how:?}");
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(
+                machine.count_named(EXACT_FLOATING_POINT_REQUESTED),
+                0,
+                "{what}"
+            );
+            assert!(machine.count_named(half) > 0, "{what}");
+            let software = machine.count(Reason::SoftwareFusedMultiplyAdd);
+            assert_eq!(software > 0, !fuses, "{what}: {software} in software");
+            eprintln!("{what}: matches, {:?}", machine.counters());
+        }
+    }
+}
+
 /// The levels whose code from `bench.c` built for the x86-64-v3 level holds that level's instructions.
 const VECTORISED_LEVELS: [&str; 2] = ["-O2", "-O3"];
 
