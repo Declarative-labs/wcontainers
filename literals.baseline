@@ -14372,15 +14372,8 @@ code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/programs.rs	bytestr	check_ordinary_programs	b"hello, world\n1 blob beef ! -1234567890123\n"
-code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'-'
-code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'='
 code	crates/wcontainers-translator-test/src/programs.rs	int	check_ordinary_programs	3
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-D{d}"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-I{}"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-ffreestanding"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-fno-stack-protector"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-fwrapv"
-code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-nostdlib"
 code	crates/wcontainers-translator-test/src/programs.rs	str	check_ordinary_programs	"forever"
 code	crates/wcontainers-translator-test/src/programs.rs	str	check_ordinary_programs	"hello"
 code	crates/wcontainers-translator-test/src/programs.rs	str	check_ordinary_programs	"hello.c"
