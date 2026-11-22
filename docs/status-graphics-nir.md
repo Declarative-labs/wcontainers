@@ -5,70 +5,114 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
-G9 run 13 (2026-11-22; the first run after the shaders track delivered `wcontainers_shaders::staged`,
-the public entry for geometry, hull and domain programs this track asked for).
+G9 run 14 (2026-11-22): the driver has a geometry stage. The screen reports it where the back end
+runs compute work, so OpenGL ES 3.1 contexts now have `OES_geometry_shader`; the version is still
+ES 3.1 (ES 3.2 needs tessellation and the rest of item 4 below), so KHR-GLES32, KHR-GL33 and
+KHR-GL46 still run no case.
 
 Done this run:
-- Route B makes a geometry program in the staged form: the bridge flattens a geometry stage
-  (`WC_FLAT_GEOMETRY`, its declarations in `struct wc_flat_geometry`: input and output primitive,
-  vertices in, most vertices out, instances, streams), per-vertex inputs (`load_per_vertex_input`,
-  an array of the slot's type, one element a vertex), each output's stream (from the IO
-  semantics' `gs_streams`), the built-ins layer, viewport index and primitive number, and the
-  intrinsics `load_primitive_id`, `load_invocation_id`, `emit_vertex` and `end_primitive` (and
-  their counter forms; `set_vertex_and_primitive_count` is dropped, the helper keeps its own
-  counts). `direct::route` then gives the program as a function (not an entry point) whose stage
-  values are private variables, emits and ends calling the empty functions the shaders crate
-  fills, and `Routed::geometry` (a `staged::GeometryProgram`); `direct::geometry` hands it to
-  `wcontainers_shaders::staged::geometry`. Positions: the vertex stage's arrive with y negated (route
-  B's return negates them), so the geometry program negates its position inputs back at its start and
-  its position output at each emit; `transform_position` now acts on geometry programs too (the last
-  stage before the rasterizer takes the viewport's flips and depth range).
-- Refused by name in the geometry form: clip distances and point sizes read from the input
-  vertices, a point size or primitive number written (the primitive number needs the shaders crate's
-  `PRIMITIVE_ID_FROM_STAGE` and `linked`), a value written to two streams or whose components go to
-  different streams, input or output primitives of other kinds.
+- `Stage::Geometry` in the driver: `create_gs_state`, `bind_gs_state`, `delete_gs_state`; the
+  blitter saves and restores the bound geometry program; Gallium's geometry stage maps to it.
+- A geometry program is converted by route B into the stage helper's forms (`convert_geometry`:
+  `direct::route`, then `direct::geometry` with the fragment program's interpolation as
+  `output_interpolation`, its border colors in the program); the pass-through vertex program is
+  the one the final draw runs. Its outputs are named as the driver's stream declarations name
+  values (`stream::name_outputs`).
+- One stage helper run for stream output and the geometry stage (`run_stages`, replacing
+  `stream_out`): the vertex program with every input fetched, then the geometry program, the last
+  of them streamed where stream output is active, then the final draw of `FinalDraw` through the
+  pass-through program and the bound fragment program (`draw_made`), every face pass and scissor
+  as a plain draw. A draw of several ranges runs one range at a time. Geometry programs stream
+  too now, and stream output takes indexed draws, fans and loops.
+- Indices the helper cannot take are made into lists on the host by Mesa's index translator and
+  written to a buffer of the helper's (`helper_indices`, counted `FanConverted`,
+  `RestartRewrite`, `IndexWidened`, `ProvokingRewrite`): fans and loops, indices in the program's
+  memory or of 8 bits, restart in a list or at an index other than the largest, indexed strips
+  without restart, and triangle strips (OpenGL with the last vertex provoking orders an odd
+  triangle's first two vertices as the strip does; the helper as Direct3D does). Indexed draws
+  read their indices back first (`ReadBackWait`).
+- A geometry program declaring no output vertex makes nothing: the draw returns
+  (`Nir::geometry_vertices_out`, a new bridge accessor; the shaders crate refuses such programs
+  as malformed).
+- Screen: `MESA_SHADER_GEOMETRY` in `STAGES` (inputs and outputs the interface's inter-stage
+  slots, no storage), `max_geometry_output_vertices` 256, `max_geometry_total_output_components`
+  1024, `max_gs_invocations` 32 (the least `OES_geometry_shader` allows; the helper sizes its
+  records by the program's own declarations).
+- The shaders track's run 99 lifted the refusal of fetched vertex components across words: the
+  driver's refusal and its component byte record are gone.
+- Adjacency primitives without a geometry program are refused by name.
+
+Refused by name, not built (each seen in the group runs below):
+- A geometry program writing a layer or viewport (`Stages::selects`): 46 refusals; needs a draw
+  per layer of the targets and per viewport with the pass-through's helper constants, as the
+  Direct3D 11 front's `draw_runs`.
+- `PRIMITIVES_GENERATED` queries (Gallium query kind 6), which `OES_geometry_shader` brings to
+  ES: 18 refusals.
+- A fragment program reading `gl_Layer` (6): the route's Layer built-in outside a geometry
+  program (`HelperValue::Layer`, with the layered draw above).
+- Flat values from the last vertex of a geometry program's output primitives (4): the helper's
+  output strips give the host's first vertex.
+- Helper constants in a geometry program (none seen yet).
+
+Failures with a reason found, not yet fixed:
+- Route B on some geometry programs: "Type resolution failed: Index 2 is out of bounds" (16 in
+  the compute form, 2 in a vertex program) and 6 `Invalid(` refusals: not yet read.
+- `GL_MAX_GEOMETRY_ATOMIC_COUNTERS`, `..._ATOMIC_COUNTER_BUFFERS` and `..._SHADER_STORAGE_BLOCKS`
+  give `GL_INVALID_ENUM` (dEQP 3, KHR 3, and the two linking cases): Mesa answers them only with
+  `ARB_shader_atomic_counters`, which st/mesa turns on only where fragment programs have atomic
+  buffers. Fragment storage (an ES 3.2 requirement too) is not reported: item 4.
+- KHR rendering: four triangle cases still differ after the strip order fix; output
+  `primite_end_done_for_single_primitive`, `program_resource` (`GL_INVALID_ENUM` making the
+  program), layered framebuffer clears: not yet read.
+
+The group runs (desktop, RTX 3080, one GPU job, 8 glcts at once, other tracks' jobs queued
+beside) of dEQP-GLES31 `geometry_shading`, KHR-GLES31 `core.geometry_shader` and dEQP-GLES3
+`transform_feedback`, at 737f7b49's code, 15:19:20 to 15:21:27 (Pacific):
+- dEQP-GLES31 geometry_shading: 207 cases; Pass 156, Fail 10, Crash 31, Skip 10: 156 of 197 run,
+  79.19% (none ran before this run).
+- KHR-GLES31 geometry_shader: 136 cases; Pass 95, Fail 11, Crash 22, Skip 8: 95 of 128, 74.22%.
+- dEQP-GLES3 transform_feedback (through the merged stage helper run): 1,320 cases; Pass 976,
+  Crash 11, Skip 333: 976 of 987, 98.89%; the 11 crashes are the known ones (gl_PointSize
+  streamed, 22 refusals, and a uniform block bound smaller than declared, 2).
+- The first try of this run (before the fixes for 8-bit indices, fans, zero vertices, strips and
+  stream output) passed 147 and 40.
+- Results: scratch `results/g9r14/geo2` (the first try's `<list>/` folders); logs
+  `logs/g9r14-geometry-*.log`, `logs/g9r14-mesa-windows-*.log`.
+
+Checked this run (x86-64 machine, load 0.2 to 4.5): clippy with warnings denied clean for
+wcontainers-nir and wcontainers-opengl with Mesa and without; with Mesa `glsl_buffers` 1,
+`glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2, `route` 11 passed. rustfmt of
+every changed file. The corpus run was not repeated (route B changed only by the new accessor).
+The Windows Mesa build with the driver: about 2 minutes each time.
 
 Not done yet (the order the next run takes):
-1. The driver's geometry stage (crates/wcontainers-opengl): `Stage::Geometry` with
-   `create_gs_state`, `bind_gs_state`, `delete_gs_state` (`to_common_form` with compute's set, as
-   the stage helper binds a geometry program's slots in set 0); the draw through
-   `Stages::new(vertex, Some(geometry), stream)`: the vertex program converted with every input
-   pulled and `streamed` (no position transform: the geometry program takes it), the geometry
-   program through `direct::geometry` with `VariantKey::output_interpolation` of the bound fragment
-   program, `Stages::run` outside the pass, then the final draw of `FinalDraw` through the
-   geometry's second module (the pass-through vertex program) with the bound fragment program,
-   `Stages::vertex_layout`, the output buffer as stream 0 and its u32 indices. The Direct3D 11
-   front's `context/geometry.rs` (`make_staged`, `run_staged`, `draw_made`) is the model. Stream
-   output from a geometry program is refused by name until it is built.
-2. Only then the screen reports the stage (`STAGES` with `MESA_SHADER_GEOMETRY`, its inputs and
-   outputs, `max_gs_invocations` 32, output vertices and components), which turns on
-   `OES_geometry_shader` on OpenGL ES 3.1 (st_extensions.c: ESSL 3.10, geometry instructions, 32
-   invocations): dEQP-GLES31's geometry_shading groups and KHR-GLES31's geometry cases then run.
-3. Tessellation the same way (`staged::hull`, `staged::domain`, `Stages::tessellated`); a TES's
-   input points and a TCS's input patch size are draw-time values (the bound control program's
-   output count, `glPatchParameteri`), so both are converted per draw's variant.
-4. Then the versions: ES 3.2 needs, beside both stages, OES_copy_image, OES_texture_buffer,
-   OES_texture_cube_map_array, OES_sample_variables, KHR_blend_equation_advanced, ASTC LDR (st/mesa
-   decodes it where the screen lacks it), robustness and fragment storage (version.c,
-   `compute_version_es2`); desktop 3.1 to 3.3 need GLSL 1.40 to 3.30, primitive restart at any index,
-   rectangles, 16 vertex texture units, multisampled textures (2D arrays among them), the 10-10-10-2
-   vertex formats with scaled and signed kinds (an interface request), dual-source blending and
-   timer queries (`compute_version`).
+1. Layered and multi-viewport geometry output (the 46 refusals) and `gl_Layer` in fragment
+   programs; `PRIMITIVES_GENERATED` queries; flat values from the last vertex of the output.
+2. Read the route B refusals above and the remaining geometry failures.
+3. Tessellation: route B's bridge flattens no control or evaluation program yet. Then
+   `staged::hull`, `staged::domain`, `Stages::tessellated_with`; a control program's input patch
+   size (`glPatchParameteri`) and an evaluation program's input points are draw-time values, so
+   both convert per draw's variant. The stage helper runs a GLSL control program's points one
+   after another (`patch_constant` None): a control program reading other points' outputs after
+   `barrier()` must be checked against that.
+4. The remaining version requirements, so that KHR-GLES32, KHR-GL33 and KHR-GL46 start: ES 3.2's
+   extensions (OES_copy_image, OES_texture_buffer, OES_texture_cube_map_array,
+   OES_sample_variables, KHR_blend_equation_advanced, ASTC LDR, robustness, fragment storage
+   with atomic counters); desktop 3.1 to 3.3 (GLSL 1.40 to 3.30, primitive restart at any index,
+   rectangles, multisampled 2D arrays, the 10-10-10-2 scaled and signed vertex formats from the
+   interface, dual-source blending, timer queries).
+5. Image atomics through a storage-buffer copy; the groups whose failures have no reason yet;
+   a case-by-case check of the NotSupported groups.
+6. Whole-list runs with the table, the comparison against the RTX 3080's own OpenGL, bgfx's and
+   Godot's OpenGL renderers on the rig, and the independent check.
 
-Checked this run (x86-64 machine, a new one: Mesa built again by `mesa/build` first, 106 s with
-the first lint; load 0.1 at the start, 16 at the build's peak): `rustfmt --check` of direct.rs clean;
-clippy with warnings denied clean for wcontainers-nir and wcontainers-opengl with Mesa and without;
-with Mesa `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2,
-`route` 11 passed. The corpus run at b2fccaf2 (17,648 items: `corpus/cts-programs` and
-`godot-forward-plus` were not made on the new machine, 984 items fewer; 96 at once, load 2 to 6,
-791 s with the fetch): route B 11,342 match, 151 differ, 5 not compared of 11,764; against run 12's
-`nir-results-g9r12b.jsonl`, no item run by both changed its outcome (`scripts/outcome_changes.py`).
-Results: scratch `results/g9r13/nir-results-g9r13.jsonl`, logs `logs/g9r13-*.log`. Nothing of this run
-tests a geometry program yet: the GLSL corpus front compiles only vertex, fragment and compute
-programs, and the driver does not take the stage (item 1 below), so the first geometry program
-route B converts will be dEQP's, on the rig.
-
-The table of run 12 below is still the latest measure: nothing of this run reaches the driver yet.
+G9 run 13 (2026-11-22): route B makes a geometry program in the shaders crate's staged form
+(bridge `WC_FLAT_GEOMETRY`, per-vertex inputs, streams, layer, viewport and primitive-number
+built-ins, emits and ends; `direct::geometry` hands it to `staged::geometry`); the vertex stage's
+y flip is undone on the geometry program's position inputs and applied at each emit. Refused by
+name in that form: clip distances and point sizes read from input vertices, a point size or
+primitive number written, a value written to two streams, other primitive kinds. Corpus run at
+b2fccaf2: route B unchanged from run 12 on every item both runs held (`results/g9r13/`).
 
 G9 run 12 (2026-11-20). G9 is still short of its bar, and cannot reach it from this track alone:
 the bar's lists for ES 3.2 and desktop 3.3 and 4.6 need geometry and tessellation stages, which
