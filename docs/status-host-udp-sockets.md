@@ -24,9 +24,10 @@ Plan: docs/plan-host-udp-sockets.md. Branch: agents, worktree /Users/thomaseaton
   `SO_RCVBUF`); portable.rs refuses it with the counted reason `BUFFER_SIZES` (other systems keep no doubled size). A
   received packet's interface comes from the shared `Ancillary::packet_fields`, which now refuses a packet without
   packet information (`EPROTO`) instead of naming 0.
-- The shared crate linux-socket-options is being conformed by another track (uncommitted when this ran: `packet_fields`
-  answering a `Result`, `Ancillary::interface`, `selected_interface` for the `InterfaceSelector`, `Slice1` sources,
-  `REPORT_INTERFACE_NOT_GIVEN` gone). This track left those files alone; the UDP host's `?` on `packet_fields` needs it.
+- The shared crate linux-socket-options was conformed by another track (04600f02: `packet_fields` answering a
+  `Result`, `Ancillary::interface`, `selected_interface` for the `InterfaceSelector`, `Slice1` sources,
+  `REPORT_INTERFACE_NOT_GIVEN` gone); this track left those files alone. With that commit (ARM, load 8 to 11): clippy
+  finds nothing in this track's files, the suite 78 + 5 pass three runs in a row.
 - Suite: 78 checks (was 76). New: `a_datagram_names_the_interface_holding_its_destination` (`IP_PKTINFO` and
   `IPV6_PKTINFO`: a datagram to 127.0.0.1 and to ::1 names one interface, to 192.0.2.3 the multicast route's, to
   203.0.113.1 and to 2001:db8:1::1 a third, as the round-2 probe measured: to 10.9.0.1 on d1 named d1);
