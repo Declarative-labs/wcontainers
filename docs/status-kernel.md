@@ -299,9 +299,11 @@ and the embedders it changed, and their tests give the same results as before. T
 percent is found to be code generation, not work: the whole round trip runs as many instructions
 as at the milestone's start (0.2 percent fewer by callgrind, 0.06 percent more by perf stat) but
 about 1.5 percent more cycles with thin LTO; built with fat LTO and one codegen unit it runs no
-more cycles than the milestone's start built the same way. The kernel's own functions run 300 to
+more cycles than the milestone's start built the same way. The kernel's own functions ran 300 to
 850 more instructions per round trip depending on the build, which moves with what the compiler
-inlines (inline hints moved it again and did not lower the total). Whether the owner's condition
+inlines (inline hints moved it again and did not lower the total). A pipe now counts its FASYNC
+ends and skips looking for them when it has none: the whole round trip then runs 0.7 percent fewer
+instructions than at the milestone's start, but still about 2 percent more cycles with thin LTO. Whether the owner's condition
 on pipes counts as met with the release profile as it is, or needs `lto = "fat"` and
 `codegen-units = 1`, is his to rule (For the owner). Not done, as before: the hooks as
 `ProcessTracer`, warnings through `FallbackObserver`, ICMP and raw sockets, the linter findings
@@ -632,13 +634,24 @@ e5d693d2, the milestone's start; ARM64 machine, load 7 to 22 on 96 cores, 05:15 
   now inlined into the runtime's `Answer::exit`, is counted as the kernel's, the test host's about
   250 more.
 - Allocations per repetition: 142, as at the milestone's start.
-- Read from the profiles, not built: every pipe write and read walks the pipe's ends to find any
-  with FASYNC (`Pipe::async_ends`, about 250 to 500 instructions per round trip, as before this
-  milestone); a count of FASYNC ends kept with the pipe would take most of it away.
+- cb0106da: every pipe write and read walked the pipe's ends to find any with FASYNC
+  (`Pipe::async_ends`, as before this milestone). A pipe now keeps at least how many of its ends
+  have FASYNC (counted where `set_async` changes the flag and where an end opens with it, made exact
+  again at each walk), and with none looks at no end. Tests (ARM64 machine, 05:53 to 05:56 UTC by
+  its clock, ka9/fasync.log): kernel lib 15, stand-in sigio 2, fifo, epoll, pollmask, signalfd 1
+  each, splice 2, streams 18, embedder 35, saving 1, shell 3 passed; fileioctl failed (ARM list).
+  Callgrind with thin LTO, counts 1000 and 2000: 138059 per round trip (the milestone's start
+  138458); the kernel's own functions 399 more than at the start, 457 fewer than before this
+  change. perf stat with thin LTO against a fresh build of e5d693d2, six pairs each, alternately
+  (ka9/statpipe2.log, load 20 to 25): before 138236 instructions and 32669 cycles, after 137277
+  and 33358. So 0.7 percent fewer instructions and still 2.1 percent more cycles: the cycles do not
+  follow the instructions here, and fewer instructions alone do not meet the owner's condition
+  with thin LTO.
 
-Next, in order: the owner's ruling on the release profile for the pipe condition (or the FASYNC
-count above, which would put the kernel's own pipe path below the milestone's start with any
-profile); read ka9/suite.log; the hooks as `ProcessTracer`, which needs the kernel's entry points
+Next, in order: the owner's ruling on the release profile for the pipe condition (For the
+owner); if thin LTO stays, find why the same or fewer instructions take more cycles (perf record
+of branch misses and instruction cache misses on both builds, then code alignment); read
+ka9/suite.log (whole suite at 05c95620; the FASYNC count came after it); the hooks as `ProcessTracer`, which needs the kernel's entry points
 generic over the executor; warnings through `FallbackObserver` once the owner rules; the linter
 findings once the linter may run again; the independent check.
 
