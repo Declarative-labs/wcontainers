@@ -58,7 +58,9 @@ route, and DXIL pixel inputs' sampling kept. Run 8 (run 95, the section below): 
 track's `B8G8R8X8_UNORM` vertex format committed, and A20, a geometry shader after a domain stage
 reading its primitive's number. Run 9 (run 96, the section below): A14's DXIL part (dxc's domain
 shaders of a patch of no control points), and typed buffers of `B8G8R8X8_UNORM` (the Direct3D 11
-track's ask). Not complete: the gap list below.
+track's ask). Run 10 (run 97, the section below): A7's geometry shaders writing their primitive
+numbers (the runner's `primitive-id-2-gs`), and the NIR track's array layer rounding in the carried
+reader. Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -116,8 +118,66 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   track's own copy of `clip_unpositioned` can go); `BuiltIn::BaseVertex` and `BaseInstance`
   arguments read the draw's bases from where `draw_base` says (the DXIL route's pass). Test
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
-  (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
-  unordered not-equal items (A26), below.
+  (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the unordered
+  not-equal item (A26), below.
+- Since run 97: the carried SPIR-V reader rounds a float array layer to the nearest integer, ties
+  to even, before making it an integer (third_party/naga `front/spv/image.rs`, 6681ff34), as
+  Vulkan and Direct3D select a layer; the DXIL route takes it from there too. And a geometry
+  program writing `BuiltIn::PrimitiveId` (GLSL's `gl_PrimitiveID` out) is no longer refused: give
+  `VariantFlags::PRIMITIVE_ID_FROM_STAGE` and `linked` in its key and its fragment program's, as
+  "How the Direct3D fronts call `convert`" says.
+
+## G6 run 10 (run 97): geometry shaders writing their primitive numbers (A7), the reader's array layer
+
+Logs and scripts in scratch `graphics-shaders/g6-r97` (run 96's with its folder, plus
+`arm-sync.sh`, which makes `tip-arm`, a git clone of the clone with the converters' submodules
+copied in, because arm-run needs a git checkout and the rig must not see copied submodules).
+Nothing built on the Mac (rustfmt of single files only).
+- A7, a geometry shader writing `SV_PrimitiveID` (41b4def7): no longer refused (`PrimitiveId`) on
+  either route. Its records hold the number in a slot after the clip distances' and before the
+  cull distances' (`lower/geometry.rs`), its reflection lists the output as
+  `SystemValue::PrimitiveId`, and with `PRIMITIVE_ID_FROM_STAGE` in its key its pass-through passes
+  the number flat at `stage::primitive_id_location`, where the pixel shader made with the same
+  flag reads it (the slot counts are one function now, `stage::drawn_slots`). The pass-through's
+  extra slot was read one slot early when the stage also writes a layer or viewport; fixed (no
+  route combined the two before). The runner's `primitive-id-2-gs` converts, both builds.
+- Own shaders (geometry.hlsl, fxc and dxc): `gs_numbered` (each triangle twice, each vertex naming
+  its own number, so the leading vertex's is the one that must reach the pixel shader),
+  `gs_numbered_layer` (a number after a layer, CPU test of the slot order) and `ps_numbered`.
+  CPU test `geometry_shaders_pass_their_primitive_numbers_on` (tests/geometry.rs). Drawn on the
+  RTX 3080 against real Direct3D 11 (job2.log): two `gs_numbered` cases (a list with two
+  instances, an indexed strip) added to `geometry_shaders_draw_as_direct3d_does`, both builds,
+  seeds 1 to 4: 240 comparisons, 0 failed, every `gs_numbered` picture 0 texels apart; the same
+  cases on the WebGL 2 replay (`geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`): 232
+  comparisons, 0 failed. The whole `geometry_draw` binary passed before (job1.log, 11 tests).
+  Mutant (job3.log): the test linking without the flag (the pixel shader reading the back end's
+  own primitive index): seed 1's two DXBC `gs_numbered` cases 817 and 448 texels apart,
+  then the device was lost at a later case (`Lost(Error)` at geometry_draw.rs:1301); the test fails.
+- The NIR track's reader item, the array layer (6681ff34): the carried reader now rounds a float
+  layer (`MathFunction::Round`, ties to even) before the cast. Drawn: `cs_one_d` now samples its
+  1D array at layers 0 to 2.25 in quarters (ties at 0.5 and 1.5), and
+  `one_d_textures_match_direct3d` (tests/compute_draw.rs) against real Direct3D 11 on the RTX
+  3080, seeds 1 to 4, both builds: 0 words apart (job2.log). Mutant (job3.log, the reader without
+  the rounding): the DXIL build 19 words apart at every seed, the DXBC build 0; the test fails. `cs_one_d` is one of A8's 27 WebAssembly files, measured with its old
+  source.
+- The whole suite on the RTX 3080 at the tip (gpu-suite.log, one job, one test thread, Windows
+  clippy with warnings denied clean first): every test binary passed, none failed (the drawn
+  tests at their default seeds).
+- CPU (ARM64, arm2.log and arm4.log, load 6 to 23): `cargo fmt -p wcontainers-shaders --check`
+  clean, clippy with warnings denied clean, every CPU test binary passed. Windows clippy clean
+  (job1.log, job2.log).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 0.4 to 3.8): 13 passed at
+  both steps (`out-r97` before the reader's rounding, `out-r97b` after). Changed records: the
+  runner's `primitive-id-2-gs` (both builds, now `ok`) and the six new own builds. WGSL files that
+  differ from run 96's out or are new: 57 (42 games-dxil, among them Godot's compute shaders, whose
+  array samples now round their layer; 4 rig-dxil array samples; `cs_one_d` and the three new
+  shaders of each own corpus; the runner's two `primitive-id-2-gs` and DXIL `sampler-5-ps`);
+  Chrome on the desktop compiles all 57 (chrome.log).
+- The literal check (ARM64, arm6.log) prints no line of this crate or the reader's file (it found
+  three test strings restating the pass-through's argument name; the test now reads the slot by
+  its location and type).
+- For the Direct3D fronts: a geometry shader writing `SV_PrimitiveID` converts; link it with
+  `PRIMITIVE_ID_FROM_STAGE` in both keys ("How the Direct3D fronts call `convert`").
 
 ## G6 run 9 (run 96): A14's DXIL part, and typed buffers of B8G8R8X8
 
@@ -1561,9 +1621,11 @@ The gap list (every item of the pass bar not met):
   15.1's loss); copying the RTX 3080's order is not proposed (one GPU's choice, undocumented).
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
   which Direct3D does not allow; several streams of points convert since run 49); indexed strips
-  and triangle strips with adjacency run since run 50; indirect draws through the stages, the
-  primitive's number behind a geometry shader (the rig's geometry scene's `ps_id`, the Direct3D 11
-  front, which draws it with the back end's native primitive index today). Typed buffers in
+  and triangle strips with adjacency run since run 50; indirect draws through the stages, and a
+  pixel shader reading `SV_PrimitiveID` behind a geometry shader that does not write it (no file
+  of any corpus; what Direct3D gives there is not measured). A geometry shader writing
+  `SV_PrimitiveID` converts and passes it on since run 97 (its section; the runner's
+  `primitive-id-2-gs`, both builds; `PRIMITIVE_ID_FROM_STAGE` in both keys). Typed buffers in
   geometry shaders convert and run since run 86 (`TypedBufferInGeometry` gone; drawn equal to
   Direct3D 11, `typed_buffers_in_geometry_shaders_draw_as_direct3d_does`, both builds; the front
   gives the view's `HelperValue::TexelBufferView` in the geometry stage's helper block, set 3 of
@@ -2212,8 +2274,8 @@ G6a run 5's tip):
   (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
   `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
-  `GeometryPrimitiveIdAfterDomain` gone in run 95 (A20); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
-  writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) (A7; `CullDistance` 8 of
+  `GeometryPrimitiveIdAfterDomain` gone in run 95 (A20); `GeometryStreams` 1, `PrimitiveId` 0 (a geometry shader
+  writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL, gone in run 97) (A7; `CullDistance` 8 of
   geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL,
   gone in run 90: they convert); "convert rejected: Unknown type!" 1 (A1).
 - Absent on both back ends, reported as the guest expects (plan 4.12 and section 9's absent
@@ -2243,20 +2305,16 @@ G6a run 5's tip):
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
-   cull distances from geometry or domain shaders, the primitive's number behind a geometry
-   shader), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   cull distances from domain shaders; a geometry shader's written primitive number done in run
+   97), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
    Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
    89, A14 in runs 89 and 96, A7's cull distances from geometry shaders in run 90, A20 in run 95).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
-   the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
-   in run 88; the array layer: the DXBC route already rounds it half to even in src/lower.rs
-   `layer`, the carried reader's `front/spv/image.rs` casts it with `As` alone; the patch is a
-   `MathFunction::Round` before that cast, and its drawn test needs a sampled 2D array texture in
-   tests/common's `Setup` and a pixel shader sampling layers 0.5 to 2.5 against real Direct3D 11
-   and 12), A26 (the unordered not-equal, both routes, with its drawn NaN
+3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals;
+   its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
+   rounding in run 97), A26 (the unordered not-equal, both routes, with its drawn NaN
    test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
    cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv and
    A8 (both want a way to carry dxbc-spirv patches), A22 on WARP.
@@ -2646,6 +2704,17 @@ G6a run 5's tip):
   the named layer as a flat u32 at `linked.location` plus the linked values' slots; the pixel
   shader reads its layer from there and no longer lists `HelperValue::Layer`
   (`layers_past_the_views_draw_into_the_first_as_direct3d_11_does`; Wine's test_layered_rendering).
+- A geometry shader writing `SV_PrimitiveID` (since run 97; `stage::writes_primitive_id(&gs.reflection)`
+  is true, its reflection lists the output as `SystemValue::PrimitiveId`): set
+  `VariantFlags::PRIMITIVE_ID_FROM_STAGE` and the same `linked` (as above) in the geometry shader's
+  key and the pixel shader's, whether the pixel shader reads the number or not. The pass-through
+  passes the number the geometry shader wrote (the leading vertex's, flat) at
+  `stage::primitive_id_location(&key)`, and the pixel shader reads it there instead of the back
+  end's primitive index, on WebGPU and on the WebGL 2 replay alike. Without the flag in the
+  geometry shader's key the number is not passed on (a pixel shader reading the built-in then reads
+  the final draw's own numbering, which is not Direct3D's). Drawn: `gs_numbered` cases of
+  `geometry_shaders_draw_as_direct3d_does` (tests/geometry_draw.rs); the Direct3D 12 runner's
+  `primitive-id-2-gs` (both builds) converts.
 - `Stages::destroy(backend)` releases its programs and buffers.
 - A vertex shader writing no `SV_Position` (feeding stream output, a geometry or a hull shader)
   converts: its program writes the position (0, 0, 0, -1), outside every clip volume, so drawn it
@@ -3774,6 +3843,16 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 97's scripts in scratch `graphics-shaders/g6-r97` are run 96's with its folder, plus
+  `arm-sync.sh`: arm-run needs a git checkout with the converters' submodules, and the rig's
+  `remote` must not see copied submodule files in the clone `tip` (it adds the working tree with
+  `git add -A`), so `arm-sync.sh` makes `tip-arm` (a git clone of `tip`, the working files and the
+  submodules copied over) and arm-run runs there: `arm-sync.sh; arm-run <scratch>/g6-r97/tip-arm
+  --name graphics-shaders -- '<command>'`. New own shaders were compiled with a temporary
+  `numbered.cmd` (compile.cmd's first lines and the new entry points) in the clone, run by
+  `tools/graphics-rig/remote`, then fetched with `rig_scp` and deleted. The WGSL files that changed
+  since the last run's out were collected on the laptop (`diff -rq out-r96 out-r97b`) into
+  `chrome-in/` and compiled with `crates/wcontainers-shaders/web/check ../chrome-in` from the clone.
 - Run 96's scripts in scratch `graphics-shaders/g6-r96` are run 95's with its folder; `tree-tar.sh`
   now lists the clone's files (it listed the checkout's). A SPIR-V probe: write dxil-spirv's words to
   `/work/src/graphics-shaders/target/<name>.spv` from a trial edit in the clone, run through
