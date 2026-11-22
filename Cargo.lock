@@ -4782,6 +4782,7 @@ dependencies = [
  "linux-raw-sys",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-route-resolver",
