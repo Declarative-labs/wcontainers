@@ -111,6 +111,10 @@ Runs:
   above.
 - Not run: WebAssembly (no input of its build changed but the refusal's place; run 78's figures),
   the fuzz test (A11 holds the check's new figures).
+- Clean-up: laptop `target/shaders-tip` (4.9 GB), its source copy and `out-r79`; x86
+  `/work/target/shaders-tip` (3.2 GB), its clone and probes; desktop `C:\wc\target\shaders-tip`,
+  `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone and tars (the written files
+  kept as `out`).
 
 ## G6a run 10 (run 78): the first check's findings at the tip after the interface merge
 
