@@ -1,9 +1,57 @@
 # Status: host internet sockets
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done; run again
-on 2026-11-21 evening for the owner's linter, below), I2 ICMP and raw sockets (redone in run 1 after the
+on 2026-11-21 evening for the owner's linter and on 2026-11-22 for the check's findings, below), I2 ICMP and raw sockets (redone in run 1 after the
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings). Nothing of
 this track is in progress.
+
+## 2026-11-22: I1 run 2, the independent check's findings, each
+- Source preferences refused though the host can answer (blocking): honoured now. Linux keeps the route of the
+  lookup without a source and picks the source from that routing entry and its device (ip6_dst_lookup_tail,
+  ip6_route_get_saddr). So the resolver keeps its lookup and reads the source from a probe: a UDP socket made as
+  the lookup's owner (the shared `open_socket`), `IPV6_UNICAST_IF` the route's interface, the lookup's traffic
+  class, mark and preferences, connected to the destination; `getsockname` is the source. Both lookups are asked
+  again with `RTM_F_FIB_MATCH` (the routing entry itself) and must be equal, else a counted refusal (PROBE). A
+  local destination skips the probe (it is its own source). The suite check now has no refusal branch and also
+  wants db's temporary address under a mark and db's public one under an owner. Broken copies, each caught by
+  source_preferences_choose_among_the_link_addresses: probe source ignored, probe not made as the owner, probe
+  without the mark (and the old mark and owner breaks now fail it too). The plan's reason for refusing is gone.
+- Encapsulating route refused though a socket is told its MTU (minor): the same probe gives its path MTU
+  (`IP_MTU`/`IPV6_MTU`), both versions. Broken copy (MTU from the route) fails
+  encapsulating_route_leaves_room_for_its_headers, which has no refusal branch now.
+- The entry comparison has its own case in tests/counters.rs (a flow label selects db's /64 in table 100, and a
+  probe, which takes no label, gets main's wider fd09::/16 via db): refused and counted. The broken copy that skips
+  the comparison fails that test; no suite check can reach it (it needs an implementation that probes).
+- IPv4 path MTU not capped at IP_MAX_MTU (minor): every IPv4 path MTU is capped at 65535, as ipv4_mtu. The suite no
+  longer sets lo's MTU (a new namespace's lo is 65536; the old comment was wrong) and loopback_route_is_local wants
+  the path MTU a connected socket is told, IPv4 (65535) and IPv6 (65536). Broken copy (no cap) fails it.
+- Anycast check passed any error (minor): only NotSupported or a Local route pass now.
+- Generic suites see only answers (minor): true and now said in the plan. Neither trait can read back what it
+  changed, and the brief fixes the one-tuple form, so a configure that toggles state passes
+  setting_twice_equals_setting_once and advice that does nothing passes both advice checks; the self-tests catch
+  only an error on the second call. The effects are the requiring suites' (ICMP and raw check each setting's; UDP's
+  negative_route_advice_keeps_a_socket_sending, TCP's negative_route_advice_picks_a_new_flow).
+- Vacuous checks (minor): the earlier "all 30, each selector its own" overstated it. Vacuity copy (unless_refused
+  panics on NotSupported), now: 25 pass, 5 only ever see the counted refusal on this implementation:
+  link_scope_takes_only_routes_on_the_link, strict_source_route_takes_only_a_first_hop_on_the_link,
+  waived_source_check_takes_a_foreign_address, mobility_header_type_selects_the_route, other_protocols_route.
+  For those selectors the suite checks only that a refusal is NotSupported.
+- Linter count (minor): the earlier "15" was wrong; the list had 11. This run's end, Mac: the I1 files have the
+  three public_outside_interface (impl, `open`, `counters`) and the seven constant_defined_twice with the ICMP
+  suite (IP, PACKETS, TRAFFIC_CONTROL, DEVICE, FIELD, LOCAL, JSON_QUOTE), all raised with the owner; the four new
+  ones this run made (LOOPBACK_MTU twice with the kernel's private one, TEMPORARY_ADDRESSES' array length, two
+  summaries too long or over two lines) were fixed after that run and not re-checked.
+- Independent check (`i1-run2/independent-check-i1c.sh`, ARM, 02:35 UTC, load 8.1 to 9.8): clean build, clippy
+  with warnings denied clean; three rounds each resolver 30 of 30 and its counter test, Configurable 2 of 2,
+  NegativeRouteAdvice 3 of 3 (23 s with the build). 13 broken copies, each caught: the 7 earlier ones still apt
+  (mark, owner, confirmation, locked MTU, flow label, anycast, routing header) and the 6 above. cargo tree of the 50
+  interface and conformance crates: none reaches any of the 17 implementations. No commit since da182336 touches
+  an interface.rs or data file; the working tree's crates/abi/interface.rs and host.rs edits are another track's.
+- Final run (ARM, 02:37 UTC, load 5.1 to 6.4, `lint-and-suites.sh`, three rounds): clippy clean on the nine
+  packages; each round ICMP 58 and 1, raw 47 and 1, resolver 30 and 1, Configurable 2, NegativeRouteAdvice 3.
+- Which check fails when a method breaks: RouteResolver::resolve_route, 25 checks that see answers (above and the
+  broken copies); Configurable::configure and NegativeRouteAdvice::give_negative_route_advice, only an error.
+- New dependency of the resolver: rustix 1.1.6 (already in the tree, licence below) for `IP_MTU` and `IPV6_MTU`.
 
 ## 2026-11-21 evening: I1 in the linter's layout
 - Linter (`cargo reviewable check`, Mac) at the start: 149 findings in the I1 files besides the model's unanswered
@@ -342,7 +390,7 @@ this track is in progress.
 - No check of the route kind refusal: added an_anycast_route_is_not_given_as_another_kind (forwarding on, the
   subnet-router anycast fd01::; an error, or Local as Linux delivers it, passes) and the crate's
   refusals_are_counted_under_their_reasons.
-- Source preferences covered nothing: the check now makes a temporary address (`mngtmpaddr` with use_tempaddr 1,
+- Source preferences covered nothing (only answered in 2026-11-22's run: until then a refusal passed it): the check now makes a temporary address (`mngtmpaddr` with use_tempaddr 1,
   measured: Linux makes it at once and a connect with IPV6_PREFER_SRC_TMP takes it) and expects it for Temporary
   and the public one for Public. The mobile half stays Home: on this kernel a care-of preference changes nothing
   (CONFIG_IPV6_MIP6 is a module, so the home address rule is not built), measured by the verifier and again here.
@@ -453,8 +501,8 @@ this track is in progress.
   priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), wait_for_events (the six wait checks),
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
-- RouteResolver::resolve_route: all 30 suite checks, each selector its own (see the I1 broken copies above and in
-  git history of this file).
+- RouteResolver::resolve_route: 25 suite checks that see answers, each selector its own; 5 see only refusals
+  here (see 2026-11-22 above).
 
 ## Honoured, and how each is checked
 - Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,

@@ -19,8 +19,8 @@ they have grown. The crate builds on every system; elsewhere than Linux each loo
 
 Chosen over connect-and-read (connect a UDP socket, then getsockname and `IP_MTU`) because connect-and-read
 cannot tell the outgoing interface or the route kind, cannot take another user than the caller (`RTA_UID`),
-and needs `CAP_NET_RAW` or `CAP_NET_ADMIN` for a mark (`SO_MARK`). The routing socket cannot take a link scope or a waived source check for
-IPv4, nor IPv6 source preferences, which connect-and-read can; those few are refused (below).
+and needs `CAP_NET_RAW` or `CAP_NET_ADMIN` for a mark (`SO_MARK`). Two answers only a socket is told are read
+by a probe (below): the source IPv6 source preferences choose, and an encapsulating route's path MTU.
 
 What each selector maps to:
 - destination `RTA_DST` (for IPv4, a loose source route's first hop instead; for IPv6, a routing header's first
@@ -45,8 +45,19 @@ What each selector maps to:
 - result: kind from `rtm_type`; source from `RTA_PREFSRC` (IPv6: the given source when there is one, as
   the kernel sends from it); interface `RTA_OIF`; device MTU `IFLA_MTU`; path MTU the route's `RTAX_MTU`,
   else the device MTU (IPv4; capped at 576 when the MTU is locked with no value and the route has a
-  gateway, as `ip_dst_mtu_maybe_forward`) or the device's IPv6 MTU (`mtu6`); hop limit `RTAX_HOPLIMIT`, else
+  gateway, as `ip_dst_mtu_maybe_forward`, and every IPv4 one at `IP_MAX_MTU`, 65535, as `ipv4_mtu`) or the
+  device's IPv6 MTU (`mtu6`); hop limit `RTAX_HOPLIMIT`, else
   `ip_default_ttl` (read as an unset socket's `IP_TTL`, socket2's `ttl_v4`) or the device's IPv6 `hop_limit`.
+- the probe: a UDP socket made as the lookup's owner (the shared `open_socket`, filesystem user while it is
+  made), with `IP_UNICAST_IF`/`IPV6_UNICAST_IF` the route's interface, the lookup's traffic class, mark (when
+  not 0) and source preferences, bound to the given source if any, connected to the destination; its
+  `getsockname` is the source and `IP_MTU`/`IPV6_MTU` the path MTU. Linux keeps the route of the lookup
+  without a source and chooses the source from that entry and its device (`ip6_dst_lookup_tail`,
+  `ip6_route_get_saddr`), so the probe's answers are the route's when its connect took the same routing entry:
+  both lookups are asked again with `RTM_F_FIB_MATCH`, which answers the entry itself, and they must be equal
+  (but for `RTA_CACHEINFO`). Used for IPv6 preferences other than the default with no source and a route
+  that is not local (a local destination is its own source, the first rule of choosing one), and for a route
+  with an encapsulation (the kernel takes its headroom off the path MTU; the routing socket does not give it).
 - socket2 covers the datagram calls (socket, bind, `sendto` with flags, `IP_TTL`); the unicast interface
   (`IP_UNICAST_IF`/`IPV6_UNICAST_IF`, which socket2 lacks) and `IPV6_RTHDR` are the shared crate's
   `set_packet_setting` on the same descriptor. The routing socket is netlink-sys's, the netlink crates' own.
@@ -55,17 +66,17 @@ Refused with `HostError::NotSupported`, a counter and a warning, each with a nam
 - IPv4 link scope (`SO_DONTROUTE`, and so a strict source route): the request's `rtm_scope` is ignored by the
   kernel on `RTM_GETROUTE` (Universe, Link and Host give the same route through a gateway).
 - IPv4 waived source check with an address the host lacks: the routing socket always checks.
-- IPv6 source preferences other than the system's default, with no source given.
+- A probe that cannot take the lookup's routing entry: its connect fails (setting another owner takes
+  `CAP_SETUID`, a mark `CAP_NET_ADMIN`), or the entries differ (for example a flow label selected the route:
+  a socket's connect takes a label only from a flow label lease).
 - An upper-layer protocol the routing socket refuses (it takes TCP, UDP, and ICMP or ICMPv6), and so a
   mobility header selector, refused before asking.
 - A route kind the contract has no name for (for example the subnet-router anycast address of a link that
   forwards).
-- A route with a lightweight-tunnel encapsulation: the kernel takes the encapsulation's headroom off the path
-  MTU, and the routing socket does not give it.
 
-Connect-and-read could honour link scope, a waived IPv4 source (`IP_TRANSPARENT`) and source preferences for
-the source and path MTU, and a raw socket's connect could take any protocol, but none of them tells the
-interface, which a route must give; so those stay refused.
+A probe could also try link scope (`SO_DONTROUTE`), a waived IPv4 source (`IP_TRANSPARENT`) and, on a raw
+socket, any protocol, but each needs the route's interface first, which is what the routing socket cannot find
+for them; so those stay refused.
 
 ## The suites
 
@@ -75,15 +86,19 @@ builds its links, addresses, routes, rules and neighbours with `ip` (iproute2, a
 check knows the answer from what it built: loopback is local; a dummy device's route gives its interface,
 source, kind, MTUs and hop limit; a rule per selector (mark, owner, DSCP, source, interface, protocol, destination port, source port,
 ICMP type and code, flow label) sends the lookup to a second device only when the selector is honoured; type 2
-and type 4 routing headers and a loose source route through the second device's gateway go there; a
-confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`) and sends no frame to
+and type 4 routing headers and a loose source route through the second device's gateway go there; IPv6
+source preferences choose between each link's address and the temporary one Linux made from it, also on the
+link a mark or owner selects; a confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`) and sends no frame to
 the gateway's link address (a tc flower filter on the link's egress counts them); a locked MTU with
-no value gives 576 through a gateway; an encapsulating route's path MTU is what a connected socket is told; a broadcast
+no value gives 576 through a gateway; an encapsulating route's path MTU, and loopback's on both versions, are what a connected socket is told; a broadcast
 address without permission is `EACCES`; a source the namespace lacks is refused when the check is required.
 
 Configurable's suite takes `(implementor, handle, setting)` and checks that setting the same value twice
 gives the same answer as once. NegativeRouteAdvice's takes `(implementor, handle)` and checks that advice
-is taken, and taken again. The socket suites make these tuples and check the effects they can see.
+is taken, and taken again. Neither trait can read back what it changed, so these suites see only the answers:
+an implementation whose second call undoes the first, or whose advice does nothing, passes them. The effects
+are the requiring suites' to check (the socket suites check each setting's; UDP's that advised sockets keep
+sending, TCP's that advice picks a new flow).
 
 ## I2: ICMP and raw sockets
 
