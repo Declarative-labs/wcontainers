@@ -41,7 +41,45 @@ depth texture's other components on both routes. Run 4 (run 83, the section belo
 geometry replay of streams past the first, the Direct3D 11 front's ask. Run 5 (run 84, the
 section below): A5's alpha-antialiased lines on WebGL 2. Run 6 (run 85, the section below): A5's
 cull distances and primitive numbers on WebGL 2, A4's multisampled integer twins found absent by
-the plan. Not complete: the gap list below.
+the plan. Run 7 (run 86, the section below): A9, vertex shaders writing storage, run as compute
+through the stage helper. Not complete: the gap list below.
+
+## G6 run 7 (run 86): vertex shaders writing storage through the stage helper (A9)
+
+Logs and scripts in scratch `graphics-shaders/g6-r86` (run 85's with its folder; jobs `job1.log`
+to `job5.log`, `gpu-suite.log`, `chrome.log`; `x86-tests.log`, `x86-tests2.log`; the laptop's
+corpus verdicts in `verdicts/`).
+- Built (src/lib.rs, src/stage.rs, src/stage/helper.rs): `convert` and `rewrite` no longer refuse
+  a vertex program writing storage (`VertexStorageWrite` is gone); `stage::writes_storage` names
+  one; `Stages::stored` (and `Stages::new` without a geometry shader) runs it as compute and draws
+  its records through the cull route's pass-through, the cull program listing every primitive
+  (dropping only by cull distances the program writes); `stage::stored_programs` gives the
+  programs. The helper counts `SlowPath::VertexStorageAsCompute` once a draw for any route whose
+  vertex program writes storage, and `CullDistanceAsGeometry` only where cull distances are
+  written. Refused by name: adjacency without a geometry shader (`VertexStorageAdjacency`). How
+  the front calls it: "How the Direct3D fronts call `convert`".
+- Test (tests/stage_draw.rs, own `vs_store_drawn`, fxc vs_5_0 and dxc vs_6_0 -Gis, in
+  `vertex_storage.hlsl`): `vertex_storage_writes_through_the_stage_helper_match_direct3d` draws the
+  seven primitive-number cases (lists, strips, points, instanced, indexed strips with restarts)
+  through `Stages::stored` on WebGPU against real Direct3D 11.1 on the RTX 3080 (UAVs bound with
+  `OMSetRenderTargetsAndUnorderedAccessViews`): the picture, and the raw buffer's words and the
+  R32_UINT texture's texels of every vertex of a whole primitive of each instance, equal; elsewhere
+  ours may hold zero (not shaded) or Direct3D's. Seeds 1 to 4: 56 comparisons, 0 failed; seeds 100
+  to 115: 224 comparisons, 0 failed; every texel and stored word equal (job5.log). The test also
+  asserts the slow path is counted once a draw.
+- Corpus (laptop, `--test corpus` with every corpus and glslang): the eight own records and the
+  runner's two `depth-bounds-1-vs` now convert, plus the new `vs_store_drawn` (own 161 and 150
+  records); the WGSL written for them is the storage route's compute form (as for cull distances),
+  and Chrome on the desktop compiles all ten (chrome.log). 13 passed (the corpus test's log
+  `logs/suite-r86c.log` there, load 0.4 to 1.1).
+- Runs: x86 machine (load 1 to 8, other tracks' jobs beside): rustfmt clean, clippy of this crate
+  and the interface with warnings denied clean, the CPU test binaries `geometry`, `variants`,
+  `rewrite`, `builtin`, `cache`, `glsl_writer` and `compute`: 99 passed, 2 ignored as before; the
+  literal check prints no line of this crate (x86-tests2.log). Desktop (RTX 3080, GPU jobs one at
+  a time, 3 cargo jobs): Windows clippy clean; the whole suite at this run's code (one job, one
+  test thread): 24 test binaries, 176 passed, 0 failed, 6 ignored as before (gpu-suite.log).
+- Not run: WebAssembly (no converted module of any other shader changed; the corpus's ten new
+  conversions are not compared with a WebAssembly build).
 
 ## G6 run 6 (run 85): cull distances and primitive numbers on WebGL 2 (A5)
 
@@ -416,7 +454,7 @@ No code changed in this run. Logs and the files Chrome compiled (`out`, 52 MB) i
   derivative refusals name `FINE_DERIVATIVES`, which the WebGL 2 back end declares absent.
 - The unbuilt parts of the milestone: refused by name (constants in src/refusal.rs) and listed with
   causes in the gap list (A1, A2, A4, A5, A7, A8; A6 closed in run 66).
-- The vertex-stage storage write route: gap A9.
+- The vertex-stage storage write route: gap A9 (closed in run 86).
 - Minor: `geometry_draw` seeds beyond 1 to 4 (A10); the tessellator's MIT notice is at the top of
   `src/stage/tessellator.wgsl`; a cache file cut inside its header loads as empty (`Cache::load`,
   test `a_cut_file_keeps_every_whole_entry_before_the_cut`); refusal names are defined once in
@@ -566,8 +604,8 @@ Runs at a00ab267:
   the NIR track asked for in the brief of 2026-11-19 night, and that track calls it on route B's
   output since its run 14 (its status, "the 15.4 rewrites are now made on route B's output by the
   shaders crate's `rewrite`"). Contract and tests: history, "Run 57"; drawn on the RTX 3080 by
-  `rewrite_draw`. It refuses a vertex program writing a storage buffer or a storage texture by
-  name (`refusal::VERTEX_STORAGE_WRITE`), as `convert` does: no back end runs one (gap A9).
+  `rewrite_draw`. A vertex program writing a storage buffer or a storage texture converts, as
+  `convert` gives it since run 86, for the stage helper (`stage::writes_storage`, gap A9).
   Changed in G6a run 6:
   - After a split it turns WGSL's derivative uniformity check off, as the DXBC and DXIL routes do
     (`lower::derivatives_anywhere`, now kept below any filter the module has): an implicit-level
@@ -617,10 +655,10 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (155 and 144 records, 145 and 136
-     converting, counted in run 75; the vertex shaders writing storage are `VertexStorageWrite`)
-     and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1438 and 1418 converting). Every
-     record holds at run 78's tip (its section above).
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (161 and 150 records, 151 and 142
+     converting, counted in run 86 with the vertex shaders writing storage, which convert since
+     that run) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1439 and 1414 converting,
+     counted in run 86). Every record holds at run 86's code (its section above).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
    since run 47 the corpus test writes it with the WebGL 2 back end's own writing
@@ -752,7 +790,8 @@ The pass bar, item by item:
    Alpha-antialiased lines on WebGL 2 since run 84 (`stage_draw`, replayed on ANGLE).
    Cull distances and primitive numbers on WebGL 2 since run 85 (`geometry_draw`, `stage_draw`,
    replayed on ANGLE); tessellation is not offered on WebGL 2 (plan section 7).
-   Not met: some topologies and streams (A7), vertex shaders writing storage (A9), single texels on
+   Since run 86, vertex shaders writing storage through `Stages::stored` (`stage_draw`, A9).
+   Not met: some topologies and streams (A7), single texels on
    the edges of clipped triangles and a few of culled lines (A10), clamped depth behind a
    geometry stage at some seeds (A12), geometry shaders taking patches (A13), hull shaders
    giving no control points (A14) and the written count of a stream with no buffer bound (A15).
@@ -936,21 +975,15 @@ The gap list (every item of the pass bar not met):
   arguments, whose order C++ leaves free (gcc and MSVC right to left, clang left to right). Waits:
   nobody until a native and a browser host share one cache. Takes: the operands sequenced in
   dxbc-spirv (upstream, or a patch carried as naga's are).
-- A9. Vertex shaders writing storage buffers or storage textures (plan section 7,
-  `VertexStorageAsCompute`) are refused by name (`VertexStorageWrite`; runner and runner DXIL 1
-  each, depth-bounds-1-vs; own `vs_store_texture`, `vs_store_typed`, `vs_store_raw`, DXBC and
-  DXIL), by `convert` and `rewrite` alike. Storage textures only since G6a run 3: before it a
-  vertex program writing one (a storage texture under the view keys, or a typed buffer read as
-  one) was returned converted and failed only when the back end made the pipeline. Tests:
-  `a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it` (rewrite, a storage
-  buffer and a storage texture) and
-  `a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key` (the own files
-  under the default key, the view keys, and storage textures through buffers). Cause: WebGPU
-  forbids storage writes in vertex programs (buffers and textures alike) and WebGL 2 has no
-  storage, and the route section 7 gives (the vertex program run as compute by the stage helper,
-  then a pass-through draw, as the cull route does) is not built. Waits: the Direct3D 12 front's runner (depth-bounds); no real program seen with it.
-  Takes: `convert` keeping such a program for the stage helper only, `vertex_as_compute` taking its
-  storage writes, and a drawn test against Direct3D 11.
+- A9. Closed in run 86 (its section): vertex shaders writing storage buffers or storage textures
+  convert (no longer `VertexStorageWrite`), `stage::writes_storage` names them, and the stage
+  helper runs them as compute and draws their records through the cull route's pass-through
+  (`Stages::stored`, `SlowPath::VertexStorageAsCompute`, plan section 7), as do its other routes
+  that run the vertex stage as compute. Drawn equal to real Direct3D 11.1 on the RTX 3080 (the
+  picture, and every word and texel each vertex of a whole primitive writes), fxc and dxc builds
+  (`vertex_storage_writes_through_the_stage_helper_match_direct3d`, tests/stage_draw.rs). Left:
+  adjacency without a geometry shader (`VertexStorageAdjacency`, as the cull route refuses it);
+  WebGL 2 has no storage (the back end's `Absent(VERTEX_STORAGE_WRITE)`, feature level 10_0).
 - A10. Clip distances through the stage helper (`gs_clip` behind a geometry shader, `vs_cull` on
   the cull route) match Direct3D 11 at the default seeds 1 to 4, but at other seeds a few texels
   are drawn on one side only. The third check (seed 9001, 16 cases, at 64787579) found four more,
@@ -1548,7 +1581,7 @@ G6a run 5's tip):
 - On the gap list: none left of A6 (`DxilGeometryShader` 26 gone in run 65; `DxilHullShader` 28
   and `DxilDomainShader` 9 gone in run 66: 36 convert, 1 is `DomainWithoutControlPoints`, next to
   A14's `HullWithoutControlPoints`);
-  `VertexStorageWrite` 8 (A9); `GeometryPatchInput` 6 (A13; DXBC 5, DXIL 1 since run 65);
+  `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` 6 (A13; DXBC 5, DXIL 1 since run 65);
   `HullWithoutControlPoints` 1 and `DomainWithoutControlPoints` 1 (A14); `ComponentPastVector` 1
   (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
@@ -1579,7 +1612,8 @@ G6a run 5's tip):
 1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
-   83 to 85, A4's multisampled integer twins are absent by plan 4.12), A9, A7, A1, the DXIL route's
+   83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7,
+   A1, the DXIL route's
    `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5).
@@ -1611,6 +1645,12 @@ G6a run 5's tip):
   float'"). They would not compile where WEBGL_clip_cull_distance is enabled either; each element
   assigned on its own would. The records name the need, so the corpus test counts them as named.
 
+- For the Direct3D 12 front (run 86, A9, its runner's `depth-bounds-1-vs`): vertex shaders
+  writing unordered access views now convert (no longer `VertexStorageWrite`), so drawing one
+  directly on WebGPU now fails when the pipeline is made; route a vertex shader for which
+  `stage::writes_storage` is true through `Stages::stored` ("How the Direct3D fronts call
+  `convert`"), drawn equal to Direct3D 11.1 here. The same holds for the Direct3D 11 front at
+  feature level 11_1.
 - Answered for the Direct3D 11 front (run 84, its ask "atg-simplecomputepc's division", still
   listed in its status): measured twice, not the converter's. This track's own `cs_divide` and
   `cs_escape` (the program's division and its Mandelbrot loop as written, fxc and dxc builds)
@@ -1770,6 +1810,21 @@ G6a run 5's tip):
 
 ## How the Direct3D fronts call `convert`
 
+- Vertex shaders writing unordered access views (Direct3D 11.1's UAVs in every stage, Direct3D
+  12's; since run 86): they convert as any vertex shader (no longer `VertexStorageWrite`), and
+  `stage::writes_storage(&vertex)` says so. Where the back end lacks
+  `Features::VERTEX_STORAGE_WRITE` (WebGPU always), convert the vertex shader with every input
+  pulled, as for the cull route, and draw through `Stages::stored(backend, &vertex,
+  stream_output)`: `run` runs it as compute (its storage writes with it) and returns a `FinalDraw`
+  drawn through `passthrough()` and `vertex_layout()`, as after the cull route; bind its sets with
+  `StageSet::COMPUTE`. `Stages::new` with no geometry shader makes the same, so stream output from
+  such a shader also ends in a `FinalDraw`; behind a geometry, hull or domain stage, or on the line
+  and primitive routes, its compute form writes the storage as well. The helper counts
+  `SlowPath::VertexStorageAsCompute` once a draw. Its refusal by name: adjacency without a geometry
+  shader (`VertexStorageAdjacency`). Direct3D runs a vertex shader any number of times per vertex;
+  the stage helper runs it once per place in the draw (index list), and not for vertices of no
+  whole primitive. On WebGL 2 there is no storage: the back end refuses the program
+  (`GpuError::Absent(VERTEX_STORAGE_WRITE)`).
 - Views of depth textures with a component mapping (Direct3D 12's `Shader4ComponentMapping`; since
   run 82 measured on real Direct3D 12): name `(slot, mapping)` in `swizzled`. Every read converts
   but comparisons through a first component of green, blue or alpha and comparison gathers whose
@@ -3395,7 +3450,9 @@ were already there.
   teaching each route a list of record numbers; the cost is more vertex work on a route that is
   already a counted slow path (`GeometryAsCompute`, `StreamOutAsCompute`,
   `CullDistanceAsGeometry`, `AntialiasedLinesAsQuads`, `PrimitiveIdAsGeometry`). A vertex shader
-  with side effects would see the difference, and those (`VertexStorageWrite`) are refused. The
+  with side effects (writing storage, run 86) may see the difference, as Direct3D leaves how often
+  a vertex is shaded to the device (its functional specification); a vertex of no whole primitive
+  is not shaded at all. The
   restart index is always the format's largest, as Direct3D 11 and WebGPU restart; a Direct3D 12
   pipeline with restarts off (`D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED`) is the front's to
   route.
