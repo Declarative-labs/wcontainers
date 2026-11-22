@@ -51,7 +51,8 @@ drawn without tessellation, and A14, hull shaders giving no control points, both
 (the Direct3D 12 runner's six files). Run 3 (run 90, the section below): A7's cull distances
 written by geometry shaders (the Direct3D 12 runner's eight files). Run 4 (run 91, the section
 below): level-of-detail queries (`CalculateLevelOfDetail`) on the DXBC route (the runner's four
-`calculate-lod` files). Run 5 (run 92, the section below): the same on the DXIL route. Not
+`calculate-lod` files). Run 5 (run 92, the section below): the same on the DXIL route. Run 6
+(run 93, the section below): samples with a per-sample clamp (`SampleClamp`) on both routes. Not
 complete: the gap list below.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
@@ -98,6 +99,54 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 6 (run 93): samples with a per-sample clamp on both routes
+
+Logs and scripts in scratch `graphics-shaders/g6-r93` (run 92's with its folder: clone `tip`,
+`gpu.sh`, `tree-tar.sh`, `suite-laptop.sh` as `~/wcontainers-graphics/suite-r93.sh` writing
+`out-r93`, `wasm.sh` as `wasm-r93.sh` writing `outw-r93`; `compile.log` (own shaders on the
+desktop), `job1.log`, `gpu-suite.log`, `arm1.log` to `arm6.log`, `chrome.log`, `chrome-out/`).
+Nothing built on the Mac.
+- Chosen as "Next" 1 of run 92: the Direct3D 12 runner's `sampler-13` and `-15` (both builds) were
+  refused, DXBC `SampleClamp`, DXIL the reader's "image sample operand 0x80".
+- Built: a sample with Direct3D's clamp (`sample_cl`, `sample_b_cl`, `sample_d_cl`; HLSL `Sample`,
+  `SampleBias`, `SampleGrad` with a clamp) becomes a sample with gradients. The library's new
+  `clamped_gradients` (`variant/lod.wgsl`, beside `level_of_detail`) takes the coordinate's
+  derivatives or the sample's gradients and scales them by two to the sample's own bias and to the
+  distance from its level of detail (the sampler's anisotropy and bias read from the helper block,
+  as `level_of_detail` reads them) up to the clamp where that is below; the device then adds the
+  sampler's bias, its level range and the resource's clamp itself, and filters (anisotropy kept).
+  Gradients too short to scale (zero) become one texel of the clamp's level. Shared by both routes
+  through `variant::lod::clamped` and `columns` (`lower.rs` `clamped_gradients`; on DXIL the
+  reader's `IMAGE_SAMPLE_CLAMP` stand-ins, replaced in place by `dxil/lod.rs` as run 92's are).
+  Refused by name (`SampleClamp`): a comparison, a depth texture and a cube (gradients, which WGSL
+  does not take there, or which the library does not compute for a cube), and outside a pixel
+  program.
+- Found and fixed beside it: the DXBC route gave a 1D texture's gradients a y of 0.5 (the row's
+  centre, as a coordinate's), now 0 as the DXIL route gives them (`FunctionLowering::gradient`).
+- Not matched, recorded and not drawn: a clamp above the sampler's `MaxLOD` lands at `MaxLOD` where
+  Direct3D's level is the clamp (the device's own range applies after the scaled gradients); on
+  the DXIL route a 1D texture whose derivatives are zero, through an anisotropic sampler, takes the
+  clamp's level less the anisotropy's (the texel's y column is cut with the coordinate).
+- Drawn on the RTX 3080 (`clamped_samples_match_direct3d` in tests/filter_draw.rs, own `ps_clamp`
+  in filter.hlsl, fxc's and dxc's builds, the same plane, seeded sampler states and comparison rules
+  as `filtering_in_the_program_matches_direct3d`, which now shares its body,
+  `samples_match_direct3d`): seeds 1 to 8 (job1.log) 102 comparisons, 0 failed, 12 known (seed 8,
+  anisotropic, as for the plain samples); where the case's sampler is native on WebGPU the variant's
+  pictures equal WebGPU's own sampler and that sampler equals Direct3D on the GPU (0 texels apart).
+  `levels_of_detail_match_direct3d` in the same job: 32 comparisons, 0 failed, 4 known, as before.
+  CPU test `clamped_samples_take_their_gradients_from_the_library` (tests/variants.rs, both routes,
+  no stand-in left, GLSL ES written).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 0.1 to 2.5): the runner's
+  `sampler-13` and `-15`, DXBC and DXIL, now `ok ; glsl compiles` (records updated); every other
+  record holds (logs/suite-r93.log there). Chrome on the desktop compiles the new and changed files,
+  WGSL and GLSL ES: own `ps_clamp` and `ps_lod`, runner `sampler-13`, `-15` and `calculate-lod-1` to
+  `-4`, both builds (chrome.log; 16 files each way).
+- `SparseFeedback` is absent by plan: the instructions that give a residency status belong to tiled
+  resources (Direct3D's tier 2), which the plan reports absent through `CheckFeatureSupport` (5.2's
+  and 9's absent lists), so a front never takes such a shader as valid; the refusal stays.
+- For the Direct3D fronts: nothing new to call; a pixel program with a clamped sample reflects the
+  same helpers as a level-of-detail query (`SamplerState`, `LodBias`).
 
 ## G6 run 5 (run 92): level-of-detail queries on the DXIL route
 
@@ -1943,8 +1992,8 @@ The gap list (every item of the pass bar not met):
   structured buffers on the DXIL route convert since run 87, its section): `rewrite` refusing
   arrays of buffers (its input's binding arrays of blocks; `src/dxil/buffer_arrays.rs` would serve
   it with the elements numbered as `common::split_arrays` numbers images; no front has asked),
-  `InterpolateAt` on the DXIL route,
-  `SampleClamp`, `globallycoherent` views (refused by name on both
+  `InterpolateAt` on the DXIL route, `SampleClamp` of a comparison, a depth texture or a cube
+  (since run 93 the others convert, its section), `globallycoherent` views (refused by name on both
   routes: on DXBC `GloballyCoherent` since G6a run 5, before which the flag was dropped without a
   word; on DXIL the reader's "unsupported memory operand .. at scope .."; no shader of any corpus
   declares one), DXIL signed atomic minimum
@@ -1991,10 +2040,10 @@ G6a run 5's tip):
 - In "Also open": `DepthGatherComponent` 10 (vkd3d's `gather-cmp-3` to `-7`, DXBC and, since
   run 82, DXIL; A4's `swizzled`) and own 6 (expected: the comparison gathers of green, blue and
   alpha without a mapping); `CalculateLevelOfDetail` 0 (the DXBC 4 convert since run 91, the DXIL 4
-  and own `ps_lod.dxil` since run 92); `SparseFeedback` 3 (DXBC) and the reader's
+  and own `ps_lod.dxil` since run 92); absent by plan (tiled resources, run 93): `SparseFeedback` 3 (DXBC) and the reader's
   "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
-  `SampleClamp` 2 (DXBC) and the reader's "image sample operand 0x80" 2 (DXIL, the same minimum
-  level operand); `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
+  `SampleClamp` 0 (the runner's `sampler-13` and `-15`, both builds, convert since run 93);
+  `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
   since run 87, recorded `UnboundedResourceArray` as the corpus has no ranges); a clip or cull distance read as an input
   (`ClipDistance` 4, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`, DXBC and,
   since run 65, DXIL). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
@@ -2002,13 +2051,10 @@ G6a run 5's tip):
 
 ## Next
 
-1. `SampleClamp` (the runner's `sampler-13` and `-15`, both builds; `CalculateLevelOfDetail` on
-   both routes done in runs 91 and 92), which can take the same library (`variant::lod::call`):
-   the sample made with gradients scaled by two to the clamp's distance above the level of detail
-   where the clamp is higher (a native sample otherwise), drawn against Direct3D 11. On the DXIL
-   route the carried reader refuses the minimum-level operand ("image sample operand 0x80"): read
-   it as run 92 read `OpImageQueryLod` (a stand-in the DXIL pass replaces) or as a sample whose
-   level the pass rewrites.
+1. `InterpolateAt` on the DXIL route (runner `eval-attrib-13` and `-14`, own `ps_evaluate.dxil`),
+   the Direct3D 12 runner's next refusal: a DXIL pass doing what `lower/evaluate.rs` does on DXBC
+   (the slopes of each evaluated input taken by derivatives in the entry point, the value moved by
+   them), the reader reading GLSL.std.450's `InterpolateAt*` as stand-ins; then A20 (below).
 2. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
@@ -3526,6 +3572,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   reader's own call graph under an id past the module's bound; the module's user replaces each
   call (this crate's `dxil/lod.rs`). Before, the reader refused the instruction. Not for upstream as
   it stands (upstream would want an IR expression).
+- SPIR-V reader (run 93), a sample's `MinLod` operand (not on a comparison or a gather) read as
+  gradients: the sample becomes `SampleLevel::Gradient` with the two columns, cut to the
+  coordinate's size, of a call of `front::spv::IMAGE_SAMPLE_CLAMP` (arguments the image, the
+  sampler, the coordinate without its layer, the sample's bias or two gradients where it has them,
+  and the minimum level; result a `mat2x3<f32>`), one per signature, made as `IMAGE_QUERY_LOD`'s
+  through one shared maker (`Frontend::stand_in`). The module's user replaces each call
+  (`dxil/lod.rs`). Before, the reader refused the operand ("image sample operand 0x80"). Not for
+  upstream as it stands.
 
 ## How to run
 
