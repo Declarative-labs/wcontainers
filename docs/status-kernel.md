@@ -684,8 +684,10 @@ the machine's limit was set (ka10/replay.log): 2 passed, 1 ignored. So the whole
 the K6c bar's results on the ARM64 machine, by these reruns; the suite was not run whole again.
 
 Next, in order: the owner's ruling on `ProcessTracer` (then redo the kernel's side above, give the
-stand-in's hooks and the runtime their part, and remove the kernel's own `System` trait); the
-whole suite once more at the tip on the ARM64 machine (ka9/suite.sh), and the Mac's part of it;
+stand-in's hooks and the runtime their part, and remove the kernel's own `System` trait); read the
+whole suite at 606d8273, started detached at this run's end on the ARM64 machine (ka10/suite.sh,
+job kernel/20261122-073407-1503526; `arm-run --attach kernel 20261122-073407-1503526` follows it,
+its log is /work/jobs/kernel/20261122-073407-1503526/log there), then the Mac's part of it;
 warnings through `FallbackObserver` once the owner rules; ICMP and raw sockets; the linter findings
 once the linter may run again; the independent check.
 
