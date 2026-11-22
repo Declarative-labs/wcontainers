@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    CounterReading, Cpu, Event, Host, HostError, PAGE_SIZE, SystemCallRequest, Warning,
+    CounterReading, Cpu, Event, Host, HostError, Next, PAGE_SIZE, SystemCallRequest, Warning,
 };
 use wcontainers_clock::Clock as _;
 use wcontainers_kernel::errno::Errno;
@@ -884,6 +884,17 @@ impl<H: Send> wcontainers_readiness::Readiness<crate::streams::End> for TestHost
 /// a message FUSE gives no reply, or one this host answers itself, finishes once sent.
 impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
     type Reply = Vec<u8>;
+    type Notice = Vec<u8>;
+
+    /// Not built: this system hands its notices to the kernel as the abi's
+    /// `Event::BackendNotice`, until the kernel keeps a wait for them.
+    async fn receive_notice(
+        &self,
+        applied: Option<Result<(), Errno>>,
+    ) -> Result<Vec<u8>, HostError> {
+        let _ = applied;
+        Err(HostError::NotSupported)
+    }
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
         use fuse_abi::linux::{fuse_in_header, fuse_opcode};
@@ -1266,7 +1277,7 @@ pub fn started_with_executor<State: Clone + 'static>(
     container: &Container<'_>,
     state: State,
 ) -> (
-    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State>,
+    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>,
     Arc<TestHost>,
 ) {
     let host = TestHost::repeatable(0, None);
@@ -1324,7 +1335,52 @@ pub fn program_not_run(
     name: &str,
     link_flags: &[&str],
     out: &std::path::Path,
-) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64> {
+) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
+    program_started(name, link_flags, out).0
+}
+
+/// As [`program_not_run`], run until every thread waits with no deadline.
+pub fn program_waiting(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
+    let (mut started, host) = program_started(name, link_flags, out);
+    let (kernel, cpu) = started.parts();
+    loop {
+        match kernel.next() {
+            Next::Run {
+                thread,
+                resume,
+                slice_nanoseconds,
+            } => {
+                let exit = cpu
+                    .run(thread, resume, slice_nanoseconds)
+                    .expect("the stand-in runs the program");
+                kernel.exit(cpu, &host, exit);
+            }
+            Next::Idle {
+                until_nanoseconds: Some(0),
+            } => kernel.event(cpu, &host, Event::Timer),
+            Next::Idle {
+                until_nanoseconds: None,
+            } => break,
+            other => panic!("the program waits for ever, not {other:?}"),
+        }
+    }
+    started
+}
+
+/// A container started with the guest program `name`, built with `link_flags` into `out`, and
+/// its system.
+fn program_started(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+) -> (
+    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost>,
+    Arc<TestHost>,
+) {
     let program = crate::guest::build(name, link_flags, out);
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(
@@ -1345,7 +1401,7 @@ pub fn program_not_run(
         root_image: None,
         address_space: crate::standin::SPACE_32_BIT,
     };
-    started_with_executor(prepare(&container), &container, u64::MIN).0
+    started_with_executor(prepare(&container), &container, u64::MIN)
 }
 
 fn run_hosted<H: BetweenSteps + Send>(

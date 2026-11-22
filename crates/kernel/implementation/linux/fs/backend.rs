@@ -2484,6 +2484,15 @@ mod tests {
 
     impl wcontainers_system::FuseServer for Server {
         type Reply = &'static [u8];
+        type Notice = &'static [u8];
+
+        /// The server sends no notices.
+        async fn receive_notice(
+            &self,
+            _applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
+        ) -> Result<&'static [u8], wcontainers_abi::HostError> {
+            core::future::pending().await
+        }
 
         async fn send_request(
             &self,

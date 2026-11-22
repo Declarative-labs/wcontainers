@@ -619,6 +619,17 @@ host_on_state!(LocalSystem, system => system.state());
 
 impl wcontainers_system::FuseServer for LocalSystem {
     type Reply = Vec<u8>;
+    type Notice = Vec<u8>;
+
+    /// Not built: this system hands its notices to the kernel as the abi's
+    /// `Event::BackendNotice`, until the kernel keeps a wait for them.
+    async fn receive_notice(
+        &self,
+        applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
+    ) -> Result<Vec<u8>, HostError> {
+        let _ = applied;
+        Err(HostError::NotSupported)
+    }
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
         self.state().serve(request)

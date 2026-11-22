@@ -30,6 +30,7 @@ fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "
 domain = { version = "0.12.3", default-features = false, features = ["alloc"] }
 rangemap = { version = "1.8.0", default-features = false }
 smallbox = { version = "0.8.9", default-features = false }
+spin = { version = "0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [dev-dependencies]
 wcontainers-kernel-conformance = { path = "../../conformance" }

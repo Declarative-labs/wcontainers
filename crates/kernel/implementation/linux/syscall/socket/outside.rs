@@ -32,7 +32,8 @@ use wcontainers_kernel::UserId;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpClose, TcpConnections, TcpContinuation, TcpFastOpen, TcpListeners,
-    TcpProtocol, TcpReceiveRequest, TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpUrgency,
+    TcpLocalEnd, TcpLocalEndError, TcpProtocol, TcpReceiveRequest, TcpRecordBoundary,
+    TcpSendRequest, TcpShutdown, TcpUrgency,
 };
 use wcontainers_udp_sockets::{UdpChecksum, UdpDatagram, UdpProtocol, UdpReceived, UdpSockets};
 
@@ -148,6 +149,24 @@ fn any_address(v4: bool) -> BindAddress {
 
 /// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
 /// without a route, which is counted.
+/// The error of a connect or listen; a socket given back is closed, since the kernel binds its
+/// sockets inside the container and asks the system for none of its own.
+fn local_end_error<S: crate::System>(
+    cx: &Context<'_, S>,
+    error: TcpLocalEndError<<S as TcpConnections>::BoundSocket>,
+) -> HostError {
+    match error {
+        TcpLocalEndError::Unbound(error) => error,
+        TcpLocalEndError::Bound {
+            bound_socket,
+            error,
+        } => {
+            TcpConnections::release(&**cx.system, bound_socket);
+            error
+        }
+    }
+}
+
 fn refusal<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
@@ -342,16 +361,21 @@ pub(super) fn open<S: crate::System>(
     let owner = UserId(socket.borrow().uid);
     let connected = TcpConnections::connect(
         &**cx.system,
-        TcpProtocol::Tcp,
-        owner,
-        local,
+        TcpLocalEnd::Unbound {
+            protocol: TcpProtocol::Tcp,
+            owner,
+            local,
+        },
         socket_address(&to),
         &[],
         TcpFastOpen::Off,
     );
     let connected = match connected {
         Ok(connected) => connected,
-        Err(error) => return Err(refusal(kernel, cx, error)),
+        Err(error) => {
+            let error = local_end_error(cx, error);
+            return Err(refusal(kernel, cx, error));
+        }
     };
     let id = next_id(&mut kernel.sockets.inet.outside);
     let handle: HandleOf<S> = Handle::Connection(connected.connection);
@@ -423,12 +447,15 @@ fn ask_listen<S: crate::System>(
     };
     let listening = TcpListeners::listen(
         &**cx.system,
-        TcpProtocol::Tcp,
-        UserId(owner),
-        local,
+        TcpLocalEnd::Unbound {
+            protocol: TcpProtocol::Tcp,
+            owner: UserId(owner),
+            local,
+        },
         ListenBacklog(backlog),
         &[],
-    );
+    )
+    .map_err(|error| local_end_error(cx, error));
     match listening {
         Ok(listening) => {
             let handle: HandleOf<S> = Handle::Listener(listening.listener);

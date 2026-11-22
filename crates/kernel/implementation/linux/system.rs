@@ -12,10 +12,11 @@ use crate::process::{Channel, Pid};
 use crate::syscall::touch::{Ending, ThreadEnd};
 use crate::{Kernel, PID_MAX, RESERVED_PIDS};
 
+use wcontainers_kernel::errno::UnknownErrno;
 pub use wcontainers_kernel::{
     AccessKind, AnonymousMemoryId, DeviceId, InodeNumber, MemoryError, MemoryObject,
-    ReplayDeterminism, SystemCallResponse, SystemVSegmentId, TaskId, ThreadOrdering, WatchesFor,
-    WriteMemoryError,
+    ReplayDeterminism, SystemCallError, SystemCallResponse, SystemVSegmentId, TaskId,
+    ThreadOrdering, WatchesFor, WriteMemoryError,
 };
 
 /// The task id of a process or thread number.
@@ -154,11 +155,19 @@ pub fn task_id_after(previous: TaskId) -> TaskId {
     task_id(if next >= PID_MAX { RESERVED_PIDS } else { next })
 }
 
-/// A call's return value as the embedder sees it.
+/// A call's return value as the embedder sees it: an error Linux names, one it passes on unnamed
+/// (from a file server), or a value.
 pub(crate) fn response_of(value: u64) -> SystemCallResponse {
-    match crate::Errno(value.wrapping_neg() as u32).to_linux() {
-        Some(errno) if crate::Errno::is_error_return(value) => Err(errno),
-        _ => Ok(value),
+    if !crate::Errno::is_error_return(value) {
+        return Ok(value);
+    }
+    let number = value.wrapping_neg() as u32;
+    if let Some(errno) = crate::Errno(number).to_linux() {
+        return Err(SystemCallError::WellKnown(errno));
+    }
+    match u16::try_from(number).ok().and_then(UnknownErrno::new) {
+        Some(unknown) => Err(SystemCallError::Unknown(unknown)),
+        None => Ok(value),
     }
 }
 
@@ -166,7 +175,8 @@ pub(crate) fn response_of(value: u64) -> SystemCallResponse {
 pub(crate) fn return_of(response: SystemCallResponse) -> u64 {
     match response {
         Ok(value) => value,
-        Err(errno) => crate::Errno::from_linux(errno).to_return(),
+        Err(SystemCallError::WellKnown(errno)) => crate::Errno::from_linux(errno).to_return(),
+        Err(SystemCallError::Unknown(unknown)) => crate::Errno(unknown.get().into()).to_return(),
     }
 }
 

@@ -1,10 +1,14 @@
 //! A kernel's processes and tasks taken off it and put back, through the kernel interface's traits:
 //! a container on the stand-in started with a program that has not run.
 
-use wcontainers_executor_unicorn::driver::{FIRST_PROCESS, program_not_run};
-use wcontainers_kernel::{
-    ExecutionConfig, ExecutorOf, Kernel, ReplayDeterminism, TaskId, ThreadOrdering,
+use wcontainers_executor_unicorn::driver::{
+    FIRST_PROCESS, TestHost, program_not_run, program_waiting,
 };
+use wcontainers_executor_unicorn::standin::StandIn;
+use wcontainers_kernel::{
+    ExecutionConfig, ExecutorOf, Kernel, Process, ReplayDeterminism, TaskId, ThreadOrdering,
+};
+use wcontainers_kernel_linux::KernelWithExecutor;
 
 /// The way of running a process every kernel supports.
 fn serial<K: Kernel>() -> ExecutionConfig<ExecutorOf<K>> {
@@ -17,7 +21,7 @@ fn serial<K: Kernel>() -> ExecutionConfig<ExecutorOf<K>> {
 
 /// Copying a process's context leaves the process on the kernel, and a copy is handed back when
 /// resumed beside the process itself.
-fn copy_leaves_the_process<K: Kernel>(mut kernel: K, process: TaskId) {
+fn copy_leaves_the_process<K: Kernel>(kernel: K, process: TaskId) {
     let copy = kernel
         .copy_process_context(process)
         .expect("the process is on the kernel");
@@ -28,7 +32,7 @@ fn copy_leaves_the_process<K: Kernel>(mut kernel: K, process: TaskId) {
 
 /// A suspended process leaves the kernel with its tasks, its tasks are handed back while its
 /// context is away, and both come back.
-fn suspended_process_comes_back<K: Kernel>(mut kernel: K, process: TaskId) {
+fn suspended_process_comes_back<K: Kernel>(kernel: K, process: TaskId) {
     let (context, tasks) = kernel
         .suspend_process(process)
         .expect("the process is on the kernel");
@@ -47,7 +51,7 @@ fn suspended_process_comes_back<K: Kernel>(mut kernel: K, process: TaskId) {
 }
 
 /// A process's tasks, taken off the kernel, are taken again once they are back.
-fn suspended_tasks_come_back<K: Kernel>(mut kernel: K, process: TaskId) {
+fn suspended_tasks_come_back<K: Kernel>(kernel: K, process: TaskId) {
     let (context, tasks) = {
         let (context, tasks) = kernel
             .suspend_process(process)
@@ -84,10 +88,24 @@ fn suspended_tasks_come_back_and_are_taken_again() {
     suspended_tasks_come_back(hello_not_run(), FIRST_PROCESS);
 }
 
+/// A process's handle takes only its own threads: its child's thread, asked for through it, is
+/// neither handed out nor taken off the kernel.
+#[test]
+fn a_handle_takes_no_thread_of_another_process() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let mut kernel = program_waiting("forked", &[], &out);
+    let child = (FIRST_PROCESS.0 + 1..1 << 12)
+        .map(TaskId)
+        .find(|&id| kernel.copy_process_context(id).is_some())
+        .expect("the first process's child");
+    let mut parent = kernel.process(FIRST_PROCESS).expect("the first process");
+    assert!(parent.suspend_threads(&[child]).next().is_none());
+    let taken: Vec<TaskId> = kernel.suspend_tasks(&[child]).map(|(id, _)| id).collect();
+    assert_eq!(taken, [child], "the child's thread is still on the kernel");
+}
+
 /// The kernel the round trips start from: `hello`, not run yet.
-fn hello_not_run()
--> wcontainers_kernel_linux::KernelWithExecutor<wcontainers_executor_unicorn::standin::StandIn, u64>
-{
+fn hello_not_run() -> KernelWithExecutor<StandIn, u64, TestHost> {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     program_not_run("hello", &["-nostdlib"], &out)
 }

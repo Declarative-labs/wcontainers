@@ -71,17 +71,48 @@ fn supported<E: Executor>(config: &interface::ExecutionConfig<E>) -> Result<(), 
     Ok(())
 }
 
-/// A kernel with the executor its threads run on, each process with the embedder's `State`.
-pub struct KernelWithExecutor<C, State> {
-    kernel: crate::Kernel,
-    executor: C,
-    state: PhantomData<fn() -> State>,
+/// A kernel with the executor its threads run on, each process with the embedder's `State`, for
+/// the system `S`.
+///
+/// Its state sits behind one lock, so that the kernel interface's calls, which take it shared,
+/// come one at a time. The state is not yet shareable between host threads (it holds `Rc` and
+/// `RefCell` throughout, and the system's waiting calls), so a kernel and what it hands out stay
+/// on one host thread at a time.
+pub struct KernelWithExecutor<C, State, S> {
+    inner: spin::Mutex<Inner<C>>,
+    types: PhantomData<fn() -> (State, S)>,
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelWithExecutor<C, State> {
+/// What [`KernelWithExecutor`]'s lock guards.
+struct Inner<C> {
+    kernel: crate::Kernel,
+    executor: C,
+}
+
+// SAFETY: every access to the kernel's state and its executor goes through the lock (shared
+// calls) or through an exclusive borrow. What they share through `Rc` stays inside them except in
+// the contexts and tasks the kernel hands out, which an embedder keeps on the host thread it runs
+// the kernel on, as it keeps the kernel itself: neither the state nor an executor such as the
+// stand-in's is shareable between host threads yet (see the type's comment).
+unsafe impl<C, State: Send, S: Send + Sync> Sync for KernelWithExecutor<C, State, S> {}
+
+/// What a kernel is made from: a fresh kernel, the executor its threads run on, its system, the
+/// container's start, and its first process's execution configuration and state.
+pub struct KernelConfig<C: Executor, State, S: crate::System> {
+    pub kernel: crate::Kernel,
+    pub executor: C,
+    pub system: alloc::sync::Arc<S>,
+    pub start: crate::Start<'static, <S as wcontainers_system::StreamTransport>::Endpoint>,
+    pub execution: interface::ExecutionConfig<C>,
+    pub state: State,
+}
+
+impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
+    KernelWithExecutor<C, State, S>
+{
     /// Starts a container on `kernel`, as [`crate::Kernel::start`], its first process with
     /// `state` and run as `config` says, unless the kernel cannot run it so.
-    pub fn start<S: crate::System>(
+    pub fn start(
         mut kernel: crate::Kernel,
         mut executor: C,
         system: &alloc::sync::Arc<S>,
@@ -102,21 +133,23 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelWithExecutor<C, 
             process.embedder = Some(EmbedderData::new(data));
         }
         Ok(Self {
-            kernel,
-            executor,
-            state: PhantomData,
+            inner: spin::Mutex::new(Inner { kernel, executor }),
+            types: PhantomData,
         })
     }
 
     /// The kernel and the executor, to drive them.
     pub fn parts(&mut self) -> (&mut crate::Kernel, &mut C) {
-        (&mut self.kernel, &mut self.executor)
+        let inner = self.inner.get_mut();
+        (&mut inner.kernel, &mut inner.executor)
     }
 
     /// One process, unless it has ended or carries no state of this embedder.
-    pub fn process(&mut self, id: TaskId) -> Option<KernelProcess<'_, C, State>> {
+    pub fn process(&mut self, id: TaskId) -> Option<KernelProcess<'_, C, State, S>> {
         let pid = pid_of(id);
-        self.kernel
+        self.inner
+            .get_mut()
+            .kernel
             .processes
             .get(&pid)
             .filter(|process| process.ended.is_none())?
@@ -125,42 +158,77 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelWithExecutor<C, 
             .value
             .downcast_ref::<ProcessData<C, State>>()?;
         Some(KernelProcess {
-            kernel: self,
+            inner: self.inner.get_mut(),
             pid,
             read: Vec::new(),
+            types: PhantomData,
         })
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessController
-    for KernelWithExecutor<C, State>
+impl<C, State, S> interface::Kernel for KernelWithExecutor<C, State, S>
+where
+    C: Cpu + Executor + 'static,
+    State: Clone + Send + 'static,
+    S: crate::System + Send,
 {
     type Executor = C;
+    type Fallback = wcontainers_abi::Warning<'static>;
+    type Config = KernelConfig<C, State, S>;
     type SuspendedTask = SuspendedTask;
     type ProcessContext = ProcessContext;
 
-    fn suspend_tasks(&mut self, tasks: &[TaskId]) -> impl Iterator<Item = (TaskId, SuspendedTask)> {
-        self.kernel.suspend_tasks(&mut self.executor, tasks)
+    /// Starts the container `config` describes.
+    ///
+    /// # Panics
+    ///
+    /// If the kernel cannot run the first process as its execution configuration asks.
+    fn new(config: Self::Config) -> Self {
+        let KernelConfig {
+            kernel,
+            executor,
+            system,
+            start,
+            execution,
+            state,
+        } = config;
+        Self::start(kernel, executor, &system, start, execution, state)
+            .unwrap_or_else(|unsupported| panic!("the kernel cannot run as asked: {unsupported:?}"))
+    }
+
+    /// Not built: the executor interface has no call that runs a thread, so this kernel is driven
+    /// through [`crate::Kernel::next`] and [`crate::Kernel::exit`] on the executor it holds.
+    fn run(&self, executor: &mut C) -> interface::StopReason {
+        let _ = executor;
+        unimplemented!("running through the kernel interface is not built")
+    }
+
+    fn suspend_tasks(&self, tasks: &[TaskId]) -> impl Iterator<Item = (TaskId, SuspendedTask)> {
+        let mut inner = self.inner.lock();
+        let Inner { kernel, executor } = &mut *inner;
+        kernel.suspend_tasks(executor, tasks)
     }
 
     fn suspend_process(
-        &mut self,
+        &self,
         process: TaskId,
     ) -> Option<(
         ProcessContext,
         impl Iterator<Item = (TaskId, SuspendedTask)>,
     )> {
-        self.kernel.suspend_process(&mut self.executor, process)
+        let mut inner = self.inner.lock();
+        let Inner { kernel, executor } = &mut *inner;
+        kernel.suspend_process(executor, process)
     }
 
     fn copy_process_context(&self, process: TaskId) -> Option<ProcessContext> {
-        self.kernel.copy_process_context(process)
+        self.inner.lock().kernel.copy_process_context(process)
     }
 
     /// Hands the context back, as the kernel's own resume does, also when it carries no state of
     /// this embedder or the kernel cannot run it as `config` says.
     fn resume_process(
-        &mut self,
+        &self,
         mut context: ProcessContext,
         config: interface::ExecutionConfig<C>,
     ) -> Option<ProcessContext> {
@@ -174,7 +242,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessCont
             return Some(context);
         };
         let before = core::mem::replace(&mut data.config, Rc::new(config));
-        let refused = self.kernel.resume_process(context);
+        let refused = self.inner.lock().kernel.resume_process(context);
         refused.map(|mut context| {
             if let Some(data) = context
                 .embedder_mut()
@@ -187,41 +255,43 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessCont
     }
 
     fn resume_tasks(
-        &mut self,
+        &self,
         tasks: impl IntoIterator<Item = SuspendedTask>,
     ) -> impl Iterator<Item = SuspendedTask> {
-        self.kernel.resume_tasks(&mut self.executor, tasks)
+        let mut inner = self.inner.lock();
+        let Inner { kernel, executor } = &mut *inner;
+        kernel.resume_tasks(executor, tasks)
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::Kernel
-    for KernelWithExecutor<C, State>
-{
-}
-
 /// One process of a [`KernelWithExecutor`], for as long as the borrow lasts.
-pub struct KernelProcess<'a, C, State> {
-    kernel: &'a mut KernelWithExecutor<C, State>,
+pub struct KernelProcess<'a, C, State, S> {
+    inner: &'a mut Inner<C>,
     pid: Pid,
     /// The bytes of the last read.
     read: Vec<u8>,
+    types: PhantomData<fn() -> (State, S)>,
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelProcess<'_, C, State> {
+impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> KernelProcess<'_, C, State, S> {
     fn handle(&mut self) -> crate::Process<'_> {
         crate::Process {
-            kernel: &mut self.kernel.kernel,
-            cpu: &mut self.kernel.executor,
+            kernel: &mut self.inner.kernel,
+            cpu: &mut self.inner.executor,
             pid: self.pid,
         }
     }
 
+    fn kernel(&self) -> &crate::Kernel {
+        &self.inner.kernel
+    }
+
     fn info(&self) -> crate::ProcessInfo<'_> {
-        crate::ProcessInfo::of(&self.kernel.kernel, self.pid)
+        crate::ProcessInfo::of(self.kernel(), self.pid)
     }
 
     fn data(&self) -> &ProcessData<C, State> {
-        self.kernel.kernel.processes[&self.pid]
+        self.kernel().processes[&self.pid]
             .embedder
             .as_ref()
             .and_then(|data| data.value.downcast_ref())
@@ -229,8 +299,8 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelProcess<'_, C, S
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessInfo
-    for KernelProcess<'_, C, State>
+impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> interface::ProcessInfo
+    for KernelProcess<'_, C, State, S>
 {
     fn mapped_memory(&self) -> u64 {
         self.info().memory_mapped()
@@ -253,11 +323,14 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessInfo
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::Process
-    for KernelProcess<'_, C, State>
+impl<C, State, S> interface::Process for KernelProcess<'_, C, State, S>
+where
+    C: Cpu + Executor + 'static,
+    State: Clone + Send + 'static,
+    S: crate::System + Send,
 {
     type State = State;
-    type Kernel = KernelWithExecutor<C, State>;
+    type Kernel = KernelWithExecutor<C, State, S>;
 
     fn id(&self) -> TaskId {
         crate::system::task_id(self.pid)
@@ -269,7 +342,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::Process
 
     fn state(&mut self) -> &mut State {
         &mut self
-            .kernel
+            .inner
             .kernel
             .processes
             .get_mut(&self.pid)
@@ -280,7 +353,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::Process
     }
 
     fn memory_id(&self) -> MemoryId {
-        self.kernel.kernel.processes[&self.pid].memory
+        self.kernel().processes[&self.pid].memory
     }
 
     fn read_memory(
@@ -319,8 +392,11 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::Process
         self.handle().send_signal(thread, signal);
     }
 
-    fn suspend_tasks(&mut self, tasks: &[TaskId]) -> impl Iterator<Item = (TaskId, SuspendedTask)> {
-        self.handle().suspend_tasks(tasks)
+    fn suspend_threads(
+        &mut self,
+        threads: &[TaskId],
+    ) -> impl Iterator<Item = (TaskId, SuspendedTask)> {
+        self.handle().suspend_tasks(threads)
     }
 
     fn suspend_process(
@@ -334,12 +410,16 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::Process
     }
 
     fn copy_process_context(&self) -> ProcessContext {
-        self.kernel.kernel.context_copy(self.pid)
+        self.kernel().context_copy(self.pid)
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessOf<State, C>
-    for KernelProcess<'_, C, State>
+impl<C, State, S> interface::ProcessOf<State, KernelWithExecutor<C, State, S>>
+    for KernelProcess<'_, C, State, S>
+where
+    C: Cpu + Executor + 'static,
+    State: Clone + Send + 'static,
+    S: crate::System + Send,
 {
 }
 

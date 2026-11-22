@@ -256,9 +256,19 @@ impl<H: StreamTransport<Endpoint = u32>> Readiness<u32> for TestPolicy<H> {
 /// The file backend is refused, as every other request to the outside.
 impl<H: Host> wcontainers_system::FuseServer for TestPolicy<H> {
     type Reply = Vec<u8>;
+    type Notice = Vec<u8>;
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
         self.refuse(request.len() as u64).map(|()| Vec::new())
+    }
+
+    /// Refused, as every other request to the outside.
+    async fn receive_notice(
+        &self,
+        applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
+    ) -> Result<Vec<u8>, HostError> {
+        let _ = applied;
+        self.refuse(0).map(|()| Vec::new())
     }
 }
 
