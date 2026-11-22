@@ -4,10 +4,14 @@
 
 extern crate alloc;
 
-use core::convert::Infallible;
 use core::ops::Range;
 
-use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::ProcessorArchitecture;
+
+pub mod encoding;
+mod simulation;
+#[cfg(test)]
+mod tests;
 
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
 pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
@@ -140,6 +144,23 @@ pub enum PreciseInstruction {
     MrsCtrEl0 { cache_type: u64 },
 }
 
+impl PreciseInstruction {
+    pub const fn to_instruction(self) -> Instruction {
+        match self {
+            Self::AddShiftedRegister64 => Instruction::AddShiftedRegister64,
+            Self::AddsShiftedRegister64 => Instruction::AddsShiftedRegister64,
+            Self::Csel64 => Instruction::Csel64,
+            Self::LdrImmediateUnsignedOffset64 => Instruction::LdrImmediateUnsignedOffset64,
+            Self::StrImmediateUnsignedOffset64 => Instruction::StrImmediateUnsignedOffset64,
+            Self::StpSignedOffset64(_) => Instruction::StpSignedOffset64,
+            Self::LdrImmediatePostIndex64(_) => Instruction::LdrImmediatePostIndex64,
+            Self::Brk => Instruction::Brk,
+            Self::Rdvl(_) => Instruction::Rdvl,
+            Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
+        }
+    }
+}
+
 /// What a store pair writes when part of it faults.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StorePairAcrossFault {
@@ -170,17 +191,4 @@ pub enum VectorLength {
     Bits512,
     Bits1024,
     Bits2048,
-}
-
-impl Simulator<Arm64> for PreciseInstruction {
-    type Error = Infallible;
-
-    fn simulate_in_place(
-        &self,
-        _processor: &mut Processor,
-        _memory: &[MemoryDelta<'_, Arm64>],
-        _on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    ) -> Result<(), Infallible> {
-        todo!("the ARM64 formulas are not built yet")
-    }
 }
