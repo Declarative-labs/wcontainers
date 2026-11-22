@@ -11,7 +11,7 @@ mod nonfinite;
 mod one_d;
 mod registers;
 mod selected;
-mod staged;
+pub(crate) mod staged;
 mod tessellation;
 mod widths;
 

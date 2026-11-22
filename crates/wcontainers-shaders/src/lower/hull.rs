@@ -75,6 +75,7 @@ const OUTSIDE_TESSELLATION: &str = "a tessellation declaration outside hull and 
 const NO_PATCH_CONSTANTS: &str = "a hull shader without its patch constant function";
 const POINT_COUNTS: &str = "a hull shader's control point counts";
 const OUTPUT_WITHOUT_TYPE: &str = "an output without a type";
+const NO_DOMAIN_ENTRY: &str = "a domain program without its entry point";
 
 /// One stage value of a hull or domain shader: the private variable the program reads or writes, and
 /// where Direct3D places it (a register and component, or a built-in of `ir::builtin`).
@@ -247,14 +248,18 @@ impl Lowering<'_> {
         let (values, ids) = self.tessellation_values()?;
         let tessellation = *self.tessellation.as_ref().unwrap();
         let main = self.functions[&self.main];
-        let constants = self.functions.get(&tessellation.constants).copied();
+        let constants = self
+            .functions
+            .get(&tessellation.constants)
+            .copied()
+            .ok_or_else(|| malformed(NO_PATCH_CONSTANTS.into()))?;
         let mut pass = HullPass {
             module: &mut self.module,
             tessellation,
             values: &values,
             reflected: Vec::new(),
         };
-        let done = pass.entry_point(main, constants);
+        let done = pass.entry_point(main, Some(constants));
         let reflected = core::mem::take(&mut pass.reflected);
         let extras = done?;
         for r in reflected {
@@ -359,7 +364,8 @@ impl HullPass<'_> {
     }
 
     /// The compute entry point: one invocation per patch (x) and API instance (y). `main` is the control
-    /// point function, `constants` the patch constant function.
+    /// point function, run once per output control point in order, then `constants`, the patch constant
+    /// function, where the program has one of its own.
     pub(crate) fn entry_point(
         &mut self,
         main: Handle<naga::Function>,
@@ -551,7 +557,6 @@ impl HullPass<'_> {
         }
 
         // The control point function per output control point, then the patch constant function.
-        let constants = constants.ok_or_else(|| malformed(NO_PATCH_CONSTANTS.into()))?;
         let zero = b.u32(0);
         let end = b.u32(points_out);
         b.each(self.module, zero, end, |b, k| {
@@ -562,7 +567,9 @@ impl HullPass<'_> {
             }
             b.call(main, Vec::new(), false);
         });
-        b.call(constants, Vec::new(), false);
+        if let Some(constants) = constants {
+            b.call(constants, Vec::new(), false);
+        }
 
         // The record.
         let header = b.u32(tess::HEADER_WORDS);
@@ -685,6 +692,36 @@ impl HullPass<'_> {
             constant_locations: constant_outputs.len() as u8,
         })
     }
+}
+
+/// Makes a domain program's one entry point take its vertex number and call `inputs`, the function
+/// [`DomainPass::inputs`] made, with it before anything else.
+pub(crate) fn call_domain_inputs(
+    module: &mut Module,
+    inputs: Handle<naga::Function>,
+) -> Result<()> {
+    let u32_ty = build::scalar(module, Scalar::U32);
+    let ep = module
+        .entry_points
+        .first_mut()
+        .ok_or_else(|| malformed(NO_DOMAIN_ENTRY.into()))?;
+    let f = &mut ep.function;
+    f.arguments.push(FunctionArgument {
+        name: Some(DOMAIN_VERTEX_ARGUMENT.into()),
+        ty: u32_ty,
+        binding: Some(Binding::BuiltIn(BuiltIn::VertexIndex)),
+    });
+    let vertex = f.expressions.append(
+        naga::Expression::FunctionArgument(f.arguments.len() as u32 - 1),
+        Span::UNDEFINED,
+    );
+    let call = naga::Statement::Call {
+        function: inputs,
+        arguments: alloc::vec![vertex],
+        result: None,
+    };
+    f.body.splice(..0, naga::Block::from_vec(alloc::vec![call]));
+    Ok(())
 }
 
 impl DomainPass<'_> {

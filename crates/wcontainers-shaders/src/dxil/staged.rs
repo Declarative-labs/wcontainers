@@ -397,7 +397,7 @@ pub(super) fn value_variable(
 }
 
 /// The IR type of a stage variable's naga type: arrays of a scalar or vector, else refused as `shape`.
-pub(super) fn ir_ty(
+pub(crate) fn ir_ty(
     module: &Module,
     mut ty: Handle<naga::Type>,
     shape: &'static str,
@@ -445,7 +445,7 @@ pub(super) fn element_at(
 
 /// The reflection of the values a pass reflected, placed by the container's input and output
 /// signatures; `stream` gives a value's stream by its index.
-pub(super) fn place(
+pub(crate) fn place(
     reflected: Vec<Reflected>,
     stream: impl Fn(usize) -> u32,
     signatures: [&[Element]; 2],

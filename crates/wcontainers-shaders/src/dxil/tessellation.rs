@@ -16,7 +16,7 @@ use crate::lower::hull::{
 };
 use crate::stage::tess;
 use alloc::vec::Vec;
-use naga::{Expression, FunctionArgument, Module, Statement};
+use naga::Module;
 use spirv::{BuiltIn, ExecutionMode, ExecutionModel, StorageClass};
 use wcontainers_gpu::{SourceStage, StageExtras, StageValue};
 
@@ -229,26 +229,6 @@ pub(crate) fn finish(
         values: &values,
     }
     .inputs()?;
-    let u32_ty = crate::build::scalar(module, naga::Scalar::U32);
-    let ep = module
-        .entry_points
-        .first_mut()
-        .ok_or(ConvertError::Malformed(staged::NO_MAIN.into()))?;
-    let f = &mut ep.function;
-    f.arguments.push(FunctionArgument {
-        name: Some(hull::DOMAIN_VERTEX_ARGUMENT.into()),
-        ty: u32_ty,
-        binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::VertexIndex)),
-    });
-    let vertex = f.expressions.append(
-        Expression::FunctionArgument(f.arguments.len() as u32 - 1),
-        naga::Span::UNDEFINED,
-    );
-    let call = Statement::Call {
-        function,
-        arguments: alloc::vec![vertex],
-        result: None,
-    };
-    f.body.splice(..0, naga::Block::from_vec(alloc::vec![call]));
+    hull::call_domain_inputs(module, function)?;
     Ok((SourceStage::Domain, extras, Vec::new()))
 }

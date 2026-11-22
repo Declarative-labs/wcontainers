@@ -14,6 +14,7 @@ mod ir;
 mod lower;
 pub mod refusal;
 pub mod stage;
+pub mod staged;
 mod variant;
 
 use alloc::format;
@@ -126,23 +127,52 @@ pub fn convert(
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported(crate::refusal::SPIR_V)),
         };
-        stage::clip_unpositioned(&mut module)?;
-        // A geometry shader's forms take no rewrite of the last vertex stage: its pass-through does.
-        let geometry = matches!(reflection.extras, StageExtras::Geometry { .. });
-        if variant.flags.contains(VariantFlags::GEOMETRY_REPLAY) && !geometry {
-            return Err(ConvertError::Malformed(REPLAY_OUTSIDE_GEOMETRY.into()));
-        }
-        let rewritten = if geometry {
-            ShaderStage::Compute
-        } else {
-            stage
-        };
-        variant::apply(&mut module, rewritten, variant, &mut reflection)?;
-        variant::offset::strides(&module, &mut reflection);
+        varied(&mut module, &mut reflection, stage, variant)?;
         Ok((module, reflection, stage))
     })?;
+    finished(
+        module,
+        reflection,
+        stage,
+        variant,
+        cache::shader_key(source, variant),
+    )
+}
+
+/// The rewrites a variant asks of a program in the common form, its stage's form already made: a
+/// vertex program without a position given one outside every clip volume, then the rewrites of 6.4.
+fn varied(
+    module: &mut naga::Module,
+    reflection: &mut Reflection,
+    stage: ShaderStage,
+    variant: &VariantKey,
+) -> Result<(), ConvertError> {
+    stage::clip_unpositioned(module)?;
+    // A geometry shader's forms take no rewrite of the last vertex stage: its pass-through does.
+    let geometry = matches!(reflection.extras, StageExtras::Geometry { .. });
+    if variant.flags.contains(VariantFlags::GEOMETRY_REPLAY) && !geometry {
+        return Err(ConvertError::Malformed(REPLAY_OUTSIDE_GEOMETRY.into()));
+    }
+    let rewritten = if geometry {
+        ShaderStage::Compute
+    } else {
+        stage
+    };
+    variant::apply(module, rewritten, variant, reflection)?;
+    variant::offset::strides(module, reflection);
+    Ok(())
+}
+
+/// The converted shader of a program in the common form, rewritten as `variant` asks: the module
+/// validated, under `key`, and for a geometry shader the vertex program drawing its output.
+fn finished(
+    module: naga::Module,
+    reflection: Reflection,
+    stage: ShaderStage,
+    variant: &VariantKey,
+    key: [u8; cache::KEY_BYTES],
+) -> Result<Converted, ConvertError> {
     let info = validate(&module)?;
-    let key = cache::shader_key(source, variant);
     let mut modules = vec![ShaderModule {
         module,
         info,
@@ -210,29 +240,36 @@ pub fn rewrite(
             },
             _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
         };
-        if common::split_arrays(&mut module)? {
-            reflection.sampled_pairs = common::sampled_pairs(&module)?;
-            // An element picked at run time is sampled inside a switch on the index, which may
-            // differ between a quad's lanes.
-            lower::derivatives_anywhere(&mut module);
-        }
-        common::gather_offsets(&mut module)?;
-        common::storage_textures(&mut module, variant, stage, &mut reflection)?;
-        variant::apply(&mut module, stage, variant, &mut reflection)?;
-        variant::offset::strides(&module, &mut reflection);
+        route_rewrites(&mut module, &mut reflection, stage, variant)?;
+        varied(&mut module, &mut reflection, stage, variant)?;
         Ok((module, reflection, stage))
     })?;
-    let info = validate(&module)?;
-    Ok(Converted {
-        modules: vec![ShaderModule {
-            module,
-            info,
-            entry_point: ENTRY_POINT.into(),
-            stage,
-            key: cache::rewritten_key(route_key, variant),
-        }],
+    finished(
+        module,
         reflection,
-    })
+        stage,
+        variant,
+        cache::rewritten_key(route_key, variant),
+    )
+}
+
+/// The rewrites of 15.4 that [`rewrite`] makes, before the variant's: arrays of textures, storage
+/// textures and samplers split (the sampled pairs taken again from the module), gathers at run-time
+/// offsets moved, storage textures given the key's format.
+fn route_rewrites(
+    module: &mut naga::Module,
+    reflection: &mut Reflection,
+    stage: ShaderStage,
+    variant: &VariantKey,
+) -> Result<(), ConvertError> {
+    if common::split_arrays(module)? {
+        // An element picked at run time is sampled inside a switch on the index, which may differ
+        // between a quad's lanes.
+        lower::derivatives_anywhere(module);
+    }
+    reflection.sampled_pairs = common::sampled_pairs(module)?;
+    common::gather_offsets(module)?;
+    common::storage_textures(module, variant, stage, reflection)
 }
 
 /// Whether `module` writes storage buffers or textures, which a vertex program does only where the
