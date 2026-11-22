@@ -5,7 +5,7 @@
 # Run from the checkout on a Linux machine with sudo: crates/tcp-sockets/implementation/host/mutants.sh
 set -uo pipefail
 checkout=$(cd "$(dirname "$0")/../../../.." && pwd)
-implementation=crates/tcp-sockets/implementation/host/implementation.rs
+implementation=crates/tcp-sockets/implementation/host/linux.rs
 icmp_error=crates/internet-protocol/implementation/linux-socket-options/icmp_error.rs
 readiness=crates/internet-protocol/implementation/linux-socket-options/readiness.rs
 shared_linux=crates/internet-protocol/implementation/linux-socket-options/linux.rs

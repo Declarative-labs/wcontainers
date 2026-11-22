@@ -11,7 +11,6 @@
 //! mark), `net.ipv6.conf.lo.forwarding` at 1 (loopback may then join any anycast address, not only those its
 //! prefixes hold), the `dctcp` congestion control available and a local route for 127.0.0.7 with the `tcp_usec_ts`
 //! feature (TCP timestamps in microseconds).
-#![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU32;
@@ -32,6 +31,7 @@ use etherparse::{
     Ipv6RawExtHeader, Ipv6RawExtHeaderSlice, TcpHeaderSlice, TcpOptionElement, TcpOptionReadError,
     icmpv4, icmpv6, tcp_option,
 };
+use linux_raw_sys::if_tun;
 use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
@@ -74,7 +74,9 @@ use wcontainers_tcp_sockets::{
     TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
 
-pub use wcontainers_readiness_conformance as readiness_conformance;
+pub use wcontainers_configurable_conformance;
+pub use wcontainers_negative_route_advice_conformance;
+pub use wcontainers_readiness_conformance;
 
 /// The byte the third fast open key is made of, unlike the two before it.
 const THIRD_KEY: u8 = 3;
@@ -90,7 +92,7 @@ const PROBE: &str = "the probe";
 const RESET: &str = "the reset";
 
 /// How long a check waits for something the network does.
-pub const DEADLINE: Duration = Duration::from_secs(10);
+const DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long data held back must stay unseen by the peer, well inside the 200 ms ceiling of a cork.
 const HELD_FOR: Duration = Duration::from_millis(30);
@@ -168,7 +170,7 @@ const SETTING_BYTES: usize = 1 << 16;
 const CONGESTION_CONTROL: &str = "reno";
 
 /// Classic BPF's return of its operand, which ends a filter.
-const RETURN_OPERAND: FilterOperation = FilterOperation((libc::BPF_RET | libc::BPF_K) as u16);
+const RETURN_OPERAND: FilterOperation = FilterOperation((if_tun::BPF_RET | if_tun::BPF_K) as u16);
 
 /// A filter that keeps every packet whole.
 static ACCEPT_ALL: [FilterInstruction; 1] = [FilterInstruction {
@@ -697,6 +699,25 @@ struct Capture {
     thread: Option<JoinHandle<()>>,
 }
 
+/// Opens the host's packet socket for every protocol, with a buffer of [`CAPTURE_BUFFER`].
+#[cfg(target_os = "linux")]
+fn packet_socket() -> OwnedFd {
+    let socket = rustix::net::socket(
+        AddressFamily::PACKET,
+        SocketType::DGRAM,
+        Some(rustix::net::eth::ALL),
+    )
+    .expect("a packet socket (the checks that watch the wire need root)");
+    sockopt::set_socket_recv_buffer_size_force(&socket, CAPTURE_BUFFER).expect("a capture buffer");
+    socket
+}
+
+/// Fails the check: only Linux has the packet socket the checks that watch the wire read.
+#[cfg(not(target_os = "linux"))]
+fn packet_socket() -> OwnedFd {
+    panic!("the checks that watch the wire need the packet socket of a Linux host");
+}
+
 /// How long apart the two copies of one loopback packet may arrive at the packet socket.
 const COPY_GAP: Duration = Duration::from_millis(5);
 
@@ -705,14 +726,7 @@ const CAPTURE_BUFFER: usize = 1 << 24;
 
 impl Capture {
     fn start(listener: SocketAddr) -> Self {
-        let socket = rustix::net::socket(
-            AddressFamily::PACKET,
-            SocketType::DGRAM,
-            Some(rustix::net::eth::ALL),
-        )
-        .expect("a packet socket (the checks that watch the wire need root)");
-        sockopt::set_socket_recv_buffer_size_force(&socket, CAPTURE_BUFFER)
-            .expect("a capture buffer");
+        let socket = packet_socket();
         sockopt::set_socket_timeout(&socket, sockopt::Timeout::Recv, Some(COPY_GAP))
             .expect("a receive timeout");
         let segments = Arc::new(Mutex::new(Vec::new()));
@@ -4555,7 +4569,8 @@ pub fn header_options_go_out_in_the_synchronize<S: TcpSockets>(sockets: S) {
 }
 
 /// A header word of IPv4 options that do nothing.
-const IPV4_OPTIONS: [u8; size_of::<u32>()] = [libc::IPOPT_NOP; size_of::<u32>()];
+const IPV4_OPTIONS: [u8; size_of::<u32>()] =
+    [linux_raw_sys::net::IPOPT_NOP as u8; size_of::<u32>()];
 
 /// The smallest IPv6 extension header, its options all one-byte padding (Pad1 is option type 0).
 const PADDING_HEADER: [u8; Ipv6RawExtHeader::MIN_LEN] = [0; Ipv6RawExtHeader::MIN_LEN];
@@ -5036,30 +5051,24 @@ pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(soc
     }
 }
 
-/// The contract of `Configurable` on a connection, by its own suite.
-pub fn connection_configurable_contract_holds<S: TcpSockets>(sockets: S) {
+/// Makes a connection and a setting it takes, for the suite of `Configurable`.
+pub fn configured_connection<S: TcpSockets>(sockets: S) -> (S, S::Connection, TcpSetting<'static>) {
     let pair = pair(&sockets);
-    wcontainers_configurable_conformance::setting_twice_equals_setting_once((
-        sockets,
-        pair.client,
-        TcpSetting::NoDelay(true),
-    ));
+    (sockets, pair.client, TcpSetting::NoDelay(true))
 }
 
-/// The contract of `Configurable` on a listener, by its own suite.
-pub fn listener_configurable_contract_holds<S: TcpSockets>(sockets: S) {
+/// Makes a listener and a setting it takes, for the suite of `Configurable`.
+pub fn configured_listener<S: TcpSockets>(
+    sockets: S,
+) -> (S, S::Listener, TcpListenerSetting<'static>) {
     let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
-    wcontainers_configurable_conformance::setting_twice_equals_setting_once((
-        sockets,
-        listener,
-        TcpListenerSetting::Backlog(BACKLOG),
-    ));
+    (sockets, listener, TcpListenerSetting::Backlog(BACKLOG))
 }
 
-/// The contract of `NegativeRouteAdvice` on a connection, by its own suite.
-pub fn negative_route_advice_contract_holds<S: TcpSockets>(sockets: S) {
+/// Makes a connection to advise, for the suite of `NegativeRouteAdvice`.
+pub fn advised_connection<S: TcpSockets>(sockets: S) -> (S, S::Connection) {
     let pair = pair(&sockets);
-    wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, pair.client));
+    (sockets, pair.client)
 }
 
 /// A waker that counts its wakes and unparks the thread that made it.
@@ -5512,150 +5521,545 @@ pub fn wait_for_an_error_finishes_when_the_peer_resets<S: TcpSockets>(sockets: S
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
-        $crate::readiness_conformance::tests!(
-            connection_readiness_contract,
+        #[test]
+        fn connect_and_accept_name_both_ends() {
+            $crate::connect_and_accept_name_both_ends($value);
+        }
+
+        #[test]
+        fn accept_cuts_the_synchronize_header_to_the_buffer() {
+            $crate::accept_cuts_the_synchronize_header_to_the_buffer($value);
+        }
+
+        #[test]
+        fn connect_settings_apply_to_the_synchronize() {
+            $crate::connect_settings_apply_to_the_synchronize($value);
+        }
+
+        #[test]
+        fn bytes_arrive_in_order_both_ways() {
+            $crate::bytes_arrive_in_order_both_ways($value);
+        }
+
+        #[test]
+        fn connects_over_ipv6() {
+            $crate::connects_over_ipv6($value);
+        }
+
+        #[test]
+        fn dual_stack_listener_accepts_ipv4() {
+            $crate::dual_stack_listener_accepts_ipv4($value);
+        }
+
+        #[test]
+        fn multipath_is_negotiated_when_both_ends_ask() {
+            $crate::multipath_is_negotiated_when_both_ends_ask($value);
+        }
+
+        #[test]
+        fn requested_port_is_bound() {
+            $crate::requested_port_is_bound($value);
+        }
+
+        #[test]
+        fn exit_node_chooses_a_port_outside_the_reserved() {
+            $crate::exit_node_chooses_a_port_outside_the_reserved($value);
+        }
+
+        #[test]
+        fn stopped_listener_refuses_connections() {
+            $crate::stopped_listener_refuses_connections($value);
+        }
+
+        #[test]
+        fn accept_without_a_connection_would_block() {
+            $crate::accept_without_a_connection_would_block($value);
+        }
+
+        #[test]
+        fn write_shutdown_ends_the_peers_stream() {
+            $crate::write_shutdown_ends_the_peers_stream($value);
+        }
+
+        #[test]
+        fn read_shutdown_ends_the_own_stream() {
+            $crate::read_shutdown_ends_the_own_stream($value);
+        }
+
+        #[test]
+        fn shutdown_of_both_directions_ends_both() {
+            $crate::shutdown_of_both_directions_ends_both($value);
+        }
+
+        #[test]
+        fn orderly_close_ends_the_peers_stream() {
+            $crate::orderly_close_ends_the_peers_stream($value);
+        }
+
+        #[test]
+        fn abort_resets_the_peer() {
+            $crate::abort_resets_the_peer($value);
+        }
+
+        #[test]
+        fn peek_leaves_the_bytes() {
+            $crate::peek_leaves_the_bytes($value);
+        }
+
+        #[test]
+        fn peek_at_an_offset_skips_bytes() {
+            $crate::peek_at_an_offset_skips_bytes($value);
+        }
+
+        #[test]
+        fn urgent_byte_is_read_apart() {
+            $crate::urgent_byte_is_read_apart($value);
+        }
+
+        #[test]
+        fn urgent_inline_keeps_the_byte_in_the_stream() {
+            $crate::urgent_inline_keeps_the_byte_in_the_stream($value);
+        }
+
+        #[test]
+        fn cork_holds_data_until_uncorked() {
+            $crate::cork_holds_data_until_uncorked($value);
+        }
+
+        #[test]
+        fn more_to_come_holds_data_until_pushed() {
+            $crate::more_to_come_holds_data_until_pushed($value);
+        }
+
+        #[test]
+        fn push_ignoring_neither_keeps_the_cork() {
+            $crate::push_ignoring_neither_keeps_the_cork($value);
+        }
+
+        #[test]
+        fn push_ignoring_neither_sends_data_held_for_more() {
+            $crate::push_ignoring_neither_sends_data_held_for_more($value);
+        }
+
+        #[test]
+        fn record_end_starts_a_new_segment() {
+            $crate::record_end_starts_a_new_segment($value);
+        }
+
+        #[test]
+        fn unread_byte_reports_count_what_is_left() {
+            $crate::unread_byte_reports_count_what_is_left($value);
+        }
+
+        #[test]
+        fn listener_unread_byte_reports_reach_the_connections_it_accepts() {
+            $crate::listener_unread_byte_reports_reach_the_connections_it_accepts($value);
+        }
+
+        #[test]
+        fn receive_software_timestamps_when_asked() {
+            $crate::receive_software_timestamps_when_asked($value);
+        }
+
+        #[test]
+        fn software_transmit_report_names_the_send() {
+            $crate::software_transmit_report_names_the_send($value);
+        }
+
+        #[test]
+        fn reports_name_their_sends_among_plain_ones() {
+            $crate::reports_name_their_sends_among_plain_ones($value);
+        }
+
+        #[test]
+        fn acknowledgement_report_follows_the_peers_acknowledgement() {
+            $crate::acknowledgement_report_follows_the_peers_acknowledgement($value);
+        }
+
+        #[test]
+        fn discarding_empties_the_error_queue() {
+            $crate::discarding_empties_the_error_queue($value);
+        }
+
+        #[test]
+        fn empty_error_queue_would_block() {
+            $crate::empty_error_queue_would_block($value);
+        }
+
+        #[test]
+        fn icmp_error_reaches_a_synchronizing_connection_over_ipv4() {
+            $crate::icmp_error_reaches_a_synchronizing_connection_over_ipv4($value);
+        }
+
+        #[test]
+        fn icmp_error_reaches_a_synchronizing_connection_over_ipv6() {
+            $crate::icmp_error_reaches_a_synchronizing_connection_over_ipv6($value);
+        }
+
+        #[test]
+        fn transmit_report_carries_the_packet_when_asked() {
+            $crate::transmit_report_carries_the_packet_when_asked($value);
+        }
+
+        #[test]
+        fn transmit_statistics_come_with_the_report_when_asked() {
+            $crate::transmit_statistics_come_with_the_report_when_asked($value);
+        }
+
+        #[test]
+        fn wireless_status_request_still_sends() {
+            $crate::wireless_status_request_still_sends($value);
+        }
+
+        #[test]
+        fn fast_open_with_data_puts_it_in_the_synchronize() {
+            $crate::fast_open_with_data_puts_it_in_the_synchronize($value);
+        }
+
+        #[test]
+        fn fast_open_until_first_send_defers_the_synchronize() {
+            $crate::fast_open_until_first_send_defers_the_synchronize($value);
+        }
+
+        #[test]
+        fn fast_open_without_cookie_needs_no_first_connect() {
+            $crate::fast_open_without_cookie_needs_no_first_connect($value);
+        }
+
+        #[test]
+        fn fast_open_keys_and_queue_decide_what_the_listener_takes() {
+            $crate::fast_open_keys_and_queue_decide_what_the_listener_takes($value);
+        }
+
+        #[test]
+        fn keep_alive_probes_end_an_unanswered_connection() {
+            $crate::keep_alive_probes_end_an_unanswered_connection($value);
+        }
+
+        #[test]
+        fn rearming_the_keep_alive_timer_sends_a_due_probe() {
+            $crate::rearming_the_keep_alive_timer_sends_a_due_probe($value);
+        }
+
+        #[test]
+        fn no_delay_sends_small_segments_while_others_are_unacknowledged() {
+            $crate::no_delay_sends_small_segments_while_others_are_unacknowledged($value);
+        }
+
+        #[test]
+        fn quick_acknowledgement_settings_time_the_acknowledgement() {
+            $crate::quick_acknowledgement_settings_time_the_acknowledgement($value);
+        }
+
+        #[test]
+        fn delayed_acknowledgement_is_sent_on_demand() {
+            $crate::delayed_acknowledgement_is_sent_on_demand($value);
+        }
+
+        #[test]
+        fn send_settings_bound_what_a_connection_takes() {
+            $crate::send_settings_bound_what_a_connection_takes($value);
+        }
+
+        #[test]
+        fn receive_settings_bound_what_the_peer_sends() {
+            $crate::receive_settings_bound_what_the_peer_sends($value);
+        }
+
+        #[test]
+        fn window_clamp_bounds_the_synchronize_window() {
+            $crate::window_clamp_bounds_the_synchronize_window($value);
+        }
+
+        #[test]
+        fn retransmission_settings_time_the_retransmissions() {
+            $crate::retransmission_settings_time_the_retransmissions($value);
+        }
+
+        #[test]
+        fn user_timeout_ends_an_unacknowledged_connection() {
+            $crate::user_timeout_ends_an_unacknowledged_connection($value);
+        }
+
+        #[test]
+        fn synchronize_retries_end_an_unanswered_connect() {
+            $crate::synchronize_retries_end_an_unanswered_connect($value);
+        }
+
+        #[test]
+        fn defer_accept_holds_a_connection_until_data() {
+            $crate::defer_accept_holds_a_connection_until_data($value);
+        }
+
+        #[test]
+        fn fin_wait_2_settings_decide_how_a_closed_connection_ends() {
+            $crate::fin_wait_2_settings_decide_how_a_closed_connection_ends($value);
+        }
+
+        #[test]
+        fn arrival_settings_drop_what_they_refuse() {
+            $crate::arrival_settings_drop_what_they_refuse($value);
+        }
+
+        #[test]
+        fn header_settings_mark_each_segment() {
+            $crate::header_settings_mark_each_segment($value);
+        }
+
+        #[test]
+        fn fixed_flow_label_marks_every_segment() {
+            $crate::fixed_flow_label_marks_every_segment($value);
+        }
+
+        #[test]
+        fn anycast_addresses_are_joined_and_left() {
+            $crate::anycast_addresses_are_joined_and_left($value);
+        }
+
+        #[test]
+        fn multicast_groups_are_joined_and_left() {
+            $crate::multicast_groups_are_joined_and_left($value);
+        }
+
+        #[test]
+        fn md5_keys_admit_only_connections_signed_with_them() {
+            $crate::md5_keys_admit_only_connections_signed_with_them($value);
+        }
+
+        #[test]
+        fn authentication_keys_admit_only_connections_signed_with_them() {
+            $crate::authentication_keys_admit_only_connections_signed_with_them($value);
+        }
+
+        #[test]
+        fn authentication_options_choose_the_keys_in_use() {
+            $crate::authentication_options_choose_the_keys_in_use($value);
+        }
+
+        #[test]
+        fn congestion_control_is_the_one_named() {
+            $crate::congestion_control_is_the_one_named($value);
+        }
+
+        #[test]
+        fn pacing_rate_spreads_what_is_sent() {
+            $crate::pacing_rate_spreads_what_is_sent($value);
+        }
+
+        #[test]
+        fn transmit_delay_holds_each_segment() {
+            $crate::transmit_delay_holds_each_segment($value);
+        }
+
+        #[test]
+        fn address_sharing_lets_connections_leave_from_one_port() {
+            $crate::address_sharing_lets_connections_leave_from_one_port($value);
+        }
+
+        #[test]
+        fn port_sharing_lets_listeners_share_a_port() {
+            $crate::port_sharing_lets_listeners_share_a_port($value);
+        }
+
+        #[test]
+        fn nonlocal_addresses_are_bound_only_when_bindable() {
+            $crate::nonlocal_addresses_are_bound_only_when_bindable($value);
+        }
+
+        #[test]
+        fn listener_backlog_bounds_the_accept_queue() {
+            $crate::listener_backlog_bounds_the_accept_queue($value);
+        }
+
+        #[test]
+        fn negative_route_advice_picks_a_new_flow() {
+            $crate::negative_route_advice_picks_a_new_flow($value);
+        }
+
+        #[test]
+        fn flow_label_reflection_answers_with_the_peers_label() {
+            $crate::flow_label_reflection_answers_with_the_peers_label($value);
+        }
+
+        #[test]
+        fn window_probe_is_answered_and_changes_no_setting() {
+            $crate::window_probe_is_answered_and_changes_no_setting($value);
+        }
+
+        #[test]
+        fn timestamp_clock_set_in_repair_mode_stamps_segments() {
+            $crate::timestamp_clock_set_in_repair_mode_stamps_segments($value);
+        }
+
+        #[test]
+        fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused() {
+            $crate::timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused($value);
+        }
+
+        #[test]
+        fn transmit_statistics_describe_the_connection() {
+            $crate::transmit_statistics_describe_the_connection($value);
+        }
+
+        #[test]
+        fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled() {
+            $crate::delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled($value);
+        }
+
+        #[test]
+        fn accept_names_where_the_synchronize_arrived() {
+            $crate::accept_names_where_the_synchronize_arrived($value);
+        }
+
+        #[test]
+        fn connect_and_listen_make_sockets_of_their_owner() {
+            $crate::connect_and_listen_make_sockets_of_their_owner($value);
+        }
+
+        #[test]
+        fn connect_in_repair_mode_is_established_at_once() {
+            $crate::connect_in_repair_mode_is_established_at_once($value);
+        }
+
+        #[test]
+        fn listener_timestamping_reaches_the_connections_it_accepts() {
+            $crate::listener_timestamping_reaches_the_connections_it_accepts($value);
+        }
+
+        #[test]
+        fn saved_synchronize_is_taken_once() {
+            $crate::saved_synchronize_is_taken_once($value);
+        }
+
+        #[test]
+        fn authentication_counters_are_set_only_where_authentication_is() {
+            $crate::authentication_counters_are_set_only_where_authentication_is($value);
+        }
+
+        #[test]
+        fn listener_state_reads_a_listener() {
+            $crate::listener_state_reads_a_listener($value);
+        }
+
+        #[test]
+        fn header_options_go_out_in_the_synchronize() {
+            $crate::header_options_go_out_in_the_synchronize($value);
+        }
+
+        #[test]
+        fn connection_settings_set_twice_equal_set_once() {
+            $crate::connection_settings_set_twice_equal_set_once($value);
+        }
+
+        #[test]
+        fn ipv6_connection_settings_set_twice_equal_set_once() {
+            $crate::ipv6_connection_settings_set_twice_equal_set_once($value);
+        }
+
+        #[test]
+        fn listener_settings_set_twice_equal_set_once() {
+            $crate::listener_settings_set_twice_equal_set_once($value);
+        }
+
+        #[test]
+        fn refusable_connection_settings_set_twice_equal_set_once() {
+            $crate::refusable_connection_settings_set_twice_equal_set_once($value);
+        }
+
+        #[test]
+        fn waits_on_many_connections_each_wake_once() {
+            $crate::waits_on_many_connections_each_wake_once($value);
+        }
+
+        #[test]
+        fn wait_for_room_finishes_when_the_peer_reads() {
+            $crate::wait_for_room_finishes_when_the_peer_reads($value);
+        }
+
+        #[test]
+        fn wait_for_urgent_data_finishes_when_it_arrives() {
+            $crate::wait_for_urgent_data_finishes_when_it_arrives($value);
+        }
+
+        #[test]
+        fn wait_for_the_peers_shutdown_finishes_when_it_comes() {
+            $crate::wait_for_the_peers_shutdown_finishes_when_it_comes($value);
+        }
+
+        #[test]
+        fn wait_for_a_hang_up_finishes_when_both_ways_are_shut() {
+            $crate::wait_for_a_hang_up_finishes_when_both_ways_are_shut($value);
+        }
+
+        #[test]
+        fn a_wait_gives_the_facts_the_connection_has_and_no_others() {
+            $crate::a_wait_gives_the_facts_the_connection_has_and_no_others($value);
+        }
+
+        #[test]
+        fn a_wait_gives_the_facts_the_listener_has_and_no_others() {
+            $crate::a_wait_gives_the_facts_the_listener_has_and_no_others($value);
+        }
+
+        #[test]
+        fn wait_for_an_error_finishes_when_the_peer_resets() {
+            $crate::wait_for_an_error_finishes_when_the_peer_resets($value);
+        }
+
+        mod configurable_tcp_connections {
+            $crate::wcontainers_configurable_conformance::tests!($crate::configured_connection($value));
+        }
+
+        mod configurable_tcp_listeners {
+            $crate::wcontainers_configurable_conformance::tests!($crate::configured_listener($value));
+        }
+
+        mod negative_route_advice {
+            $crate::wcontainers_negative_route_advice_conformance::tests!($crate::advised_connection($value));
+        }
+
+        $crate::wcontainers_readiness_conformance::tests!(
+            readiness_tcp_connections,
             ready: $crate::waiting_for_data($value),
             failing: $crate::waiting_for_urgent_data_until_a_report($value)
         );
+
         // The failure above is an error alone; this one is a hang-up alone, so each ends a wait by itself.
-        mod connection_hang_up_readiness_contract {
-            #[allow(unused_imports)]
-            use super::*;
-
-            $crate::tests!(@readiness $crate::waiting_for_urgent_data_until_both_ways_are_shut($value);
-                a_failure_ends_a_wait_that_did_not_ask_for_it,
-            );
+        mod readiness_tcp_connections_hanging_up {
+            #[test]
+            fn a_failure_ends_a_wait_that_did_not_ask_for_it() {
+                $crate::wcontainers_readiness_conformance::a_failure_ends_a_wait_that_did_not_ask_for_it(
+                    $crate::waiting_for_urgent_data_until_both_ways_are_shut($value),
+                );
+            }
         }
+
         // No call of the traits makes a listener fail, so its readiness runs every check of the suite but the failure's.
-        mod listener_readiness_contract {
-            #[allow(unused_imports)]
-            use super::*;
+        mod readiness_tcp_listeners {
+            #[test]
+            fn a_wait_does_not_finish_before_the_handle_is_ready() {
+                $crate::wcontainers_readiness_conformance::a_wait_does_not_finish_before_the_handle_is_ready($crate::waiting_for_a_connection($value));
+            }
 
-            $crate::tests!(@readiness $crate::waiting_for_a_connection($value);
-                a_wait_does_not_finish_before_the_handle_is_ready,
-                a_wait_finishes_when_the_handle_becomes_ready,
-                a_wait_made_when_ready_finishes_at_once,
-                a_dropped_wait_is_withdrawn,
-                many_waits_each_wake_once,
-            );
+            #[test]
+            fn a_wait_finishes_when_the_handle_becomes_ready() {
+                $crate::wcontainers_readiness_conformance::a_wait_finishes_when_the_handle_becomes_ready($crate::waiting_for_a_connection($value));
+            }
+
+            #[test]
+            fn a_wait_made_when_ready_finishes_at_once() {
+                $crate::wcontainers_readiness_conformance::a_wait_made_when_ready_finishes_at_once($crate::waiting_for_a_connection($value));
+            }
+
+            #[test]
+            fn a_dropped_wait_is_withdrawn() {
+                $crate::wcontainers_readiness_conformance::a_dropped_wait_is_withdrawn($crate::waiting_for_a_connection($value));
+            }
+
+            #[test]
+            fn many_waits_each_wake_once() {
+                $crate::wcontainers_readiness_conformance::many_waits_each_wake_once($crate::waiting_for_a_connection($value));
+            }
         }
-        $crate::tests!(@each $value;
-            waits_on_many_connections_each_wake_once,
-            a_wait_gives_the_facts_the_connection_has_and_no_others,
-            a_wait_gives_the_facts_the_listener_has_and_no_others,
-            wait_for_room_finishes_when_the_peer_reads,
-            wait_for_urgent_data_finishes_when_it_arrives,
-            wait_for_the_peers_shutdown_finishes_when_it_comes,
-            wait_for_a_hang_up_finishes_when_both_ways_are_shut,
-            wait_for_an_error_finishes_when_the_peer_resets,
-            connect_and_accept_name_both_ends,
-            connect_and_listen_make_sockets_of_their_owner,
-            accept_cuts_the_synchronize_header_to_the_buffer,
-            connect_settings_apply_to_the_synchronize,
-            bytes_arrive_in_order_both_ways,
-            connects_over_ipv6,
-            dual_stack_listener_accepts_ipv4,
-            multipath_is_negotiated_when_both_ends_ask,
-            requested_port_is_bound,
-            exit_node_chooses_a_port_outside_the_reserved,
-            stopped_listener_refuses_connections,
-            accept_without_a_connection_would_block,
-            write_shutdown_ends_the_peers_stream,
-            read_shutdown_ends_the_own_stream,
-            shutdown_of_both_directions_ends_both,
-            orderly_close_ends_the_peers_stream,
-            abort_resets_the_peer,
-            peek_leaves_the_bytes,
-            peek_at_an_offset_skips_bytes,
-            urgent_byte_is_read_apart,
-            urgent_inline_keeps_the_byte_in_the_stream,
-            cork_holds_data_until_uncorked,
-            more_to_come_holds_data_until_pushed,
-            push_ignoring_neither_keeps_the_cork,
-            push_ignoring_neither_sends_data_held_for_more,
-            record_end_starts_a_new_segment,
-            unread_byte_reports_count_what_is_left,
-            listener_unread_byte_reports_reach_the_connections_it_accepts,
-            receive_software_timestamps_when_asked,
-            software_transmit_report_names_the_send,
-            reports_name_their_sends_among_plain_ones,
-            acknowledgement_report_follows_the_peers_acknowledgement,
-            discarding_empties_the_error_queue,
-            empty_error_queue_would_block,
-            icmp_error_reaches_a_synchronizing_connection_over_ipv4,
-            icmp_error_reaches_a_synchronizing_connection_over_ipv6,
-            transmit_report_carries_the_packet_when_asked,
-            transmit_statistics_come_with_the_report_when_asked,
-            wireless_status_request_still_sends,
-            fast_open_with_data_puts_it_in_the_synchronize,
-            fast_open_until_first_send_defers_the_synchronize,
-            fast_open_without_cookie_needs_no_first_connect,
-            fast_open_keys_and_queue_decide_what_the_listener_takes,
-            keep_alive_probes_end_an_unanswered_connection,
-            rearming_the_keep_alive_timer_sends_a_due_probe,
-            no_delay_sends_small_segments_while_others_are_unacknowledged,
-            quick_acknowledgement_settings_time_the_acknowledgement,
-            delayed_acknowledgement_is_sent_on_demand,
-            send_settings_bound_what_a_connection_takes,
-            receive_settings_bound_what_the_peer_sends,
-            window_clamp_bounds_the_synchronize_window,
-            retransmission_settings_time_the_retransmissions,
-            user_timeout_ends_an_unacknowledged_connection,
-            synchronize_retries_end_an_unanswered_connect,
-            defer_accept_holds_a_connection_until_data,
-            fin_wait_2_settings_decide_how_a_closed_connection_ends,
-            arrival_settings_drop_what_they_refuse,
-            header_settings_mark_each_segment,
-            fixed_flow_label_marks_every_segment,
-            multicast_groups_are_joined_and_left,
-            anycast_addresses_are_joined_and_left,
-            md5_keys_admit_only_connections_signed_with_them,
-            authentication_keys_admit_only_connections_signed_with_them,
-            authentication_options_choose_the_keys_in_use,
-            congestion_control_is_the_one_named,
-            pacing_rate_spreads_what_is_sent,
-            transmit_delay_holds_each_segment,
-            address_sharing_lets_connections_leave_from_one_port,
-            port_sharing_lets_listeners_share_a_port,
-            nonlocal_addresses_are_bound_only_when_bindable,
-            listener_backlog_bounds_the_accept_queue,
-            negative_route_advice_picks_a_new_flow,
-            flow_label_reflection_answers_with_the_peers_label,
-            window_probe_is_answered_and_changes_no_setting,
-            timestamp_clock_set_in_repair_mode_stamps_segments,
-            timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused,
-            transmit_statistics_describe_the_connection,
-            delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled,
-            accept_names_where_the_synchronize_arrived,
-            connect_in_repair_mode_is_established_at_once,
-            listener_timestamping_reaches_the_connections_it_accepts,
-            saved_synchronize_is_taken_once,
-            authentication_counters_are_set_only_where_authentication_is,
-            listener_state_reads_a_listener,
-            header_options_go_out_in_the_synchronize,
-            connection_settings_set_twice_equal_set_once,
-            ipv6_connection_settings_set_twice_equal_set_once,
-            refusable_connection_settings_set_twice_equal_set_once,
-            listener_settings_set_twice_equal_set_once,
-            connection_configurable_contract_holds,
-            listener_configurable_contract_holds,
-            negative_route_advice_contract_holds,
-        );
-    };
-    (@each $value:expr; $($check:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $check() {
-                $crate::$check($value);
-            }
-        )*
-    };
-    (@readiness $waiting:expr; $($check:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $check() {
-                $crate::readiness_conformance::$check($waiting);
-            }
-        )*
     };
 }
