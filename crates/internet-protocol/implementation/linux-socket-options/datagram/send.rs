@@ -151,6 +151,11 @@ impl SendState {
         self.sticky.ensure(fd, Slot::Timestamping, &value)
     }
 
+    /// Whether the transmit reports Linux makes for the socket from now on hold their packet.
+    pub fn reports_hold_the_packet(&self) -> bool {
+        self.packet_reports
+    }
+
     /// Sets which receive timestamps the socket takes and the hardware clock it is bound to.
     pub fn set_receive_timestamps(
         &mut self,

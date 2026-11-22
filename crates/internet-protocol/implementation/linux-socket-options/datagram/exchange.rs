@@ -247,6 +247,26 @@ pub fn reports_requested(reports: &TransmitReportRequest) -> bool {
     .contains(&Report::Requested)
 }
 
+pub const PACKET_WISH_CHANGED: &str = "a send changed whether transmit reports hold their packet while the \
+     host held earlier sends, whose reports linux makes by the new wish (it reads SOF_TIMESTAMPING_OPT_TSONLY when \
+     it takes a timestamp)";
+
+/// Counts a send that asks for reports with or without the packet unlike the socket's earlier sends, while the
+/// host still holds some of them; `held` is whether the socket's reports hold the packet before this send.
+pub fn note_packet_wish(
+    fd: BorrowedFd<'_>,
+    shortfalls: &Shortfalls,
+    held: bool,
+    reports: &TransmitReportRequest,
+) {
+    if reports_requested(reports)
+        && (reports.packet == Report::Requested) != held
+        && unsent_bytes(fd).is_ok_and(|bytes| bytes.0 != usize::MIN)
+    {
+        shortfalls.count(PACKET_WISH_CHANGED);
+    }
+}
+
 /// Receives in the order Linux keeps for a socket with `IP_RECVERR` or `IPV6_RECVERR`: the error queue first while
 /// reports a send asked for may wait there or entries a send took off the host are kept, else the packet queue, and
 /// the error queue when a receive is answered with the socket error that Linux sets for every ICMP error it queues

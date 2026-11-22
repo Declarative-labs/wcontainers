@@ -180,3 +180,44 @@ fn a_report_without_its_packet_counts_its_missing_interface() {
         .collect();
     assert_eq!(counted, [1]);
 }
+
+/// A send that changes whether reports hold their packet while the host still holds earlier sends counts that.
+#[test]
+fn a_packet_wish_changed_while_sends_are_held_is_counted() {
+    use wcontainers_configurable::Configurable;
+    use wcontainers_icmp_sockets_conformance as suite;
+    use wcontainers_internet_protocol::{BytesPerSecond, IpSocketSetting};
+    use wcontainers_internet_protocol_linux_socket_options::datagram::exchange::PACKET_WISH_CHANGED;
+    suite::enter_network_namespace();
+    suite::tc(suite::FAIR_QUEUE);
+    let sockets = HostIcmpSockets::new().unwrap();
+    let socket = sockets.open(IpVersion::V4, UserId(u32::MIN)).unwrap();
+    // Slow enough that the second and third sends wait in the fair queue.
+    let rate = BytesPerSecond(1000);
+    sockets
+        .configure(&socket, IpSocketSetting::MaximumPacingRate(Some(rate)))
+        .unwrap();
+    let to = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let message = suite::echo(IpVersion::V4, &[u8::MAX; 1000]);
+    for packet in [Report::Requested, Report::Requested, Report::NotRequested] {
+        let fields = IpSendFields {
+            transmit_reports: TransmitReportRequest {
+                key: suite::REPORT_KEY,
+                software: Report::Requested,
+                packet,
+                ..suite::no_reports()
+            },
+            ..suite::plain_fields()
+        };
+        sockets
+            .send_to(&socket, suite::header_to(to, &message), fields, &message)
+            .unwrap();
+    }
+    let counted: Vec<_> = sockets
+        .counters()
+        .into_iter()
+        .filter(|reading| reading.reason == PACKET_WISH_CHANGED)
+        .map(|reading| reading.count)
+        .collect();
+    assert_eq!(counted, [1]);
+}

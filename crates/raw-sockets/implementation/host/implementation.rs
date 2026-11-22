@@ -27,7 +27,7 @@ use wcontainers_raw_sockets::{
 
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
-    ErrorQueue, receive_in_order, reports_requested, send_message, unsent_bytes,
+    ErrorQueue, note_packet_wish, receive_in_order, reports_requested, send_message, unsent_bytes,
 };
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
@@ -410,6 +410,12 @@ impl RawSockets for HostRawSockets {
                 (destination, packet)
             }
         };
+        note_packet_wish(
+            fd,
+            &self.shortfalls,
+            state.send.reports_hold_the_packet(),
+            &fields.transmit_reports,
+        );
         let flags = match state.send.apply_send_fields(fd, &mut control, &fields) {
             Ok(flags) => flags,
             Err(Refusal::Host(error)) => return Err(SendError::Host(error)),
