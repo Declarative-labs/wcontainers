@@ -11,7 +11,8 @@ use core::net::SocketAddr;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, LocalBinding, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
+    BindingSetting, ByteCount, LocalBinding, ReceiveTimestamps, ReceivedPacketFields, Report,
+    TransmitReportRequest,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
@@ -20,7 +21,9 @@ use wcontainers_readiness::Readiness;
 use crate::authentication::TcpAuthenticationCounters;
 use crate::repair::TcpTimestampClock;
 use crate::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
-use crate::state::{TcpErrorQueueEntry, TcpListenerQuery, TcpQuery, TcpReading};
+use crate::state::{
+    TcpErrorQueueEntry, TcpListenerQuery, TcpListenerReading, TcpQuery, TcpReading,
+};
 
 /// Sockets for [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) connections.
 pub trait TcpSockets: TcpConnections + TcpListeners {}
@@ -31,12 +34,19 @@ pub trait TcpConnections:
     + Readiness<Self::Connection>
 {
     type Connection: Ord;
+    type BoundSocket: Ord;
 
-    fn connect(
+    /// Opens a socket and binds it, claiming its local address and port now, so that a clash [fails the bind](https://man7.org/linux/man-pages/man2/bind.2.html#:~:text=The%20given%20address%20is%20already%20in%20use) itself.
+    fn bind(
         &self,
         protocol: TcpProtocol,
         owner: UserId,
         local: LocalBinding<'_>,
+        settings: &[BindingSetting<'_>],
+    ) -> Result<TcpBound<Self::BoundSocket>, HostError>;
+    fn connect(
+        &self,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
         peer: SocketAddr,
         settings: &[TcpSetting<'_>],
         fast_open: TcpFastOpen<'_>,
@@ -70,6 +80,8 @@ pub trait TcpConnections:
         directions: TcpShutdown,
     ) -> Result<(), HostError>;
     fn close(&self, connection: Self::Connection, manner: TcpClose);
+    /// Frees the socket's address and port, unless a connect or listen took the socket.
+    fn release(&self, bound_socket: Self::BoundSocket);
     /// Sends now what of the connection's queued data its windows, its [cork](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_CORK%20%28since) and [Nagle's algorithm](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.7.4) allow.
     ///
     /// The cork and Nagle's algorithm do not count when the push ignores them and stay ignored for that data until more is queued.
@@ -115,9 +127,7 @@ pub trait TcpListeners:
 
     fn listen(
         &self,
-        protocol: TcpProtocol,
-        owner: UserId,
-        local: LocalBinding<'_>,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
         backlog: ListenBacklog,
         settings: &[TcpListenerSetting<'_>],
     ) -> Result<TcpListening<Self::Listener>, HostError>;
@@ -130,7 +140,7 @@ pub trait TcpListeners:
         &self,
         listener: &Self::Listener,
         query: TcpListenerQuery<'a>,
-    ) -> Result<TcpReading<'a>, HostError>;
+    ) -> Result<TcpListenerReading<'a>, HostError>;
     fn set_listener_authentication_counters(
         &self,
         listener: &Self::Listener,
@@ -181,6 +191,23 @@ pub struct ListenBacklog(pub u32);
 pub struct TcpListening<L> {
     pub listener: L,
     pub local: SocketAddr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpBound<B> {
+    pub bound_socket: B,
+    pub local: SocketAddr,
+}
+
+/// The socket a connect or listen starts from: one bound before, which stays bound if the call fails, or a new one the call binds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpLocalEnd<'a, B> {
+    Bound(&'a B),
+    Unbound {
+        protocol: TcpProtocol,
+        owner: UserId,
+        local: LocalBinding<'a>,
+    },
 }
 
 /// A connection taken from a listener, with the IP header of its SYN cut to the buffer given.

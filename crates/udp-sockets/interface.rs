@@ -6,7 +6,7 @@ use core::num::NonZeroU16;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, BindingSetting,
+    BufferSizes, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, BindingSetting,
     ProcessorIndex, ReceivedPacketFields, RouteSelectors, SendError, TransmitReport,
 };
 use wcontainers_kernel::UserId;
@@ -48,6 +48,7 @@ pub trait UdpSockets:
     fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError>;
     /// Returns the socket's incoming processor, the one set or, once the socket is connected, the one that last took in a packet for it.
     fn read_incoming_processor(
         &self,

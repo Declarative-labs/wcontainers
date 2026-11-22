@@ -2,11 +2,19 @@ use wcontainers_internet_protocol::{InterfaceIndex, IpPrefix};
 
 use crate::settings::{SegmentCount, TcpSequenceNumber};
 
-/// The peer of a [TCP MD5 signature](https://www.rfc-editor.org/rfc/rfc2385) key, `TCP_MD5SIG_EXT`'s prefix and interface.
+/// The [VRF](https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#L399) whose connections a key is for: any, only the default one, or the one whose device is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpKeyVrf {
+    Any,
+    Default,
+    Device(InterfaceIndex),
+}
+
+/// The peer of a [TCP MD5 signature](https://www.rfc-editor.org/rfc/rfc2385) key, `TCP_MD5SIG_EXT`'s prefix and VRF.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpMd5Peer {
     pub prefix: IpPrefix,
-    pub interface: Option<InterfaceIndex>,
+    pub vrf: TcpKeyVrf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,7 +33,7 @@ pub struct TcpAuthenticationMacLength(pub u8);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpAuthenticationKeyIdentity {
     pub peer: IpPrefix,
-    pub interface: Option<InterfaceIndex>,
+    pub vrf: TcpKeyVrf,
     pub send_identifier: TcpAuthenticationKeyIdentifier,
     pub receive_identifier: TcpAuthenticationKeyIdentifier,
 }
@@ -55,17 +63,10 @@ pub struct TcpAuthenticationKeyAddition<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TcpAuthenticationRemovalTiming {
-    Now,
-    WhenUnused,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpAuthenticationKeyRemoval {
     pub identity: TcpAuthenticationKeyIdentity,
     pub current: Option<TcpAuthenticationKeyIdentifier>,
     pub requested_next: Option<TcpAuthenticationKeyIdentifier>,
-    pub timing: TcpAuthenticationRemovalTiming,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

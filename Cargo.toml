@@ -19,6 +19,7 @@ bitflags = { version = "2", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 naga = { version = "30.0.2", default-features = false }
 etherparse = { version = "0.21.0", default-features = false }
+mitsein = { version = "0.10.0", default-features = false }
 
 # naga 30.0.2 as published, plus our changes (listed in docs/status-graphics-shaders.md), until upstream has them.
 [patch.crates-io]

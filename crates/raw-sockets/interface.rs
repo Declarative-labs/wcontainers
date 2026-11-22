@@ -4,8 +4,8 @@ use etherparse::IpNumber;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4RouteSelectors,
-    Ipv6RouteSelectors, Received, RouterAlertValue, SendError,
+    BufferSizes, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion,
+    Ipv4RouteSelectors, Ipv6RouteSelectors, Received, RouterAlertValue, SendError,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::Readiness;
@@ -31,6 +31,7 @@ pub trait RawSockets:
     fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<Received, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError>;
     fn close(&self, socket: Self::Socket);
 }
 
@@ -39,7 +40,6 @@ pub enum RawSocketSetting<'a> {
     Ip(IpSocketSetting<'a>),
     Checksum(Option<ChecksumOffset>),
     RouterAlert(RouterAlert),
-    MulticastRouting(MulticastRouting),
 }
 
 /// Where in a packet's data its checksum sits, for the stack to fill in on send and check on receipt, as [`IPV6_CHECKSUM`](https://www.rfc-editor.org/rfc/rfc3542.html#section-3.1) sets.
@@ -61,13 +61,6 @@ pub enum RouterAlert {
 pub enum RouterAlertIsolation {
     AllNamespaces,
     OwnNamespace,
-}
-
-/// The multicast routing role of a socket, which hears every multicast packet and membership report on the link.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MulticastRouting {
-    Disabled,
-    Enabled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

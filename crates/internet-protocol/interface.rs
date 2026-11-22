@@ -4,6 +4,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::time::Duration;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
+use mitsein::slice1::Slice1;
 use wcontainers_abi::HostError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,7 +318,8 @@ pub enum Membership {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceFilter<'a, A> {
-    Include(&'a [A]),
+    /// Including no source leaves the group ([IGMPv3](https://www.rfc-editor.org/rfc/rfc3376.html#section-3.1), [MLDv2](https://www.rfc-editor.org/rfc/rfc3810.html#section-4.1)).
+    Include(&'a Slice1<A>),
     Exclude(&'a [A]),
 }
 
@@ -359,6 +361,13 @@ pub enum IpSocketSetting<'a> {
     Timestamping(Timestamping),
     MulticastLoopback(bool),
     MulticastAllGroups { version: IpVersion, enabled: bool },
+}
+
+/// The sizes of a socket's buffers as Linux [reads them back](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=this%20doubled%20value%20is%20returned): the size asked for, held to the exit node's limits, then doubled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferSizes {
+    pub send: ByteCount,
+    pub receive: ByteCount,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -471,10 +480,10 @@ pub enum IpPacketSetting<'a> {
         version: IpVersion,
         limit: Option<HopLimit>,
     },
+    /// The DSCP alone, as the [TCP sender sets the ECN field](https://www.rfc-editor.org/rfc/rfc3168.html#section-6.1.1) itself.
     TrafficClass {
         version: IpVersion,
         dscp: IpDscp,
-        ecn: IpEcn,
     },
     PathMtuDiscovery {
         version: IpVersion,
@@ -488,7 +497,6 @@ pub enum IpPacketSetting<'a> {
     FlowLabel(FlowLabelChoice),
     Mark(PacketMark),
     Priority(PacketPriority),
-    UnicastInterface(Option<InterfaceIndex>),
     RouteScope(RouteScope),
     SourcePreferences(SourcePreferences),
 }
