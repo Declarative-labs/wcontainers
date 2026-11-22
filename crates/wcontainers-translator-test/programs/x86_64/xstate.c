@@ -1,6 +1,7 @@
 // xsave and xrstor of x87, SSE and AVX state: the area xsave writes after every component was written, and
-// what xrstor loads, initialises or leaves for components named or not in XSTATE_BV and in edx:eax. Built for
-// a program told XSAVE and AVX.
+// what xrstor loads, initialises or leaves for components named or not in XSTATE_BV and in edx:eax, and the
+// components xsave reports in use after each kind of instruction leaves them. Built for a program told XSAVE
+// and AVX.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,11 +14,15 @@ enum {
     HEADER = 512,
     AVX = 576,
     AVX_END = 832,
+    MXCSR = 24,
+    STEPS = 6,
 };
 
 static uint8_t area[AREA] __attribute__((aligned(64)));
 static uint8_t saved[AREA] __attribute__((aligned(64)));
 static uint8_t pattern[16][32];
+static uint8_t blank[AREA] __attribute__((aligned(64)));
+static uint8_t seen[STEPS][AREA] __attribute__((aligned(64)));
 
 static void dump(const char *what, const uint8_t *p, int from, int to) {
     printf("%s %d:", what, from);
@@ -45,6 +50,40 @@ static void restore_and_save(uint32_t components) {
                      : "r"(area), "r"(saved)
                      : "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8",
                        "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+}
+
+// XSTATE_BV after every component is put in its initial configuration, then after a 256-bit write, vzeroupper,
+// vzeroall, an x87 load and store, and fninit, all in one asm statement so that nothing else runs between.
+static void in_use(void) {
+    static const char *const after[STEPS] = {
+        "xrstor of nothing", "a 256-bit move", "vzeroupper", "vzeroall", "fld1 and fstp", "fninit",
+    };
+    memset(blank, 0, sizeof blank);
+    memset(seen, 0, sizeof seen);
+    uint32_t default_mxcsr = 0x1f80;
+    memcpy(blank + MXCSR, &default_mxcsr, sizeof default_mxcsr);
+    __asm__ volatile("mov $7, %%eax\n\t"
+                     "xor %%edx, %%edx\n\t"
+                     "xrstor64 (%0)\n\t"
+                     "xsave64 (%1)\n\t"
+                     "vmovdqu (%2), %%ymm0\n\t"
+                     "xsave64 1024(%1)\n\t"
+                     "vzeroupper\n\t"
+                     "xsave64 2048(%1)\n\t"
+                     "vzeroall\n\t"
+                     "xsave64 3072(%1)\n\t"
+                     "fld1\n\t"
+                     "fstp %%st(0)\n\t"
+                     "xsave64 4096(%1)\n\t"
+                     "fninit\n\t"
+                     "xsave64 5120(%1)"
+                     :
+                     : "r"(blank), "r"(seen), "r"(pattern)
+                     : "rax", "rdx", "memory", "st", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
+                       "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+    for (int k = 0; k < STEPS; k++) {
+        printf("in use after %s: %02x\n", after[k], seen[k][HEADER]);
+    }
 }
 
 int main(void) {
@@ -106,5 +145,6 @@ int main(void) {
     area[HEADER] = 0;
     restore_and_save(2);
     show("sse alone initial");
+    in_use();
     return 0;
 }

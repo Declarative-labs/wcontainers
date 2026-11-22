@@ -1010,12 +1010,54 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     }
 }
 
-/// `xsave` and `xrstor` after their checks: the components RFBM (edx:eax with XCR0) names. `xsave` writes each
-/// and sets their bits in XSTATE_BV, by design: Intel lets a processor report a component in use when it is
-/// in its initial configuration, and which ones the reference reports depends on what ran before (plan
-/// 5.10). `xrstor` loads each component XSTATE_BV names and puts the others in their initial configuration,
-/// MXCSR from the area with SSE or AVX; a header the standard form refuses or a reserved MXCSR bit is general
-/// protection, before anything changes.
+/// Into `set`, the x87, SSE and AVX components not in their initial configuration (Intel SDM Vol. 1 13.6), as
+/// XSTATE_BV bits: x87 with its header (control word, status, tags and opcode), pointers and registers as
+/// `fninit` leaves them and every register zero, SSE with every xmm register zero, AVX with every upper half
+/// zero. MXCSR is in neither (plan 5.10).
+fn components_in_use<E: Emitter<X86_64> + ?Sized>(e: &mut E, set: u32) {
+    use crate::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
+    e.get_control(Control::X87Header);
+    e.sink().i64_const(crate::FCW_AT_START.into()).i64_ne();
+    for control in [Control::X87InstructionPointer, Control::X87DataPointer] {
+        e.get_control(control);
+        e.sink().i64_const(0).i64_ne().i32_or();
+    }
+    for n in 0..REGISTERS as u8 {
+        e.get(mmx_register(n));
+        e.sink().i64_const(0).i64_ne().i32_or();
+        e.get_control(Control::X87High(n));
+        e.sink().i32_const(0).i32_ne().i32_or();
+    }
+    e.sink()
+        .if_(BlockType::Result(ValType::I64))
+        .i64_const(XSAVE_X87.into())
+        .else_()
+        .i64_const(0)
+        .end()
+        .local_set(set);
+    for (component, high) in [(XSAVE_SSE, false), (XSAVE_AVX, true)] {
+        for x in 0..crate::guest::XMM_COUNT as u8 {
+            e.get_vector(if high { crate::operand::ymm_high(x) } else { x });
+            if x > 0 {
+                e.sink().v128_or();
+            }
+        }
+        e.sink()
+            .v128_any_true()
+            .if_(BlockType::Empty)
+            .local_get(set)
+            .i64_const(component.into())
+            .i64_or()
+            .local_set(set)
+            .end();
+    }
+}
+
+/// `xsave` and `xrstor` after their checks: the components RFBM (edx:eax with XCR0) names. `xsave` writes each,
+/// and sets its bit in XSTATE_BV where it is not in its initial configuration and clears it where it is, as a
+/// processor that tracks that exactly would (`components_in_use`). `xrstor` loads each component XSTATE_BV names
+/// and puts the others in their initial configuration, MXCSR from the area with SSE or AVX; a header the
+/// standard form refuses or a reserved MXCSR bit is general protection, before anything changes.
 fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wide: bool) {
     use crate::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
     let enabled = crate::cpuid::enabled_state(e.offer());
@@ -1085,8 +1127,19 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
             }
             e.sink().end();
         }
+        let in_use = e.local(ValType::I64);
+        components_in_use(e, in_use);
         load_at(e, at, XSTATE_BV, VALUE_LOW);
-        e.sink().local_get(rfbm).i64_or().local_set(value);
+        e.sink()
+            .local_get(rfbm)
+            .i64_const(-1)
+            .i64_xor()
+            .i64_and()
+            .local_get(in_use)
+            .local_get(rfbm)
+            .i64_and()
+            .i64_or()
+            .local_set(value);
         store_at(e, at, XSTATE_BV, VALUE_LOW, value);
         return;
     }
