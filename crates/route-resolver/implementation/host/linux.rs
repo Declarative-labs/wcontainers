@@ -4,7 +4,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddr
 use std::io;
 use std::os::fd::AsFd;
 
-use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6RawExtHeaderSlice};
+use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6Header, Ipv6RawExtHeaderSlice};
 use linux_raw_sys::net::{
     IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
 };
@@ -57,8 +57,13 @@ const PROBE_PORT: u16 = u16::MAX;
 
 /// The most an IPv4 path MTU can be, the largest total length its header holds; Linux caps every IPv4 route's MTU at it.
 ///
-/// https://github.com/torvalds/linux/blob/v6.18/include/net/ip.h
+/// https://github.com/torvalds/linux/blob/v6.18/include/net/ip.h#:~:text=IP_MAX_MTU
 const IP_MAX_MTU: u32 = u16::MAX as u32;
+
+/// The most an IPv6 path MTU can be, the largest payload length its header holds and the header; Linux caps every IPv6 route's MTU at it.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/net/ip6_route.h#:~:text=IP6_MAX_MTU
+const IP6_MAX_MTU: u32 = u16::MAX as u32 + Ipv6Header::LEN as u32;
 
 /// The send flags that confirm the neighbour and send nothing.
 const CONFIRMING_PROBE: libc::c_int = libc::MSG_CONFIRM | MSG_PROBE as libc::c_int;
@@ -413,11 +418,16 @@ impl Lookup<'_> {
             kind: found.kind,
             source,
             interface: found.interface,
-            path_mtu: MaximumTransmissionUnit(match (&probe, found.mtu) {
-                (Some(probe), _) if found.encapsulated => probe.path_mtu,
-                (_, Some(mtu)) => mtu,
-                (_, None) => u32::try_from(conf.mtu).map_err(|_| HostError::Errno(libc::EPROTO))?,
-            }),
+            path_mtu: MaximumTransmissionUnit(
+                match (&probe, found.mtu) {
+                    (Some(probe), _) if found.encapsulated => probe.path_mtu,
+                    (_, Some(mtu)) => mtu,
+                    (_, None) => {
+                        u32::try_from(conf.mtu).map_err(|_| HostError::Errno(libc::EPROTO))?
+                    }
+                }
+                .min(IP6_MAX_MTU),
+            ),
             device_mtu: MaximumTransmissionUnit(link.mtu),
             default_hop_limit: hop_limit(match found.hop_limit {
                 Some(limit) => limit,

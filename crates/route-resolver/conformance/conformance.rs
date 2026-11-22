@@ -1695,6 +1695,189 @@ pub fn an_ipv4_mapped_destination_routes_over_ipv4<R: RouteResolver>(resolver: R
     }
 }
 
+/// Checks that a link whose MTU passes the largest packet of each version gives the path MTU Linux caps a connected socket's at.
+pub fn a_path_mtu_is_capped_at_the_largest_packet_of_its_version<R: RouteResolver>(resolver: R) {
+    /// A link MTU above the largest IPv4 packet and the largest IPv6 packet but a jumbogram, which a dummy link takes.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc2675#section-1
+    const LARGE_MTU: u32 = 100_000;
+    /// An address on the large link that the namespace does not have.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
+    const LARGE_NEIGHBOUR: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 5);
+    /// An IPv6 address on the large link that the namespace does not have.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+    const LARGE_NEIGHBOUR_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 5);
+    const LARGE: &str = "dx";
+    network();
+    const LARGE_LINK: &str = "link add dx type dummy
+link set dx up mtu 100000
+address add 10.3.0.1/24 dev dx
+address add fd03::1/64 dev dx nodad";
+    ip(IPV4, LARGE_LINK);
+    let options = Ipv4Options::new();
+    for (route, destination) in [
+        (
+            resolve4(&resolver, v4(&options, LARGE_NEIGHBOUR)),
+            IpAddr::V4(LARGE_NEIGHBOUR),
+        ),
+        (
+            resolve6(&resolver, v6(LARGE_NEIGHBOUR_V6)),
+            IpAddr::V6(LARGE_NEIGHBOUR_V6),
+        ),
+    ] {
+        let route = route.expect("resolves");
+        let told = connected_path_mtu(destination, DISCARD);
+        assert!(told < LARGE_MTU, "{destination}: {told}");
+        assert_eq!(
+            (route.interface, route.device_mtu, route.path_mtu),
+            (
+                index(LARGE),
+                MaximumTransmissionUnit(LARGE_MTU),
+                MaximumTransmissionUnit(told)
+            ),
+            "{destination}"
+        );
+    }
+}
+
+/// Returns what Linux gives a datagram socket that names the interface for its unicast sends, from the source if any, when it connects.
+///
+/// That is the source and path MTU it is told, or the error of the connect.
+fn told_naming_interface(
+    destination: IpAddr,
+    source: Option<IpAddr>,
+    interface: InterfaceIndex,
+) -> Result<(IpAddr, MaximumTransmissionUnit), HostError> {
+    let any = match destination {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    let socket =
+        std::net::UdpSocket::bind((source.unwrap_or(any), u16::MIN)).expect("a socket binds");
+    #[cfg(target_os = "linux")]
+    {
+        // Both versions take the index in network byte order.
+        let value = interface.0.to_be();
+        let (level, name) = match destination {
+            IpAddr::V4(_) => (libc::IPPROTO_IP, linux_raw_sys::net::IP_UNICAST_IF),
+            IpAddr::V6(_) => (libc::IPPROTO_IPV6, linux_raw_sys::net::IPV6_UNICAST_IF),
+        };
+        // SAFETY: the value is an integer that lives across the call, which only reads it for its size.
+        let result = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(&socket),
+                level,
+                libc::c_int::try_from(name).expect("an option name"),
+                (&raw const value).cast(),
+                libc::socklen_t::try_from(size_of_val(&value)).expect("a length"),
+            )
+        };
+        assert!(
+            result == 0,
+            "{destination} by {interface:?}: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    socket
+        .connect((destination, DISCARD))
+        .map_err(|error| HostError::Errno(error.raw_os_error().expect("an errno")))?;
+    let source = socket
+        .local_addr()
+        .expect("a connected socket's source")
+        .ip();
+    #[cfg(target_os = "linux")]
+    return Ok((
+        source,
+        MaximumTransmissionUnit(
+            match destination {
+                IpAddr::V4(_) => rustix::net::sockopt::ip_mtu(&socket),
+                IpAddr::V6(_) => rustix::net::sockopt::ipv6_mtu(&socket),
+            }
+            .expect("a connected socket's path MTU"),
+        ),
+    ));
+    #[cfg(not(target_os = "linux"))]
+    panic!("only Linux tells a connected socket's path MTU, not {source} by {interface:?}");
+}
+
+/// Checks that a lookup naming an interface routes as a send naming it does, so that over IPv6 with a source it only prefers its routes.
+///
+/// A send names its interface per packet (`IP_PKTINFO`, `IPV6_PKTINFO`) as `IP_UNICAST_IF` does, not as a socket bound to the device.
+pub fn an_interface_routes_as_a_send_that_names_it<R: RouteResolver>(resolver: R) {
+    /// An IPv6 address the main table routes by da first and by db after.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+    const TWO_WAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd0a, 0, 0, 0, 0, 0, 0, 5);
+    /// An IPv6 address of an unreachable route.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+    const UNREACHABLE_V6: Ipv6Addr = Ipv6Addr::new(0xfd52, 0, 0, 0, 0, 0, 0, 2);
+    let network = network();
+    const ROUTES: &str = "route add fd0a::/64 via fd01::2 metric 1
+route add fd0a::/64 via fd02::2 metric 2
+route add unreachable fd52::/64";
+    ip(IPV6, ROUTES);
+    let options = Ipv4Options::new();
+    let cases = [
+        (IpAddr::V4(FAR), None, network.b),
+        (IpAddr::V4(FAR), Some(IpAddr::V4(B_ADDRESS)), network.b),
+        (IpAddr::V4(FAR), Some(IpAddr::V4(A_ADDRESS)), network.b),
+        (IpAddr::V6(TWO_WAY_V6), None, network.b),
+        (
+            IpAddr::V6(TWO_WAY_V6),
+            Some(IpAddr::V6(B_ADDRESS_V6)),
+            network.b,
+        ),
+        (
+            IpAddr::V6(FAR_V6),
+            Some(IpAddr::V6(B_ADDRESS_V6)),
+            network.b,
+        ),
+        (
+            IpAddr::V6(UNREACHABLE_V6),
+            Some(IpAddr::V6(A_ADDRESS_V6)),
+            network.a,
+        ),
+    ];
+    for (destination, source, interface) in cases {
+        let route = match destination {
+            IpAddr::V4(destination) => resolve4(
+                &resolver,
+                Ipv4RouteSelectors {
+                    source: source.map(|source| match source {
+                        IpAddr::V4(source) => source,
+                        IpAddr::V6(source) => {
+                            panic!("{source} is not of the destination's version")
+                        }
+                    }),
+                    interface: Some(interface),
+                    ..v4(&options, destination)
+                },
+            ),
+            IpAddr::V6(destination) => resolve6(
+                &resolver,
+                Ipv6RouteSelectors {
+                    source: source.map(|source| match source {
+                        IpAddr::V6(source) => source,
+                        IpAddr::V4(source) => {
+                            panic!("{source} is not of the destination's version")
+                        }
+                    }),
+                    interface: Some(interface),
+                    ..v6(destination)
+                },
+            ),
+        };
+        assert_eq!(
+            route.map(|route| (route.source, route.path_mtu)),
+            told_naming_interface(destination, source, interface),
+            "{destination} from {source:?} by {interface:?}"
+        );
+    }
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -1872,6 +2055,16 @@ macro_rules! tests {
         #[test]
         fn an_ipv4_mapped_destination_routes_over_ipv4() {
             $crate::an_ipv4_mapped_destination_routes_over_ipv4($value);
+        }
+
+        #[test]
+        fn a_path_mtu_is_capped_at_the_largest_packet_of_its_version() {
+            $crate::a_path_mtu_is_capped_at_the_largest_packet_of_its_version($value);
+        }
+
+        #[test]
+        fn an_interface_routes_as_a_send_that_names_it() {
+            $crate::an_interface_routes_as_a_send_that_names_it($value);
         }
     };
 }
