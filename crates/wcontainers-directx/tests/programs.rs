@@ -386,7 +386,7 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
     } else {
         0
     };
-    let mut differences = vec![
+    let differences = vec![
         (
             DXGI_FORMAT_R32G32B32_FLOAT,
             D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
@@ -424,8 +424,9 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
 /// Every ability Microsoft's format tables require at 10_0, 10_1 and 11_0 that real Direct3D
 /// reports on the RTX 3080 at that level, ours reports at it (`required::LEVEL_REQUIRED`, its bits
 /// of both words and its 4- and 8-sample counts). Prints what the tables require that real
-/// Direct3D itself does not report. A known failure until the B5 targets, `B8G8R8X8_UNORM`
-/// elements and typed buffers and the extended-range display are served (Gap list).
+/// Direct3D itself does not report. A known failure until the 16-bit packed formats' targets and
+/// resolves, `B8G8R8X8_UNORM` elements and typed buffers, the extended-range display and the
+/// `R32G32B32` formats' multisample loads and resolves are served (Gap list).
 #[cfg(not(feature = "webgl"))]
 #[test]
 #[ignore]
@@ -461,8 +462,13 @@ fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it()
                 .collect()
         };
         let (real, ours) = (answers("system"), answers("ours"));
+        // A format the tables leave optional requires nothing of a device without it.
         let lacks = |has: Required, need: Required| {
-            Required(need.0 & !has.0, need.1 & !has.1, need.2 & !has.2)
+            if need.3 && has.0 == 0 {
+                Required::default()
+            } else {
+                Required(need.0 & !has.0, need.1 & !has.1, need.2 & !has.2, false)
+            }
         };
         for (format, need) in required::at(level).unwrap() {
             let real_lacks = lacks(real[format as usize].1, need);
@@ -476,6 +482,7 @@ fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it()
                 ours_lacks.0 & !real_lacks.0,
                 ours_lacks.1 & !real_lacks.1,
                 ours_lacks.2 & !real_lacks.2,
+                false,
             );
             if short != Required::default() {
                 unmet.push(format!("{name} format {format}: lacks {short:x?}"));
