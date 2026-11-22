@@ -5,6 +5,13 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+Changed by the Direct3D 11 track (G4h run 5, 2026-11-22, the orchestrator's ruling that missing
+feature level abilities are built in the crate that owns them): the back end now holds
+`A8_UNORM` (RGBA8 as (0, 0, 0, a), colour masked per target), `B5G5R5A1_UNORM` and
+`B4G4R4A4_UNORM` (native `RGB5_A1` and `RGBA4`, alpha rotated on upload, packed again on read back;
+`B4G4R4A4` sampled only) and the two-pixel `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (host-kept,
+stored decoded). Details and tests: docs/status-graphics-direct3d-11.md, "G4h run 5".
+
 G3b run 8, 2026-11-19 (about 01:20 to 03:00 Pacific). Merged origin/phase-2-graphics-webgpu, which held
 the newest -direct3d-11 and -shaders (the shared line, -direct3d-12, -rig and phase-1-literals had
 nothing new; no interface change among them). The run's own work:
