@@ -4735,6 +4735,20 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- KC: the build is `cargo check --workspace --all-targets` on the ARM64 machine (passed at
+  0ce16ef9 with no error or warning line). The kernel suite is `cargo test -p
+  wcontainers-kernel-linux --test conformance` (16 checks; it builds guest/forked.c with zig and
+  runs it on the stand-in), with the stand-in's `--test round_trips` (4). The whole suite and the
+  whole LTP comparison are one command: scratch kernel/kc/whole.sh (log beside it); the LTP
+  verdicts compare against ltp/reference-20260930.tsv and against ours-20260930-91d85e31.tsv, the
+  last whole run at K6c's bar. Interface files: `git diff main --` of every interface.rs and the
+  kernel's data files shows only abi, executor, instruction-set and processor-architecture, which
+  main changed after the last merge into agents (bb91b32c and two before it), none by this track.
+  Not built and recorded For the owner: `Kernel::run` (panics as not built), shareable state
+  behind the asserted `Sync`. Places to break for the check: executing.rs `suspend_threads` (pass
+  `None` to `take_tasks` through `Kernel::suspend_tasks` instead), system.rs `response_of` (map
+  every error to `WellKnown`), outside.rs `local_end_error`.
+
 - KA (by the orchestrator's rulings of 2026-11-22): the hooks as `ProcessTracer` and warnings
   through `FallbackObserver` are the owner's interface questions and are not part of KA; the
   release profile stays as it is (the pipe's cycles without thin LTO are recorded and accepted);
