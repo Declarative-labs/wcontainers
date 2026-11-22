@@ -174,6 +174,12 @@ side of each is worked around without changing the interface.
   KA, tenth run: measured again at load 5 to 10 with thin LTO, the cycles are the same as at the
   milestone's start (32782 and 32776 per round trip, 11 and 12 pairs), so the 2 percent was not
   seen at a lower load; a ruling on the profile is only needed if it comes back.
+  KA, eleventh run: it came back in another program. A getppid answered by the kernel inside the
+  hardware monitor's machine (release profile, no LTO) takes 518 ns against 497 at the milestone's
+  start (6 runs each, each within 1 ns); with thin LTO it takes 505 against 522, so after is the
+  faster one. The kernel's own share on the host, release, is now below the start's (221.5 against
+  227 to 231 ns). Example: wcontainers-executor-hardware-virtualization's tests/speed.rs, part
+  `syscalls`, which builds its inside program with the release profile.
 - KA, eighth run: the kernel's hooks cannot be the interface's `ProcessTracer` without making the
   whole kernel generic over its executor: each hook takes `P: ProcessOf<ProcessState, Executor>`,
   a process handle whose kernel is a `ProcessController` with that executor, but the kernel calls
@@ -204,6 +210,18 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KA, eleventh run: of the open items the readiness notice listed, two are settled for this
+  track. The tests of wcontainers-executor-hardware-virtualization build again (319a0326, two test
+  files, the smallest change; see "KA, eleventh run"). `StreamTransport` has implementations: the
+  stand-in's test host, the test policy and the runtime (KA, seventh run). Turning `ReadyFor` into
+  a guest's poll bits is not needed: the kernel pulls what the system has into its own socket
+  queue when a wait ends and gives the guest that socket's poll bits.
+- KA, eleventh run: the Mac's part of the suite (layer 1 seeds and the tests the ARM64 machine's
+  kernel answers differently from Docker Desktop's, scratch kernel/k6c19/mac5.sh) needs Docker
+  Desktop and tests on the Mac, which the notice of 2026-11-22 forbids. It waits for permission,
+  or for an ARM64 machine whose kernel answers as Docker Desktop's does.
+- KA, eleventh run: this track's build folders on the ARM64 machine are /work/target/kernel
+  (155 GB) and kernel-kd (14 GB, the milestone's start for before-and-after measurements).
 - KA, tenth run: inotify `instances_are_limited_per_user` failed on the ARM64 machine because its
   `fs.inotify.max_user_instances` was Ubuntu's 128 (22 of them taken by the host's root), not
   Docker Desktop's 8192, which the kernel models and a container's root shares with the host's.
@@ -329,6 +347,16 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, eleventh run: the hardware monitor's tests build again (this milestone had removed names they
+used) and give the same results as at the milestone's start: busybox passes, the kernel test and
+the speed test's compute part fail as they did then. A getppid answered by the kernel inside that
+machine is 4 percent slower with the release profile and 3 percent faster with thin LTO, the code
+generation already under For the owner; on the host the kernel's share is now below the start's,
+once the stand-in's test host stopped taking a lock at each clock read (ee57be38). ICMP and raw
+sockets are left out of KA with their reason (Departures). KA is not complete: the hooks as
+`ProcessTracer` and warnings through `FallbackObserver` wait for the owner's rulings, the linter may
+not run, the Mac's part of the suite may not run, and the independent check. See "KA, eleventh run".
 
 KA, tenth run: the guest pipe, measured again at load 5 to 10 with thin LTO and the front-end
 counters, is no slower than at the milestone's start (32782 cycles per round trip after, 32776
@@ -629,6 +657,54 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, eleventh run
+
+Started about 07:30 UTC on 2026-11-22 at fc7fa739 (branch agents). Everything ran on the ARM64
+machine; the Mac only edited and formatted files. Scratch kernel/ka11 (scripts and logs).
+
+The hardware monitor's tests (wcontainers-executor-hardware-virtualization, another track's crate,
+which the readiness notice named) no longer built: 4ee5def7 of this milestone removed
+`BackendRequestId` and `Host::backend_send`, and the kernel's entry points take `&Arc<S>`. The
+smallest change, in 319a0326: tests/container/mod.rs drops `Recording`'s `backend_send` (and its
+`absent` helper, used only there); tests/speed.rs's `kernel_share` holds its `TestHost` in an `Arc`
+and lets the kernel settle a wait woken at the start (the standard ends') before the first thread
+runs, as layer 1's runner does (e3ddd795). clippy with warnings denied passes on that crate's tests.
+Run before (a clone at e5d693d2, the milestone's start) and after, the same machine (load 7 to 18;
+ka11/hv-before.log, hv-after.log):
+- busybox: 56 commands gave the reference's output, exit code and files (seed 0x6b65726e), both.
+- kernel: fails at the same check both times, `blocks: "memory fault" counted alike` (8 natively,
+  10 on the WebAssembly side; the test's own known failure about a zeroed block's fault is printed
+  just before). Not this track's to fix; the same before the milestone.
+- speed: the compute part fails both times (geometric mean +24.23 percent before, +24.17 after,
+  bar +21.2 percent; translated code, no kernel in it), the system-call part passes both times in
+  the test profile.
+
+A getppid answered inside the kernel (the speed test's system-call part, 10^6 calls per run, 15
+pairs, medians; ka11/syscalls.log, syscalls-lto.log, syscalls-hostfix.log; load 5 to 32):
+- Natively (the kernel inside the machine, built with the release profile): 497 ns a call before
+  in each of 6 runs (496.5 to 497.3), 518 after in each of 6 (517.8 to 519.4): 4.2 percent more.
+  With `CARGO_PROFILE_RELEASE_LTO=thin`: before 521.9 and 521.6, after 505.0 and 505.3, so after is
+  3 percent faster. Thin LTO alone moves the milestone's start by 5 percent, so this is the code
+  generation the For-the-owner note on the profile describes, not work.
+- The kernel's share on the host, release: before 227 to 231 ns, after 242 to 244. perf (ka11/
+  perfcalls.log, perfg.log) put the new time in a mutex taken at each clock read, the stand-in's
+  `TestHost` start instant (a `Mutex<Instant>` since 4ee5def7, which shares the host by `Arc`).
+  Made lock-free (ee57be38: a fixed origin and an atomic offset): after is 221.5 ns, below before.
+  In the test profile (opt-level 1) the share was 427 to 437 before and 504 to 508 after, the lock
+  included; not measured again.
+- `#[inline]` on the eight hot helpers perf showed as calls (thread_mut, process_of, charge,
+  account_system, let_go, next_to_run, Waiting::woken, cpu_limit_times) gave 516.2 natively and
+  220.3 on the host: within the noise of 518.5 and 221.5, so undone.
+
+Not built, and why (Departures): ICMP and raw sockets to the outside. The kernel refuses both, as
+plan section 15 says (no raw packets, so no ping), counted "socket protocol not built"; it never
+asks the system for them, so this milestone's part (b) has no call to move. Carrying them is a new
+feature that changes guest-visible results (LTP's ping and raw tests now give EACCES and EPERM),
+which the pass bar (the same results as before) rules out inside KA.
+
+The Mac's part of the suite (scratch kernel/k6c19/mac5.sh) was not run: the notice of 2026-11-22
+allows no tests on the Mac.
 
 ## KA, tenth run
 
@@ -5755,6 +5831,10 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- KA, eleventh run: KA does not carry ICMP (ping) or raw sockets to the outside, though its brief
+  names "an outside socket" among the waits. The kernel refuses both (plan section 15) and never
+  asks the system for them, so there is no wait to move; carrying them would change what guests
+  see, which KA's pass bar (the same results as before) rules out. A milestone of its own if wanted.
 - KF, third run: Docker has no option for scheduling, the I/O priority or the personality, so
   startoptions' reference shell sets them (`renice`, `ionice`, `linux64 -R`) before its program,
   where runc would. The image has no `chrt`, so the policy is compared only as SCHED_NORMAL (stat's
