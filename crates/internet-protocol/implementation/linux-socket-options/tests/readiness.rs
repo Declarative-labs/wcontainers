@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
-use wcontainers_internet_protocol_linux_socket_options::readiness::Watcher;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_internet_protocol_linux_socket_options::readiness::{NOTHING, Watcher};
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 
 #[derive(Default)]
 struct Wakes(AtomicUsize);
@@ -33,13 +33,20 @@ fn a_held_error_wakes_a_waiting_call() {
     let mut context = Context::from_waker(&waker);
     let mut wait = pin!(watched.wait_until_ready(ReadyFor::READABLE));
     assert!(wait.as_mut().poll(&mut context).is_pending());
-    watched.hold(ReadyFor::ERROR);
+    watched.hold(ReadinessReport {
+        unconditional: UnconditionalEvents::ERROR,
+        ..NOTHING
+    });
     assert_eq!(wakes.0.load(Ordering::SeqCst), 1);
     match wait.as_mut().poll(&mut context) {
-        Poll::Ready(Ok(events)) => assert!(events.contains(ReadyFor::ERROR), "{events:?}"),
+        Poll::Ready(Ok(report)) => assert_eq!(
+            report.unconditional,
+            UnconditionalEvents::ERROR,
+            "{report:?}"
+        ),
         other => panic!("the wait finishes with the error, not {other:?}"),
     }
-    watched.hold(ReadyFor::empty());
+    watched.hold(NOTHING);
     let wait = pin!(watched.wait_until_ready(ReadyFor::READABLE));
     assert!(wait.poll(&mut context).is_pending());
     assert_eq!(wakes.0.load(Ordering::SeqCst), 1);

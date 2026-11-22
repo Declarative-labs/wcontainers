@@ -8,7 +8,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::task::Wake;
 use std::time::Duration;
 
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 
 /// A handle not yet ready for the interest, and a call that makes it ready.
 pub struct Waiting<R, Handle, MakeReady> {
@@ -18,9 +18,6 @@ pub struct Waiting<R, Handle, MakeReady> {
     /// Gives the handle a fact of the interest; for a check of failures, an error or a hang-up instead.
     pub make_ready: MakeReady,
 }
-
-/// The facts that end a wait whether or not it asked for them.
-pub const ALWAYS_REPORTED: ReadyFor = ReadyFor::ERROR.union(ReadyFor::HANG_UP);
 
 /// How many waits a check makes on one handle at once.
 pub const MANY_WAITS: usize = 32;
@@ -71,18 +68,18 @@ fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output
     call.poll(&mut Context::from_waker(&waker))
 }
 
-/// The facts a finished wait gave.
-fn finished<E: Debug>(poll: Poll<Result<ReadyFor, E>>) -> ReadyFor {
+/// The report a finished wait gave.
+fn finished<E: Debug>(poll: Poll<Result<ReadinessReport, E>>) -> ReadinessReport {
     match poll {
         Poll::Ready(facts) => facts.expect("the wait succeeds"),
         Poll::Pending => panic!("the wait did not finish"),
     }
 }
 
-/// The facts of a wait polled until it finishes, within the patience of a check.
-fn finished_soon<E: Debug, F: Future<Output = Result<ReadyFor, E>>>(
+/// The report of a wait polled until it finishes, within the patience of a check.
+fn finished_soon<E: Debug, F: Future<Output = Result<ReadinessReport, E>>>(
     mut call: Pin<&mut F>,
-) -> ReadyFor {
+) -> ReadinessReport {
     let wakes = Arc::new(Wakes::default());
     match poll_with(call.as_mut(), &wakes) {
         Poll::Pending => {
@@ -137,8 +134,11 @@ pub fn a_wait_finishes_when_the_handle_becomes_ready<R, Handle, MakeReady>(
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     make_ready(&readiness, &handle);
     assert!(wakes.reach(1), "woken when the handle became ready");
-    let facts = finished(poll_with(wait, &wakes));
-    assert!(facts.intersects(interest), "{facts:?} for {interest:?}");
+    let report = finished(poll_with(wait, &wakes));
+    assert!(
+        report.ready_for.intersects(interest),
+        "{report:?} for {interest:?}"
+    );
     assert_eq!(wakes.count(), 1, "woken more than once");
 }
 
@@ -158,13 +158,19 @@ pub fn a_wait_made_when_ready_finishes_at_once<R, Handle, MakeReady>(
     make_ready(&readiness, &handle);
     // The first wait lets the readiness arrive, which on a host may come a moment after the call that makes it.
     let settled = finished_soon(pin!(readiness.wait_until_ready(&handle, interest)));
-    assert!(settled.intersects(interest), "{settled:?} for {interest:?}");
+    assert!(
+        settled.ready_for.intersects(interest),
+        "{settled:?} for {interest:?}"
+    );
     let wakes = Arc::new(Wakes::default());
-    let facts = finished(poll_with(
+    let report = finished(poll_with(
         pin!(readiness.wait_until_ready(&handle, interest)),
         &wakes,
     ));
-    assert!(facts.intersects(interest), "{facts:?} for {interest:?}");
+    assert!(
+        report.ready_for.intersects(interest),
+        "{report:?} for {interest:?}"
+    );
     assert_eq!(wakes.count(), 0, "a wait that finished at once was woken");
 }
 
@@ -188,8 +194,11 @@ where
     make_ready(&readiness, &handle);
     std::thread::sleep(SILENCE);
     assert_eq!(wakes.count(), 0, "a dropped wait was woken");
-    let facts = finished_soon(pin!(readiness.wait_until_ready(&handle, interest)));
-    assert!(facts.intersects(interest), "{facts:?} for {interest:?}");
+    let report = finished_soon(pin!(readiness.wait_until_ready(&handle, interest)));
+    assert!(
+        report.ready_for.intersects(interest),
+        "{report:?} for {interest:?}"
+    );
 }
 
 /// Many waits on one handle are each woken once when it becomes ready, and each finishes.
@@ -222,12 +231,15 @@ where
     std::thread::sleep(SILENCE);
     for (wait, wakes) in &mut waits {
         assert_eq!(wakes.count(), 1, "a wait woken more than once");
-        let facts = finished(poll_with(wait.as_mut(), wakes));
-        assert!(facts.intersects(interest), "{facts:?} for {interest:?}");
+        let report = finished(poll_with(wait.as_mut(), wakes));
+        assert!(
+            report.ready_for.intersects(interest),
+            "{report:?} for {interest:?}"
+        );
     }
 }
 
-/// An error or a hang-up ends a wait that asked for neither, and the wait gives it.
+/// An error or a hang-up ends a wait that cannot ask for either, and the wait reports it as unconditional.
 pub fn a_failure_ends_a_wait_that_did_not_ask_for_it<R, Handle, MakeReady>(
     waiting: Waiting<R, Handle, MakeReady>,
 ) where
@@ -240,17 +252,13 @@ pub fn a_failure_ends_a_wait_that_did_not_ask_for_it<R, Handle, MakeReady>(
         interest,
         make_ready,
     } = waiting;
-    assert!(
-        !interest.intersects(ALWAYS_REPORTED),
-        "the requiring suite gives a wait that asks for neither an error nor a hang-up, not {interest:?}"
-    );
     let wakes = Arc::new(Wakes::default());
     let mut wait = pin!(readiness.wait_until_ready(&handle, interest));
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     make_ready(&readiness, &handle);
     assert!(wakes.reach(1), "woken by the failure");
-    let facts = finished(poll_with(wait, &wakes));
-    assert!(facts.intersects(ALWAYS_REPORTED), "{facts:?}");
+    let report = finished(poll_with(wait, &wakes));
+    assert!(!report.unconditional.is_empty(), "{report:?}");
 }
 
 /// Runs each check above as a test in the module named, on a new `ready` bundle, or `failing` (an error or hang-up).
@@ -289,9 +297,31 @@ mod suite {
     use core::task::{Context, Poll, Waker};
 
     use wcontainers_abi::HostError;
-    use wcontainers_readiness::{Readiness, ReadyFor};
+    use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 
-    use crate::{ALWAYS_REPORTED, Waiting};
+    use crate::Waiting;
+
+    /// A report of no fact at all.
+    const NOTHING: ReadinessReport = ReadinessReport {
+        ready_for: ReadyFor::empty(),
+        unconditional: UnconditionalEvents::empty(),
+    };
+
+    /// A report of the facts asked for alone.
+    fn ready_for(facts: ReadyFor) -> ReadinessReport {
+        ReadinessReport {
+            ready_for: facts,
+            ..NOTHING
+        }
+    }
+
+    /// A report of the unconditional events alone.
+    fn unconditional(events: UnconditionalEvents) -> ReadinessReport {
+        ReadinessReport {
+            unconditional: events,
+            ..NOTHING
+        }
+    }
 
     /// What a double gets wrong, each of which a check must catch.
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -310,12 +340,12 @@ mod suite {
 
     /// A handle whose facts a check sets, with the wakers of the waits on it.
     struct Handle {
-        facts: Cell<ReadyFor>,
+        facts: Cell<ReadinessReport>,
         waiters: RefCell<Vec<Option<Waker>>>,
     }
 
     impl Handle {
-        fn become_ready(&self, facts: ReadyFor) {
+        fn become_ready(&self, facts: ReadinessReport) {
             self.facts.set(facts);
             let woken: Vec<Waker> = self
                 .waiters
@@ -336,22 +366,20 @@ mod suite {
     }
 
     impl Future for Wait<'_> {
-        type Output = Result<ReadyFor, HostError>;
+        type Output = Result<ReadinessReport, HostError>;
 
         fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
             let this = self.get_mut();
             let first = !core::mem::replace(&mut this.polled, true);
             let facts = this.handle.facts.get();
-            let ending = match this.flaw {
-                Flaw::IgnoresFailures => this.interest,
-                _ => this.interest | ALWAYS_REPORTED,
-            };
+            let ends = facts.ready_for.intersects(this.interest)
+                || (this.flaw != Flaw::IgnoresFailures && !facts.unconditional.is_empty());
             if this.flaw == Flaw::FinishesAtOnce {
-                return Poll::Ready(Ok(this.interest));
+                return Poll::Ready(Ok(ready_for(this.interest)));
             }
-            if facts.intersects(ending) && !(first && this.flaw == Flaw::WaitsWhenReady) {
+            if ends && !(first && this.flaw == Flaw::WaitsWhenReady) {
                 return Poll::Ready(Ok(if this.flaw == Flaw::GivesNothing {
-                    ReadyFor::empty()
+                    NOTHING
                 } else {
                     facts
                 }));
@@ -394,7 +422,7 @@ mod suite {
             &self,
             handle: &Handle,
             interest: ReadyFor,
-        ) -> Result<ReadyFor, HostError> {
+        ) -> Result<ReadinessReport, HostError> {
             Wait {
                 flaw: self.0,
                 handle,
@@ -409,12 +437,12 @@ mod suite {
     /// A double's handle, waited on for being readable, which the bundle's call makes have the facts given.
     fn waiting(
         flaw: Flaw,
-        becomes: ReadyFor,
+        becomes: ReadinessReport,
     ) -> Waiting<Double, Handle, impl FnOnce(&Double, &Handle)> {
         Waiting {
             readiness: Double(flaw),
             handle: Handle {
-                facts: Cell::new(ReadyFor::empty()),
+                facts: Cell::new(NOTHING),
                 waiters: RefCell::new(Vec::new()),
             },
             interest: ReadyFor::READABLE,
@@ -424,8 +452,8 @@ mod suite {
 
     crate::tests!(
         correct,
-        ready: waiting(Flaw::None, ReadyFor::READABLE | ReadyFor::WRITABLE),
-        failing: waiting(Flaw::None, ReadyFor::HANG_UP)
+        ready: waiting(Flaw::None, ready_for(ReadyFor::READABLE | ReadyFor::WRITABLE)),
+        failing: waiting(Flaw::None, unconditional(UnconditionalEvents::HANG_UP))
     );
 
     #[test]
@@ -433,7 +461,7 @@ mod suite {
     fn catches_a_wait_that_finishes_at_once() {
         crate::a_wait_does_not_finish_before_the_handle_is_ready(waiting(
             Flaw::FinishesAtOnce,
-            ReadyFor::READABLE,
+            ready_for(ReadyFor::READABLE),
         ));
     }
 
@@ -442,7 +470,7 @@ mod suite {
     fn catches_a_wait_never_woken() {
         crate::a_wait_finishes_when_the_handle_becomes_ready(waiting(
             Flaw::NeverWakes,
-            ReadyFor::READABLE,
+            ready_for(ReadyFor::READABLE),
         ));
     }
 
@@ -451,20 +479,26 @@ mod suite {
     fn catches_a_ready_handle_that_still_waits() {
         crate::a_wait_made_when_ready_finishes_at_once(waiting(
             Flaw::WaitsWhenReady,
-            ReadyFor::READABLE,
+            ready_for(ReadyFor::READABLE),
         ));
     }
 
     #[test]
     #[should_panic]
     fn catches_a_dropped_wait_still_woken() {
-        crate::a_dropped_wait_is_withdrawn(waiting(Flaw::KeepsDroppedWaits, ReadyFor::READABLE));
+        crate::a_dropped_wait_is_withdrawn(waiting(
+            Flaw::KeepsDroppedWaits,
+            ready_for(ReadyFor::READABLE),
+        ));
     }
 
     #[test]
     #[should_panic]
     fn catches_waits_of_which_only_the_latest_wakes() {
-        crate::many_waits_each_wake_once(waiting(Flaw::WakesOnlyTheLatest, ReadyFor::READABLE));
+        crate::many_waits_each_wake_once(waiting(
+            Flaw::WakesOnlyTheLatest,
+            ready_for(ReadyFor::READABLE),
+        ));
     }
 
     #[test]
@@ -472,7 +506,7 @@ mod suite {
     fn catches_a_failure_that_does_not_end_a_wait() {
         crate::a_failure_ends_a_wait_that_did_not_ask_for_it(waiting(
             Flaw::IgnoresFailures,
-            ReadyFor::ERROR,
+            unconditional(UnconditionalEvents::ERROR),
         ));
     }
 
@@ -481,7 +515,7 @@ mod suite {
     fn catches_a_wait_that_gives_no_fact() {
         crate::a_wait_finishes_when_the_handle_becomes_ready(waiting(
             Flaw::GivesNothing,
-            ReadyFor::READABLE,
+            ready_for(ReadyFor::READABLE),
         ));
     }
 }

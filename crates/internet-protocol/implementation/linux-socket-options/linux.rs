@@ -14,10 +14,10 @@ use rustix::net::{Protocol, SocketType};
 use socket2::{Domain, SockAddr, Socket};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, BindAddress, FilterInstruction, FlowLabelChoice, IpPacketSetting,
-    IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort, MobileAddressPreference,
-    NonlocalAddresses, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing,
-    RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
+    AddressSharing, BindAddress, BindingSetting, FilterInstruction, FlowLabelChoice,
+    IpPacketSetting, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort,
+    MobileAddressPreference, NonlocalAddresses, PathMtuDiscovery, Port, PortChoice, PortRange,
+    PortSharing, RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
 };
 use wcontainers_kernel::UserId;
 
@@ -262,19 +262,19 @@ pub fn set_ip_socket_setting(
 }
 
 /// Sets how the socket holds its local address and port.
-pub fn set_port_setting(
+pub fn set_binding_setting(
     socket: BorrowedFd<'_>,
     family: IpVersion,
-    setting: &PortSetting<'_>,
+    setting: &BindingSetting<'_>,
 ) -> Result<(), HostError> {
     match *setting {
-        PortSetting::AddressSharing(sharing) => sock(&socket)
+        BindingSetting::AddressSharing(sharing) => sock(&socket)
             .set_reuse_address(sharing == AddressSharing::Shared)
             .map_err(|error| io_host_error(&error)),
-        PortSetting::PortSharing(sharing) => sock(&socket)
+        BindingSetting::PortSharing(sharing) => sock(&socket)
             .set_reuse_port(sharing == PortSharing::Shared)
             .map_err(|error| io_host_error(&error)),
-        PortSetting::NonlocalAddresses(permission) => {
+        BindingSetting::NonlocalAddresses(permission) => {
             let transparent = permission == NonlocalAddresses::Transparent;
             let bindable = permission == NonlocalAddresses::Bindable;
             let socket = sock(&socket);
@@ -288,7 +288,7 @@ pub fn set_port_setting(
             }
             .map_err(|error| io_host_error(&error))
         }
-        PortSetting::BoundInterface(interface) => {
+        BindingSetting::BoundInterface(interface) => {
             let index = interface.and_then(|interface| NonZeroU32::new(interface.0));
             match family {
                 IpVersion::V4 => sock(&socket).bind_device_by_index_v4(index),
@@ -296,19 +296,19 @@ pub fn set_port_setting(
             }
             .map_err(|error| io_host_error(&error))
         }
-        PortSetting::GroupFilter(filter) => set_filter(
+        BindingSetting::GroupFilter(filter) => set_filter(
             socket,
             uapi::SO_ATTACH_REUSEPORT_CBPF,
             uapi::SO_DETACH_REUSEPORT_BPF,
             filter,
         ),
-        PortSetting::IncomingProcessor(Some(processor)) => sock(&socket)
+        BindingSetting::IncomingProcessor(Some(processor)) => sock(&socket)
             .set_cpu_affinity(
                 usize::try_from(processor.0).map_err(|_| HostError::Errno(libc::EINVAL))?,
             )
             .map_err(|error| io_host_error(&error)),
         // socket2 sets only a processor; none is Linux's -1.
-        PortSetting::IncomingProcessor(None) => set_int(
+        BindingSetting::IncomingProcessor(None) => set_int(
             socket,
             uapi::SOL_SOCKET,
             uapi::SO_INCOMING_CPU,

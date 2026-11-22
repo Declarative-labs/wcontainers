@@ -13,7 +13,7 @@ use polling::{Event, Events, PollMode, Poller};
 use rustix::event::{PollFd, PollFlags, Timespec};
 use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 
 use crate::{host_error, io_host_error};
 
@@ -39,7 +39,7 @@ pub struct Watched {
 struct Watch {
     fd: RawFd,
     key: usize,
-    /// The facts this kind of socket can have; a fact outside them is never asked of the host or reported.
+    /// The facts this kind of socket can be ready for; one outside them is never asked of the host or reported.
     possible: ReadyFor,
     state: Mutex<WatchState>,
 }
@@ -47,7 +47,7 @@ struct Watch {
 struct WatchState {
     open: bool,
     /// Facts the implementation holds for the socket beside the host's, as entries it has taken off a queue.
-    held: ReadyFor,
+    held: ReadinessReport,
     next: u64,
     /// The calls waiting on the socket; its room is kept, so a wait allocates nothing once it has grown.
     waiters: Vec<Waiter>,
@@ -72,23 +72,34 @@ pub struct WaitUntilReady<'a> {
 /// The name of the thread that waits on the host's readiness, short enough for Linux to keep whole.
 pub const WATCHER_THREAD: &str = "socket waits";
 
-/// The facts that end a wait whether or not they are asked for.
-const ALWAYS_REPORTED: ReadyFor = ReadyFor::ERROR.union(ReadyFor::HANG_UP);
+/// The facts a datagram socket can be ready for: it has no urgent data and no peer that finishes sending.
+pub const DATAGRAM_FACTS: ReadyFor = ReadyFor::READABLE.union(ReadyFor::WRITABLE);
 
-/// The facts a datagram socket can have: it has no urgent data and no peer that finishes sending.
-pub const DATAGRAM_FACTS: ReadyFor = ReadyFor::READABLE
-    .union(ReadyFor::WRITABLE)
-    .union(ALWAYS_REPORTED);
+/// A report of no fact at all.
+pub const NOTHING: ReadinessReport = ReadinessReport {
+    ready_for: ReadyFor::empty(),
+    unconditional: UnconditionalEvents::empty(),
+};
 
-/// Each fact and the host's poll bit for it.
+/// A report of every fact, given when a socket's facts cannot be read, so that every call reads the error itself.
+const EVERYTHING: ReadinessReport = ReadinessReport {
+    ready_for: ReadyFor::all(),
+    unconditional: UnconditionalEvents::all(),
+};
+
+/// Each fact that can be asked for and the host's poll bit for it.
 const POLL_BITS: &[(ReadyFor, PollFlags)] = &[
     (ReadyFor::READABLE, PollFlags::IN),
     (ReadyFor::WRITABLE, PollFlags::OUT),
-    (ReadyFor::ERROR, PollFlags::ERR),
-    (ReadyFor::HANG_UP, PollFlags::HUP),
     (ReadyFor::URGENT_DATA, PollFlags::PRI),
     #[cfg(target_os = "linux")]
     (ReadyFor::PEER_FINISHED_SENDING, PollFlags::RDHUP),
+];
+
+/// Each event reported whether or not it is asked for and the host's poll bit for it.
+const UNCONDITIONAL_BITS: &[(UnconditionalEvents, PollFlags)] = &[
+    (UnconditionalEvents::ERROR, PollFlags::ERR),
+    (UnconditionalEvents::HANG_UP, PollFlags::HUP),
 ];
 
 /// A poll that answers at once.
@@ -112,15 +123,36 @@ fn poll_flags(facts: ReadyFor) -> PollFlags {
         .fold(PollFlags::empty(), |flags, (_, bit)| flags | *bit)
 }
 
-fn facts(flags: PollFlags) -> ReadyFor {
-    POLL_BITS
-        .iter()
-        .filter(|(_, bit)| flags.contains(*bit))
-        .fold(ReadyFor::empty(), |facts, (fact, _)| facts | *fact)
+fn facts(flags: PollFlags) -> ReadinessReport {
+    ReadinessReport {
+        ready_for: POLL_BITS
+            .iter()
+            .filter(|(_, bit)| flags.contains(*bit))
+            .fold(ReadyFor::empty(), |facts, (fact, _)| facts | *fact),
+        unconditional: UNCONDITIONAL_BITS
+            .iter()
+            .filter(|(_, bit)| flags.contains(*bit))
+            .fold(UnconditionalEvents::empty(), |events, (event, _)| {
+                events | *event
+            }),
+    }
+}
+
+/// Gives both reports' facts together.
+fn union(one: ReadinessReport, other: ReadinessReport) -> ReadinessReport {
+    ReadinessReport {
+        ready_for: one.ready_for | other.ready_for,
+        unconditional: one.unconditional | other.unconditional,
+    }
+}
+
+/// Tells whether a report ends a wait for the interest: a fact asked for, or any unconditional event.
+fn ends(report: ReadinessReport, interest: ReadyFor) -> bool {
+    report.ready_for.intersects(interest) || !report.unconditional.is_empty()
 }
 
 /// Gives the facts a socket has now, of those asked for and those always reported.
-fn facts_now(fd: BorrowedFd<'_>, interest: ReadyFor) -> Result<ReadyFor, HostError> {
+fn facts_now(fd: BorrowedFd<'_>, interest: ReadyFor) -> Result<ReadinessReport, HostError> {
     let mut polled = [PollFd::new(&fd, poll_flags(interest))];
     rustix::event::poll(&mut polled, Some(&NO_WAIT)).map_err(host_error)?;
     Ok(facts(polled[0].revents()))
@@ -167,7 +199,7 @@ impl Watcher {
             possible,
             state: Mutex::new(WatchState {
                 open: true,
-                held: ReadyFor::empty(),
+                held: NOTHING,
                 next: u64::MIN,
                 waiters: Vec::new(),
                 armed: None,
@@ -227,12 +259,11 @@ impl Shared {
         let fd = unsafe { BorrowedFd::borrow_raw(watch.fd) };
         if let Some(waiting) = waiting_interest(&state) {
             let now = match facts_now(fd, waiting) {
-                Ok(now) => now | state.held,
-                // A socket whose facts cannot be read wakes every call, which reads the error itself.
-                Err(_) => ReadyFor::all(),
+                Ok(now) => union(now, state.held),
+                Err(_) => EVERYTHING,
             };
             for waiter in &mut state.waiters {
-                if now.intersects(waiter.interest | ALWAYS_REPORTED)
+                if ends(now, waiter.interest)
                     && let Some(waker) = waiter.waker.take()
                 {
                     woken.push(waker);
@@ -301,14 +332,14 @@ impl Watched {
     }
 
     /// Sets the facts the implementation holds for the socket beside the host's, waking the calls they finish.
-    pub fn hold(&self, held: ReadyFor) {
+    pub fn hold(&self, held: ReadinessReport) {
         locked(&self.watch.state).held = held;
         // One waker at a time, each woken outside the lock.
         loop {
             let waker = locked(&self.watch.state)
                 .waiters
                 .iter_mut()
-                .filter(|waiter| held.intersects(waiter.interest | ALWAYS_REPORTED))
+                .filter(|waiter| ends(held, waiter.interest))
                 .find_map(|waiter| waiter.waker.take());
             match waker {
                 Some(waker) => wake(&mut core::iter::once(waker)),
@@ -351,11 +382,11 @@ impl WaitUntilReady<'_> {
     }
 
     /// Gives every fact the socket has once one asked for or always reported holds, withdrawing the wait, or none yet.
-    fn answer(&mut self) -> Option<Result<ReadyFor, HostError>> {
+    fn answer(&mut self) -> Option<Result<ReadinessReport, HostError>> {
         let watch = &self.watched.watch;
         let held = locked(&watch.state).held;
-        match facts_now(self.watched.fd(), watch.possible).map(|now| now | held) {
-            Ok(now) if !now.intersects(self.interest | ALWAYS_REPORTED) => None,
+        match facts_now(self.watched.fd(), watch.possible).map(|now| union(now, held)) {
+            Ok(now) if !ends(now, self.interest) => None,
             answer => {
                 self.withdraw();
                 Some(answer)
@@ -365,7 +396,7 @@ impl WaitUntilReady<'_> {
 }
 
 impl Future for WaitUntilReady<'_> {
-    type Output = Result<ReadyFor, HostError>;
+    type Output = Result<ReadinessReport, HostError>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
