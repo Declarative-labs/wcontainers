@@ -268,16 +268,27 @@ pub fn typeless_group(value: u32) -> Option<u32> {
 }
 
 /// The back buffer formats a swap chain takes (DXGI's display formats): `R16G16B16A16_FLOAT`,
-/// `R10G10B10A2_UNORM`, `R8G8B8A8_UNORM` and its sRGB twin, `B8G8R8A8_UNORM` and its sRGB twin. The
-/// sRGB ones only in the blit model, as DXGI rules.
-pub const BACK_BUFFER_FORMATS: [u32; 6] = [
+/// `R10G10B10A2_UNORM`, `R8G8B8A8_UNORM` and its sRGB twin, `B8G8R8A8_UNORM` and its sRGB twin, and
+/// `R10G10B10_XR_BIAS_A2_UNORM`. The sRGB ones and the extended-range one only in the blit model, as
+/// DXGI rules.
+pub const BACK_BUFFER_FORMATS: [u32; 7] = [
     dxgi::R16G16B16A16_FLOAT,
     dxgi::R10G10B10A2_UNORM,
     dxgi::R8G8B8A8_UNORM,
     dxgi::R8G8B8A8_UNORM_SRGB,
     dxgi::B8G8R8A8_UNORM,
     dxgi::B8G8R8A8_UNORM_SRGB,
+    dxgi::R10G10B10_XR_BIAS_A2_UNORM,
 ];
+
+/// The interface format a back buffer of DXGI format `value` is held in: its own, and for the
+/// extended-range format the bits of `R10G10B10A2_UNORM`, which the present copy decodes.
+pub fn back_buffer_format(value: u32) -> Option<Format> {
+    if value == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
+        return Some(Format::Rgb10a2Unorm);
+    }
+    dxgi_format(value).map(|(format, _)| format)
+}
 
 /// The interface format a surface is configured with for a back buffer of `format`. Swap chains
 /// present in SDR sRGB only (`presents_in`), so a float surface would add nothing: a float back
@@ -301,7 +312,7 @@ pub fn present_format(caps: &Caps, format: Format) -> Format {
 /// The DXGI back buffer formats with what each is presented as on this back end.
 pub fn present_formats(caps: &Caps) -> impl Iterator<Item = (u32, Format)> + '_ {
     BACK_BUFFER_FORMATS.into_iter().map(|value| {
-        let (format, _) = dxgi_format(value).expect("back buffer formats are mapped");
+        let format = back_buffer_format(value).expect("back buffer formats are held");
         (value, present_format(caps, format))
     })
 }

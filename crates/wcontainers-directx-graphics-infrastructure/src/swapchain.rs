@@ -18,7 +18,7 @@ use wcontainers_gpu::{
     TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };
 
-use crate::format::{BACK_BUFFER_FORMATS, dxgi_format, present_format};
+use crate::format::{BACK_BUFFER_FORMATS, back_buffer_format, dxgi, present_format};
 
 /// The most buffers a swap chain may have (`DXGI_MAX_SWAP_CHAIN_BUFFERS`).
 pub const MAX_BUFFERS: u32 = 16;
@@ -75,7 +75,7 @@ impl SwapChainDesc {
         if !BACK_BUFFER_FORMATS.contains(&self.format) {
             return Err("the format is not a back buffer format");
         }
-        let (format, _) = dxgi_format(self.format).ok_or("unknown format")?;
+        let format = back_buffer_format(self.format).ok_or("unknown format")?;
         if self.width == 0 || self.height == 0 {
             return Err("a back buffer has no size");
         }
@@ -87,6 +87,9 @@ impl SwapChainDesc {
                 return Err(
                     "flip models take no sRGB formats; sRGB views of the buffers draw sRGB",
                 );
+            }
+            if self.format == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
+                return Err("flip models take no extended-range format");
             }
         } else if !(1..=MAX_BUFFERS).contains(&self.buffers) {
             return Err("blit models take 1 to 16 buffers");
@@ -111,9 +114,16 @@ impl From<GpuError> for SwapChainError {
 
 /// The program copying a back buffer into the surface: a full-screen triangle loading the texel
 /// under each pixel. `encode` writes sRGB-encoded values, for back buffers whose loads decode
-/// (sRGB formats) or hold linear light (float formats).
+/// (sRGB formats) or hold linear light (float formats); `extended` decodes the extended-range
+/// format's codes, `(c - 384) / 510` (the functional specification's XR_BIAS mapping, -0.7529 to
+/// 1.2529), and shows the part an SDR display shows, 0 to 1.
 const PRESENT_WGSL: &str = r#"
 @group(0) @binding(32) var source: texture_2d<f32>;
+
+// The extended-range format's codes per channel, and the code and count of codes of 0 to 1.
+const XR_CODES: f32 = 1023.0;
+const XR_ZERO: f32 = 384.0;
+const XR_ONE: f32 = 510.0;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -133,16 +143,49 @@ fn encode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let e = select(1.055 * pow(l, vec3<f32>(1.0 / 2.4)) - 0.055, l * 12.92, l <= vec3<f32>(0.0031308));
     return vec4<f32>(e, c.a);
 }
+
+@fragment
+fn extended(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = textureLoad(source, vec2<i32>(p.xy), 0);
+    let v = (round(c.rgb * XR_CODES) - XR_ZERO) / XR_ONE;
+    return vec4<f32>(saturate(v), c.a);
+}
 "#;
 
-/// Whether a back buffer of `format` is presented through the encoding copy: sRGB formats, and
-/// 16-bit float buffers, which hold linear light.
-fn encodes(format: Format) -> bool {
-    format != format.linear() || format == Format::Rgba16Float
+/// How the present copy writes a back buffer's texels into the surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    /// As loaded.
+    Copied,
+    /// sRGB-encoded: sRGB formats, whose loads decode, and 16-bit float buffers, which hold linear
+    /// light.
+    Encoded,
+    /// The extended-range format's codes decoded.
+    Extended,
 }
 
-fn copy_program<B: Backend>(backend: &mut B, encode: bool) -> Result<B::Program, GpuError> {
-    let fragment = if encode { "encode" } else { "copy" };
+impl Shown {
+    fn of(value: u32, format: Format) -> Shown {
+        if value == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
+            Shown::Extended
+        } else if format != format.linear() || format == Format::Rgba16Float {
+            Shown::Encoded
+        } else {
+            Shown::Copied
+        }
+    }
+
+    fn entry_point(self) -> &'static str {
+        match self {
+            Shown::Copied => "copy",
+            Shown::Encoded => "encode",
+            Shown::Extended => "extended",
+        }
+    }
+}
+
+fn copy_program<B: Backend>(backend: &mut B, shown: Shown) -> Result<B::Program, GpuError> {
+    let fragment = shown.entry_point();
     let vs = backend.create_shader(&ShaderModule::from_wgsl(
         PRESENT_WGSL,
         "vs",
@@ -196,7 +239,7 @@ pub struct SwapChain<B: Backend> {
     /// Presented frames whose GPU work has finished, counted when found finished.
     retired: u64,
     copy: Copy<B>,
-    encode: bool,
+    shown: Shown,
 }
 
 impl<B: Backend> SwapChain<B> {
@@ -207,9 +250,9 @@ impl<B: Backend> SwapChain<B> {
         let surface = backend.create_surface(window)?;
         let surface_format = present_format(backend.caps(), format);
         backend.configure_surface(&surface, surface_format, desc.width, desc.height, true)?;
-        let encode = encodes(format);
+        let shown = Shown::of(desc.format, format);
         let copy = Copy {
-            program: copy_program(backend, encode)?,
+            program: copy_program(backend, shown)?,
             blend: backend.create_blend(&BlendDesc {
                 targets: [RenderTargetBlend {
                     blend: None,
@@ -260,7 +303,7 @@ impl<B: Backend> SwapChain<B> {
             in_flight: VecDeque::new(),
             retired: 0,
             copy,
-            encode,
+            shown,
         };
         chain.make_buffers(backend)?;
         Ok(chain)
@@ -547,7 +590,7 @@ impl<B: Backend> SwapChain<B> {
             desc.format = format;
         }
         let new_format = desc.check().map_err(SwapChainError::InvalidCall)?;
-        self.set_encode(backend, encodes(new_format))?;
+        self.set_shown(backend, Shown::of(desc.format, new_format))?;
         self.drop_buffers(backend);
         self.desc = desc;
         self.format = new_format;
@@ -564,12 +607,12 @@ impl<B: Backend> SwapChain<B> {
         Ok(())
     }
 
-    fn set_encode(&mut self, backend: &mut B, encode: bool) -> Result<(), GpuError> {
-        if encode != self.encode {
-            let program = copy_program(backend, encode)?;
+    fn set_shown(&mut self, backend: &mut B, shown: Shown) -> Result<(), GpuError> {
+        if shown != self.shown {
+            let program = copy_program(backend, shown)?;
             let old = std::mem::replace(&mut self.copy.program, program);
             backend.destroy(Object::Program(old));
-            self.encode = encode;
+            self.shown = shown;
         }
         Ok(())
     }

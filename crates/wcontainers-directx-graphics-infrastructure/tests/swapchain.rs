@@ -126,12 +126,34 @@ fn descriptions_dxgi_refuses_are_refused() {
         desc(28, 1, Model::FlipSequential),
         desc(28, 17, Model::Discard),
         desc(2, 2, Model::FlipDiscard),
+        desc(89, 2, Model::FlipDiscard),
+        desc(89, 2, Model::FlipSequential),
     ] {
         assert!(matches!(
             SwapChain::new(&mut b, 1, &bad),
             Err(SwapChainError::InvalidCall(_))
         ));
     }
+}
+
+#[test]
+fn extended_range_buffers_are_held_in_10_bit_codes_and_decoded_at_present() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(89, 1, Model::Sequential)).unwrap();
+    assert_eq!(chain.buffer_desc().format, Format::Rgb10a2Unorm);
+    assert_eq!(chain.surface_format(), Format::Rgba8Unorm);
+    chain.present(&mut b, 1).unwrap();
+    assert!(b.named("create").iter().any(|c| c.contains("\"extended\"")));
+    // Resized to a format of its group, the buffers are copied as they are.
+    chain.resize(&mut b, 0, 0, 0, 24).unwrap();
+    assert_eq!(chain.buffer_desc().format, Format::Rgb10a2Unorm);
+    assert_eq!(
+        b.named("create")
+            .iter()
+            .filter(|c| c.contains("\"copy\""))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -205,6 +227,7 @@ fn outputs_offer_their_current_mode() {
     };
     assert_eq!(output.modes(28).len(), 1);
     assert_eq!(output.modes(2).len(), 0);
+    assert_eq!(output.modes(89).len(), 1);
     let mode = output.closest_mode(&DisplayMode {
         width: 800,
         height: 600,
