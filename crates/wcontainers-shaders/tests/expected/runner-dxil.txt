@@ -1032,9 +1032,9 @@ hlsl+sample-minmax-2-ps.dxil	ok ; glsl compiles
 hlsl+sampler-1-ps.dxil	ok ; glsl compiles
 hlsl+sampler-11-vs.dxil	ok ; glsl compiles
 hlsl+sampler-12-ps.dxil	ok ; glsl compiles
-hlsl+sampler-13-ps.dxil	spirv-reader unsupported image sample operand 0x80
+hlsl+sampler-13-ps.dxil	ok ; glsl compiles
 hlsl+sampler-14-ps.dxil	ok ; glsl compiles
-hlsl+sampler-15-ps.dxil	spirv-reader unsupported image sample operand 0x80
+hlsl+sampler-15-ps.dxil	ok ; glsl compiles
 hlsl+sampler-16-ps.dxil	ok ; glsl compiles
 hlsl+sampler-17-ps.dxil	ok ; glsl compiles
 hlsl+sampler-2-ps.dxil	ok ; glsl compiles

@@ -1065,9 +1065,9 @@ hlsl+sample-minmax-2-ps.dxbc	ok ; glsl compiles
 hlsl+sampler-1-ps.dxbc	ok ; glsl compiles
 hlsl+sampler-11-vs.dxbc	ok ; glsl compiles
 hlsl+sampler-12-ps.dxbc	ok ; glsl compiles
-hlsl+sampler-13-ps.dxbc	unsupported SampleClamp
+hlsl+sampler-13-ps.dxbc	ok ; glsl compiles
 hlsl+sampler-14-ps.dxbc	ok ; glsl compiles
-hlsl+sampler-15-ps.dxbc	unsupported SampleClamp
+hlsl+sampler-15-ps.dxbc	ok ; glsl compiles
 hlsl+sampler-16-ps.dxbc	ok ; glsl compiles
 hlsl+sampler-2-ps.dxbc	ok ; glsl compiles
 hlsl+sampler-3-ps.dxbc	ok ; glsl compiles
