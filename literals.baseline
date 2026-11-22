@@ -16563,7 +16563,6 @@ code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_exp
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"fine"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"float"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"fwidth"
-code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"int2("
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"isinf"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"isnan"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_expr	"min(uint("
