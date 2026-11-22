@@ -157,6 +157,10 @@ the shared worktree; nothing built on the Mac.
   the key needs `TEXTURE_INFO` as for every level count. The Direct3D 12 runner's `calculate-lod`
   DXBC files should now pass where its sampler state reaches the helpers.
 - Not run: WebAssembly (no module of an existing record changed but the runner's four).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip`,
+  `C:\wc\out\shaders-tip` and `C:\wc\scratch\shaders-lod`, the laptop's `src/shaders-tip`,
+  `target/shaders-tip` and tar (its `out-r91` and logs kept), the scratch clone and tar. The ARM64
+  machine's `/work/target/graphics-shaders` is kept.
 
 ## G6 run 3 (run 90): cull distances written by geometry shaders (A7)
 
