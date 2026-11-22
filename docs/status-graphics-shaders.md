@@ -81,6 +81,8 @@ Logs and scripts in scratch `graphics-shaders/g6-r85` (run 84's with its folder:
 - Not run: WebAssembly, Chrome, the corpora (no converted shader changed; the stage helper's
   programs are in no corpus record). A DXIL build of `vs_cull` is not drawn on either cull route
   (as before this run).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip` and `C:\wc\target\shaders-tip`, the x86
+  machine's clone, build folder and bundle, the scratch clone and bundle (logs kept in `g6-r85`).
 
 ## G6 run 5 (run 84): alpha-antialiased lines on WebGL 2 (A5)
 
