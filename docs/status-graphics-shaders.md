@@ -183,7 +183,10 @@ Logs and scripts in scratch `graphics-shaders/g6-r100`. Nothing built on the Mac
   with warnings denied clean, every CPU test binary passed, the literal check prints no line of
   this crate (it found the new build-script literals first; named, and the build directory passed
   from `main`; the baseline's `b'\r'` line went, 192df8ba). Windows clippy with warnings denied
-  clean, and the MSVC build applies the patches (gpu-suite.log).
+  clean, the MSVC build applies the patches, and the whole GPU suite on the RTX 3080 (one job, one
+  test thread, the drawn tests at their default seeds, `cs_one_d`'s among them): 28 test binaries,
+  none failing (gpu-suite.log). Chrome 157 on the desktop compiles all 27 changed WGSL files
+  (chrome.log).
 
 ## G6 run 12 (run 99): the NIR track's pulled inputs at any byte, 3D texel offsets on Direct3D 12, A26 on WebGL 2
 
@@ -2149,8 +2152,10 @@ The gap list (every item of the pass bar not met):
   `IoMap::computeRegisterAddress` (dxbc/dxbc_io_map.cpp) addresses a component by its distance from
   the mask's first (`tzcnt`, 2 for `z`), where its own interpolation path counts the mask's bits below
   it (`popcnt`, 1). Waits: nobody (no corpus or real program seen with it; the fourth check's
-  `ds_c4*`). Takes: that one line in dxbc-spirv (upstream, or a patch carried as naga's are), then
-  the refusal removed and the check's `ds_c4` drawn against Direct3D 11.
+  `ds_c4*`). Takes: that one line as a carried patch (`converter-patches/dxbc-spirv/`, since run
+  100: the index as the mask's bits below the component, `popcnt`, line 1460 of dxbc_io_map.cpp),
+  then a drawn test before the refusal goes (`ds_rows_gap` has no hull shader writing its `ARR`
+  rows yet; one, drawn against Direct3D 11 on the RTX 3080, both builds).
 - A24. The stage helper's refusals by name not listed above (G6a's second check). No file of any
   corpus and no drawn test meets one; each is a form Direct3D allows or may give, and none is
   built. Waits: nobody yet (no real program seen with one). Each takes its route and a drawn test
