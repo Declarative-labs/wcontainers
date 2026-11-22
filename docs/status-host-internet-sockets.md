@@ -6,10 +6,58 @@ reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the inde
 on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared the suites' comment and literal
 findings and checked itself; run 3 answered the I2 check's four findings, below). I1 run 5 (2026-11-22, after the
 restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. I2 run 4
-(2026-11-22) answered that check's five findings; I2 run 5 answered the next check's four. Next: the independent
-check of I2; the linter findings left all wait on a ruling (below), and the interface selector's meaning on the
-owner's (For the owner). Nothing of this track is in progress.
+(2026-11-22) answered that check's five findings; I2 run 5 answered the next check's four; I2 run 6 found and fixed
+the ICMP wait flake's cause and answered that check's four minor findings. Next: the independent check of I2; the
+linter findings left all wait on a ruling (below), and the interface selector's meaning on the owner's (For the
+owner). Nothing of this track is in progress.
 
+## 2026-11-22: I2 run 6 (the ICMP flake found, and the check's four minor findings)
+- ICMP suite flake (blocking): found and fixed. The cause is in the checks' setup, not in the host implementation:
+  after `ip address add fd03::1/64 dev ia nodad` returns, Linux has the address but routes it locally only once its
+  address work (behind the routing lock) has run, so for a while a packet to fd03::1 leaves by the dummy link's
+  prefix route. A check that sent its ICMP error to the request's source (fd03::1) in that window sent it out of
+  the dummy link, and the ping socket never got it. Seen with a diagnostic copy of the suite (`i2-run6/diag-hunt.sh`,
+  log diag-hunt3.log, ARM, 06:26 to 06:34 UTC, load 6 to 10, raw and ICMP suites in turn at 12 threads): 3 failures
+  in about 125 rounds (both of the check's failing checks, each time in the IPv6 case), and each time the
+  namespace's counters showed the error sent (Icmp6OutDestUnreachs 1) with nothing received (Ip6InReceives 0),
+  3 packets out of ia (request, router solicitation, the error) and none through lo, while 2 s later the local
+  route was there. Measured on its own (`i2-run6/dad-window2.sh`, 06:31 UTC, load 11 to 14): `route get fd03::1` in
+  the same iproute2 batch as the address answers a non-local route in 4 of 200 fresh namespaces alone and 191 of
+  200 beside 24 loops of namespace churn. Fix: the ICMP suite's `ip` (which the raw suite uses too) and the
+  resolver suite's wait, after a batch that adds or replaces an IPv6 address, until `ip -6 route show table local`
+  lists it (at most `SETTLING`, 10 s, in the ICMP suite; 200 tries 10 ms apart in the resolver's). The resolver
+  suite never failed of it, but its lookups of its own addresses race the same way.
+- Ping socket drop count told early (minor): true, and kept, now said. Linux gives a ping socket no `SO_RXQ_OVFL`
+  (ping_recvmsg calls only sock_recv_timestamp, not sock_recv_cmsgs), so no per-packet count exists to read;
+  `SO_MEMINFO` at each receive tells every drop up to then, and nothing tells which of them came after the packet
+  was queued. Totals are exact (checked). The DROPS_ASKED warning now says drops after the packet are told with
+  it; listed under Not honoured.
+- Multicast routing off on a socket that never had it (minor): recorded (Departures). It answers Ok without asking
+  Linux, whose `MRT_DONE` answers EACCES from a socket that is not the router. Configurable's rule (twice is once)
+  needs a second Disabled after one that ended routing to answer as the first did, and Linux would answer it
+  EACCES; a new socket starts Disabled, so Disabled is answered from the socket's state.
+- Counter tests (minor): the ICMP crate's each_send_refusal_is_counted_under_its_reason sends every refused IPv6
+  send (a source, each of the four extension headers, a confirmed neighbour, a wrong ICMP code) and an IPv4 one
+  with no selector, each on a new value, and wants one count each, one reason per kind and a different one for
+  each other kind. The raw crate's test of the same name does so for another protocol and the upper layer of a
+  payload, an IPv4 and an IPv6 packet with its own header; a_packet_taken_as_forwarded_is_counted sends a local
+  protocol 255 packet whose payload repeats its own headers to an IPv6 router alert socket of protocol 255 and wants
+  the payload whole and one count under the forwarded reason. Broken copies (`i2-run6/check.sh`, log check.log):
+  the neighbour refusal skipped (the verifier's), destination options not refused, extension headers counted under
+  the source's reason, the IPv6 header-included selector not refused, the forwarded count dropped, the payload
+  selector refused under the other protocol's reason: each fails its test.
+- Care-of preference unchecked (minor): sources_by_preference now gives each temporary preference with Home (its
+  known address, which the host's own UDP socket with the same `IPV6_ADDR_PREFERENCES` must also choose) and with
+  CareOf (whatever that host socket chooses), and the ICMP and raw source checks send all four. Linux prefers a
+  care-of address only over a Mobile IPv6 home address (CONFIG_IPV6_MIP6, a module), which no link here has, so
+  CareOf chooses as Home does here: the check shows it is taken and sent as the host sends it, not that it changes
+  the source (listed under Not honoured).
+- With the fix (`i2-run6/check.sh`, ARM, 06:36 to 06:45 UTC, load 5.9 to 9.8): 150 rounds of the raw and ICMP suite
+  executables in turn at 12 threads, 0 failing runs of 300 (before it, 3 failures in about 125 rounds of the same
+  turns). Final (`lint-and-suites.sh`, `ROUNDS=3`, 06:46 UTC, load 3.8 to 4.6): clippy with warnings denied clean on
+  the nine packages; three rounds, each ICMP 59 and its 5 counter and 1 wait tests, raw 53 and 2 and 1, resolver 37
+  and 1, Configurable 2, NegativeRouteAdvisable 7. This run's one code commit (3e59c08d) touches the three suites,
+  the two counter tests and one warning's text; no interface.rs, data file or manifest.
 ## 2026-11-22: I2 run 5 (the check's four findings)
 - Checksum offset value never checked (blocking): true. a_checksum_offset_is_written now wants the all-zero payload
   to carry its checksum at the offset alone: every other byte still zero, the two bytes there not both zero, and the
@@ -653,9 +701,9 @@ owner's (For the owner). Nothing of this track is in progress.
 - Run 4: seen once more, the raw an_icmp_error_ends_a_wait_for_data in round 2 of 3 at load 1.9 to 2.2 (23:05 UTC),
   "woken by the ICMP error" (which address was not told then; the message now names it). The 40 rounds after, and
   the 3 rounds of each later run, passed. Still no fault found; the shared readiness is the UDP track's.
-- Left as it is: no fault found to fix, and the check's patience (2 s for one local ICMP error) was not raised,
-  since raising it would only hide a lost wake. If it fails again, flake-hunt.sh keeps the panic's text, which
-  names the step (no capture, no wake, no error event, or the receive).
+- Found in I2 run 6 (above): a lost fact, not a lost wake. An ICMP error sent to a `nodad` IPv6 address before
+  Linux had routed it locally left by the dummy link. The suites now wait for the local route after adding an
+  IPv6 address; the patience was not raised.
 
 ## Independent check, run 2 (21:54 to 21:57 UTC, load 3.3 to 8.1)
 - Clean build in a fresh target folder; clippy with warnings denied clean on the nine packages; three rounds, each
@@ -737,6 +785,11 @@ owner's (For the owner). Nothing of this track is in progress.
   folder:
   - `lint-and-suites.sh`: clippy with warnings denied on the nine packages, then the ICMP, raw and resolver
     suites and the generic self-tests (`ROUNDS=3` before it for three rounds, `FILTER=<name>` to filter).
+  - `i2-run6/check.sh`: broken copies for run 6's counter tests (`NO_MUTANTS=1` skips them), then the raw and ICMP
+    suite executables in turn `ROUNDS` times (default 150) at 12 threads, each failure's text kept.
+    `i2-run6/diag-hunt.sh`: the same turns with a patched ICMP suite that prints the namespace's counters, routes,
+    links and what left lo when an ICMP error is missing. `i2-run6/dad-window2.sh`: how often a `nodad` address is
+    not yet routed locally right after it is added.
   - `i2-run4/check.sh`: clean build of the nine packages with clippy, `ROUNDS` (default 3) of every suite, broken
     copies of the run's fixes and three of the ICMP and raw hosts, the TCP suite's advice tests, the UDP build
     state, the lookup cost, cargo tree (`NO_MUTANTS=1` stops after the rounds). `i2-run4/check2.sh`: the same
@@ -855,7 +908,7 @@ owner's (For the owner). Nothing of this track is in progress.
 - Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,
   source, waived source check, interface, link scope, broadcast permission, mark and owner, ICMP type and code,
   path MTU modes (the don't-fragment bit, and which MTU each takes, fragments to or is too long for), too long (`MessageTooLong` with the link MTU). IPv6 hop limit, DSCP, ECN, flow label, source
-  preferences (a temporary address against the public one), local fragmentation and fragment MTU, and for raw sockets source, hop-by-hop, routing destination
+  preferences (a temporary address against the public one; care-of as the host's own socket sends it), local fragmentation and fragment MTU, and for raw sockets source, hop-by-hop, routing destination
   and destination options and a segment routing header. Received IPv4 options (an echoed record route).
 - Send fields: neighbour confirmation, priority (third band of a prio queue), transmit time (fq holds 300 ms;
   rejected times reported with their keys, among them a Realtime send etf drops as of another clock), transmit
@@ -885,8 +938,12 @@ owner's (For the owner). Nothing of this track is in progress.
 - Both kinds: an upper-layer selector other than what Linux routes the send by, and a raw payload under another
   protocol than the socket's (IPv4; IPv6 unless the socket's is `IPPROTO_RAW`).
 - Ping sockets give no `SO_RXQ_OVFL`, `SO_RCVMARK` or `SO_RCVPRIORITY`: mark and priority are written as 0 and
-  counted (RECEIVED_FIELDS_NOT_GIVEN), drops are read from `SO_MEMINFO` at each receive (totals exact, checked;
-  the extra system call counted as DROPS_ASKED).
+  counted (RECEIVED_FIELDS_NOT_GIVEN), drops are read from `SO_MEMINFO` at each receive (totals exact, checked).
+  So a packet is told every drop up to its receive, also those after it was queued, which Linux's own per-packet
+  count would give the next packet; the extra system call and this are counted and warned as DROPS_ASKED.
+- A care-of source preference is passed to Linux (`IPV6_PREFER_SRC_COA`) but chooses as Home here: Linux prefers a
+  care-of address only over a Mobile IPv6 home address (CONFIG_IPV6_MIP6), which no link has. Checked only against
+  the host's own socket with the same preference.
 - ICMP errors: Linux gives no identification or fragment flags of an IPv4 one, nor (under a payload) the quoted
   header's fields but its addresses: written as zero and counted (ICMP_ERROR_FIELDS_NOT_GIVEN).
 - Multicast all-groups: no effect to see on a ping socket (it takes only echo replies) or an IPv6 raw socket
@@ -944,6 +1001,9 @@ owner's (For the owner). Nothing of this track is in progress.
   go under crates/configurable/implementation/ and crates/negative-route-advice/implementation/, which this
   track does not own, and no other suite needs one.
 - The shared readiness (the UDP track's file) was changed here, in a commit of its own, for the double wake.
+- Raw multicast routing Disabled on a socket that is not the router answers Ok, from the socket's state, where
+  Linux's `MRT_DONE` answers EACCES: Configurable's rule (setting a value twice equals setting it once) needs a
+  second Disabled after the one that ended routing to answer Ok, and a new socket starts Disabled.
 
 ## For the owner
 - The route selectors' `interface` does not say whether it names the interface per packet (as a send's
