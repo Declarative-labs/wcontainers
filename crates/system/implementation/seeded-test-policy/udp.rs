@@ -20,7 +20,7 @@ use crate::TestPolicy;
 impl<H: Host> UdpSockets for TestPolicy<H> {
     type Socket = Infallible;
 
-    /// Refused, with no number concerned: a socket opened only to reach outside.
+    /// Refuses the socket, with no number concerned, as it is opened only to reach outside.
     fn open(
         &self,
         _version: IpVersion,

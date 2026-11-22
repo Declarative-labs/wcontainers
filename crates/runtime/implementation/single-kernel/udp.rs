@@ -1,5 +1,4 @@
-//! The local system's UDP on the host's sockets, made and waited on by the network, and the whole
-//! packet a datagram received is given as.
+//! Implements the local system's UDP on the host's sockets, each datagram given as a whole packet.
 
 use core::net::{IpAddr, SocketAddr};
 
@@ -21,7 +20,7 @@ use wcontainers_udp_sockets::{
 use crate::LocalSystem;
 use crate::tcp::NetworkHandle;
 
-/// The length of the IP and UDP headers of a datagram between addresses of `peer`'s family.
+/// Gives the length of the IP and UDP headers of a datagram of `peer`'s address family.
 fn headers_length(peer: SocketAddr) -> usize {
     UdpHeader::LEN
         + match peer {
@@ -30,8 +29,7 @@ fn headers_length(peer: SocketAddr) -> usize {
         }
 }
 
-/// An address as one of `family`'s family holds it: an IPv4 address mapped into IPv6, or the
-/// unspecified address where it has no form there.
+/// Gives an address in `family`'s address family, mapped, or unspecified where it has no form.
 fn in_family(address: SocketAddr, family: SocketAddr) -> IpAddr {
     match (address.ip(), family) {
         (IpAddr::V4(v4), SocketAddr::V6(_)) => IpAddr::V6(v4.to_ipv6_mapped()),
@@ -42,9 +40,10 @@ fn in_family(address: SocketAddr, family: SocketAddr) -> IpAddr {
     }
 }
 
-/// Receives one datagram from `peer` to `local` with `payload`, which fills the buffer it is given
-/// and returns how many bytes it wrote, and gives it in `into` as the whole packet from its IP
-/// header; the packet's length.
+/// Receives a datagram from `peer` to `local` through `payload` into `into` as a whole packet.
+///
+/// `payload` fills the buffer it is given and returns how many bytes it wrote; this returns the
+/// packet's length from its IP header.
 pub fn receive_packet(
     peer: SocketAddr,
     local: SocketAddr,
@@ -90,12 +89,12 @@ pub fn receive_packet(
     Ok(headers + length)
 }
 
-/// A datagram received as a whole packet of `length` bytes, of which nothing else is known.
+/// Describes a datagram received as a whole packet of `length` bytes, of which nothing else is known.
 pub fn received(length: usize) -> UdpReceived {
     UdpReceived::Packet(UdpReceivedPacket {
         fields: ReceivedPacketFields {
             length,
-            interface: InterfaceIndex(0),
+            interface: InterfaceIndex(u32::MIN),
             specific_destination: None,
             largest_fragment: None,
             link_layer_length: None,
@@ -103,15 +102,15 @@ pub fn received(length: usize) -> UdpReceived {
                 software: None,
                 hardware: None,
             },
-            mark: PacketMark(0),
-            priority: PacketPriority(0),
-            drops_since_previous: DropCount(0),
+            mark: PacketMark(u32::MIN),
+            priority: PacketPriority(u32::MIN),
+            drops_since_previous: DropCount(u32::MIN),
         },
         segment_size: None,
     })
 }
 
-/// The destination address and port a route selects.
+/// Gives the destination address and port a route selects.
 fn destination(route: &RouteSelectors<'_>) -> Result<SocketAddr, HostError> {
     let (address, upper_layer) = match route {
         RouteSelectors::V4(route) => (IpAddr::V4(route.destination), route.upper_layer),

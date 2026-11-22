@@ -1,5 +1,4 @@
-//! The test host's UDP on this machine's sockets, each call kept in the record and each readiness
-//! kept as a TCP connection's is.
+//! Implements UDP for the test host on this machine's sockets, each call kept in the record.
 
 use std::sync::atomic::Ordering;
 
@@ -26,7 +25,7 @@ use crate::replay::Entry;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UdpHandle(u32);
 
-/// The destination address and port a route selects.
+/// Gives the destination address and port a route selects.
 fn destination(route: &RouteSelectors<'_>) -> Result<SocketAddr, HostError> {
     let (address, upper_layer) = match route {
         RouteSelectors::V4(route) => (route.destination.into(), route.upper_layer),
@@ -111,9 +110,9 @@ impl<H: Send> UdpSockets for TestHost<H> {
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![0; into.len()];
+                let mut bytes = vec![u8::MIN; into.len()];
                 let result = lock(&self.network).udp_receive(socket.0, &mut bytes);
-                bytes.truncate(*result.as_ref().unwrap_or(&0));
+                bytes.truncate(*result.as_ref().unwrap_or(&usize::MIN));
                 (result, bytes)
             },
         );
