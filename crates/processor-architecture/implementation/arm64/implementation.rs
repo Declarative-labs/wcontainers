@@ -1,0 +1,186 @@
+//! ARM64 as a program at EL0 sees it, under an EL1 that configures the processor as Linux does.
+
+#![no_std]
+
+extern crate alloc;
+
+use core::convert::Infallible;
+use core::ops::Range;
+
+use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture, Simulator};
+
+/// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
+pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
+/// X0 to X30; the encoding's number after the last names the zero register or the stack pointer.
+pub const GENERAL_PURPOSE_REGISTERS: usize = 31;
+/// V0 to V31.
+pub const VECTOR_REGISTERS: usize = 32;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Arm64;
+
+impl ProcessorArchitecture for Arm64 {
+    type Processor = Processor;
+    type PagePermission = PagePermission;
+    type Instruction = Instruction;
+    type PreciseInstruction = PreciseInstruction;
+
+    const ADDRESSABLE: Range<u64> = 0..1 << VIRTUAL_ADDRESS_BITS;
+
+    fn list_instructions() -> impl Iterator<Item = Instruction> {
+        [
+            Instruction::AddShiftedRegister64,
+            Instruction::AddsShiftedRegister64,
+            Instruction::Csel64,
+            Instruction::LdrImmediateUnsignedOffset64,
+            Instruction::StrImmediateUnsignedOffset64,
+            Instruction::StpSignedOffset64,
+            Instruction::LdrImmediatePostIndex64,
+            Instruction::Brk,
+            Instruction::Rdvl,
+            Instruction::MrsCtrEl0,
+        ]
+        .into_iter()
+    }
+}
+
+/// The registers a program at EL0 can see or change, and the exception its last instruction raised.
+///
+/// TODO: temporary placeholder until the rest of the EL0 state is designed: PSTATE's DIT, SSBS, TCO and
+/// BTYPE, TPIDRRO_EL0, and the SVE and SME state (Z beyond 128 bits, P, FFR, streaming mode, ZA, ZT0).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Processor {
+    pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
+    pub stack_pointer: u64,
+    pub program_counter: u64,
+    pub condition_flags: ConditionFlags,
+    pub vector_registers: [u128; VECTOR_REGISTERS],
+    /// [FPCR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register).
+    pub floating_point_control: u64,
+    /// [FPSR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPSR--Floating-point-Status-Register).
+    pub floating_point_status: u64,
+    /// [TPIDR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TPIDR-EL0--EL0-Read-Write-Software-Thread-ID-Register).
+    pub software_thread_id: u64,
+    /// None when the last instruction completed.
+    pub exception: Option<Exception>,
+}
+
+bitflags::bitflags! {
+    /// PSTATE's [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), at its bit positions in that register.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct ConditionFlags: u32 {
+        const NEGATIVE = 1 << 31;
+        const ZERO = 1 << 30;
+        const CARRY = 1 << 29;
+        const OVERFLOW = 1 << 28;
+    }
+}
+
+/// A synchronous exception taken to EL1, with the instruction that raised it still at the program counter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Exception {
+    /// [ESR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-).
+    pub syndrome: u64,
+    /// [FAR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FAR-EL1--Fault-Address-Register--EL1-), where the syndrome makes it valid.
+    pub fault_address: Option<u64>,
+}
+
+/// What a program at EL0 may do with a page; memory that was never given a permission is unmapped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PagePermission {
+    Unmapped,
+    Mapped {
+        data_access: DataAccess,
+        instruction_fetch: InstructionFetch,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DataAccess {
+    Forbidden,
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InstructionFetch {
+    Forbidden,
+    Allowed,
+}
+
+/// An [A64 instruction variant](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions).
+///
+/// TODO: temporary placeholder until every variant is listed: these are the ten of the first slice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Instruction {
+    AddShiftedRegister64,
+    AddsShiftedRegister64,
+    Csel64,
+    LdrImmediateUnsignedOffset64,
+    StrImmediateUnsignedOffset64,
+    StpSignedOffset64,
+    LdrImmediatePostIndex64,
+    Brk,
+    Rdvl,
+    MrsCtrEl0,
+}
+
+/// An instruction with one behavior for every case the manual leaves open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreciseInstruction {
+    AddShiftedRegister64,
+    AddsShiftedRegister64,
+    Csel64,
+    LdrImmediateUnsignedOffset64,
+    StrImmediateUnsignedOffset64,
+    StpSignedOffset64(StorePairAcrossFault),
+    LdrImmediatePostIndex64(LoadIntoBaseWithWriteback),
+    Brk,
+    Rdvl(VectorLengthReading),
+    MrsCtrEl0 { cache_type: u64 },
+}
+
+/// What a store pair writes when part of it faults.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StorePairAcrossFault {
+    WritesNothing,
+    WritesBytesBelowFault,
+}
+
+/// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a post-indexed load whose target is its base.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LoadIntoBaseWithWriteback {
+    WritebackSuppressed,
+    WritebackOverwritesLoad,
+    Undefined,
+    NoOperation,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VectorLengthReading {
+    Undefined,
+    Reads(VectorLength),
+}
+
+/// An [SVE vector length](https://developer.arm.com/documentation/ddi0487/latest/#:~:text=permitted%20vector%20lengths).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VectorLength {
+    Bits128,
+    Bits256,
+    Bits512,
+    Bits1024,
+    Bits2048,
+}
+
+impl Simulator<Arm64> for PreciseInstruction {
+    type Error = Infallible;
+
+    fn simulate_in_place(
+        &self,
+        _processor: &mut Processor,
+        _memory: &[MemoryDelta<'_, Arm64>],
+        _on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+    ) -> Result<(), Infallible> {
+        todo!("the ARM64 formulas are not built yet")
+    }
+}

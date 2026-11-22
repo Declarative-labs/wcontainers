@@ -1,0 +1,21 @@
+[package]
+name = "wcontainers-processor-architecture-arm64"
+description = "The ARM64 architecture as a program at EL0 sees it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-processor-architecture = { path = "../.." }
+bitflags.workspace = true
+# The fields and exception classes of ESR_EL1 (MIT OR Apache-2.0); already used by the hardware executor.
+aarch64-cpu = "12.0.0"
+
+[lints]
+workspace = true
