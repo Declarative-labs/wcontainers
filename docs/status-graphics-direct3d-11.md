@@ -124,7 +124,7 @@ Main run 3 (2026-11-21, from about 15:20 Pacific), the seventh check's findings:
   (`NormAsInteger`, plan section 9's "no render bits"), so those formats are render targets with
   generated mips again; only blending into them is missing (Gap list). Tests: programs.rs
   `format_support_without_texture_formats_tier1_...` (bit by bit) and
-  `normalised_targets_drawn_and_their_mips_generated_as_direct3d_does` (drawn, read back and mips
+  `normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does` (drawn, read back and mips
   generated, natively and without tier1, against real Direct3D).
 - The WebGL 2 build's multisampling (blocking): without the back end's sample mask
   (`SampleMaskInShader` is not built) no format reports multisampling and
@@ -409,6 +409,9 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 - Multisampling per format (plan section 9's listed shortfall): claimed only where the back end
   draws a count of the format, a subset of real Direct3D's.
 - Optional and served: `R32G32B32_FLOAT` is sampled (and at 11_0 gathered) by ours from 10_0.
+- The 8-bit signed and 16-bit normalised formats held as their integer twins (without
+  texture-formats-tier1 or 16-bit norm) claim `SHADER_LOAD` and `SHADER_SAMPLE` as the RTX 3080
+  does and are read decoded in every stage, compute included (agents run 2).
 - Optional video formats absent altogether: AYUV, Y410, Y416, P010, P016, Y210, Y216, NV11, AI44,
   IA44, P8, A8P8.
 - Shortfalls of the reported level, in the Gap list: the B5 targets (at every level),
