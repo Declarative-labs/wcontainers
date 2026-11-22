@@ -4,7 +4,7 @@ use core::ops::Range;
 
 use wcontainers_abi::{CpuError, Permissions, ThreadId};
 
-/// Executes guest threads.
+/// The runner of guest threads.
 pub trait Executor {
     type TranslatorConfig: Default;
 }

@@ -9,6 +9,7 @@ path = "interface.rs"
 [dependencies]
 domain = { version = "0.12.3", default-features = false }
 wcontainers-abi.workspace = true
+wcontainers-readiness = { path = "../readiness" }
 wcontainers-kernel = { path = "../kernel" }
 wcontainers-clock = { path = "../clock" }
 wcontainers-executor = { path = "../executor" }

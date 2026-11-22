@@ -16,7 +16,7 @@ pub struct MultipathToken(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DataSequenceNumber(pub u64);
 
-/// The [`MPTCP_INFO`](https://docs.kernel.org/networking/mptcp.html) of a multipath connection.
+/// The [`MPTCP_INFO`](https://docs.kernel.org/networking/mptcp.html#:~:text=MPTCP_INFO) of a multipath connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MultipathInformation {
     pub extra_subflows: SubflowCount,

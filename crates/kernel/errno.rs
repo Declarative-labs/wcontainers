@@ -1,5 +1,4 @@
 #![allow(
-    reviewable::magic_literal,
     reviewable::interface_item,
     reason = "Linux's error numbers for ARM64 and x86-64, which share one table"
 )]
@@ -140,7 +139,7 @@ pub enum Errno {
     ENOTRECOVERABLE = 131,
     ERFKILL = 132,
     EHWPOISON = 133,
-    /// A [restart code](https://github.com/torvalds/linux/blob/v6.18/include/linux/errno.h), which a call a signal interrupted returns inside the kernel and only a tracer sees.
+    /// A [restart code](https://github.com/torvalds/linux/blob/v6.18/include/linux/errno.h#L8-L18), which a call a signal interrupted returns inside the kernel and only a tracer sees.
     ERESTARTSYS = 512,
     ERESTARTNOINTR = 513,
     ERESTARTNOHAND = 514,

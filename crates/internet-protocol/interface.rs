@@ -43,7 +43,7 @@ pub struct DropCount(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InterfaceIndex(pub u32);
 
-/// A [PTP hardware clock](https://docs.kernel.org/networking/timestamping.html) of the exit node, by its index there.
+/// A [PTP hardware clock](https://docs.kernel.org/driver-api/ptp.html) of the exit node, by its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PtpHardwareClockIndex(pub u32);
 
@@ -75,7 +75,7 @@ pub struct IpPrefix {
     pub length: PrefixLength,
 }
 
-/// A processor of the exit node, by its number there, as [`SO_INCOMING_CPU`](https://man7.org/linux/man-pages/man7/socket.7.html) names one.
+/// A processor of the exit node, by its number there, as [`SO_INCOMING_CPU`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_INCOMING_CPU) names one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessorIndex(pub u32);
 
@@ -85,7 +85,7 @@ pub struct TransportPorts {
     pub destination: Port,
 }
 
-/// A mode of [path MTU discovery](https://man7.org/linux/man-pages/man7/ip.7.html).
+/// A mode of [path MTU discovery](https://man7.org/linux/man-pages/man2/IP_MTU_DISCOVER.2const.html).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathMtuDiscovery {
     Dont,
@@ -150,7 +150,9 @@ pub struct UpperLayer {
     pub selector: Option<UpperLayerSelector>,
 }
 
-/// The check that the source address a route is looked up with is one the exit node has, which [`IP_TRANSPARENT`](https://man7.org/linux/man-pages/man2/IP_TRANSPARENT.2const.html) waives, as [`IP_HDRINCL`](https://man7.org/linux/man-pages/man2/IP_HDRINCL.2const.html) also does for IPv4 and [`IP_FREEBIND`](https://man7.org/linux/man-pages/man2/IP_FREEBIND.2const.html) or the `net.ipv6.ip_nonlocal_bind` sysctl also do for IPv6.
+/// The check that the exit node has the source address of a route lookup.
+///
+/// [`IP_TRANSPARENT`](https://man7.org/linux/man-pages/man2/IP_TRANSPARENT.2const.html) waives it, as [`IP_HDRINCL`](https://man7.org/linux/man-pages/man2/IP_HDRINCL.2const.html) also does for IPv4 and [`IP_FREEBIND`](https://man7.org/linux/man-pages/man2/IP_FREEBIND.2const.html) or the `net.ipv6.ip_nonlocal_bind` sysctl also do for IPv6.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceAddressCheck {
     Required,
@@ -168,7 +170,7 @@ pub struct Ipv4RouteSelectors<'a> {
     pub mark: PacketMark,
     pub scope: RouteScope,
     pub broadcast: BroadcastPermission,
-    /// [IP options](https://man7.org/linux/man-pages/man7/ip.7.html) in the form `IP_OPTIONS` takes, with a source route's first hop in its first slot.
+    /// [IP options](https://man7.org/linux/man-pages/man2/IP_OPTIONS.2const.html) in the form `IP_OPTIONS` takes, with a source route's first hop in its first slot.
     pub options: &'a Ipv4Options,
     pub upper_layer: UpperLayer,
 }
@@ -392,14 +394,14 @@ pub struct LocalBinding<'a> {
     pub port: LocalPort<'a>,
 }
 
-/// The sharing of a local address that [`SO_REUSEADDR`](https://man7.org/linux/man-pages/man7/socket.7.html) allows.
+/// The sharing of a local address that [`SO_REUSEADDR`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_REUSEADDR) allows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddressSharing {
     Exclusive,
     Shared,
 }
 
-/// The sharing of a local port that [`SO_REUSEPORT`](https://man7.org/linux/man-pages/man7/socket.7.html) allows.
+/// The sharing of a local port that [`SO_REUSEPORT`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_REUSEPORT%20%28since) allows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortSharing {
     Exclusive,
@@ -431,13 +433,13 @@ pub struct FilterInstruction {
     pub operand: FilterOperand,
 }
 
-/// A classic BPF program, as [`SO_ATTACH_FILTER`](https://man7.org/linux/man-pages/man7/socket.7.html) takes one.
+/// A classic BPF program, as [`SO_ATTACH_FILTER`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_ATTACH_FILTER) takes one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SocketFilter<'a>(pub &'a [FilterInstruction]);
 
 /// A setting of how a socket holds its local address and port among the exit node's sockets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PortSetting<'a> {
+pub enum BindingSetting<'a> {
     AddressSharing(AddressSharing),
     PortSharing(PortSharing),
     NonlocalAddresses(NonlocalAddresses),

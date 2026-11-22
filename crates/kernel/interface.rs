@@ -168,25 +168,25 @@ pub enum WriteMemoryError {
 
 pub type SystemCallResponse = Result<u64, Errno>;
 
-/// A [process or thread ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html).
+/// A [process or thread ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=pid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(pub u32);
 
-/// A Linux [user ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html).
+/// A Linux [user ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=uid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UserId(pub u32);
 
 /// The memory behind a shared mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemoryObject {
-    /// A file mapped with [`MAP_SHARED`](https://man7.org/linux/man-pages/man2/mmap.2.html).
+    /// A file mapped with [`MAP_SHARED`](https://man7.org/linux/man-pages/man2/mmap.2.html#:~:text=MAP_SHARED).
     File {
         device: DeviceId,
         inode: InodeNumber,
     },
-    /// A [System V shared memory segment](https://man7.org/linux/man-pages/man7/sysvipc.7.html).
+    /// A [System V shared memory segment](https://man7.org/linux/man-pages/man7/sysvipc.7.html#:~:text=Shared%20memory%20segments).
     SystemVSegment(SystemVSegmentId),
-    /// A mapping made with [`MAP_SHARED | MAP_ANONYMOUS`](https://man7.org/linux/man-pages/man2/mmap.2.html).
+    /// A mapping made with [`MAP_SHARED | MAP_ANONYMOUS`](https://man7.org/linux/man-pages/man2/mmap.2.html#:~:text=not%20backed%20by%20any%20file).
     Anonymous(AnonymousMemoryId),
 }
 
@@ -194,7 +194,7 @@ pub enum MemoryObject {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId(pub u64);
 
-/// A file's [inode number](https://man7.org/linux/man-pages/man7/inode.7.html).
+/// A file's [inode number](https://man7.org/linux/man-pages/man7/inode.7.html#:~:text=Inode%20number).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InodeNumber(pub u64);
 

@@ -2,7 +2,7 @@ use core::num::NonZeroU32;
 use core::time::Duration;
 
 use wcontainers_internet_protocol::{
-    ByteCount, HopLimit, IpPacketSetting, IpSocketSetting, IpVersion, PortSetting, Report,
+    ByteCount, HopLimit, IpPacketSetting, IpSocketSetting, IpVersion, BindingSetting, Report,
     SocketFilter,
 };
 
@@ -42,7 +42,7 @@ pub struct TcpSequenceNumber(pub u32);
 pub enum TcpSetting<'a> {
     Ip(IpSocketSetting<'a>),
     Packet(IpPacketSetting<'a>),
-    Port(PortSetting<'a>),
+    Binding(BindingSetting<'a>),
     BufferLocks(BufferLocks),
     ReceiveLowWater(ByteCount),
     Filter(Option<SocketFilter<'a>>),
@@ -125,14 +125,14 @@ pub enum TransmitRehash {
     Enabled,
 }
 
-/// A [`TCP_QUICKACK`](https://man7.org/linux/man-pages/man7/tcp.7.html) mode, which the connection's own acknowledging later switches.
+/// A [`TCP_QUICKACK`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_QUICKACK%20%28since) mode, which the connection's own acknowledging later switches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpQuickAcknowledgement {
     Off,
     On,
 }
 
-/// A [`TCP_LINGER2`](https://man7.org/linux/man-pages/man7/tcp.7.html) value.
+/// A [`TCP_LINGER2`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_LINGER2%20%28since) value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpFinWait2 {
     SystemDefault,
@@ -149,7 +149,7 @@ pub struct FastOpenKeys {
     pub backup: Option<FastOpenKey>,
 }
 
-/// A [`TCP_SAVE_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html) value.
+/// A [`TCP_SAVE_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_SAVE_SYN%20%28since) value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpSavedSynchronize {
     Off,

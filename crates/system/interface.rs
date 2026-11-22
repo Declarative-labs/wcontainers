@@ -10,12 +10,13 @@ use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_kernel::signal_information::{PollEvents, SignalInformation};
+use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
     AccessKind, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse, TaskId,
 };
 use wcontainers_random_source::RandomSource;
 use wcontainers_raw_sockets::RawSockets;
+use wcontainers_readiness::Readiness;
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_tcp_sockets::TcpSockets;
 use wcontainers_udp_sockets::UdpSockets;
@@ -119,7 +120,7 @@ pub trait ProcessTracer {
     ) {
     }
 
-    /// Another process is about to read this one's internal state.
+    /// Runs when another process is about to read this one's internal state.
     fn on_inspection_starting<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {
     }
     fn on_inspection_ended<P: ProcessOf<Self::ProcessState, Self::Executor>>(&self, process: P) {}
@@ -146,12 +147,6 @@ pub trait ProcessorInputs: ProcessTracer {
     ) -> u64;
 }
 
-/// The largest [`pid_max`](https://man7.org/linux/man-pages/man5/proc_sys_kernel.5.html) Linux allows on a 64-bit machine.
-pub const TASK_ID_LIMIT: u32 = 4_194_304;
-
-/// The task ID that allocation restarts from after it reaches the limit, as Linux keeps the lower ones for early processes.
-pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
-
 pub trait TaskIdAllocator {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         let next = previous.0 + 1;
@@ -164,18 +159,18 @@ pub trait TaskIdAllocator {
     fn free_task_id(&self, id: TaskId);
 }
 
+/// The largest [`pid_max`](https://man7.org/linux/man-pages/man5/proc_sys_kernel.5.html#:~:text=pid_max%20%28since) Linux allows on a 64-bit machine.
+pub const TASK_ID_LIMIT: u32 = 4_194_304;
+
+/// The task ID that allocation restarts from after it reaches the limit, as Linux [keeps the lower ones](https://github.com/torvalds/linux/blob/v6.18/include/linux/pid.h#L48) for early processes.
+pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
+
 /// A transport of byte streams to and from endpoints.
-pub trait StreamTransport {
+pub trait StreamTransport: Readiness<Self::Endpoint> {
     type Endpoint: Ord;
 
     fn send_stream(&self, peer: &Self::Endpoint, bytes: &[u8]) -> Result<usize, HostError>;
     fn receive_stream(&self, peer: &Self::Endpoint, into: &mut [u8]) -> Result<usize, HostError>;
-    /// Waits until the stream has one of the events asked for, and returns the events it has.
-    async fn wait_for_stream_events(
-        &self,
-        peer: &Self::Endpoint,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError>;
     fn close_stream(&self, peer: &Self::Endpoint);
 }
 
@@ -186,19 +181,20 @@ pub trait FallbackObserver {
     fn on_fallback_used(&self, which: &Self::Fallback) {}
 }
 
+/// A [FUSE](https://man7.org/linux/man-pages/man4/fuse.4.html) server.
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
 
-    /// Sends a FUSE request and returns its reply; a request that FUSE gives no reply finishes at once with an empty one.
+    /// Sends a FUSE request and returns its reply; a request FUSE never replies to completes immediately with an empty reply.
     async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>;
 }
 
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 pub trait DomainNameResolver {
-    type Answer: Deref<Target = Message<[u8]>>;
+    type AnswerBytes: AsRef<[u8]>;
 
     async fn resolve_domain(
         &self,
         question: Question<&Name<[u8]>>,
-    ) -> Result<Self::Answer, HostError>;
+    ) -> Result<Message<Self::AnswerBytes>, HostError>;
 }
