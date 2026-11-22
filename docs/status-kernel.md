@@ -8,6 +8,50 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, first run: the kernel builds against the owner's interfaces of 2026-11-22
+
+- Built and pushed at once (0ce16ef9, lock file 503fbebb): wcontainers-kernel-linux, the kernel
+  suite, the stand-in (executor unicorn), the runtime's single kernel and the seeded test policy
+  pass `cargo check --all-targets` on the ARM64 machine.
+- `KernelWithExecutor<C, State, S>` now implements the one `Kernel` trait (ProcessController is
+  gone). It is generic over its system because `type Config` must name it: `KernelConfig` holds a
+  fresh kernel, the executor, the system, a `Start<'static, ..>`, the first process's
+  `ExecutionConfig` and its state, and `new` starts the container from it (it panics, naming the
+  reason, if the kernel cannot run the first process as asked; the inherent `start` returns that
+  as an error and stays the drivers' constructor, since their starts borrow).
+- `Kernel: Sync` with every call taking `&self`: the kernel's state and its executor sit behind one
+  `spin::Mutex` (spin 0.10.1, MIT; already in the lock file), and `Sync` is asserted by an `unsafe
+  impl` (executing.rs) whose condition is that a kernel and what it hands out stay on one host
+  thread at a time. Nothing checks that condition: the state is `Rc` and `RefCell` throughout, the
+  stand-in's executor (Unicorn) is not `Send`, and the system's stored waiting calls need not be
+  `Send` (For the owner). Making the state shareable is the owner's "start on that", not done here.
+- `Kernel::run` is not built: it panics as "not built". The executor interface has no call that
+  runs a thread, so this kernel is still driven through its own `next`, `exit` and `event` on the
+  executor it holds (For the owner). `type Fallback` is the abi's `Warning<'static>` (what the
+  kernel counts and warns of today); nothing reports through `FallbackObserver` yet.
+- The process handle's `suspend_threads` takes only its own process's threads (it already
+  filtered). The suite now runs on a kernel with two processes (guest/forked.c, run on the stand-in
+  until both wait: `driver::program_waiting`) and has two new checks:
+  `tasks_of_several_processes_are_taken_at_once` (one `Kernel::suspend_tasks` takes both
+  processes' threads, then neither again) and `threads_of_another_process_are_not_taken` (a
+  handle asked for every id but its own returns nothing, and its own thread is still there). The
+  stand-in's round_trips.rs adds `a_handle_takes_no_thread_of_another_process`: the child's thread,
+  asked for through the parent's handle, is still taken by the kernel afterwards.
+- `SystemCallError`: a backend's unnamed error (134 to 511) is now `Err(Unknown(..))`; a known one
+  `Err(WellKnown(..))`; restart codes stay `Ok` of the raw value, as before.
+- `FuseServer::receive_notice`: the test host and the runtime answer `NotSupported` (they still
+  hand notices as the abi's `Event::BackendNotice`); the policy refuses it, counted, as every
+  other outside request; the kernel's own test server never sends one. The kernel does not yet
+  keep a wait on `receive_notice` (next work).
+- TCP: connect and listen pass `TcpLocalEnd::Unbound`, as they did before the change; a socket
+  given back in an error is released. The kernel does not bind at the system at a guest's `bind`:
+  a container has its own network namespace and its sockets reach the outside through the exit
+  node's NAT, as Docker's do, so a guest bind claims no port of the exit node (Departures). The
+  other guest-kernel items of the networking notes build values this kernel does not build (it
+  keeps every socket option in its own model), so nothing of them applies yet.
+- The K6c independent-check findings repeated in this run's brief were answered in K6c's
+  fourteenth run (see there); ADSP038 is under "Waiting for the owner".
+
 ## 2026-11-22: a wait gives a readiness report
 
 - The owner's interfaces merged at a00ab267: `wait_until_ready` returns `ReadinessReport { ready_for,
@@ -38,6 +82,18 @@ crates/runtime/implementation/single-kernel.
   end a wait whether or not they were asked for, which the suites keep checking.
 
 ## For the owner
+
+- KC: `Kernel: Sync` cannot be met soundly by this kernel yet, and the interfaces leave part of it
+  unexpressed. The system's `async fn`s carry no `Send` bound, so a kernel that stores a system's
+  waiting call and lets another host thread poll it cannot know it may. Example: a browser system
+  whose `send_request` future holds a JavaScript value polled from a worker other than the one
+  that made it. This kernel asserts `Sync` with an `unsafe impl` on the condition that it stays on
+  one host thread at a time (executing.rs).
+- KC: `Kernel::run(&self, executor)` cannot be built: the executor interface has no call that
+  runs a thread, and `suspend_tasks`, `suspend_process` and `copy_process_context` are given no
+  executor, though each reads the threads' registers from it. Example: `suspend_tasks(&[task])`
+  must read the task's registers, which are in the executor that `run` was handed. So this
+  kernel keeps one executor of its own and `run` panics as not built.
 
 Found while making the kernel implement the reviewed interface (KA, first run). Each is a place
 where the interface cannot be implemented as written or leaves something undefined; the kernel's
