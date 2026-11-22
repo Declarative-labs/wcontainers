@@ -38,6 +38,8 @@ wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 wcontainers-executor = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 wcontainers-executor-wasmtime = { path = "../wasmtime", optional = true }
 wcontainers-arm64 = { path = "../../../wcontainers-arm64", optional = true }
 unicorn-engine = "2.1.5"
