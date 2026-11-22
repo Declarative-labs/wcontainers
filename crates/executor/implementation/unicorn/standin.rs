@@ -678,7 +678,19 @@ impl Default for StandIn {
 
 /// The stand-in runs guest code as it is, with no translator to configure.
 impl wcontainers_executor::Executor for StandIn {
+    type Architecture = wcontainers_processor_architecture_arm64::Arm64;
     type TranslatorConfig = ();
+
+    fn execute_single_instruction_in_place(
+        &mut self,
+        _processor: &mut wcontainers_processor_architecture_arm64::Processor,
+        _memory: &[wcontainers_processor_architecture::MemoryDelta<'_, Self::Architecture>],
+        _on_memory_mutated: impl FnMut(
+            wcontainers_processor_architecture::MemoryDelta<'_, Self::Architecture>,
+        ),
+    ) {
+        todo!("single instruction execution is not built for the Unicorn stand-in yet")
+    }
 }
 
 impl Cpu for StandIn {
