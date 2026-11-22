@@ -365,6 +365,7 @@ pub fn dxgi_vertex_format(value: u32) -> Option<(VertexFormat, u32)> {
         dxgi::R8_SNORM => (Snorm8x1, 1),
         dxgi::R8_SINT => (Sint8x1, 1),
         dxgi::B8G8R8A8_UNORM => (Bgra8Unorm, 4),
+        dxgi::B8G8R8X8_UNORM => (Bgrx8Unorm, 4),
         _ => return None,
     })
 }
