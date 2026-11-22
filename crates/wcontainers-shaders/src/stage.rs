@@ -96,7 +96,9 @@ pub(crate) mod word {
     /// hold no vertex: the vertex stage writes their records outside every clip volume, the
     /// geometry stage closes their slots and stream output skips their primitives.
     pub const LISTED_TOTAL: u32 = 12;
-    pub const COUNT_OF: u32 = 13;
+    /// The stream a geometry shader's replay form keeps the vertices of, for one of several streams.
+    pub const STREAM: u32 = 13;
+    pub const COUNT_OF: u32 = 14;
 }
 
 /// The position's w of a record that no clip volume holds.

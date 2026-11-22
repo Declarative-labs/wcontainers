@@ -609,18 +609,16 @@ impl GeometryPass<'_> {
             let limit = b.u32(max);
             let room = b.binary(BinaryOperator::Less, n, limit);
             b.open();
-            // Only the drawn stream is replayed.
+            // Of several streams, the replay keeps the vertices of the one `word::STREAM` names.
             let keeps = match state.form {
-                Form::Replay(r) if stream == 0 => Some(replay_emit(&mut b, r, n, output_vertices)),
-                Form::Replay(_) => {
-                    let accept = b.close();
-                    b.stmt(naga::Statement::If {
-                        condition: room,
-                        accept,
-                        reject: naga::Block::new(),
+                Form::Replay(r) => {
+                    let replayed = (streams > 1).then(|| {
+                        let values = b.global(state.values);
+                        let named = stage::value(&mut b, values, stage::word::STREAM);
+                        let this = b.u32(stream as u32);
+                        b.binary(BinaryOperator::Equal, named, this)
                     });
-                    self.module.functions[emit[stream]] = b.finish();
-                    continue;
+                    Some(replay_emit(&mut b, r, n, output_vertices, replayed))
                 }
                 Form::Compute { .. } => None,
             };
@@ -1490,13 +1488,24 @@ fn record_slot(b: &mut Builder, state: State, at: Expr) -> Expr {
     })
 }
 
-/// The replay form's bookkeeping as vertex `n` of the drawn stream is emitted, and whether it is the
-/// vertex the corner keeps. Odd triangles of a strip take their last two vertices swapped, as the
-/// strip draws them.
-fn replay_emit(b: &mut Builder, r: Replay, n: Expr, output_vertices: u32) -> Expr {
+/// The replay form's bookkeeping as vertex `n` of a stream is emitted, and whether it is the vertex
+/// the corner keeps; with `replayed`, only where it is true (the stream is the one replayed). Odd
+/// triangles of a strip take their last two vertices swapped, as the strip draws them.
+fn replay_emit(
+    b: &mut Builder,
+    r: Replay,
+    n: Expr,
+    output_vertices: u32,
+    replayed: Option<Expr>,
+) -> Expr {
+    let only = |b: &mut Builder, condition| match replayed {
+        Some(replayed) => b.binary(BinaryOperator::LogicalAnd, condition, replayed),
+        None => condition,
+    };
     let slot = b.global(r.slot);
     let slot = b.load(slot);
     let first = b.binary(BinaryOperator::Equal, n, slot);
+    let first = only(b, first);
     b.when(first, |b| {
         let start = b.global(r.strip_start);
         let start = b.load(start);
@@ -1524,6 +1533,7 @@ fn replay_emit(b: &mut Builder, r: Replay, n: Expr, output_vertices: u32) -> Exp
     let last = b.u32(output_vertices - 1);
     let last = b.add(slot, last);
     let closes = b.binary(BinaryOperator::Equal, n, last);
+    let closes = only(b, closes);
     b.when(closes, |b| {
         let start = b.global(r.strip_start);
         let start = b.load(start);
@@ -1535,7 +1545,8 @@ fn replay_emit(b: &mut Builder, r: Replay, n: Expr, output_vertices: u32) -> Exp
     });
     let wanted = b.global(r.wanted);
     let wanted = b.load(wanted);
-    b.binary(BinaryOperator::Equal, n, wanted)
+    let keeps = b.binary(BinaryOperator::Equal, n, wanted);
+    only(b, keeps)
 }
 
 /// This invocation's number among the slots of `stream`: stream 0's slots come first, each later

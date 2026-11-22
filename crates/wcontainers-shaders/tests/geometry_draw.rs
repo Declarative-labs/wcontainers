@@ -2420,9 +2420,12 @@ fn streams_alike(
     agree && statistics.iter().all(|s| s[1] > 0) && apart.iter().all(|&n| n == 0)
 }
 
+/// A geometry shader writing four streams of points, through the compute route on WebGPU and the
+/// replay route on the WebGL 2 back end (ANGLE), against real Direct3D.
 #[test]
 fn streams_past_the_first_match_direct3d() {
     let mut backend = webgpu();
+    let mut webgl = webgl();
     let gpus = references();
     let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
         .map(|s| s.parse().unwrap())
@@ -2464,18 +2467,23 @@ fn streams_past_the_first_match_direct3d() {
                     unreachable!()
                 };
                 compared += 1;
-                let alike = streams_alike(
-                    &name,
-                    case,
-                    output,
-                    (&reference, &statistics),
-                    (&streamed, &words),
-                );
+                let reference = (&reference[..], &statistics[..]);
+                let alike = streams_alike(&name, case, output, reference, (&streamed, &words));
                 if !alike {
-                    failures.push(name);
+                    failures.push(name.clone());
                 } else if taken > 0 {
                     eprintln!("{name}: known, {taken} position words from direct3d 11 (A22)");
-                    known.push(name);
+                    known.push(name.clone());
+                }
+                let name = format!("{name}, replayed");
+                match ours_replayed(&mut webgl, case, &vertices, &indices, Some(output)) {
+                    Ok(Made::Streamed(streamed, words)) => {
+                        compared += 1;
+                        if !streams_alike(&name, case, output, reference, (&streamed, &words)) {
+                            failures.push(name);
+                        }
+                    }
+                    other => failures.push(format!("{name}: not streamed: {:?}", other.err())),
                 }
             }
         }
@@ -2619,10 +2627,10 @@ const ROWS_CASES: [Case; 5] = [
     },
 ];
 
-/// Whether the replay route refuses a rows case of `streams` streams by name: several streams, and
-/// dxc's build reading input arrays of rows, which its replay form holds as arrays of arrays.
-fn replay_refuses(case: &Case, streams: usize) -> bool {
-    streams > 1 || (case.route == Route::Dxil && case.vs == "vs_rows")
+/// Whether the replay route refuses a rows case by name: dxc's build reading input arrays of rows,
+/// which its replay form holds as arrays of arrays.
+fn replay_refuses(case: &Case) -> bool {
+    case.route == Route::Dxil && case.vs == "vs_rows"
 }
 
 /// Geometry shaders with arrays among their inputs and outputs, one register a row, through the
@@ -2694,10 +2702,10 @@ fn geometry_shaders_with_rows_stream_as_direct3d_does() {
             }
             let name = format!("{name}, replayed");
             match ours_replayed(&mut webgl, case, &vertices, &indices, Some(output)) {
-                Err(StageError::Unsupported(reason)) if replay_refuses(case, streams) => {
+                Err(StageError::Unsupported(reason)) if replay_refuses(case) => {
                     eprintln!("{name}: refused, {reason}")
                 }
-                Ok(Made::Streamed(streamed, words)) if !replay_refuses(case, streams) => {
+                Ok(Made::Streamed(streamed, words)) if !replay_refuses(case) => {
                     compared += 1;
                     if !streams_alike(&name, case, output, reference, (&streamed, &words)) {
                         failures.push(name);

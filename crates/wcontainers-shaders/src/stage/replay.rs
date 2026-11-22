@@ -2,8 +2,9 @@
 //! stage is captured into records, the records are copied into a texture, and the geometry shader's
 //! replay form (`VariantFlags::GEOMETRY_REPLAY`) is captured in turn, one vertex per corner of each
 //! output primitive slot; the pass-through draws what it captured, and stream output is written on
-//! the host from it. Stream output from a vertex shader alone is written on the host from the vertex
-//! stage's capture, which the pass-through draws.
+//! the host from it. A geometry shader writing several streams is replayed once a stream for its
+//! stream output, stream 0 last for the draw. Stream output from a vertex shader alone is written on
+//! the host from the vertex stage's capture, which the pass-through draws.
 
 use super::helper::{
     FinalDraw, InputTopology, LINE_VERTICES, NOT_A_GEOMETRY_SHADER, Owned, STAGE_INDIRECT,
@@ -31,8 +32,6 @@ use wcontainers_gpu::{
 const ADJACENT_STRIP: &str = "GeometryReplayAdjacentStrip";
 /// A record wider than one capture target holds.
 const RECORD_COMPONENTS: &str = "GeometryReplayComponents";
-/// Stream output from a geometry shader writing streams past the first, which the replay leaves out.
-const STREAMS_PAST_THE_FIRST: &str = "GeometryReplayStreams";
 /// Stream output of a vertex program whose records do not hold its reflected locations first.
 const STREAMED_LOCATIONS: &str = "StreamOutCaptureLocations";
 /// A replay form holding an array of arrays (a DXIL geometry shader's input arrays of rows, one per
@@ -112,6 +111,8 @@ struct Replayed<B: Backend> {
     /// Words per captured output vertex: its record, then whether its slot's primitive is whole.
     out_words: u32,
     selects: bool,
+    /// Streams the geometry shader writes, at least one.
+    streams: u32,
 }
 
 /// The states of a captured draw, which draws nothing: no colour writes, no depth test, no culling,
@@ -247,11 +248,10 @@ impl<B: Backend> GeometryReplay<B> {
         if (in_slots * VEC4).max(out_words) > backend.caps().limits.capture_components {
             return Err(StageError::Unsupported(RECORD_COMPONENTS));
         }
-        let stream = match stream_output {
-            Some(_) if streams > 1 => return Err(StageError::Unsupported(STREAMS_PAST_THE_FIRST)),
-            Some(so) => Some(stream_declaration(so, &geometry.reflection.outputs, 1)?),
-            None => None,
-        };
+        let streams = u32::from(streams.max(1));
+        let stream = stream_output
+            .map(|so| stream_declaration(so, &geometry.reflection.outputs, streams))
+            .transpose()?;
         let output = u32::from(output_vertices);
         let primitive_vertices =
             instances.max(1) * super::replay_slots(max_output_vertices, output) * output;
@@ -274,6 +274,7 @@ impl<B: Backend> GeometryReplay<B> {
                 out_slots,
                 out_words,
                 selects,
+                streams,
             }),
             passthrough: geometry.modules[1].clone(),
             states,
@@ -474,10 +475,9 @@ impl<B: Backend> GeometryReplay<B> {
                     backend,
                     declared,
                     targets,
-                    captured,
-                    captured_bytes,
-                    record,
+                    (captured, captured_bytes, record),
                     n,
+                    (0, 1),
                 )?;
             }
             return Ok(Some(FinalDraw {
@@ -511,7 +511,7 @@ impl<B: Backend> GeometryReplay<B> {
         );
 
         // The replay: every corner of every output slot of every geometry invocation, per API
-        // instance.
+        // instance; of several streams, each later one for its stream output, then stream 0, drawn.
         let vertices = primitives
             .checked_mul(geometry.primitive_vertices)
             .ok_or(GpuError::OutOfMemory)?;
@@ -525,89 +525,99 @@ impl<B: Backend> GeometryReplay<B> {
             out_bytes,
             BufferUsage::CAPTURE | BufferUsage::VERTEX | BufferUsage::COPY_SRC,
         )?;
-        let mut values = [0u32; word::COUNT_OF as usize];
-        values[word::COUNT as usize] = count;
-        values[word::FIRST as usize] = first;
-        values[word::FIRST_INSTANCE as usize] = first_instance;
-        values[word::INSTANCES as usize] = instances;
-        values[word::PRIMITIVES as usize] = primitives;
-        let bytes = words_as_bytes(&values);
-        let mut offset = [0u64];
-        let ring = backend.write_buffer_ring(
-            RingKind::Data,
-            &[&bytes],
-            limits.min_uniform_offset_alignment,
-            &mut offset,
-        )?;
-        let set = backend.create_binding_set(&[
-            BindingEntry {
-                binding: VALUES_BINDING,
-                stages: StageSet::VERTEX,
-                resource: BindingResource::UniformBuffer(BufferRange {
-                    buffer: &ring,
-                    offset: offset[0],
-                    size: bytes.len() as u64,
-                }),
-            },
-            BindingEntry {
-                binding: VERTICES_BINDING,
-                stages: StageSet::VERTEX,
-                resource: BindingResource::Texture(&records.view),
-            },
-        ])?;
-        let mut sets = draw.geometry_sets;
-        sets[STAGE_SET as usize] = Some(&set);
+        let streamed = match (&self.stream, &draw.stream_output) {
+            (Some(declared), Some(targets)) => Some((declared, targets)),
+            _ => None,
+        };
+        let replayed: Vec<u32> = match streamed {
+            Some(_) => (1..geometry.streams).chain([0]).collect(),
+            None => alloc::vec![0],
+        };
         let out = &self.out.as_ref().unwrap().buffer;
-        backend.capture_vertices(
-            &DrawCall {
-                program: &geometry.program,
-                blend: &self.states.blend,
-                depth_stencil: &self.states.depth_stencil,
-                raster: &self.states.raster,
-                vertex_layout: &geometry.no_streams,
-                bindings: sets,
-                vertex_buffers: &[],
-                index: None,
-                topology: Topology::PointList,
-                restart: false,
-                viewports: &[CAPTURE_VIEWPORT],
-                scissors: &[],
-                blend_constant: Default::default(),
-                stencil_reference: Default::default(),
-                immediates: &[],
-                range: DrawRange::Vertices {
-                    first: 0,
-                    count: vertices,
-                    first_instance: 0,
-                    instances,
+        for stream in replayed {
+            let mut values = [0u32; word::COUNT_OF as usize];
+            values[word::COUNT as usize] = count;
+            values[word::FIRST as usize] = first;
+            values[word::FIRST_INSTANCE as usize] = first_instance;
+            values[word::INSTANCES as usize] = instances;
+            values[word::PRIMITIVES as usize] = primitives;
+            values[word::STREAM as usize] = stream;
+            let bytes = words_as_bytes(&values);
+            let mut offset = [0u64];
+            let ring = backend.write_buffer_ring(
+                RingKind::Data,
+                &[&bytes],
+                limits.min_uniform_offset_alignment,
+                &mut offset,
+            )?;
+            let set = backend.create_binding_set(&[
+                BindingEntry {
+                    binding: VALUES_BINDING,
+                    stages: StageSet::VERTEX,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset: offset[0],
+                        size: bytes.len() as u64,
+                    }),
                 },
-            },
-            &[BufferRange {
-                buffer: out,
-                offset: 0,
-                size: out_bytes,
-            }],
-            false,
-        )?;
+                BindingEntry {
+                    binding: VERTICES_BINDING,
+                    stages: StageSet::VERTEX,
+                    resource: BindingResource::Texture(&records.view),
+                },
+            ])?;
+            let mut sets = draw.geometry_sets;
+            sets[STAGE_SET as usize] = Some(&set);
+            backend.capture_vertices(
+                &DrawCall {
+                    program: &geometry.program,
+                    blend: &self.states.blend,
+                    depth_stencil: &self.states.depth_stencil,
+                    raster: &self.states.raster,
+                    vertex_layout: &geometry.no_streams,
+                    bindings: sets,
+                    vertex_buffers: &[],
+                    index: None,
+                    topology: Topology::PointList,
+                    restart: false,
+                    viewports: &[CAPTURE_VIEWPORT],
+                    scissors: &[],
+                    blend_constant: Default::default(),
+                    stencil_reference: Default::default(),
+                    immediates: &[],
+                    range: DrawRange::Vertices {
+                        first: 0,
+                        count: vertices,
+                        first_instance: 0,
+                        instances,
+                    },
+                },
+                &[BufferRange {
+                    buffer: out,
+                    offset: 0,
+                    size: out_bytes,
+                }],
+                false,
+            )?;
+            if let Some((declared, targets)) = streamed {
+                let record = Record {
+                    words: geometry.out_words,
+                    whole_word: true,
+                };
+                let streams = (stream, geometry.streams);
+                stream_out(
+                    backend,
+                    declared,
+                    targets,
+                    (out, out_bytes, record),
+                    geometry.output,
+                    streams,
+                )?;
+            }
+        }
         let count = vertices
             .checked_mul(instances)
             .ok_or(GpuError::OutOfMemory)?;
-        if let (Some(declared), Some(targets)) = (&self.stream, &draw.stream_output) {
-            let out = &self.out.as_ref().unwrap().buffer;
-            let record = Record {
-                words: geometry.out_words,
-                whole_word: true,
-            };
-            stream_out(
-                backend,
-                declared,
-                targets,
-                out,
-                out_bytes,
-                record,
-                geometry.output,
-            )?;
-        }
         let out = &self.out.as_ref().unwrap().buffer;
         Ok(Some(FinalDraw {
             buffer: out.clone(),
@@ -698,21 +708,21 @@ struct Record {
     whole_word: bool,
 }
 
-/// Writes stream 0's output on the host ([`SlowPath::StreamOutAfterReplay`]) from a capture `out`
-/// (`out_bytes`, `record` a vertex, `vertices` a primitive), as Direct3D's stream output stage: the
-/// whole primitives in order, each written only while every bound buffer holds it, and the filled
-/// sizes and counts advanced.
+/// Writes stream `stream`'s output on the host ([`SlowPath::StreamOutAfterReplay`]) from a capture
+/// `out` (`out_bytes`, `record` a vertex, `vertices` a primitive) of that stream, of `streams` the
+/// shader writes, as Direct3D's stream output stage: the whole primitives in order, each written only
+/// while every bound buffer of the stream holds it, and the filled sizes and the stream's counts
+/// advanced.
 fn stream_out<B: Backend>(
     backend: &mut B,
     declared: &StreamDeclaration,
     targets: &StreamTargets<'_, B>,
-    out: &B::Buffer,
-    out_bytes: u64,
-    record: Record,
+    (out, out_bytes, record): (&B::Buffer, u64, Record),
     vertices: u32,
+    (stream, streams): (u32, u32),
 ) -> Result<(), StageError> {
     backend.slow_paths().hit(SlowPath::StreamOutAfterReplay);
-    let filled_words = STREAM_BUFFERS + 2;
+    let filled_words = STREAM_BUFFERS + 2 * streams as usize;
     let filled_bytes = filled_words as u64 * u64::from(WORD);
     if targets.filled.size < filled_bytes {
         return Err(ConvertError::Malformed(STREAM_FILLED_SIZE.into()).into());
@@ -738,12 +748,12 @@ fn stream_out<B: Backend>(
     )?;
     let captured = words_of(&bytes);
 
-    // The primitives every bound buffer of stream 0 holds past its filled size.
+    // The primitives every bound buffer of the stream holds past its filled size.
     let mut strides = [0u64; STREAM_BUFFERS];
     let mut capacity = None;
     for (b, target) in targets.buffers.iter().enumerate() {
         if let Some(t) = target
-            && declared.buffer_streams[b] == 0
+            && u32::from(declared.buffer_streams[b]) == stream
             && declared.strides[b] != 0
         {
             strides[b] = u64::from(declared.strides[b]);
@@ -786,7 +796,7 @@ fn stream_out<B: Backend>(
             for k in 0..vertices as usize {
                 let vertex = &captured[(first + k) * record..][..record];
                 let base = (p * vertices as usize + k) * stride;
-                for e in declared.elements(0).filter(|e| e.buffer == b) {
+                for e in declared.elements(stream as u8).filter(|e| e.buffer == b) {
                     let words = &vertex[e.word as usize..][..e.count as usize];
                     let to = base + e.offset as usize;
                     old[to..to + words.len() * WORD as usize]
@@ -800,8 +810,9 @@ fn stream_out<B: Backend>(
         let advanced = u64::from(filled[b]) + written * u64::from(vertices) * strides[b];
         filled[b] = u32::try_from(advanced).map_err(|_| GpuError::OutOfMemory)?;
     }
-    filled[STREAM_BUFFERS] = written as u32;
-    filled[STREAM_BUFFERS + 1] = made as u32;
+    let counts = STREAM_BUFFERS + 2 * stream as usize;
+    filled[counts] = written as u32;
+    filled[counts + 1] = made as u32;
     backend.write_buffer(
         targets.filled.buffer,
         targets.filled.offset,
