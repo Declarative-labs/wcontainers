@@ -2,7 +2,47 @@
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done), I2 ICMP
 and raw sockets (redone in run 1 after the reorganization and the async ruling of 2026-11-21; runs 2 and 3
-answered the independent checks' findings, below; run 4 those of run 3's check). Nothing of this track is in progress.
+answered the independent checks' findings, below; run 4 those of run 3's check; run 5 those of run 4's). Nothing of
+this track is in progress.
+
+## I2 run 5: the independent check's findings, each
+- Largest fragment checked by nothing (blocking): new checks a_fragmented_reply_tells_its_largest_fragment (ICMP)
+  and a_fragmented_packet_tells_its_largest_fragment (raw): loopback's MTU lowered to 1280, a 3000-byte echo or
+  payload to 127.0.0.1 and ::1, and the field must equal the longest fragment of that packet on loopback's wire
+  (matched by the fragments' identification). A reply or packet in one piece must tell none (reply_arrives_whole,
+  ipv4_packets_arrive_whole). The verifier's broken copy (`let _ = integer();`) fails both. The status no longer
+  calls it not honoured; link-layer length now has its Linux reason (below).
+- Transmit report interface unchecked and made up (blocking): both suites now check, through the ICMP suite's new
+  `check_loopback_reports`, that a report holding its packet names loopback and tells the frame's length (the IP
+  packet on the wire plus loopback's Ethernet header: 58 and 78 bytes for the 24-byte echo). A report without its
+  packet (`SOF_TIMESTAMPING_OPT_TSONLY`) has no `IP_PKTINFO` (ipv4_datagram_support_cmsg: "Not possible for packets
+  ... without payload"), so its interface 0 is now counted and warned of (REPORT_INTERFACE_NOT_GIVEN, also for a
+  rejected transmit time), listed below and raised with the owner. Broken copies: interface always 0, length
+  without the link header, the count dropped: each fails.
+- Path MTU modes Interface and Omit not told from Dont (minor): new check each_path_mtu_discovery_mode_takes_its_mtu
+  in both suites, on the shared `path_mtu_modes_take_their_mtu`: a route of MTU 1300 out of a link of 1500
+  (`route ... mtu 1300`, the route's own MTU, which Linux's path MTU takes as an ICMP-learnt one would be; simpler
+  than a crafted "fragmentation needed"), packets of 1400 and 1600 bytes, IPv4 and IPv6. Dont and Want fragment to
+  1300; Do is too long at 1300; Probe and Interface leave 1400 whole (DF on IPv4 only for Probe) and are too long
+  at 1500; Omit leaves 1400 whole and fragments 1600 to the link's 1500. Read in the kernel (ip_sk_use_pmtu,
+  ip_sk_ignore_df, ip6_setup_cork, __ip6_append_data) and passing on Linux 7.0. Broken copies Interface and Omit as
+  Dont, Omit as Interface, Probe as Do: each fails both. Probe and Interface stay alike over IPv6 (they differ only
+  in taking learnt path MTUs).
+- Required source accepted any error (minor): both suites now want `HostError::Errno`, not a refusal. Broken copies
+  that answer the host's error as NotSupported fail a_waived_source_check_sends_from_an_absent_address and
+  payload_routes_take_their_selectors.
+- Wait flake (minor): still not explained. A hunt of the check alone (`flake-wait.sh`: the raw and ICMP
+  an_icmp_error_ends_a_wait_for_data, 12 loops of 100 process runs each, 00:07 UTC, load 2.2 to 4.3): 2400 passes,
+  no failure. Both checks now say, if not woken, whether the wait has its events when polled again (a lost wake) or
+  not (an error Linux never queued), so the next failure tells which.
+- Forwarded guess uncounted (minor): each packet taken as forwarded is now counted and warned of
+  (FORWARDED_BY_ITS_BYTES). No crate test reaches it: only the suite's forwarding pair makes such a packet, and a
+  suite function consumes its value before its counters could be read.
+- Found on the way: Linux reads `SOF_TIMESTAMPING_OPT_TSONLY` from the socket when it takes a timestamp
+  (__skb_tstamp_tx), not per send, so a send that changes whether its reports hold the packet while earlier sends
+  wait in the host changes theirs too. Such a send is now counted and warned of (PACKET_WISH_CHANGED, when the host
+  still holds bytes of the socket's sends); crate test a_packet_wish_changed_while_sends_are_held_is_counted (fq
+  pacing at 1000 bytes a second, three sends); listed below.
 
 ## I2 run 4: the independent check's findings, each
 - IPv6 router alert Off checked by nothing (blocking): an_ipv6_router_alert_takes_forwarded_packets now turns the
@@ -260,8 +300,11 @@ answered the independent checks' findings, below; run 4 those of run 3's check).
   - `independent-check-i2b.sh`: clean build with clippy, three rounds, 24 broken copies, cargo tree.
   - `independent-check-i2d.sh`: clean build with clippy, three rounds, the 43 broken copies of runs 1 to 3, cargo
     tree, then the UDP and TCP suites (the shared crate is theirs too).
-  - `findings-run2.sh`, `findings-run3.sh`, `findings-run4.sh`: the broken copies of each run's findings alone
-    (`TESTS` picks the test targets of a copy).
+  - `findings-run2.sh` to `findings-run5.sh` (and `findings-run5b.sh`, `findings-run5c.sh`): the broken copies
+    of each run's findings alone (`TESTS` picks the test targets of a copy).
+  - `final-run5.sh`: lint-and-suites.sh, the shared readiness test, then the UDP and TCP suites.
+  - `flake-wait.sh`: one check (`CHECK`, default the ICMP-error wait) of the raw and ICMP suites alone, `ROUNDS`
+    process runs in each of `LOOPS` parallel loops, failures' text kept.
   - `run4-suites.sh`: lint-and-suites.sh and the shared crate's readiness test.
   - `flake-hunt.sh`: both suites side by side, `ROUNDS` times (default 20), `FILTER` to pick checks, each
     failure's text printed.
@@ -275,6 +318,13 @@ answered the independent checks' findings, below; run 4 those of run 3's check).
   `git reset -q -- <those paths> Cargo.lock` in the shared index.
 
 ## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores, 12 test threads)
+- Run 5, 00:08 to 00:09 UTC, load 2.1 to 2.9, final code (`final-run5.sh`, `ROUNDS=3`): clippy with warnings denied
+  clean; three rounds, each ICMP 55 of 55 (0.95 s), raw 44 of 44 (2.9 s), resolver 31 of 31, Configurable 2 of 2,
+  NegativeRouteAdvice 3 of 3 and the allocation tests; the shared readiness test; UDP 75 and 5, TCP 106 of 106.
+  Broken copies of this run (00:02 to 00:05 UTC, load 1.2 to 1.8): fragment size dropped, report interface 0,
+  report length without the link header, Interface and Omit as Dont, Omit as Interface, Probe as Do, the ICMP and
+  raw source checks answered as refusals, the interface and packet wish counts dropped: each caught. The literal
+  check: 0 findings in all. No commit of this run touches a reviewed file or a manifest.
 - Run 4, 23:20 UTC, load 6.1 to 10.9, final code: three rounds, each ICMP 51 of 51 (0.95 s), raw 42 of 42 (2.9 s),
   resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3, the four crate tests and the shared readiness
   test; clippy with warnings denied clean.
@@ -317,6 +367,8 @@ answered the independent checks' findings, below; run 4 those of run 3's check).
 - Literal check: no finding in this track's files (20 in all, elsewhere).
 
 ## Which check fails when a method breaks
+- Run 5 adds: receive (both largest fragment checks, the report interface and length in check_loopback_reports),
+  send_to (each_path_mtu_discovery_mode_takes_its_mtu in both suites, the absent source's host error).
 - Run 4 adds: receive (an_echo_reply_arrives_with_its_ipv4_options, icmp_errors_queued_together_each_arrive,
   an_icmp_error_a_send_met_still_arrives; raw drops over two floods), configure (both source filter checks, the
   IPv6 alert turned off and changed, ICMP IPv6 multicast loopback).
@@ -338,13 +390,13 @@ answered the independent checks' findings, below; run 4 those of run 3's check).
 ## Honoured, and how each is checked
 - Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,
   source, waived source check, interface, link scope, broadcast permission, mark and owner, ICMP type and code,
-  path MTU modes, too long (`MessageTooLong` with the link MTU). IPv6 hop limit, DSCP, ECN, flow label, source
+  path MTU modes (the don't-fragment bit, and which MTU each takes, fragments to or is too long for), too long (`MessageTooLong` with the link MTU). IPv6 hop limit, DSCP, ECN, flow label, source
   preferences (a temporary address against the public one), local fragmentation and fragment MTU, and for raw sockets source, hop-by-hop, routing destination
   and destination options and a segment routing header. Received IPv4 options (an echoed record route).
 - Send fields: neighbour confirmation, priority (third band of a prio queue), transmit time (fq holds 300 ms;
   rejected times reported with their keys), transmit reports scheduled and software with key, with and without
-  the packet.
-- Received fields: interface, specific destination, software timestamps, drops since previous, mark and priority
+  the packet, and with it the loopback link and the frame's length.
+- Received fields: interface, specific destination, largest fragment (none for a whole packet), software timestamps, drops since previous, mark and priority
   (raw), whole IPv4 and IPv6 headers with extension headers (raw IPv6 traffic class checked), the whole length and
   the start when the buffer cuts the packet anywhere; ICMP errors whole, their outer header as on the wire, and
   their start and whole length when cut.
@@ -371,8 +423,15 @@ answered the independent checks' findings, below; run 4 those of run 3's check).
   on delivery: what Linux holds of them is checked from its lists, and their effect on IPv4 raw sockets.
 - A packet an IPv6 router alert socket of `IPPROTO_RAW` takes is told forwarded (given whole) by its bytes: Linux
   gives no sign. A local packet of protocol 255 whose payload repeats its own IPv6 and hop-by-hop headers is taken
-  for a forwarded one and given without its outer headers (see I2 run 4).
-- Largest fragment and link-layer length: filled by the shared code as for UDP, whose suite checks them.
+  for a forwarded one and given without its outer headers (see I2 run 4). Each packet taken as forwarded is counted
+  and warned (FORWARDED_BY_ITS_BYTES).
+- Link-layer length: Linux gives `SCM_TIMESTAMPING_PKTINFO` only with a hardware receive timestamp
+  (__sock_recv_timestamp), which needs a device with a hardware clock; the namespace has none, so it stays None.
+- A transmit report without its packet: Linux gives no `IP_PKTINFO` with it (`SOF_TIMESTAMPING_OPT_TSONLY`), so its
+  interface is told as 0, counted and warned (REPORT_INTERFACE_NOT_GIVEN).
+- Whether reports hold the packet is a socket flag Linux reads when it takes each timestamp: a send that changes
+  it while earlier sends wait in the host changes their reports too; counted and warned (PACKET_WISH_CHANGED).
+- IPv6 path MTU modes Probe and Interface send alike here; they differ only in taking learnt path MTUs.
 - Wireless status reports: refused as in the UDP track. Acknowledgement reports are TCP's; hardware and
   completion reports need a device with a hardware clock, which the namespace has not.
 - Measured Linux behaviour the suites follow: a raw send into a full send buffer answers `ENOBUFS`;
@@ -425,6 +484,11 @@ answered the independent checks' findings, below; run 4 those of run 3's check).
 - The contract does not say which error a failed source check gives: Linux's IPv4 lookup gives `ENETUNREACH`,
   bind `EADDRNOTAVAIL`, a send with `IP_PKTINFO` `EINVAL`.
 - No way through the interfaces to read the refusal counters; `counters()` is inherent.
+- `TransmitReport.interface` is a plain index, but Linux gives none with a report that does not hold its packet:
+  an `Option` would say so. Example: a ping to 127.0.0.1 with a software report and `packet: NotRequested` reads
+  interface 0 (with the packet, 1).
+- The contract does not say what `TransmitReport.packet_length` counts: Linux's is the frame, link-layer header
+  included (58 bytes for a 24-byte echo over IPv4 on loopback, whose IP packet is 44); the suites expect that.
 
 ## Dependencies (licences checked)
 - socket2 0.6.5 (MIT OR Apache-2.0), now named by the ICMP and raw crates too; polling 3.11.0 (Apache-2.0 OR
