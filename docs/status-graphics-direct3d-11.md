@@ -965,6 +965,11 @@ Earlier runs' measurements are in this file's git history.
 
 ## Literals
 
+- G4h run 3 (2026-11-22): the check at f23c2563 finds nothing in this track's crates (one
+  restatement in the new example, a wait equal to another crate's constant, changed in that
+  commit). The infrastructure patch names its decoding constants in its WGSL text; checked once
+  landed.
+
 - Agents run 3 (2026-11-21): 66 lines of this track cut: the stage helper's refusals behind
   geometry, hull and domain shaders, its draw range (`Direct`) and word sizes
   (`wcontainers_gpu::STORAGE_WORD`), the patch list count, stream output declarations' buffer and
@@ -1014,7 +1019,9 @@ Dependencies of what this track owns, each read in its Cargo.toml when added: `w
 ANGLE (BSD-3-Clause), the system's d3dcompiler_47.dll. Installed on the desktop: build output in
 C:\wc\target\phase-2-graphics-direct3d-11, pictures and logs in C:\wc\out, the 15 KB runner copy
 in C:\wc\out\phase-2-graphics-direct3d-11\rigfix, an empty nvapi64.dll there (bgfx's examples),
-the programs' cache files under C:\wc\out\phase-2-graphics-direct3d-11\gpu-cache, the test-only
+the programs' cache files under C:\wc\out\phase-2-graphics-direct3d-11\gpu-cache, the
+test-only WARP d3d11.dll (G4h run 3, built with no dependency; about 1 MB with its build folder)
+in C:\wc\out\phase-2-graphics-direct3d-11\warpshim, the test-only
 d3d10_1.dll forwarder in C:\wc\out\phase-2-graphics-direct3d-11\d3d10_1fwd, and the LF worktree
 C:\wc\src\phase-2-graphics-direct3d-11-lf for the literal check. On the Mac (not the desktop),
 rustup's x86_64-pc-windows-msvc standard library for 1.99.0.
