@@ -47,7 +47,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_readiness_conformance::Waiting;
 use wcontainers_tcp_sockets::authentication::{
     TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
@@ -5148,8 +5148,20 @@ pub fn waiting_for_data<S: TcpSockets>(
     }
 }
 
-/// A connection waited on for urgent data, which its peer's abort resets, for the readiness suite.
-pub fn waiting_for_urgent_data_until_a_reset<S: TcpSockets>(
+/// A send that asks for a software transmit report, which queues an entry on the sender's error queue.
+fn software_reported() -> TcpSendRequest {
+    TcpSendRequest {
+        transmit_reports: TransmitReportRequest {
+            key: KEY,
+            software: Report::Requested,
+            ..no_reports()
+        },
+        ..plain()
+    }
+}
+
+/// A connection waited on for urgent data, which a transmit report on its error queue fails with no hang-up.
+pub fn waiting_for_urgent_data_until_a_report<S: TcpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Connection, impl FnOnce(&S, &S::Connection)> {
     let Pair {
@@ -5162,8 +5174,38 @@ pub fn waiting_for_urgent_data_until_a_reset<S: TcpSockets>(
         readiness: sockets,
         handle: client,
         interest: ReadyFor::URGENT_DATA,
+        make_ready: move |sockets: &S, client: &S::Connection| {
+            send_all(sockets, client, software_reported(), MESSAGE);
+            // Read before the close, which would otherwise reset the connection and hang it up.
+            receive_up_to(sockets, &server, MESSAGE.len());
+            sockets.close(server, TcpClose::Orderly);
+            sockets.stop_listening(listener);
+        },
+    }
+}
+
+/// A connection that has shut down writing, waited on for urgent data, which its peer's shutdown hangs up with no error.
+pub fn waiting_for_urgent_data_until_both_ways_are_shut<S: TcpSockets>(
+    sockets: S,
+) -> Waiting<S, S::Connection, impl FnOnce(&S, &S::Connection)> {
+    let Pair {
+        listener,
+        client,
+        server,
+        ..
+    } = pair(&sockets);
+    sockets
+        .shut_down(&server, TcpShutdown::Write)
+        .expect("shut down");
+    Waiting {
+        readiness: sockets,
+        handle: server,
+        interest: ReadyFor::URGENT_DATA,
         make_ready: move |sockets: &S, _: &S::Connection| {
-            sockets.close(server, TcpClose::Abort);
+            sockets
+                .shut_down(&client, TcpShutdown::Write)
+                .expect("shut down");
+            sockets.close(client, TcpClose::Orderly);
             sockets.stop_listening(listener);
         },
     }
@@ -5348,6 +5390,105 @@ pub fn wait_for_a_hang_up_finishes_when_both_ways_are_shut<S: TcpSockets>(socket
     );
 }
 
+/// The facts a wait on the handle gives once it finishes.
+fn facts_once_ready<R: Readiness<H>, H>(readiness: &R, handle: &H, interest: ReadyFor) -> ReadyFor {
+    let (counter, waker) = counting_waker();
+    finish(
+        pin!(readiness.wait_until_ready(handle, interest)),
+        &counter,
+        &waker,
+    )
+    .expect("wait")
+}
+
+/// A wait for every fact gives exactly the facts the connection has, in each state that brings a different set.
+pub fn a_wait_gives_the_facts_the_connection_has_and_no_others<S: TcpSockets>(sockets: S) {
+    let every =
+        |connection: &S::Connection| facts_once_ready(&sockets, connection, ReadyFor::all());
+    let readable_and_writable = ReadyFor::READABLE | ReadyFor::WRITABLE;
+    let data = pair(&sockets);
+    assert_eq!(every(&data.server), ReadyFor::WRITABLE, "nothing to read");
+    send_all(&sockets, &data.client, plain(), MESSAGE);
+    facts_once_ready(&sockets, &data.server, ReadyFor::READABLE);
+    assert_eq!(every(&data.server), readable_and_writable, "data to read");
+    send_all(&sockets, &data.client, urgent(), URGENT);
+    facts_once_ready(&sockets, &data.server, ReadyFor::URGENT_DATA);
+    assert_eq!(
+        every(&data.server),
+        readable_and_writable | ReadyFor::URGENT_DATA,
+        "urgent data behind data"
+    );
+    close(&sockets, data);
+
+    let shut = pair(&sockets);
+    sockets
+        .shut_down(&shut.client, TcpShutdown::Write)
+        .expect("shut down");
+    facts_once_ready(&sockets, &shut.server, ReadyFor::PEER_FINISHED_SENDING);
+    assert_eq!(
+        every(&shut.server),
+        readable_and_writable | ReadyFor::PEER_FINISHED_SENDING,
+        "the peer finished sending"
+    );
+    sockets
+        .shut_down(&shut.server, TcpShutdown::Write)
+        .expect("shut down");
+    facts_once_ready(&sockets, &shut.client, ReadyFor::HANG_UP);
+    assert_eq!(
+        every(&shut.client),
+        readable_and_writable | ReadyFor::PEER_FINISHED_SENDING | ReadyFor::HANG_UP,
+        "both ways shut"
+    );
+    close(&sockets, shut);
+
+    let reported = pair(&sockets);
+    send_all(&sockets, &reported.client, software_reported(), MESSAGE);
+    facts_once_ready(&sockets, &reported.client, ReadyFor::ERROR);
+    assert_eq!(
+        every(&reported.client),
+        ReadyFor::WRITABLE | ReadyFor::ERROR,
+        "a transmit report queued"
+    );
+    assert_eq!(
+        receive_up_to(&sockets, &reported.server, MESSAGE.len()),
+        MESSAGE
+    );
+    close(&sockets, reported);
+}
+
+/// A wait for every fact on a listener waits while none is queued, and then gives only that it is readable.
+pub fn a_wait_gives_the_facts_the_listener_has_and_no_others<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let (counter, waker) = counting_waker();
+    {
+        let mut wait = pin!(sockets.wait_until_ready(&listener, ReadyFor::all()));
+        assert!(
+            poll_once(wait.as_mut(), &waker).is_pending(),
+            "nothing to accept"
+        );
+        assert!(!woken_within(&counter, 1, SETTLE), "nothing to accept");
+    }
+    let client = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(ipv4_any()),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .expect("connect")
+        .connection;
+    facts_once_ready(&sockets, &listener, ReadyFor::READABLE);
+    assert_eq!(
+        facts_once_ready(&sockets, &listener, ReadyFor::all()),
+        ReadyFor::READABLE,
+        "a connection to accept"
+    );
+    sockets.close(client, TcpClose::Orderly);
+    sockets.stop_listening(listener);
+}
+
 /// A wait for an error finishes when the peer resets the connection, and gives the error with the hang-up.
 pub fn wait_for_an_error_finishes_when_the_peer_resets<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
@@ -5374,8 +5515,17 @@ macro_rules! tests {
         $crate::readiness_conformance::tests!(
             connection_readiness_contract,
             ready: $crate::waiting_for_data($value),
-            failing: $crate::waiting_for_urgent_data_until_a_reset($value)
+            failing: $crate::waiting_for_urgent_data_until_a_report($value)
         );
+        // The failure above is an error alone; this one is a hang-up alone, so each ends a wait by itself.
+        mod connection_hang_up_readiness_contract {
+            #[allow(unused_imports)]
+            use super::*;
+
+            $crate::tests!(@readiness $crate::waiting_for_urgent_data_until_both_ways_are_shut($value);
+                a_failure_ends_a_wait_that_did_not_ask_for_it,
+            );
+        }
         // No call of the traits makes a listener fail, so its readiness runs every check of the suite but the failure's.
         mod listener_readiness_contract {
             #[allow(unused_imports)]
@@ -5391,6 +5541,8 @@ macro_rules! tests {
         }
         $crate::tests!(@each $value;
             waits_on_many_connections_each_wake_once,
+            a_wait_gives_the_facts_the_connection_has_and_no_others,
+            a_wait_gives_the_facts_the_listener_has_and_no_others,
             wait_for_room_finishes_when_the_peer_reads,
             wait_for_urgent_data_finishes_when_it_arrives,
             wait_for_the_peers_shutdown_finishes_when_it_comes,
