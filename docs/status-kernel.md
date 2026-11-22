@@ -180,6 +180,12 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KA, ninth run (about 05:48 UTC on the 22nd): the ARM64 machine's disk filled (/work lies on
+  /dev/root, 581 GB, not on the stripe arm-machine.md names) and builds failed with "No space left
+  on device". This track's own folders were most of it: its extra build folders of this and earlier
+  KA runs (kernel-ka 114 GB, kernel-kb 48 GB and eight smaller) were deleted, root-owned leftovers
+  of the test backend with `sudo -n`; 205 GB were free after. Only /work/target/kernel is kept.
+
 - Twenty-first run (15:14 UTC on the 20th on): Docker Desktop on the Mac still starts no
   container (a probe made at 15:14 UTC stayed "Created" and was removed; six of other tracks
   stay so). By 18:10 UTC it started containers again (a probe ran); the Mac's part of the bar
