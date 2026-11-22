@@ -223,12 +223,9 @@ pub(super) fn split(
                 } if dim != ImageDimension::D1 || buffer => {}
                 _ => return Err(refused()),
             }
-            let &[class, space, register] =
-                resources
-                    .get(binding.binding as usize)
-                    .ok_or(ConvertError::Malformed(
-                        "a binding past the resource list".into(),
-                    ))?;
+            let &[class, space, register] = resources
+                .get(binding.binding as usize)
+                .ok_or(ConvertError::Malformed(super::PAST_THE_LIST.into()))?;
             let n = match size {
                 ArraySize::Constant(n) => n.get(),
                 ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,

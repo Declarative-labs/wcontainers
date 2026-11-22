@@ -21,6 +21,9 @@ use wcontainers_gpu::VariantKey;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
+/// Why a module is malformed: an atomic operation's result is another expression.
+const NOT_AN_ATOMIC_RESULT: &str = "an atomic operation's result of another kind";
+
 /// One step from a block's pointer towards the pointer used: a member or element by a constant, or
 /// an element at an index expression.
 #[derive(Clone, Copy)]
@@ -110,12 +113,9 @@ pub(super) fn split(
     }
     let mut arrays: Vec<(Handle<GlobalVariable>, Vec<Handle<GlobalVariable>>)> = Vec::new();
     for (g, binding, base, size) in found {
-        let &[class, space, register] =
-            resources
-                .get(binding.binding as usize)
-                .ok_or(ConvertError::Malformed(
-                    "a binding past the resource list".into(),
-                ))?;
+        let &[class, space, register] = resources
+            .get(binding.binding as usize)
+            .ok_or(ConvertError::Malformed(super::PAST_THE_LIST.into()))?;
         let n = match size {
             ArraySize::Constant(n) => n.get(),
             ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,
@@ -354,9 +354,7 @@ fn typed_uses(
             } => match f.expressions[r] {
                 Expression::AtomicResult { ty, .. } => Some(module.types[ty].inner.clone()),
                 _ => {
-                    return Err(ConvertError::Malformed(
-                        "an atomic operation's result".into(),
-                    ));
+                    return Err(ConvertError::Malformed(NOT_AN_ATOMIC_RESULT.into()));
                 }
             },
             Operation::Atomic { .. } | Operation::Store { .. } => None,

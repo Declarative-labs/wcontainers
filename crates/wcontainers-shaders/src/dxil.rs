@@ -1757,7 +1757,7 @@ fn bindings(
         }
         let &[class, space, register] = resources
             .get(binding.binding as usize)
-            .ok_or_else(|| ConvertError::Malformed("a binding past the resource list".into()))?;
+            .ok_or_else(|| ConvertError::Malformed(PAST_THE_LIST.into()))?;
         let kind =
             slot_kind(binding.group).ok_or_else(|| ConvertError::Malformed(NO_CLASS.into()))?;
         if binding.group != class && !(binding.group == COUNTER && class == STORAGE) {
@@ -1812,6 +1812,8 @@ fn bindings(
 /// The slot kind of a resource class (`cpp/boundary.h`).
 /// Why a resource is malformed: its class is none of Direct3D's.
 const NO_CLASS: &str = "a resource of no class";
+/// Why a resource is malformed: its binding names no entry of the resource list.
+const PAST_THE_LIST: &str = "a binding past the resource list";
 
 fn slot_kind(class: u32) -> Option<SlotKind> {
     match class {
