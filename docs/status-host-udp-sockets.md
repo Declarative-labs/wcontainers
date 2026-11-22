@@ -2,6 +2,26 @@
 
 Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
 
+## 2026-11-22: conformed to the interfaces of a00ab267
+- `wait_until_ready` answers `ReadinessReport`. The host holds kept error queue entries as
+  `ReadinessReport { ready_for: empty, unconditional: ERROR }` through the shared `Watched::hold`. The settings use
+  `UdpSocketSetting::Binding(BindingSetting::..)` and the shared `set_binding_setting`. Changed in linux.rs, portable.rs
+  and tests/readiness.rs (commit 10cf2478).
+- Suite: `finished` and `finished_soon` give the report. Checks that wanted ERROR in the facts now want it in
+  `unconditional`. The exact-fact checks compare whole reports: a socket with nothing queued is WRITABLE with no events;
+  with a datagram, READABLE | WRITABLE; with an ICMP error, WRITABLE and ERROR. The waits that only an error can end
+  already asked for nothing. No check was removed; a wait for URGENT_DATA or PEER_FINISHED_SENDING still waits on.
+- Run on the ARM machine (job udp-conform): clippy with warnings denied clean on the host and the suite; the suite ten
+  times in a row, each 76 + 5 pass. The Mac's `nice -n 19 cargo check -p wcontainers-udp-sockets-host` (portable.rs)
+  is clean, with no warning.
+- Leftovers of the internet sockets track, checked: the resolver's IPv6 cap (65575) and its check
+  a_path_mtu_is_capped_at_the_largest_packet_of_its_version were already in (66c1bc0b), and the advice suite already
+  takes `NotSupported` and wants the same answer twice (324d9a19). Run three times on the ARM machine: resolver 37 + 1,
+  advice suite 7. Nothing changed there.
+- The system suite has `call_stream_transport_methods`, a placeholder like the FUSE and DNS ones. It names the four
+  methods rather than calls them, since the trait gives no endpoint. The FUSE and DNS placeholders now drop their
+  futures with `drop(..)`: clippy's `let_underscore_future` refused `let _ =` (commit e48be540).
+
 ## 2026-11-21: waiting is the Readiness trait
 - Repair after the independent check: two long comments of the suite made one sentence; the plan names
   wait_until_ready. `NEVER_ON_UDP` stays beside ICMP's `NEVER_ON_DATAGRAMS`: this suite does not depend on ICMP's.
