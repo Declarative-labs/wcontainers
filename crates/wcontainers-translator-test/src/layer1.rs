@@ -145,13 +145,32 @@ const CASES_A_PAGE: usize = 1000;
 
 /// Run cases through the translator in Chrome, [`CASES_A_PAGE`] to a page.
 pub fn translated_in_chrome<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
-    cases
-        .chunks(CASES_A_PAGE)
-        .flat_map(translated_in_one_page::<G>)
+    // Each page runs cases told one offer, its cases' outcomes put back in their places.
+    let mut outcomes: Vec<Option<Outcome>> = cases.iter().map(|_| None).collect();
+    let mut keys: Vec<u64> = cases
+        .iter()
+        .map(|case| G::offer_key(G::case_offer(case)))
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    for key in keys {
+        let chosen: Vec<usize> = (0..cases.len())
+            .filter(|&n| G::offer_key(G::case_offer(&cases[n])) == key)
+            .collect();
+        for places in chosen.chunks(CASES_A_PAGE) {
+            let page: Vec<Case> = places.iter().map(|&n| cases[n].clone()).collect();
+            for (&n, outcome) in places.iter().zip(translated_in_one_page::<G>(&page, key)) {
+                outcomes[n] = Some(outcome);
+            }
+        }
+    }
+    outcomes
+        .into_iter()
+        .map(|outcome| outcome.expect("every case ran"))
         .collect()
 }
 
-fn translated_in_one_page<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
+fn translated_in_one_page<G: GuestTest>(cases: &[Case], offer: u64) -> Vec<Outcome> {
     let states: Vec<crate::browser::StateCase> = cases
         .iter()
         .map(|case| crate::browser::StateCase {
@@ -179,6 +198,7 @@ fn translated_in_one_page<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
         code_area::<G>(),
         std::slice::from_ref(&(DATA..DATA + DATA_BYTES)),
         &states,
+        Some(offer),
     )
     .into_iter()
     .map(|run| {

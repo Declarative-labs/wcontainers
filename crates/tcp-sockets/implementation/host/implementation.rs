@@ -41,7 +41,12 @@ use wcontainers_internet_protocol_linux_socket_options::{
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
-use wcontainers_tcp_sockets::authentication::{TcpAuthenticationCounters, TcpMd5KeyChange};
+use wcontainers_tcp_sockets::authentication::{
+    TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
+    TcpAuthenticationKeyIdentity, TcpAuthenticationKeyRemoval, TcpAuthenticationKeyUse,
+    TcpAuthenticationOptionCoverage, TcpAuthenticationOptions, TcpAuthenticationRemovalTiming,
+    TcpAuthenticationRequirement, TcpMd5KeyChange,
+};
 use wcontainers_tcp_sockets::repair::{
     TcpRepair, TcpRepairQueue, TcpTimestampClock, TcpTimestampUnit,
 };
@@ -100,7 +105,8 @@ const IPV6_RECORDS: [u32; 6] = [
 ];
 
 /// The reasons the host could not honour a request, each counted by [`Shortfalls`].
-const NO_AUTHENTICATION: &str = "the TCP Authentication Option is not mapped to the host yet";
+const NO_AUTHENTICATION_COUNTERS: &str = "setting the TCP Authentication Option counters of a connection or listener is not mapped to the host yet";
+const NO_AUTHENTICATION_REPAIR: &str = "the TCP Authentication Option repair values are not mapped to the host yet";
 const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
@@ -319,6 +325,8 @@ pub struct HostTcpListener {
     saves_synchronize: AtomicI32,
     /// Whether the guest asked the listener's sockets to record the last header they received.
     records_last_received: AtomicBool,
+    /// Whether the connections it accepts report the bytes left unread, as Linux's `TCP_INQ` is copied to them.
+    unread_reports: AtomicBool,
     anycast: Mutex<AnycastMemberships>,
 }
 
@@ -569,7 +577,6 @@ fn protocol_of(protocol: TcpProtocol) -> rustix::net::Protocol {
     }
 }
 
-/// The `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
 /// Makes the socket hold a flow label to the peer, shared with this process's other sockets, and send the label its
 /// connect address carries: Linux connects with a label only when the socket holds it.
 fn hold_flow_label(
@@ -604,10 +611,7 @@ fn set_md5_key(
     };
     // SAFETY: tcp_md5sig is plain data.
     let mut request: uapi::tcp_md5sig = unsafe { std::mem::zeroed() };
-    request.tcpm_addr = storage(match (family, peer.prefix.address) {
-        (IpVersion::V6, IpAddr::V4(address)) => IpAddr::V6(address.to_ipv6_mapped()),
-        (_, address) => address,
-    });
+    request.tcpm_addr = storage(key_address(family, peer.prefix.address));
     request.tcpm_flags = uapi::TCP_MD5SIG_FLAG_PREFIX as u8;
     request.tcpm_prefixlen = peer.prefix.length.0;
     if let Some(interface) = peer.interface {
@@ -624,6 +628,231 @@ fn set_md5_key(
         Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),
         other => other,
     }
+}
+
+/// The `SO_TIMESTAMPING` record flags a send's report request asks for, and how many reports they bring.
+/// A key's peer address as Linux takes it from a socket of the family: an IPv4 one of an IPv6 socket mapped.
+fn key_address(family: IpVersion, address: IpAddr) -> IpAddr {
+    match (family, address) {
+        (IpVersion::V6, IpAddr::V4(address)) => IpAddr::V6(address.to_ipv6_mapped()),
+        (_, address) => address,
+    }
+}
+
+/// The `TCP_AO_*` fields that name a key: its peer, prefix, interface flag and index, and identifiers.
+struct AuthenticationKeyName {
+    address: uapi::__kernel_sockaddr_storage,
+    prefix: u8,
+    flags: u8,
+    interface: i32,
+    send: u8,
+    receive: u8,
+}
+
+fn authentication_key_name(
+    family: IpVersion,
+    identity: &TcpAuthenticationKeyIdentity,
+) -> Result<AuthenticationKeyName, HostError> {
+    let (flags, interface) = match identity.interface {
+        Some(interface) => (
+            uapi::TCP_AO_KEYF_IFINDEX as u8,
+            i32::try_from(interface.0).map_err(|_| invalid())?,
+        ),
+        None => (0, 0),
+    };
+    Ok(AuthenticationKeyName {
+        address: storage(key_address(family, identity.peer.address)),
+        prefix: identity.peer.length.0,
+        flags,
+        interface,
+        send: identity.send_identifier.0,
+        receive: identity.receive_identifier.0,
+    })
+}
+
+/// Adds a TCP Authentication Option key through `TCP_AO_ADD_KEY`. Linux refuses a key whose identifiers a held key
+/// of the peer has (`EEXIST`): when the held key is this one, the socket is as asked, with the key put to its use.
+fn add_authentication_key(
+    socket: BorrowedFd<'_>,
+    family: IpVersion,
+    addition: &TcpAuthenticationKeyAddition<'_>,
+) -> Result<(), HostError> {
+    let name = authentication_key_name(family, &addition.identity)?;
+    // SAFETY: tcp_ao_add is plain data.
+    let mut request: uapi::tcp_ao_add = unsafe { std::mem::zeroed() };
+    request.addr = name.address;
+    request.prefix = name.prefix;
+    request.ifindex = name.interface;
+    request.keyflags = name.flags;
+    if addition.other_options == TcpAuthenticationOptionCoverage::Excluded {
+        request.keyflags |= uapi::TCP_AO_KEYF_EXCLUDE_OPT as u8;
+    }
+    request.sndid = name.send;
+    request.rcvid = name.receive;
+    request.maclen = addition.mac_length.0;
+    // The algorithm's name is a C string, so one with a NUL or no room for the terminating one is invalid.
+    let algorithm = addition.algorithm.as_bytes();
+    if algorithm.contains(&0) || algorithm.len() >= request.alg_name.len() {
+        return Err(invalid());
+    }
+    for (to, from) in request.alg_name.iter_mut().zip(algorithm) {
+        *to = *from as libc::c_char;
+    }
+    request
+        .key
+        .get_mut(..addition.secret.len())
+        .ok_or_else(invalid)?
+        .copy_from_slice(addition.secret);
+    request.keylen = addition.secret.len() as u8;
+    let (current, next) = match addition.key_use {
+        TcpAuthenticationKeyUse::Stored => (false, false),
+        TcpAuthenticationKeyUse::Current => (true, false),
+        TcpAuthenticationKeyUse::RequestedNext => (false, true),
+        TcpAuthenticationKeyUse::CurrentAndRequestedNext => (true, true),
+    };
+    request.set_set_current(u32::from(current));
+    request.set_set_rnext(u32::from(next));
+    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, &request) {
+        Err(HostError::Errno(libc::EEXIST)) if holds_authentication_key(socket, &request) => {
+            if current || next {
+                change_authentication_options(socket, |options| {
+                    options.set_set_current(u32::from(current));
+                    options.current_key = request.sndid;
+                    options.set_set_rnext(u32::from(next));
+                    options.rnext = request.rcvid;
+                })
+            } else {
+                Ok(())
+            }
+        }
+        other => other,
+    }
+}
+
+/// Whether the socket holds the key the request adds, as `TCP_AO_GET_KEYS` gives the key with its name.
+fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) -> bool {
+    // SAFETY: tcp_ao_getsockopt is plain data.
+    let mut held: uapi::tcp_ao_getsockopt = unsafe { std::mem::zeroed() };
+    held.addr = request.addr;
+    held.prefix = request.prefix;
+    held.keyflags = request.keyflags & uapi::TCP_AO_KEYF_IFINDEX as u8;
+    held.ifindex = request.ifindex;
+    held.sndid = request.sndid;
+    held.rcvid = request.rcvid;
+    held.nkeys = 1;
+    // SAFETY: the structure is plain data, read and written as its bytes.
+    let bytes = unsafe {
+        std::slice::from_raw_parts_mut(
+            std::ptr::from_mut(&mut held).cast::<u8>(),
+            size_of::<uapi::tcp_ao_getsockopt>(),
+        )
+    };
+    options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_AO_GET_KEYS, bytes).is_ok()
+        && held.nkeys == 1
+        && held.alg_name == request.alg_name
+        && held.maclen == request.maclen
+        && held.keyflags == request.keyflags
+        && held.key[..usize::from(held.keylen)] == request.key[..usize::from(request.keylen)]
+}
+
+/// Removes a TCP Authentication Option key through `TCP_AO_DEL_KEY`; removing one that is not there leaves the socket
+/// as asked, with the keys named to be used next put to use.
+fn remove_authentication_key(
+    socket: BorrowedFd<'_>,
+    family: IpVersion,
+    removal: &TcpAuthenticationKeyRemoval,
+) -> Result<(), HostError> {
+    let name = authentication_key_name(family, &removal.identity)?;
+    // SAFETY: tcp_ao_del is plain data.
+    let mut request: uapi::tcp_ao_del = unsafe { std::mem::zeroed() };
+    request.addr = name.address;
+    request.prefix = name.prefix;
+    request.ifindex = name.interface;
+    request.keyflags = name.flags;
+    request.sndid = name.send;
+    request.rcvid = name.receive;
+    if let Some(key) = removal.current {
+        request.set_set_current(1);
+        request.current_key = key.0;
+    }
+    if let Some(key) = removal.requested_next {
+        request.set_set_rnext(1);
+        request.rnext = key.0;
+    }
+    request.set_del_async(u32::from(
+        removal.timing == TcpAuthenticationRemovalTiming::WhenUnused,
+    ));
+    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, &request) {
+        Err(HostError::Errno(libc::ENOENT)) => {
+            if removal.current.is_none() && removal.requested_next.is_none() {
+                return Ok(());
+            }
+            change_authentication_options(socket, |options| {
+                options.set_set_current(request.set_current());
+                options.current_key = request.current_key;
+                options.set_set_rnext(request.set_rnext());
+                options.rnext = request.rnext;
+            })
+        }
+        other => other,
+    }
+}
+
+/// Writes `TCP_AO_INFO` as the socket holds it, with the change: Linux sets the requirement and the ICMP choice at
+/// every write, so they are read first (none held is Linux's defaults, zero).
+fn change_authentication_options(
+    socket: BorrowedFd<'_>,
+    change: impl FnOnce(&mut uapi::tcp_ao_info_opt),
+) -> Result<(), HostError> {
+    let mut options =
+        match options::get_option::<uapi::tcp_ao_info_opt>(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO)
+        {
+            Ok(held) => held,
+            // SAFETY: tcp_ao_info_opt is plain data.
+            Err(HostError::Errno(libc::ENOENT)) => unsafe { std::mem::zeroed() },
+            Err(error) => return Err(error),
+        };
+    options.set_set_current(0);
+    options.set_set_rnext(0);
+    options.set_set_counters(0);
+    change(&mut options);
+    set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO, &options)
+}
+
+fn set_authentication_options(
+    socket: BorrowedFd<'_>,
+    choice: &TcpAuthenticationOptions,
+) -> Result<(), HostError> {
+    change_authentication_options(socket, |options| {
+        if let Some(key) = choice.current {
+            options.set_set_current(1);
+            options.current_key = key.0;
+        }
+        if let Some(key) = choice.requested_next {
+            options.set_set_rnext(1);
+            options.rnext = key.0;
+        }
+        options.set_ao_required(u32::from(
+            choice.requirement == TcpAuthenticationRequirement::Required,
+        ));
+        options.set_accept_icmps(u32::from(
+            choice.icmp_errors == TcpAuthenticationIcmpErrors::Accepted,
+        ));
+    })
+}
+
+fn set_authentication_counters(
+    socket: BorrowedFd<'_>,
+    counters: &TcpAuthenticationCounters,
+) -> Result<(), HostError> {
+    change_authentication_options(socket, |options| {
+        options.set_set_counters(1);
+        options.pkt_good = counters.verified.0;
+        options.pkt_bad = counters.failed.0;
+        options.pkt_key_not_found = counters.key_not_found.0;
+        options.pkt_ao_required = counters.signature_missing.0;
+        options.pkt_dropped_icmp = counters.icmp_errors_ignored.0;
+    })
 }
 
 fn record_flags(request: &TransmitReportRequest) -> (u32, u32) {
@@ -950,11 +1179,19 @@ impl HostTcpSockets {
                 report == Report::Requested,
             ),
             TcpSetting::Md5Key(change) => set_md5_key(socket, family, change),
-            TcpSetting::AddAuthenticationKey(_)
-            | TcpSetting::RemoveAuthenticationKey(_)
-            | TcpSetting::AuthenticationOptions(_)
-            | TcpSetting::InitialAuthenticationCounters(_)
-            | TcpSetting::AuthenticationRepair(_) => refuse(NO_AUTHENTICATION),
+            TcpSetting::AddAuthenticationKey(ref addition) => {
+                add_authentication_key(socket, family, addition)
+            }
+            TcpSetting::RemoveAuthenticationKey(ref removal) => {
+                remove_authentication_key(socket, family, removal)
+            }
+            TcpSetting::AuthenticationOptions(ref choice) => {
+                set_authentication_options(socket, choice)
+            }
+            TcpSetting::InitialAuthenticationCounters(ref counters) => {
+                set_authentication_counters(socket, counters)
+            }
+            TcpSetting::AuthenticationRepair(_) => refuse(NO_AUTHENTICATION_REPAIR),
             TcpSetting::Repair(mode) => tcp(
                 uapi::TCP_REPAIR,
                 match mode {
@@ -1214,6 +1451,19 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 }
                 listener
                     .records_last_received
+                    .store(report == Report::Requested, Ordering::Relaxed);
+                Ok(())
+            }
+            TcpListenerSetting::Socket(TcpSetting::UnreadByteReports(report)) => {
+                self.configure_socket(
+                    socket,
+                    listener.family,
+                    &TcpSetting::UnreadByteReports(report),
+                    0,
+                    &listener.anycast,
+                )?;
+                listener
+                    .unread_reports
                     .store(report == Report::Requested, Ordering::Relaxed);
                 Ok(())
             }
@@ -1737,7 +1987,7 @@ impl TcpConnections for HostTcpSockets {
         _connection: &Self::Connection,
         _values: TcpAuthenticationCounters,
     ) -> Result<(), HostError> {
-        Err(self.shortfalls.refuse(NO_AUTHENTICATION))
+        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))
     }
 }
 
@@ -1784,6 +2034,7 @@ impl TcpListeners for HostTcpSockets {
             bound_clock: Mutex::new(None),
             saves_synchronize: AtomicI32::new(SAVE_NONE),
             records_last_received: AtomicBool::new(false),
+            unread_reports: AtomicBool::new(false),
             anycast: Mutex::default(),
         };
         let socket = listener.socket.fd();
@@ -1823,6 +2074,10 @@ impl TcpListeners for HostTcpSockets {
             self.readiness.watch(OwnedFd::from(socket))?,
             listener.family,
             listener.receive_timestamping.load(Ordering::Relaxed),
+        );
+        connection.unread_reports.store(
+            listener.unread_reports.load(Ordering::Relaxed),
+            Ordering::Relaxed,
         );
         let bound_clock = *locked(&listener.bound_clock);
         if bound_clock.is_some() {
@@ -1881,7 +2136,7 @@ impl TcpListeners for HostTcpSockets {
         _listener: &Self::Listener,
         _values: TcpAuthenticationCounters,
     ) -> Result<(), HostError> {
-        Err(self.shortfalls.refuse(NO_AUTHENTICATION))
+        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))
     }
 
     fn set_listener_timestamp_clock(

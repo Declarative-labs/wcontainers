@@ -21,10 +21,10 @@ side of each is worked around without changing the interface.
   (`PartNum::new(12)` and others). Only the 4 lines on the kernel's own restart codes
   (linux_extra.rs) were the kernel's, and they are gone. The rest need the interface's files or
   the check's rule for linux-raw-sys to change.
-- `ProcessController`, `FuseClient` and `Process` take no executor and no `System`, and the
-  interface has no call that drives a kernel (the abi's `next`, `exit` and `event`). So a kernel
-  that implements them must own its executor and its system, and how a driver then runs threads
-  on that executor is undefined. Example: `ProcessController::suspend_tasks(&mut self, tasks)`
+- `ProcessController` and `Process` take no executor and no `System`, and the interface has no
+  call that drives a kernel (the abi's `next`, `exit` and `event`). So a kernel that implements
+  them must own its executor (this one's `KernelWithExecutor` does, KA, third run), and how a
+  driver then runs threads on that executor is undefined (here, `parts` hands both out). Example: `ProcessController::suspend_tasks(&mut self, tasks)`
   must read each task's registers from the executor, which it is not given.
 - With the async ruling, answers come back as the results of the system's `async` calls, but three
   things a system tells the kernel unasked still have no call: a FUSE notice (Linux's

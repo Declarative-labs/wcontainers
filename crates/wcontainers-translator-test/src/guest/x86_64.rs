@@ -58,6 +58,9 @@ const SI_KERNEL: u32 = 128;
 const BUS_ADRALN: u32 = 1;
 const FPE_INTDIV: u32 = 1;
 
+/// The compiler flag (zig's name) for a program built for the x86-64-v3 level, the list `wcontainers_x86::V3`.
+pub const V3_CPU: &str = "-mcpu=x86_64_v3";
+
 /// One layer 1 form: an iced `Code`.
 #[derive(Clone, Debug)]
 pub struct Form {

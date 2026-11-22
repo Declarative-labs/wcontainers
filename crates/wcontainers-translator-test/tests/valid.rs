@@ -22,6 +22,15 @@ const HOST_X86_64: wcontainers_x86::Host = wcontainers_x86::Host {
     fused_multiply_add: false,
 };
 
+/// The v3 list when `v3`, else the default list, so that random code reaches the VEX instructions too.
+fn told(v3: bool) -> Offer {
+    if v3 {
+        Offer::new(wcontainers_x86::V3).expect("a built list")
+    } else {
+        Offer::default()
+    }
+}
+
 fn validate(wasm: &[u8]) {
     if let Err(error) = check(wasm) {
         panic!("invalid module: {error}");
@@ -207,19 +216,19 @@ proptest! {
     /// Random bytes translated from every byte address at look-ahead none: x86 code may start anywhere. A
     /// piece for every start but those whose instruction runs past the end of the bytes.
     #[test]
-    fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES)) {
+    fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), v3 in any::<bool>()) {
         let starts: Vec<u64> = (0..bytes.len() as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, Offer::default()).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
         validate(&translation.modules[0].wasm);
     }
 
     /// Random bytes at full look-ahead, from the first byte and from a few others.
     #[test]
-    fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4)) {
+    fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4), v3 in any::<bool>()) {
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| p.index(bytes.len()) as u64));
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, Offer::default()).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
         for module in &translation.modules {
             validate(&module.wasm);
         }
@@ -227,9 +236,9 @@ proptest! {
 
     /// Random bytes at bounded look-ahead of random N, from a few byte addresses: one piece in the table each.
     #[test]
-    fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
+    fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, v3 in any::<bool>()) {
         let mut starts: Vec<u64> = picks.iter().map(|p| p.index(bytes.len()) as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, Offer::default()).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
@@ -357,4 +366,67 @@ fn every_form_is_valid_arm64() {
             validate(&translation.modules[0].wasm);
         }
     }
+}
+
+/// How many times in a row each instruction of `every_form_is_valid_x86_64` is written, so that a meaning that
+/// does not end its piece runs on into more of the same.
+const REPEATS: usize = 3;
+
+/// Every layer 1 form of x86-64, a form beyond the default list told a list that has it: `WC_VALID_WORDS` cases
+/// a form (default 16) seeded from `WC_VALID_SEED` (default 1) and the form's name, each instruction written
+/// [`REPEATS`] times in a row and translated at none, bounded and full on a host that needs every fix-up:
+/// valid modules.
+#[test]
+fn every_form_is_valid_x86_64() {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    use wcontainers_translator_test::guest::GuestTest;
+    let setting = |name: &str, default: u64| {
+        std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
+    };
+    let count = setting("WC_VALID_WORDS", 16);
+    let seed = setting("WC_VALID_SEED", 1);
+    let mut failures = Vec::new();
+    let mut cases = 0;
+    for form in X86_64::forms() {
+        let name = X86_64::form_name(form);
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            wcontainers_translator_test::seeded::generator(seed, &[], name),
+        );
+        let strategy = X86_64::cases(form);
+        for _ in 0..count {
+            let case = strategy.new_tree(&mut runner).expect("a case").current();
+            let one = case.code.code();
+            let code = one.repeat(REPEATS);
+            cases += 1;
+            for look_ahead in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full] {
+                let translation = translate::<X86_64>(
+                    &code,
+                    0..code.len() as u64,
+                    None,
+                    &[0],
+                    look_ahead,
+                    Optimise::Speed,
+                    wcontainers_translator::ProgressCount::Absent,
+                    HOST_X86_64,
+                    X86_64::case_offer(&case),
+                )
+                .unwrap();
+                for module in &translation.modules {
+                    if let Err(error) = check(&module.wasm) {
+                        failures.push(format!("{name} {one:02x?} at {look_ahead:?}: {error}"));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{cases} cases of {} forms", X86_64::forms().len());
+    failures.dedup_by(|a, b| a.split(' ').next() == b.split(' ').next());
+    assert!(
+        failures.is_empty(),
+        "{} invalid:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

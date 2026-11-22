@@ -37,6 +37,8 @@ function run({
   codeBytes,
   load,
   linkAddress,
+  // The key of the features the program is told, the default list when not given.
+  offer,
   memoryBytes,
   regions,
   fill,
@@ -535,6 +537,8 @@ function run({
       omit,
       optimise ?? 0,
       splitBytes ?? 0,
+      offer === undefined || offer === null ? 0 : 1,
+      BigInt(offer ?? 0),
     );
     if (length < 0) throw new Error(`no translation from ${start}`);
     const modules = [result(length)];

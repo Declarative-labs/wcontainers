@@ -4483,6 +4483,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "libc",
+ "linux-raw-sys",
  "rustix",
  "wcontainers-abi",
  "wcontainers-configurable",
@@ -4605,7 +4606,6 @@ dependencies = [
  "cc",
  "glam",
  "glow 0.18.0",
- "wcontainers-abi",
  "khronos-egl",
  "libloading",
  "naga",

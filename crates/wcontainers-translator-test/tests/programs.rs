@@ -8,7 +8,7 @@ use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Position, Ran, boundaries, build, build_with, native, native_with_stop, ran,
+    Blob, Library, Position, Ran, boundaries, build, build_for, build_with, native, native_with_stop, ran,
     reachable_memory, ready_on, ready_with, run_container, translated, translated_for,
     translated_stopping_everywhere,
 };
@@ -1037,6 +1037,64 @@ fn mmx_and_x87_state_match_linux_x86_64() {
         &[("mmx", Library::C), ("x87_state", Library::C)],
         &every_unit_look_ahead(),
     );
+}
+
+/// AVX2's integer, permute, gather and masked move instructions with BMI2, and FMA, F16C and AVX's floating
+/// point in every rounding mode, for programs told the x86-64-v3 list, at every look-ahead.
+#[test]
+fn avx2_fma_and_f16c_match_linux_x86_64() {
+    let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
+    match_linux_told::<X86_64>(
+        &[("avx2_integer", Library::C), ("fma_f16c", Library::C)],
+        &every_unit_look_ahead(),
+        Some(v3.key()),
+    );
+}
+
+/// The levels whose code from `bench.c` built for the x86-64-v3 level holds that level's instructions.
+const VECTORISED_LEVELS: [&str; 2] = ["-O2", "-O3"];
+
+/// The benchmark set built for the x86-64-v3 level: told the v3 list, Linux's output at every look-ahead with no
+/// instruction reached of a feature it was not told of; told the default list, killed by illegal instruction at
+/// the first instruction beyond it, counted.
+#[test]
+fn benchmark_set_for_x86_64_v3_runs_only_when_told_x86_64() {
+    use wcontainers_guest_cpu::Guest;
+    use wcontainers_translator_test::guest::x86_64::V3_CPU;
+    use wcontainers_translator_test::layout::SIGNALLED;
+    let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
+    let (_, not_told) = X86_64::REASONS
+        .iter()
+        .find(|(reason, _)| *reason == wcontainers_x86::Reason::NotToldFeatureReached)
+        .expect("a named reason");
+    let killed = SIGNALLED + linux_raw_sys::general::SIGILL as i32;
+    for optimisation in VECTORISED_LEVELS {
+        let mut blob = build_for::<X86_64>(
+            "bench",
+            optimisation,
+            Library::None,
+            &[],
+            Position::Fixed,
+            Some(V3_CPU),
+        );
+        blob.offer = Some(v3.key());
+        let theirs = native::<X86_64>(&blob);
+        for how in EVERY_LOOK_AHEAD {
+            let (ours, machine, _) = translated_for::<X86_64>(&blob, how);
+            let what = format!("bench {optimisation} for v3, told v3, {how:?}");
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(machine.count_named(not_told), 0, "{what}");
+            eprintln!("{what}: matches, {:?}", machine.counters());
+        }
+        blob.offer = None;
+        for how in EVERY_LOOK_AHEAD {
+            let (ours, machine, _) = translated_for::<X86_64>(&blob, how);
+            let what = format!("bench {optimisation} for v3, told the default list, {how:?}");
+            assert_eq!(ours.status, killed, "{what}");
+            assert_eq!(machine.count_named(not_told), 1, "{what}");
+            eprintln!("{what}: illegal instruction, {:?}", machine.counters());
+        }
+    }
 }
 
 /// `xsave` and `xrstor` of x87, SSE and AVX state, for a program told the x86-64-v3 list, at every look-ahead.

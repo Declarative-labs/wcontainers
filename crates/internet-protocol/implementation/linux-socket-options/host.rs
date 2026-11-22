@@ -103,7 +103,7 @@ struct Slot {
 }
 
 /// The requests a host implementation could not honour, counted by reason without a lock, each reason warned of at
-/// its first count.
+/// its first count; the reasons counted together in the last slot are warned of at every count.
 #[derive(Debug)]
 pub struct Shortfalls {
     slots: [Slot; REASON_SLOTS],
@@ -136,7 +136,9 @@ impl Shortfalls {
                 let _ = last.reason.set(MORE_REASONS);
                 last
             });
-        if slot.count.fetch_add(1, Ordering::Relaxed) == 0 {
+        let first = slot.count.fetch_add(1, Ordering::Relaxed) == 0;
+        // The last slot cannot tell its reasons apart, so none of them is known to have been warned of.
+        if first || core::ptr::eq(slot, last) {
             eprintln!("warning: {reason}");
         }
     }

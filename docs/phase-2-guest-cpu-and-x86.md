@@ -1862,8 +1862,12 @@ Tests (section 7 gives the detail):
   - **`xlat`**: one byte read at rbx + al, `Index::Register` with `Extend { from_bits: 8, signed: false }`
     (al 0xFF reads rbx + 0xFF).
   - **The gathers** (`vgatherdps`, `vgatherqps`, `vpgatherdd` and the rest, AVX2): one access with an
-    `Index::Lanes` index and `Masked` bytes. The meaning goes through the elements in lane order; for each
-    element whose mask lane is set it checks the element's range (reporting its first byte not allowed),
+    `Index::Lanes` index and `Masked` bytes. First every mask element becomes all ones or zero by its sign
+    bit, which a fault even at the first element leaves (seen on the reference at X8, layer 1); a 128-bit
+    form's upper halves (destination and mask) are cleared only when
+    the gather is done, so a fault leaves them as they were. The meaning goes through the elements in lane
+    order; for each element whose mask lane is set it checks the element's range (reporting its first byte
+    not allowed),
     loads it, writes the destination lane and clears the mask lane. A fault therefore leaves what the CPU
     leaves: the elements before it gathered and their mask lanes clear, the rest untouched, rip at the
     gather, and the fault at the first byte not allowed of the faulting element (seen: elements 0 and 1
@@ -1875,8 +1879,10 @@ Tests (section 7 gives the detail):
   - **`vmaskmovps`, `vmaskmovpd`, `vpmaskmovd`, `vpmaskmovq`** (AVX setting): one access with `Masked`
     bytes. Masked-off elements never fault, and nothing is loaded or stored when a selected one faults
     (seen: lane 0 not stored when lane 3 faults; the load leaves its destination unchanged). With S the
-    first byte of the first selected element and E the last byte of the last one: a load checks [S, E] for
-    reading and reports its first byte not allowed; a store reports S when S is not allowed and E otherwise
+    first byte of the first selected element and E the last byte of the last one: a load checks each
+    selected element in lane order and reports the first byte not allowed of the first that faults, so a
+    masked-off gap between selected elements is never reported (seen on the reference at X8, layer 1); a
+    store reports S when S is not allowed and E otherwise
     (seen in nine store cases, 128-bit and 256-bit, `vmaskmovps` and `vpmaskmovd`, including elements across
     the page end: lanes 0 and 3 from 0x2000fff4 fault at 0x20010003, lane 3 alone at 0x20010000). Since [S,
     E] is at most 32 bytes it crosses at most one page boundary, so the store's meaning makes two one-byte
@@ -3255,7 +3261,9 @@ Measured throughout, recorded with machine and load: translation speed, output s
   transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
   bar: layer 1 for every x87 and MMX form at 1,000 cases a form, zero mismatches except known failures
   recorded with their reasons; a C program using `long double` gives the native output.
-- **X8, the AVX setting.** AVX, AVX2, FMA, F16C, BMI2, XSAVE in the setting, the two counters, the setting
+- **X8, the AVX setting** (since the owner's ruling of 2026-11-20 no setting: the per-process list a program
+  is told, `Offer`, section 5.10, with "on" the v3 list and "off" the default list). AVX, AVX2, FMA, F16C,
+  BMI2, XSAVE in the setting, the two counters, the setting
   in the cache key, the instructions of the setting's claim group trapping with the counter when it is off,
   and the designed-answers case of a gather that faults part way with TF set (section 5.1's known
   difference).

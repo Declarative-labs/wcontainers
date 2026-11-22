@@ -302,6 +302,7 @@ fn run_in_chrome<G: GuestTest>(
         load: blob.load,
         look_ahead,
         memory_bytes: place.memory_bytes,
+        offer: blob.offer,
         omit: omit.bits(),
         optimise: Some(optimise as u8),
         regions: regions(&place.regions),
@@ -387,6 +388,9 @@ struct Setup {
     /// How many code modules translated ahead of time the folder holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     modules: Option<usize>,
+    /// The key of the features the program is told, the default list when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offer: Option<u64>,
     omit: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     optimise: Option<u8>,
@@ -578,7 +582,8 @@ pub struct StateRun {
 /// in a memory of `memory_bytes` with these regions and `code_area` holding the guest's filler, ending at a
 /// system call or where control lands. The lookup covers the instruction's address only, and the translator
 /// is given the instruction's own bytes, as in wasmtime. Each instruction goes as its length, then as the
-/// longest the guest has, the rest of it the filler.
+/// longest the guest has, the rest of it the filler. The program is told the offer whose key is `offer`, or the
+/// default list.
 pub fn cases<G: crate::guest::GuestTest>(
     code: u64,
     memory_bytes: u64,
@@ -586,6 +591,7 @@ pub fn cases<G: crate::guest::GuestTest>(
     code_area: Range<u64>,
     places: &[Range<u64>],
     cases: &[StateCase],
+    offer: Option<u64>,
 ) -> Vec<StateRun> {
     let code_bytes = G::MAX_LENGTH as usize;
     let padded = |code: &crate::guest::Encoded| {
@@ -617,6 +623,7 @@ pub fn cases<G: crate::guest::GuestTest>(
         load: code,
         look_ahead: LookAhead::None.code().0,
         memory_bytes,
+        offer,
         regions: regions(regions_given),
         stand_in: Some(stand_in::<G>()),
         stop_at_syscall: Some(true),

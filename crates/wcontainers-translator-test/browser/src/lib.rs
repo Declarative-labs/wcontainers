@@ -51,9 +51,10 @@ fn answer(bytes: Vec<u8>) -> i32 {
 /// `translate`), at look-ahead none (0), full (1) or bounded (2, N in `bound`), for the host the probe found
 /// (`probe`, its answer), leaving out the checks set in `omit` (as `Omit::bits` gives them; only to measure
 /// them), for speed (0) or size (1), split into
-/// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules). Returns the
-/// length of the first code module, or -1 if the start, the code range or the bound is not valid;
-/// [`more_modules`] gives the rest.
+/// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules), for a program
+/// told the features of the offer whose key is `offer` when `offered` is 1 (`Guest::offer_from_key`), else the
+/// default list. Returns the length of the first code module, or -1 if the start, the code range, the bound or
+/// the offer is not valid; [`more_modules`] gives the rest.
 #[unsafe(no_mangle)]
 pub extern "C" fn translate(
     code_start: u64,
@@ -67,7 +68,16 @@ pub extern "C" fn translate(
     omit: u32,
     optimise: u32,
     module_bytes: u32,
+    offered: u32,
+    offer: u64,
 ) -> i32 {
+    let offer = match offered {
+        1 => match G::offer_from_key(offer) {
+            Some(offer) => offer,
+            None => return -1,
+        },
+        _ => <G as Guest>::Offer::default(),
+    };
     let look_ahead = LookAhead::from_code(look_ahead, bound);
     let omit = Omit::from_bits(omit);
     let optimise = if optimise == 1 {
@@ -84,7 +94,7 @@ pub extern "C" fn translate(
             start,
             look_ahead,
             optimise,
-            probe,
+            (probe, offer),
             omit,
             module_bytes,
         )
@@ -101,8 +111,7 @@ pub extern "C" fn translate(
     }
 }
 
-/// Translate for guest `C` as [`translate`] says, with what the CPU claims when the container asks for nothing
-/// more.
+/// Translate for guest `C` as [`translate`] says, for the host its probe found and a program told `offer`.
 #[allow(clippy::too_many_arguments)]
 fn translate_for<C: Guest>(
     blob: &[u8],
@@ -110,12 +119,11 @@ fn translate_for<C: Guest>(
     start: u64,
     look_ahead: LookAhead,
     optimise: Optimise,
-    probe: i32,
+    (probe, offer): (i32, C::Offer),
     omit: Omit,
     module_bytes: u32,
 ) -> Result<Translation, Error> {
     let host = C::host_from_probe(probe);
-    let offer = C::Offer::default();
     match module_bytes {
         0 => translate_omitting::<C>(
             blob,

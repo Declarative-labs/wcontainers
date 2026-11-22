@@ -34,10 +34,20 @@ fn programs_match_linux_in_chrome<G: GuestTest>(
     programs: &[(&str, Library)],
     ways: &[(LookAhead, Optimise)],
 ) {
+    programs_told_match_linux_in_chrome::<G>(programs, ways, None);
+}
+
+/// As `programs_match_linux_in_chrome`, for programs told the offer whose key is `offer`.
+fn programs_told_match_linux_in_chrome<G: GuestTest>(
+    programs: &[(&str, Library)],
+    ways: &[(LookAhead, Optimise)],
+    offer: Option<u64>,
+) {
     for &(name, library) in programs {
         let mut built: Vec<Vec<u8>> = Vec::new();
         for optimisation in LEVELS {
-            let blob = build::<G>(name, optimisation, library);
+            let mut blob = build::<G>(name, optimisation, library);
+            blob.offer = offer;
             if built.contains(&blob.bytes) {
                 continue;
             }
@@ -99,5 +109,21 @@ fn mmx_and_x87_state_match_linux_in_chrome_x86_64() {
     programs_match_linux_in_chrome::<X86_64>(
         &[("mmx", Library::C), ("x87_state", Library::C)],
         &EVERY_WAY,
+    );
+}
+
+/// `xsave` and `xrstor`, AVX2's integer work with BMI2, and FMA, F16C and AVX's floating point, for programs told
+/// the x86-64-v3 list, every way.
+#[test]
+fn x86_64_v3_programs_match_linux_in_chrome_x86_64() {
+    let v3 = wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a built list");
+    programs_told_match_linux_in_chrome::<X86_64>(
+        &[
+            ("xstate", Library::C),
+            ("avx2_integer", Library::C),
+            ("fma_f16c", Library::C),
+        ],
+        &EVERY_WAY,
+        Some(v3.key()),
     );
 }

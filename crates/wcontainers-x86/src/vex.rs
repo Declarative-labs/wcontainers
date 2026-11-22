@@ -104,7 +104,9 @@ impl<E: Emitter<X86_64> + ?Sized> Emitter<X86_64> for Lane<'_, E> {
     }
     fn check(&mut self, address: u32, bytes: u32, access: Access, which: u8) {
         if self.checked {
-            X86_64::data_address(&mut self.e.sink(), address);
+            let mut s = self.e.sink();
+            X86_64::data_address(&mut s, address);
+            s.local_set(address);
         } else {
             self.e.check(address, bytes, access, which)
         }

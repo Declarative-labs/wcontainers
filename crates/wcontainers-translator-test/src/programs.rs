@@ -300,9 +300,26 @@ pub fn build_with<G: GuestTest>(
     defines: &[&str],
     position: Position,
 ) -> Blob {
+    build_for::<G>(name, optimisation, library, defines, position, None)
+}
+
+/// [`build_with`] for the processor named by a compiler flag, such as x86's [`crate::guest::x86_64::V3_CPU`],
+/// whose instructions the compiler may then use anywhere (a program without a C library too); `None` builds for
+/// the guest's baseline, a program without a C library for its general registers only.
+pub fn build_for<G: GuestTest>(
+    name: &str,
+    optimisation: &str,
+    library: Library,
+    defines: &[&str],
+    position: Position,
+    processor: Option<&str>,
+) -> Blob {
     let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
     let mut stem = format!("{name}{optimisation}{}", position.suffix());
+    if let Some(processor) = processor {
+        stem.push_str(processor);
+    }
     for define in defines {
         stem.push('-');
         stem.push_str(&define.replace('=', ""));
@@ -316,6 +333,7 @@ pub fn build_with<G: GuestTest>(
     let script = source_directory().join(FLAT_SCRIPT);
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if language == Language::Rust {
+        assert!(processor.is_none(), "a Rust program is built for the baseline");
         rust::<G>(&source, &elf, &script, optimisation, position);
         return flatten(&elf, &own, stem);
     }
@@ -334,9 +352,12 @@ pub fn build_with<G: GuestTest>(
     }
     if library == Library::None {
         arguments.extend(["-ffreestanding", "-nostdlib"]);
-        arguments.extend(G::GENERAL_ONLY);
+        if processor.is_none() {
+            arguments.extend(G::GENERAL_ONLY);
+        }
         arguments.extend(["-fno-stack-protector", "-fwrapv"]);
     }
+    arguments.extend(processor);
     arguments.extend(defines.iter().map(String::as_str));
     let (elf_text, source_text) = (text(&elf), text(&source));
     arguments.extend([OUTPUT_FLAG, &elf_text, &source_text]);

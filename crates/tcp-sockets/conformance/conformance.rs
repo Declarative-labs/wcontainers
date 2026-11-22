@@ -48,7 +48,11 @@ use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_tcp_sockets::authentication::{
-    TcpAuthenticationCounters, TcpMd5KeyChange, TcpMd5Peer,
+    TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
+    TcpAuthenticationKeyIdentifier, TcpAuthenticationKeyIdentity, TcpAuthenticationKeyRemoval,
+    TcpAuthenticationKeyUse, TcpAuthenticationMacLength, TcpAuthenticationOptionCoverage,
+    TcpAuthenticationOptions, TcpAuthenticationRemovalTiming, TcpAuthenticationRequirement,
+    TcpMd5KeyChange, TcpMd5Peer,
 };
 use wcontainers_tcp_sockets::repair::{
     TcpRepair, TcpRepairQueue, TcpTimestamp, TcpTimestampClock, TcpTimestampUnit,
@@ -539,6 +543,42 @@ const MULTIPATH_OPTION: u8 = 30;
 /// The TCP option kind of an MD5 signature, which etherparse does not parse.
 const MD5_OPTION: u8 = 19;
 
+/// The TCP option kind of the TCP Authentication Option (RFC 5925, section 2.2), which etherparse does not parse.
+const AUTHENTICATION_OPTION: u8 = 29;
+
+/// The bytes of a TCP Authentication Option before its MAC: kind, length, key identifier and next key identifier.
+const AUTHENTICATION_OPTION_HEADER: u8 = 4;
+
+/// A segment's TCP Authentication Option.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AuthenticationOption {
+    key: u8,
+    next_key: u8,
+    length: u8,
+}
+
+/// The TCP Authentication Option among a segment's options, walked as RFC 9293 section 3.1 lays them out.
+fn authentication_option(options: &[u8]) -> Option<AuthenticationOption> {
+    let mut rest = options;
+    loop {
+        match *rest {
+            [] | [0, ..] => return None,
+            [1, ..] => rest = &rest[1..],
+            [kind, length, ..] if usize::from(length) >= 2 && usize::from(length) <= rest.len() => {
+                if kind == AUTHENTICATION_OPTION && length >= AUTHENTICATION_OPTION_HEADER {
+                    return Some(AuthenticationOption {
+                        key: rest[2],
+                        next_key: rest[3],
+                        length,
+                    });
+                }
+                rest = &rest[usize::from(length)..];
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// One TCP segment loopback carried, as the host's packet socket saw it.
 #[derive(Clone, Debug)]
 struct Segment {
@@ -562,6 +602,7 @@ struct Segment {
     multipath: bool,
     /// Whether the segment carries an MD5 signature option.
     signed: bool,
+    authentication: Option<AuthenticationOption>,
 }
 
 impl Segment {
@@ -624,6 +665,7 @@ impl Segment {
             signed: tcp
                 .options_iterator()
                 .any(|option| option == Err(TcpOptionReadError::UnknownId(MD5_OPTION))),
+            authentication: authentication_option(tcp.options()),
         })
     }
 
@@ -1512,6 +1554,31 @@ pub fn unread_byte_reports_count_what_is_left<S: TcpSockets>(sockets: S) {
     close(&sockets, pair);
 }
 
+/// A listener asked for unread byte reports gives them to the connections it accepts.
+pub fn listener_unread_byte_reports_reach_the_connections_it_accepts<S: TcpSockets>(sockets: S) {
+    let pair = pair_with(
+        &sockets,
+        &[],
+        &[TcpListenerSetting::Socket(TcpSetting::UnreadByteReports(
+            Report::Requested,
+        ))],
+    );
+    let mut buffer = [0; READ_PART];
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    wait_for_unread(&sockets, &pair.server, MESSAGE.len());
+    let got = sockets
+        .receive(&pair.server, TcpReceiveRequest::Read, &mut buffer)
+        .expect("receive");
+    assert_eq!(
+        (got.length, got.unread_after),
+        (
+            ByteCount(READ_PART),
+            Some(ByteCount(MESSAGE.len() - READ_PART))
+        )
+    );
+    close(&sockets, pair);
+}
+
 pub fn receive_software_timestamps_when_asked<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let mut buffer = [0; 1];
@@ -2200,44 +2267,51 @@ fn assert_near(what: &str, measured: Duration, expected: Duration) {
     );
 }
 
-/// The peer answering nothing, the connection probes after the idle time and resets an interval after its last probe.
+/// The peer answering nothing, the connection probes after the idle time, then an interval apart as many times as
+/// asked, and resets an interval after its last probe.
 pub fn keep_alive_probes_end_an_unanswered_connection<S: TcpSockets>(sockets: S) {
-    let (pair, capture) = watched_pair(
-        &sockets,
-        ipv4_loopback(),
-        &[
-            TcpSetting::KeepAlive(true),
-            TcpSetting::KeepAliveIdle(KEEP_ALIVE_IDLE),
-            TcpSetting::KeepAliveInterval(KEEP_ALIVE_INTERVAL),
-            TcpSetting::KeepAliveProbes(ProbeCount(1)),
-        ],
-        &[],
-    );
-    let start = Instant::now();
-    drop_arrivals(&sockets, &pair.server, IpVersion::V4);
-    let next = capture.next_to_listener();
-    let ending = KEEP_ALIVE_IDLE + KEEP_ALIVE_INTERVAL + TIMER_SLACK;
-    let probe = capture
-        .wait_for(start, ending, |segment| is_probe(segment, next))
-        .expect("a keep-alive probe");
-    assert_near(PROBE, probe.at - start, KEEP_ALIVE_IDLE);
-    let reset = capture
-        .wait_for(start, ending, |segment| {
-            segment.to_listener && segment.reset
-        })
-        .expect("a reset after the last probe");
-    assert_near(RESET, reset.at - probe.at, KEEP_ALIVE_INTERVAL);
-    let probes = capture
-        .segments()
-        .iter()
-        .filter(|segment| is_probe(segment, next))
-        .count();
-    assert_eq!(probes, 1);
-    assert_eq!(
-        receive_outcome(&sockets, &pair.client, DEADLINE).map(|got| got.length),
-        Err(errno(Errno::ETIMEDOUT))
-    );
-    close(&sockets, pair);
+    for count in [1, 2] {
+        let (pair, capture) = watched_pair(
+            &sockets,
+            ipv4_loopback(),
+            &[
+                TcpSetting::KeepAlive(true),
+                TcpSetting::KeepAliveIdle(KEEP_ALIVE_IDLE),
+                TcpSetting::KeepAliveInterval(KEEP_ALIVE_INTERVAL),
+                TcpSetting::KeepAliveProbes(ProbeCount(count)),
+            ],
+            &[],
+        );
+        let start = Instant::now();
+        drop_arrivals(&sockets, &pair.server, IpVersion::V4);
+        let next = capture.next_to_listener();
+        let ending = KEEP_ALIVE_IDLE + KEEP_ALIVE_INTERVAL * u32::from(count) + TIMER_SLACK;
+        let probe = capture
+            .wait_for(start, ending, |segment| is_probe(segment, next))
+            .expect("a keep-alive probe");
+        assert_near(PROBE, probe.at - start, KEEP_ALIVE_IDLE);
+        let reset = capture
+            .wait_for(start, ending, |segment| {
+                segment.to_listener && segment.reset
+            })
+            .expect("a reset after the last probe");
+        let probes: Vec<_> = capture
+            .segments()
+            .into_iter()
+            .filter(|segment| is_probe(segment, next))
+            .collect();
+        assert_eq!(probes.len(), usize::from(count), "{count} probes");
+        for (earlier, later) in probes.iter().zip(&probes[1..]) {
+            assert_near(PROBE, later.at - earlier.at, KEEP_ALIVE_INTERVAL);
+        }
+        let last = probes.last().expect("a probe");
+        assert_near(RESET, reset.at - last.at, KEEP_ALIVE_INTERVAL);
+        assert_eq!(
+            receive_outcome(&sockets, &pair.client, DEADLINE).map(|got| got.length),
+            Err(errno(Errno::ETIMEDOUT))
+        );
+        close(&sockets, pair);
+    }
 }
 
 /// A probe answered by nothing is followed by the next only an interval later, unless the timer is rearmed: then the
@@ -2895,48 +2969,97 @@ pub fn fixed_flow_label_marks_every_segment<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// A connection joins a multicast group on an interface and leaves it, each twice the same as once, and still
-/// carries bytes.
+/// Groups no other check joins, so that the host's tables show this check's memberships alone.
+const MEMBERSHIP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 123);
+const MEMBERSHIP_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x123);
+
+/// How many sockets of the host have joined the group on the interface, by `/proc/net/igmp` or `/proc/net/igmp6`.
+fn group_users(group: IpAddr, interface: InterfaceIndex) -> usize {
+    let users = |field: Option<&str>| field.and_then(|users| users.parse().ok()).unwrap_or(0);
+    match group {
+        // Device lines start with the interface's index, its groups follow indented, each the address's bytes as a
+        // number of this host's byte order.
+        IpAddr::V4(group) => {
+            let wanted = format!("{:08X}", u32::from_ne_bytes(group.octets()));
+            let table = std::fs::read_to_string("/proc/net/igmp").expect("the IPv4 group table");
+            let mut device = None;
+            for line in table.lines().skip(1) {
+                let mut fields = line.split_whitespace();
+                if !line.starts_with(char::is_whitespace) {
+                    device = fields.next().and_then(|index| index.parse().ok());
+                } else if device == Some(interface.0) && fields.next() == Some(wanted.as_str()) {
+                    return users(fields.next());
+                }
+            }
+            0
+        }
+        IpAddr::V6(group) => {
+            let wanted: String = group.octets().iter().map(|byte| format!("{byte:02x}")).collect();
+            let table = std::fs::read_to_string("/proc/net/igmp6").expect("the IPv6 group table");
+            table
+                .lines()
+                .find_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let index = fields.next()?.parse::<u32>().ok()?;
+                    let _name = fields.next();
+                    (index == interface.0 && fields.next() == Some(wanted.as_str()))
+                        .then(|| users(fields.next()))
+                })
+                .unwrap_or(0)
+        }
+    }
+}
+
+/// A connection joins a multicast group on an interface, which the host's group table then lists with one user, and
+/// leaves it, which takes it off; each twice the same as once, and the connection still carries bytes.
 pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
-    let interface = Some(loopback_interface());
-    for (address, joined, left) in [
+    let interface = loopback_interface();
+    for (address, group, joined, left) in [
         (
             ipv4_loopback(),
+            IpAddr::V4(MEMBERSHIP_V4),
             IpSocketSetting::MulticastV4(MulticastGroup {
-                group: MULTICAST_V4,
-                interface,
+                group: MEMBERSHIP_V4,
+                interface: Some(interface),
                 membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
             }),
             IpSocketSetting::MulticastV4(MulticastGroup {
-                group: MULTICAST_V4,
-                interface,
+                group: MEMBERSHIP_V4,
+                interface: Some(interface),
                 membership: MulticastMembership::Left,
             }),
         ),
         (
             ipv6_loopback(),
+            IpAddr::V6(MEMBERSHIP_V6),
             IpSocketSetting::MulticastV6(MulticastGroup {
-                group: MULTICAST_V6,
-                interface,
+                group: MEMBERSHIP_V6,
+                interface: Some(interface),
                 membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
             }),
             IpSocketSetting::MulticastV6(MulticastGroup {
-                group: MULTICAST_V6,
-                interface,
+                group: MEMBERSHIP_V6,
+                interface: Some(interface),
                 membership: MulticastMembership::Left,
             }),
         ),
     ] {
         let pair = pair_at(&sockets, address, &[], &[]);
-        for setting in [&joined, &joined, &left, &left] {
+        assert_eq!(group_users(group, interface), 0, "{group} before");
+        for (setting, users) in [(&joined, 1), (&joined, 1), (&left, 0), (&left, 0)] {
             assert_eq!(
                 sockets.configure(&pair.client, TcpSetting::Ip(*setting)),
                 Ok(()),
                 "{setting:?}"
             );
+            assert_eq!(group_users(group, interface), users, "{setting:?}");
         }
         assert_carries_bytes(&sockets, &pair);
+        sockets
+            .configure(&pair.client, TcpSetting::Ip(joined))
+            .expect("joined again");
         close(&sockets, pair);
+        assert_eq!(group_users(group, interface), 0, "{group} after the close");
     }
 }
 
@@ -3043,6 +3166,257 @@ pub fn md5_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: 
             sockets.stop_listening(listener);
         }
     }
+}
+
+const AUTHENTICATION_ALGORITHM: &str = "hmac(sha1)";
+const AUTHENTICATION_SECRET: &[u8] = b"conformance secret";
+const OTHER_AUTHENTICATION_SECRET: &[u8] = b"another secret";
+/// A MAC length unlike Linux's default for the algorithm (12 bytes), so that the length given shows on the wire.
+const AUTHENTICATION_MAC_LENGTH: TcpAuthenticationMacLength = TcpAuthenticationMacLength(16);
+const FIRST_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(1);
+const SECOND_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(2);
+
+/// A key for the peers at 127.0.0.1 that sends and receives with the one identifier.
+fn authentication_identity(identifier: TcpAuthenticationKeyIdentifier) -> TcpAuthenticationKeyIdentity {
+    authentication_identity_of(Ipv4Addr::LOCALHOST, identifier)
+}
+
+fn authentication_identity_of(
+    peer: Ipv4Addr,
+    identifier: TcpAuthenticationKeyIdentifier,
+) -> TcpAuthenticationKeyIdentity {
+    TcpAuthenticationKeyIdentity {
+        peer: IpPrefix {
+            address: IpAddr::V4(peer),
+            length: PrefixLength(Ipv4Addr::BITS as u8),
+        },
+        interface: None,
+        send_identifier: identifier,
+        receive_identifier: identifier,
+    }
+}
+
+fn authentication_key(
+    identifier: TcpAuthenticationKeyIdentifier,
+    secret: &'static [u8],
+    other_options: TcpAuthenticationOptionCoverage,
+    key_use: TcpAuthenticationKeyUse,
+) -> TcpSetting<'static> {
+    TcpSetting::AddAuthenticationKey(TcpAuthenticationKeyAddition {
+        identity: authentication_identity(identifier),
+        algorithm: AUTHENTICATION_ALGORITHM,
+        mac_length: AUTHENTICATION_MAC_LENGTH,
+        other_options,
+        secret,
+        key_use,
+    })
+}
+
+fn authentication_key_removed(
+    identifier: TcpAuthenticationKeyIdentifier,
+    current: Option<TcpAuthenticationKeyIdentifier>,
+) -> TcpSetting<'static> {
+    TcpSetting::RemoveAuthenticationKey(TcpAuthenticationKeyRemoval {
+        identity: authentication_identity(identifier),
+        current,
+        requested_next: None,
+        timing: TcpAuthenticationRemovalTiming::Now,
+    })
+}
+
+fn authentication_options(
+    key: Option<TcpAuthenticationKeyIdentifier>,
+    requirement: TcpAuthenticationRequirement,
+) -> TcpSetting<'static> {
+    TcpSetting::AuthenticationOptions(TcpAuthenticationOptions {
+        current: key,
+        requested_next: key,
+        requirement,
+        icmp_errors: TcpAuthenticationIcmpErrors::Ignored,
+    })
+}
+
+/// The option a segment signed with the key carries, asking for the same key next.
+fn signed_with(key: TcpAuthenticationKeyIdentifier) -> Option<AuthenticationOption> {
+    Some(AuthenticationOption {
+        key: key.0,
+        next_key: key.0,
+        length: AUTHENTICATION_OPTION_HEADER + AUTHENTICATION_MAC_LENGTH.0,
+    })
+}
+
+/// Whether a listener with the settings admits a client with its own, and the option the client's SYN carries; for a
+/// connection made, every segment both ways is signed when the SYN is.
+fn authentication_round<S: TcpSockets>(
+    sockets: &S,
+    listener_settings: &[TcpSetting<'static>],
+    client_settings: &[TcpSetting<'static>],
+) -> (Option<Pair<S>>, Option<AuthenticationOption>, Capture) {
+    let listener_settings: Vec<_> = listener_settings
+        .iter()
+        .map(|setting| TcpListenerSetting::Socket(setting.clone()))
+        .collect();
+    let (listener, local) = listen(sockets, ipv4_loopback(), &listener_settings);
+    let capture = Capture::start(local);
+    let client = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(ipv4_any()),
+            local,
+            client_settings,
+            TcpFastOpen::Off,
+        )
+        .expect("connect")
+        .connection;
+    std::thread::sleep(SETTLE);
+    let mut header = [0; 0];
+    let synchronize = capture
+        .segments()
+        .iter()
+        .find(|segment| segment.to_listener && segment.synchronize)
+        .expect("the SYN")
+        .authentication;
+    match sockets.accept(&listener, &mut header) {
+        Ok(accepted) => {
+            let pair = Pair {
+                listener,
+                local,
+                client,
+                server: accepted.connection,
+            };
+            assert_carries_bytes(sockets, &pair);
+            std::thread::sleep(SETTLE);
+            for segment in capture.segments() {
+                assert_eq!(
+                    segment.authentication.is_some(),
+                    synchronize.is_some(),
+                    "{segment:?}"
+                );
+                if let Some(option) = segment.authentication {
+                    assert_eq!(option.length, synchronize.expect("signed").length);
+                }
+            }
+            (Some(pair), synchronize, capture)
+        }
+        Err(HostError::WouldBlock) => {
+            assert!(
+                capture.segments().iter().all(|segment| segment.to_listener),
+                "answered"
+            );
+            sockets.close(client, TcpClose::Abort);
+            sockets.stop_listening(listener);
+            (None, synchronize, capture)
+        }
+        Err(error) => panic!("accept: {error:?}"),
+    }
+}
+
+/// A listener with TCP Authentication Option keys for its peers takes only connections signed with one of them, by the
+/// key, MAC length and option coverage given; keys added twice are added once, the key asked to be current signs the
+/// SYN, a key removed signs nothing, and a listener that requires authentication takes no plain client until it no
+/// longer does.
+pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: S) {
+    use TcpAuthenticationKeyUse::{CurrentAndRequestedNext, Stored};
+    use TcpAuthenticationOptionCoverage::{Excluded, Included};
+    use TcpAuthenticationRequirement::{Optional, Required};
+    let first = authentication_key(FIRST_KEY, AUTHENTICATION_SECRET, Included, Stored);
+    let second = authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, Stored);
+    let second_current =
+        authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, CurrentAndRequestedNext);
+    let other = authentication_key(FIRST_KEY, OTHER_AUTHENTICATION_SECRET, Included, Stored);
+    let excluding = authentication_key(FIRST_KEY, AUTHENTICATION_SECRET, Excluded, Stored);
+    let first_removed = authentication_key_removed(FIRST_KEY, None);
+    let first_removed_for_second = authentication_key_removed(FIRST_KEY, Some(SECOND_KEY));
+    for (listener_settings, client_settings, admitted, synchronize) in [
+        (vec![first.clone()], vec![first.clone()], true, signed_with(FIRST_KEY)),
+        (
+            vec![first.clone()],
+            vec![first.clone(), first.clone()],
+            true,
+            signed_with(FIRST_KEY),
+        ),
+        (
+            vec![first.clone(), second.clone()],
+            vec![first.clone(), second_current.clone(), second_current.clone()],
+            true,
+            signed_with(SECOND_KEY),
+        ),
+        (
+            vec![first.clone(), second.clone()],
+            vec![
+                first.clone(),
+                second.clone(),
+                first_removed_for_second.clone(),
+                first_removed_for_second,
+            ],
+            true,
+            signed_with(SECOND_KEY),
+        ),
+        (vec![first.clone()], vec![other], false, signed_with(FIRST_KEY)),
+        (vec![first.clone()], vec![], false, None),
+        (
+            vec![first.clone(), first_removed.clone(), first_removed],
+            vec![],
+            true,
+            None,
+        ),
+        (vec![authentication_options(None, Required)], vec![], false, None),
+        (
+            vec![
+                authentication_options(None, Required),
+                authentication_options(None, Optional),
+            ],
+            vec![],
+            true,
+            None,
+        ),
+        (vec![excluding.clone()], vec![first], false, signed_with(FIRST_KEY)),
+        (vec![excluding.clone()], vec![excluding], true, signed_with(FIRST_KEY)),
+    ] {
+        let case = format!("listener {listener_settings:?}, client {client_settings:?}");
+        let (pair, signed, _) = authentication_round(&sockets, &listener_settings, &client_settings);
+        assert_eq!(signed, synchronize, "{case}");
+        assert_eq!(pair.is_some(), admitted, "{case}");
+        if let Some(pair) = pair {
+            close(&sockets, pair);
+        }
+    }
+}
+
+/// A connection's authentication options choose the key it signs with and the one it asks its peer for, set twice the
+/// same as once.
+pub fn authentication_options_choose_the_keys_in_use<S: TcpSockets>(sockets: S) {
+    use TcpAuthenticationKeyUse::{CurrentAndRequestedNext, Stored};
+    use TcpAuthenticationOptionCoverage::Included;
+    let keys = [
+        authentication_key(FIRST_KEY, AUTHENTICATION_SECRET, Included, Stored),
+        authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, Stored),
+    ];
+    let client_keys = [
+        keys[0].clone(),
+        authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, CurrentAndRequestedNext),
+    ];
+    let (pair, signed, capture) = authentication_round(&sockets, &keys, &client_keys);
+    assert_eq!(signed, signed_with(SECOND_KEY));
+    let pair = pair.expect("admitted");
+    let switched = authentication_options(Some(FIRST_KEY), TcpAuthenticationRequirement::Optional);
+    for _ in 0..2 {
+        assert_eq!(sockets.configure(&pair.client, switched.clone()), Ok(()));
+    }
+    let start = Instant::now();
+    assert_carries_bytes(&sockets, &pair);
+    std::thread::sleep(SETTLE);
+    let sent: Vec<_> = capture
+        .since(start)
+        .into_iter()
+        .filter(Segment::is_data_to_listener)
+        .collect();
+    assert!(!sent.is_empty(), "the client's data");
+    for segment in sent {
+        assert_eq!(segment.authentication, signed_with(FIRST_KEY), "{segment:?}");
+    }
+    close(&sockets, pair);
 }
 
 /// A congestion control that needs explicit congestion notification marks the data it sends as capable of it.
@@ -3656,36 +4030,118 @@ pub fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled<S: TcpSock
     close(&sockets, pair);
 }
 
-/// Accept names the loopback interface a SYN came in on, the address it was sent to as the one to reply from (IPv4
-/// only), and the mark its sender gave it.
+/// Accept names the loopback interface a SYN came in on, also to an address loopback's prefix holds and for multipath,
+/// the address it was sent to as the one to reply from (IPv4 only), and the mark its sender gave it.
 pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
-    for (address, specific_destination) in [
-        (BindAddress::V4(OTHER_LOOPBACK), Some(OTHER_LOOPBACK)),
-        (ipv6_loopback(), None),
+    for protocol in [TcpProtocol::Tcp, TcpProtocol::Multipath] {
+        for (address, specific_destination) in [
+            (BindAddress::V4(OTHER_LOOPBACK), Some(OTHER_LOOPBACK)),
+            (ipv6_loopback(), None),
+        ] {
+            let case = format!("{protocol:?} to {address:?}");
+            let listening = sockets
+                .listen(protocol, OWNER, bind_any_port(address), BACKLOG, &[])
+                .expect("listen");
+            let connected = sockets
+                .connect(
+                    protocol,
+                    OWNER,
+                    bind_any_port(any_of(address)),
+                    listening.local,
+                    &[TcpSetting::Packet(IpPacketSetting::Mark(MARK))],
+                    TcpFastOpen::Off,
+                )
+                .expect("connect");
+            let accepted = accept_with_header(&sockets, &listening.listener, 0);
+            let fields = accepted.synchronize;
+            assert_eq!(fields.interface, interface, "{case}: {fields:?}");
+            assert_eq!(
+                fields.specific_destination, specific_destination,
+                "{case}: {fields:?}"
+            );
+            assert_eq!(fields.mark, MARK, "{case}: {fields:?}");
+            sockets.close(accepted.connection, TcpClose::Orderly);
+            sockets.close(connected.connection, TcpClose::Orderly);
+            sockets.stop_listening(listening.listener);
+        }
+    }
+}
+
+/// Owners other than [`OWNER`] for a connection and a listener.
+const CONNECTION_OWNER: UserId = UserId(1001);
+const LISTENER_OWNER: UserId = UserId(1002);
+
+/// The user the host's table of TCP sockets (`/proc/net/tcp` or `/proc/net/tcp6`) names for the socket between the
+/// ports, a listener's peer port being 0.
+fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
+    let table = match version {
+        IpVersion::V4 => "/proc/net/tcp",
+        IpVersion::V6 => "/proc/net/tcp6",
+    };
+    let port = |address: &str| {
+        address
+            .rsplit(':')
+            .next()
+            .and_then(|port| u16::from_str_radix(port, 16).ok())
+    };
+    std::fs::read_to_string(table)
+        .expect("the host's TCP sockets")
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let wanted = port(fields.get(1)?) == Some(local.0) && port(fields.get(2)?) == Some(peer.0);
+            wanted.then(|| fields.get(7)?.parse().ok()).flatten()
+        })
+}
+
+/// A connection and a listener belong to the owners they were made for, over IPv4 and IPv6.
+pub fn connect_and_listen_make_sockets_of_their_owner<S: TcpSockets>(sockets: S) {
+    for (address, version) in [
+        (ipv4_loopback(), IpVersion::V4),
+        (ipv6_loopback(), IpVersion::V6),
     ] {
-        let (listener, local) = listen(&sockets, address, &[]);
+        let listening = sockets
+            .listen(
+                TcpProtocol::Tcp,
+                LISTENER_OWNER,
+                bind_any_port(address),
+                BACKLOG,
+                &[],
+            )
+            .expect("listen");
         let connected = sockets
             .connect(
                 TcpProtocol::Tcp,
-                OWNER,
+                CONNECTION_OWNER,
                 bind_any_port(any_of(address)),
-                local,
-                &[TcpSetting::Packet(IpPacketSetting::Mark(MARK))],
+                listening.local,
+                &[],
                 TcpFastOpen::Off,
             )
             .expect("connect");
-        let accepted = accept_with_header(&sockets, &listener, 0);
-        let fields = accepted.synchronize;
-        assert_eq!(fields.interface, interface, "{address:?}: {fields:?}");
+        let server = accept(&sockets, &listening.listener);
+        let listener_port = Port(listening.local.port());
         assert_eq!(
-            fields.specific_destination, specific_destination,
-            "{address:?}: {fields:?}"
+            socket_owner(version, listener_port, Port(0)),
+            Some(LISTENER_OWNER.0),
+            "the listener over {version:?}"
         );
-        assert_eq!(fields.mark, MARK, "{address:?}: {fields:?}");
-        sockets.close(accepted.connection, TcpClose::Orderly);
-        sockets.close(connected.connection, TcpClose::Orderly);
-        sockets.stop_listening(listener);
+        assert_eq!(
+            socket_owner(version, Port(connected.local.port()), listener_port),
+            Some(CONNECTION_OWNER.0),
+            "the connection over {version:?}"
+        );
+        close(
+            &sockets,
+            Pair {
+                listener: listening.listener,
+                local: listening.local,
+                client: connected.connection,
+                server,
+            },
+        );
     }
 }
 
@@ -4174,7 +4630,54 @@ pub fn ipv6_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets:
 /// must have succeeds, and the listeners still accept connections that carry bytes.
 pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     let key = FastOpenKey([u8::MAX; FAST_OPEN_KEY_LENGTH]);
+    // Authentication for a peer other than the clients, so that the listener still takes them unsigned.
+    let distant = authentication_identity_of(NONLOCAL, FIRST_KEY);
     let settings = [
+        (
+            TcpListenerSetting::Socket(TcpSetting::AddAuthenticationKey(
+                TcpAuthenticationKeyAddition {
+                    identity: distant,
+                    algorithm: AUTHENTICATION_ALGORITHM,
+                    mac_length: AUTHENTICATION_MAC_LENGTH,
+                    other_options: TcpAuthenticationOptionCoverage::Included,
+                    secret: AUTHENTICATION_SECRET,
+                    key_use: TcpAuthenticationKeyUse::Stored,
+                },
+            )),
+            true,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::RemoveAuthenticationKey(
+                TcpAuthenticationKeyRemoval {
+                    identity: distant,
+                    current: None,
+                    requested_next: None,
+                    timing: TcpAuthenticationRemovalTiming::WhenUnused,
+                },
+            )),
+            true,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::AuthenticationOptions(
+                TcpAuthenticationOptions {
+                    current: None,
+                    requested_next: None,
+                    requirement: TcpAuthenticationRequirement::Optional,
+                    icmp_errors: TcpAuthenticationIcmpErrors::Accepted,
+                },
+            )),
+            true,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::InitialAuthenticationCounters(
+                AUTHENTICATION_COUNTERS,
+            )),
+            true,
+            ipv4_loopback(),
+        ),
         (
             TcpListenerSetting::Backlog(ListenBacklog(u32::from(SETTING_COUNT))),
             true,
@@ -4305,6 +4808,14 @@ pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(soc
     let interface = loopback_interface();
     let ipv4 = [
         TcpSetting::Packet(IpPacketSetting::Mark(MARK)),
+        // Linux adds the first authentication key only before a connection starts.
+        authentication_key(
+            FIRST_KEY,
+            AUTHENTICATION_SECRET,
+            TcpAuthenticationOptionCoverage::Included,
+            TcpAuthenticationKeyUse::Stored,
+        ),
+        TcpSetting::InitialAuthenticationCounters(AUTHENTICATION_COUNTERS),
         TcpSetting::Port(PortSetting::GroupFilter(Some(SocketFilter(&ACCEPT_ALL)))),
         TcpSetting::Port(PortSetting::GroupFilter(None)),
         TcpSetting::Ip(IpSocketSetting::MulticastV4(MulticastGroup {
@@ -4799,6 +5310,7 @@ macro_rules! tests {
             listener_wait_finishes_when_a_connection_comes,
             dropping_a_listener_wait_cancels_it,
             connect_and_accept_name_both_ends,
+            connect_and_listen_make_sockets_of_their_owner,
             accept_cuts_the_synchronize_header_to_the_buffer,
             connect_settings_apply_to_the_synchronize,
             bytes_arrive_in_order_both_ways,
@@ -4824,6 +5336,7 @@ macro_rules! tests {
             push_ignoring_neither_sends_data_held_for_more,
             record_end_starts_a_new_segment,
             unread_byte_reports_count_what_is_left,
+            listener_unread_byte_reports_reach_the_connections_it_accepts,
             receive_software_timestamps_when_asked,
             software_transmit_report_names_the_send,
             reports_name_their_sends_among_plain_ones,
@@ -4857,6 +5370,8 @@ macro_rules! tests {
             fixed_flow_label_marks_every_segment,
             multicast_groups_are_joined_and_left,
             md5_keys_admit_only_connections_signed_with_them,
+            authentication_keys_admit_only_connections_signed_with_them,
+            authentication_options_choose_the_keys_in_use,
             congestion_control_is_the_one_named,
             pacing_rate_spreads_what_is_sent,
             transmit_delay_holds_each_segment,
