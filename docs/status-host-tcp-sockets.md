@@ -43,6 +43,45 @@ readings, repair, authentication, multipath state, the privileged settings).
   old `IP_ADD_MEMBERSHIP` is EPROTO there). `set_ip_socket_setting` and `set_packet_setting` still refuse
   memberships and a fixed flow label for whoever calls them without handling those first.
 
+## Done in run 9 (2026-11-22): the independent check of run 8 answered
+- Memberships by their effect: multicast_groups_are_joined_and_left reads `/proc/net/igmp` and `/proc/net/igmp6`
+  (groups 224.0.0.123 and ff02::123, which no other check joins): none before, one user after a join and after a
+  second, none after a leave, a second leave and the close. New anycast_addresses_are_joined_and_left does the same
+  with `/proc/net/anycast6` (fd00::123): the namespace now has `net.ipv6.conf.lo.forwarding=1`, since Linux lets a
+  host (not a router) join only anycast addresses its interface's prefixes hold.
+- The owner: new connect_and_listen_make_sockets_of_their_owner connects as uid 1001 and listens as uid 1002 over
+  IPv4 and IPv6 and finds each in `/proc/net/tcp` or `tcp6` (by its ports) with that uid.
+- The TCP Authentication Option's settings are honoured (they need no privilege, as the checker measured):
+  `AddAuthenticationKey` is `TCP_AO_ADD_KEY` (peer prefix, an IPv4 one of an IPv6 socket mapped, interface, both
+  identifiers, algorithm, MAC length, options excluded or not, the key's use as current or requested next); Linux
+  answers EEXIST for a key whose identifiers a held key has, so when `TCP_AO_GET_KEYS` shows the held key is the one
+  asked for, that is a success (its use applied through `TCP_AO_INFO`). `RemoveAuthenticationKey` is
+  `TCP_AO_DEL_KEY` (with the keys to use next and removal when unused); an absent key's removal is a success, the
+  keys to use next still applied. `AuthenticationOptions` and `InitialAuthenticationCounters` are `TCP_AO_INFO`,
+  read first, since Linux writes the requirement and the ICMP choice at every call. `AuthenticationRepair` and
+  `set_authentication_counters` stay T2 (counted refusals).
+  New authentication_keys_admit_only_connections_signed_with_them (11 cases on the wire, option kind 29: its key
+  identifiers and its length, 4 + the MAC length 16 the check gives, unlike Linux's default 12): matching keys
+  admit, every segment both ways signed; a key added twice; the key asked to be current signs the SYN; a key
+  removed with another made current; another secret, no key, and options covered on one end only are refused; a
+  listener's key removed twice admits plain clients; a listener requiring authentication refuses plain clients
+  until it no longer requires it. New authentication_options_choose_the_keys_in_use: options set twice on an
+  established connection switch the key its data is signed with. The listener settings list gains the four
+  settings (for a peer other than the clients), all required to succeed; the refusable list a key and counters on
+  established connections (Linux: EISCONN both times).
+- A listener's `UnreadByteReports` reaches the connections it accepts (accept copies the flag, as Linux copies
+  `TCP_INQ`); checked by new listener_unread_byte_reports_reach_the_connections_it_accepts.
+- keep_alive_probes_end_an_unanswered_connection runs with 1 and with 2 probes: as many probes as asked, an
+  interval apart, then the reset an interval after the last.
+- accept_names_where_the_synchronize_arrived also accepts multipath connections (their arrival interface comes from
+  the host's addresses), to 127.0.0.2, which loopback holds only by its prefix: the exact-address-only copy now
+  fails. Linux gives an accepted multipath socket mark 0 (measured), so the mark is checked for TCP only.
+- Shared `Shortfalls`: a reason counted in the overflow slot is warned of at every count, since that slot cannot
+  tell its reasons apart.
+- Note: commit d60b9609 ("refactored everything to fit the new reviewable rust format", not this track's) took
+  part of this run's uncommitted edits of implementation.rs, conformance.rs and the shared host.rs with it; the
+  rest is in 198547b0.
+
 ## Done in run 8 (2026-11-21): the independent check of run 7 answered
 - The two flaky checks. listener_backlog_bounds_the_accept_queue: two of 60 full runs still failed after a first
   change (accepting at once), both with two connections accepted: a SYN that came while the queue was momentarily
@@ -187,12 +226,12 @@ readings, repair, authentication, multipath state, the privileged settings).
   queue (transmit reports with packet, statistics or wireless status; ICMP errors written whole), every plain
   setting of settings.rs, and the action methods. read_state, read_listener_state, authentication and the repair
   queues are T2 (counted refusals now).
-- Suite `crates/tcp-sockets/conformance`: 97 checks against the traits alone (and four of the implementation's
-  own: the wait and receive allocation checks, discarding_cuts_no_packet and the two-thread peeks; 101 tests in one
-  binary), each on a value made anew. The body
+- Suite `crates/tcp-sockets/conformance`: 102 checks against the traits alone since run 9 (and four of the
+  implementation's own: the wait and receive allocation checks, discarding_cuts_no_packet and the two-thread peeks;
+  106 tests in one binary), each on a value made anew. The body
   is `cfg(target_os = "linux")`: the checks watch the wire. A capture thread reads the host's packet socket
   (`AF_PACKET`, every loopback packet seen twice, counted once) filtered to one listener's port, and the checks
-  read headers, sequence numbers, windows, TCP timestamps and times from it. Timer checks make the peer drop
+  read headers, sequence numbers, windows, TCP timestamps and times from it; since run 9 the host's tables in /proc too. Timer checks make the peer drop
   everything with a minimum hop limit of 255. Buffer checks measure what a connection takes, or what a peer
   sends, while nothing is read. The namespace the suite needs (root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`,
   `net.ipv6.flowlabel_consistency=0`, `dctcp`) is written at the top of the suite and made by run-conformance.sh.
@@ -224,7 +263,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   wait_ends_with_the_errors_always_reported. wait_for_listener_events: listener_wait_finishes_when_a_connection_comes,
   dropping_a_listener_wait_cancels_it.
 - Which check fails when a method or setting breaks, each one run as a broken copy by mutants.sh (results under
-  Measurements): connect, listen, accept: every check; their protocol: multipath_is_negotiated_when_both_ends_ask. send and receive: bytes_arrive_in_order_both_ways and the
+  Measurements): connect, listen, accept: every check; their owner: connect_and_listen_make_sockets_of_their_owner;
+  their protocol: multipath_is_negotiated_when_both_ends_ask. send and receive: bytes_arrive_in_order_both_ways and the
   request checks (urgent_*, peek_*, more_to_come_*, record_end_starts_a_new_segment, unread_byte_reports_*,
   receive_software_timestamps_*, the transmit report checks). shut_down: the three shutdown checks (ReadAndWrite as Write fails
   shutdown_of_both_directions_ends_both). close:
@@ -248,13 +288,14 @@ readings, repair, authentication, multipath state, the privileged settings).
   repair (their checks); cork, urgent inline, unread byte reports, maximum segment size, ICMP error reports (as
   before); listener backlog, fast open queue and keys, flow label reflection (their checks).
 - Settings still checked only for being set twice the same, since loopback or the traits cannot show them yet:
-  multicast loopback and all-groups (no effect on TCP traffic), packet priority and mark (not on the wire),
-  unicast interface, route scope, source preferences, bound interface, incoming processor (one interface, no
-  read-back before T2), IPv4 options and IPv6 extension headers, anycast (no address it may join on loopback), the
-  IPv6 variants of traffic
-  class and path MTU discovery, `RecordsLastReceivedHeader` (shows only in `TcpQuery::LastReceivedHeader`, T2).
+  multicast loopback and all-groups (no effect on TCP traffic), packet priority (not on the wire), unicast
+  interface, route scope, source preferences, bound interface, incoming processor (one interface, no read-back
+  before T2), IPv4 options and IPv6 extension headers, the IPv6 variants of traffic class and path MTU discovery,
+  `RecordsLastReceivedHeader` (shows only in `TcpQuery::LastReceivedHeader`, T2), `InitialAuthenticationCounters`
+  (shows only in read_state, T2) and the authentication options' ICMP choice (would need an ICMP error to an
+  authenticated connection; not attempted). The mark is checked by accept_names_where_the_synchronize_arrived.
   `SaveSynchronize` with all three values is checked through `TakeSavedSynchronize` (saved_synchronize_is_taken_once).
-  T2 settings (the TCP Authentication Option, repair options and windows) are not in T1.
+  T2 settings (the authentication repair values, repair options and windows) are not in T1.
 
 ## Measurements
 - Run 8, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 23:17 to 23:21, load 2.8 to 5.3: clippy with
@@ -371,7 +412,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
 - Broken copies: the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
-  copy, 106 copies; names pick some). Whether every copy's text is still there once: scratch
+  copy, 130 copies; names pick some). Whether every copy's text is still there once: scratch
   tools/check_mutants.sh <checkout> (on the Mac, no build).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
   $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance --
@@ -392,10 +433,11 @@ readings, repair, authentication, multipath state, the privileged settings).
   implementation.rs staged as linux.rs): if this crate stops building on it, wait and try again.
 
 ## Next (T2)
-- read_state and read_listener_state (every query), the TCP Authentication Option (keys, options, initial counters,
-  repair, set_authentication_counters), repair options and windows: counted refusals now.
+- read_state and read_listener_state (every query), the authentication repair values and
+  set_authentication_counters, repair options and windows: counted refusals now.
 - With read_state, give the settings listed above as unobservable a check of their effect, first
-  `RecordsLastReceivedHeader` through `TcpQuery::LastReceivedHeader`.
+  `RecordsLastReceivedHeader` through `TcpQuery::LastReceivedHeader` and `InitialAuthenticationCounters` through the
+  authentication status.
 - authentication_counters_are_set_only_where_authentication_is and listener_state_reads_a_listener still pass on
   any NotSupported answer (conformance.rs, `assert_eq!(error, HostError::NotSupported)`): once T2 answers them, make
   both demand the real answer on Linux.
@@ -421,10 +463,10 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Run 3: the suite's body is Linux only (it was empty of Linux-only calls before): the wire checks need the host's
   packet socket.
 
-- Run 8: the plan put all authentication in T2, while the milestone asks for every setting of settings.rs that needs
-  no privilege. MD5 keys are one plain socket option and moved to T1. The TCP Authentication Option's settings stay
-  in T2 with its counters and status (`set_authentication_counters` and the AO readings of read_state are T2
-  methods): its keys, options and counters are one `TCP_AO_*` state whose effect the suite can only show with them.
+- Run 8 and 9: the plan put all authentication in T2, while the milestone asks for every setting of settings.rs
+  that needs no privilege. MD5 keys (run 8) and the TCP Authentication Option's keys, options and initial counters
+  (run 9) moved to T1, plan corrected; the authentication repair values (repair mode needs CAP_NET_ADMIN) and the
+  method `set_authentication_counters` stay T2.
 
 ## Dependencies added
 - Run 5: nix 0.31.4 in the suite too (Linux only, `net` feature: the loopback interface by its flag): MIT.
@@ -461,6 +503,9 @@ readings, repair, authentication, multipath state, the privileged settings).
 - `TcpAccepted::synchronize` asks for fields Linux never reports for a SYN: for IPv4 the arrival interface (Linux
   keeps that of the segment that completed the handshake, given in its place and counted), and the SYN's own mark,
   priority and timestamps (it gives the accepted socket's mark and priority and no timestamps).
+- Linux gives an accepted multipath socket mark 0 whatever its SYN's mark (`tcp_fwmark_accept` marks only the
+  subflow), so `TcpAccepted::synchronize.mark` of a multipath accept is the socket's 0 (counted with the other
+  fields of the socket). Example: a multipath client with mark 7 to 127.0.0.2 is accepted with mark 0.
 - A multipath accept has no SYN to give: Linux has no `TCP_SAVED_SYN` (nor packet options) on MPTCP sockets, so
   `synchronize_header` is empty and `synchronize.length` is 0, counted (`NO_SAVED_SYNCHRONIZE`), with the interface
   taken from the host's addresses (counted). Example: a multipath client to a multipath listener on 127.0.0.1 is

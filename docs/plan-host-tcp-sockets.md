@@ -74,14 +74,16 @@
 - set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). The unit is the one the route gave the
   socket (`tcp_usec_ts`, read from `TCP_INFO`'s `TCPI_OPT_USEC_TS`): Linux cannot change it, so the other unit is
   refused with a counted reason. set_authentication_counters and the
-  listener's: `TCP_AO_INFO` with its counter flag.
+  listener's: `TCP_AO_INFO` with its counter flag (T2).
 - read_state and read_listener_state: `TCP_INFO`, `TCP_CC_INFO`, `TCP_CONGESTION`, `SIOCINQ`/`SIOCOUTQ`/
   `SIOCOUTQNSD`, `TCP_SAVED_SYN`, `TCP_TIMESTAMP`, `TCP_REPAIR_WINDOW` and the sequence options, `TCP_AO_INFO`,
   `TCP_AO_GET_KEYS`, `MPTCP_INFO`, `MPTCP_FULL_INFO`, `IP_PKTOPTIONS`, `SO_INCOMING_CPU`.
 - Settings: each `TcpSetting` and `TcpListenerSetting` variant is the one socket option its doc names
   (`SO_BUF_LOCK`, `SO_RCVLOWAT`, `SO_ATTACH_FILTER`/`SO_DETACH_FILTER`, `SO_TXREHASH`, `IP_MINTTL`/
   `IPV6_MINHOPCOUNT`, `IP_PKTINFO`-family records, `IP_RECVERR`/`IPV6_RECVERR`, the `TCP_*` options of tcp(7),
-  `TCP_MD5SIG_EXT` (an IPv4 prefix of an IPv6 socket mapped), `TCP_AO_*`, `TCP_REPAIR*`, `TCP_FASTOPEN`, `TCP_FASTOPEN_KEY`, `TCP_SAVE_SYN`, the flow label
+  `TCP_MD5SIG_EXT` (an IPv4 prefix of an IPv6 socket mapped), `TCP_AO_ADD_KEY` and `TCP_AO_DEL_KEY` (a key added
+  again or removed when absent leaves the socket as asked), `TCP_AO_INFO` (read first, since Linux writes the
+  requirement and ICMP choice at every call), `TCP_REPAIR*`, `TCP_FASTOPEN`, `TCP_FASTOPEN_KEY`, `TCP_SAVE_SYN`, the flow label
   manager's reflection), and an internet-protocol setting goes through the shared crate, multicast groups through
   its `set_multicast_group` (`MCAST_JOIN_GROUP`, which Linux takes on TCP sockets) and anycast through its
   `AnycastMemberships`.
@@ -98,11 +100,12 @@
 ## Milestones
 - T1: connect (settings, fast open), listen, accept, send, receive with their requests, shut_down, close,
   stop_listening, the error queue, the settings that need no privilege (among them `RecordsLastReceivedHeader`, the
-  `IP_PKTINFO`-family and `IPV6_RECV*` records, `SaveSynchronize` from the link header, MD5 keys, memberships and
-  a fixed flow label at connect), the action methods;
-  the suite for them, passing on the Linux machine over loopback.
-- T2: read_state and read_listener_state with every query; repair, timestamps, the TCP Authentication Option,
-  multipath; the privileged settings, run as root in a network namespace.
+  `IP_PKTINFO`-family and `IPV6_RECV*` records, `SaveSynchronize` from the link header, MD5 keys, the TCP
+  Authentication Option's keys, options and initial counters, memberships and a fixed flow label at connect), the
+  action methods; the suite for them, passing on the Linux machine over loopback.
+- T2: read_state and read_listener_state with every query; repair options and windows, the authentication repair
+  values and `set_authentication_counters` (whose effect only read_state shows), timestamps, multipath state; the
+  privileged settings, run as root in a network namespace.
 
 ## The suite (crates/tcp-sockets/conformance/conformance.rs)
 - Written against the traits alone: each public function takes one `TcpSockets` value, makes its own listener
@@ -126,8 +129,11 @@
   checks look at headers, sequence numbers, windows, timestamps and timing; a peer made to drop everything (a
   minimum hop limit of 255) leaves segments unanswered for the timer checks; how much a connection takes or a peer
   sends while nothing is read shows the buffer settings.
+- Memberships and owners are checked by the host's own tables (`/proc/net/igmp`, `igmp6`, `anycast6`, `tcp`, `tcp6`);
+  authentication keys on the wire (option kind 29: its key identifiers and MAC length) and by what a keyed listener
+  admits.
 - The suite needs root, `fq` on loopback, `net.ipv4.tcp_fastopen=3`, `net.ipv6.flowlabel_consistency=0`,
-  `net.ipv4.tcp_fwmark_accept=1`, `dctcp` and a local route for 127.0.0.7 with the `tcp_usec_ts` feature (its
+  `net.ipv4.tcp_fwmark_accept=1`, `net.ipv6.conf.lo.forwarding=1` (anycast joins on loopback), `dctcp` and a local route for 127.0.0.7 with the `tcp_usec_ts` feature (its
   connections' timestamps count microseconds); run-conformance.sh makes that namespace, with the iproute2 of the
   checkout's pinned nixpkgs (the machine's 6.1 does not know the feature).
 - `tests!` runs each function as its own test on a value made anew.

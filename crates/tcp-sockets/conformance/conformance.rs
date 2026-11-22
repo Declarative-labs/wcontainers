@@ -30,7 +30,7 @@ use etherparse::{
     Icmpv4Header, Icmpv4Slice, Icmpv4Type, Icmpv6Header, Icmpv6Slice, Icmpv6Type, IpDscp, IpEcn,
     IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6Header, Ipv6HeaderSlice,
     Ipv6RawExtHeader, Ipv6RawExtHeaderSlice, TcpHeaderSlice, TcpOptionElement, TcpOptionReadError,
-    icmpv4, icmpv6,
+    icmpv4, icmpv6, tcp_option,
 };
 use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
@@ -550,6 +550,9 @@ const AUTHENTICATION_OPTION: u8 = 29;
 /// The bytes of a TCP Authentication Option before its MAC: kind, length, key identifier and next key identifier.
 const AUTHENTICATION_OPTION_HEADER: u8 = 4;
 
+/// The kind and length bytes every TCP option but the end and no-operation starts with.
+const OPTION_HEAD: u8 = 2;
+
 /// A segment's TCP Authentication Option.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AuthenticationOption {
@@ -563,17 +566,19 @@ fn authentication_option(options: &[u8]) -> Option<AuthenticationOption> {
     let mut rest = options;
     loop {
         match *rest {
-            [] | [0, ..] => return None,
-            [1, ..] => rest = &rest[1..],
-            [kind, length, ..] if usize::from(length) >= 2 && usize::from(length) <= rest.len() => {
-                if kind == AUTHENTICATION_OPTION && length >= AUTHENTICATION_OPTION_HEADER {
-                    return Some(AuthenticationOption {
-                        key: rest[2],
-                        next_key: rest[3],
-                        length,
-                    });
-                }
-                rest = &rest[usize::from(length)..];
+            [kind, ..] if kind == tcp_option::KIND_END => return None,
+            [kind, ..] if kind == tcp_option::KIND_NOOP => rest = &rest[1..],
+            [kind, length, key, next_key, ..]
+                if kind == AUTHENTICATION_OPTION && length >= AUTHENTICATION_OPTION_HEADER =>
+            {
+                return Some(AuthenticationOption {
+                    key,
+                    next_key,
+                    length,
+                });
+            }
+            [_, length, ..] if length >= OPTION_HEAD => {
+                rest = rest.get(usize::from(length)..)?;
             }
             _ => return None,
         }
@@ -2974,35 +2979,37 @@ pub fn fixed_flow_label_marks_every_segment<S: TcpSockets>(sockets: S) {
 const MEMBERSHIP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 123);
 const MEMBERSHIP_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x123);
 
-/// How many sockets of the host have joined the group on the interface, by `/proc/net/igmp` or `/proc/net/igmp6`.
-fn group_users(group: IpAddr, interface: InterfaceIndex) -> usize {
+/// The host's tables of the multicast groups and anycast addresses each interface has joined.
+const IPV4_GROUPS: &str = "/proc/net/igmp";
+const IPV6_GROUPS: &str = "/proc/net/igmp6";
+const IPV6_ANYCAST: &str = "/proc/net/anycast6";
+
+/// How many sockets of the host have joined the group on the interface, by its table; none when it is not listed.
+fn group_users(group: IpAddr, interface: InterfaceIndex) -> Option<usize> {
     match group {
         // Device lines start with the interface's index, its groups follow indented, each the address's bytes as a
         // number of this host's byte order.
         IpAddr::V4(group) => {
             let wanted = format!("{:08X}", u32::from_ne_bytes(group.octets()));
-            let table = std::fs::read_to_string("/proc/net/igmp").expect("the IPv4 group table");
+            let table = std::fs::read_to_string(IPV4_GROUPS).expect("the IPv4 group table");
             let mut device = None;
             for line in table.lines().skip(1) {
                 let mut fields = line.split_whitespace();
                 if !line.starts_with(char::is_whitespace) {
                     device = fields.next().and_then(|index| index.parse().ok());
                 } else if device == Some(interface.0) && fields.next() == Some(wanted.as_str()) {
-                    return fields
-                        .next()
-                        .and_then(|users| users.parse().ok())
-                        .unwrap_or(0);
+                    return fields.next().and_then(|users| users.parse().ok());
                 }
             }
-            0
+            None
         }
-        IpAddr::V6(group) => ipv6_address_users("/proc/net/igmp6", group, interface),
+        IpAddr::V6(group) => ipv6_address_users(IPV6_GROUPS, group, interface),
     }
 }
 
-/// How many sockets the host's table (`/proc/net/igmp6` or `/proc/net/anycast6`, a line for each interface's address:
-/// index, name, address and users) counts for the address on the interface.
-fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex) -> usize {
+/// How many sockets the host's table ([`IPV6_GROUPS`] or [`IPV6_ANYCAST`], a line for each interface's address: index,
+/// name, address and users) counts for the address on the interface; none when it is not listed.
+fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex) -> Option<usize> {
     let wanted: String = address
         .octets()
         .iter()
@@ -3019,7 +3026,6 @@ fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex)
                 .then(|| fields.next()?.parse().ok())
                 .flatten()
         })
-        .unwrap_or(0)
 }
 
 /// An anycast address no other check joins.
@@ -3030,13 +3036,13 @@ const ANYCAST_MEMBERSHIP: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x1
 pub fn anycast_addresses_are_joined_and_left<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     let pair = pair_at(&sockets, ipv6_loopback(), &[], &[]);
-    let users = || ipv6_address_users("/proc/net/anycast6", ANYCAST_MEMBERSHIP, interface);
-    assert_eq!(users(), 0, "before");
+    let users = || ipv6_address_users(IPV6_ANYCAST, ANYCAST_MEMBERSHIP, interface);
+    assert_eq!(users(), None, "before");
     for (membership, expected) in [
-        (Membership::Joined, 1),
-        (Membership::Joined, 1),
-        (Membership::Left, 0),
-        (Membership::Left, 0),
+        (Membership::Joined, Some(1)),
+        (Membership::Joined, Some(1)),
+        (Membership::Left, None),
+        (Membership::Left, None),
     ] {
         let setting = TcpSetting::Ip(IpSocketSetting::Anycast(AnycastAddress {
             address: ANYCAST_MEMBERSHIP,
@@ -3089,8 +3095,13 @@ pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
         ),
     ] {
         let pair = pair_at(&sockets, address, &[], &[]);
-        assert_eq!(group_users(group, interface), 0, "{group} before");
-        for (setting, users) in [(&joined, 1), (&joined, 1), (&left, 0), (&left, 0)] {
+        assert_eq!(group_users(group, interface), None, "{group} before");
+        for (setting, users) in [
+            (&joined, Some(1)),
+            (&joined, Some(1)),
+            (&left, None),
+            (&left, None),
+        ] {
             assert_eq!(
                 sockets.configure(&pair.client, TcpSetting::Ip(*setting)),
                 Ok(()),
@@ -3103,7 +3114,11 @@ pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
             .configure(&pair.client, TcpSetting::Ip(joined))
             .expect("joined again");
         close(&sockets, pair);
-        assert_eq!(group_users(group, interface), 0, "{group} after the close");
+        assert_eq!(
+            group_users(group, interface),
+            None,
+            "{group} after the close"
+        );
     }
 }
 
@@ -3219,6 +3234,7 @@ const OTHER_AUTHENTICATION_SECRET: &[u8] = b"another secret";
 const AUTHENTICATION_MAC_LENGTH: TcpAuthenticationMacLength = TcpAuthenticationMacLength(16);
 const FIRST_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(1);
 const SECOND_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(2);
+const THIRD_AUTHENTICATION_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(3);
 
 /// A key for the peers at 127.0.0.1 that sends and receives with the one identifier.
 fn authentication_identity(
@@ -3258,6 +3274,7 @@ fn authentication_key(
     })
 }
 
+/// A key removed, with another made current and requested next.
 fn authentication_key_removed(
     identifier: TcpAuthenticationKeyIdentifier,
     current: Option<TcpAuthenticationKeyIdentifier>,
@@ -3265,7 +3282,7 @@ fn authentication_key_removed(
     TcpSetting::RemoveAuthenticationKey(TcpAuthenticationKeyRemoval {
         identity: authentication_identity(identifier),
         current,
-        requested_next: None,
+        requested_next: current,
         timing: TcpAuthenticationRemovalTiming::Now,
     })
 }
@@ -3377,6 +3394,12 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
     let other = authentication_key(FIRST_KEY, OTHER_AUTHENTICATION_SECRET, Included, Stored);
     let excluding = authentication_key(FIRST_KEY, AUTHENTICATION_SECRET, Excluded, Stored);
     let first_removed = authentication_key_removed(FIRST_KEY, None);
+    let third = authentication_key(
+        THIRD_AUTHENTICATION_KEY,
+        AUTHENTICATION_SECRET,
+        Included,
+        Stored,
+    );
     let first_removed_for_second = authentication_key_removed(FIRST_KEY, Some(SECOND_KEY));
     for (listener_settings, client_settings, admitted, synchronize) in [
         (
@@ -3391,22 +3414,50 @@ pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets
             true,
             signed_with(FIRST_KEY),
         ),
+        // The current key added before and after another, so that one of them is not Linux's choice without it.
         (
             vec![first.clone(), second.clone()],
-            vec![
-                first.clone(),
-                second_current.clone(),
-                second_current.clone(),
-            ],
+            vec![first.clone(), second_current.clone()],
             true,
             signed_with(SECOND_KEY),
         ),
         (
             vec![first.clone(), second.clone()],
+            vec![second_current.clone(), first.clone()],
+            true,
+            signed_with(SECOND_KEY),
+        ),
+        // A key held already and added again to be current.
+        (
+            vec![first.clone(), second.clone()],
+            vec![second.clone(), first.clone(), second_current.clone()],
+            true,
+            signed_with(SECOND_KEY),
+        ),
+        (
+            vec![first.clone(), second.clone()],
+            vec![first.clone(), second.clone(), second_current.clone()],
+            true,
+            signed_with(SECOND_KEY),
+        ),
+        (
+            vec![first.clone(), second.clone(), third.clone()],
             vec![
-                first.clone(),
+                third.clone(),
                 second.clone(),
+                first.clone(),
                 first_removed_for_second.clone(),
+                first_removed_for_second.clone(),
+            ],
+            true,
+            signed_with(SECOND_KEY),
+        ),
+        (
+            vec![first.clone(), second.clone(), third.clone()],
+            vec![
+                second.clone(),
+                third,
+                first.clone(),
                 first_removed_for_second,
             ],
             true,
@@ -3474,13 +3525,13 @@ pub fn authentication_options_choose_the_keys_in_use<S: TcpSockets>(sockets: S) 
         authentication_key(SECOND_KEY, AUTHENTICATION_SECRET, Included, Stored),
     ];
     let client_keys = [
-        keys[0].clone(),
         authentication_key(
             SECOND_KEY,
             AUTHENTICATION_SECRET,
             Included,
             CurrentAndRequestedNext,
         ),
+        keys[0].clone(),
     ];
     let (pair, signed, capture) = authentication_round(&sockets, &keys, &client_keys);
     assert_eq!(signed, signed_with(SECOND_KEY));
@@ -4164,18 +4215,25 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
 const CONNECTION_OWNER: UserId = UserId(1001);
 const LISTENER_OWNER: UserId = UserId(1002);
 
-/// The user the host's table of TCP sockets (`/proc/net/tcp` or `/proc/net/tcp6`) names for the socket between the
-/// ports, a listener's peer port being 0.
+/// The host's tables of TCP sockets, a line for each: slot, local and peer address (each the address and port in
+/// hexadecimal after a colon), state, queues, timer, retransmissions, user and more.
+const IPV4_TCP_SOCKETS: &str = "/proc/net/tcp";
+const IPV6_TCP_SOCKETS: &str = "/proc/net/tcp6";
+const ADDRESS_PORT_SEPARATOR: char = ':';
+const HEXADECIMAL: u32 = 16;
+const USER_COLUMN: usize = 7;
+
+/// The user the host's table of TCP sockets names for the socket between the ports, a listener's peer port being 0.
 fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
     let table = match version {
-        IpVersion::V4 => "/proc/net/tcp",
-        IpVersion::V6 => "/proc/net/tcp6",
+        IpVersion::V4 => IPV4_TCP_SOCKETS,
+        IpVersion::V6 => IPV6_TCP_SOCKETS,
     };
     let port = |address: &str| {
         address
-            .rsplit(':')
+            .rsplit(ADDRESS_PORT_SEPARATOR)
             .next()
-            .and_then(|port| u16::from_str_radix(port, 16).ok())
+            .and_then(|port| u16::from_str_radix(port, HEXADECIMAL).ok())
     };
     std::fs::read_to_string(table)
         .expect("the host's TCP sockets")
@@ -4185,7 +4243,9 @@ fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
             let fields: Vec<_> = line.split_whitespace().collect();
             let wanted =
                 port(fields.get(1)?) == Some(local.0) && port(fields.get(2)?) == Some(peer.0);
-            wanted.then(|| fields.get(7)?.parse().ok()).flatten()
+            wanted
+                .then(|| fields.get(USER_COLUMN)?.parse().ok())
+                .flatten()
         })
 }
 
