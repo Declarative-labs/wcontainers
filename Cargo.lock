@@ -5006,6 +5006,8 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-negative-route-advice-conformance",
+ "wcontainers-readiness",
+ "wcontainers-readiness-conformance",
  "wcontainers-udp-sockets",
 ]
 
@@ -5024,6 +5026,7 @@ dependencies = [
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
  "wcontainers-negative-route-advice",
+ "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
 ]
