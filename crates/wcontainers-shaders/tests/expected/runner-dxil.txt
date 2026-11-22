@@ -364,7 +364,7 @@ hlsl+default-values-6-ps.dxil	ok ; glsl compiles
 hlsl+default-values-7-ps.dxil	ok ; glsl compiles
 hlsl+default-values-8-ps.dxil	ok ; glsl compiles
 hlsl+default-values-9-ps.dxil	ok ; glsl compiles
-hlsl+depth-bounds-1-vs.dxil	unsupported VertexStorageWrite (with views)
+hlsl+depth-bounds-1-vs.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)
 hlsl+depth-bounds-2-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)
 hlsl+depth-out-1-ps.dxil	ok ; glsl compiles
 hlsl+depth-out-2-vs.dxil	ok ; glsl compiles

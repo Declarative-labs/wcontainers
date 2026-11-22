@@ -206,4 +206,6 @@ for %%e in (vs_store_texture vs_store_typed vs_store_raw) do (
   "%FXC%" /nologo /T vs_5_0 /E %%e /Fo %%e.dxbc vertex_storage.hlsl || exit /b 1
   "%DXC%" -nologo -T vs_6_0 -E %%e -Fo %%e.dxil vertex_storage.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T vs_5_0 /E vs_store_drawn /Fo vs_store_drawn.dxbc vertex_storage.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_store_drawn -Gis -Fo vs_store_drawn.dxil vertex_storage.hlsl || exit /b 1
 echo %FXC% %DXC%

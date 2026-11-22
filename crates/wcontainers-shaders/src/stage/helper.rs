@@ -369,6 +369,8 @@ pub(super) const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
 /// A vertex stage writing cull distances, drawn with adjacency, which Direct3D draws without the
 /// adjacent vertices.
 pub(super) const CULL_DISTANCE_ADJACENCY: &str = "CullDistanceAdjacency";
+/// A vertex stage writing storage, drawn alone with adjacency.
+const VERTEX_STORAGE_ADJACENCY: &str = "VertexStorageAdjacency";
 /// Stream output from a vertex stage writing cull distances whose records do not hold its reflected
 /// locations first.
 const CULL_DISTANCE_STREAM_LOCATIONS: &str = "CullDistanceStreamLocations";
@@ -483,6 +485,8 @@ const UNUSED_RANGE_BYTES: u64 = super::RECORD_SLOT_BYTES as u64;
 /// [`SlowPath::StreamOutAsCompute`], [`SlowPath::TessellationAsCompute`]).
 pub struct Stages<B: Backend> {
     vertex: B::Program,
+    /// The vertex program writes storage ([`SlowPath::VertexStorageAsCompute`]).
+    stores: bool,
     geometry: Option<Geometry<B>>,
     hull: Option<Hull<B>>,
     domain: Option<Domain<B>>,
@@ -504,13 +508,17 @@ pub struct Stages<B: Backend> {
 
 impl<B: Backend> Stages<B> {
     /// Makes the compute programs of `vertex` (converted with every input pulled), of `geometry` if
-    /// given, and of stream output from the last of them if declared.
+    /// given, and of stream output from the last of them if declared. Without a geometry shader, a
+    /// vertex program writing storage is made as [`Self::stored`] makes it.
     pub fn new(
         backend: &mut B,
         vertex: &Converted,
         geometry: Option<&Converted>,
         stream_output: Option<&StreamOutput>,
     ) -> Result<Self, StageError> {
+        if geometry.is_none() && super::writes_storage(vertex) {
+            return Self::stored(backend, vertex, stream_output);
+        }
         if geometry.is_none() && stream_output.is_none() {
             return Err(StageError::Convert(ConvertError::Malformed(
                 WITHOUT_WORK.into(),
@@ -548,6 +556,7 @@ impl<B: Backend> Stages<B> {
         })?;
         Ok(Stages {
             vertex: vertex_program,
+            stores: super::writes_storage(vertex),
             geometry,
             hull: None,
             domain: None,
@@ -573,7 +582,38 @@ impl<B: Backend> Stages<B> {
         vertex: &Converted,
         stream_output: Option<&StreamOutput>,
     ) -> Result<Self, StageError> {
-        let programs = super::cull_programs(vertex)?;
+        Self::drawn_records(
+            backend,
+            vertex,
+            super::cull_programs(vertex)?,
+            stream_output,
+        )
+    }
+
+    /// Makes the compute programs of `vertex` (converted with every input pulled), which writes
+    /// storage ([`super::writes_storage`]), and of stream output from it if declared: each draw runs it,
+    /// and the final draw draws its records through [`Self::passthrough`], less the primitives its
+    /// cull distances drop if it writes any ([`SlowPath::VertexStorageAsCompute`]).
+    pub fn stored(
+        backend: &mut B,
+        vertex: &Converted,
+        stream_output: Option<&StreamOutput>,
+    ) -> Result<Self, StageError> {
+        Self::drawn_records(
+            backend,
+            vertex,
+            super::stored_programs(vertex)?,
+            stream_output,
+        )
+    }
+
+    /// The cull route's helper of `vertex` made into `programs`.
+    fn drawn_records(
+        backend: &mut B,
+        vertex: &Converted,
+        programs: super::CullPrograms,
+        stream_output: Option<&StreamOutput>,
+    ) -> Result<Self, StageError> {
         let shader = backend.create_shader(&programs.compute)?;
         let vertex_program = backend.create_program(&Program::Compute(&shader))?;
         let stream = match stream_output {
@@ -599,6 +639,7 @@ impl<B: Backend> Stages<B> {
         })?;
         Ok(Stages {
             vertex: vertex_program,
+            stores: super::writes_storage(vertex),
             geometry: None,
             hull: None,
             domain: None,
@@ -649,6 +690,7 @@ impl<B: Backend> Stages<B> {
         })?;
         Ok(Stages {
             vertex: vertex_program,
+            stores: super::writes_storage(vertex),
             geometry: None,
             hull: None,
             domain: None,
@@ -697,6 +739,7 @@ impl<B: Backend> Stages<B> {
         })?;
         Ok(Stages {
             vertex: vertex_program,
+            stores: super::writes_storage(vertex),
             geometry: None,
             hull: None,
             domain: None,
@@ -832,6 +875,7 @@ impl<B: Backend> Stages<B> {
         })?;
         Ok(Stages {
             vertex: vertex_program,
+            stores: super::writes_storage(vertex),
             geometry,
             hull: Some(Hull {
                 program: hull_program,
@@ -1035,7 +1079,12 @@ impl<B: Backend> Stages<B> {
                 return Err(StageError::Unsupported(PRIMITIVE_ID_ADJACENCY));
             }
             (None, None) if n > TRIANGLE_VERTICES && self.cull.is_some() => {
-                return Err(StageError::Unsupported(CULL_DISTANCE_ADJACENCY));
+                return Err(StageError::Unsupported(
+                    match self.cull.as_ref().is_some_and(|c| c.distances != 0) {
+                        true => CULL_DISTANCE_ADJACENCY,
+                        false => VERTEX_STORAGE_ADJACENCY,
+                    },
+                ));
             }
             (None, None) if n > TRIANGLE_VERTICES => {
                 return Err(StageError::Unsupported(STREAM_OUTPUT_ADJACENCY));
@@ -1231,8 +1280,13 @@ impl<B: Backend> Stages<B> {
         })?;
 
         let mut last = None;
+        if self.stores {
+            backend.slow_paths().hit(SlowPath::VertexStorageAsCompute);
+        }
         if let Some(c) = &self.cull {
-            backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+            if c.distances != 0 {
+                backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+            }
             let mut cv = [0u32; word_at(size_of::<CullValues>())];
             let at = |offset| word_at(offset);
             cv[at(offset_of!(CullValues, units))] = primitives * instances;

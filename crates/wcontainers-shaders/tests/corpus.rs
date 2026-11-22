@@ -175,20 +175,24 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     };
     let m = &converted.modules[0];
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-    // A vertex shader writing cull distances reaches WebGPU through the stage helper: the WGSL
-    // written is its compute form's, converted with every input pulled.
+    // A vertex shader writing cull distances or storage reaches WebGPU through the stage helper: the
+    // WGSL written is its compute form's, converted with every input pulled.
     let drawn = |converted: &Converted| -> Result<ShaderModule, String> {
-        if !writes_cull_distances(converted) {
+        let (route, programs): (_, fn(&Converted) -> _) = if stage::writes_storage(converted) {
+            (" (storage route)", stage::stored_programs)
+        } else if writes_cull_distances(converted) {
+            (" (cull route)", stage::cull_programs)
+        } else {
             return Ok(converted.modules[0].clone());
-        }
+        };
         let k = VariantKey {
             pulled: pulled_inputs(converted),
             ..key.clone()
         };
-        let pulled = convert(source(&bytes), &k, None).map_err(|e| named(e) + " (cull route)")?;
-        stage::cull_programs(&pulled)
+        let pulled = convert(source(&bytes), &k, None).map_err(|e| named(e) + route)?;
+        programs(&pulled)
             .map(|p| p.compute)
-            .map_err(|e| named(e) + " (cull route)")
+            .map_err(|e| named(e) + route)
     };
     let w = match drawn(&converted) {
         Ok(w) => w,

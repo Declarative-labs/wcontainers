@@ -1,7 +1,8 @@
 //! The stage helper's routes of a vertex shader alone on the WebGPU back end, against real Direct3D 11:
 //! alpha-antialiased lines (and WARP drawing them), both blending each line's colour over the target
 //! by its alpha, and the same lines replayed on the WebGL 2 back end (ANGLE); and the primitive's
-//! number for a pixel shader reading it. Seeded vertices:
+//! number for a pixel shader reading it; and a vertex shader writing storage, run as compute. Seeded
+//! vertices:
 //! `WCONTAINERS_LINE_SEED` (default 1) and `WCONTAINERS_LINE_CASES` seeds from it (default 4); every
 //! case runs per seed. An indexed list Direct3D draws nothing of is passed over for the seed's next
 //! (`scene`), and ours must draw nothing of it either.
@@ -17,7 +18,7 @@ use wcontainers_gpu::{
     DrawBaseSource, DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace,
     HelperValue, IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program,
     ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderModule, ShaderStage,
-    StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, VariantFlags, VariantKey,
+    SlowPath, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, VariantFlags, VariantKey,
     VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
     helper_binding,
 };
@@ -30,7 +31,7 @@ use wcontainers_shaders::{Converted, Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::core::s;
+use windows::core::{Interface, s};
 
 /// Vertices per seed.
 const VERTICES: usize = 24;
@@ -1098,6 +1099,459 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
                             &picture[at..at + 4]
                         );
                     }
+                    failures.push(name);
+                }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Bytes of the words `vs_store_drawn` writes: two words for each of 32 vertices of two instances.
+const STORED_WORD_BYTES: usize = 2 * 32 * 2 * 4;
+/// Texels a side of the texture it writes at (vertex, instance), zero before the draw.
+const STORED_TEXELS: u32 = SIZE;
+
+/// What a draw of `vs_store_drawn` leaves: the target's texels, the words and the texture's texels.
+struct Stored {
+    picture: Vec<u8>,
+    words: Vec<u8>,
+    texels: Vec<u8>,
+}
+
+/// `vs_store_drawn` and `ps_line` drawn by real Direct3D 11.1 (UAVs in every stage), unblended, with
+/// its buffer and texture zero.
+fn direct3d_stored(gpu: &Gpu, case: &Case, (vertices, indices): (&[f32], &[u8])) -> Stored {
+    let (vs, ps) = (bytecode("vs_store_drawn.dxbc"), bytecode("ps_line.dxbc"));
+    let elements = [
+        d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
+        d3d11::element(
+            s!("COLOR"),
+            0,
+            DXGI_FORMAT_R32G32B32A32_FLOAT,
+            0,
+            POSITION_BYTES,
+            0,
+        ),
+    ];
+    gpu.program(&vs, &ps, &elements).unwrap();
+    let _buffer = gpu
+        .vertices(0, bytes_of(vertices), COLOURED_VERTEX_BYTES)
+        .unwrap();
+    let raster = gpu.rasterizer(&d3d11::solid()).unwrap();
+    let (target, rtv) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap();
+    let zeros = vec![0u8; STORED_WORD_BYTES];
+    let words = gpu
+        .buffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: zeros.len() as u32,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                MiscFlags: D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS.0 as u32,
+                ..Default::default()
+            },
+            Some(&zeros),
+        )
+        .unwrap();
+    let words_view = gpu
+        .uav(
+            &words.cast().unwrap(),
+            Some(&D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                Format: DXGI_FORMAT_R32_TYPELESS,
+                ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
+                Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                    Buffer: D3D11_BUFFER_UAV {
+                        FirstElement: 0,
+                        NumElements: zeros.len() as u32 / 4,
+                        Flags: D3D11_BUFFER_UAV_FLAG_RAW.0 as u32,
+                    },
+                },
+            }),
+        )
+        .unwrap();
+    let texel_zeros = vec![0u8; (4 * STORED_TEXELS * STORED_TEXELS) as usize];
+    let texels = gpu
+        .texture2d(
+            &d3d11::tex2d(
+                STORED_TEXELS,
+                STORED_TEXELS,
+                DXGI_FORMAT_R32_UINT,
+                D3D11_BIND_UNORDERED_ACCESS,
+            ),
+            &[d3d11::data(&texel_zeros, 4 * STORED_TEXELS, 0)],
+        )
+        .unwrap();
+    let texels_view = gpu.uav(&texels.cast().unwrap(), None).unwrap();
+    let index_buffer = case
+        .indexed
+        .then(|| gpu.immutable(indices, D3D11_BIND_INDEX_BUFFER).unwrap());
+    unsafe {
+        let c = &gpu.context;
+        c.RSSetState(&raster);
+        c.IASetPrimitiveTopology(d3d_topology(case.topology));
+        c.ClearRenderTargetView(&rtv, &[0.0; 4]);
+        let views = [Some(words_view), Some(texels_view)];
+        c.OMSetRenderTargetsAndUnorderedAccessViews(
+            Some(&[Some(rtv)]),
+            None,
+            1,
+            views.len() as u32,
+            Some(views.as_ptr()),
+            None,
+        );
+        gpu.viewport(SIZE, SIZE);
+        match &index_buffer {
+            Some(ib) => {
+                c.IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+                c.DrawIndexedInstanced(case.count, case.instances, 0, 0, 0);
+            }
+            None => c.DrawInstanced(case.count, case.instances, 0, 0),
+        }
+        c.OMSetRenderTargets(None, None::<&ID3D11DepthStencilView>);
+    }
+    Stored {
+        picture: read(gpu, &target, Format::Rgba8Unorm),
+        words: gpu.read_buffer(&words).unwrap(),
+        texels: read(gpu, &texels, Format::R32Uint),
+    }
+}
+
+/// The same through the stage helper's storage route ([`Stages::stored`]) on the WebGPU back end, from
+/// the fxc or the dxc build; asserts the route counts its slow path once.
+fn ours_stored<B: Backend>(
+    b: &mut B,
+    case: &Case,
+    (vertices, indices): (&[f32], &[u8]),
+    dxil: bool,
+) -> Stored {
+    let kind = if dxil { "dxil" } else { "dxbc" };
+    let (vs_code, ps_code) = (
+        bytecode(&format!("vs_store_drawn.{kind}")),
+        bytecode(&format!("ps_line.{kind}")),
+    );
+    let source = |c| match dxil {
+        true => Source::Dxil(c),
+        false => Source::Dxbc(c),
+    };
+    let vs_key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        draw_base: DrawBaseSource::Helpers,
+        // The texture's slot: its register on the DXBC route, its rank among the registers on the
+        // DXIL route.
+        storage_formats: (0..=2).map(|slot| (slot, Format::R32Uint)).collect(),
+        ..Default::default()
+    };
+    let vs = convert(source(&vs_code), &vs_key, None).unwrap();
+    assert!(wcontainers_shaders::stage::writes_storage(&vs));
+    let ps = convert(source(&ps_code), &VariantKey::default(), None).unwrap();
+    let mut stages = Stages::stored(b, &vs, None).unwrap();
+
+    let vertex_buffer = buffer(
+        b,
+        bytes_of(vertices),
+        BufferUsage::VERTEX | BufferUsage::STORAGE,
+    );
+    let size = std::mem::size_of_val(vertices) as u64;
+    let words = buffer(
+        b,
+        &[0; STORED_WORD_BYTES],
+        BufferUsage::STORAGE | BufferUsage::COPY_SRC,
+    );
+    // WebGPU makes textures zero.
+    let (texels, texels_view) = texture(
+        b,
+        Format::R32Uint,
+        STORED_TEXELS,
+        TextureUsage::STORAGE | TextureUsage::COPY_SRC,
+    );
+    let entries: Vec<_> = vs
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            let resource = match (r.added, r.register) {
+                (Some(_), _) => BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &vertex_buffer,
+                        offset: 0,
+                        size,
+                    },
+                    writable: false,
+                },
+                (None, 1) => BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &words,
+                        offset: 0,
+                        size: STORED_WORD_BYTES as u64,
+                    },
+                    writable: true,
+                },
+                (None, _) => BindingResource::StorageTexture {
+                    view: &texels_view,
+                    writable: true,
+                },
+            };
+            BindingEntry {
+                binding: r.binding,
+                stages: StageSet::COMPUTE,
+                resource,
+            }
+        })
+        .collect();
+    let vertex_set = b.create_binding_set(&entries).unwrap();
+    let mut helpers = vec![0u8; vs.reflection.helper_size as usize];
+    for h in &vs.reflection.helpers {
+        let words = match h.value {
+            HelperValue::PulledStream { input } => [
+                if input == 0 { 0 } else { POSITION_BYTES },
+                COLOURED_VERTEX_BYTES,
+                0,
+                0,
+            ],
+            HelperValue::DrawBase => [0; 4],
+            _ => panic!("{h:?}"),
+        };
+        let at = h.offset as usize;
+        for (i, w) in words.iter().enumerate() {
+            let word = std::mem::size_of::<u32>();
+            helpers[at + word * i..at + word * (i + 1)].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+    let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
+    let vertex_helpers = b
+        .create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Compute),
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &helper_buffer,
+                offset: 0,
+                size: helpers.len() as u64,
+            }),
+        }])
+        .unwrap();
+    let index_buffer = case
+        .indexed
+        .then(|| buffer(b, indices, BufferUsage::INDEX | BufferUsage::STORAGE));
+    let draw = StageDraw {
+        vertex_sets: [Some(&vertex_set), None, None, Some(&vertex_helpers)],
+        geometry_sets: [None; 4],
+        index: index_buffer.as_ref().map(|buffer| StageIndex {
+            buffer,
+            size: indices.len() as u64,
+            offset: 0,
+            format: IndexFormat::U16,
+        }),
+        topology: case.topology,
+        range: match case.indexed {
+            true => DrawRange::Indexed {
+                first: 0,
+                count: case.count,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: case.instances,
+            },
+            false => DrawRange::Vertices {
+                first: 0,
+                count: case.count,
+                first_instance: 0,
+                instances: case.instances,
+            },
+        },
+        stream_output: None,
+    };
+    let before = b.slow_paths().count(SlowPath::VertexStorageAsCompute);
+    let last = stages.run(b, &draw).unwrap().expect("primitives");
+    assert_eq!(
+        b.slow_paths().count(SlowPath::VertexStorageAsCompute),
+        before + 1
+    );
+    assert_eq!(b.slow_paths().count(SlowPath::CullDistanceAsGeometry), 0);
+    let layout = stages.vertex_layout().unwrap();
+    let picture = drawn(b, stages.passthrough().unwrap(), &layout, &ps, &last, false);
+    stages.destroy(b);
+    let mut stored_words = vec![0; STORED_WORD_BYTES];
+    b.read_back_now(
+        &ReadSource::Buffer {
+            buffer: &words,
+            offset: 0,
+            size: STORED_WORD_BYTES as u64,
+        },
+        &mut stored_words,
+    )
+    .unwrap();
+    let mut stored_texels = vec![0; (4 * STORED_TEXELS * STORED_TEXELS) as usize];
+    b.read_back_now(
+        &ReadSource::Texture {
+            region: TextureRegion {
+                texture: &texels,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: STORED_TEXELS,
+                height: STORED_TEXELS,
+                depth_or_layers: 1,
+            },
+        },
+        &mut stored_texels,
+    )
+    .unwrap();
+    Stored {
+        picture,
+        words: stored_words,
+        texels: stored_texels,
+    }
+}
+
+/// The vertices a draw of `case` runs the vertex shader for by Direct3D's rules: those of its whole
+/// primitives. Direct3D may run it for the others (an indexed strip's pieces too short for a
+/// primitive) or not.
+fn vertices_of_primitives(case: &Case, indices: &[u8]) -> Vec<bool> {
+    let mut used = vec![false; VERTICES];
+    if !case.indexed {
+        used[..case.count as usize].fill(true);
+        return used;
+    }
+    let least = match case.topology {
+        InputTopology::LineStrip => 2,
+        _ => 3,
+    };
+    let words: Vec<u16> = indices[..2 * case.count as usize]
+        .chunks(2)
+        .map(|w| u16::from_le_bytes([w[0], w[1]]))
+        .collect();
+    for piece in words.split(|i| *i == RESTART) {
+        if piece.len() >= least {
+            piece.iter().for_each(|i| used[*i as usize] = true);
+        }
+    }
+    used
+}
+
+/// The places of `stored`'s words and texels that differ from `reference`'s where Direct3D's rules
+/// fix them: every vertex of a whole primitive, of each instance drawn. Elsewhere ours may hold
+/// zero (not run) or Direct3D's.
+fn stored_differences(
+    case: &Case,
+    used: &[bool],
+    reference: &Stored,
+    ours: &Stored,
+) -> Vec<String> {
+    let word =
+        |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[4 * at..][..4].try_into().unwrap());
+    let mut out = Vec::new();
+    for instance in 0..2usize {
+        for (v, used) in used.iter().enumerate() {
+            let fixed = instance < case.instances as usize && *used;
+            let places = [
+                (
+                    "word",
+                    &reference.words,
+                    &ours.words,
+                    2 * (instance * 32 + v),
+                ),
+                (
+                    "word",
+                    &reference.words,
+                    &ours.words,
+                    2 * (instance * 32 + v) + 1,
+                ),
+                (
+                    "texel",
+                    &reference.texels,
+                    &ours.texels,
+                    instance * STORED_TEXELS as usize + v,
+                ),
+            ];
+            for (what, theirs, mine, at) in places {
+                let (t, m) = (word(theirs, at), word(mine, at));
+                if t != m && (fixed || m != 0) {
+                    out.push(format!(
+                        "instance {instance} vertex {v} {what} {at}: direct3d {t:#x}, ours {m:#x}"
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A vertex shader writing a raw buffer and a typed texture (Direct3D 11.1's UAVs in the vertex stage),
+/// drawn through the stage helper's storage route on WebGPU, which lacks
+/// `Features::VERTEX_STORAGE_WRITE` (`VertexStorageAsCompute`): the words and texels each vertex of
+/// a primitive writes, and the picture, equal to real Direct3D 11.1's on the RTX 3080, from the fxc
+/// and the dxc build.
+#[test]
+fn vertex_storage_writes_through_the_stage_helper_match_direct3d() {
+    let mut backend = webgpu();
+    assert!(
+        !backend
+            .caps()
+            .features
+            .contains(Features::VERTEX_STORAGE_WRITE)
+    );
+    let gpu = d3d11::create(Driver::Hardware, false, &[D3D_FEATURE_LEVEL_11_1]).unwrap();
+    eprintln!("direct3d 11.1: {}", gpu.adapter().unwrap());
+    let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_LINE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &NUMBERED {
+            let name = format!(
+                "seed {seed} {:?} x{}{}",
+                case.topology,
+                case.instances,
+                if case.indexed { " indexed" } else { "" }
+            );
+            let Ok((indices, reference)) = scene(
+                case.indexed,
+                |attempt| indices(seed, case, attempt),
+                |indices| direct3d_stored(&gpu, case, (&vertices, indices)),
+                |reference| drawn_texels(&reference.picture) != 0,
+                |indices, _| {
+                    [false, true].into_iter().all(|dxil| {
+                        let ours = ours_stored(&mut backend, case, (&vertices, indices), dxil);
+                        drawn_texels(&ours.picture) == 0
+                    })
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
+            let used = vertices_of_primitives(case, &indices);
+            for dxil in [false, true] {
+                let name = format!("{name} {}", if dxil { "dxil" } else { "dxbc" });
+                let ours = ours_stored(&mut backend, case, (&vertices, &indices), dxil);
+                let d = apart(&reference.picture, &ours.picture);
+                let count = d.iter().filter(|x| **x != 0).count();
+                let stored = stored_differences(case, &used, &reference, &ours);
+                compared += 1;
+                eprintln!(
+                    "{name}: {} texels drawn by direct3d, {count} differ; {} vertices written, {} stored values differ",
+                    drawn_texels(&reference.picture),
+                    used.iter().filter(|u| **u).count() * case.instances as usize,
+                    stored.len()
+                );
+                if drawn_texels(&reference.picture) == 0 || count != 0 || !stored.is_empty() {
+                    for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
+                        let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
+                        let at = t * 4;
+                        eprintln!(
+                            "  ({px}, {py}): direct3d {:?}, ours {:?}",
+                            &reference.picture[at..at + 4],
+                            &ours.picture[at..at + 4]
+                        );
+                    }
+                    stored.iter().take(16).for_each(|s| eprintln!("  {s}"));
                     failures.push(name);
                 }
             }

@@ -142,8 +142,9 @@ vs_patch.dxil	ok ; glsl compiles
 vs_pull.dxil	ok ; glsl compiles
 vs_rows.dxil	ok ; glsl compiles
 vs_rows_io.dxil	ok ; glsl compiles
-vs_store_raw.dxil	unsupported VertexStorageWrite
-vs_store_texture.dxil	unsupported VertexStorageWrite (with views)
-vs_store_typed.dxil	unsupported VertexStorageWrite (with views)
+vs_store_drawn.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)
+vs_store_raw.dxil	ok ; glsl needs VERTEX_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+vs_store_texture.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+vs_store_typed.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)
 vs_texels.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 vs_transform.dxil	ok ; glsl compiles

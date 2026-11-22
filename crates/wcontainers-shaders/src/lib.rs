@@ -126,7 +126,6 @@ pub fn convert(
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported(crate::refusal::SPIR_V)),
         };
-        vertex_storage_write(&module, stage)?;
         stage::clip_unpositioned(&mut module)?;
         // A geometry shader's forms take no rewrite of the last vertex stage: its pass-through does.
         let geometry = matches!(reflection.extras, StageExtras::Geometry { .. });
@@ -190,8 +189,8 @@ pub fn convert(
 /// `module` with one entry point named [`ENTRY_POINT`], bound by 6.4's rule with an array's elements
 /// at consecutive bindings from the array's, and `reflection` its reflection. A storage texture keeps
 /// the module's format unless `storage_formats` names its slot, so a route that read one without a
-/// format refuses it where the key does not name it. A vertex program writing storage is refused by
-/// name, as [`convert`] refuses it. `route_key` is the key the route gives the program it made; the
+/// format refuses it where the key does not name it. A vertex program writing storage converts, as
+/// [`convert`] gives it ([`stage::writes_storage`]). `route_key` is the key the route gives the program it made; the
 /// module carries [`cache::rewritten_key`] of it.
 pub fn rewrite(
     module: naga::Module,
@@ -211,7 +210,6 @@ pub fn rewrite(
             },
             _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
         };
-        vertex_storage_write(&module, stage)?;
         if common::split_arrays(&mut module)? {
             reflection.sampled_pairs = common::sampled_pairs(&module)?;
             // An element picked at run time is sampled inside a switch on the index, which may
@@ -237,9 +235,10 @@ pub fn rewrite(
     })
 }
 
-/// Refuses, by name, a vertex program writing storage buffers or textures, which WebGPU's vertex
-/// stage cannot.
-fn vertex_storage_write(module: &naga::Module, stage: ShaderStage) -> Result<(), ConvertError> {
+/// Whether `module` writes storage buffers or textures, which a vertex program does only where the
+/// back end has `Features::VERTEX_STORAGE_WRITE` or through the stage helper
+/// ([`stage::writes_storage`]).
+pub(crate) fn writes_storage(module: &naga::Module) -> bool {
     let writable_image = |mut ty: naga::Handle<naga::Type>| loop {
         match module.types[ty].inner {
             naga::TypeInner::BindingArray { base, .. } => ty = base,
@@ -255,12 +254,7 @@ fn vertex_storage_write(module: &naga::Module, stage: ShaderStage) -> Result<(),
         naga::AddressSpace::Handle => writable_image(g.ty),
         _ => false,
     };
-    if stage == ShaderStage::Vertex && module.global_variables.iter().any(|(_, g)| writable(g)) {
-        return Err(ConvertError::Unsupported(
-            crate::refusal::VERTEX_STORAGE_WRITE,
-        ));
-    }
-    Ok(())
+    module.global_variables.iter().any(|(_, g)| writable(g))
 }
 
 /// What [`rewrite`] takes a module to have.

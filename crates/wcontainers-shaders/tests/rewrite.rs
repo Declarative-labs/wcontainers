@@ -8,7 +8,9 @@ use wcontainers_gpu::{
     Format, HELPER_SET, ReflectedBinding, Reflection, SlotKind, SourceStage, StageExtras,
     TexelBufferRoute, VariantKey, helper_binding,
 };
-use wcontainers_shaders::{ConvertError, ENTRY_POINT, Source, cache, convert, refusal, rewrite};
+use wcontainers_shaders::{
+    ConvertError, ENTRY_POINT, Source, cache, convert, refusal, rewrite, stage,
+};
 
 const ROUTE_KEY: [u8; cache::KEY_BYTES] = [0; cache::KEY_BYTES];
 
@@ -259,7 +261,7 @@ enable wgpu_binding_array;
 }
 
 #[test]
-fn a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it() {
+fn a_vertex_program_writing_storage_is_rewritten_for_the_stage_helper_as_convert_gives_it() {
     let buffer = "
 @group(0) @binding(STORAGE) var<storage, read_write> out: array<u32>;
 @vertex fn ENTRY(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
@@ -274,27 +276,30 @@ fn a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it() {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 ";
-    for source in [buffer, texture] {
+    let read = "
+@group(0) @binding(STORAGE) var<storage, read> values: array<u32>;
+@vertex fn ENTRY(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32(values[v]), 0.0, 0.0, 1.0);
+}
+";
+    for (source, writes) in [(buffer, true), (texture, true), (read, false)] {
         let module = parse(source);
         let reflection = Reflection {
             stage: SourceStage::Vertex,
             extras: StageExtras::None,
             ..compute_reflection(&module)
         };
-        let refused = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
-            .expect_err("no back end runs it");
-        assert_eq!(
-            refused,
-            ConvertError::Unsupported(refusal::VERTEX_STORAGE_WRITE),
-            "{source}"
-        );
+        let rewritten = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
+            .expect("a vertex program writing storage is the stage helper's to run");
+        assert_eq!(stage::writes_storage(&rewritten), writes, "{source}");
     }
 }
 
 /// Our own vertex shaders writing a storage texture, a typed storage buffer and a raw storage buffer,
-/// under each key a front asks for them: refused by name, whatever form the storage takes.
+/// under each key a front asks for them: converted, and named as writing storage, whatever form the
+/// storage takes.
 #[test]
-fn a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key() {
+fn a_vertex_program_writing_storage_converts_for_the_stage_helper_under_every_view_key() {
     let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
     let slots = || 0..SlotKind::Storage.slots();
     let keys = [
@@ -320,19 +325,19 @@ fn a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key()
                 Source::Dxbc(&bytes)
             };
             for key in &keys {
-                let refused = convert(source, key, None).map(|c| c.modules[0].stage);
-                // Without a view's format a storage texture or typed buffer is refused for that first.
+                let converted = convert(source, key, None);
+                // Without a view's format a storage texture or typed buffer is refused for that.
                 let unnamed_view = key.storage_formats.is_empty()
                     && matches!(
-                        refused,
+                        converted,
                         Err(ConvertError::Unsupported(
                             refusal::STORAGE_FORMAT | refusal::TYPED_BUFFER
                         ))
                     );
                 assert!(
-                    unnamed_view
-                        || refused == Err(ConvertError::Unsupported(refusal::VERTEX_STORAGE_WRITE)),
-                    "{name}.{ext} under {key:?}: {refused:?}"
+                    unnamed_view || converted.as_ref().is_ok_and(stage::writes_storage),
+                    "{name}.{ext} under {key:?}: {:?}",
+                    converted.map(|c| c.modules[0].stage)
                 );
             }
         }

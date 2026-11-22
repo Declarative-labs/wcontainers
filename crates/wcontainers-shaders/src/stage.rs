@@ -612,7 +612,8 @@ pub fn cull_program() -> Result<wcontainers_gpu::ShaderModule> {
 }
 
 /// A vertex program writing cull distances, drawn through the stage helper
-/// ([`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]).
+/// ([`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]); also, with none, one writing storage
+/// ([`writes_storage`]).
 pub struct CullPrograms {
     /// Its compute form, writing records of its position, each output location (`locations`), its
     /// clip distances' slots and its cull distances' slots.
@@ -689,16 +690,45 @@ const VERTEX_OUTPUT_SHAPE: &str = "VertexOutputShape";
 const VERTEX_OUTPUT_FOR_GEOMETRY: &str = "VertexOutputForGeometry";
 /// The refusal of a vertex program without cull distances on their route.
 const NO_CULL_DISTANCES: &str = "a vertex program without cull distances";
+/// The refusal of a vertex program writing no storage on the storage route.
+const WITHOUT_STORAGE_WRITES: &str = "a vertex program writing no storage";
 
 /// The programs of `vertex` (converted with every input pulled) on the cull route. They take its
 /// outputs from its module, so every rewrite its key made (values linked for the pixel program
 /// among them) reaches the pixel program as it would from the vertex program.
 pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
-    let source = &vertex.modules[0];
-    let drawn = drawn_outputs(source)?;
-    if drawn.cull == 0 {
+    let programs = record_programs(vertex)?;
+    if programs.cull_distances == 0 {
         return Err(ConvertError::Malformed(NO_CULL_DISTANCES.into()));
     }
+    Ok(programs)
+}
+
+/// Whether `converted` is a vertex program writing storage buffers or textures. Where the back end
+/// lacks `Features::VERTEX_STORAGE_WRITE` it is drawn through the stage helper
+/// ([`wcontainers_gpu::SlowPath::VertexStorageAsCompute`]): [`Stages::stored`] alone, or any of its
+/// routes that runs the vertex stage as compute ([`Stages::new`], [`Stages::culled`],
+/// [`Stages::antialiased_lines`], [`Stages::primitive_numbered`], [`Stages::tessellated_with`]).
+pub fn writes_storage(converted: &crate::Converted) -> bool {
+    let m = &converted.modules[0];
+    m.stage == wcontainers_gpu::ShaderStage::Vertex && crate::writes_storage(&m.module)
+}
+
+/// The programs of `vertex` (converted with every input pulled), which writes storage
+/// ([`writes_storage`]), on the storage route ([`Stages::stored`]): the cull route's, which drop
+/// primitives only by the cull distances it writes, if any.
+pub fn stored_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
+    if !writes_storage(vertex) {
+        return Err(ConvertError::Malformed(WITHOUT_STORAGE_WRITES.into()));
+    }
+    record_programs(vertex)
+}
+
+/// The cull route's programs of `vertex`, with or without cull distances: its compute form writing
+/// records, and the pass-through drawing them.
+fn record_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
+    let source = &vertex.modules[0];
+    let drawn = drawn_outputs(source)?;
     let compute = compute_module(
         source,
         vertex_as_compute(&source.module, &drawn.locations, true)?,
