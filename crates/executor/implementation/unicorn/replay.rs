@@ -33,9 +33,9 @@ pub enum Entry {
     BackendAnswered(u64, Vec<u8>),
     NameAnswered(u64, Vec<u8>),
     /// What a socket a wait of the kernel's is on became ready for, by its number.
-    SocketReady(u32, wcontainers_readiness::ReadyFor),
+    SocketReady(u32, wcontainers_readiness::ReadinessReport),
     /// What a stream endpoint a wait of the kernel's is on became ready for.
-    StreamReady(End, wcontainers_readiness::ReadyFor),
+    StreamReady(End, wcontainers_readiness::ReadinessReport),
     /// A send on a stream endpoint, and a receive with what it gave.
     StreamSent(Result<usize, HostError>),
     StreamReceived(Result<usize, HostError>, Vec<u8>),

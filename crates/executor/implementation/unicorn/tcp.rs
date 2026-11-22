@@ -17,7 +17,7 @@ use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{ByteCount, LocalBinding, LocalPort};
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
 use wcontainers_tcp_sockets::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
@@ -38,16 +38,18 @@ pub struct TcpHandle(u32);
 /// The readiness each TCP connection or listener reported and the waker of each wait, by number.
 #[derive(Default)]
 pub(super) struct Readied {
-    pub(super) arrived: BTreeMap<u32, ReadyFor>,
+    pub(super) arrived: BTreeMap<u32, ReadinessReport>,
     pub(super) waiting: BTreeMap<u32, Waker>,
 }
 
 impl Readied {
     /// What `number` became ready for, ending its wait.
-    pub(super) fn arrive(readied: &Mutex<Readied>, number: u32, ready: ReadyFor) {
+    pub(super) fn arrive(readied: &Mutex<Readied>, number: u32, ready: ReadinessReport) {
         let waiting = {
             let mut readied = lock(readied);
-            *readied.arrived.entry(number).or_insert(ready) |= ready;
+            let arrived = readied.arrived.entry(number).or_insert(ready);
+            arrived.ready_for |= ready.ready_for;
+            arrived.unconditional |= ready.unconditional;
             readied.waiting.remove(&number)
         };
         if let Some(waker) = waiting {
@@ -56,7 +58,7 @@ impl Readied {
     }
 
     /// Waits until the network says what `number` is ready for, forgetting it if let go.
-    pub(super) async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadyFor {
+    pub(super) async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadinessReport {
         /// Forgets the readiness waited for, when the wait is let go.
         struct Forget<'a>(&'a Mutex<Readied>, u32);
         impl Drop for Forget<'_> {
@@ -360,7 +362,7 @@ impl<H: Send> Readiness<TcpHandle> for TestHost<H> {
         &self,
         connection: &TcpHandle,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         if !self.replaying() {
             lock(&self.network).arm(connection.0, interest);
         }

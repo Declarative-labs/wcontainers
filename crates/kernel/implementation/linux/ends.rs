@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use wcontainers_abi::HostError;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_system::StreamTransport;
 
 use crate::file::FileRef;
@@ -94,8 +94,9 @@ struct Held {
     drained: bool,
     /// The system said its side has let go: what it still gives is taken, then the end goes.
     hung_up: bool,
-    /// What the wait kept on the endpoint asks for; empty for none.
-    asked: ReadyFor,
+    /// What the wait kept on the endpoint asks for, beside the events every wait reports; none
+    /// while no wait is kept.
+    asked: Option<ReadyFor>,
     /// Bytes a terminal's master gave that the system has not taken yet, sent before any more is
     /// taken from the master.
     outbox: Vec<u8>,
@@ -143,7 +144,7 @@ impl Ends {
             blocked: false,
             drained: false,
             hung_up: false,
-            asked: ReadyFor::empty(),
+            asked: None,
             outbox: Vec::new(),
         };
         self.held.insert(number, held);
@@ -275,7 +276,7 @@ impl Kernel {
         let Some(held) = self.ends.held.remove(&end) else {
             return;
         };
-        if !held.asked.is_empty() {
+        if held.asked.is_some() {
             self.waiting
                 .drop_where(|about| *about == WaitFor::Stream(end));
         }
@@ -302,14 +303,15 @@ impl Kernel {
         &mut self,
         _cx: &mut Context<'_, S>,
         end: EndNumber,
-        ready: Result<ReadyFor, HostError>,
+        ready: Result<ReadinessReport, HostError>,
     ) {
-        let ready = ready.unwrap_or(ReadyFor::ERROR);
+        let report = crate::waiting::report_of(ready);
+        let ready = report.ready_for;
         let Some(held) = self.ends.held.get_mut(&end) else {
             return;
         };
-        held.asked = ReadyFor::empty();
-        let gone = ready.intersects(ReadyFor::ERROR | ReadyFor::HANG_UP);
+        held.asked = None;
+        let gone = !report.unconditional.is_empty();
         if gone || ready.contains(ReadyFor::WRITABLE) {
             held.blocked = false;
         }
@@ -448,30 +450,29 @@ impl Kernel {
     /// it had nothing. A new wait's first poll comes when the kernel next settles.
     fn watch_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: EndNumber, side: Side) {
         let held = self.ends.held.get_mut(&end).expect("held");
-        let mut wanted = ReadyFor::HANG_UP;
-        if held.hung_up {
-            wanted = ReadyFor::empty();
-        } else {
+        let wanted = (!held.hung_up).then(|| {
+            let mut wanted = ReadyFor::empty();
             if side.sends() && held.blocked {
                 wanted |= ReadyFor::WRITABLE;
             }
             if side.receives() && held.drained {
                 wanted |= ReadyFor::READABLE;
             }
-        }
+            wanted
+        });
         if wanted == held.asked {
             return;
         }
-        let had = !held.asked.is_empty();
+        let had = held.asked.is_some();
         held.asked = wanted;
         let endpoint = held.endpoint.clone();
         if had {
             self.waiting
                 .drop_where(|about| *about == WaitFor::Stream(end));
         }
-        if wanted.is_empty() {
+        let Some(wanted) = wanted else {
             return;
-        }
+        };
         let call: crate::waiting::Call =
             waiting_call!(ready_of(cx.system.clone(), endpoint, wanted));
         if Waiting::on_heap(&call) {
@@ -529,7 +530,7 @@ impl Kernel {
         self.waiting
             .drop_where(|about| matches!(about, WaitFor::Stream(_)));
         for held in self.ends.held.values_mut() {
-            held.asked = ReadyFor::empty();
+            held.asked = None;
             held.blocked = false;
             held.drained = false;
         }

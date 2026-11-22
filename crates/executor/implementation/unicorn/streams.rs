@@ -8,7 +8,7 @@ use std::sync::{Arc, MutexGuard};
 use rand::Rng;
 use wcontainers_abi::{Cpu, Event, HostError};
 use wcontainers_kernel_linux::{Kernel, Standard};
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system_seeded_test_policy::Schedule;
 
 /// One of the test host's stream endpoints, by its number.
@@ -210,37 +210,38 @@ impl Streams {
     }
 
     /// What an endpoint is ready for now.
-    fn ready(&self, end: End) -> ReadyFor {
-        let mut ready = ReadyFor::empty();
+    fn ready(&self, end: End) -> ReadinessReport {
+        let mut ready = crate::network::report(ReadyFor::empty(), UnconditionalEvents::empty());
         let closed = self.closed_here.contains(&end);
         if closed {
-            ready |= ReadyFor::HANG_UP;
+            ready.unconditional |= UnconditionalEvents::HANG_UP;
         }
         if self.client.outputs().contains(&end)
             && self.given.get(&end).is_some_and(|room| *room > 0)
         {
-            ready |= ReadyFor::WRITABLE;
+            ready.ready_for |= ReadyFor::WRITABLE;
         }
         if Some(end) == self.client.input_end() && (!self.pending.is_empty() || closed) {
-            ready |= ReadyFor::READABLE;
+            ready.ready_for |= ReadyFor::READABLE;
         }
         ready
     }
 
     /// The waits whose endpoint is now ready for something they ask for, each taken off with
     /// what it is ready for.
-    fn take_ready(&mut self) -> Vec<(End, ReadyFor)> {
+    fn take_ready(&mut self) -> Vec<(End, ReadinessReport)> {
         if !core::mem::take(&mut self.stirred) {
             return Vec::new();
         }
-        let ready: Vec<(End, ReadyFor)> = self
+        let ready: Vec<(End, ReadinessReport)> = self
             .armed
             .iter()
             .map(|(end, interest)| {
-                let asked = *interest | ReadyFor::ERROR | ReadyFor::HANG_UP;
-                (*end, self.ready(*end) & asked)
+                let mut ready = self.ready(*end);
+                ready.ready_for &= *interest;
+                (*end, ready)
             })
-            .filter(|(_, ready)| !ready.is_empty())
+            .filter(|(_, ready)| !ready.ready_for.is_empty() || !ready.unconditional.is_empty())
             .collect();
         for (end, _) in &ready {
             self.armed.remove(end);
@@ -335,7 +336,13 @@ pub trait StreamHost: wcontainers_kernel_linux::System {
     /// Hands the kernel an event.
     fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>);
     /// Ends the kernel's wait on an endpoint with what it is ready for.
-    fn ready(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, end: End, ready: ReadyFor);
+    fn ready(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        end: End,
+        ready: ReadinessReport,
+    );
 }
 
 /// Ends every wait whose endpoint is now ready. Whether any did.

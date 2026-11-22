@@ -15,7 +15,7 @@ use std::time::Duration;
 use domain::base::{Name, Question};
 use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 
 /// Docker Desktop's name and address for the machine it runs on.
 pub const DOCKER_HOST_NAME: &str = "host.docker.internal";
@@ -46,7 +46,7 @@ struct Stream {
 /// socket of a number became ready for.
 pub enum Owed {
     Answered(u64, Vec<u8>),
-    Ready(u32, ReadyFor),
+    Ready(u32, ReadinessReport),
 }
 
 /// A container port this machine accepts connections for.
@@ -101,19 +101,33 @@ fn unspecified_of(address: SocketAddr) -> SocketAddr {
 }
 
 /// What a socket is ready for, from the events `poll` gave for it.
-fn ready_for(revents: i16) -> ReadyFor {
-    let mut ready = ReadyFor::empty();
+fn ready_for(revents: i16) -> ReadinessReport {
+    let mut ready = report(ReadyFor::empty(), UnconditionalEvents::empty());
     for (bit, flag) in [
         (libc::POLLIN, ReadyFor::READABLE),
         (libc::POLLOUT, ReadyFor::WRITABLE),
-        (libc::POLLERR, ReadyFor::ERROR),
-        (libc::POLLHUP, ReadyFor::HANG_UP),
     ] {
         if revents & bit != 0 {
-            ready |= flag;
+            ready.ready_for |= flag;
+        }
+    }
+    for (bit, flag) in [
+        (libc::POLLERR, UnconditionalEvents::ERROR),
+        (libc::POLLHUP, UnconditionalEvents::HANG_UP),
+    ] {
+        if revents & bit != 0 {
+            ready.unconditional |= flag;
         }
     }
     ready
+}
+
+/// A readiness report of what a handle is ready for and its unconditional events.
+pub(crate) fn report(ready_for: ReadyFor, unconditional: UnconditionalEvents) -> ReadinessReport {
+    ReadinessReport {
+        ready_for,
+        unconditional,
+    }
 }
 
 /// How long a connect to the outside may take.
@@ -187,11 +201,14 @@ impl Network {
             Ok(socket) => {
                 socket.set_nonblocking(true).expect("nonblocking");
                 stream.socket = Some(socket);
-                ReadyFor::WRITABLE
+                report(ReadyFor::WRITABLE, UnconditionalEvents::empty())
             }
             Err(error) => {
                 stream.error = Some(errno(&error));
-                ReadyFor::ERROR | ReadyFor::HANG_UP
+                report(
+                    ReadyFor::empty(),
+                    UnconditionalEvents::ERROR | UnconditionalEvents::HANG_UP,
+                )
             }
         };
         self.streams.insert(number, stream);
@@ -409,7 +426,10 @@ impl Network {
                     if let Some(listener) = self.listeners.get_mut(&number) {
                         listener.armed = false;
                     }
-                    self.owed.push_back(Owed::Ready(number, ReadyFor::READABLE));
+                    self.owed.push_back(Owed::Ready(
+                        number,
+                        report(ReadyFor::READABLE, UnconditionalEvents::empty()),
+                    ));
                 }
                 Watched::Stream(number) => {
                     let stream = self.streams.get_mut(&number).expect("an armed connection");

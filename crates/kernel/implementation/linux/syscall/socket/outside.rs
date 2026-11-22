@@ -29,7 +29,7 @@ use wcontainers_internet_protocol::{
     TransmitReportKey, TransmitReportRequest, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpClose, TcpConnections, TcpContinuation, TcpFastOpen, TcpListeners,
     TcpProtocol, TcpReceiveRequest, TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpUrgency,
@@ -648,9 +648,13 @@ pub(super) fn ready<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     id: u32,
-    ready: Result<ReadyFor, HostError>,
+    ready: Result<ReadinessReport, HostError>,
 ) {
-    let ready = ready.unwrap_or(ReadyFor::ERROR);
+    let report = crate::waiting::report_of(ready);
+    let failed = report.unconditional.contains(UnconditionalEvents::ERROR);
+    let room = failed
+        || report.unconditional.contains(UnconditionalEvents::HANG_UP)
+        || report.ready_for.contains(ReadyFor::WRITABLE);
     if let Some(link) = kernel.sockets.inet.outside.listeners.get_mut(&id) {
         link.asked = ReadyFor::empty();
         link.drained = false;
@@ -664,14 +668,14 @@ pub(super) fn ready<S: crate::System>(
     };
     link.asked = ReadyFor::empty();
     let connecting = core::mem::take(&mut link.connecting);
-    if ready.intersects(ReadyFor::WRITABLE | ReadyFor::ERROR | ReadyFor::HANG_UP) {
+    if room {
         link.blocked = false;
     }
     let Some(socket) = owner(kernel, id) else {
         return;
     };
     if connecting {
-        if ready.contains(ReadyFor::ERROR) {
+        if failed {
             let error = connect_error(kernel, cx, id);
             if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
                 let_go(kernel, id, link);
@@ -697,9 +701,7 @@ pub(super) fn ready<S: crate::System>(
         watch(kernel, cx, id);
         return;
     }
-    if ready.intersects(ReadyFor::WRITABLE | ReadyFor::ERROR | ReadyFor::HANG_UP)
-        && let Some(inet) = socket.borrow_mut().inet.as_deref_mut()
-    {
+    if room && let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
         inet.room = true;
     }
     if let Some(link) = kernel.sockets.inet.outside.connections.get_mut(&id) {

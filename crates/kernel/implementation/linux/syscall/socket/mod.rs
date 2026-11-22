@@ -387,7 +387,7 @@ pub(crate) fn outside_ready<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     id: u32,
-    ready: Result<wcontainers_readiness::ReadyFor, wcontainers_abi::HostError>,
+    ready: Result<wcontainers_readiness::ReadinessReport, wcontainers_abi::HostError>,
 ) {
     outside::ready(kernel, cx, id, ready);
 }

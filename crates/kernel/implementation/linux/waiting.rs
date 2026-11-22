@@ -35,7 +35,17 @@ pub(crate) enum Answer {
     /// The resolver's answer, as the message's bytes.
     Name(Result<Vec<u8>, wcontainers_abi::HostError>),
     /// What a connection, listener or stream endpoint is ready for.
-    Ready(Result<wcontainers_readiness::ReadyFor, wcontainers_abi::HostError>),
+    Ready(Result<wcontainers_readiness::ReadinessReport, wcontainers_abi::HostError>),
+}
+
+/// Reads a finished wait on a handle's readiness, a failed wait as an error on the handle.
+pub(crate) fn report_of(
+    ready: Result<wcontainers_readiness::ReadinessReport, wcontainers_abi::HostError>,
+) -> wcontainers_readiness::ReadinessReport {
+    ready.unwrap_or(wcontainers_readiness::ReadinessReport {
+        ready_for: wcontainers_readiness::ReadyFor::empty(),
+        unconditional: wcontainers_readiness::UnconditionalEvents::ERROR,
+    })
 }
 
 /// The room a waiting call has in its cell; a larger one is kept on the heap (counted).

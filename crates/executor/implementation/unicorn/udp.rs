@@ -11,7 +11,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_runtime_single_kernel::udp::received;
 use wcontainers_udp_sockets::{
     UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived, UdpSocketSetting, UdpSockets,
@@ -143,7 +143,7 @@ impl<H: Send> Readiness<UdpHandle> for TestHost<H> {
         &self,
         socket: &UdpHandle,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         if !self.replaying() {
             lock(&self.network).arm(socket.0, interest);
         }

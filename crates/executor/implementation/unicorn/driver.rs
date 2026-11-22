@@ -865,7 +865,7 @@ impl<H: Send> wcontainers_readiness::Readiness<crate::streams::End> for TestHost
         &self,
         peer: &crate::streams::End,
         interest: wcontainers_readiness::ReadyFor,
-    ) -> Result<wcontainers_readiness::ReadyFor, HostError> {
+    ) -> Result<wcontainers_readiness::ReadinessReport, HostError> {
         if !self.replaying() {
             lock(&self.streams).arm(*peer, interest);
         }
@@ -989,12 +989,12 @@ impl<H> TestHost<H> {
     pub(crate) fn stream_readied(
         &self,
         end: crate::streams::End,
-        ready: wcontainers_readiness::ReadyFor,
+        ready: wcontainers_readiness::ReadinessReport,
     ) {
         Readied::arrive(&self.stream_ready, end.0, ready);
     }
 
-    pub(crate) fn socket_ready(&self, number: u32, ready: wcontainers_readiness::ReadyFor) {
+    pub(crate) fn socket_ready(&self, number: u32, ready: wcontainers_readiness::ReadinessReport) {
         Readied::arrive(&self.ready, number, ready);
     }
 }
@@ -1028,7 +1028,7 @@ where
         kernel: &mut Kernel,
         cpu: &mut dyn Cpu,
         end: crate::streams::End,
-        ready: wcontainers_readiness::ReadyFor,
+        ready: wcontainers_readiness::ReadinessReport,
     ) {
         if self.taped_run() {
             self.kept_in_step(Entry::StreamReady(end, ready));
