@@ -597,7 +597,7 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
             "nf_conntrack_expect",
         ),
     ),
-    ("sys", "abi debug dev fs kernel net sunrpc user vm"),
+    (SYSCTL_ROOT, "abi debug dev fs kernel net sunrpc user vm"),
     ("sys/abi", "tagged_addr_disabled"),
     ("sys/debug", "exception-trace"),
     ("sys/dev", "scsi tty"),
