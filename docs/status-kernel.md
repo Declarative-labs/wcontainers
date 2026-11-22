@@ -59,6 +59,14 @@ crates/runtime/implementation/single-kernel.
   list) and backend `listings_match_reference`, which then passed alone 3 times and in the whole
   backend file twice (8 threads); its failing output was cut by the job's filter, so which side
   differed is not known.
+- The whole LTP comparison at 0ce16ef9 (same job, 21:17 to 22:46 UTC, load 10 to 18, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-0ce16ef9.tsv): 4167 of 4226 match the reference,
+  59 differ (at 91d85e31, the K6c bar: 4154 of 4211). Against 91d85e31's own verdicts 5 differ:
+  fcntl12, fcntl12_64 and fork09 now time out where they failed or broke (all three are the test
+  harness's open-file limit, under "Waiting for the owner", and differ from the reference both
+  times); getrusage04 failed, then passed alone 3 times of 3 (its timing, as noted at 18eda16f);
+  ADSP072 timed out at 900 s (852 s at 91d85e31) and passed alone with a 3600 s limit in 886 s
+  (load 7 to 9). So the verdicts are no worse than before the merges.
 - The ARM64 machine's disk was full (5 GB free at 21:48 UTC) while the LTP comparison ran: this
   track removed its old measurement build (kernel-kd, 18 GB), its incremental caches and build
   outputs older than five hours from /work/target/kernel (140 GB); 135 GB were free after.
@@ -434,6 +442,17 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KC, first run: the kernel, its suite, the stand-in, the runtime's single kernel and the test
+policy build against the owner's interfaces of 2026-11-22, and the whole workspace's `cargo check
+--all-targets` passes on the ARM64 machine. The kernel suite passes (16, two new checks of
+threads across processes), the whole suite fails only the ARM list (and one backend flake that
+then passed five times), and the whole LTP comparison is no worse than at K6c's bar. No interface
+file was edited. Not built, For the owner: `Kernel::run` (no executor call runs a thread) and a
+state truly shareable between host threads (`Sync` is asserted). KC goes to its independent check.
+Next, in order: a wait on `FuseServer::receive_notice` in the kernel instead of the abi's
+`Event::BackendNotice`; main's executor interface (bb91b32c: `Executor::Architecture` and
+`execute_single_instruction`) when it is merged into agents. See "KC, first run".
 
 KA, sixteenth run: every finding of KA's second independent check is fixed or answered: an
 outside connection shut for reading still queues and reads what its peer sends (a test that failed
