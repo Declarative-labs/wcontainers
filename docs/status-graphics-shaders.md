@@ -62,7 +62,9 @@ track's ask). Run 10 (run 97, the section below): A7's geometry shaders writing 
 numbers (the runner's `primitive-id-2-gs`), and the NIR track's array layer rounding in the carried
 reader. Run 11 (run 98, the section below): A26, float comparisons with Direct3D's NaN rules on
 both routes (the carried reader's unordered comparisons, the NIR track's finding), and A30,
-saturate of a NaN on the DXIL route through WebGL 2. Not complete: the gap list below.
+saturate of a NaN on the DXIL route through WebGL 2. Run 12 (run 99, the section below): the NIR
+track's pulled inputs at any byte and 3D texel offsets through naga's HLSL writer, and A26's
+WebGL 2 part for selects. Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -134,6 +136,56 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   operators are ordered on every back end); before, each was read as the ordered operator. Drawn
   on WebGPU (run 98's section); through ANGLE the negated forms still give the ordered result
   (A26).
+- Since run 99 (its G9 run 7 ask): a pulled input's component that does not start at a multiple
+  of its size (a float at byte 17, OpenGL's `stride.*_17`) is read right: the fetch joins the word
+  it starts in with the next one (`variant/pull.rs`). The driver's refusal of such inputs can go.
+  Drawn: `pulled_inputs_read_what_direct3d_fetches` (tests/pull_draw.rs) also draws every stream
+  moved to offsets 1, 2, 11 and 3 and strides 51, 5, 7 and 6 against Direct3D 11 reading the
+  aligned bytes (run 99's section).
+- Since run 99 (its G9 run 10 finding): naga's HLSL writer wraps a constant texel offset in the
+  offset's own type (`int3(...)` for a 3D texture, was always `int2(...)`), so wgpu's Direct3D 12
+  path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
+  (tests/writer_draw.rs).
+
+## G6 run 12 (run 99): the NIR track's pulled inputs at any byte, 3D texel offsets on Direct3D 12, A26 on WebGL 2
+
+Logs and scripts in scratch `graphics-shaders/g6-r99` (run 98's with its folder). Nothing built on
+the Mac (rustfmt of single files only).
+- Pulled inputs (the NIR track's G9 run 7 ask, `variant/pull.rs`): a component wider than a byte
+  is read from the word it starts in joined with the next one (the next shifted up by 32 less the
+  bit in the word, in two shifts so an aligned component takes none of it), so any offset and
+  stride read right; byte components keep one load. Test `pulled_inputs_read_what_direct3d_fetches`
+  now also draws the 13 formats with the four streams moved to offsets 1, 2, 11, 3 and strides 51,
+  5, 7, 6 (the bytes between elements seeded), against Direct3D 11 reading the aligned bytes: seed
+  1, both builds, 0 of 4,096 texels apart, aligned and moved (gpu-suite.log). The old fetch on the
+  moved streams (mutant-pull.log): 1,574 of 4,096 texels apart on both builds, in every input
+  wider than a byte (the four byte formats 0 apart), the aligned draws still 0. WGSL that changed in the corpus run: the pulled programs of the own
+  `vs_cull`, `vs_store_drawn` and three runner clip and cull files.
+- naga's HLSL writer (the NIR track's G9 run 10 finding): a constant texel offset is wrapped in
+  its own type (`int3(...)` for a 3D texture), where naga wrote `int2(...)` always, which DXC
+  refuses. Tests: `hlsl_texel_offsets_keep_their_width` (tests/glsl_writer.rs, any machine) and
+  `volume_samples_with_offsets_read_the_texel_each_names` (tests/writer_draw.rs, RTX 3080): an 8x8x8
+  texture of seeded bytes sampled at every texel with offset (1, -2, 3) through a nearest sampler,
+  against the texel each offset names clamped to the edge; seeds 1 to 4, wgpu's Direct3D 12 and
+  Vulkan paths, 0 of 512 texels apart in all 8. The writer's `int2(` line left literals.baseline.
+- A26 on WebGL 2: run 98's `ps_compare` differences were the negated ordered comparisons only;
+  `!(a == b)` was right through ANGLE, `!(a < b)` and its kin were folded into the ordered
+  opposite (read in the GLSL the corpus wrote: the DXBC build selects with swapped arms instead,
+  `(a < b) ? 0u : 64u`). The carried reader now reads `OpSelect` of a logical negation as the
+  select of the negated value with its arms swapped. `ps_compare`'s known failure removed: the
+  whole GPU suite passed with it (gpu-suite.log), so webgl-dxil draws it equal to Direct3D.
+- Corpus (laptop, `--test corpus`, every corpus and glslang, load 0.1 to 1.4): 13 passed
+  (`out-r99`). WGSL files that differ from run 98's `out-r98b`: 60 (34 games-dxil, 17 runner-dxil,
+  4 own-dxil, 3 runner, 2 own); Chrome on the desktop compiles all 60 (chrome.log).
+- Checks at the tree committed (ARM64, arm3.log, load 22 to 30): `cargo fmt -p wcontainers-shaders
+  --check` clean, clippy with warnings denied clean, every CPU test binary passed; the literal check
+  prints no line of this crate or the carried naga but the baseline line to delete (deleted,
+  33b2e995). Windows clippy with warnings denied clean; the whole GPU suite (one job, one test
+  thread): 28 test binaries, none failing (gpu-suite.log). Between the suite and the commit only
+  names changed (`back::OPEN` shared by the GLSL and HLSL writers, the test's `VOLUME_SIDE`), for
+  the literal check; checked on ARM64 after.
+- Two slips, both harmless: a `gpu-job --help` from the agents' worktree queued one job whose
+  command was `--help` (no tree sent; it fails at once), and an aborted first suite submission.
 
 ## G6 run 11 (run 98): float comparisons' NaN rules (A26), saturate of a NaN on WebGL 2 (A30)
 
@@ -2093,7 +2145,8 @@ The gap list (every item of the pass bar not met):
   array's elements; two independent picks need a switch over every pair, not built. Waits: the
   NIR track's route B on Vulkan programs (its status names no program refused so). Takes: the
   nested switch (or one switch over the pairs) and a case of `rewrite_draw`.
-- A26. Closed on WebGPU in run 98 (its section), open on WebGL 2's DXIL route. Direct3D's `ne` and
+- A26. Closed on WebGPU in run 98 (its section), and for selects on WebGL 2's DXIL route in run 99
+  (below; a negated comparison as a branch's condition there is not drawn). Direct3D's `ne` and
   dxc's unordered comparisons (`fcmp une`, `ult`, `uge`, ...; true where an operand is NaN) were
   read as naga's ordered operators. Now: the carried reader writes each unordered comparison as the
   negated ordered opposite (`OpFUnordLessThan` as `!(a >= b)`, `OpFUnordNotEqual` as `!(a == b)`),
@@ -2101,13 +2154,14 @@ The gap list (every item of the pass bar not met):
   DXBC `F_NE` as `!(a == b)` (dxbc-spirv turns most `ne` into a negated `eq` before it reaches the
   lowering). Drawn (own `cs_compare`, `nan_rules_match_direct3d`): both builds 0 words apart from
   Direct3D 11 on wgpu's Direct3D 12 and Vulkan paths, where the DXIL build was 76 to 87 apart at
-  each seed. Left: through ANGLE the DXIL build's negated ordered comparisons give the ordered
-  result for a NaN (own `ps_compare`, webgl-dxil 1,118 of 4,096 texels, bits 6 to 9 of the
-  comparison word; a known failure in `own_shaders_draw_as_direct3d_does`). Waits: nobody (a NaN
-  compared by an unordered comparison in a dxc build on WebGL 2). Takes: a form ANGLE's compiler
-  keeps, measured there (for example the ordered opposite selected with swapped arms, as dxbc-spirv
-  writes it, which the reader would have to do at the comparison's uses, or an `isnan` by bits
-  joined with the ordered comparison, at its cost), then `ps_compare`'s known failure removed.
+  each seed. Through ANGLE the DXIL build's negated ordered comparisons gave the ordered result
+  for a NaN (own `ps_compare`, webgl-dxil 1,118 of 4,096 texels, bits 6 to 9 of the comparison
+  word, run 98): ANGLE's compiler folds `!(a < b)` into `a >= b` but keeps `!(a == b)`. Since run
+  99 the carried reader reads a select of a negated condition as the select of the condition with
+  its arms swapped, as dxbc-spirv writes it; `ps_compare` then draws equal to Direct3D on all four
+  routes and its known failure is gone (gpu-suite.log of run 99). Left: a negated unordered
+  comparison used other than by a select (a branch's condition, `&&`) on WebGL 2, not drawn.
+  Waits: nobody. Takes: a pixel shader branching on such a comparison drawn through ANGLE.
   The `OpFOrdNotEqual` and `OpFUnordEqual` forms are not drawn (dxc wrote neither for
   `cs_compare`).
 - A27. Refusals by name that no file of any corpus meets and that no entry above lists (the third
@@ -2373,13 +2427,14 @@ G6a run 5's tip):
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
    cull distances from domain shaders; a geometry shader's written primitive number done in run
-   97), A26's WebGL 2 part (a form of unordered comparisons ANGLE keeps), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   97), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
    Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
    89, A14 in runs 89 and 96, A7's cull distances from geometry shaders in run 90, A20 in run 95).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals;
+3. Besides, as asked: the NIR track's items (the carried SPIR-V reader's three refusals, on its
+   candidate route only; pulled inputs at any byte and naga's HLSL texel offsets done in run 99;
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
    rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
    `saturate` of a NaN added to `ps_compare` and drawn on WebGL 2), A32 (the DXIL overflow's
@@ -3911,9 +3966,21 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `OpFUnord*` as the negated ordered opposite, `OpFOrdNotEqual` as `(a < b) | (a > b)`,
   `OpFUnordEqual` as its negation (naga's operators are ordered); before, each was read as the
   ordered operator. For upstream as it stands.
+- SPIR-V reader (run 99, `OpSelect`), a select whose condition is a logical negation is read as the
+  select of the negated value with its arms swapped (the same value without the negation, which
+  ANGLE's compiler folds into the ordered opposite of a comparison). For upstream as it stands.
+- HLSL writer (run 99), a constant texel offset is wrapped in its own type (`write_value_type_of`)
+  where naga always wrote `int2(`, which DXC refuses for a 3D texture's `int3`; `back::OPEN` (an
+  opening parenthesis) is shared by the GLSL and HLSL writers. For upstream as it stands.
 
 ## How to run
 
+- Run 99's scripts in scratch `graphics-shaders/g6-r99` are run 98's with its folder. Make
+  `tip-arm` with `git clone -q tip tip-arm` before `arm-sync.sh` (arm-run refuses a folder that is
+  not a git checkout). A foreground shell is cut at 10 minutes and a background one at its own
+  limit: give the whole GPU suite (about 14 minutes with its build) a background limit of an hour.
+  `tools/graphics-rig/gpu-job` takes any first word that is not one of its options as the command
+  (no `--help`).
 - Run 98's scripts in scratch `graphics-shaders/g6-r98` are run 97's with its folder (`tip-arm`
   made first with `git clone -q tip tip-arm`). `compare.hlsl`'s builds were compiled by a
   temporary `compare.cmd` (compile.cmd's first lines and its compare lines) in the clone, run by
