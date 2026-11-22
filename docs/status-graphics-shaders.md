@@ -142,6 +142,14 @@ Nothing built on the Mac.
   record holds (logs/suite-r93.log there). Chrome on the desktop compiles the new and changed files,
   WGSL and GLSL ES: own `ps_clamp` and `ps_lod`, runner `sampler-13`, `-15` and `calculate-lod-1` to
   `-4`, both builds (chrome.log; 16 files each way).
+- Runs: ARM64 machine (load 6 to 25): clippy of this crate with warnings denied clean, rustfmt clean,
+  every CPU test binary passed (arm5.log, arm6.log); the literal check prints no line of this crate
+  or of the reader change (arm5.log). Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy
+  clean; the whole suite (one job, one test thread, at 3305bc5f's code): 25 test binaries, 195
+  passed, 0 failed, 6 ignored as before (gpu-suite.log). WebAssembly (laptop, wasm32-wasip1 under
+  wasmtime, every corpus, `logs/wasm-r93b.log` there): the corpus test's 12 tests pass; the
+  per-folder counts of written files differing from the native ones equal run 92's
+  (`logs/wasm-r92b.log`).
 - `SparseFeedback` is absent by plan: the instructions that give a residency status belong to tiled
   resources (Direct3D's tier 2), which the plan reports absent through `CheckFeatureSupport` (5.2's
   and 9's absent lists), so a front never takes such a shader as valid; the refusal stays.
