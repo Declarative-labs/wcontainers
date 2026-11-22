@@ -77,10 +77,26 @@
 - set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). The unit is the one the route gave the
   socket (`tcp_usec_ts`, read from `TCP_INFO`'s `TCPI_OPT_USEC_TS`): Linux cannot change it, so the other unit is
   refused with a counted reason. set_authentication_counters and the
-  listener's: `TCP_AO_INFO` with its counter flag (T2).
-- read_state and read_listener_state: `TCP_INFO`, `TCP_CC_INFO`, `TCP_CONGESTION`, `SIOCINQ`/`SIOCOUTQ`/
-  `SIOCOUTQNSD`, `TCP_SAVED_SYN`, `TCP_TIMESTAMP`, `TCP_REPAIR_WINDOW` and the sequence options, `TCP_AO_INFO`,
-  `TCP_AO_GET_KEYS`, `MPTCP_INFO`, `MPTCP_FULL_INFO`, `IP_PKTOPTIONS`, `SO_INCOMING_CPU`.
+  listener's: `TCP_AO_INFO` with its counter flag.
+- read_state and read_listener_state (linux/state.rs), one source per query: Information `TCP_INFO` (linux-raw-sys's
+  structure, and the Accurate ECN fields after `tcpi_total_rto_time` from a structure of our own until it carries
+  them; a shorter answer from an older kernel is counted, its missing fields zero); CongestionControl
+  `TCP_CONGESTION` (cut to the buffer as Linux cuts it) and `TCP_CC_INFO` (DCTCP's and BBR's forms by name, Vegas's
+  by its length, none when empty); Queues `SIOCINQ`, `SIOCOUTQ`, `SIOCOUTQNSD`, `SIOCATMARK`; Tuned `SO_SNDBUF`,
+  `SO_RCVBUF`, `SO_RCVLOWAT`, `TCP_MAXSEG`, `TCP_WINDOW_CLAMP`, `TCP_QUICKACK` and `tcpi_pmtu`; TakeSavedSynchronize
+  the saved SYN accept kept; Timestamp `TCP_TIMESTAMP`, its unit from `TCPI_OPT_USEC_TS`; Repair `TCP_REPAIR_WINDOW`,
+  `TCP_QUEUE_SEQ` under each repair queue (the queue chosen put back) and `TCP_AO_REPAIR` (none when Linux says
+  ENOENT); Authentication `TCP_AO_INFO`; AuthenticationKey `TCP_AO_GET_KEYS` for the one key; Multipath `MPTCP_INFO`
+  and MultipathSubflow `MPTCP_FULL_INFO` (structures of our own: neither libc nor linux-raw-sys has them), asked
+  first for the count and then with arrays as long as it; LastReceivedHeader `IP_PKTOPTIONS` or
+  `IPV6_2292PKTOPTIONS` by the peer's family, the IPv4 options and IPv6 extension headers recorded as the header
+  bytes; IncomingProcessor `SO_INCOMING_CPU`. Linux's own refusals pass through (repair reads out of repair mode
+  EPERM or EINVAL, `TCP_AO_INFO` without authentication ENOENT, `MPTCP_INFO` on TCP or a fallen-back connection
+  EOPNOTSUPP, `TCP_TIMESTAMP` on MPTCP EOPNOTSUPP).
+- Repair settings: `RepairOptions` `TCP_REPAIR_OPTIONS` (a few `tcp_repair_opt` at a time on the stack, Linux taking
+  each on its own; option kinds from etherparse), `RepairWindow` `TCP_REPAIR_WINDOW`, `AuthenticationRepair`
+  `TCP_AO_REPAIR` (initial sequence numbers in network order, as Linux keeps them). All need repair mode
+  (CAP_NET_ADMIN).
 - Settings: each `TcpSetting` and `TcpListenerSetting` variant is the one socket option its doc names
   (`SO_BUF_LOCK`, `SO_RCVLOWAT`, `SO_ATTACH_FILTER`/`SO_DETACH_FILTER`, `SO_TXREHASH`, `IP_MINTTL`/
   `IPV6_MINHOPCOUNT`, `IP_PKTINFO`-family records, `IP_RECVERR`/`IPV6_RECVERR`, the `TCP_*` options of tcp(7),
@@ -96,6 +112,11 @@
 - Settings that need CAP_NET_ADMIN or CAP_NET_RAW (mark, repair, transparent addresses, priorities above six)
   answer Linux's own EPERM when the host lacks it.
 - A fixed IPv6 flow label on a listener, an accepted connection or after connect (Linux fixes it only at connect).
+- What Linux does not record of the last packet a TCP socket received: its length and fixed IP header
+  (`LastReceivedHeader` gives the options and extension headers recorded, length 0, counted).
+- A multipath connection that fell back to TCP has no `MPTCP_INFO` (EOPNOTSUPP), so `fell_back_to_tcp` is never
+  true in a reading on Linux 7.0.
+- A listener's timestamp clock: Linux never lets a listener into repair mode (EPERM).
 - Fields of `ReceivedPacketFields` that Linux never reports for a SYN (its IPv4 arrival interface, its
   timestamps, and everything of a multipath SYN): taken from what the accepted socket reports, each counted under
   a named reason.
@@ -108,7 +129,11 @@
   action methods; the suite for them, passing on the Linux machine over loopback.
 - T2: read_state and read_listener_state with every query; repair options and windows, the authentication repair
   values and `set_authentication_counters` (whose effect only read_state shows), timestamps, multipath state; the
-  privileged settings, run as root in a network namespace.
+  privileged settings, run as root in a network namespace. Host needs, measured on Linux 7.0 (Ubuntu's
+  7.0.0-1018-aws): `CONFIG_TCP_AO` (6.7 and later) for the authentication readings and repair values,
+  `CONFIG_MPTCP` with `MPTCP_FULL_INFO` (6.7 and later) for the subflows, 6.18 or later for the Accurate ECN fields
+  of `TCP_INFO` (zero and counted before), `tcp_vegas` and `tcp_bbr` modules for their congestion information,
+  CAP_NET_ADMIN for repair mode.
 
 ## The suite (crates/tcp-sockets/conformance/conformance.rs)
 - Written against the traits alone: each public function takes one `TcpSockets` value, makes its own listener
@@ -132,6 +157,13 @@
   checks look at headers, sequence numbers, windows, timestamps and timing; a peer made to drop everything (a
   minimum hop limit of 255) leaves segments unanswered for the timer checks; how much a connection takes or a peer
   sends while nothing is read shows the buffer settings.
+- The state readings are checked by what the traits and the wire show: each end's information agrees with the
+  other's, counts follow a transfer, states follow a shutdown; queues follow a cork, a dropping peer and urgent data;
+  tuned values follow the settings; a clock advances as time does in its unit; a connection read in repair mode and
+  written back into a new socket (sequence numbers, options, window, clock) goes on with the old peer; the
+  authentication readings follow the keys and counters set, its repair values the captured SYN and SYN-ACK; the
+  multipath readings agree across ends and name the subflow's addresses; the last header names loopback; settings
+  given once and twice read the same tuned values, authentication state and last header.
 - Memberships and owners are checked by the host's own tables (`/proc/net/igmp`, `igmp6`, `anycast6`, `tcp`, `tcp6`);
   authentication keys on the wire (option kind 29: its key identifiers and MAC length) and by what a keyed listener
   admits.
@@ -172,7 +204,8 @@ machine allows, and each stays clear of the value it is checked against.
 - Names and values that only need to differ. Ports 41000 to 41020 (reserved to 41010) and 61000 to 61020 (above
   Linux's default local range, which ends at 60999) for the exit node's port choice. Fast open key bytes 1, 2 and 3;
   authentication key identifiers 1, 2 and 3, AUTHENTICATION_MAC_LENGTH 16 (Linux's default is 12, so the length
-  given shows on the wire) and AUTHENTICATION_COUNTERS each unlike the others. TransmitReportKey 7. CLOCK_READING
+  given shows on the wire) and AUTHENTICATION_COUNTERS 1 to 5 and LATER_AUTHENTICATION_COUNTERS 11 to 15, each unlike
+  every other. SEND_EXTENSION 1 and RECEIVE_EXTENSION 2, unlike a new connection's zero. TransmitReportKey 7. CLOCK_READING
   2^30 ms. MICROSECOND_CLOCK 127.0.0.7, the loopback address run-conformance.sh gives the `tcp_usec_ts` route. Flow labels
   0x2468A and 0x13579, below 0x80000, which Linux keeps for its own, and 0xABCDE for the setting checks. Mark 7.
   Owners 1001 and 1002 beside root. Peers: SHARING_PEERS 3 (two share, one does not), BACKLOG_OVERFLOW 3 (more than

@@ -169,8 +169,10 @@ Refused: an upper-layer selector other than what Linux routes the send by (the m
 the mobility header type for IPv6, none for other protocols or a packet with its own header), and a payload
 under another protocol than the socket's (IPv4, or IPv6 unless the socket's is `IPPROTO_RAW`).
 
-Each suite runs every check as root in a network namespace of its own, which the `tests!` macro enters on the
-test's thread before the value is made, with loopback up and (ICMP) every group in the ping range. Checks see
+Each suite runs every check as root in a network namespace of its own, which each check (and each value it makes
+for the readiness and Configurable suites) enters first on the test's thread, after the value is made, so the
+`tests!` macro has the layout's shape; loopback is up and (ICMP) every group in the ping range. An implementation
+therefore opens each socket in the namespace of the calling thread. Checks see
 what leaves a dummy link on a packet socket of the namespace, and its statistics. Header fields (TTL or hop limit, DSCP and ECN, flow label, options, extension
 headers, path MTU modes, local fragmentation and fragment MTU, source, interface, mark, scope, broadcast) are
 checked by what arrives; path MTU modes also by what each makes of a packet over a route of smaller MTU than its

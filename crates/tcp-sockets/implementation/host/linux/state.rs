@@ -133,7 +133,7 @@ const INFORMATION_LENGTH: usize = ACCURATE_ECN_AT + size_of::<AccurateEcnInforma
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InformationBytes {
-    _aligned: [u64; 0],
+    _aligned: [u64; usize::MIN],
     bytes: [u8; INFORMATION_LENGTH],
 }
 
@@ -184,7 +184,7 @@ struct BottleneckBandwidthInformation {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CongestionBytes {
-    _aligned: [u64; 0],
+    _aligned: [u64; usize::MIN],
     bytes: [u8; size_of::<BottleneckBandwidthInformation>()],
 }
 

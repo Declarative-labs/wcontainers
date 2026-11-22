@@ -2,8 +2,75 @@
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done; run again
 on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the checks' findings, below), I2 ICMP and raw sockets (redone in run 1 after the
-reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings). Nothing of
-this track is in progress.
+reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings; a new run 1
+on 2026-11-22 put the ICMP and raw crates in the linter's layout). Next: the 75 comment and literal findings left in
+the two suites (below). Nothing of this track is in progress.
+
+## 2026-11-22: I2 run 1 after the reorganization (the I1 check's findings, then the linter's layout)
+- The I1 check's eight findings, each (broken copies in `i2-run1/findings.sh`, log `i2-run1/findings.log`, ARM,
+  03:44 UTC, load 0.3 to 1.1; each copy caught by the check named):
+  - Routing header passed a first hop taken from the last entry: the type 4 header now has three segments and
+    segments left 1, so its next segment is neither its first nor its last (srh-first-hop-from-last-entry fails
+    routing_header_goes_to_its_first_hop).
+  - IPv4 route via an IPv6 gateway: locked_mtu_without_value_uses_the_device_mtu adds `10.21.0.0/16 via inet6
+    fd01::2 dev da mtu lock 0`, path MTU 576 (ipv6-gateway-of-ipv4-route-ignored fails it).
+  - Probe's traffic class unchecked: new dscp_rule_takes_an_encapsulating_route, IPv4 and IPv6: a rule on DSCP 8
+    sends lookups to a seg6 route on db in table 100 (main has a plain one on da); the answer must be db with the
+    path MTU a socket of that traffic class connected there is told (below db's), and without the DSCP da at 1400.
+    Linux's IPv6 connect takes the socket's traffic class (ip6_datagram_flow_key_init). probe-without-traffic-class
+    fails it.
+  - IPv4 options not validated: a lookup with options now sets them as `IP_OPTIONS` on a datagram socket first and
+    answers its error. New malformed_ipv4_options_are_refused_as_a_send_refuses_them: an LSRR with its pointer
+    past its end, one with a length of no whole address, and two LSRRs must give the error `IP_OPTIONS` gives (the
+    check asks the host for it and requires one); the well-formed LSRR resolves (ipv4-options-not-validated fails).
+  - No IPv4 address in the namespace gave EPROTO: the source is now 0.0.0.0, as a connected socket gets. New
+    a_namespace_without_an_ipv4_address_routes_from_the_unspecified_address (a fresh namespace, lo and a dummy dc
+    with addrgenmode none, MTU 1450): equal to the connected socket's (0.0.0.0, 1450). With other links holding
+    addresses Linux lends one (measured: 10.1.0.1), which the resolver already gave. no-source-is-eproto fails it.
+  - IPv4-mapped destination: now resolved over IPv4, as a dual-stack socket sends (source mapped back; a source
+    that maps no IPv4 address is a counted refusal, MIXED_SOURCE, in the counter test's six reasons). New
+    an_ipv4_mapped_destination_routes_over_ipv4 compares with a dual-stack connected socket for FAR and db's
+    gateway. mapped-looked-up-in-ipv6 and mapped-source-not-mapped-back fail it.
+  - One lock for the whole lookup: the kept buffers are taken with `try_lock`; a lookup that finds them busy uses
+    buffers of its own, so lookups no longer wait on each other. Not measured.
+  - Generic suites see only answers: unchanged, as recorded in I1 runs 2 to 4 and the plan; neither trait reads
+    back, and the effects are checked by the requiring suites (ICMP and raw each setting's, now also
+    other_settings_set_twice_answer_as_once).
+- Linter layout, ICMP and raw (the start of run: 401 findings in this track's files besides the model's unanswered
+  names and summaries; the end: 187):
+  - Each host crate now builds on every unix system: implementation.rs holds the types (fields under
+    `cfg(target_os = "linux")`), linux.rs Linux's calls (moved with `git mv`), portable.rs a counted refusal of
+    every socket (NO_PING_SOCKETS, NO_RAW_SOCKETS; the socket type holds `Infallible` there). Checked with `cargo
+    check` on the Mac. The reason constants are private; the crate tests count distinct reasons instead.
+  - conformance.rs at the crate root runs the suite (`[[test]] conformance`); the crate's own tests are
+    tests/counters.rs.
+  - Each suite's `tests!` lists every check in the standard shape; each check enters its namespace first (after the
+    value is made), as the resolver suite does. One `mod configurable` line runs Configurable's suite on one
+    setting (ICMP: a multicast membership; raw: an IPv4 router alert); the other setting kinds are the new check
+    other_settings_set_twice_answer_as_once. The helper macros `each_check` and `configurable_checks` are gone; the
+    suites re-export the required suites under their own names.
+  - Function summaries in the third person (helpers "Returns ...", checks "Checks that ..."), links on every named
+    number (array lengths that were the only number made slices), the router alert and checksum -1 named.
+  - Results (ARM, 04:02 UTC, load 1.9 to 2.5, `lint-and-suites.sh`, `ROUNDS=3`): clippy with warnings denied
+    clean on the nine packages; each round ICMP 51 and 5 crate tests, raw 44 and 1, both allocation tests,
+    resolver 35 and its counter test, Configurable 2, NegativeRouteAdvice 3, the shared readiness test.
+  - cargo tree (normal, build, dev) of the six interface crates and three suites of this track: no implementation
+    (control: the ICMP host crate's tree names the shared crate). No commit of this run touches an interface.rs or a
+    data file.
+- Left in this track's files (end of run, Mac, 04:01 UTC), each to do or raised:
+  - 75 comment and literal findings in the two suites (summaries over two lines or 150 characters, not one
+    sentence, magic literals in checks): to do, rewording each.
+  - public_outside_interface (61) and conformance_not_run on crate tests (8): the suites' shared test tools (the
+    raw suite and the crate tests use the ICMP suite's namespace, capture and send helpers), and the inherent
+    `new` and `counters`: raised below.
+  - The readiness line: the readiness suite's own `tests!` takes a module, ready and failing values, not the
+    layout's one value, so `mod readiness { ...::tests!(f($value)); }` cannot be written here (also in UDP and
+    TCP), and `waiting_for_*` are taken for suite functions: for the readiness track.
+  - conformance.rs keeps `#![cfg(target_os = "linux")]`, which the rule counts as more than one invocation: the
+    ICMP and raw suites are Linux-only files, so the invocation does not compile elsewhere.
+  - implementation_folder on `impl Readiness` and `impl Configurable` in linux.rs: traits their own interface
+    requires (the same in UDP and TCP); raised below.
+  - The seven constant_defined_twice between the resolver and ICMP suites, as before.
 
 ## 2026-11-22: I1 run 4, the independent check's findings, each
 - IPv4 never saw an answer for another protocol (blocking): true. other_protocols_route added its rule on UDP
@@ -486,6 +553,8 @@ this track is in progress.
     resolver, cargo tree, and the lookup cost (a throwaway crate in /work outside the checkout).
   - `i1-linter/hunt2.sh`: the resolver suite `ROUNDS` times (default 100), then a broken copy that sends.
   - `i1-run3/resolver.sh`: clippy on the four I1 packages, then their tests (`ROUNDS`, `FILTER`).
+  - `i2-run1/findings.sh`: the I1 packages' clippy and three rounds, then the seven broken resolver copies of the
+    2026-11-22 findings (`NO_MUTANTS=1` skips them). Linter tools of that run: `i2-lint/*.py`.
   - `i1-run3/independent-check-i1d.sh`: I1's clean build, three rounds, 19 broken copies, vacuity, cargo tree.
   - `i1-run3/verify-run.sh`: the verifier's seeded comparison with connected sockets, three seeds of 20000.
   - `independent-check-i2d.sh`: clean build with clippy, three rounds, the 43 broken copies of runs 1 to 3, cargo
@@ -659,6 +728,11 @@ this track is in progress.
 - The shared readiness (the UDP track's file) was changed here, in a commit of its own, for the double wake.
 
 ## For the owner
+- The linter's implementation_folder reports `impl Readiness<HostIcmpSocket> for HostIcmpSockets` (and Configurable)
+  in the ICMP and raw host crates, though IcmpSockets requires both as supertraits, so the implementation cannot
+  live anywhere else. Example: crates/icmp-sockets/implementation/host/linux.rs, `impl Readiness`.
+- The route resolver contract does not say how an IPv4-mapped IPv6 destination routes; the host implementation
+  resolves it over IPv4 as a dual-stack socket sends (::ffff:10.9.1.1 by da from ::ffff:10.1.0.1).
 - No interface can build its implementation. Proposed, as `StandaloneRuntime` does:
   `pub trait StandaloneIcmpSockets: IcmpSockets + Sized { fn open_host() -> Result<Self, HostError>; }`, the same
   for `RawSockets` and `RouteResolver`. Meanwhile `new()` (fallible: it starts the readiness thread) and the
