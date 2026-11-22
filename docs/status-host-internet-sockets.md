@@ -6,6 +6,9 @@ answered the independent checks' findings, below; run 4 those of run 3's check; 
 this track is in progress.
 
 ## 2026-11-21: waiting is the Readiness trait
+- Repair after the independent check: three long comments of the ICMP suite and one of the raw suite made one
+  sentence each. Run on the ARM machine (job readiness-repair): ICMP 58 + 1, raw 47 + 1, route resolver 31 pass.
+  The literal check still finds ICMP suite `ROUTE_MTU = 1300` (eeddf0af5, before this change).
 - The interfaces lost `wait_for_events`; IcmpSockets and RawSockets now require `Readiness<Self::Socket>`
   (crates/readiness), whose facts are the six of `ReadyFor`. Both host implementations write
   `impl Readiness<HostXSocket> for HostXSockets` on the shared `Watcher`, watching with `DATAGRAM_FACTS`; a held

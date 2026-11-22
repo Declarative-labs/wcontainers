@@ -9,7 +9,9 @@ readings, repair, authentication, multipath state, the privileged settings).
   facts of `ReadyFor`), through the shared `Watcher`, each socket watched with `ReadyFor::all()`. A wait gives every
   fact that holds, not only those asked for.
 - Suite: it re-exports the readiness suite as `readiness_conformance` and runs it as `connection_readiness_contract`
-  (`waiting_for_data`, and `waiting_for_urgent_data_until_a_reset` for the failure check) and
+  (`waiting_for_data`, and `waiting_for_urgent_data_until_a_report` for the failure check: a queued transmit report,
+  an error with no hang-up), `connection_hang_up_readiness_contract` (the failure check alone on
+  `waiting_for_urgent_data_until_both_ways_are_shut`, a hang-up with no error) and
   `listener_readiness_contract` (`waiting_for_a_connection`). The listener runs five of the six checks, not the failure
   check: no call of the TCP traits makes a listener get an error or a hang-up.
 - Deleted as copies of the readiness suite: wait_for_events_finishes_when_data_arrives,
@@ -21,7 +23,10 @@ readings, repair, authentication, multipath state, the privileged settings).
   (wait_for_room_finishes_when_the_peer_reads), URGENT_DATA, PEER_FINISHED_SENDING (with no hang-up), HANG_UP (new:
   wait_for_a_hang_up_finishes_when_both_ways_are_shut, both ends shut down writing, no error) and ERROR (new:
   wait_for_an_error_finishes_when_the_peer_resets). mutants.sh names the new texts of the shared crate.
-- Run on the ARM machine (job readiness-tcp): 113 passed, six runs; the eight wait mutants each fail the suite.
+- Repair after the independent check: new a_wait_gives_the_facts_the_connection_has_and_no_others (exact facts when
+  fresh, with data, urgent data behind data, the peer finished, both ways shut, a transmit report queued) and
+  a_wait_gives_the_facts_the_listener_has_and_no_others. Run on the ARM machine (job readiness-repair): 116 passed,
+  three runs; the checker's seven TCP mutants and a new one (ALWAYS_REPORTED of ERROR alone) each fail the suite.
   Clippy: no warning in this track's files (two in crates/kernel/interface.rs, not this track's). Literal check: nothing.
 - For the owner: the trait's comment does not say that ERROR and HANG_UP end a wait whether or not they were asked for,
   which the implementation does and the readiness suite checks.
@@ -32,8 +37,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   takes any control bytes the kernel wrote). UDP track: `Ancillary::parse` could take its messages from
   `ControlMessages::new` so the crate has one CMSG walk. TCP now sends its transmit report requests through
   socket2's `sendmsg` with the UDP track's `datagram::send::Control`.
-- TCP uses the shared `readiness` for both waits; since 12b98f7f (UDP track) it arms a one-shot registration only
-  while a call waits, and `open_socket` makes TCP's sockets with socket2 (9ad7b201).
+- TCP uses the shared `readiness` for both waits; since 12b98f7f (UDP track) it arms an edge-triggered registration
+  only while a call waits, and `open_socket` makes TCP's sockets with socket2 (9ad7b201).
 - The shared crate is `crates/internet-protocol/implementation/linux-socket-options` (package
   `wcontainers-internet-protocol-linux-socket-options`), made by this track. Its body is
   `cfg(target_os = "linux")`. It holds: `host_error`, `last_host_error`; the raw option calls `set_option`,

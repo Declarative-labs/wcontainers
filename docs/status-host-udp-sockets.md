@@ -3,6 +3,9 @@
 Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
 
 ## 2026-11-21: waiting is the Readiness trait
+- Repair after the independent check: two long comments of the suite made one sentence; the plan names
+  wait_until_ready. `NEVER_ON_UDP` stays beside ICMP's `NEVER_ON_DATAGRAMS`: this suite does not depend on ICMP's.
+  Run on the ARM machine (job readiness-repair): 76 + 5 pass.
 - `wait_for_events` and `PollEvents` are gone. `HostUdpSockets` implements `wcontainers_readiness::Readiness<HostUdpSocket>`
   (`wait_until_ready`, on the six facts of `ReadyFor`). A wait now gives every fact the socket has, not only those asked
   for. A UDP socket never reports URGENT_DATA or PEER_FINISHED_SENDING; a wait for only those waits for an error.
