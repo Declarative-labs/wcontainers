@@ -22,6 +22,10 @@ Plan: docs/plan-host-udp-sockets.md. Branch: agents, worktree /Users/thomaseaton
   `ProcessController`, `Kernel`'s new items missing, `Send`/`Sync` asked of its `Rc` state); none of the stand-ins'
   inputs changed since the type check, so it was not repeated. Without `-D warnings` only because
   crates/kernel/interface.rs has two `type_complexity` findings of clippy (lines 46 and 111), which deny it.
+  Run 3 (tree at fa91ff16): nothing under crates/kernel, runtime, executor or system changed since run 2 (committed
+  or not), so the kernel's 64 errors stand and no build was repeated. Rechecked on the Mac: no networking, runtime,
+  system or readiness interface file differs from main; no old name (`StandaloneRuntime`, `PortSetting`,
+  `Setting::Port(`, `InterfaceIndex(0)`, `wait_for_events`) is left in this track's folders; still no `Runtime` impl.
 - `Runtime` with `type Config` and `new`: nothing in the tree implements `Runtime` (single-kernel has no such impl),
   so there was nothing to fold.
 - UDP host (a62b3f64): `read_buffer_sizes` is socket2's `send_buffer_size` and `recv_buffer_size` (`SO_SNDBUF`,
