@@ -406,6 +406,7 @@ const MAIR_EL1: SystemRegister = system(3, 0, 10, 2, 0);
 const MPIDR_EL1: SystemRegister = system(3, 0, 0, 0, 5);
 const ID_AA64MMFR0_EL1: SystemRegister = system(3, 0, 0, 7, 0);
 const ID_AA64PFR0_EL1: SystemRegister = system(3, 0, 0, 4, 0);
+const ID_AA64PFR1_EL1: SystemRegister = system(3, 0, 0, 4, 1);
 const ESR_EL1: SystemRegister = system(3, 0, 5, 2, 0);
 const FAR_EL1: SystemRegister = system(3, 0, 6, 0, 0);
 const VBAR_EL1: SystemRegister = system(3, 0, 12, 0, 0);
@@ -454,6 +455,7 @@ fn place(register: Register) -> Place {
         Register::Affinity => Place::System(MPIDR_EL1),
         Register::MemoryModelFeatures => Place::System(ID_AA64MMFR0_EL1),
         Register::ProcessorFeatures => Place::System(ID_AA64PFR0_EL1),
+        Register::ProcessorFeatures1 => Place::System(ID_AA64PFR1_EL1),
         Register::Syndrome => Place::System(ESR_EL1),
         Register::FaultAddress => Place::System(FAR_EL1),
         Register::Vectors => Place::System(VBAR_EL1),

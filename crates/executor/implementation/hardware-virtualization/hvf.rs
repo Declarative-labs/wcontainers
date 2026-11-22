@@ -201,6 +201,7 @@ fn which(register: Register) -> Which {
         Register::Affinity => Which::System(SysReg::MPIDR_EL1),
         Register::MemoryModelFeatures => Which::System(SysReg::ID_AA64MMFR0_EL1),
         Register::ProcessorFeatures => Which::System(SysReg::ID_AA64PFR0_EL1),
+        Register::ProcessorFeatures1 => Which::System(SysReg::ID_AA64PFR1_EL1),
         Register::StackEl0 => Which::System(SysReg::SP_EL0),
         Register::ExceptionLink => Which::System(SysReg::ELR_EL1),
         Register::SavedState => Which::System(SysReg::SPSR_EL1),

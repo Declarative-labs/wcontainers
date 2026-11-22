@@ -79,6 +79,8 @@ pub enum Register {
     MemoryModelFeatures,
     /// ID_AA64PFR0_EL1.
     ProcessorFeatures,
+    /// ID_AA64PFR1_EL1.
+    ProcessorFeatures1,
     /// SP_EL0: the guest's level's stack pointer.
     StackEl0,
     /// ELR_EL1: where an exception taken to the inside came from, and where `eret` goes.

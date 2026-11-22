@@ -11,9 +11,13 @@ use std::ops::Range;
 use std::ptr::NonNull;
 use std::time::{Duration, Instant};
 
-use aarch64_cpu::registers::{CPACR_EL1, ESR_EL1, ID_AA64PFR0_EL1, MDSCR_EL1, SCTLR_EL1, SPSR_EL1};
+use aarch64_cpu::registers::{
+    CPACR_EL1, ESR_EL1, ESR_EL2, ID_AA64MMFR0_EL1, ID_AA64PFR0_EL1, MDSCR_EL1, SCTLR_EL1, SPSR_EL1,
+    TTBR0_EL1,
+};
 use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
+use wcontainers_arm64::INSTRUCTION_BYTES;
 use wcontainers_executor::Executor;
 use wcontainers_executor_hardware_virtualization_inside::boot::{
     BOOT_MAP_BYTES, BootRegisters, boot_registers, inside_attributes, write_boot_map,
@@ -51,6 +55,12 @@ const VECTOR_REGISTER_BYTES: usize = size_of::<u128>();
 /// [FnV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=FnV%2C%20bit%20%5B10%5D), set when an abort's FAR_EL1 is not valid.
 const FAULT_ADDRESS_NOT_VALID: u64 = 1 << 10;
 
+/// [SME](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64PFR1-EL1--AArch64-Processor-Feature-Register-1#:~:text=SME%2C%20bits%20%5B27%3A24%5D), not zero when the chip has SME.
+const SME_IMPLEMENTED: u64 = 0b1111 << 24;
+
+/// [SMEN](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CPACR-EL1--Architectural-Feature-Access-Control-Register#:~:text=SMEN%2C%20bits%20%5B25%3A24%5D) at 0b11: EL0 may use SME, as Linux lets a program once it has used it.
+const SME_TRAPS_NOTHING: u64 = 0b11 << 24;
+
 /// What a program at EL0 holds, in the order the handler loads and saves it.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -77,7 +87,7 @@ struct Registers {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Slot {
-    /// TTBR0_EL1 while the instruction runs.
+    /// TTBR0_EL1 while the instruction runs: the slot's top-level table and its ASID.
     translation_table: u64,
     /// The linear address of the next slot of the batch, zero after the last.
     next: u64,
@@ -136,17 +146,18 @@ extern "C" fn find_handler_code() -> HandlerCode {
         "b 8f",
         ".balign {vector_bytes}",
         ".endr",
-        // The entry: unlock the OS lock, which stops software step, then run the slot.
+        // The entry: unlock the OS lock, which stops software step, forget the translations and instructions of
+        // the frames the last batch used, then run the slot. Within a batch each slot has its own ASID and frames.
         "4:",
         "msr oslar_el1, xzr",
+        "tlbi vmalle1is",
+        "ic ialluis",
+        "dsb ish",
+        "isb",
         "3:",
         "mrs x0, tpidr_el1",
         "ldr x1, [x0, #{translation_table}]",
         "msr ttbr0_el1, x1",
-        "isb",
-        "tlbi vmalle1",
-        "ic ialluis",
-        "dsb ish",
         "isb",
         "add x1, x0, #{before}",
         "ldp x2, x3, [x1, #{stack_pointer}]",
@@ -340,6 +351,10 @@ pub struct SingleStepMachine {
     entry_state: u64,
     /// The next free page of the arena.
     free: u64,
+    /// How many ASIDs the chip has, and so how many slots a batch holds at most.
+    asids: u64,
+    /// The slots of the batch so far; the next one's ASID.
+    slots: u64,
     first_slot: Option<u64>,
     last_slot: Option<u64>,
     writable_runs: Vec<WritableRun>,
@@ -367,6 +382,8 @@ impl SingleStepMachine {
             entry: 0,
             entry_state: 0,
             free: ARENA.start,
+            asids: 0,
+            slots: 0,
             first_slot: None,
             last_slot: None,
             writable_runs: Vec::new(),
@@ -422,6 +439,7 @@ impl SingleStepMachine {
         for level in TOP_LEVEL + 1..=LEAF_LEVEL {
             self.fill_table(unmapped_table(level), to_unmapped_entry(level));
         }
+        let memory_model_features = self.cpu.get(Register::MemoryModelFeatures)?;
         let BootRegisters {
             mair,
             tcr,
@@ -429,13 +447,24 @@ impl SingleStepMachine {
             cpacr,
             ttbr1,
             pstate,
-        } = boot_registers(BOOT_MAP, self.cpu.get(Register::MemoryModelFeatures)?, true);
+        } = boot_registers(BOOT_MAP, memory_model_features, true);
         self.entry_state = pstate;
+        self.asids = match ID_AA64MMFR0_EL1::ASIDBits.read_as_enum(memory_model_features) {
+            Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_16) => 1 << u16::BITS,
+            Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_8) | None => 1 << u8::BITS,
+        };
         // CTR_EL0 is readable at EL0, as Linux has it.
         let sctlr = sctlr | SCTLR_EL1::UCT::DontTrap.value;
         let has_sve = ID_AA64PFR0_EL1::SVE.read(self.cpu.get(Register::ProcessorFeatures)?) != 0;
         let cpacr = if has_sve {
             cpacr | CPACR_EL1::ZEN::TrapNothing.value
+        } else {
+            cpacr
+        };
+        // Hypervisor.framework hides the M5's SME here, so its EL0 gets SME's trap (0x76000000 for RDVL).
+        let has_sme = self.cpu.get(Register::ProcessorFeatures1)? & SME_IMPLEMENTED != 0;
+        let cpacr = if has_sme {
+            cpacr | SME_TRAPS_NOTHING
         } else {
             cpacr
         };
@@ -456,14 +485,18 @@ impl SingleStepMachine {
 
     fn start_batch(&mut self) {
         self.free = ARENA.start;
+        self.slots = 0;
         self.first_slot = None;
         self.last_slot = None;
         self.writable_runs.clear();
         self.bytes_before.clear();
     }
 
-    /// Writes a state into a slot after the batch's others, or gives `None` when the arena has no room for it.
+    /// Writes a state into a slot after the batch's others, or gives `None` when the batch has no room for it.
     fn load(&mut self, processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Option<Loaded> {
+        if self.slots == self.asids {
+            return None;
+        }
         let pages = to_page_permissions(memory);
         let mapped: Vec<(u64, DataAccess, InstructionFetch)> = pages
             .iter()
@@ -512,7 +545,7 @@ impl SingleStepMachine {
             self.write_entry(leaf, to_page_entry(frame, data_access, instruction_fetch));
         }
         let record = Slot {
-            translation_table: top,
+            translation_table: top | TTBR0_EL1::ASID.val(self.slots).value,
             next: 0,
             ending: Ending::NotRun as u64,
             before: to_registers(processor),
@@ -524,6 +557,7 @@ impl SingleStepMachine {
             // SAFETY: as above, for the batch's previous slot.
             unsafe { (*self.memory.host(last).cast::<Slot>()).next = linear(slot) };
         }
+        self.slots += 1;
         self.first_slot.get_or_insert(slot);
         self.last_slot = Some(slot);
         Some(Loaded {
@@ -564,12 +598,26 @@ impl SingleStepMachine {
                 .unwrap_or_else(|error| panic!("the hypervisor refused {register:?}: {error:?}"));
         }
         let started = Instant::now();
-        let exit = self.cpu.run();
-        self.time_in_guest += started.elapsed();
-        match exit {
-            Ok(Exit::Doorbell) => {}
-            other => panic!("the guest stopped other than at the handler's doorbell: {other:?}"),
+        loop {
+            match self.cpu.run() {
+                Ok(Exit::Doorbell) => break,
+                // Hypervisor.framework traps the unlock of the OS lock and leaves it to us: the lock is already
+                // open, so the handler goes on after it.
+                Ok(Exit::Exception { syndrome, .. })
+                    if ESR_EL2::EC.read(syndrome) == ESR_EL2::EC::Value::TrappedMsrMrs as u64
+                        && self.cpu.get(Register::Pc).ok() == Some(self.entry) =>
+                {
+                    let after = self.entry + INSTRUCTION_BYTES as u64;
+                    self.cpu
+                        .set(Register::Pc, after)
+                        .unwrap_or_else(|error| panic!("the hypervisor refused Pc: {error:?}"));
+                }
+                other => {
+                    panic!("the guest stopped other than at the handler's doorbell: {other:?}")
+                }
+            }
         }
+        self.time_in_guest += started.elapsed();
     }
 
     /// Gives the processor after a slot's run, and each run of bytes it changed as a slice of guest memory.
@@ -711,7 +759,13 @@ fn to_page_entry(frame: u64, data_access: DataAccess, instruction_fetch: Instruc
         InstructionFetch::Allowed => El1Attributes::empty(),
     };
     let normal = inside_attributes(ATTRIBUTE_NORMAL).difference(El1Attributes::UXN);
-    let attributes = normal | El1Attributes::TABLE_OR_PAGE | El1Attributes::PXN | access | fetch;
+    // Not global, so that a slot's translations are tagged with its ASID.
+    let attributes = normal
+        | El1Attributes::TABLE_OR_PAGE
+        | El1Attributes::PXN
+        | El1Attributes::NON_GLOBAL
+        | access
+        | fetch;
     frame | attributes.bits() as u64
 }
 
