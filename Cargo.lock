@@ -4911,7 +4911,7 @@ name = "wcontainers-tcp-sockets-conformance"
 version = "0.1.0"
 dependencies = [
  "etherparse",
- "libc",
+ "linux-raw-sys",
  "nix",
  "rustix",
  "wcontainers-abi",
