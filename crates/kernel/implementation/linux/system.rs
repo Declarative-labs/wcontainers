@@ -724,4 +724,26 @@ mod tests {
         assert_eq!(task_id_after(TaskId(0)), TaskId(1));
         assert_eq!(task_id_after(task_id(PID_MAX - 1)), task_id(RESERVED_PIDS));
     }
+
+    #[test]
+    fn errors_are_named_or_passed_on_unnamed_and_read_back() {
+        use wcontainers_kernel::errno::Errno as Linux;
+        let value = u64::from(UnknownErrno::LARGEST);
+        let named = crate::Errno::EPERM.to_return();
+        let unnamed = crate::Errno(UnknownErrno::LARGEST.into()).to_return();
+        assert_eq!(response_of(value), Ok(value));
+        assert_eq!(
+            response_of(named),
+            Err(SystemCallError::WellKnown(Linux::EPERM))
+        );
+        assert_eq!(
+            response_of(unnamed),
+            Err(SystemCallError::Unknown(
+                UnknownErrno::new(UnknownErrno::LARGEST).expect("an unnamed error")
+            ))
+        );
+        for value in [value, named, unnamed] {
+            assert_eq!(return_of(response_of(value)), value);
+        }
+    }
 }
