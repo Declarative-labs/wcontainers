@@ -1313,17 +1313,64 @@ pub fn started_with_executor<State: Clone + 'static>(
         translator: (),
     };
     let host = Arc::new(host);
-    let kernel = wcontainers_kernel_linux::KernelWithExecutor::start(
-        prepared.kernel,
-        cpu,
-        &host,
-        start,
-        config,
-        state,
-    )
+    // SAFETY: the test host's waiting calls hold only what may move between host threads (see
+    // `waiting_calls_move_between_threads`).
+    let kernel = unsafe {
+        wcontainers_kernel_linux::KernelWithExecutor::start(
+            prepared.kernel,
+            cpu,
+            &host,
+            start,
+            config,
+            state,
+        )
+    }
     .expect("the kernel runs a process serially with exact replay");
     (kernel, host)
 }
+
+/// Fails to build unless every waiting call of the test host may move between host threads, as
+/// the kernel's start asks of a system.
+fn waiting_calls_move_between_threads(
+    host: &TestHost,
+    end: &crate::streams::End,
+    tcp: &tcp::TcpHandle,
+    udp: &udp::UdpHandle,
+    question: domain::base::Question<&domain::base::Name<[u8]>>,
+) {
+    use wcontainers_readiness::{Readiness, ReadyFor};
+    use wcontainers_system::{DomainNameResolver, FuseServer};
+    fn movable(_: &impl Send) {}
+    movable(&Readiness::<crate::streams::End>::wait_until_ready(
+        host,
+        end,
+        ReadyFor::READABLE,
+    ));
+    movable(&Readiness::<tcp::TcpHandle>::wait_until_ready(
+        host,
+        tcp,
+        ReadyFor::READABLE,
+    ));
+    movable(&Readiness::<udp::UdpHandle>::wait_until_ready(
+        host,
+        udp,
+        ReadyFor::READABLE,
+    ));
+    movable(&host.send_request(&[]));
+    movable(&host.receive_notice(None));
+    movable(&host.resolve_domain(question));
+}
+
+/// The test host's waiting calls, as [`waiting_calls_move_between_threads`] takes them.
+type WaitingCallsOf = fn(
+    &TestHost,
+    &crate::streams::End,
+    &tcp::TcpHandle,
+    &udp::UdpHandle,
+    domain::base::Question<&domain::base::Name<[u8]>>,
+);
+
+const _: WaitingCallsOf = waiting_calls_move_between_threads;
 
 /// The id of a container's first process, as the kernel numbers it inside the container.
 pub const FIRST_PROCESS: wcontainers_kernel::TaskId = wcontainers_kernel::TaskId(1);
@@ -1346,28 +1393,29 @@ pub fn program_waiting(
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
     let (mut started, host) = program_started(name, link_flags, out);
-    let (kernel, cpu) = started.parts();
-    loop {
-        match kernel.next() {
-            Next::Run {
-                thread,
-                resume,
-                slice_nanoseconds,
-            } => {
-                let exit = cpu
-                    .run(thread, resume, slice_nanoseconds)
-                    .expect("the stand-in runs the program");
-                kernel.exit(cpu, &host, exit);
+    started.with_parts(|kernel, cpu| {
+        loop {
+            match kernel.next() {
+                Next::Run {
+                    thread,
+                    resume,
+                    slice_nanoseconds,
+                } => {
+                    let exit = cpu
+                        .run(thread, resume, slice_nanoseconds)
+                        .expect("the stand-in runs the program");
+                    kernel.exit(cpu, &host, exit);
+                }
+                Next::Idle {
+                    until_nanoseconds: Some(0),
+                } => kernel.event(cpu, &host, Event::Timer),
+                Next::Idle {
+                    until_nanoseconds: None,
+                } => break,
+                other => panic!("the program waits for ever, not {other:?}"),
             }
-            Next::Idle {
-                until_nanoseconds: Some(0),
-            } => kernel.event(cpu, &host, Event::Timer),
-            Next::Idle {
-                until_nanoseconds: None,
-            } => break,
-            other => panic!("the program waits for ever, not {other:?}"),
         }
-    }
+    });
     started
 }
 

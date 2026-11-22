@@ -147,9 +147,7 @@ fn any_address(v4: bool) -> BindAddress {
     }
 }
 
-/// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
-/// without a route, which is counted.
-/// The error of a connect or listen; a socket given back is closed, since the kernel binds its
+/// The error of a connect or listen; a socket given back is released, since the kernel binds its
 /// sockets inside the container and asks the system for none of its own.
 fn local_end_error<S: crate::System>(
     cx: &Context<'_, S>,
@@ -167,6 +165,8 @@ fn local_end_error<S: crate::System>(
     }
 }
 
+/// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
+/// without a route, which is counted.
 fn refusal<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,

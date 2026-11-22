@@ -131,6 +131,12 @@ pub struct StandIn {
     digests: Option<MemoryDigests>,
 }
 
+// SAFETY: a stand-in owns everything it reaches: each memory's unicorn engine (whose shared
+// handle is cloned only inside its own hooks, which capture nothing, and which keeps no state of
+// the host thread between calls), the mappings its block pointers point into, and its records.
+// So all of it moves to another host thread together, and it is used by one at a time.
+unsafe impl Send for StandIn {}
+
 fn prot(permissions: Permissions) -> Prot {
     let mut prot = Prot::NONE.0;
     if permissions.contains(Permissions::READ) {

@@ -100,8 +100,53 @@ fn a_handle_takes_no_thread_of_another_process() {
         .expect("the first process's child");
     let mut parent = kernel.process(FIRST_PROCESS).expect("the first process");
     assert!(parent.suspend_threads(&[child]).next().is_none());
+    drop(parent);
     let taken: Vec<TaskId> = kernel.suspend_tasks(&[child]).map(|(id, _)| id).collect();
     assert_eq!(taken, [child], "the child's thread is still on the kernel");
+}
+
+/// Copies of a context made and let go of on several host threads at once leave the kernel whole:
+/// what a copy shares with the kernel is touched under the kernel's lock.
+#[test]
+fn copies_are_made_and_let_go_of_on_several_threads() {
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 20_000;
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let kernel = program_waiting("forked", &[], &out);
+    std::thread::scope(|scope| {
+        for _ in 0..THREADS {
+            scope.spawn(|| {
+                for _ in 0..ROUNDS {
+                    assert!(kernel.copy_process_context(FIRST_PROCESS).is_some());
+                }
+            });
+        }
+    });
+    let copy = kernel
+        .copy_process_context(FIRST_PROCESS)
+        .expect("the first process is still there");
+    assert!(
+        kernel
+            .resume_process(copy, serial::<KernelWithExecutor<StandIn, u64, TestHost>>())
+            .is_some()
+    );
+}
+
+/// A copy let go of while a process's handle holds the kernel's lock is dropped by the lock's next
+/// holder, and the kernel goes on.
+#[test]
+fn a_copy_let_go_of_under_a_handle_is_dropped_later() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let mut kernel = program_waiting("forked", &[], &out);
+    let mut process = kernel.process(FIRST_PROCESS).expect("the first process");
+    drop(process.copy_process_context());
+    let taken: Vec<TaskId> = process
+        .suspend_threads(&[FIRST_PROCESS])
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(taken, [FIRST_PROCESS]);
+    drop(process);
+    assert!(kernel.copy_process_context(FIRST_PROCESS).is_some());
 }
 
 /// The kernel the round trips start from: `hello`, not run yet.

@@ -106,6 +106,7 @@ fn bytes_after_a_read_shutdown_are_read() {
 }
 
 /// How long the resetting server waits after a reset before it tells of it.
+// standalone 300: a pause long enough for the reset to reach the guest, not a task id
 const TOLD_AFTER_RESET: Duration = Duration::from_millis(300);
 
 /// A server on this machine that sends a connection up to 1 MiB (as much as goes within 2 s), and

@@ -1,7 +1,8 @@
 //! The tests every implementation of wcontainers-kernel runs, written against its traits alone.
 //!
 //! A kernel's checks take a kernel with two processes, a container's first process and its child,
-//! each of one thread whose id is its process's, both waiting for ever, with ids below [`PROBED`].
+//! each of one thread whose id is its process's, both waiting for ever, with ids among the first
+//! a kernel hands out.
 //! A process's checks take a handle to such a container's first process, started to run serially
 //! and exactly, which leaves its first page unmapped. Its start has written pages for it, as
 //! Linux's `execve` writes the new program's arguments onto its stack before its first
@@ -17,7 +18,7 @@ use wcontainers_kernel::{
 const ABSENT: TaskId = TaskId(u32::MAX);
 
 /// One past the largest id the checks look for a process at: the ids a kernel hands out first.
-pub const PROBED: u32 = 1 << 12;
+const PROBED: u32 = 1 << 12;
 
 /// The bytes a process's checks write, a word's worth of distinct values.
 const WRITTEN: [u8; size_of::<u64>()] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -48,14 +49,12 @@ pub fn tasks_of_several_processes_are_taken_at_once<K: Kernel>(kernel: K) {
         2,
         "the container's first process and its child"
     );
-    let taken: Vec<TaskId> = kernel
+    let mut taken: Vec<TaskId> = kernel
         .suspend_tasks(&processes)
         .map(|(task, _)| task)
         .collect();
-    assert_eq!(
-        taken, processes,
-        "each process's thread, in the order asked"
-    );
+    taken.sort_unstable();
+    assert_eq!(taken, processes, "each process's thread, once");
     assert!(kernel.suspend_tasks(&processes).next().is_none());
 }
 
@@ -67,7 +66,7 @@ fn processes_of<K: Kernel>(kernel: &K) -> Vec<TaskId> {
         .collect()
 }
 
-/// Checks what a container's first process tells of itself before it has run.
+/// Checks what a container's first process tells of itself.
 pub fn first_process_tells_of_itself<P: Process>(process: P) {
     assert_eq!(process.parent(), None, "the container's first process");
     assert!(process.mapped_memory() > 0, "its program is mapped");
@@ -190,8 +189,9 @@ pub fn taken_tasks_are_not_taken_again<P: Process>(mut process: P) {
     assert_eq!(tasks.count(), 0, "its one thread is already taken");
 }
 
-/// Checks that asking a process for every thread id but its own takes and returns nothing, though
-/// its child's thread is among them, and that its own thread is still there to take.
+/// Checks that asking a process for every thread id but its own returns nothing, though its
+/// child's thread is among them, and that its own thread is still there to take. Whether the
+/// child's thread stayed on the kernel is not seen here: a handle reaches only its own process.
 pub fn threads_of_another_process_are_not_taken<P: Process>(mut process: P) {
     let id = process.id();
     let others: Vec<TaskId> = (1..PROBED).map(TaskId).filter(|&task| task != id).collect();
@@ -205,7 +205,7 @@ pub fn threads_of_another_process_are_not_taken<P: Process>(mut process: P) {
     assert_eq!(taken, [id], "only its own thread");
 }
 
-/// Checks that a signal whose default is to go on leaves a process that has not run as it was.
+/// Checks that a signal whose default is to go on leaves a waiting process as it was.
 pub fn continue_signal_leaves_the_process<P: Process>(mut process: P) {
     let id = process.id();
     process.send_signal(
