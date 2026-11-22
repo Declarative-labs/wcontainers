@@ -816,6 +816,44 @@ fn main() -> windows::core::Result<()> {
             viewport(1, 1);
             unsafe { context.Draw(1, 0) };
             print("B8G8R8X8_UNORM element", &target, 16);
+
+            // The same bytes read by the pixel shader as a typed buffer's element.
+            let typed = D3D11_BUFFER_DESC {
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                ..desc
+            };
+            let mut texels = None;
+            unsafe { device.CreateBuffer(&typed, Some(&data), Some(&mut texels))? };
+            let view_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_B8G8R8X8_UNORM,
+                ViewDimension: D3D11_SRV_DIMENSION_BUFFER,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Buffer: D3D11_BUFFER_SRV {
+                        Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: 0 },
+                        Anonymous2: D3D11_BUFFER_SRV_1 { NumElements: 1 },
+                    },
+                },
+            };
+            let mut view = None;
+            let r = unsafe {
+                device.CreateShaderResourceView(
+                    texels.as_ref().unwrap(),
+                    Some(&view_desc),
+                    Some(&mut view),
+                )
+            };
+            println!("typed buffer view {:#010x}", code(r));
+            let Some(view) = view else { return Ok(()) };
+            let reader = ps("Buffer<float4> b : register(t0);
+                float4 main(float4 p : SV_Position, float4 c : COLOR) : SV_Target {
+                    return b.Load(0);
+                }");
+            unsafe {
+                context.PSSetShader(reader.as_ref(), None);
+                context.PSSetShaderResources(0, Some(&[Some(view)]));
+                context.Draw(1, 0);
+            }
+            print("B8G8R8X8_UNORM typed buffer", &target, 16);
         }
         "xr" => {
             // R10G10B10_XR_BIAS_A2_UNORM textures: which shapes and bindings are taken, their

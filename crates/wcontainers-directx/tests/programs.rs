@@ -286,12 +286,14 @@ fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
 }
 
 /// A vertex shader reads a `B8G8R8X8_UNORM` element's three colours and its fourth component as 1
-/// (on the RTX 3080; Wine's test says AMD's is undefined). A known failure: the interface has no
-/// vertex format reading the X byte as 1, so ours reports no vertex buffers of the format and
-/// refuses the layout, as Direct3D refuses a format it does not report (Gap list).
+/// (on the RTX 3080; Wine's test says AMD's is undefined), and a pixel shader reads the same bytes
+/// as a typed buffer's element. A known failure until the infrastructure crate maps the element
+/// format and the shaders crate reads typed buffers of it (Gap list): ours reports no vertex or
+/// typed buffers of the format and refuses the layout, as Direct3D refuses a format it does not
+/// report.
 #[test]
 #[ignore]
-fn b8g8r8x8_elements_read_as_direct3d_reads_them() {
+fn b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them() {
     case("bgrx");
 }
 
@@ -1198,6 +1200,66 @@ fn a_swap_chain_presents_and_resizes_as_direct3d_does() {
         assert_eq!(w, g, "the first line that differs");
     }
     assert_eq!(want.lines().count(), got.lines().count());
+}
+
+/// Extended-range swap chains: made from 10_0, refused in the flip model, their buffers viewed
+/// through their group, as real Direct3D answers; and their codes shown as the functional
+/// specification decodes them, `(c - 384) / 510` clamped to what an SDR display shows, beside an
+/// `R10G10B10A2_UNORM` chain of the same codes shown as `c / 1023`, within one 8-bit step. Real
+/// Direct3D composes nothing on the hidden desktop the test runs on, so its colours are not read,
+/// and its presents there answer `DXGI_STATUS_OCCLUDED`, which ours never reports (Gap list). A
+/// known failure until the infrastructure crate makes swap chains of the format (Gap list).
+#[test]
+#[ignore]
+fn extended_range_swap_chains_show_as_direct3d_shows_them() {
+    /// The extended-range format's codes of 0 and of the step from 0 to 1, the largest 10-bit
+    /// code, and the largest 8-bit one.
+    const XR_ZERO: f64 = 384.0;
+    const XR_ONE: f64 = 510.0;
+    const TEN_BITS: f64 = 1023.0;
+    const EIGHT_BITS: f64 = 255.0;
+    /// Eight columns of each of the two chains.
+    const COLUMNS: usize = 16;
+    let (code, want) = run("own_extended_range", &place("extended-range-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_extended_range", &place("extended-range-ours", true));
+    assert_eq!(code, 0, "{got}");
+    let answers = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| {
+                ["column ", "printed ", "Present "]
+                    .iter()
+                    .all(|p| !l.starts_with(p))
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(answers(&want), answers(&got));
+    let mut extended = false;
+    let mut columns = 0;
+    for l in got.lines() {
+        if let Some(format) = l.strip_prefix("swap chain of ") {
+            extended = format.starts_with("89 ");
+        }
+        let Some(rest) = l.strip_prefix("column of codes ") else {
+            continue;
+        };
+        let n: Vec<f64> = rest.split(' ').filter_map(|w| w.parse().ok()).collect();
+        let (codes, shown) = n.split_at(3);
+        for (&c, &s) in codes.iter().zip(shown) {
+            let value = if extended {
+                ((c - XR_ZERO) / XR_ONE).clamp(0.0, 1.0)
+            } else {
+                c / TEN_BITS
+            };
+            assert!(
+                (value * EIGHT_BITS - s).abs() <= 1.5,
+                "{l} (extended {extended})"
+            );
+        }
+        columns += 1;
+    }
+    assert_eq!(columns, COLUMNS, "{got}");
 }
 
 #[test]

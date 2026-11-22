@@ -466,17 +466,20 @@ impl<B: Backend> Device<B> {
         }
         if dxgi == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
             // 2D textures held in its bits, mapped and copied with the R10G10B10A2 formats,
-            // never viewed (Microsoft's 11_0 table gives it no shader or target use); displaying
-            // it is the swap chain's.
+            // never viewed (Microsoft's 11_0 table gives it no shader or target use); shown by
+            // the swap chains that take it, whose buffers are drawn through views of its group.
             let held = caps
                 .formats
                 .get(Format::Rgb10a2Unorm)
                 .contains(FormatUse::COPY_OUT);
-            let support1 = if held {
+            let mut support1 = if held {
                 TEXTURE2D | CPU_LOCKABLE | CAST_WITHIN_BIT_LAYOUT
             } else {
                 0
             };
+            if held && format::displayed(dxgi, self.level) {
+                support1 |= DISPLAY | BACK_BUFFER_CAST;
+            }
             return FormatSupport {
                 support1,
                 support2: shareable(support1),
