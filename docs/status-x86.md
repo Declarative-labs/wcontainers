@@ -145,7 +145,10 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   program and an x87 state program compared with Linux at every look-ahead in wasmtime and Chrome, and verified
   X7's bar on main from a clean build (see "X7, run 4"). Run 5 (2026-11-21, X7 dispatched again on branch
   agents) kept the X6f check's open finding listed for the runtime track and verified X7's bar again from a
-  clean build (see "X7, run 5").
+  clean build (see "X7, run 5"). Run 6 (2026-11-22, X7 dispatched again with the third X6f check's three
+  findings) finished that check's runs, fixed a decoder bug they found (`wait` with a lock prefix ran where the
+  CPU raises illegal instruction), took `lea` of a displacement alone as a written-out address, and verified
+  X7's bar again (see "X7, run 6").
 - X8 (AVX, AVX2, FMA, F16C, BMI2, XSAVE): run 1 (2026-11-21) fixed the X7 check's four findings, made what a
   program is told a per-process list of the kernel interface that the translator, `cpuid` and `xgetbv` take
   (every told family switched by it), and built BMI2, `xgetbv` and `xsetbv`; AVX, AVX2, FMA, F16C and `xsave`
@@ -158,6 +161,65 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
   it found (see "X8, runs 4 and 5"). Run 6 (2026-11-21, the workflow's first dispatch of X8 after X7's check)
   fixed the X7 check's three findings and ran X8's bar from the tree as it is (see "X8, run 6").
+
+## X7, run 6 (2026-11-22)
+
+X7 was dispatched again with the three findings of the third X6f check. All of X7 is in the tree (runs 1 to 5).
+Every build and test ran on the rented machines and the i7-8750H; the Mac only edited and committed. Logs and
+scripts in scratch `x7r6/`; the laptop's in `~/wcontainers-x86/logs/x7r6-l1.log` (copied to scratch).
+- [minor] The check was cut off before most of its runs ended. Its jobs went on running after it reported, and I
+  read their verdicts (at 4836bd81, its tree): on the rented x86-64 machine (`ck6f3`) the bar's fmt, clippy,
+  unit, executor, `main`, programs (28 + 2 + 6), browser, valid (80,000, seed 73391), lookaheads (500, seed
+  73392), changes (400, seed 73393) and layer 2 (20,000 all on the CPU, seed 73394, 0 failing) all pass;
+  layer 3 Csmith (1,200, seed 73395): 1,041 compared, 159 did not end in time on Linux, 0 failing; the literal
+  check: marks 0, no change that could add a line (`checker-bar.log`). On the i7-8750H layer 1 every form (2,008 forms, 100 a form, seed 73396): 0 failing, 2 known
+  failures with their reasons (`fyl2x`, `fyl2xp1`); the hand cases, the Chrome sample and the refusal test pass.
+  The no-form test at seed 73397 FAILED, a real bug: `3e 3e 40 49 49 42 65 f0 f3 48 67 36 9b` (`wait` with a
+  lock prefix among others) is illegal on the CPU, and ours ran it as `wait`. The decoder's rule that cuts
+  iced's `wait` plus x87 instruction back to `wait` alone turned iced's "invalid" into `wait` too. Fixed
+  (832bfa42): a lock prefix before `wait` makes it illegal; `tests/facts.rs` `wait_alone_and_locked` holds the
+  case and its neighbours, and the no-form test at seed 73397 now passes on the i7-8750H. The checker's own
+  programs: `ck3_inside.c` did not compile (`mov %1, %%eax` with a 64-bit operand); with `%k1` and two
+  functions reached only through `lea` of a displacement alone (below) added, all three programs (fixed and
+  position independent, -O0 and -O2) match Linux at every look-ahead in wasmtime and Chrome, `main` has a
+  piece in every one given the link address, and every function but `ck3_jumped` has a piece with it. The
+  checker's benchmark pairs before (56a34d24) and after (a1960001) the link address, rented x86-64 machine (load 3
+  to 6 at the start, one checker job beside it), 3 alternating rounds at full, `taskset -c 0-9` (`pairs.log`):
+  the blob bytes of all eight workloads are the same, every output equal; wasmtime and Chrome times agree within
+  noise for six (fib 5.57 / 4.07 s each), interpret in wasmtime is 6.35 before and 6.40 after (0.8%, three rounds
+  each), and sieve in Chrome is 1.745 before and 1.593 after (three rounds each, faster after).
+- [minor] The shipped executor passes no link address: the runtime track's crate; the entry under "For the
+  orchestrator" stays, with its recipe and the cache test with `Some` it asks for.
+- [minor] `built_address`: `lea r, [disp32]` with no base and no index into a 32- or 64-bit register is now
+  `BuiltAddress::Absolute` of the value the register gets (a 32-bit one keeps the low half); a 16-bit one is
+  not an address. `tests/facts.rs` `built_addresses` covers it with `mov`, `push` and `lea [rip + d]`; in the
+  checker's `ck3_inside`, `ck3_lea_only` and `ck3_lea_only32`, reached only that way, have pieces given the link
+  address and none without it. A function reached only by a direct `jmp` with a hand-pushed return address
+  stays a block of the jumping function: the run is exact, it only has no piece of its own. Plan 3.4 says both.
+- Rented x86-64 machine (96 processors, kernel 7.0.0-1018-aws, 5-level paging; load 8 to 59 from other jobs),
+  the working tree that was committed as 832bfa42, with other agents' uncommitted edits (`verify.log`, 49 min;
+  a first job on the tree before the decoder fix was stopped after its unit tests, `verify-first.log`): fmt of the
+  five crates, clippy `--no-deps` with warnings denied for them and the wasmtime executor, the browser crate's
+  wasm32 clippy for both guests: pass. Unit tests of the translator, guest-cpu, x86 (both new tests among them)
+  and arm64 crates, the executor's unit and cache tests, the test crate's library: pass. `--test programs --test
+  checks --test smoke -- x86_64`: 28 + 2 + 6 passed (`long_double`, `mmx_and_x87_state` among them). Browser,
+  every x86 test (`long_double` and `mmx_and_x87_state` every way): 4 passed. Valid, 80,000 cases, seed 12601:
+  6 passed. Lookaheads, 500, seed 12602: pass. Changes, 400 cases, 6 program seeds, seed 12603: 3 passed. Layer 2,
+  10,000 all on the CPU, seed 12604: 0 failing (3,426 faulted, 1,133 left to an address, 23,910 stacks lost,
+  23,841 pieces forgotten). Layer 3 Csmith, 1,000, seed 12605: 896 compared, 104 did not end in time on Linux, 0
+  failing. The literal check (over a git index made in the copy): marks 0, no change that could add a line, nothing in
+  this track's crates among the lines it says may go. Baseline lines: x86 117, guest-cpu 26,
+  the test crate 1,738, the translator 8, unchanged. The reference tests there: 5 of 6 pass; the refusal test
+  fails from 5-level paging as known (its verdict is the laptop's).
+- The i7-8750H (load 4 from other jobs, 4 at once): no-form at seed 73397 (64 cases) and at seed 12607 (1,000
+  cases), the hand cases, the Chrome sample and the refusal test: pass. The bar's layer 1, every x87 and MMX form
+  and every other form whose name holds "mm" (1,375 forms), 1,000 cases a form, seed 12606: 0 failing (4,046 s);
+  27 known failures, each with its reason: F2xm1 1, Fcos 2, Fptan 8, Fsin 4, Fsincos 2, Fyl2x 7, Fyl2xp1 3 (4 of
+  them C1 only: Fptan 1, Fsin 2, Fsincos 1). (`the_x86_64_reference_runs_programs`
+  fails there only because zig is not on the job's path outside Nix; it passes on the rented machine.)
+- Rented ARM64 machine (load 16 to 40): ARM64's programs, output, browser, layer 2, valid and checks tests: 28
+  passed (one on its second run), as at run 5. In the first job `written_code_and_null_calls_match_linux_arm64` failed once with "the browser
+  runner failed" (Chrome, under load 26) and passed alone; the cargo run stopped before `valid`, run on its own.
 
 ## X6f, run 4 (2026-11-22)
 
