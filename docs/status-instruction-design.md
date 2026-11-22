@@ -4,6 +4,48 @@ Scratch: pyro-parked/wcontainers-scratch/instruction-slice/design. Builds and te
 machine (`arm-run --name instruction-slice`); on the Mac only editing, rustfmt on single files and
 `cargo metadata --offline` for the lock.
 
+## FOR THE OTHER ENGINEERS: the old input domain names are gone (2026-11-22, commit 66a69f24)
+
+- The draft trait `InstructionInputDomain` inside the generator crate is deleted; the slice uses the
+  committed interface crates/instruction-input-domain (`InstructionInputDomain<Architecture>`).
+- The ARM64 domain is the new crate crates/instruction-input-domain/implementation/arm64 (package
+  wcontainers-instruction-input-domain-arm64), value `Arm64InputDomain`. `Arm64Operand` is now
+  `OperandType`, `Arm64OperandValue` is `OperandValue` (its register variant is `RegisterNumber`);
+  `AccessPlacement` and `DataPage` moved with them.
+- `CriticalValueProduct` (crate wcontainers-distinguishing-state-generator-input-domain) is now generic over
+  the domain it holds. Where you wrote `&CriticalValueProduct`, write
+  `&CriticalValueProduct::new(Arm64InputDomain)` with
+  `use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;` and add to your Cargo.toml
+  `wcontainers-instruction-input-domain-arm64 = { path = "<up to crates>/instruction-input-domain/implementation/arm64" }`.
+  Its states are the same as before, in the same counts.
+- Not changed by me (their owners' files): crates/processor-architecture/implementation/arm64/conformance.rs,
+  the recording crate, the measured set, and the executors' conformance and tests; each needs the line above.
+
+## The input domain (2026-11-22)
+
+- crates/instruction-input-domain/implementation/arm64: the operand types, their critical values (the
+  same as step 3 below) and `build_state`. `list_operand_types` gives the operands of the assembly syntax in
+  its order, then what the instruction reads besides them (register values, flags, where the access lies,
+  the data pages' permissions). tests.rs: the counts per instruction, and every critical state decoded back
+  (word at the program counter, every field, register values, flags, access placement, page permissions)
+  gives the instruction and the operands asked for; the operands read back build the very same state.
+- The suite (crates/instruction-input-domain/conformance), three functions on `(domain, architecture)`:
+  every operand type an instruction lists has a critical value; one critical state per combination; the same
+  operands build the same state, and the state of the first critical values is a critical state.
+- crates/distinguishing-state-generator/implementation/input-domain: `CriticalValueProduct<Domain>`, whose
+  `generate_states` is the domain's `generate_critical_states`. Its suite (every two behaviors told apart)
+  passes for the 21 behaviors.
+- For the owner: a decoding check cannot be part of the generic suite: no interface reads the instruction
+  and its operands back out of a state. It needs something like
+  `fn decode(&self, state: &ExecutionState<'_, Architecture>) -> Option<(Instruction, Vec<OperandValue>)>`.
+  Until then the ARM64 crate checks it in its own tests.
+- For the owner: an instruction's operand values are not always independent in the state. Example: ADD with
+  Rn = Rm = X0 and the values 1 and all ones: X0 can hold only one of them (the last wins), and a value given
+  to the zero register (number 31) is held nowhere. Such states repeat others; ADD's 5184 states hold fewer
+  distinct ones.
+- For the owner: one `OperandValue` type for every operand type still lets `build_state` be handed a value of
+  the wrong kind (`Register(RD)` with `Integer(5)`); it panics, documented under `# Panics`.
+
 ## Step 1 (2026-11-22): the workspace compiles again
 
 The new `Executor` trait needs `type Architecture` and `execute_single_instruction_in_place`. Two types
