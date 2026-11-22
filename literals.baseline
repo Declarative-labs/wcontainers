@@ -8528,7 +8528,6 @@ code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"p"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"usampler2D"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"usampler2DArray"
 code	crates/wcontainers-gpu-webgl/src/format.rs	int	ReadAs::texel_read	4
-code	crates/wcontainers-gpu-webgl/src/format.rs	int	clear_value	3
 code	crates/wcontainers-gpu-webgl/src/format.rs	int	clear_value	4
 code	crates/wcontainers-gpu-webgl/src/format.rs	int	clear_value	4
 code	crates/wcontainers-gpu-webgl/src/format.rs	int	read_as	4
@@ -8583,10 +8582,6 @@ code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
 code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
 code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
 code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
-code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
-code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
-code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
-code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	4
 code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	8
 code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	8
 code	crates/wcontainers-gpu-webgl/src/host.rs	int	decode	8
@@ -8616,8 +8611,6 @@ code	crates/wcontainers-gpu-webgl/src/lib.rs	int	<Gl as Backend>::create_vertex_
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	<Gl as Backend>::finish_read	8
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	<Gl as Backend>::read_queries	8
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	<Gl as Backend>::wait_fence	1_000_000_000
-code	crates/wcontainers-gpu-webgl/src/lib.rs	int	<Gl as Backend>::write_texture	4
-code	crates/wcontainers-gpu-webgl/src/lib.rs	int	<Gl as Backend>::write_texture	4
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl	5
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::apply_vertices	32
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::copy_within	4
@@ -8664,10 +8657,7 @@ code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::stencil_by_draw	0xff
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::stencil_by_draw	0xff
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::stencil_by_draw	0xff
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::stencil_by_draw	8
-code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::upload_blocks	4
-code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::upload_blocks	4
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	gl_rect	4
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_pass	"a pass drawing into formats with and without alpha together without \\n                     OES_draw_buffers_indexed"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_query	"begin_query outside a pass"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_query	"begin_query without an occlusion set or with a query running"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices into a buffer without CAPTURE, at an offset not a multiple of 4, \\n                 or into a range smaller than the vertices the draw makes"
@@ -8938,7 +8928,6 @@ code	crates/wcontainers-gpu-webgl/src/state.rs	int	GlValues::initial	4
 code	crates/wcontainers-gpu-webgl/src/state.rs	int	GlValues::initial	4
 code	crates/wcontainers-gpu-webgl/src/state.rs	int	attribute	4
 code	crates/wcontainers-gpu-webgl/src/state.rs	int	attribute	4
-code	crates/wcontainers-gpu-webgl/src/state.rs	int	blend	3
 code	crates/wcontainers-gpu-webgl/src/state.rs	int	conversion	3
 code	crates/wcontainers-gpu-webgl/src/state.rs	int	depth_stencil	3
 code	crates/wcontainers-gpu-webgl/src/state.rs	int	open_masks	3
