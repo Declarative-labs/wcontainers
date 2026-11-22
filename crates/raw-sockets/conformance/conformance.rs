@@ -1618,6 +1618,7 @@ pub fn icmp_errors_arrive_whole<S: RawSockets>(sockets: S) {
         });
         assert_eq!(given.len(), on_the_wire.len(), "{to}");
         wcontainers_icmp_sockets_conformance::headers_are_as_on_the_wire(given, &on_the_wire);
+        wcontainers_icmp_sockets_conformance::has_the_error_traffic_class(given);
         let header = given.len() - outer.payload.len();
         let inner_header =
             outer.payload.len() - etherparse::Icmpv4Header::MIN_LEN - inner.payload.len();
@@ -2224,6 +2225,85 @@ pub fn waiting_for_data_until_an_icmp_error<S: RawSockets>(
     }
 }
 
+/// Checks that a wait for writing on a new socket finishes at its first poll, writable and not readable.
+pub fn a_wait_for_writing_finishes_at_once<S: RawSockets>(sockets: S) {
+    enter_network_namespace();
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let socket = opened(&sockets, version, EXPERIMENT);
+        for interest in [ReadyFor::WRITABLE, ReadyFor::READABLE | ReadyFor::WRITABLE] {
+            let wakes = Arc::new(Wakes::default());
+            let facts = finished(poll_with(
+                pin!(sockets.wait_until_ready(&socket, interest)),
+                &wakes,
+            ));
+            assert_eq!(facts, ReadyFor::WRITABLE, "{version:?} {interest:?}");
+        }
+    }
+}
+
+/// Fills the smallest send buffer of a socket with payloads to the address that its link's fair queue holds.
+fn fill_send_buffer<S: RawSockets>(sockets: &S, socket: &S::Socket, to: IpAddr) {
+    set(
+        sockets,
+        socket,
+        RawSocketSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(usize::MIN))),
+    );
+    let long = vec![u8::MAX; HELD_PAYLOAD];
+    let full = (0..u8::MAX).any(|_| {
+        match sockets.send_to(
+            socket,
+            payload_to(to, EXPERIMENT, &long),
+            icmp_suite::held_fields(),
+        ) {
+            Ok(()) => false,
+            // Linux answers that it has no buffer for a raw send that its full send buffer leaves no room for.
+            Err(SendError::Host(HostError::WouldBlock | HostError::Errno(libc::ENOBUFS))) => true,
+            Err(error) => panic!("{to}: {error:?}"),
+        }
+    });
+    assert!(full, "{to}: the send buffer fills");
+}
+
+/// Returns a socket waited on for writing, its send buffer full of held payloads, which removing the queue frees.
+pub fn waiting_to_write<S: RawSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    enter_network_namespace();
+    tc(FAIR_QUEUE);
+    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    fill_send_buffer(&sockets, &socket, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::WRITABLE,
+        make_ready: |_: &S, _: &S::Socket| tc(icmp_suite::NO_FAIR_QUEUE),
+    }
+}
+
+/// Returns a socket waited on for writing, its send buffer full, which an ICMP error about its first payload fails.
+pub fn waiting_to_write_until_an_icmp_error<S: RawSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    enter_network_namespace();
+    ip(NETWORK);
+    tc(icmp_suite::FAIR_QUEUE_ON_DUMMY);
+    let to = IpAddr::V4(ON_LINK);
+    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let capture = Capture::on(DUMMY);
+    send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+    let sent = capture
+        .next(|packet| seen(packet).protocol == EXPERIMENT && seen(packet).destination == to);
+    fill_send_buffer(&sockets, &socket, to);
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::WRITABLE,
+        make_ready: move |_: &S, _: &S::Socket| {
+            send_icmp_error_about(&sent);
+        },
+    }
+}
+
 /// Checks that an ICMP error that a too long send read off the host while looking for its own error still ends a wait at once.
 pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
     enter_network_namespace();
@@ -2524,10 +2604,21 @@ macro_rules! tests {
             $crate::other_settings_set_twice_answer_as_once($value);
         }
 
+        #[test]
+        fn a_wait_for_writing_finishes_at_once() {
+            $crate::a_wait_for_writing_finishes_at_once($value);
+        }
+
         $crate::wcontainers_readiness_conformance::tests!(
             readiness,
             ready: $crate::waiting_for_a_packet($value),
             failing: $crate::waiting_for_data_until_an_icmp_error($value)
+        );
+
+        $crate::wcontainers_readiness_conformance::tests!(
+            readiness_for_writing,
+            ready: $crate::waiting_to_write($value),
+            failing: $crate::waiting_to_write_until_an_icmp_error($value)
         );
 
         mod configurable {
