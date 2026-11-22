@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(async_fn_in_trait)]
 
 pub mod authentication;
 pub mod multipath;
@@ -10,13 +9,13 @@ pub mod state;
 use core::net::SocketAddr;
 
 use wcontainers_abi::HostError;
-use wcontainers_abi::readiness::Readiness;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, LocalBinding, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_readiness::Readiness;
 
 use crate::authentication::TcpAuthenticationCounters;
 use crate::repair::TcpTimestampClock;
@@ -27,7 +26,9 @@ use crate::state::{TcpErrorQueueEntry, TcpListenerQuery, TcpQuery, TcpReading};
 pub trait TcpSockets: TcpConnections + TcpListeners {}
 
 pub trait TcpConnections:
-    for<'a> Configurable<Self::Connection, TcpSetting<'a>> + NegativeRouteAdvice<Self::Connection>
+    for<'a> Configurable<Self::Connection, TcpSetting<'a>>
+    + NegativeRouteAdvice<Self::Connection>
+    + Readiness<Self::Connection>
 {
     type Connection: Ord;
 
@@ -68,12 +69,6 @@ pub trait TcpConnections:
         connection: &Self::Connection,
         directions: TcpShutdown,
     ) -> Result<(), HostError>;
-    /// Waits until the connection has one of the events asked for, and returns the events it has.
-    async fn wait_for_events(
-        &self,
-        connection: &Self::Connection,
-        interest: Readiness,
-    ) -> Result<Readiness, HostError>;
     fn close(&self, connection: Self::Connection, manner: TcpClose);
     /// Sends now what of the connection's queued data its windows, its cork and [Nagle's algorithm](https://man7.org/linux/man-pages/man7/tcp.7.html) allow, the cork and Nagle's algorithm not counting when the push ignores them and staying ignored for that data until more is queued.
     fn push_queued_data(
@@ -106,7 +101,9 @@ pub trait TcpConnections:
 }
 
 pub trait TcpListeners:
-    TcpConnections + for<'a> Configurable<Self::Listener, TcpListenerSetting<'a>>
+    TcpConnections
+    + for<'a> Configurable<Self::Listener, TcpListenerSetting<'a>>
+    + Readiness<Self::Listener>
 {
     type Listener: Ord;
 
@@ -139,12 +136,6 @@ pub trait TcpListeners:
         listener: &Self::Listener,
         reading: TcpTimestampClock,
     ) -> Result<(), HostError>;
-    /// Waits until the listener has one of the events asked for, and returns the events it has.
-    async fn wait_for_listener_events(
-        &self,
-        listener: &Self::Listener,
-        interest: Readiness,
-    ) -> Result<Readiness, HostError>;
     fn stop_listening(&self, listener: Self::Listener);
 }
 

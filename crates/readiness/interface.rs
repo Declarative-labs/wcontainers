@@ -1,15 +1,21 @@
-#![allow(
-    reviewable::interface_item,
-    reviewable::number_constant_without_link,
-    reason = "A flag set written with bitflags, whose macro needs each flag's bit written out; the bits come from no standard"
-)]
+#![no_std]
+#![allow(async_fn_in_trait)]
 
 use bitflags::bitflags;
+use wcontainers_abi::HostError;
+
+pub trait Readiness<Handle> {
+    /// Waits until the handle is ready for one of the things asked for, and returns everything it is ready for.
+    async fn wait_until_ready(
+        &self,
+        handle: &Handle,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError>;
+}
 
 bitflags! {
-    /// What a stream or socket is ready for.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct Readiness: u8 {
+    pub struct ReadyFor: u8 {
         const READABLE = 1 << 0;
         const WRITABLE = 1 << 1;
         const ERROR = 1 << 2;

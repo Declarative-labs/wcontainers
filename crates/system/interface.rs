@@ -6,7 +6,6 @@
 use core::ops::{ControlFlow, Deref, Range};
 
 use domain::base::{Message, Name, Question};
-use wcontainers_abi::readiness::Readiness;
 use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
@@ -17,6 +16,7 @@ use wcontainers_kernel::{
 };
 use wcontainers_random_source::RandomSource;
 use wcontainers_raw_sockets::RawSockets;
+use wcontainers_readiness::Readiness;
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_tcp_sockets::TcpSockets;
 use wcontainers_udp_sockets::UdpSockets;
@@ -166,17 +166,11 @@ pub trait TaskIdAllocator {
 }
 
 /// A transport of byte streams to and from endpoints.
-pub trait StreamTransport {
+pub trait StreamTransport: Readiness<Self::Endpoint> {
     type Endpoint: Ord;
 
     fn send_stream(&self, peer: &Self::Endpoint, bytes: &[u8]) -> Result<usize, HostError>;
     fn receive_stream(&self, peer: &Self::Endpoint, into: &mut [u8]) -> Result<usize, HostError>;
-    /// Waits until the stream has one of the events asked for, and returns the events it has.
-    async fn wait_for_stream_events(
-        &self,
-        peer: &Self::Endpoint,
-        interest: Readiness,
-    ) -> Result<Readiness, HostError>;
     fn close_stream(&self, peer: &Self::Endpoint);
 }
 

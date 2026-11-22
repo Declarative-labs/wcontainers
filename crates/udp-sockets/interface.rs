@@ -1,11 +1,9 @@
 #![no_std]
-#![allow(async_fn_in_trait)]
 
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
 
 use wcontainers_abi::HostError;
-use wcontainers_abi::readiness::Readiness;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, PortSetting,
@@ -13,10 +11,13 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_readiness::Readiness;
 
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.
 pub trait UdpSockets:
-    for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>> + NegativeRouteAdvice<Self::Socket>
+    for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>>
+    + NegativeRouteAdvice<Self::Socket>
+    + Readiness<Self::Socket>
 {
     type Socket: Ord;
 
@@ -52,12 +53,6 @@ pub trait UdpSockets:
         &self,
         socket: &Self::Socket,
     ) -> Result<Option<ProcessorIndex>, HostError>;
-    /// Waits until the socket has one of the events asked for, and returns the events it has.
-    async fn wait_for_events(
-        &self,
-        socket: &Self::Socket,
-        interest: Readiness,
-    ) -> Result<Readiness, HostError>;
     fn close(&self, socket: Self::Socket);
 }
 
