@@ -26,6 +26,7 @@ Plan: docs/plan-host-udp-sockets.md. Branch: agents, worktree /Users/thomaseaton
   or not), so the kernel's 64 errors stand and no build was repeated. Rechecked on the Mac: no networking, runtime,
   system or readiness interface file differs from main; no old name (`StandaloneRuntime`, `PortSetting`,
   `Setting::Port(`, `InterfaceIndex(0)`, `wait_for_events`) is left in this track's folders; still no `Runtime` impl.
+  Run 4 (tree at f23c2563): still nothing changed under those folders, committed or not; no build repeated.
 - `Runtime` with `type Config` and `new`: nothing in the tree implements `Runtime` (single-kernel has no such impl),
   so there was nothing to fold.
 - UDP host (a62b3f64): `read_buffer_sizes` is socket2's `send_buffer_size` and `recv_buffer_size` (`SO_SNDBUF`,
