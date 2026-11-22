@@ -28,14 +28,14 @@ fn ranges() -> Vec<(SlotKind, u32, Range<u32>)> {
 fn elements(views: &[TypedView]) -> Vec<String> {
     views
         .iter()
-        .map(|v| (v, v.slot))
+        .flat_map(|v| v.slots.clone().map(move |s| (v, s)))
         .map(|(v, s)| format!("{} {} {s} {:?}", v.storage as u8, v.buffer as u8, v.kind))
         .collect()
 }
 
 /// Each slot of `arrays`.
-fn slots(arrays: &[u32]) -> Vec<u32> {
-    arrays.to_vec()
+fn slots(arrays: &[Range<u32>]) -> Vec<u32> {
+    arrays.iter().flat_map(|r| r.clone()).collect()
 }
 
 fn containers() -> Vec<PathBuf> {

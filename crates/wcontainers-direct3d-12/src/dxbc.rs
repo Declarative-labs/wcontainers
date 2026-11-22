@@ -18,17 +18,17 @@ pub enum Kind {
     Sint,
 }
 
-/// A typed view a shader declares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A typed view a shader declares, or an array of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedView {
     /// An unordered access view (a storage slot), else a shader resource view (a texture slot).
     pub storage: bool,
     /// A typed buffer, else a texture.
     pub buffer: bool,
-    /// Its place in its kind's range (`ReflectedBinding::slot`): the register under Direct3D 11's
-    /// numbering (DXBC), its place among the program's views of its class in (space, register)
-    /// order under Direct3D 12's (DXIL).
-    pub slot: u32,
+    /// Its elements' places in their kind's range (`ReflectedBinding::slot`), consecutive, never
+    /// none: the registers under Direct3D 11's numbering (DXBC), their places among the program's
+    /// views of their class in (space, register) order under Direct3D 12's (DXIL).
+    pub slots: Range<u32>,
     pub kind: Kind,
 }
 
@@ -81,16 +81,17 @@ fn views(code: &[u8]) -> Option<(Vec<Declared>, bool)> {
     Some((views, spaces))
 }
 
-/// The elements of each of `views` (an array without a length takes the rest of the range of
-/// `ranges` holding its first register, one element where none does) with their slots: the
-/// register under Direct3D 11's numbering, the place among its kind's elements in (space,
-/// register) order under Direct3D 12's (`spaces`), as the converter numbers them.
+/// The slots of the elements of each of `views` (an array without a length takes the rest of the
+/// range of `ranges` holding its first register, one element where none does; an array ends at
+/// the last register), consecutive: the registers under Direct3D 11's numbering, the places among
+/// their kind's elements in (space, register) order under Direct3D 12's (`spaces`), as the
+/// converter numbers them. A range is kept as its first slot and its end, however long.
 fn element_slots(
     views: &[Declared],
     spaces: bool,
     ranges: &[(SlotKind, u32, Range<u32>)],
-) -> Vec<Vec<u32>> {
-    let places = |v: &Declared| {
+) -> Vec<Range<u32>> {
+    let elements = |v: &Declared| {
         let (space, register) = v.place;
         let kind = if v.storage {
             SlotKind::Storage
@@ -103,32 +104,25 @@ fn element_slots(
                 .find(|(k, s, r)| *k == kind && *s == space && r.contains(&register))
                 .map_or(1, |(.., r)| r.end - register)
         });
-        (register..register.saturating_add(length)).map(move |r| (space, r))
+        (space, register, register.saturating_add(length) - register)
     };
     let all = |storage: bool| {
-        let places: Vec<_> = views
-            .iter()
-            .filter(|v| v.storage == storage)
-            .flat_map(places)
-            .collect();
-        crate::dxil::sorted_places(&places)
+        let class = views.iter().filter(|v| v.storage == storage);
+        crate::dxil::Places::of(class.map(elements))
     };
     let (uavs, srvs) = (all(true), all(false));
     views
         .iter()
-        .map(|v| {
-            places(v)
-                .map(|place| match spaces {
-                    true => crate::dxil::slot(if v.storage { &uavs } else { &srvs }, place),
-                    false => place.1,
-                })
-                .collect()
+        .map(|v| match (spaces, elements(v)) {
+            (true, e) => (if v.storage { &uavs } else { &srvs }).slots(e),
+            (false, (_, register, count)) => register..register + count,
         })
         .collect()
 }
 
 /// The typed unordered access views and typed buffers `code` declares (shader resource views of
-/// textures left out), one per element of an array, whose unbounded arrays `ranges` sizes;
+/// textures left out), with a slot per element of an array, whose unbounded arrays `ranges` sizes
+/// (an array of no elements left out);
 /// `None` where `code` holds no DXBC program chunk or its tokens are malformed.
 pub fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Option<Vec<TypedView>> {
     let (views, spaces) = views(code)?;
@@ -141,17 +135,15 @@ pub fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Optio
             DCL_RESOURCE => buffer,
             _ => false,
         };
-        if !typed {
+        if !typed || slots.is_empty() {
             continue;
         }
-        for slot in slots {
-            out.push(TypedView {
-                storage: v.storage,
-                buffer,
-                slot,
-                kind: v.kind?,
-            });
-        }
+        out.push(TypedView {
+            storage: v.storage,
+            buffer,
+            slots,
+            kind: v.kind?,
+        });
     }
     Some(out)
 }
@@ -182,23 +174,25 @@ pub fn declares_unbounded_array(code: &[u8]) -> bool {
     found
 }
 
-/// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares, one
-/// per element of an array, whose unbounded arrays `ranges` sizes; `None` where it holds no DXBC
-/// program chunk or its tokens are malformed.
+/// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares, a
+/// range per declaration with a slot per element of an array (none empty), whose unbounded arrays
+/// `ranges` sizes; `None` where it holds no DXBC program chunk or its tokens are malformed.
 pub fn multisampled_arrays(
     code: &[u8],
     ranges: &[(SlotKind, u32, Range<u32>)],
-) -> Option<Vec<u32>> {
+) -> Option<Vec<Range<u32>>> {
     let (views, spaces) = views(code)?;
     let slots = element_slots(&views, spaces, ranges);
     Some(
         views
             .iter()
             .zip(slots)
-            .filter(|(v, _)| {
-                v.opcode == DCL_RESOURCE && v.dimension == dxbc_dimension::TEXTURE_2DMS_ARRAY
+            .filter(|(v, slots)| {
+                v.opcode == DCL_RESOURCE
+                    && v.dimension == dxbc_dimension::TEXTURE_2DMS_ARRAY
+                    && !slots.is_empty()
             })
-            .flat_map(|(_, slots)| slots)
+            .map(|(_, slots)| slots)
             .collect(),
     )
 }
@@ -225,7 +219,10 @@ fn view(instruction: Instruction) -> Option<((u32, u32), Option<u32>, bool, Opti
         ONE_INDEX => (instruction.word(at)?, Some(1), false),
         RANGE_INDICES => {
             let (lower, upper) = (instruction.word(at + 1)?, instruction.word(at + 2)?);
-            let length = (upper != UNBOUNDED_UPPER).then(|| upper.wrapping_sub(lower) + 1);
+            // Wrapping as a release build did before: an upper bound below the lower is no
+            // element.
+            let length =
+                (upper != UNBOUNDED_UPPER).then(|| upper.wrapping_sub(lower).wrapping_add(1));
             (lower, length, true)
         }
         _ => return None,
@@ -293,9 +290,14 @@ mod tests {
         TypedView {
             storage,
             buffer,
-            slot,
+            slots: one(slot),
             kind,
         }
+    }
+
+    /// The slots of one element at `slot`.
+    fn one(slot: u32) -> Range<u32> {
+        slot..slot + 1
     }
 
     #[test]
@@ -356,10 +358,13 @@ mod tests {
         let ms = DCL_RESOURCE | (4 << 11) | (4 << 24);
         let srv = 0x0010_1000 | (7 << 12);
         let tokens = [0x50, 0, ms_array, srv, 2, 0x5555, ms, srv, 3, 0x5555];
-        assert_eq!(multisampled_arrays(&container(&tokens), &[]), Some(vec![2]));
+        assert_eq!(
+            multisampled_arrays(&container(&tokens), &[]),
+            Some(vec![one(2)])
+        );
         assert_eq!(typed_views(&container(&tokens), &[]), Some(vec![]));
         let code = include_bytes!("../../wcontainers-shaders/tests/own/ps_msarray.dxbc");
-        assert_eq!(multisampled_arrays(code, &[]), Some(vec![0]));
+        assert_eq!(multisampled_arrays(code, &[]), Some(vec![one(0)]));
     }
 
     #[test]
@@ -386,5 +391,58 @@ mod tests {
                 view(false, true, 0, Kind::Sint),
             ])
         );
+    }
+
+    /// Shader model 5.1 tokens declaring a typed 2D texture of uint at `U0[lower:upper]` (no upper
+    /// bound where `upper` is `UNBOUNDED_UPPER`), a typed uint buffer at `U1[5:5]` and a
+    /// multisampled array texture at `T0[lower:upper]`, all in space 0.
+    fn ranges(lower: u32, upper: u32) -> Vec<u8> {
+        let operand = 0x0030_1000 | (30 << 12);
+        let srv = 0x0030_1000 | (7 << 12);
+        let texture = DCL_UAV_TYPED | (3 << 11) | (7 << 24);
+        let buffer = DCL_UAV_TYPED | (1 << 11) | (7 << 24);
+        let ms_array = DCL_RESOURCE | (9 << 11) | (7 << 24);
+        container(&[
+            0x51, 0, texture, operand, 0, lower, upper, 0x4444, 0, buffer, operand, 1, 5, 5,
+            0x4444, 0, ms_array, srv, 0, lower, upper, 0x5555, 0,
+        ])
+    }
+
+    /// The elements of a range of every register but the last, and of a range sized by the root
+    /// signature's range of every register but the last, are two numbers each: read at once, in
+    /// a few bytes.
+    #[test]
+    fn a_range_of_every_register_is_kept_as_two_numbers() {
+        let uint = Kind::Uint;
+        let every = 0..u32::MAX;
+        let all = TypedView {
+            slots: every.clone(),
+            ..view(true, false, 0, uint)
+        };
+        let expected = Some(vec![all, view(true, true, 5, uint)]);
+        // U0[0:4294967294]: 2^32 - 1 elements, ending at the last register.
+        let bounded = ranges(0, u32::MAX - 1);
+        assert_eq!(typed_views(&bounded, &[]), expected);
+        assert_eq!(
+            multisampled_arrays(&bounded, &[]),
+            Some(vec![every.clone()])
+        );
+        // U0[0:...] with no stated length, in root signature ranges of 2^32 - 1 registers.
+        let unbounded = ranges(0, UNBOUNDED_UPPER);
+        assert!(declares_unbounded_array(&unbounded));
+        let root = [
+            (SlotKind::Storage, 0, every.clone()),
+            (SlotKind::Texture, 0, every.clone()),
+        ];
+        assert_eq!(typed_views(&unbounded, &root), expected);
+        assert_eq!(multisampled_arrays(&unbounded, &root), Some(vec![every]));
+        // Outside any root signature range it is one element.
+        assert_eq!(multisampled_arrays(&unbounded, &[]), Some(vec![one(0)]));
+        // U0[1:0]: 2^32 elements counted modulo 2^32, none, as a release build counted them
+        // before; the views beside it keep their places.
+        let wrapped = ranges(1, 0);
+        let buffer = view(true, true, 0, uint);
+        assert_eq!(typed_views(&wrapped, &[]), Some(vec![buffer]));
+        assert_eq!(multisampled_arrays(&wrapped, &[]), Some(vec![]));
     }
 }

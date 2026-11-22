@@ -3,33 +3,37 @@
 //! DXBC), from the views of the module's resource list, which the shaders crate reads.
 
 use crate::dxbc::{Kind, TypedView};
+use std::ops::Range;
 use wcontainers_gpu::ScalarKind;
 use wcontainers_shaders::container::{DxilShape, DxilView, DxilViews, RANGE_WITHOUT_SIZE};
 
-/// The (space, register) places of each of a list's views' elements, and every place of the list
-/// sorted for the slots; `None` where a range runs past the last register.
-#[allow(clippy::type_complexity)]
-fn places(list: &[DxilView]) -> Option<(Vec<Vec<(u32, u32)>>, Vec<(u32, u32)>)> {
-    let mut each = Vec::with_capacity(list.len());
-    let mut places = Vec::with_capacity(list.len());
-    for v in list {
-        // An unbounded range is one place: the converter refuses such arrays.
-        let count = match v.count {
-            RANGE_WITHOUT_SIZE => 1,
-            count => count,
-        };
-        let elements: Vec<(u32, u32)> = (0..count)
-            .map(|i| Some((v.space, v.register.checked_add(i)?)))
-            .collect::<Option<_>>()?;
-        places.extend_from_slice(&elements);
-        each.push(elements);
-    }
-    Some((each, sorted_places(&places)))
+/// A view's elements: its space, first register and element count.
+pub(crate) type Elements = (u32, u32, u32);
+
+/// The elements of each of a list's views, and the list's places for the slots; `None` where a
+/// range runs past the last register.
+fn places(list: &[DxilView]) -> Option<(Vec<Elements>, Places)> {
+    let each = list
+        .iter()
+        .map(|v| {
+            // An unbounded range is one place: the converter refuses such arrays.
+            let count = match v.count {
+                RANGE_WITHOUT_SIZE => 1,
+                count => count,
+            };
+            if let Some(last) = count.checked_sub(1) {
+                v.register.checked_add(last)?;
+            }
+            Some((v.space, v.register, count))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let all = Places::of(each.iter().copied());
+    Some((each, all))
 }
 
 /// The typed views of one list: shader resource views (`storage` false, typed buffers only) or
-/// unordered access views (textures and typed buffers), one per element of an array, as the
-/// converter declares a view per element.
+/// unordered access views (textures and typed buffers), with a slot per element of an array, as
+/// the converter declares a view per element.
 fn typed(list: &[DxilView], storage: bool, out: &mut Vec<TypedView>) -> Option<()> {
     let (each, all) = places(list)?;
     for (v, elements) in list.iter().zip(each) {
@@ -45,36 +49,84 @@ fn typed(list: &[DxilView], storage: bool, out: &mut Vec<TypedView>) -> Option<(
             ScalarKind::Uint => Kind::Uint,
             ScalarKind::Sint => Kind::Sint,
         };
-        out.extend(elements.into_iter().map(|place| TypedView {
-            storage,
-            buffer: v.shape == DxilShape::TypedBuffer,
-            slot: slot(&all, place),
-            kind,
-        }));
+        let slots = all.slots(elements);
+        if !slots.is_empty() {
+            out.push(TypedView {
+                storage,
+                buffer: v.shape == DxilShape::TypedBuffer,
+                slots,
+                kind,
+            });
+        }
     }
     Some(())
 }
 
-/// A class's (space, register) places, sorted, each once.
-pub(crate) fn sorted_places(places: &[(u32, u32)]) -> Vec<(u32, u32)> {
-    let mut all = places.to_vec();
-    all.sort_unstable();
-    all.dedup();
-    all
+/// A class's (space, register) places under Direct3D 12's numbering, which numbers its views in
+/// (space, register) order, each place once: the runs of consecutive places its views take, each
+/// with the count of places before it. Two numbers per declared range however long it is, as a
+/// driver keeps a range.
+pub(crate) struct Places {
+    /// (space, first register, end register, places before), sorted, not overlapping or touching.
+    runs: Vec<(u32, u64, u64, u64)>,
 }
 
-/// The slot of the view at `place` under Direct3D 12's numbering: its place among its class's
-/// views in (space, register) order, as the converter numbers them.
-pub(crate) fn slot(all: &[(u32, u32)], place: (u32, u32)) -> u32 {
-    all.partition_point(|&p| p < place) as u32
+impl Places {
+    /// The places of views' `elements`.
+    pub(crate) fn of(elements: impl IntoIterator<Item = Elements>) -> Places {
+        let mut sorted: Vec<(u32, u64, u64)> = elements
+            .into_iter()
+            .filter(|e| e.2 != 0)
+            .map(|(space, register, count)| {
+                let start = u64::from(register);
+                (space, start, start + u64::from(count))
+            })
+            .collect();
+        sorted.sort_unstable();
+        let mut runs: Vec<(u32, u64, u64, u64)> = Vec::with_capacity(sorted.len());
+        for (space, start, end) in sorted {
+            match runs.last_mut() {
+                Some(last) if last.0 == space && start <= last.2 => last.2 = last.2.max(end),
+                last => {
+                    let before = last.map_or(0, |l| l.3 + (l.2 - l.1));
+                    runs.push((space, start, end, before));
+                }
+            }
+        }
+        Places { runs }
+    }
+
+    /// The slot of the view at (`space`, `register`): the count of the class's places before it,
+    /// as the converter numbers them.
+    pub(crate) fn slot(&self, space: u32, register: u32) -> u32 {
+        let register = u64::from(register);
+        let at = self
+            .runs
+            .partition_point(|r| (r.0, r.1) <= (space, register));
+        let Some(&(s, start, end, before)) = at.checked_sub(1).and_then(|i| self.runs.get(i))
+        else {
+            return 0;
+        };
+        let within = match s == space {
+            true => register.min(end) - start,
+            false => end - start,
+        };
+        (before + within) as u32
+    }
+
+    /// The slots of a view's elements, consecutive: its places are all the class's.
+    pub(crate) fn slots(&self, (space, register, count): Elements) -> Range<u32> {
+        let first = self.slot(space, register);
+        first..first.saturating_add(count)
+    }
 }
 
 /// What `declared` gives for a container.
-pub type Declared = (Option<Vec<TypedView>>, Option<Vec<u32>>);
+pub type Declared = (Option<Vec<TypedView>>, Option<Vec<Range<u32>>>);
 
 /// The typed unordered access views and typed buffers `code` declares (shader resource views of
 /// textures left out), and the texture slots of its multisampled array textures
-/// (`Texture2DMSArray`), from its module's views (the process's cache keeps them); each `None`
+/// (`Texture2DMSArray`, a range of slots each), from its module's views (the process's cache keeps them); each `None`
 /// where `code` holds no DXIL module or the lists it is read from are malformed.
 pub fn declared(code: &[u8]) -> Declared {
     of(crate::cache::dxil_views(code))
@@ -95,7 +147,8 @@ fn of(lists: Option<DxilViews>) -> Declared {
         let (each, all) = places(list)?;
         let arrays = list.iter().zip(each);
         let arrays = arrays.filter(|(v, _)| v.shape == DxilShape::MultisampledArray);
-        Some(arrays.flat_map(|(_, e)| e).map(|p| slot(&all, p)).collect())
+        let slots = arrays.map(|(_, e)| all.slots(e)).filter(|s| !s.is_empty());
+        Some(slots.collect())
     });
     (views, multisampled)
 }
@@ -108,9 +161,14 @@ mod tests {
         TypedView {
             storage,
             buffer,
-            slot,
+            slots: one(slot),
             kind,
         }
+    }
+
+    /// The slots of one element at `slot`.
+    fn one(slot: u32) -> Range<u32> {
+        slot..slot + 1
     }
 
     #[test]
@@ -120,7 +178,7 @@ mod tests {
         // structured buffer at u2 (left out).
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_texels.dxil");
         let mut views = declared(code).0.unwrap();
-        views.sort_by_key(|v| (v.storage, v.slot));
+        views.sort_by_key(|v| (v.storage, v.slots.start));
         assert_eq!(
             views,
             [
@@ -140,7 +198,7 @@ mod tests {
         // RWTexture2DArray<uint4> u2, RWTexture2D<int2> u3.
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_images.dxil");
         let mut views = declared(code).0.unwrap();
-        views.sort_by_key(|v| v.slot);
+        views.sort_by_key(|v| v.slots.start);
         assert_eq!(
             views,
             [
@@ -153,20 +211,22 @@ mod tests {
     }
 
     #[test]
-    fn arrays_of_storage_textures_are_a_view_per_element() {
+    fn arrays_of_storage_textures_are_a_slot_per_element() {
         // arrays.hlsl's cs_image_array: RWTexture2D<uint> images[4] at u0.
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_image_array.dxil");
-        let mut views = declared(code).0.unwrap();
-        views.sort_by_key(|v| v.slot);
-        let elements: Vec<_> = (0..4).map(|s| view(true, false, s, Kind::Uint)).collect();
-        assert_eq!(views, elements);
+        let views = declared(code).0.unwrap();
+        let elements = TypedView {
+            slots: 0..4,
+            ..view(true, false, 0, Kind::Uint)
+        };
+        assert_eq!(views, [elements]);
     }
 
     #[test]
     fn multisampled_arrays_are_read_from_the_resource_list() {
         // msarray.hlsl's ps_msarray: Texture2DMSArray<float4> t0.
         let code = include_bytes!("../../wcontainers-shaders/tests/own/ps_msarray.dxil");
-        assert_eq!(declared(code).1, Some(vec![0]));
+        assert_eq!(declared(code).1, Some(vec![one(0)]));
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_texels.dxil");
         assert_eq!(declared(code).1, Some(vec![]));
     }
@@ -174,9 +234,19 @@ mod tests {
     #[test]
     fn slots_follow_space_then_register() {
         // u5 and u0 in space 1, u7 in space 0, u5 again in space 1 (a view and its counter).
-        let all = sorted_places(&[(1, 5), (1, 0), (0, 7), (1, 5)]);
-        let slots: Vec<u32> = [(0, 7), (1, 0), (1, 5)].map(|p| slot(&all, p)).to_vec();
+        let all = Places::of([(1, 5, 1), (1, 0, 1), (0, 7, 1), (1, 5, 1)]);
+        let slots: Vec<u32> = [(0, 7), (1, 0), (1, 5)]
+            .map(|p| all.slot(p.0, p.1))
+            .to_vec();
         assert_eq!(slots, [0, 1, 2]);
+        // Ranges overlapping and touching in space 0 (u2 to u9), one in space 1 (u0 to u3): a slot
+        // per place, each place once.
+        let all = Places::of([(0, 4, 6), (0, 2, 3), (1, 0, 4), (0, 0, 0)]);
+        assert_eq!(all.slots((0, 2, 3)), 0..3);
+        assert_eq!(all.slots((0, 4, 6)), 2..8);
+        assert_eq!(all.slots((1, 0, 4)), 8..12);
+        assert_eq!(all.slot(0, 100), 8);
+        assert_eq!(all.slot(2, 0), 12);
     }
 
     #[test]

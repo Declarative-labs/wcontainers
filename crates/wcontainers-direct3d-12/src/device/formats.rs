@@ -65,10 +65,13 @@ pub(super) struct Formats<B: Backend> {
     variants: Vec<Variant<B>>,
 }
 
-/// The typed views a DXBC or DXIL shader declares, one per element of an array, and the texture
-/// slots of its multisampled arrays, its unbounded arrays sized by `ranges`; none where its
-/// declarations cannot be read. A DXIL module is read once for both.
-fn declared(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> (Vec<TypedView>, Vec<u32>) {
+/// The typed views a DXBC or DXIL shader declares, with a slot per element of an array, and the
+/// texture slots of its multisampled arrays, its unbounded arrays sized by `ranges`; none where
+/// its declarations cannot be read. A DXIL module is read once for both.
+fn declared(
+    code: &[u8],
+    ranges: &[(SlotKind, u32, Range<u32>)],
+) -> (Vec<TypedView>, Vec<Range<u32>>) {
     let views = crate::dxbc::typed_views(code, ranges);
     let arrays = crate::dxbc::multisampled_arrays(code, ranges);
     let (dxil_views, dxil_arrays) = match views.is_none() || arrays.is_none() {
@@ -84,7 +87,9 @@ fn declared(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> (Vec<TypedVi
 /// The key fields a shader's typed views are first converted with: their formats by slot,
 /// `route` where it declares typed buffers, and its multisampled arrays' layer counts (default for
 /// shaders declaring none); with the slots of its typed unordered access views of textures, one bit
-/// each (`VariantKey::texels_through_buffer` where the converter refuses their atomics).
+/// each (`VariantKey::texels_through_buffer` where the converter refuses their atomics). Slots
+/// past their kind's range (`SlotKind::slots`) are left out: the converter refuses a view there
+/// (`BindingsBeyondLimit`), so no program is made with them.
 pub(super) fn typed_key(
     code: &[u8],
     route: TexelBufferRoute,
@@ -103,10 +108,11 @@ pub(super) fn typed_key(
             Kind::Uint => Format::R32Uint,
             Kind::Sint => Format::R32Sint,
         };
-        match v.storage {
-            true => key.storage_formats.push((v.slot, format)),
-            false => key.texel_formats.push((v.slot, format)),
-        }
+        let (formats, kind) = match v.storage {
+            true => (&mut key.storage_formats, SlotKind::Storage),
+            false => (&mut key.texel_formats, SlotKind::Texture),
+        };
+        formats.extend(within(&v.slots, kind.slots()).map(|s| (s, format)));
         if v.buffer {
             key.texel_buffers = route;
         }
@@ -114,13 +120,24 @@ pub(super) fn typed_key(
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
     // Converted reading one layer of each; the bound views' layer counts come at the draw.
-    key.texture_layers = arrays.into_iter().map(|s| (s, 1)).collect();
+    let textures = SlotKind::Texture.slots();
+    key.texture_layers = arrays
+        .iter()
+        .flat_map(|a| within(a, textures))
+        .map(|s| (s, 1))
+        .collect();
     key.texture_layers.sort_unstable();
     let texture_slots = views
         .iter()
-        .filter(|v| v.storage && !v.buffer && v.slot < u64::BITS)
-        .fold(0u64, |m, v| m | (1 << v.slot));
+        .filter(|v| v.storage && !v.buffer)
+        .flat_map(|v| within(&v.slots, u64::BITS))
+        .fold(0u64, |m, s| m | (1 << s));
     (key, texture_slots)
+}
+
+/// The slots of `slots` below `end`.
+fn within(slots: &Range<u32>, end: u32) -> Range<u32> {
+    slots.start.min(end)..slots.end.min(end)
 }
 
 /// The formats of `key` by slot, sorted.
@@ -584,5 +601,29 @@ mod tests {
         let code = include_bytes!("../../../wcontainers-shaders/tests/own/ps_msarray.dxil");
         let (key, _) = typed_key(code, route, &empty_root(), bind::PIXEL);
         assert_eq!(key.texture_layers, [(0, 1)]);
+    }
+
+    /// A DXBC stage declaring a typed storage texture at `U0[0:4294967294]`: its key is made at
+    /// once, with the slots the converter can bind.
+    #[test]
+    fn a_stage_s_range_of_every_register_keys_the_slots_the_converter_binds() {
+        let operand = 0x0030_1000 | (30 << 12);
+        let texture =
+            wcontainers_shaders::container::dxbc_op::DCL_UAV_TYPED | (3 << 11) | (7 << 24);
+        let tokens = [0x51, 0, texture, operand, 0, 0, u32::MAX - 1, 0x4444, 0];
+        // A container holding one program chunk of the tokens.
+        let mut code = b"DXBC".to_vec();
+        code.resize(28, 0);
+        code.extend(1u32.to_le_bytes());
+        code.extend(36u32.to_le_bytes());
+        code.extend(b"SHEX");
+        code.extend(((tokens.len() * 4) as u32).to_le_bytes());
+        code.extend(tokens.iter().flat_map(|t| t.to_le_bytes()));
+        let route = TexelBufferRoute::Storage;
+        let (key, through) = typed_key(&code, route, &empty_root(), bind::ALL);
+        let storage: Vec<_> = (0..SlotKind::Storage.slots())
+            .map(|s| (s, Format::R32Uint))
+            .collect();
+        assert_eq!((key.storage_formats, through), (storage, u64::MAX));
     }
 }
