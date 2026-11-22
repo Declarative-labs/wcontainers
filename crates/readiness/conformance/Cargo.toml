@@ -9,3 +9,6 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-readiness = { path = ".." }
+
+[dev-dependencies]
+wcontainers-abi.workspace = true
