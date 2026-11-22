@@ -105,6 +105,9 @@ fn bytes_after_a_read_shutdown_are_read() {
     assert!(text.contains("echoed after shutdown: 2 bc"), "{text}");
 }
 
+/// How long the resetting server waits after a reset before it tells of it.
+const TOLD_AFTER_RESET: Duration = Duration::from_millis(300);
+
 /// A server on this machine that sends a connection up to 1 MiB (as much as goes within 2 s), and
 /// once the next one comes, resets the first and tells the second "reset", for each pair in turn.
 /// Returns its port.
@@ -145,7 +148,7 @@ fn resetting_server() -> u16 {
                 );
             }
             drop(data);
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(TOLD_AFTER_RESET);
             let _ = signal.write_all(b"reset");
             let _ = signal.read_to_end(&mut Vec::new());
         }

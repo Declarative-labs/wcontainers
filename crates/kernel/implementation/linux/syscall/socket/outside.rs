@@ -725,7 +725,7 @@ pub(super) fn ready<S: crate::System>(
     if let Some(link) = kernel.sockets.inet.outside.connections.get_mut(&id) {
         link.drained = false;
     }
-    pull(kernel, cx, &socket, id);
+    pull_kept(kernel, cx, &socket, id);
     // A stream that failed with bytes its queue had no room for: Linux, whose window those bytes
     // never entered, has its socket reset now (`tcp_reset`), its queue kept.
     let taken = kernel
@@ -751,7 +751,7 @@ pub(super) fn pull_and_wait<S: crate::System>(
     socket: &SocketRef,
     id: u32,
 ) {
-    pull(kernel, cx, socket, id);
+    pull_kept(kernel, cx, socket, id);
     watch(kernel, cx, id);
 }
 
@@ -791,20 +791,20 @@ fn payload_of(packet: &[u8]) -> Option<Range<usize>> {
     Some(start..start + payload.len())
 }
 
-/// What [`pull_and_wait`] takes now, without waiting.
-fn pull<S: crate::System>(
+/// What [`pull_and_wait`] takes now, without waiting, received into the kept buffer.
+fn pull_kept<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     socket: &SocketRef,
     id: u32,
 ) {
     let mut received = core::mem::take(&mut kernel.sockets.inet.outside.received);
-    pull_into(kernel, cx, socket, id, &mut received);
+    pull(kernel, cx, socket, id, &mut received);
     kernel.sockets.inet.outside.received = received;
 }
 
-/// [`pull`], receiving into `buffer`.
-fn pull_into<S: crate::System>(
+/// [`pull_kept`], receiving into `buffer`.
+fn pull<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     socket: &SocketRef,

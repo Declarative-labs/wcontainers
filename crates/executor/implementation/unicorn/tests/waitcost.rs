@@ -49,7 +49,7 @@ static COUNTING: Counting = Counting;
 const DEFAULT_COUNT: u64 = 700;
 const DEFAULT_ROUNDS: usize = 5;
 /// For showing whole runs in microseconds.
-const NANOSECONDS_PER_MICROSECOND: u64 = 1_000;
+const NANOSECONDS_PER_MICROSECOND: u64 = std::time::Duration::from_micros(1).as_nanos() as u64;
 
 fn knob<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
