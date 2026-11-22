@@ -4,6 +4,7 @@
 //! iproute2's `ip`, and asks the value made in that namespace about them.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::num::NonZeroU32;
 use std::fs;
 use std::process::Command;
 
@@ -18,11 +19,11 @@ use wcontainers_icmp_sockets_conformance::{
     temporary_address,
 };
 use wcontainers_internet_protocol::{
-    BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, Ipv4RouteSelectors,
-    Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, MobilityHeaderType,
-    NeighbourConfirmation, PacketMark, Port, Route, RouteKind, RouteScope, RouteSelectors,
-    SourceAddressCheck, SourcePreferences, TemporaryAddressPreference, TransportPorts, UpperLayer,
-    UpperLayerSelector,
+    BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, InterfaceSelector,
+    Ipv4RouteSelectors, Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference,
+    MobilityHeaderType, NeighbourConfirmation, PacketMark, Port, Route, RouteKind, RouteScope,
+    RouteSelectors, SourceAddressCheck, SourcePreferences, TemporaryAddressPreference,
+    TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
@@ -135,8 +136,7 @@ fn index(name: &str) -> InterfaceIndex {
     let name = std::ffi::CString::new(name).expect("a link's name");
     // SAFETY: the name is a string that ends in a zero byte, which the call only reads.
     let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-    assert_ne!(index, u32::MIN, "{name:?}");
-    InterfaceIndex(index)
+    InterfaceIndex(NonZeroU32::new(index).unwrap_or_else(|| panic!("no link {name:?}")))
 }
 
 /// Builds the two links, their addresses and routes in a network namespace of the calling thread's own.
@@ -716,32 +716,39 @@ pub fn source_selects_the_route<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// Checks that a rule on the outgoing interface sends lookups bound to it to the other table.
+/// Checks that a rule on the outgoing interface sends lookups bound to it or asking for it to the other table.
 pub fn interface_selects_the_route<R: RouteResolver>(resolver: R) {
     let network = network();
     const RULE: &str = "rule add oif db lookup 100";
     ip(IPV4, RULE);
     ip(IPV6, RULE);
     let options = Ipv4Options::new();
-    let route = Ipv4RouteSelectors {
-        interface: Some(network.b),
-        ..v4(&options, FAR)
-    };
-    let route = resolve4(&resolver, route).expect("resolves");
-    assert_eq!(
-        (route.interface, route.source),
-        (network.b, IpAddr::V4(B_ADDRESS))
-    );
-    assert_eq!(route.device_mtu, MaximumTransmissionUnit(B_MTU));
-    let route = Ipv6RouteSelectors {
-        interface: Some(network.b),
-        ..v6(FAR_V6)
-    };
-    let route = resolve6(&resolver, route).expect("resolves");
-    assert_eq!(
-        (route.interface, route.source),
-        (network.b, IpAddr::V6(B_ADDRESS_V6))
-    );
+    for selector in [
+        InterfaceSelector::Bound(network.b),
+        InterfaceSelector::Requested(network.b),
+    ] {
+        let route = Ipv4RouteSelectors {
+            interface: Some(selector),
+            ..v4(&options, FAR)
+        };
+        let route = resolve4(&resolver, route).expect("resolves");
+        assert_eq!(
+            (route.interface, route.source),
+            (network.b, IpAddr::V4(B_ADDRESS)),
+            "{selector:?}"
+        );
+        assert_eq!(route.device_mtu, MaximumTransmissionUnit(B_MTU));
+        let route = Ipv6RouteSelectors {
+            interface: Some(selector),
+            ..v6(FAR_V6)
+        };
+        let route = resolve6(&resolver, route).expect("resolves");
+        assert_eq!(
+            (route.interface, route.source),
+            (network.b, IpAddr::V6(B_ADDRESS_V6)),
+            "{selector:?}"
+        );
+    }
 }
 
 /// Checks that a rule on protocol and port sends only that protocol's lookups to that port to the other table.
@@ -1029,7 +1036,7 @@ pub fn multicast_route_is_multicast<R: RouteResolver>(resolver: R) {
         (RouteKind::Multicast, network.a)
     );
     let group = Ipv6RouteSelectors {
-        interface: Some(network.a),
+        interface: Some(InterfaceSelector::Requested(network.a)),
         ..v6(GROUP_V6)
     };
     let route = resolve6(&resolver, group).expect("resolves");
@@ -1648,13 +1655,15 @@ address add fd03::1/64 dev dx nodad";
     }
 }
 
-/// Returns what Linux gives a datagram socket that names the interface for its unicast sends, from the source if any, when it connects.
+/// Returns what Linux gives a datagram socket held to the interface as the selector says, from the source if any, when it connects.
 ///
-/// That is the source and path MTU it is told, or the error of the connect.
-fn told_naming_interface(
+/// That is the source and path MTU it is told, or the error of the connect. A requested interface is named for the
+/// socket's unicast sends (`IP_UNICAST_IF`, `IPV6_UNICAST_IF`), as a send names it per packet; a bound one binds the
+/// socket to the device (`SO_BINDTOIFINDEX`).
+fn told_by_interface(
     destination: IpAddr,
     source: Option<IpAddr>,
-    interface: InterfaceIndex,
+    selector: InterfaceSelector,
 ) -> Result<(IpAddr, MaximumTransmissionUnit), HostError> {
     let any = match destination {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -1664,11 +1673,23 @@ fn told_naming_interface(
         std::net::UdpSocket::bind((source.unwrap_or(any), u16::MIN)).expect("a socket binds");
     #[cfg(target_os = "linux")]
     {
-        // Both versions take the index in network byte order.
-        let value = interface.0.to_be();
-        let (level, name) = match destination {
-            IpAddr::V4(_) => (libc::IPPROTO_IP, linux_raw_sys::net::IP_UNICAST_IF),
-            IpAddr::V6(_) => (libc::IPPROTO_IPV6, linux_raw_sys::net::IPV6_UNICAST_IF),
+        let (level, name, value) = match (selector, destination) {
+            // Both versions take the index of a requested interface in network byte order.
+            (InterfaceSelector::Requested(index), IpAddr::V4(_)) => (
+                libc::IPPROTO_IP,
+                linux_raw_sys::net::IP_UNICAST_IF,
+                index.0.get().to_be(),
+            ),
+            (InterfaceSelector::Requested(index), IpAddr::V6(_)) => (
+                libc::IPPROTO_IPV6,
+                linux_raw_sys::net::IPV6_UNICAST_IF,
+                index.0.get().to_be(),
+            ),
+            (InterfaceSelector::Bound(index), _) => (
+                libc::SOL_SOCKET,
+                linux_raw_sys::net::SO_BINDTOIFINDEX,
+                index.0.get(),
+            ),
         };
         // SAFETY: the value is an integer that lives across the call, which only reads it for its size.
         let result = unsafe {
@@ -1682,7 +1703,7 @@ fn told_naming_interface(
         };
         assert!(
             result == 0,
-            "{destination} by {interface:?}: {}",
+            "{destination} by {selector:?}: {}",
             std::io::Error::last_os_error()
         );
     }
@@ -1705,28 +1726,28 @@ fn told_naming_interface(
         ),
     ));
     #[cfg(not(target_os = "linux"))]
-    panic!("only Linux tells a connected socket's path MTU, not {source} by {interface:?}");
+    panic!("only Linux tells a connected socket's path MTU, not {source} by {selector:?}");
 }
 
-/// Checks that a lookup naming an interface routes as a send naming it does, so that over IPv6 with a source it only prefers its routes.
+/// An IPv6 address the main table routes by da first and by db after.
 ///
-/// A send names its interface per packet (`IP_PKTINFO`, `IPV6_PKTINFO`) as `IP_UNICAST_IF` does, not as a socket bound to the device.
-pub fn an_interface_routes_as_a_send_that_names_it<R: RouteResolver>(resolver: R) {
-    /// An IPv6 address the main table routes by da first and by db after.
-    ///
-    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
-    const TWO_WAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd0a, 0, 0, 0, 0, 0, 0, 5);
-    /// An IPv6 address of an unreachable route.
-    ///
-    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
-    const UNREACHABLE_V6: Ipv6Addr = Ipv6Addr::new(0xfd52, 0, 0, 0, 0, 0, 0, 2);
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+const TWO_WAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd0a, 0, 0, 0, 0, 0, 0, 5);
+/// An IPv6 address of an unreachable route.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+const UNREACHABLE_V6: Ipv6Addr = Ipv6Addr::new(0xfd52, 0, 0, 0, 0, 0, 0, 2);
+
+/// Builds the network with the routes of the interface checks and returns the cases they ask.
+///
+/// Each case is a destination, a source if any and the interface asked for.
+fn interface_cases() -> Vec<(IpAddr, Option<IpAddr>, InterfaceIndex)> {
     let network = network();
     const ROUTES: &str = "route add fd0a::/64 via fd01::2 metric 1
 route add fd0a::/64 via fd02::2 metric 2
 route add unreachable fd52::/64";
     ip(IPV6, ROUTES);
-    let options = Ipv4Options::new();
-    let cases = [
+    vec![
         (IpAddr::V4(FAR), None, network.b),
         (IpAddr::V4(FAR), Some(IpAddr::V4(B_ADDRESS)), network.b),
         (IpAddr::V4(FAR), Some(IpAddr::V4(A_ADDRESS)), network.b),
@@ -1746,40 +1767,76 @@ route add unreachable fd52::/64";
             Some(IpAddr::V6(A_ADDRESS_V6)),
             network.a,
         ),
-    ];
+    ]
+}
+
+/// Resolves a route to the destination from the source if any, held to the interface as the selector says.
+fn resolve_by_interface<R: RouteResolver>(
+    resolver: &R,
+    destination: IpAddr,
+    source: Option<IpAddr>,
+    selector: InterfaceSelector,
+) -> Result<Route, HostError> {
+    let options = Ipv4Options::new();
+    match destination {
+        IpAddr::V4(destination) => resolve4(
+            resolver,
+            Ipv4RouteSelectors {
+                source: source.map(|source| match source {
+                    IpAddr::V4(source) => source,
+                    IpAddr::V6(source) => panic!("{source} is not of the destination's version"),
+                }),
+                interface: Some(selector),
+                ..v4(&options, destination)
+            },
+        ),
+        IpAddr::V6(destination) => resolve6(
+            resolver,
+            Ipv6RouteSelectors {
+                source: source.map(|source| match source {
+                    IpAddr::V6(source) => source,
+                    IpAddr::V4(source) => panic!("{source} is not of the destination's version"),
+                }),
+                interface: Some(selector),
+                ..v6(destination)
+            },
+        ),
+    }
+}
+
+/// Checks that a lookup requesting an interface routes as a send naming it does, so that over IPv6 with a source it only prefers its routes.
+///
+/// A send names its interface per packet (`IP_PKTINFO`, `IPV6_PKTINFO`) as `IP_UNICAST_IF` does.
+pub fn an_interface_routes_as_a_send_that_names_it<R: RouteResolver>(resolver: R) {
+    let cases = interface_cases();
     for (destination, source, interface) in cases {
-        let route = match destination {
-            IpAddr::V4(destination) => resolve4(
-                &resolver,
-                Ipv4RouteSelectors {
-                    source: source.map(|source| match source {
-                        IpAddr::V4(source) => source,
-                        IpAddr::V6(source) => {
-                            panic!("{source} is not of the destination's version")
-                        }
-                    }),
-                    interface: Some(interface),
-                    ..v4(&options, destination)
-                },
-            ),
-            IpAddr::V6(destination) => resolve6(
-                &resolver,
-                Ipv6RouteSelectors {
-                    source: source.map(|source| match source {
-                        IpAddr::V6(source) => source,
-                        IpAddr::V4(source) => {
-                            panic!("{source} is not of the destination's version")
-                        }
-                    }),
-                    interface: Some(interface),
-                    ..v6(destination)
-                },
-            ),
-        };
+        let selector = InterfaceSelector::Requested(interface);
         assert_eq!(
-            route.map(|route| (route.source, route.path_mtu)),
-            told_naming_interface(destination, source, interface),
+            resolve_by_interface(&resolver, destination, source, selector)
+                .map(|route| (route.source, route.path_mtu)),
+            told_by_interface(destination, source, selector),
             "{destination} from {source:?} by {interface:?}"
+        );
+    }
+}
+
+/// Checks that a lookup bound to an interface routes as a socket bound to the device does, held to its routes alone.
+///
+/// Over IPv6 with a source this differs from a requested interface: a destination routed only by the other link, or
+/// by an unreachable route, has no route.
+pub fn a_bound_interface_routes_as_a_bound_socket<R: RouteResolver>(resolver: R) {
+    let cases = interface_cases();
+    for (destination, source, interface) in cases {
+        let selector = InterfaceSelector::Bound(interface);
+        unless_refused(
+            resolve_by_interface(&resolver, destination, source, selector),
+            |route| {
+                assert_eq!(
+                    route.map(|route| (route.source, route.path_mtu)),
+                    told_by_interface(destination, source, selector),
+                    "{destination} from {source:?} bound to {interface:?}"
+                );
+            },
         );
     }
 }
@@ -1971,6 +2028,11 @@ macro_rules! tests {
         #[test]
         fn an_interface_routes_as_a_send_that_names_it() {
             $crate::an_interface_routes_as_a_send_that_names_it($value);
+        }
+
+        #[test]
+        fn a_bound_interface_routes_as_a_bound_socket() {
+            $crate::a_bound_interface_routes_as_a_bound_socket($value);
         }
     };
 }

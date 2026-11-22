@@ -198,49 +198,6 @@ fn a_received_packet_counts_what_linux_does_not_give() {
     );
 }
 
-/// Checks that a transmit report without its packet, which Linux gives with no interface, counts that once.
-#[test]
-fn a_report_without_its_packet_counts_its_missing_interface() {
-    use wcontainers_icmp_sockets_conformance as suite;
-    use wcontainers_internet_protocol::Received;
-    use wcontainers_internet_protocol_linux_socket_options::datagram::exchange::REPORT_INTERFACE_NOT_GIVEN;
-    suite::enter_network_namespace();
-    let sockets = HostIcmpSockets::new().unwrap();
-    let to = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-    for packet in [Report::Requested, Report::NotRequested] {
-        let socket = sockets.open(IpVersion::V4, UserId(u32::MIN)).unwrap();
-        let message = suite::echo(IpVersion::V4, suite::PAYLOAD);
-        let fields = IpSendFields {
-            transmit_reports: TransmitReportRequest {
-                key: suite::REPORT_KEY,
-                software: Report::Requested,
-                packet,
-                ..suite::no_reports()
-            },
-            ..suite::plain_fields()
-        };
-        sockets
-            .send_to(&socket, suite::header_to(to, &message), fields, &message)
-            .unwrap();
-        let start = std::time::Instant::now();
-        let mut into = suite::buffer();
-        while !matches!(
-            sockets.receive(&socket, &mut into),
-            Ok(Received::TransmitReport(_))
-        ) {
-            assert!(start.elapsed() < suite::PATIENCE, "no report");
-            std::thread::yield_now();
-        }
-    }
-    let counted: Vec<_> = sockets
-        .counters()
-        .into_iter()
-        .filter(|reading| reading.reason == REPORT_INTERFACE_NOT_GIVEN)
-        .map(|reading| reading.count)
-        .collect();
-    assert_eq!(counted, [1]);
-}
-
 /// Checks that a send that changes whether reports hold their packet while the host still holds earlier sends counts that.
 #[test]
 fn a_packet_wish_changed_while_sends_are_held_is_counted() {

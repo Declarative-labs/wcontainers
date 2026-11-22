@@ -27,7 +27,7 @@ What each selector maps to:
   0.0.0.0 the kernel's lookup makes loopback itself; for IPv4, a loose source route's first hop instead; for IPv6, a routing header's first
   hop, as the kernel's `fl6_update_dst`: a type 2 header's address, a type 4 header's segment at its segments
   left. The header is first set as `IPV6_RTHDR` on a new socket, so the host's own check refuses what it
-  refuses, type 0 with `EINVAL`), source `RTA_SRC`, interface
+  refuses, type 0 with `EINVAL`), source `RTA_SRC`, interface (bound or requested)
   `RTA_OIF`, mark `RTA_MARK`, owner `RTA_UID`, DSCP and ECN the header's `rtm_tos` (the kernel ignores ECN),
   flow label `RTA_FLOWLABEL`, upper-layer protocol `RTA_IP_PROTO` for TCP, UDP and the version's ICMP (the
   only ones the routing socket takes), ports `RTA_SPORT`/`RTA_DPORT`, an ICMP type and code, or a mobility
@@ -65,9 +65,15 @@ What each selector maps to:
   (but for `RTA_CACHEINFO`). Used for IPv6 preferences other than the default with no source and a route
   that is not local (a local destination is its own source, the first rule of choosing one), and for a route
   with an encapsulation (the kernel takes its headroom off the path MTU; the routing socket does not give it).
-- socket2 covers the datagram calls (socket, bind, `sendto` with flags, `IP_TTL`); the unicast interface
-  (`IP_UNICAST_IF`/`IPV6_UNICAST_IF`, which socket2 lacks) and `IPV6_RTHDR` are the shared crate's
-  `set_packet_setting` on the same descriptor. The routing socket is netlink-sys's, the netlink crates' own.
+- socket2 covers the datagram calls (socket, bind, `sendto` with flags, `IP_TTL`, the traffic class,
+  `SO_BINDTOIFINDEX`); the unicast interface (`IP_UNICAST_IF`/`IPV6_UNICAST_IF`, which socket2 lacks) is the
+  shared crate's `set_option`, and `IPV6_RTHDR` its `set_packet_setting`, on the same descriptor.
+- A bound interface is the routing socket's `RTA_OIF` as a requested one is, which holds the lookup to it as a
+  bound socket's is held, except over IPv6 with a source, where the kernel holds the routing socket's lookup to
+  the interface only without one. There, when that lookup fails or leaves by another interface, a UDP socket
+  bound to the device (`SO_BINDTOIFINDEX`) and the source, with the lookup's owner, mark and traffic class,
+  connects: its error is the answer, and a route it finds is refused (counted), as is any lookup under a rule
+  on the upper layer or on what netlink-packet-route cannot read, which the probe's lookup lacks. The routing socket is netlink-sys's, the netlink crates' own.
 
 Refused with `HostError::NotSupported`, a counter and a warning, each with a named reason:
 - IPv4 link scope (`SO_DONTROUTE`, and so a strict source route): the request's `rtm_scope` is ignored by the
@@ -144,15 +150,16 @@ keeps the host's entries, since Linux may have answered it with that socket erro
 `crates/icmp-sockets/implementation/host`, package `wcontainers-icmp-sockets-host`: Linux ping
 sockets (`SOCK_DGRAM` with `IPPROTO_ICMP` or `IPPROTO_ICMPV6`), which need the caller's group inside
 `net.ipv4.ping_group_range`. open is the socket, owned by the given user (filesystem user while it is made);
-bind_identifier is `SO_REUSEADDR` as asked and a bind to the identifier as port; send_to writes the header and
+bind is `SO_REUSEADDR` as asked and a bind to the address (an IPv6 one with its scope) and the identifier as port, or
+port 0 for one Linux chooses, then `getsockname` for the identifier bound; send_to writes the header and
 send fields as the UDP track does, then one `sendmsg` of the message (Linux puts the identifier in it and
 computes the checksum); receive gives an error queue entry (an ICMP error whole from its IP header, written from all
 of the entry so that a buffer that cuts it holds its start and the whole length, or a transmit report), else an echo reply with its IP header written in front (from the sender, `IP_PKTINFO`, the
 TTL, TOS and options messages; IPv6 with its extension headers), read with a tail buffer behind the caller's
 because Linux cuts a ping socket's packet to the buffers given and tells only what it copied, and its drop count
 asked of `SO_MEMINFO` (counted, one more system call per packet); count_unsent_bytes is `SO_MEMINFO`'s
-`SK_MEMINFO_WMEM_ALLOC`, which is what `SIOCOUTQ` gives a UDP socket (ping sockets take no ioctl); close drops
-the descriptor.
+`SK_MEMINFO_WMEM_ALLOC`, which is what `SIOCOUTQ` gives a UDP socket (ping sockets take no ioctl);
+read_buffer_sizes is `SO_SNDBUF` and `SO_RCVBUF` (socket2); close drops the descriptor.
 
 Refused with a counter and a warning, by what Linux's ping sockets do (net/ipv6/ping.c): for IPv6 a source
 address (the socket's bound one is used), extension headers and a routing header (dropped), and neighbour
@@ -167,9 +174,8 @@ and `IP_PKTINFO`, the flow's protocol as `IP_PROTOCOL` (IPv4) or the address's p
 error queue entry (ICMP errors whole; a socket that wrote its headers gets the quoted packet from its IP header
 on), else the packet: IPv4 as Linux gives it, IPv6 with its header and extension headers written in front.
 Settings: the IP ones as for ICMP; checksum `IPV6_CHECKSUM` (offset, or -1 for none); router alert
-`IP_ROUTER_ALERT`, or `IPV6_ROUTER_ALERT_ISOLATE` and `IPV6_ROUTER_ALERT`; multicast routing `MRT_INIT` and
-`MRT_DONE` (`MRT6_*` for IPv6). Linux takes the last two only once per socket, so the socket keeps what it
-has and changes it only to another value. count_unsent_bytes as for ICMP.
+`IP_ROUTER_ALERT`, or `IPV6_ROUTER_ALERT_ISOLATE` and `IPV6_ROUTER_ALERT`. count_unsent_bytes and
+read_buffer_sizes as for ICMP.
 
 Refused: an upper-layer selector other than what Linux routes the send by (the message's ICMP type and code,
 the mobility header type for IPv6, none for other protocols or a packet with its own header), and a payload

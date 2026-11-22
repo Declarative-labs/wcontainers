@@ -23,24 +23,24 @@ use wcontainers_icmp_sockets_conformance::{
     HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
     NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED, PATIENCE,
     PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, Wakes,
-    buffer, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4, ipv6, no_reports,
-    output, plain_fields, poll_with, seen, segment_routing_header, source_filters_are_written, tc,
-    version_of, woken, write_setting,
+    buffer, buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip,
+    ip6, ipv4, ipv6, no_reports, output, plain_fields, poll_with, seen, segment_routing_header,
+    source_filters_are_written, tc, version_of, woken, write_setting,
 };
 use wcontainers_icmp_sockets_conformance::{PAD_N, seconds_since_confirmed};
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
-    IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
-    Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation, MaximumTransmissionUnit, Membership,
-    MobileAddressPreference, MobilityHeaderType, MulticastGroup, MulticastMembership,
-    NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Port, Received,
-    ReceivedPacketFields, Report, RouteScope, RouterAlertValue, SendError, SourceAddressCheck,
-    SourceFilter, SourcePreferences, TemporaryAddressPreference, Timestamping,
-    TransmitReportRequest, TransportPorts, UpperLayer, UpperLayerSelector,
+    InterfaceSelector, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
+    Ipv4RouteSelectors, Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation,
+    MaximumTransmissionUnit, Membership, MobileAddressPreference, MobilityHeaderType,
+    MulticastGroup, MulticastMembership, NeighbourConfirmation, PacketMark, PacketPriority,
+    PathMtuDiscovery, Port, Received, ReceivedPacketFields, Report, RouteScope, RouterAlertValue,
+    SendError, SourceAddressCheck, SourceFilter, SourcePreferences, TemporaryAddressPreference,
+    Timestamping, TransmitReportRequest, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_raw_sockets::{
-    ChecksumOffset, HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket,
-    RawSocketSetting, RawSockets, RouterAlert, RouterAlertIsolation,
+    ChecksumOffset, HeaderIncludedPacket, OutgoingReassembly, RawPacket, RawSocketSetting,
+    RawSockets, RouterAlert, RouterAlertIsolation,
 };
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
@@ -124,8 +124,6 @@ const ELSEWHERE: Ipv4Addr = Ipv4Addr::new(10, 5, 0, 9);
 const ELSEWHERE_V6: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 9);
 // https://www.rfc-editor.org/rfc/rfc2711
 const ROUTER_ALERT_VALUE: RouterAlertValue = RouterAlertValue(0x2a);
-const MULTICAST_FORWARDING: &str = "/proc/sys/net/ipv4/conf/all/mc_forwarding";
-const MULTICAST_FORWARDING_V6: &str = "/proc/sys/net/ipv6/conf/all/mc_forwarding";
 /// The IPv4 option of a router alert, then the end of the options.
 ///
 /// https://www.rfc-editor.org/rfc/rfc2113
@@ -363,6 +361,22 @@ fn icmp_selector(message: &[u8]) -> Option<UpperLayerSelector> {
         message_type: wcontainers_internet_protocol::IcmpType(message[0]),
         code: wcontainers_internet_protocol::IcmpCode(message[1]),
     })
+}
+
+/// Checks that a socket's buffer sizes read back as Linux gives them.
+pub fn buffer_sizes_are_read_as_linux_gives_them<S: RawSockets>(sockets: S) {
+    enter_network_namespace();
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let socket = opened(&sockets, version, EXPERIMENT);
+        buffer_sizes_are_read_back(
+            || {
+                sockets
+                    .read_buffer_sizes(&socket)
+                    .expect("the buffer sizes are read")
+            },
+            |setting| set(&sockets, &socket, RawSocketSetting::Ip(setting)),
+        );
+    }
 }
 
 /// Checks that raw sockets open for each version and protocol, and not for protocol zero.
@@ -1294,53 +1308,32 @@ pub fn an_ipv6_router_alert_takes_forwarded_packets<S: RawSockets>(sockets: S) {
     }
 }
 
-/// Checks that multicast routing takes the namespace's one role and turns multicast forwarding on while it holds it.
-pub fn multicast_routing_takes_the_namespace_role<S: RawSockets>(sockets: S) {
-    enter_network_namespace();
-    for (version, protocol, forwarding) in [
-        (IpVersion::V4, IpNumber::IGMP, MULTICAST_FORWARDING),
-        (IpVersion::V6, IpNumber::IPV6_ICMP, MULTICAST_FORWARDING_V6),
-    ] {
-        let read = || {
-            std::fs::read_to_string(forwarding)
-                .expect("the forwarding setting")
-                .trim()
-                .parse::<u8>()
-                .expect("a number")
-        };
-        let first = opened(&sockets, version, protocol);
-        let second = opened(&sockets, version, protocol);
-        let routing = |enabled| RawSocketSetting::MulticastRouting(enabled);
-        set(&sockets, &first, routing(MulticastRouting::Enabled));
-        assert_ne!(read(), u8::MIN, "{version:?}");
-        assert!(
-            sockets
-                .configure(&second, routing(MulticastRouting::Enabled))
-                .is_err()
-        );
-        set(&sockets, &first, routing(MulticastRouting::Disabled));
-        assert_eq!(read(), u8::MIN, "{version:?}");
-        set(&sockets, &second, routing(MulticastRouting::Enabled));
-    }
-}
-
-/// Checks that closing a socket gives up the namespace's multicast routing role, at once or once no forked child holds it.
+/// Checks that closing a socket leaves the groups it joined, at once or once no forked child holds it.
 pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
     enter_network_namespace();
-    let routing = RawSocketSetting::MulticastRouting(MulticastRouting::Enabled);
-    let first = opened(&sockets, IpVersion::V4, IpNumber::IGMP);
-    set(&sockets, &first, routing);
-    let second = opened(&sockets, IpVersion::V4, IpNumber::IGMP);
-    assert!(sockets.configure(&second, routing).is_err());
-    sockets.close(first);
-    let start = Instant::now();
-    let taken = loop {
-        match sockets.configure(&second, routing) {
-            Err(_) if start.elapsed() < PATIENCE => std::thread::sleep(LOOK_AGAIN_SOON),
-            other => break other,
-        }
+    ip(NETWORK);
+    // https://www.rfc-editor.org/rfc/rfc2365#section-6
+    const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 6);
+    // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
+    const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x126);
+    let joined = |group: IpAddr| {
+        output(
+            wcontainers_icmp_sockets_conformance::IP,
+            &[SHOW_GROUPS, &[DUMMY]].concat(),
+        )
+        .contains(&group.to_string())
     };
-    assert_eq!(taken, Ok(()));
+    for group in [IpAddr::V4(GROUP), IpAddr::V6(GROUP_V6)] {
+        let socket = opened(&sockets, version_of(group), EXPERIMENT);
+        set(&sockets, &socket, membership(group, true));
+        assert!(joined(group), "{group}");
+        sockets.close(socket);
+        let start = Instant::now();
+        while joined(group) {
+            assert!(start.elapsed() < PATIENCE, "{group} is still joined");
+            std::thread::sleep(LOOK_AGAIN_SOON);
+        }
+    }
 }
 
 /// Checks that a payload's route takes its header fields: interface, link scope, broadcast, waived source, preferences, owner, mark.
@@ -1371,7 +1364,7 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         prohibited
     );
     let elsewhere = Ipv4RouteSelectors {
-        interface: Some(index(DUMMY)),
+        interface: Some(InterfaceSelector::Requested(index(DUMMY))),
         ..v4_route(
             wcontainers_icmp_sockets_conformance::NOWHERE,
             under(EXPERIMENT),
@@ -1449,15 +1442,14 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         wcontainers_icmp_sockets_conformance::NOWHERE_V6,
         under(EXPERIMENT),
     );
+    let second = index(wcontainers_icmp_sockets_conformance::SECOND);
     for (interface, capture) in [
         (None, &capture),
-        (
-            Some(wcontainers_icmp_sockets_conformance::SECOND),
-            &second_capture,
-        ),
+        (Some(InterfaceSelector::Requested(second)), &second_capture),
+        (Some(InterfaceSelector::Bound(second)), &second_capture),
     ] {
         sent(Ipv6RouteSelectors {
-            interface: interface.map(index),
+            interface,
             ..nowhere.clone()
         })
         .expect("the payload is sent");
@@ -2105,7 +2097,7 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 4);
     // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x125);
-    let link = Some(index(DUMMY));
+    let link = Some(InterfaceSelector::Requested(index(DUMMY)));
     let joined = |group: IpAddr| {
         output(
             wcontainers_icmp_sockets_conformance::IP,
@@ -2219,7 +2211,7 @@ pub fn multicast_source_filters_choose_the_senders<S: RawSockets>(sockets: S) {
         filtered_membership(IpAddr::V4(GROUP), include, &[IpAddr::V4(source)])
             .with_setting(|setting| set(&sockets, &filtered, RawSocketSetting::Ip(setting)));
         let header = IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
-            interface: Some(index(DUMMY)),
+            interface: Some(InterfaceSelector::Requested(index(DUMMY))),
             ..v4_route(GROUP, under(EXPERIMENT))
         }));
         send(
@@ -2618,7 +2610,6 @@ pub fn other_settings_set_twice_answer_as_once<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     for (version, protocol, setting) in [
         (IpVersion::V6, RAW_PROTOCOL, ipv6_router_alert_setting()),
-        (IpVersion::V4, IpNumber::IGMP, multicast_routing_setting()),
         (
             IpVersion::V6,
             IpNumber::EXPERIMENTAL_AND_TESTING_0,
@@ -2638,6 +2629,11 @@ macro_rules! tests {
         #[test]
         fn open_takes_each_version_and_protocol() {
             $crate::open_takes_each_version_and_protocol($value);
+        }
+
+        #[test]
+        fn buffer_sizes_are_read_as_linux_gives_them() {
+            $crate::buffer_sizes_are_read_as_linux_gives_them($value);
         }
 
         #[test]
@@ -2728,11 +2724,6 @@ macro_rules! tests {
         #[test]
         fn an_ipv6_router_alert_takes_forwarded_packets() {
             $crate::an_ipv6_router_alert_takes_forwarded_packets($value);
-        }
-
-        #[test]
-        fn multicast_routing_takes_the_namespace_role() {
-            $crate::multicast_routing_takes_the_namespace_role($value);
         }
 
         #[test]
@@ -2862,10 +2853,6 @@ pub fn ipv6_router_alert_setting() -> RawSocketSetting<'static> {
         value: ROUTER_ALERT_VALUE,
         isolation: RouterAlertIsolation::OwnNamespace,
     })
-}
-
-pub fn multicast_routing_setting() -> RawSocketSetting<'static> {
-    RawSocketSetting::MulticastRouting(MulticastRouting::Enabled)
 }
 
 pub fn checksum_setting() -> RawSocketSetting<'static> {

@@ -6,7 +6,7 @@
 #![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use core::num::NonZeroU16;
+use core::num::{NonZeroU16, NonZeroU32};
 use std::future::Future;
 use std::io::Write;
 use std::mem::{size_of, zeroed};
@@ -21,18 +21,22 @@ use etherparse::{
     IpDscp, IpEcn, IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6FragmentHeaderSlice,
     Ipv6HeaderSlice, Ipv6RawExtHeaderSlice, icmpv4, icmpv6,
 };
+use mitsein::slice1::Slice1;
 use wcontainers_abi::HostError;
-use wcontainers_icmp_sockets::{EchoIdentifier, IcmpSockets, IdentifierSharing};
+use wcontainers_icmp_sockets::{
+    EchoBindAddress, EchoBinding, EchoIdentifier, IcmpSockets, IdentifierSharing, LocalIdentifier,
+};
 use wcontainers_internet_protocol::{
-    AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, HopLimit,
-    IcmpCode, IcmpType, InterfaceIndex, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion,
-    Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation,
-    MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
-    MulticastMembership, NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery,
-    Received, ReceivedPacketFields, Report, RouteScope, SendError, SourceAddressCheck,
-    SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping,
-    TransmitClock, TransmitEvent, TransmitReportKey, TransmitReportRequest, TransmitStage,
-    TransmitTime, TransmitTimeError, TransmitTimeMode, UpperLayer, UpperLayerSelector,
+    AnycastAddress, BroadcastPermission, BufferSizes, ByteCount, BytesPerSecond, FragmentSize,
+    HopLimit, IcmpCode, IcmpType, InterfaceIndex, InterfaceSelector, IpHeaderFields, IpSendFields,
+    IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6HeaderFields,
+    Ipv6RouteSelectors, LocalFragmentation, MaximumTransmissionUnit, Membership,
+    MobileAddressPreference, MulticastGroup, MulticastMembership, NeighbourConfirmation,
+    PacketMark, PacketPriority, PathMtuDiscovery, Received, ReceivedPacketFields, Report,
+    RouteScope, SendError, SourceAddressCheck, SourceFilter, SourcePreferences,
+    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitClock, TransmitEvent,
+    TransmitReportKey, TransmitReportRequest, TransmitStage, TransmitTime, TransmitTimeError,
+    TransmitTimeMode, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
@@ -362,7 +366,8 @@ pub fn index(name: &str) -> InterfaceIndex {
         None,
     )
     .expect("a socket opens");
-    InterfaceIndex(rustix::net::netdevice::name_to_index(&socket, name).expect(name))
+    let index = rustix::net::netdevice::name_to_index(&socket, name).expect(name);
+    InterfaceIndex(NonZeroU32::new(index).expect("an interface's index is not zero"))
 }
 
 /// Returns an echo request of the version with the sequence number and payload; Linux writes the identifier and checksum.
@@ -492,6 +497,55 @@ fn opened<S: IcmpSockets>(sockets: &S, version: IpVersion) -> S::Socket {
     sockets.open(version, ROOT).expect("an echo socket opens")
 }
 
+/// Returns the unspecified address of the version, for any address, with no scope.
+pub fn any_address(version: IpVersion) -> EchoBindAddress {
+    match version {
+        IpVersion::V4 => EchoBindAddress::V4(Ipv4Addr::UNSPECIFIED),
+        IpVersion::V6 => EchoBindAddress::V6 {
+            address: Ipv6Addr::UNSPECIFIED,
+            scope: None,
+        },
+    }
+}
+
+/// Binds the socket to any address of its version and the identifier, alone or shared as asked.
+fn bind_requested<S: IcmpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    version: IpVersion,
+    identifier: EchoIdentifier,
+    sharing: IdentifierSharing,
+) -> Result<EchoIdentifier, HostError> {
+    sockets.bind(
+        socket,
+        EchoBinding {
+            address: any_address(version),
+            identifier: LocalIdentifier::Requested(identifier),
+            sharing,
+        },
+    )
+}
+
+/// Binds the socket to any address of its version and the identifier alone, which must be the one bound.
+fn bind_alone<S: IcmpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    version: IpVersion,
+    identifier: EchoIdentifier,
+) {
+    assert_eq!(
+        bind_requested(
+            sockets,
+            socket,
+            version,
+            identifier,
+            IdentifierSharing::Exclusive
+        ),
+        Ok(identifier),
+        "{version:?}"
+    );
+}
+
 fn set<S: IcmpSockets>(sockets: &S, socket: &S::Socket, setting: IpSocketSetting<'_>) {
     sockets
         .configure(socket, setting)
@@ -615,7 +669,7 @@ impl Capture {
         let mut address: libc::sockaddr_ll = unsafe { zeroed() };
         address.sll_family = libc::AF_PACKET as u16;
         address.sll_protocol = all;
-        address.sll_ifindex = index(link).0 as i32;
+        address.sll_ifindex = index(link).0.get() as i32;
         // SAFETY: the address is a sockaddr_ll of its own size.
         let bound = unsafe {
             libc::bind(
@@ -812,9 +866,7 @@ pub fn headers_are_as_on_the_wire(packet: &[u8], on_the_wire: &[u8]) {
 fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Options) {
     let version = version_of(to);
     let socket = opened(&sockets, version);
-    sockets
-        .bind_identifier(&socket, IDENTIFIER, IdentifierSharing::Exclusive)
-        .expect("the identifier binds");
+    bind_alone(&sockets, &socket, version, IDENTIFIER);
     let wire = Capture::on(SELF_LINK);
     let request = echo(version, PAYLOAD);
     // A reply takes its request's traffic class, which is not zero, so that the received one is the wire's.
@@ -950,9 +1002,7 @@ pub fn the_request_carries_the_bound_identifier<S: IcmpSockets>(sockets: S) {
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let socket = opened(&sockets, version_of(to));
         let identifier = identifier(version_of(to));
-        sockets
-            .bind_identifier(&socket, identifier, IdentifierSharing::Exclusive)
-            .expect("the identifier binds");
+        bind_alone(&sockets, &socket, version_of(to), identifier);
         let capture = Capture::on(DUMMY);
         ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
         let request = capture.echo_request();
@@ -971,20 +1021,26 @@ pub fn identifiers_are_shared_only_when_both_ask<S: IcmpSockets>(sockets: S) {
         let first = opened(&sockets, version);
         let second = opened(&sockets, version);
         let identifier = identifier(version);
-        sockets
-            .bind_identifier(&first, identifier, IdentifierSharing::Exclusive)
-            .expect("the identifier binds");
+        bind_alone(&sockets, &first, version, identifier);
         assert_eq!(
-            sockets.bind_identifier(&second, identifier, IdentifierSharing::Shared),
+            bind_requested(
+                &sockets,
+                &second,
+                version,
+                identifier,
+                IdentifierSharing::Shared
+            ),
             Err(HostError::Errno(libc::EADDRINUSE))
         );
         let third = opened(&sockets, version);
         let fourth = opened(&sockets, version);
         let shared = EchoIdentifier(identifier.0.saturating_add(u16::from(u8::MAX)));
         for socket in [&third, &fourth] {
-            sockets
-                .bind_identifier(socket, shared, IdentifierSharing::Shared)
-                .expect("a shared identifier binds twice");
+            assert_eq!(
+                bind_requested(&sockets, socket, version, shared, IdentifierSharing::Shared),
+                Ok(shared),
+                "a shared identifier binds twice"
+            );
         }
     }
 }
@@ -995,25 +1051,283 @@ pub fn close_frees_the_identifier<S: IcmpSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let first = opened(&sockets, version);
         let identifier = identifier(version);
-        sockets
-            .bind_identifier(&first, identifier, IdentifierSharing::Exclusive)
-            .expect("the identifier binds");
+        bind_alone(&sockets, &first, version, identifier);
         let second = opened(&sockets, version);
+        let alone = IdentifierSharing::Exclusive;
         assert_eq!(
-            sockets.bind_identifier(&second, identifier, IdentifierSharing::Exclusive),
+            bind_requested(&sockets, &second, version, identifier, alone),
             Err(HostError::Errno(libc::EADDRINUSE))
         );
         sockets.close(first);
         let start = Instant::now();
         let rebound = loop {
-            match sockets.bind_identifier(&second, identifier, IdentifierSharing::Exclusive) {
+            match bind_requested(&sockets, &second, version, identifier, alone) {
                 Err(HostError::Errno(libc::EADDRINUSE)) if start.elapsed() < PATIENCE => {
                     std::thread::sleep(LOOK_AGAIN_SOON);
                 }
                 other => break other,
             }
         };
-        assert_eq!(rebound, Ok(()), "{version:?}");
+        assert_eq!(rebound, Ok(identifier), "{version:?}");
+    }
+}
+
+/// Checks that an identifier the exit node chooses is returned, bound and carried by the request that leaves.
+pub fn the_exit_node_chooses_an_identifier_when_asked<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        let chosen = sockets
+            .bind(
+                &socket,
+                EchoBinding {
+                    address: any_address(version),
+                    identifier: LocalIdentifier::ChosenByExitNode,
+                    sharing: IdentifierSharing::Exclusive,
+                },
+            )
+            .expect("an identifier is chosen");
+        let capture = Capture::on(DUMMY);
+        ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+        assert_eq!(
+            identifier_of(seen(&capture.echo_request()).payload),
+            chosen.0.get()
+        );
+        let other = opened(&sockets, version);
+        assert_eq!(
+            bind_requested(
+                &sockets,
+                &other,
+                version,
+                chosen,
+                IdentifierSharing::Exclusive
+            ),
+            Err(HostError::Errno(libc::EADDRINUSE)),
+            "{to}"
+        );
+    }
+}
+
+/// A second address of the dummy link, of each version, for the checks that bind one.
+const SECOND_ADDRESSES: &str = "address add 10.3.0.5/24 dev ia
+address add fd03::5/64 dev ia nodad";
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
+const SECOND_LOCAL: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 5);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+const SECOND_LOCAL_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 5);
+
+/// Checks that a socket bound to an address of the namespace sends its requests from it.
+pub fn a_bound_address_is_the_requests_source<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    ip(SECOND_ADDRESSES);
+    for (to, address, from) in [
+        (
+            IpAddr::V4(ON_LINK),
+            EchoBindAddress::V4(SECOND_LOCAL),
+            IpAddr::V4(SECOND_LOCAL),
+        ),
+        (
+            IpAddr::V6(ON_LINK_V6),
+            EchoBindAddress::V6 {
+                address: SECOND_LOCAL_V6,
+                scope: None,
+            },
+            IpAddr::V6(SECOND_LOCAL_V6),
+        ),
+    ] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        let identifier = identifier(version);
+        let binding = EchoBinding {
+            address,
+            identifier: LocalIdentifier::Requested(identifier),
+            sharing: IdentifierSharing::Exclusive,
+        };
+        assert_eq!(sockets.bind(&socket, binding), Ok(identifier));
+        let capture = Capture::on(DUMMY);
+        ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+        let request = capture.echo_request();
+        assert_eq!(seen(&request).source, from);
+        assert_eq!(identifier_of(seen(&request).payload), identifier.0.get());
+    }
+}
+
+// https://www.rfc-editor.org/rfc/rfc4291#section-2.5.6
+const LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 5);
+/// [`LINK_LOCAL`] on the second link, and on the dummy link.
+const LINK_LOCAL_ON_SECOND: &str = "address add fe80::5/64 dev ib nodad";
+const LINK_LOCAL_ON_DUMMY: &str = "address add fe80::5/64 dev ia nodad";
+// https://www.rfc-editor.org/rfc/rfc1112#section-4
+const ALL_HOSTS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
+
+/// Checks that a link-local address binds the socket to the link of its scope, and any other address does not.
+///
+/// The requests of the first leave by the second link though the first is preferred; the others' by the first.
+pub fn a_link_local_address_binds_the_socket_to_its_link<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    ip(TWO_ROUTES);
+    ip(LINK_LOCAL_ON_SECOND);
+    let second = index(SECOND);
+    for (address, link) in [
+        (LINK_LOCAL, SECOND),
+        // Linux only checks that the interface of another address's scope exists.
+        (LOCAL_V6, DUMMY),
+        (Ipv6Addr::UNSPECIFIED, DUMMY),
+    ] {
+        let socket = opened(&sockets, IpVersion::V6);
+        let binding = EchoBinding {
+            address: EchoBindAddress::V6 {
+                address,
+                scope: Some(second),
+            },
+            identifier: LocalIdentifier::ChosenByExitNode,
+            sharing: IdentifierSharing::Exclusive,
+        };
+        sockets
+            .bind(&socket, binding)
+            .unwrap_or_else(|error| panic!("{address} binds: {error:?}"));
+        let capture = Capture::on(link);
+        ping(&sockets, &socket, IpAddr::V6(NOWHERE_V6), PAYLOAD).expect("the request is sent");
+        let request = capture.echo_request();
+        assert_eq!(
+            seen(&request).destination,
+            IpAddr::V6(NOWHERE_V6),
+            "{address}"
+        );
+    }
+}
+
+/// Checks that bind refuses, with Linux's errors, what Linux's ping sockets refuse to bind.
+pub fn binding_refuses_what_linux_refuses<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    ip(TWO_ROUTES);
+    ip(LINK_LOCAL_ON_DUMMY);
+    let v6 = |address, scope| EchoBindAddress::V6 { address, scope };
+    let no_link = InterfaceIndex(NonZeroU32::MAX);
+    for (version, address, error) in [
+        // An address the namespace does not have, and a group.
+        (
+            IpVersion::V4,
+            EchoBindAddress::V4(NOWHERE),
+            libc::EADDRNOTAVAIL,
+        ),
+        (
+            IpVersion::V4,
+            EchoBindAddress::V4(ALL_HOSTS),
+            libc::EADDRNOTAVAIL,
+        ),
+        (IpVersion::V6, v6(NOWHERE_V6, None), libc::EADDRNOTAVAIL),
+        // A scope no link has, for any address.
+        (IpVersion::V6, v6(LOCAL_V6, Some(no_link)), libc::ENODEV),
+        // A link-local address without its link, and with another.
+        (IpVersion::V6, v6(LINK_LOCAL, None), libc::EINVAL),
+        (
+            IpVersion::V6,
+            v6(LINK_LOCAL, Some(index(SECOND))),
+            libc::EADDRNOTAVAIL,
+        ),
+        // An IPv4-mapped address, which a ping socket of IPv6 never sends from.
+        (
+            IpVersion::V6,
+            v6(LOCAL.to_ipv6_mapped(), None),
+            libc::EINVAL,
+        ),
+        // An address of the other version: Linux reads its family on an IPv4 socket and its length on an IPv6 one.
+        (IpVersion::V4, v6(LOCAL_V6, None), libc::EAFNOSUPPORT),
+        (IpVersion::V6, EchoBindAddress::V4(LOCAL), libc::EINVAL),
+    ] {
+        let socket = opened(&sockets, version);
+        let binding = EchoBinding {
+            address,
+            identifier: LocalIdentifier::ChosenByExitNode,
+            sharing: IdentifierSharing::Exclusive,
+        };
+        assert_eq!(
+            sockets.bind(&socket, binding),
+            Err(HostError::Errno(error)),
+            "{address:?} on {version:?}"
+        );
+    }
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let socket = opened(&sockets, version);
+        let binding = EchoBinding {
+            address: any_address(version),
+            identifier: LocalIdentifier::ChosenByExitNode,
+            sharing: IdentifierSharing::Exclusive,
+        };
+        sockets.bind(&socket, binding).expect("the first bind");
+        assert_eq!(
+            sockets.bind(&socket, binding),
+            Err(HostError::Errno(libc::EINVAL)),
+            "a second bind on {version:?}"
+        );
+    }
+}
+
+/// Reads a whole number from a file of `/proc/sys`.
+fn sysctl_number(path: &str) -> usize {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("{path}: {error}"))
+        .trim()
+        .parse()
+        .unwrap_or_else(|error| panic!("{path}: {error}"))
+}
+
+/// Checks the buffer sizes `read` gives: the namespace's defaults, then what `configure` asked, held to its limits and doubled.
+pub fn buffer_sizes_are_read_back(
+    read: impl Fn() -> BufferSizes,
+    configure: impl Fn(IpSocketSetting<'_>),
+) {
+    // https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=wmem_default
+    const LIMITS: [&str; 4] = [
+        "/proc/sys/net/core/wmem_default",
+        "/proc/sys/net/core/rmem_default",
+        "/proc/sys/net/core/wmem_max",
+        "/proc/sys/net/core/rmem_max",
+    ];
+    let [send_default, receive_default, send_max, receive_max] = LIMITS.map(sysctl_number);
+    assert_eq!(
+        read(),
+        BufferSizes {
+            send: ByteCount(send_default),
+            receive: ByteCount(receive_default),
+        }
+    );
+    for (send, receive) in [
+        (usize::from(u16::MAX), usize::from(u16::MAX) * 2),
+        (send_max.saturating_mul(2), receive_max.saturating_mul(2)),
+    ] {
+        configure(IpSocketSetting::SendBuffer(ByteCount(send)));
+        configure(IpSocketSetting::ReceiveBuffer(ByteCount(receive)));
+        assert_eq!(
+            read(),
+            BufferSizes {
+                send: ByteCount(2 * send.min(send_max)),
+                receive: ByteCount(2 * receive.min(receive_max)),
+            },
+            "asked {send} and {receive}"
+        );
+    }
+}
+
+/// Checks that a socket's buffer sizes read back as Linux gives them.
+pub fn buffer_sizes_are_read_as_linux_gives_them<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let socket = opened(&sockets, version);
+        buffer_sizes_are_read_back(
+            || {
+                sockets
+                    .read_buffer_sizes(&socket)
+                    .expect("the buffer sizes are read")
+            },
+            |setting| set(&sockets, &socket, setting),
+        );
     }
 }
 
@@ -1636,7 +1950,7 @@ pub fn icmp_type_and_code_select_the_route<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Checks that an interface chooses among routes to a destination the one out of that link.
+/// Checks that an interface, bound or requested, chooses among routes to a destination the one out of that link.
 pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1648,16 +1962,24 @@ pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
         let socket = opened(&sockets, version_of(to));
         ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
         assert_eq!(seen(&first_capture.echo_request()).destination, to);
-        let message = echo(version_of(to), PAYLOAD);
-        let mut header = header_to(to, &message);
-        match &mut header {
-            IpHeaderFields::V4(header) => header.route.interface = Some(second),
-            IpHeaderFields::V6(header) => header.route.interface = Some(second),
+        for selector in [
+            InterfaceSelector::Requested(second),
+            InterfaceSelector::Bound(second),
+        ] {
+            let message = echo(version_of(to), PAYLOAD);
+            let mut header = header_to(to, &message);
+            match &mut header {
+                IpHeaderFields::V4(header) => header.route.interface = Some(selector),
+                IpHeaderFields::V6(header) => header.route.interface = Some(selector),
+            }
+            sockets
+                .send_to(&socket, header, plain_fields(), &message)
+                .unwrap_or_else(|error| panic!("{to} by {selector:?}: {error:?}"));
+            assert_eq!(seen(&second_capture.echo_request()).destination, to);
         }
-        sockets
-            .send_to(&socket, header, plain_fields(), &message)
-            .expect("the request is sent on the second link");
-        assert_eq!(seen(&second_capture.echo_request()).destination, to);
+        // A send that names no interface takes the preferred link again.
+        ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+        assert_eq!(seen(&first_capture.echo_request()).destination, to);
     }
 }
 
@@ -2048,6 +2370,8 @@ pub fn check_rejections(
                     report.packet_length.is_some(),
                     reason == TransmitTimeError::Missed
                 );
+                // Linux gives a rejected transmit time no sending interface.
+                assert_eq!(report.interface, None, "{report:?}");
                 reported.push((report.key, Some(reason)));
             }
             Ok(Received::Packet(packet)) => panic!("a report, not {packet:?}"),
@@ -2145,14 +2469,16 @@ pub fn check_loopback_reports(
             continue;
         };
         assert_eq!(report.key, REPORT_KEY);
+        // Linux tells the sending interface only with the packet.
         if packet == Report::Requested {
-            assert_eq!(report.interface, index(SELF_LINK), "{report:?}");
+            assert_eq!(report.interface, Some(index(SELF_LINK)), "{report:?}");
             assert_eq!(
                 report.packet_length,
                 Some(ByteCount(LOOPBACK_LINK_HEADER + sent.len())),
                 "{report:?}"
             );
         } else {
+            assert_eq!(report.interface, None, "{report:?}");
             assert_eq!(report.packet_length, None, "{report:?}");
         }
         let TransmitEvent::Timestamp { stage, source, .. } = report.event else {
@@ -2212,9 +2538,7 @@ fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     ip(NETWORK);
     let version = version_of(to);
     let socket = opened(&sockets, version);
-    sockets
-        .bind_identifier(&socket, identifier(version), IdentifierSharing::Exclusive)
-        .unwrap();
+    bind_alone(&sockets, &socket, version, identifier(version));
     let wire = Capture::on(SELF_LINK);
     let request = provoke_icmp_error(&sockets, &socket, to, Quote::Least);
     let source = seen(&request).source;
@@ -2260,9 +2584,7 @@ pub fn a_short_buffer_keeps_the_start_of_an_icmp_error<S: IcmpSockets>(sockets: 
     ] {
         let version = version_of(to);
         let socket = opened(&sockets, version);
-        sockets
-            .bind_identifier(&socket, identifier(version), IdentifierSharing::Exclusive)
-            .unwrap();
+        bind_alone(&sockets, &socket, version, identifier(version));
         provoke_icmp_error(&sockets, &socket, to, Quote::Whole);
         let mut whole = buffer();
         let length = receive_packet(&sockets, &socket, &mut whole).length;
@@ -2495,12 +2817,15 @@ impl FilteredMembership {
     pub fn with_setting<R>(&self, then: impl FnOnce(IpSocketSetting<'_>) -> R) -> R {
         let interface = Some(index(DUMMY));
         let include = self.include;
+        /// Including no source is leaving the group, the one way to write it.
         fn joined<A>(include: bool, sources: &[A]) -> MulticastMembership<'_, A> {
-            MulticastMembership::Joined(if include {
-                SourceFilter::Include(sources)
+            if include {
+                Slice1::try_from_slice(sources).map_or(MulticastMembership::Left, |sources| {
+                    MulticastMembership::Joined(SourceFilter::Include(sources))
+                })
             } else {
-                SourceFilter::Exclude(sources)
-            })
+                MulticastMembership::Joined(SourceFilter::Exclude(sources))
+            }
         }
         match self.group {
             IpAddr::V4(group) => {
@@ -2625,11 +2950,11 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
             let message = echo(version_of(group), PAYLOAD);
             let header = match group {
                 IpAddr::V4(group) => IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
-                    interface: link,
+                    interface: link.map(InterfaceSelector::Requested),
                     ..v4_route(group, &message)
                 })),
                 IpAddr::V6(group) => IpHeaderFields::V6(v6_header(Ipv6RouteSelectors {
-                    interface: link,
+                    interface: link.map(InterfaceSelector::Requested),
                     ..v6_route(group, &message)
                 })),
             };
@@ -3400,6 +3725,31 @@ macro_rules! tests {
         #[test]
         fn close_frees_the_identifier() {
             $crate::close_frees_the_identifier($value);
+        }
+
+        #[test]
+        fn the_exit_node_chooses_an_identifier_when_asked() {
+            $crate::the_exit_node_chooses_an_identifier_when_asked($value);
+        }
+
+        #[test]
+        fn a_bound_address_is_the_requests_source() {
+            $crate::a_bound_address_is_the_requests_source($value);
+        }
+
+        #[test]
+        fn a_link_local_address_binds_the_socket_to_its_link() {
+            $crate::a_link_local_address_binds_the_socket_to_its_link($value);
+        }
+
+        #[test]
+        fn binding_refuses_what_linux_refuses() {
+            $crate::binding_refuses_what_linux_refuses($value);
+        }
+
+        #[test]
+        fn buffer_sizes_are_read_as_linux_gives_them() {
+            $crate::buffer_sizes_are_read_as_linux_gives_them($value);
         }
 
         #[test]

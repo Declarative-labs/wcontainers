@@ -1,8 +1,9 @@
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
-use wcontainers_icmp_sockets::{EchoIdentifier, IcmpSockets, IdentifierSharing};
+use wcontainers_icmp_sockets::{EchoBinding, EchoIdentifier, IcmpSockets};
 use wcontainers_internet_protocol::{
-    ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Received, SendError,
+    BufferSizes, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Received,
+    SendError,
 };
 use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 use wcontainers_kernel::UserId;
@@ -34,12 +35,11 @@ impl IcmpSockets for HostIcmpSockets {
         Err(self.shortfalls.refuse(NO_PING_SOCKETS))
     }
 
-    fn bind_identifier(
+    fn bind(
         &self,
         socket: &Self::Socket,
-        _identifier: EchoIdentifier,
-        _sharing: IdentifierSharing,
-    ) -> Result<(), HostError> {
+        _local: EchoBinding,
+    ) -> Result<EchoIdentifier, HostError> {
         match socket.never {}
     }
 
@@ -58,6 +58,10 @@ impl IcmpSockets for HostIcmpSockets {
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
+        match socket.never {}
+    }
+
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
         match socket.never {}
     }
 

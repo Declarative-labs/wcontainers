@@ -1,8 +1,9 @@
 use core::cell::RefCell;
 use core::cmp::Ordering;
 use core::mem::MaybeUninit;
+use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
 use etherparse::IpNumber;
@@ -10,10 +11,12 @@ use linux_raw_sys::net as uapi;
 use rustix::net::{SocketType, ipproto};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
-use wcontainers_icmp_sockets::{EchoIdentifier, IcmpSockets, IdentifierSharing};
+use wcontainers_icmp_sockets::{
+    EchoBindAddress, EchoBinding, EchoIdentifier, IcmpSockets, IdentifierSharing, LocalIdentifier,
+};
 use wcontainers_internet_protocol::{
-    ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion,
-    NeighbourConfirmation, Received, Report, SendError, UpperLayer, UpperLayerSelector,
+    BufferSizes, ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, NeighbourConfirmation, Received, Report, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
@@ -270,22 +273,30 @@ impl IcmpSockets for HostIcmpSockets {
         })
     }
 
-    fn bind_identifier(
-        &self,
-        socket: &Self::Socket,
-        identifier: EchoIdentifier,
-        sharing: IdentifierSharing,
-    ) -> Result<(), HostError> {
+    fn bind(&self, socket: &Self::Socket, local: EchoBinding) -> Result<EchoIdentifier, HostError> {
         let fd = socket.fd();
         sock(&fd)
-            .set_reuse_address(sharing == IdentifierSharing::Shared)
+            .set_reuse_address(local.sharing == IdentifierSharing::Shared)
             .map_err(|error| io_host_error(&error))?;
-        let any = if socket.ipv6 {
-            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
-        } else {
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        // A ping socket's port is its identifier, and Linux chooses one for port zero.
+        let port = match local.identifier {
+            LocalIdentifier::Requested(identifier) => identifier.0.get(),
+            LocalIdentifier::ChosenByExitNode => u16::MIN,
         };
-        shared::bind_to(fd, SocketAddr::new(any, identifier.0.get())).map_err(host_error)
+        // Linux answers an address of the other version by its family and length, as given.
+        let address = match local.address {
+            EchoBindAddress::V4(address) => SocketAddr::V4(SocketAddrV4::new(address, port)),
+            EchoBindAddress::V6 { address, scope } => SocketAddr::V6(SocketAddrV6::new(
+                address,
+                port,
+                u32::MIN,
+                scope.map_or(u32::MIN, |index| index.0.get()),
+            )),
+        };
+        shared::bind_to(fd, address).map_err(host_error)?;
+        NonZeroU16::new(local_address(fd)?.port())
+            .map(EchoIdentifier)
+            .ok_or(HostError::Errno(libc::EPROTO))
     }
 
     fn send_to(
@@ -409,6 +420,20 @@ impl IcmpSockets for HostIcmpSockets {
         unsent_bytes(socket.fd())
     }
 
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
+        let fd = socket.fd();
+        let socket2 = sock(&fd);
+        let send = socket2.send_buffer_size();
+        let receive = socket2.recv_buffer_size();
+        match (send, receive) {
+            (Ok(send), Ok(receive)) => Ok(BufferSizes {
+                send: ByteCount(send),
+                receive: ByteCount(receive),
+            }),
+            (Err(error), _) | (_, Err(error)) => Err(io_host_error(&error)),
+        }
+    }
+
     fn close(&self, socket: Self::Socket) {
         drop(socket);
     }
@@ -508,7 +533,7 @@ impl HostIcmpSockets {
         let total = dropped_packets(fd)?;
         let drops = total.wrapping_sub(state.drops);
         state.drops = total;
-        let mut fields = ancillary.packet_fields(headers.len() + message.length, drops);
+        let mut fields = ancillary.packet_fields(headers.len() + message.length, drops)?;
         // Linux prepares no preferred source for a ping socket and gives the unspecified address in its place.
         if fields.specific_destination == Some(Ipv4Addr::UNSPECIFIED) {
             fields.specific_destination = None;

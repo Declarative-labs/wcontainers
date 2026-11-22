@@ -1,12 +1,14 @@
 use core::cell::RefCell;
 use core::mem::offset_of;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::num::NonZeroU32;
 use std::io;
 use std::os::fd::AsFd;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6Header, Ipv6RawExtHeaderSlice};
 use linux_raw_sys::net::{
-    IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
+    IP_UNICAST_IF, IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, IPV6_UNICAST_IF, MSG_PROBE, SOL_IP,
+    SOL_IPV6, in6_addr, ipv6_rt_hdr, rt0_hdr,
 };
 use linux_raw_sys::netlink::RTAX_MTU;
 use netlink_packet_core::{
@@ -25,13 +27,14 @@ use rustix::net::{SocketType, ipproto};
 use socket2::{Domain, SockAddr, Socket as DatagramSocket, Type};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    BroadcastPermission, HopLimit, InterfaceIndex, IpPacketSetting, IpVersion, Ipv4RouteSelectors,
-    Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, NeighbourConfirmation,
-    PacketMark, Route, RouteKind, RouteScope, RouteSelectors, SourceAddressCheck,
-    SourcePreferences, TemporaryAddressPreference, UpperLayer, UpperLayerSelector,
+    BroadcastPermission, HopLimit, InterfaceIndex, InterfaceSelector, IpPacketSetting, IpVersion,
+    Ipv4RouteSelectors, Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference,
+    NeighbourConfirmation, PacketMark, Route, RouteKind, RouteScope, RouteSelectors,
+    SourceAddressCheck, SourcePreferences, TemporaryAddressPreference, UpperLayer,
+    UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options::{
-    Shortfalls, io_host_error, open_socket, set_packet_setting,
+    Shortfalls, io_host_error, open_socket, set_option, set_packet_setting,
 };
 use wcontainers_kernel::UserId;
 
@@ -43,6 +46,7 @@ const HASHED_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing
 const MIXED_SOURCE: &str = "route lookup: an IPv4-mapped destination from an IPv6 source that maps no IPv4 address, which a dual-stack socket cannot send from";
 const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
 const PROBE: &str = "route lookup: a datagram socket connected out of the route's interface took another routing entry or none, so what it is told is not this route's";
+const BOUND_WITH_SOURCE: &str = "route lookup: an ipv6 lookup from a source by a bound interface, which the routing socket holds to the interface only without a source, and its own lookup left by another";
 
 const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
     temporary: TemporaryAddressPreference::SystemDefault,
@@ -240,7 +244,6 @@ impl Lookup<'_> {
             // The options are taken as a send takes them, or refused with the error `IP_OPTIONS` gives.
             set_packet_setting(
                 datagram_socket(IpVersion::V4)?.as_fd(),
-                IpVersion::V4,
                 &IpPacketSetting::Ipv4Options(route.options),
                 self.shortfalls,
             )?;
@@ -360,7 +363,7 @@ impl Lookup<'_> {
             )));
         if let Some(source) = route.source {
             if route.source_address_check == SourceAddressCheck::Required {
-                has_address_v6(source, route.interface)?;
+                has_address_v6(source, route.interface.map(selected_index))?;
             }
             request.header.source_prefix_length = full_prefix(Ipv6Addr::BITS);
             request
@@ -378,10 +381,20 @@ impl Lookup<'_> {
             owner,
             route.upper_layer,
         )?;
-        let found = self.found(
-            &self.exchange_route(request.clone())?,
-            IpAddr::V6(destination),
-        )?;
+        let found = self
+            .exchange_route(request.clone())
+            .and_then(|reply| self.found(&reply, IpAddr::V6(destination)));
+        let found = match (route.interface, route.source) {
+            // The routing socket's lookup prefers the interface; where it leaves by another, a bound socket's differs.
+            (Some(InterfaceSelector::Bound(bound)), Some(source))
+                if found
+                    .as_ref()
+                    .map_or(true, |found| found.interface != bound) =>
+            {
+                return Err(self.bound_with_source(route, destination, source, bound, owner));
+            }
+            _ => found?,
+        };
         if protocol == Protocol::Withheld {
             self.protocol_not_hashed(&request)?;
         }
@@ -486,7 +499,6 @@ impl Lookup<'_> {
         let check = datagram_socket(IpVersion::V6)?;
         set_packet_setting(
             check.as_fd(),
-            IpVersion::V6,
             &IpPacketSetting::RoutingHeader(Some(header.clone())),
             self.shortfalls,
         )?;
@@ -509,6 +521,70 @@ impl Lookup<'_> {
             .and_then(|addresses| addresses.first_chunk::<{ size_of::<in6_addr>() }>())
             .map(|&octets| Ipv6Addr::from(octets))
             .ok_or(HostError::Errno(libc::EINVAL))
+    }
+
+    /// Answers an IPv6 lookup from a source by a bound interface whose routing socket lookup failed or left by another.
+    ///
+    /// A datagram socket bound to the interface and the source tells the error of its connect; a route it finds is refused.
+    fn bound_with_source(
+        &self,
+        route: &Ipv6RouteSelectors<'_>,
+        destination: Ipv6Addr,
+        source: Ipv6Addr,
+        bound: InterfaceIndex,
+        owner: UserId,
+    ) -> HostError {
+        let connected = || -> Result<(), HostError> {
+            // The probe's lookup is a UDP socket's without a flow label, which no rule may tell apart from the one asked.
+            if self.a_rule_selects_beyond_a_probe()? {
+                return Err(self.shortfalls.refuse(BOUND_WITH_SOURCE));
+            }
+            let socket = DatagramSocket::from(
+                open_socket(IpVersion::V6, SocketType::DGRAM, ipproto::UDP, owner)
+                    .map_err(|_| self.shortfalls.refuse(BOUND_WITH_SOURCE))?,
+            );
+            socket
+                .bind_device_by_index_v6(Some(bound.0))
+                .map_err(io_error)?;
+            set_traffic_class(&socket, IpVersion::V6, route.dscp, route.ecn)?;
+            if route.mark != PacketMark(u32::MIN) {
+                set_packet_setting(
+                    socket.as_fd(),
+                    &IpPacketSetting::Mark(route.mark),
+                    self.shortfalls,
+                )
+                .map_err(|_| self.shortfalls.refuse(BOUND_WITH_SOURCE))?;
+            }
+            socket
+                .bind(&socket_address(IpAddr::V6(source), ANY_PORT, bound))
+                .map_err(io_error)?;
+            socket
+                .connect(&socket_address(IpAddr::V6(destination), PROBE_PORT, bound))
+                .map_err(io_error)
+        };
+        match connected() {
+            Ok(()) => self.shortfalls.refuse(BOUND_WITH_SOURCE),
+            Err(error) => error,
+        }
+    }
+
+    /// Tells whether a rule of the IPv6 policy selects on an upper-layer protocol or port, or on what netlink-packet-route cannot read.
+    fn a_rule_selects_beyond_a_probe(&self) -> Result<bool, HostError> {
+        let mut request = RuleMessage::default();
+        request.header.family = AddressFamily::Inet6;
+        self.routing
+            .borrow_mut()
+            .dump(RouteNetlinkMessage::GetRule(request), |message| {
+                matches!(message, RouteNetlinkMessage::NewRule(rule) if rule.attributes.iter().any(
+                    |attribute| matches!(
+                        attribute,
+                        RuleAttribute::IpProtocol(_)
+                            | RuleAttribute::SourcePortRange(_)
+                            | RuleAttribute::DestinationPortRange(_)
+                            | RuleAttribute::Other(_)
+                    )
+                ))
+            })
     }
 
     /// Tells whether the host has the address, as the kernel's IPv4 source check asks: its own lookup of it is local.
@@ -538,12 +614,7 @@ impl Lookup<'_> {
             IpAddr::V6(_) => IpVersion::V6,
         };
         let socket = datagram_socket(version)?;
-        set_packet_setting(
-            socket.as_fd(),
-            version,
-            &IpPacketSetting::UnicastInterface(Some(interface)),
-            self.shortfalls,
-        )?;
+        name_interface(&socket, version, interface)?;
         socket
             .send_to_with_flags(
                 &[],
@@ -588,7 +659,10 @@ impl Lookup<'_> {
         for attribute in &reply.attributes {
             match attribute {
                 RouteAttribute::PrefSource(address) => source = address_of(address),
-                RouteAttribute::Oif(index) => interface = Some(InterfaceIndex(*index)),
+                RouteAttribute::Oif(index) => {
+                    interface =
+                        Some(NonZeroU32::new(*index).ok_or(HostError::Errno(libc::EPROTO))?);
+                }
                 RouteAttribute::Gateway(address) => {
                     next_hop = address_of(address).ok_or(HostError::Errno(libc::EPROTO))?;
                     through_gateway = true;
@@ -620,7 +694,7 @@ impl Lookup<'_> {
         Ok(FoundRoute {
             kind,
             source,
-            interface: interface.ok_or(HostError::Errno(libc::EPROTO))?,
+            interface: InterfaceIndex(interface.ok_or(HostError::Errno(libc::EPROTO))?),
             next_hop,
             through_gateway,
             mtu,
@@ -647,14 +721,10 @@ impl Lookup<'_> {
                 .map_err(|_| self.shortfalls.refuse(PROBE))?,
         );
         let set = |setting: &IpPacketSetting<'_>| {
-            set_packet_setting(socket.as_fd(), version, setting, self.shortfalls)
+            set_packet_setting(socket.as_fd(), setting, self.shortfalls)
         };
-        set(&IpPacketSetting::UnicastInterface(Some(found.interface)))?;
-        set(&IpPacketSetting::TrafficClass {
-            version,
-            dscp: selectors.dscp,
-            ecn: selectors.ecn,
-        })?;
+        name_interface(&socket, version, found.interface)?;
+        set_traffic_class(&socket, version, selectors.dscp, selectors.ecn)?;
         if selectors.mark != PacketMark(u32::MIN) {
             // Setting a mark takes `CAP_NET_ADMIN`, which the routing socket does not need.
             set(&IpPacketSetting::Mark(selectors.mark))
@@ -670,7 +740,7 @@ impl Lookup<'_> {
             && destination.is_multicast()
         {
             socket
-                .set_multicast_if_v6(found.interface.0)
+                .set_multicast_if_v6(found.interface.0.get())
                 .map_err(io_error)?;
         }
         if let Some(source) = selectors.source {
@@ -709,7 +779,7 @@ impl Lookup<'_> {
             taken.header.source_prefix_length = request.header.source_prefix_length;
             attributes.push(RouteAttribute::Source(address(source)));
         }
-        attributes.push(RouteAttribute::Oif(found.interface.0));
+        attributes.push(RouteAttribute::Oif(found.interface.0.get()));
         attributes.push(RouteAttribute::Mark(selectors.mark.0));
         attributes.push(RouteAttribute::Uid(selectors.owner.0));
         attributes.push(RouteAttribute::IpProto(IpNumber::UDP.0));
@@ -736,7 +806,7 @@ impl Lookup<'_> {
 
     fn read_link(&self, interface: InterfaceIndex) -> Result<Link, HostError> {
         let mut request = LinkMessage::default();
-        request.header.index = interface.0;
+        request.header.index = interface.0.get();
         let RouteNetlinkMessage::NewLink(reply) =
             self.exchange(RouteNetlinkMessage::GetLink(request))?
         else {
@@ -775,7 +845,7 @@ impl Lookup<'_> {
         &self,
         request: &mut RouteMessage,
         version: IpVersion,
-        interface: Option<InterfaceIndex>,
+        interface: Option<InterfaceSelector>,
         mark: u32,
         owner: UserId,
         upper_layer: UpperLayer,
@@ -787,8 +857,11 @@ impl Lookup<'_> {
             Protocol::Withheld
         };
         let attributes = &mut request.attributes;
-        if let Some(interface) = interface {
-            attributes.push(RouteAttribute::Oif(interface.0));
+        // A bound and a requested interface are both the lookup's outgoing interface, held to it as Linux holds each.
+        if let Some(InterfaceSelector::Bound(index) | InterfaceSelector::Requested(index)) =
+            interface
+        {
+            attributes.push(RouteAttribute::Oif(index.0.get()));
         }
         attributes.push(RouteAttribute::Mark(mark));
         attributes.push(RouteAttribute::Uid(owner.0));
@@ -982,9 +1055,44 @@ fn socket_address(address: IpAddr, port: u16, interface: InterfaceIndex) -> Sock
 /// Returns the scope a link-local address needs, the interface's; none for any other.
 fn scope_of(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> u32 {
     match interface {
-        Some(interface) if address.is_unicast_link_local() => interface.0,
+        Some(interface) if address.is_unicast_link_local() => interface.0.get(),
         _ => u32::MIN,
     }
+}
+
+/// Returns the interface a selector names, bound or requested.
+fn selected_index(selector: InterfaceSelector) -> InterfaceIndex {
+    match selector {
+        InterfaceSelector::Bound(index) | InterfaceSelector::Requested(index) => index,
+    }
+}
+
+/// Names the interface of the socket's unicast sends, as `IP_UNICAST_IF` and `IPV6_UNICAST_IF` do, in network byte order.
+fn name_interface(
+    socket: &DatagramSocket,
+    version: IpVersion,
+    interface: InterfaceIndex,
+) -> Result<(), HostError> {
+    let (level, name) = match version {
+        IpVersion::V4 => (SOL_IP, IP_UNICAST_IF),
+        IpVersion::V6 => (SOL_IPV6, IPV6_UNICAST_IF),
+    };
+    set_option(socket.as_fd(), level, name, &interface.0.get().to_be())
+}
+
+/// Sets the socket's traffic class, the DSCP and ECN bits a datagram socket sends with.
+fn set_traffic_class(
+    socket: &DatagramSocket,
+    version: IpVersion,
+    dscp: IpDscp,
+    ecn: IpEcn,
+) -> Result<(), HostError> {
+    let class = u32::from(traffic_class(dscp, ecn));
+    match version {
+        IpVersion::V4 => socket.set_tos_v4(class),
+        IpVersion::V6 => socket.set_tclass_v6(class),
+    }
+    .map_err(io_error)
 }
 
 fn datagram_socket(version: IpVersion) -> Result<DatagramSocket, HostError> {

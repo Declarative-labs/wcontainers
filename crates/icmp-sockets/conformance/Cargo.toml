@@ -17,6 +17,7 @@ wcontainers-kernel = { path = "../../kernel" }
 wcontainers-readiness = { path = "../../readiness" }
 wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 etherparse.workspace = true
+mitsein.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The packet socket that sees what leaves a link, and the errno values of Linux.

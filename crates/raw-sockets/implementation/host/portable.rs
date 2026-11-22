@@ -1,7 +1,9 @@
 use etherparse::IpNumber;
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
-use wcontainers_internet_protocol::{ByteCount, IpSendFields, IpVersion, Received, SendError};
+use wcontainers_internet_protocol::{
+    BufferSizes, ByteCount, IpSendFields, IpVersion, Received, SendError,
+};
 use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::{RawPacket, RawSocketSetting, RawSockets};
@@ -52,6 +54,10 @@ impl RawSockets for HostRawSockets {
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
+        match socket.never {}
+    }
+
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
         match socket.never {}
     }
 

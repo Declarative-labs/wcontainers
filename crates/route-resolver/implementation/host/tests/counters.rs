@@ -1,13 +1,14 @@
 #![cfg(target_os = "linux")]
 
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::num::NonZeroU32;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    BroadcastPermission, Ipv4RouteSelectors, Ipv6RouteSelectors, MobileAddressPreference,
-    MobilityHeaderType, NeighbourConfirmation, PacketMark, RouteScope, RouteSelectors,
-    SourceAddressCheck, SourcePreferences, TemporaryAddressPreference, UpperLayer,
+    BroadcastPermission, InterfaceIndex, InterfaceSelector, Ipv4RouteSelectors, Ipv6RouteSelectors,
+    MobileAddressPreference, MobilityHeaderType, NeighbourConfirmation, PacketMark, RouteScope,
+    RouteSelectors, SourceAddressCheck, SourcePreferences, TemporaryAddressPreference, UpperLayer,
     UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
@@ -134,6 +135,14 @@ fn refusals_are_counted_under_their_reasons() {
         },
         ..v6(Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1))
     };
+    // SAFETY: the name ends in a zero byte, and the call only reads it.
+    let da = NonZeroU32::new(unsafe { libc::if_nametoindex(c"da".as_ptr()) }).expect("da");
+    // The routing socket's lookup leaves by db, which a socket bound to da would not take.
+    let bound_elsewhere = Ipv6RouteSelectors {
+        source: Some(Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 1)),
+        interface: Some(InterfaceSelector::Bound(InterfaceIndex(da))),
+        ..v6(Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1))
+    };
     let mapped_from_ipv6 = Ipv6RouteSelectors {
         source: Some(Ipv6Addr::LOCALHOST),
         ..v6(Ipv4Addr::LOCALHOST.to_ipv6_mapped())
@@ -145,6 +154,7 @@ fn refusals_are_counted_under_their_reasons() {
         RouteSelectors::V6(hashed),
         RouteSelectors::V6(labelled_with_preferences),
         RouteSelectors::V6(mapped_from_ipv6),
+        RouteSelectors::V6(bound_elsewhere),
     ] {
         assert_eq!(
             resolve(&resolver, route.clone()),
@@ -156,7 +166,7 @@ fn refusals_are_counted_under_their_reasons() {
     let mut reasons: Vec<_> = counters.iter().map(|reading| reading.reason).collect();
     reasons.sort();
     reasons.dedup();
-    assert_eq!(reasons.len(), 6, "{counters:?}");
+    assert_eq!(reasons.len(), 7, "{counters:?}");
     assert!(
         counters.iter().all(|reading| reading.count == 1),
         "{counters:?}"

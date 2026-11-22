@@ -11,15 +11,15 @@ use rustix::net::{Protocol, SocketType};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion,
-    Ipv4HeaderFields, Ipv6HeaderFields, LocalFragmentation, MobilityHeaderType, PathMtuDiscovery,
-    Received, Report, SendError, UpperLayer, UpperLayerSelector,
+    BufferSizes, ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, Ipv4HeaderFields, Ipv6HeaderFields, LocalFragmentation, MobilityHeaderType,
+    PathMtuDiscovery, Received, Report, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::{
-    HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket, RawSocketSetting,
-    RawSockets, RouterAlert, RouterAlertIsolation,
+    HeaderIncludedPacket, OutgoingReassembly, RawPacket, RawSocketSetting, RawSockets, RouterAlert,
+    RouterAlertIsolation,
 };
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 
@@ -32,7 +32,7 @@ use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
 use shared::readiness::{DATAGRAM_FACTS, Watcher};
-use shared::{Shortfalls, io_host_error, set_bytes, set_flag, set_int, sock};
+use shared::{Shortfalls, io_host_error, set_flag, set_int, sock};
 
 pub(crate) struct SocketState {
     send: SendState,
@@ -45,7 +45,6 @@ pub(crate) struct SocketState {
     header_included: bool,
     reassembly: OutgoingReassembly,
     router_alert: RouterAlert,
-    multicast_routing: MulticastRouting,
 }
 
 const UPPER_LAYER: &str = "an upper layer other than the one linux routes a raw send by: the message's ICMP type and code or mobility header type, else none";
@@ -55,13 +54,6 @@ const FORWARDED_BY_ITS_BYTES: &str = "linux does not tell a packet it forwards t
      alert socket of ipproto_raw from a local one: taken as forwarded, and given whole, by its bytes";
 const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a raw socket an icmp error without the identification and \
      fragment flags of an ipv4 one, nor under a payload the quoted header's fields but its addresses: written as zero";
-
-/// `MRT_INIT` of linux/mroute.h, and `MRT6_INIT` of linux/mroute6.h, which neither libc nor linux-raw-sys carries.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mroute.h
-const MULTICAST_ROUTING_INIT: u32 = 200;
-/// `MRT_DONE` and `MRT6_DONE`, the next request after the first.
-const MULTICAST_ROUTING_DONE: u32 = MULTICAST_ROUTING_INIT + 1;
 
 /// The value that takes a socket off the IPv6 router alert chain: any negative one.
 ///
@@ -333,7 +325,6 @@ impl RawSockets for HostRawSockets {
                 header_included: protocol == raw_protocol(),
                 reassembly: OutgoingReassembly::Allowed,
                 router_alert: RouterAlert::Off,
-                multicast_routing: MulticastRouting::Disabled,
             }),
         })
     }
@@ -533,6 +524,20 @@ impl RawSockets for HostRawSockets {
         unsent_bytes(socket.fd())
     }
 
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
+        let fd = socket.fd();
+        let socket2 = sock(&fd);
+        let send = socket2.send_buffer_size();
+        let receive = socket2.recv_buffer_size();
+        match (send, receive) {
+            (Ok(send), Ok(receive)) => Ok(BufferSizes {
+                send: ByteCount(send),
+                receive: ByteCount(receive),
+            }),
+            (Err(error), _) | (_, Err(error)) => Err(io_host_error(&error)),
+        }
+    }
+
     fn close(&self, socket: Self::Socket) {
         drop(socket);
     }
@@ -643,7 +648,7 @@ impl HostRawSockets {
             }
             None => u32::MIN,
         };
-        Ok(Received::Packet(ancillary.packet_fields(length, drops)))
+        Ok(Received::Packet(ancillary.packet_fields(length, drops)?))
     }
 }
 
@@ -710,28 +715,6 @@ impl HostRawSocket {
         state.router_alert = wanted;
         Ok(())
     }
-
-    fn set_multicast_routing(
-        &self,
-        state: &mut SocketState,
-        wanted: MulticastRouting,
-    ) -> Result<(), HostError> {
-        // Linux answers a second MRT_INIT of a socket with EADDRINUSE, so only a change is written.
-        if state.multicast_routing == wanted {
-            return Ok(());
-        }
-        let level = if self.ipv6 {
-            uapi::SOL_IPV6
-        } else {
-            uapi::SOL_IP
-        };
-        match wanted {
-            MulticastRouting::Enabled => set_flag(self.fd(), level, MULTICAST_ROUTING_INIT, true)?,
-            MulticastRouting::Disabled => set_bytes(self.fd(), level, MULTICAST_ROUTING_DONE, &[])?,
-        }
-        state.multicast_routing = wanted;
-        Ok(())
-    }
 }
 
 impl<'a> Configurable<HostRawSocket, RawSocketSetting<'a>> for HostRawSockets {
@@ -784,9 +767,6 @@ impl<'a> Configurable<HostRawSocket, RawSocketSetting<'a>> for HostRawSockets {
                 },
             ),
             RawSocketSetting::RouterAlert(alert) => socket.set_router_alert(state, alert),
-            RawSocketSetting::MulticastRouting(routing) => {
-                socket.set_multicast_routing(state, routing)
-            }
         }
     }
 }
