@@ -7,9 +7,42 @@ on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared 
 findings and checked itself; run 3 answered the I2 check's four findings, below). I1 run 5 (2026-11-22, after the
 restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. I2 run 4
 (2026-11-22) answered that check's five findings; I2 run 5 answered the next check's four; I2 run 6 found and fixed
-the ICMP wait flake's cause and answered that check's four minor findings. Next: the independent check of I2; the
-linter findings left all wait on a ruling (below), and the interface selector's meaning on the owner's (For the
-owner). Nothing of this track is in progress.
+the ICMP wait flake's cause and answered that check's four minor findings; I2 run 7 answered the next check's three
+and cleared 17 literal findings the check script had hidden. Next: the independent check of I2; the linter
+findings left all wait on a ruling (below), and the interface selector's meaning on the owner's (For the owner).
+Nothing of this track is in progress.
+
+## 2026-11-22: I2 run 7 (the check's three findings, and the literal check)
+- Mobility header type never really checked (blocking): true. a_mobility_header_is_sent_by_its_type now sends a
+  binding update (type 5, length byte 1, 16 bytes) with selector MobilityHeader(5) and wants it out whole with the
+  checksum Linux writes; then adds `ip -6 rule add ipproto 135 dport 1280 prohibit` (Linux matches a rule's
+  destination port against the type in its first byte, as it does an ICMP type) and wants that send to get EACCES
+  (routed by its type), a binding refresh request (type 0) with selector 5 refused or prohibited, and the binding
+  update with selector 0 refused or sent. The raw counter test now also sends the binding update with selector 1
+  (its length byte) and wants it counted under the upper layer reason. Broken copies (`i2-run7/check.sh`, log
+  check.log, ARM, 07:06 UTC, load 2.0 to 2.7): the verifier's offset 1 fails the check and the counter test; a
+  mismatched mobility selector passed to Linux fails both too.
+- A refused router alert change dropped the old alert (minor): fixed. set_router_alert writes the new alert before
+  clearing the old one, except from one IPv6 alert to another, where Linux needs the old gone first and the old is
+  written back if the new is refused. an_ipv4_router_alert_takes_forwarded_packets now asks the IPv4 alert socket
+  for an IPv6 alert and, when refused, wants the next forwarded packet still taken. Broken copy: the old order
+  (clear, then write) fails it.
+- Multicast routing off on a socket that never had it (minor): the check only confirmed the reproduction of the
+  departure already recorded (Departures); unchanged.
+- Literal check: the scripts' "0 findings" of runs since I2 run 2 were false. The check stopped on missing
+  linux-raw-sys sources (it needs `cargo fetch` first there) and the script counted its one error line as none.
+  With the fetch it found 17 in this track's files: the resolver suite's copies of the ICMP suite's IP, ADDRESS,
+  PACKETS, TRAFFIC_CONTROL, DEVICE, the JSON fields and quote, B_MTU 1300 (the ICMP suite's ROUTE_MTU), the resolver
+  counter test's "ip" and flow label, both settle_addresses' '/', and the ICMP and raw counter tests' PAD_N and
+  PADDED. Fixed: the resolver suite depends on the ICMP suite (manifest and Cargo.lock, commit 47930ab8) and uses its
+  batch, number_after, seconds_since_confirmed and temporary_address, re-exporting it as icmp_suite for the
+  resolver counter test; PAD_N and PADDED live once in the ICMP suite; LABEL is public in the resolver suite; '/' is
+  PREFIX_LENGTH; B_MTU is 1310 (a free value under da's 1400 and over IPv6's 1280). After: none in this track's files.
+- Final (`i2-run7/final.sh`, log final.log, ARM, 07:12 UTC, load 6.3 to 7.1): clean build with clippy denied
+  warnings clean on the nine packages; three rounds, each ICMP 59, 5 and 1, raw 53, 2 and 1, resolver 37 and 1,
+  Configurable 2, NegativeRouteAdvisable 7 (35 s with the build); cargo tree of the 30 interface and conformance
+  crates reaches none of the 17 implementations (control 2). No interface.rs or data file changed (`git status`).
+  Code commit d0174c58.
 
 ## 2026-11-22: I2 run 6 (the ICMP flake found, and the check's four minor findings)
 - ICMP suite flake (blocking): found and fixed. The cause is in the checks' setup, not in the host implementation:
@@ -820,7 +853,10 @@ owner). Nothing of this track is in progress.
   - `flake-hunt.sh`: both suites side by side, `ROUNDS` times (default 20), `FILTER` to pick checks, each
     failure's text printed.
   - `readiness-fix.sh`: the wait checks twenty times, then the UDP and TCP suites.
-  - `literals.sh`: the literal check in a throwaway git copy (the synced copy has no .git).
+  - `literals.sh`: the literal check in a throwaway git copy (the synced copy has no .git). Run `cargo fetch -q`
+    first there: without linux-raw-sys's sources the check stops at one error line, which the script counts as 0.
+  - `i2-run7/check.sh`: clippy and the raw tests, then broken copies of run 7's two fixes (`NO_MUTANTS=1` skips
+    them). `i2-run7/final.sh`: clean build with clippy, `ROUNDS` (default 3) of every suite, cargo tree.
 - Test tools put on the path there: iproute2 and nftables from nixpkgs (GPL tools, never dependencies).
 - Cargo.lock: other tracks' entries are in the working file, so this track commits a lock built from HEAD's with
   `lock-edit.py` (renames and added dependencies, as cargo orders them) through a private index:
@@ -920,8 +956,8 @@ owner). Nothing of this track is in progress.
   their start and whole length when cut. The received traffic class of an echo reply (both versions) and of an
   ICMP error's outer header (both suites) is checked with a request or error sent with DSCP EF and ECN.
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
-  mobility header is sent by its type;
-  withdrawn reassembly; checksum offset (where it is written, and a wrong checksum dropped on receipt); IPv4 and IPv6 router alerts with isolation, turned off and changed; multicast routing.
+  mobility header is sent by its type, and its type is what a rule sees (a mismatched selector refused);
+  withdrawn reassembly; checksum offset (where it is written, and a wrong checksum dropped on receipt); IPv4 and IPv6 router alerts with isolation, turned off and changed, and a refused change keeps the old alert; multicast routing.
 - Settings: multicast membership, its source filters (as Linux lists them, and IPv4 raw delivery) and loopback
   (both versions), IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
