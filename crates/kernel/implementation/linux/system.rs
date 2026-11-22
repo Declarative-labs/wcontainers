@@ -28,22 +28,6 @@ pub(crate) fn pid_of(id: TaskId) -> Pid {
     id.0 as Pid
 }
 
-/// How one process is run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExecutionConfig {
-    pub thread_ordering: ThreadOrdering,
-    pub replay_determinism: ReplayDeterminism,
-}
-
-impl Default for ExecutionConfig {
-    fn default() -> Self {
-        Self {
-            thread_ordering: ThreadOrdering::Serial,
-            replay_determinism: ReplayDeterminism::Exact,
-        }
-    }
-}
-
 /// Something of the interface that is not built yet, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unsupported {
@@ -51,19 +35,6 @@ pub enum Unsupported {
     ReplayDeterminism(ReplayDeterminism),
     /// The executor cannot watch one thread and not its siblings.
     PerThreadWatch,
-}
-
-impl ExecutionConfig {
-    /// Whether the kernel can run a process this way.
-    pub fn supported(&self) -> Result<(), Unsupported> {
-        if self.thread_ordering != ThreadOrdering::Serial {
-            return Err(Unsupported::ThreadOrdering(self.thread_ordering));
-        }
-        if self.replay_determinism != ReplayDeterminism::Exact {
-            return Err(Unsupported::ReplayDeterminism(self.replay_determinism));
-        }
-        Ok(())
-    }
 }
 
 pub use wcontainers_kernel::signal_information::SignalInformation;
@@ -301,10 +272,6 @@ impl Process<'_> {
             kernel: self.kernel,
             process: &self.kernel.processes[&self.pid],
         }
-    }
-
-    pub fn execution_config(&self) -> ExecutionConfig {
-        self.kernel.processes[&self.pid].execution
     }
 
     /// The memory the process runs in: the same for processes that share it (vfork, `CLONE_VM`),
@@ -741,25 +708,6 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_serial_exact_runs_and_the_rest_are_refused_by_name() {
-        let config = |thread_ordering, replay_determinism| ExecutionConfig {
-            thread_ordering,
-            replay_determinism,
-        };
-        assert_eq!(ExecutionConfig::default().supported(), Ok(()));
-        assert_eq!(
-            config(ThreadOrdering::Parallel, ReplayDeterminism::Exact).supported(),
-            Err(Unsupported::ThreadOrdering(ThreadOrdering::Parallel))
-        );
-        for replay in [ReplayDeterminism::External, ReplayDeterminism::None] {
-            assert_eq!(
-                config(ThreadOrdering::Serial, replay).supported(),
-                Err(Unsupported::ReplayDeterminism(replay))
-            );
-        }
-    }
 
     #[test]
     fn the_default_task_ids_count_and_wrap_past_the_low_ones() {

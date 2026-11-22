@@ -4643,12 +4643,9 @@ fn run_ours_on(
         address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes: wcontainers_abi::Cpu::address_space(cpu).end,
         ceiling: None,
-        execution: wcontainers_kernel_linux::ExecutionConfig::default(),
         options: wcontainers_kernel_linux::StartOptions::default(),
     };
-    kernel
-        .start(cpu, &host, start)
-        .expect("the kernel runs a process serially with exact replay");
+    kernel.start(cpu, &host, start);
     crate::streams::begin(&mut kernel, cpu, &host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);

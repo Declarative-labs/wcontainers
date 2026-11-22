@@ -21,9 +21,8 @@ use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalValue};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    AccessKind, ContextOrigin, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
-    SignalInformation, SuspendedTask, SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor,
-    reason, task_id_after,
+    AccessKind, ContextOrigin, Kernel, MemoryError, MemoryObject, Process, SignalInformation,
+    SuspendedTask, SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor, reason, task_id_after,
 };
 
 fn out() -> PathBuf {
@@ -161,7 +160,6 @@ impl Recorder {
         let info = process.info();
         assert!(info.memory_mapped() > 0, "{seen}: memory mapped");
         let _ = (info.ceiling_distance(), info.compute_used());
-        let _ = process.execution_config();
         let changed = process.take_dirty_memory();
         if let Some(first) = changed.first() {
             let bytes = process
@@ -2554,7 +2552,6 @@ impl Suspender {
     /// Takes the whole process and puts it back, its tasks first without the context.
     fn whole_process(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
         let process = self.process.expect("the process");
-        let config = ExecutionConfig::default();
         let copy = kernel.copy_process_context(process).expect("a copy");
         let every = self.every_thread();
         let got: Vec<_> = kernel.suspend_tasks(cpu, &every).collect();
@@ -2579,9 +2576,9 @@ impl Suspender {
         );
         self.check(
             "the context put back",
-            kernel.resume_process(context, config).is_none(),
+            kernel.resume_process(context).is_none(),
         );
-        let twice = kernel.resume_process(copy, config);
+        let twice = kernel.resume_process(copy);
         self.check(
             "a context already there handed back",
             twice.as_ref().map(|context| context.id()) == Some(process),
@@ -2595,7 +2592,6 @@ impl Suspender {
     /// Moves the process to a second kernel, checks it is there as it was, and brings it back.
     fn second_kernel(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
         let process = self.process.expect("the process");
-        let config = ExecutionConfig::default();
         let memory = kernel.process(cpu, process).expect("here").memory_id();
         let mapped = kernel
             .process(cpu, process)
@@ -2612,7 +2608,7 @@ impl Suspender {
         );
         self.check(
             "the context on the second kernel",
-            other.resume_process(context, config).is_none(),
+            other.resume_process(context).is_none(),
         );
         self.check(
             "the tasks on the second kernel",
@@ -2631,7 +2627,7 @@ impl Suspender {
         );
         self.check(
             "the context back on the first kernel",
-            kernel.resume_process(context, config).is_none(),
+            kernel.resume_process(context).is_none(),
         );
         let ordered: Vec<_> = self
             .order
@@ -2957,9 +2953,7 @@ impl Hooks for Stopper {
                 if let Some(context) = CONTEXT.take() {
                     self.check(
                         "the child's context put back",
-                        kernel
-                            .resume_process(context, ExecutionConfig::default())
-                            .is_none(),
+                        kernel.resume_process(context).is_none(),
                     );
                 }
                 let mut tasks = SUSPENDED.take();

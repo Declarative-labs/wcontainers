@@ -15,7 +15,7 @@ use wcontainers_executor_unicorn::hooks::Hooks;
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    ExecutionConfig, Kernel, Process, ProcessContext, SuspendedTask, SystemCallResponse, TaskId,
+    Kernel, Process, ProcessContext, SuspendedTask, SystemCallResponse, TaskId,
 };
 
 const PROGRAM: &str = "taskend";
@@ -264,7 +264,7 @@ impl Hooks for CopyEnds {
             return false;
         };
         let mut log = self.log.lock().unwrap();
-        let refused = kernel.resume_process(copy, ExecutionConfig::default());
+        let refused = kernel.resume_process(copy);
         log.push(format!("copy refused {}", refused.is_some()));
         let caller = self.caller.expect("the caller");
         let (back, staying): (Vec<SuspendedTask>, Vec<SuspendedTask>) = TAKEN

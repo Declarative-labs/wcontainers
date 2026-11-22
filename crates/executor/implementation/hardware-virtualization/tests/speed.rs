@@ -1116,27 +1116,24 @@ mod speed {
         let arguments: Vec<&[u8]> = starting.arguments.iter().map(Vec::as_slice).collect();
         let environment: Vec<&[u8]> = starting.environment.iter().map(Vec::as_slice).collect();
         let memory_bytes = cpu.address_space().end;
-        kernel
-            .start(
-                &mut cpu,
-                &host,
-                Start {
-                    path: &starting.path,
-                    arguments: &arguments,
-                    environment: &environment,
-                    working_directory: &starting.working_directory,
-                    hostname: &starting.hostname,
-                    groups: &starting.groups,
-                    backend: None,
-                    standard: host.standard(),
-                    address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-                    memory_bytes,
-                    ceiling: None,
-                    execution: wcontainers_kernel_linux::ExecutionConfig::default(),
-                    options: wcontainers_kernel_linux::StartOptions::default(),
-                },
-            )
-            .expect("the kernel runs a default container's first process");
+        kernel.start(
+            &mut cpu,
+            &host,
+            Start {
+                path: &starting.path,
+                arguments: &arguments,
+                environment: &environment,
+                working_directory: &starting.working_directory,
+                hostname: &starting.hostname,
+                groups: &starting.groups,
+                backend: None,
+                standard: host.standard(),
+                address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
+                memory_bytes,
+                ceiling: None,
+                options: wcontainers_kernel_linux::StartOptions::default(),
+            },
+        );
         assert_eq!(kernel.start_failure(), None, "starting {ANSWERED}");
         loop {
             match kernel.next() {

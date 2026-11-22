@@ -17,7 +17,7 @@ use wcontainers_kernel::{MemoryError, TaskId, WatchesFor, WriteMemoryError};
 
 use crate::process::Pid;
 use crate::suspend::{ProcessContext, SuspendedTask};
-use crate::system::{ExecutionConfig, pid_of};
+use crate::system::{Unsupported, pid_of};
 
 /// What the embedder keeps of one process: its state, and how it asked for the process to run,
 /// shared by the processes a fork made from it.
@@ -60,12 +60,15 @@ impl EmbedderData {
     }
 }
 
-/// The kernel's own way of running a process from the interface's.
-fn kernel_config<E: Executor>(config: &interface::ExecutionConfig<E>) -> ExecutionConfig {
-    ExecutionConfig {
-        thread_ordering: config.thread_ordering,
-        replay_determinism: config.replay_determinism,
+/// Whether the kernel can run a process as `config` says: serially, with exact replay.
+fn supported<E: Executor>(config: &interface::ExecutionConfig<E>) -> Result<(), Unsupported> {
+    if config.thread_ordering != interface::ThreadOrdering::Serial {
+        return Err(Unsupported::ThreadOrdering(config.thread_ordering));
     }
+    if config.replay_determinism != interface::ReplayDeterminism::Exact {
+        return Err(Unsupported::ReplayDeterminism(config.replay_determinism));
+    }
+    Ok(())
 }
 
 /// A kernel with the executor its threads run on, each process with the embedder's `State`.
@@ -77,7 +80,7 @@ pub struct KernelWithExecutor<C, State> {
 
 impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelWithExecutor<C, State> {
     /// Starts a container on `kernel`, as [`crate::Kernel::start`], its first process with
-    /// `state` and run as `config` says (the start's own execution is replaced by it).
+    /// `state` and run as `config` says, unless the kernel cannot run it so.
     pub fn start<S: crate::System>(
         mut kernel: crate::Kernel,
         mut executor: C,
@@ -85,12 +88,9 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelWithExecutor<C, 
         start: crate::Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
         config: interface::ExecutionConfig<C>,
         state: State,
-    ) -> Result<Self, crate::Unsupported> {
-        let start = crate::Start {
-            execution: kernel_config(&config),
-            ..start
-        };
-        kernel.start(&mut executor, system, start)?;
+    ) -> Result<Self, Unsupported> {
+        supported(&config)?;
+        kernel.start(&mut executor, system, start);
         let first = kernel
             .init
             .expect("a started container has a first process");
@@ -158,13 +158,15 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessCont
     }
 
     /// Hands the context back, as the kernel's own resume does, also when it carries no state of
-    /// this embedder.
+    /// this embedder or the kernel cannot run it as `config` says.
     fn resume_process(
         &mut self,
         mut context: ProcessContext,
         config: interface::ExecutionConfig<C>,
     ) -> Option<ProcessContext> {
-        let kernel_config = kernel_config(&config);
+        if supported(&config).is_err() {
+            return Some(context);
+        }
         let Some(data) = context
             .embedder_mut()
             .and_then(|data| data.value.downcast_mut::<ProcessData<C, State>>())
@@ -172,7 +174,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessCont
             return Some(context);
         };
         let before = core::mem::replace(&mut data.config, Rc::new(config));
-        let refused = self.kernel.resume_process(context, kernel_config);
+        let refused = self.kernel.resume_process(context);
         refused.map(|mut context| {
             if let Some(data) = context
                 .embedder_mut()
@@ -352,14 +354,44 @@ mod tests {
         type TranslatorConfig = ();
     }
 
+    /// A way of running a process.
+    fn config(
+        thread_ordering: interface::ThreadOrdering,
+        replay_determinism: interface::ReplayDeterminism,
+    ) -> interface::ExecutionConfig<Plain> {
+        interface::ExecutionConfig {
+            thread_ordering,
+            replay_determinism,
+            translator: (),
+        }
+    }
+
+    #[test]
+    fn only_serial_exact_runs_and_the_rest_are_refused_by_name() {
+        use interface::{ReplayDeterminism, ThreadOrdering};
+        assert_eq!(
+            supported(&config(ThreadOrdering::Serial, ReplayDeterminism::Exact)),
+            Ok(())
+        );
+        assert_eq!(
+            supported(&config(ThreadOrdering::Parallel, ReplayDeterminism::Exact)),
+            Err(Unsupported::ThreadOrdering(ThreadOrdering::Parallel))
+        );
+        for replay in [ReplayDeterminism::External, ReplayDeterminism::None] {
+            assert_eq!(
+                supported(&config(ThreadOrdering::Serial, replay)),
+                Err(Unsupported::ReplayDeterminism(replay))
+            );
+        }
+    }
+
     #[test]
     fn a_copy_has_its_own_state_and_shares_the_configuration() {
         let data = EmbedderData::new(ProcessData::<Plain, u32> {
-            config: Rc::new(interface::ExecutionConfig {
-                thread_ordering: interface::ThreadOrdering::Serial,
-                replay_determinism: interface::ReplayDeterminism::Exact,
-                translator: (),
-            }),
+            config: Rc::new(config(
+                interface::ThreadOrdering::Serial,
+                interface::ReplayDeterminism::Exact,
+            )),
             state: 1,
         });
         let mut copy = data.clone();

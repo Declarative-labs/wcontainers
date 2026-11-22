@@ -79,8 +79,6 @@ pub struct Start<'a, E> {
     /// space; a request past it fails as out of memory and is announced as
     /// `System::on_process_outgrown`.
     pub ceiling: Option<u64>,
-    /// How the first process is run.
-    pub execution: crate::ExecutionConfig,
     /// What the container's configuration sets beyond its program.
     pub options: StartOptions<'a>,
 }
@@ -978,9 +976,8 @@ impl Kernel {
         cpu: &mut dyn Cpu,
         system: &alloc::sync::Arc<S>,
         start: Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
-    ) -> Result<(), crate::Unsupported> {
+    ) {
         assert!(self.init.is_none(), "the container has already started");
-        start.execution.supported()?;
         let mut cx = Context {
             cpu,
             host: &**system,
@@ -1028,7 +1025,7 @@ impl Kernel {
                 self.start_failure = Some(error);
                 self.finished = Some(start_failed(error));
                 self.close_unmade(&mut cx, &standard);
-                return Ok(());
+                return;
             }
         };
         let credentials = credentials.expect("checked before the id was taken");
@@ -1070,7 +1067,6 @@ impl Kernel {
             peak_mapped: 0,
             started: cx.monotonic(),
             vdso: 0,
-            execution: start.execution,
             embedder: None,
             execed: false,
             self_exec_id: 0,
@@ -1106,7 +1102,7 @@ impl Kernel {
             self.start_failure = Some(error);
             self.finished = Some(start_failed(error));
             self.close_unmade(&mut cx, &standard);
-            return Ok(());
+            return;
         }
         let owned = |strings: &[&[u8]]| strings.iter().map(|string| string.to_vec()).collect();
         self.starting = Some(Box::new(Starting {
@@ -1121,7 +1117,6 @@ impl Kernel {
         }));
         self.run_start(&mut cx);
         self.settle(&mut cx);
-        Ok(())
     }
 
     /// Gives the first process the values runc sets before its program runs, each as the

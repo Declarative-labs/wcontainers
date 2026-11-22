@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use wcontainers_abi::Cpu;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel_linux::{
-    ARM64_ADDRESS_SPACE_BYTES, Attributes, ExecutionConfig, FileRecord, Kernel, NewFile, Start,
-    StartOptions,
+    ARM64_ADDRESS_SPACE_BYTES, Attributes, FileRecord, Kernel, NewFile, Start, StartOptions,
 };
 use wcontainers_runtime_single_kernel::System;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -158,12 +157,9 @@ pub fn start<R: Ring, S: System>(
         address_space_bytes: ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes: cpu.address_space().end,
         ceiling: None,
-        execution: ExecutionConfig::default(),
         options: StartOptions::default(),
     };
-    kernel
-        .start(cpu, system, start)
-        .expect("the kernel runs a default container's first process");
+    kernel.start(cpu, system, start);
     system.started(kernel, cpu);
     Ok(())
 }

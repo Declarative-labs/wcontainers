@@ -9,7 +9,7 @@ use wcontainers_abi::{Cpu, MemoryId, RegisterBlock, Resume};
 use crate::counters::reason;
 use crate::linux::general::{SIGCHLD, SIGRTMIN};
 use crate::process::{Away, Call, Channel, Leader, Map, Pending, Pid, Thread, Tid};
-use crate::system::{ExecutionConfig, Process, TaskId};
+use crate::system::{Process, TaskId};
 use crate::{Kernel, sharing, syscall};
 
 /// A task taken off a kernel: its own records, its registers, and where it was in line.
@@ -135,14 +135,9 @@ impl Kernel {
         Some(self.context_copy(pid))
     }
 
-    /// Puts a process's context on this kernel, run as `config` says; hands it back if that
-    /// process is already here or the kernel cannot run it so.
-    pub fn resume_process(
-        &mut self,
-        context: ProcessContext,
-        config: ExecutionConfig,
-    ) -> Option<ProcessContext> {
-        if self.processes.contains_key(&context.process.pid) || config.supported().is_err() {
+    /// Puts a process's context on this kernel; hands it back if that process is already here.
+    pub fn resume_process(&mut self, context: ProcessContext) -> Option<ProcessContext> {
+        if self.processes.contains_key(&context.process.pid) {
             return Some(context);
         }
         let ProcessContext {
@@ -150,7 +145,6 @@ impl Kernel {
             announced,
             ..
         } = context;
-        process.execution = config;
         process.threads.clear();
         // A parent that ended while it was away gave it to a reaper.
         if let Some(away) = self.processes_away.remove(&process.pid) {

@@ -18,8 +18,8 @@ use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::{ProcessIdentity, SendCode};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    ContextOrigin, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext,
-    SignalInformation, SuspendedTask, SystemCallResponse, TaskId, reason,
+    ContextOrigin, Kernel, MemoryObject, Process, ProcessContext, SignalInformation, SuspendedTask,
+    SystemCallResponse, TaskId, reason,
 };
 
 const PROGRAM: &str = "away";
@@ -167,7 +167,7 @@ impl Script {
 
     fn put_back(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
         if let Some(context) = CONTEXT.take() {
-            let back = kernel.resume_process(context, ExecutionConfig::default());
+            let back = kernel.resume_process(context);
             assert!(back.is_none(), "the context is put back");
         }
         let back = kernel.resume_tasks(cpu, TAKEN.take()).count();
@@ -354,7 +354,7 @@ impl Hooks for Script {
                 let copy = kernel.copy_process_context(process).expect("a copy");
                 self.seen.lock().unwrap().origin = Some(copy.origin());
                 let mut second = Kernel::new();
-                let back = second.resume_process(copy, ExecutionConfig::default());
+                let back = second.resume_process(copy);
                 assert!(back.is_none(), "the copy is put on the second kernel");
                 assert!(
                     kernel.copy_process_context(process).is_some(),

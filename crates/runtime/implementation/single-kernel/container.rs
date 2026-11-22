@@ -160,30 +160,27 @@ impl<E: Executor> Runtime<E> {
                     .any(|listed| listed.destination().as_os_str() == docker.point)
             })
             .collect();
-        kernel
-            .start(
-                &mut cpu,
-                &system,
-                Start {
-                    path: path.as_bytes(),
-                    arguments: &arguments,
-                    environment: &environment,
-                    working_directory: accepted.cwd.as_bytes(),
-                    hostname: accepted.hostname.as_bytes(),
-                    groups: &accepted.groups,
-                    backend: accepted.volume.as_ref().map(|v| v.destination.as_bytes()),
-                    standard,
-                    address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-                    memory_bytes,
-                    ceiling: None,
-                    execution: wcontainers_kernel_linux::ExecutionConfig::default(),
-                    options: StartOptions {
-                        mounts: &mounts,
-                        ..StartOptions::default()
-                    },
+        kernel.start(
+            &mut cpu,
+            &system,
+            Start {
+                path: path.as_bytes(),
+                arguments: &arguments,
+                environment: &environment,
+                working_directory: accepted.cwd.as_bytes(),
+                hostname: accepted.hostname.as_bytes(),
+                groups: &accepted.groups,
+                backend: accepted.volume.as_ref().map(|v| v.destination.as_bytes()),
+                standard,
+                address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
+                memory_bytes,
+                ceiling: None,
+                options: StartOptions {
+                    mounts: &mounts,
+                    ..StartOptions::default()
                 },
-            )
-            .expect("the kernel runs a process serially with exact replay");
+            },
+        );
         system.started(&mut kernel, &mut cpu);
         Ok(Container {
             kernel,

@@ -19,8 +19,8 @@ use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalValue};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    AccessKind, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext, SignalInformation,
-    SuspendedTask, SystemCallResponse, TaskId, WatchesFor,
+    AccessKind, Kernel, MemoryObject, Process, ProcessContext, SignalInformation, SuspendedTask,
+    SystemCallResponse, TaskId, WatchesFor,
 };
 
 const PROGRAM: &str = "edges";
@@ -491,7 +491,7 @@ impl Hooks for SharingRecorder {
             }
             Writer::Away if self.child_ended => {
                 let context = CONTEXT.take().expect("the parent's context");
-                let back = kernel.resume_process(context, ExecutionConfig::default());
+                let back = kernel.resume_process(context);
                 assert!(back.is_none(), "the parent's context is put back");
                 assert_eq!(kernel.resume_tasks(cpu, TAKEN.take()).count(), 0);
                 self.plan = Writer::Back;

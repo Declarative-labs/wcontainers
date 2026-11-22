@@ -16,8 +16,8 @@ use wcontainers_clock::Clock as _;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel_linux::{
-    AccessKind, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process, SignalInformation,
-    Standard, Start, System, SystemCallResponse, TaskId,
+    AccessKind, FileRecord, Kernel, MemoryObject, Process, SignalInformation, Standard, Start,
+    System, SystemCallResponse, TaskId,
 };
 use wcontainers_runtime_single_kernel::{Ending, Execution, TerminalSize, Turn};
 use wcontainers_system_seeded_test_policy::{
@@ -1289,7 +1289,6 @@ pub fn started_with_executor<State: Clone + 'static>(
         address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes: cpu.address_space().end,
         ceiling: prepared.ceiling,
-        execution: ExecutionConfig::default(),
         options: prepared.options,
     };
     let config = wcontainers_kernel::ExecutionConfig {
@@ -1425,15 +1424,12 @@ where
         address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes: cpu.address_space().end,
         ceiling,
-        execution: ExecutionConfig::default(),
         options,
     };
     #[cfg(feature = "runtime")]
     let started = Instant::now();
     let host = Arc::new(host);
-    kernel
-        .start(&mut cpu, &host, start)
-        .expect("the kernel runs a process serially with exact replay");
+    kernel.start(&mut cpu, &host, start);
     wcontainers_runtime_single_kernel::System::started(&host, &mut kernel, &mut cpu);
     let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &host);
     let status = match ending {
