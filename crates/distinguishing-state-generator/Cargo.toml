@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-instruction-set"
+name = "wcontainers-distinguishing-state-generator"
 version = "0.1.0"
 edition = "2024"
 
