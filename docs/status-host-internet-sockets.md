@@ -10,8 +10,38 @@ restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267
 the ICMP wait flake's cause and answered that check's four minor findings; I2 run 7 answered the next check's three
 and cleared 17 literal findings the check script had hidden; the linter findings left all wait on a ruling
 (below). C22 run 1 (2026-11-22, below) conformed the three hosts and their suites to the owner's interfaces merged
-at 158b6c62; C22 run 2 answered its check's five findings. Next: the independent check of C22 run 2. Nothing of
-this track is in progress.
+at 158b6c62; C22 run 2 answered its check's five findings; C22 run 3 answered the next check's six. Next: the
+independent check of C22 run 3. Nothing of this track is in progress.
+
+## 2026-11-22: C22 run 3 (the check's six findings, each)
+- No check told `Requested` from `Bound` (blocking): true. New ICMP check
+  a_ping_from_a_bound_address_takes_a_requested_interface_as_linux_does: a ping bound to 10.3.0.1, to 10.8.0.1 with
+  `Requested(ib)`, leaves by ib (IPv4 holds it); one bound to fd03::1, to fd08::1 with `Requested(ib)`, leaves by ia
+  (Linux's IPv6 lookup with a source only prefers it; ia's route has metric 1); nothing by the other link. The raw
+  route check sends from fd03::1 with `Requested(ib)` and wants it by ia. The checker's two broken copies (Requested
+  held as Bound) now fail.
+- No check of the exemption of a scoped link-local bind (minor): true, and writing it found a fault. Linux refuses a
+  non-zero `IPV6_UNICAST_IF` (EINVAL) on a socket bound to a device, which such a bind is, so the host failed every
+  ping from fe80::5 bound on ib that named ib. Measured (c22-run3/probe.py, ARM): by `IPV6_UNICAST_IF` ib EINVAL, by
+  `IPV6_PKTINFO` ib or the address's scope sent by ib; naming ia by either option EINVAL. Fixed: the ICMP host keeps
+  the bound link and sends a ping naming it without the interface. New check
+  a_link_local_bind_takes_pings_by_its_link_and_refuses_another (Bound and Requested ib sent by ib from fe80::5;
+  Bound and Requested ia EINVAL; nothing by ia). The checker's broken copy (scope condition removed) and one that
+  passes the own link on both fail it. Raw sockets have no bind, so no device binding.
+- Known refusal BOUND_WITH_SOURCE (minor): a confirmation; unchanged, recorded under Not honoured and For the owner.
+- The resolver's ECN bits have no observable effect (minor): kept. The route selectors carry ECN and the resolver
+  hands Linux every selector as a send would give it (header tos, the helper socket's traffic class); that Linux's
+  lookups mask ECN is Linux's choice, which the resolver should not bake in. No check can see it, as the plan says.
+- read_buffer_sizes copied in both hosts (minor): fixed. The shared crate has `datagram::exchange::buffer_sizes`
+  (its own commit); both hosts call it; the UDP track is told (For the other socket tracks).
+- The plan's ICMP and raw sections lacked the Bound hold (minor): fixed; they also say how a scoped link-local bind
+  takes an interface.
+- Runs (`c22-run3/check.sh`, log final.log, ARM, 20:25 to 20:26 UTC, load 6.8 to 9.9, `CLEAN=1 ROUNDS=3`): clean
+  build folder; clippy with warnings denied clean on nine packages (the eight and the shared crate); three rounds of
+  ICMP 67 + 5 counter + 1 wait, raw 53 + 2 + 1, resolver 38 + 1, Configurable 2, NegativeRouteAdvisable 7, all
+  passing; eleven broken copies each caught (run 2's six, the checker's three, the own link passed on, raw buffer
+  sizes swapped through the shared call). No interface.rs or data file of the track's crates, internet-protocol,
+  readiness, udp, tcp or kernel differs from main (`git diff main --` of the 20 files, empty).
 
 ## 2026-11-22: C22 run 2 (the C22 check's findings, each)
 - An IPv6 ping or raw send from a source by a `Bound` interface left by another link (blocking): true. Linux holds a
@@ -1053,9 +1083,12 @@ this track is in progress.
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
   mobility header is sent by its type, and its type is what a rule sees (a mismatched selector refused);
   withdrawn reassembly; checksum offset (where it is written, and a wrong checksum dropped on receipt); IPv4 and IPv6 router alerts with isolation, turned off and changed, and a refused change keeps the old alert.
-- Interface selectors: `Requested` per packet (`IP_PKTINFO`/`IPV6_PKTINFO`, `IP_UNICAST_IF`/`IPV6_UNICAST_IF`);
+- Interface selectors: `Requested` per packet (`IP_PKTINFO`/`IPV6_PKTINFO`, `IP_UNICAST_IF`/`IPV6_UNICAST_IF`),
+  which holds IPv4 and IPv6 without a source and only steers IPv6 from a source (checked both ways);
   `Bound` the same where Linux's per-packet lookup is held (IPv4, IPv6 without a source), and for an IPv6 send from
-  a source only after the route resolver said that lookup leaves by the bound interface (else refused, above).
+  a source only after the route resolver said that lookup leaves by the bound interface (else refused, above). A
+  ping socket bound to a scoped link-local address sends one naming its link without `IPV6_UNICAST_IF` (which Linux
+  refuses there) and gets EINVAL for another link, as Linux answers (checked).
 - Settings: multicast membership, its source filters (as Linux lists them, and IPv4 raw delivery) and loopback
   (both versions), IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
@@ -1111,6 +1144,14 @@ this track is in progress.
   `IPV6_MTU` fragments nothing smaller than the path MTU; IPv6 router alerts reach only `IPPROTO_RAW` sockets.
 
 ## For the other socket tracks
+- UDP, new in C22 run 3: the shared crate has `datagram::exchange::buffer_sizes(fd)` (`SO_SNDBUF`, `SO_RCVBUF`
+  through socket2), which the ICMP and raw hosts now use; your `read_buffer_sizes` is the same lines and could call it.
+- UDP, new in C22 run 3: Linux refuses a non-zero `IPV6_UNICAST_IF` (EINVAL) on a socket bound to a device, which a
+  bind to a link-local address with its scope does (measured on the ARM machine, c22-run3/probe.py: a ping socket
+  bound to fe80::5 on ib, sent to fd08::1 naming ib by `IPV6_UNICAST_IF` gets EINVAL, by `IPV6_PKTINFO` or the
+  address's scope is sent by ib; naming ia by either option gets EINVAL). The shared `apply_route` writes the
+  option for any route interface, so a UDP send naming the socket's own link from such a socket gets EINVAL. The
+  ICMP host drops an interface equal to its bound link before the shared call.
 - UDP, new in I2 run 4: your receive order holds for several ICMP errors too, which I had doubted: reading an entry
   off the error queue sets the socket error again while the next entry is an ICMP error (sock_dequeue_err_skb), so
   each receive is answered with an error while one waits. ICMP and raw now use the same order through the shared

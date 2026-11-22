@@ -159,12 +159,23 @@ TTL, TOS and options messages; IPv6 with its extension headers), read with a tai
 because Linux cuts a ping socket's packet to the buffers given and tells only what it copied, and its drop count
 asked of `SO_MEMINFO` (counted, one more system call per packet); count_unsent_bytes is `SO_MEMINFO`'s
 `SK_MEMINFO_WMEM_ALLOC`, which is what `SIOCOUTQ` gives a UDP socket (ping sockets take no ioctl);
-read_buffer_sizes is `SO_SNDBUF` and `SO_RCVBUF` (socket2); close drops the descriptor.
+read_buffer_sizes is `SO_SNDBUF` and `SO_RCVBUF` (the shared crate's `buffer_sizes`, socket2); close drops the
+descriptor.
+
+A route's interface goes to Linux as `IP_UNICAST_IF`/`IPV6_UNICAST_IF` or the packet information's interface, which
+holds every IPv4 lookup and an IPv6 one without a source to it, but only steers an IPv6 lookup with a source. So a
+`Bound` interface on an IPv6 ping from a socket bound to an address (other than a link-local one with its scope,
+which Linux already binds to its link) first asks the route resolver host the same question from that address with
+`Bound` (counted, one routing socket exchange): a route out of the bound interface sends the ping as above, the
+resolver's error answers the send, and its refusal refuses the send (BOUND_WITH_SOURCE). A `Requested` interface
+goes to Linux as it is. A socket bound to a link-local address with its scope is held to that link by Linux, which
+refuses `IPV6_UNICAST_IF` on it: a send naming that link goes without the option, one naming another link gets
+Linux's EINVAL.
 
 Refused with a counter and a warning, by what Linux's ping sockets do (net/ipv6/ping.c): for IPv6 a source
 address (the socket's bound one is used), extension headers and a routing header (dropped), and neighbour
 confirmation (the flags are not passed on). For both, an upper-layer selector other than the type and code
-of the message, which Linux routes by.
+of the message, which Linux routes by. Also a bound interface the route resolver host refuses, above.
 
 `crates/raw-sockets/implementation/host`, package `wcontainers-raw-sockets-host`: `SOCK_RAW`
 sockets of the given protocol (root or `CAP_NET_RAW`). A payload is sent with `IP_HDRINCL`/`IPV6_HDRINCL` off
@@ -175,11 +186,13 @@ error queue entry (ICMP errors whole; a socket that wrote its headers gets the q
 on), else the packet: IPv4 as Linux gives it, IPv6 with its header and extension headers written in front.
 Settings: the IP ones as for ICMP; checksum `IPV6_CHECKSUM` (offset, or -1 for none); router alert
 `IP_ROUTER_ALERT`, or `IPV6_ROUTER_ALERT_ISOLATE` and `IPV6_ROUTER_ALERT`. count_unsent_bytes and
-read_buffer_sizes as for ICMP.
+read_buffer_sizes as for ICMP. A `Bound` interface on an IPv6 payload with a source is held as an ICMP ping's from a
+bound address, the route's source asked of the route resolver host.
 
 Refused: an upper-layer selector other than what Linux routes the send by (the message's ICMP type and code,
-the mobility header type for IPv6, none for other protocols or a packet with its own header), and a payload
-under another protocol than the socket's (IPv4, or IPv6 unless the socket's is `IPPROTO_RAW`).
+the mobility header type for IPv6, none for other protocols or a packet with its own header), a payload
+under another protocol than the socket's (IPv4, or IPv6 unless the socket's is `IPPROTO_RAW`), and a bound interface
+the route resolver host refuses.
 
 Each suite runs every check as root in a network namespace of its own, which each check (and each value it makes
 for the readiness and Configurable suites) enters first on the test's thread, after the value is made, so the
