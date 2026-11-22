@@ -4221,6 +4221,8 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-conformance",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
 ]
@@ -4587,10 +4589,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-instruction-input-domain-arm64"
+version = "0.1.0"
+dependencies = [
+ "itertools 0.14.0",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
 name = "wcontainers-instruction-input-domain-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-instruction-input-domain",
+ "wcontainers-processor-architecture",
 ]
 
 [[package]]
