@@ -34,7 +34,44 @@ item stays open until one of them comes.
 
 G6 (the rest of the gap list), given on 2026-11-22 as its run 1 (run 80, the section below):
 G6b's check's findings settled or recorded, A4's `combine` drawn for single-sample targets, and
-subnormal tessellation factors kept on the DXBC route. Not complete: the gap list below.
+subnormal tessellation factors kept on the DXBC route. Run 2 (run 81, the section below): A28's
+first part, `A8Unorm` storage views, built and drawn. Not complete: the gap list below.
+
+## G6 run 2 (run 81): `A8Unorm` storage views
+
+Logs and scripts in scratch `graphics-shaders/g6-r81` (clone `tip`, `gpu.sh`, `x86-checks.sh`).
+- A28 (1), the Direct3D 11 front's ask, built (da38fb54): a storage view of `A8Unorm` in
+  `storage_formats` is declared `rgba8unorm`, the form the WebGPU back end holds `A8Unorm` in (value
+  in alpha, colour channels zero; its packed.rs), on both routes and through `rewrite`
+  (`lower::storage_form`). The variant pass `src/variant/alpha.rs` makes every store into such a
+  view write `(0, 0, 0, a)` of its value, as Direct3D stores the fourth component into the format's
+  one channel, so the colour channels stay zero and a load reads `(0, 0, 0, a)`. Through a buffer
+  (`texels_through_buffer`) it is still `StorageFormatAbsent`, as is the built-in storage clear (the
+  component Direct3D's clear of an A8 view takes was not measured).
+- Tests: `alpha_storage_views_store_their_alpha_alone_on_both_routes` (tests/compute.rs: the type,
+  each store's value, WGSL round trip, the buffer route's refusal) and
+  `alpha_storage_textures_store_their_alpha_as_direct3d_does` (tests/compute_draw.rs: `cs_images`
+  with u0 an `A8_UNORM` view against real Direct3D 11 on the RTX 3080, both routes, default seeds 1
+  to 4; ours drawn into an rgba8unorm texture as the back end holds it, every texel equal to
+  Direct3D's widened to `(0, 0, 0, a)`, so the colour channels are checked zero too): passed
+  (job1.log). Not drawn: a load of an A8 storage view (no test program loads one).
+- The WebGPU back end still gives `A8Unorm` no storage use (the Direct3D 12 track asked it), so a
+  front must create the texture through the back end's `A8Unorm`, which refuses `STORAGE`, or hold
+  it itself as `Rgba8Unorm` with the value in alpha (the Direct3D 11 front does), binding that view
+  with `A8Unorm` named in `storage_formats`.
+
+Runs (at da38fb54, from the scratch clone):
+- x86 machine (load 40 at the start, 19 at the end, other tracks' jobs beside): rustfmt of every
+  file of this crate clean, clippy of this crate and the interface with warnings denied clean, the
+  whole suite with every corpus (`--include-ignored --skip mutated --skip
+  damaged_records_decode_without_a_panic`, A16's known failure): 125 passed, 0 failed, the four
+  corpus record tests among them (13 passed); the literal check prints no line of this crate (it
+  fails on 413 lines of other tracks); this crate's baseline lines 4,787, 356 under src
+  (x86-checks.log).
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy of this crate with warnings denied
+  clean; `compute_draw`'s four storage texture tests passed (job1.log).
+- Not run: WebAssembly and Chrome (no corpus file names an `A8Unorm` storage view; the verdicts
+  hold), the whole GPU suite.
 
 ## G6 run 1 (run 80): G6b's check's findings, `combine` drawn, subnormal factors kept
 
@@ -227,6 +264,10 @@ Runs at a00ab267:
   `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
 ## New for the owner
+
+- Run 81: `A8Unorm` storage views convert and store as Direct3D 11 does (A28's first part), for
+  the Direct3D 11 front. The WebGPU back end still declares no storage use of `A8Unorm`. No
+  interface change.
 
 - Run 80: single-sample `TargetInShader::combine` is drawn equal to Direct3D 11 (blends into
   the integer twins within one code, logic operations exact), so the Direct3D 11 front may set it
@@ -1185,20 +1226,19 @@ The gap list (every item of the pass bar not met):
   - `StorageFormatAbsent`, a storage view whose format has no storage form here: raised by the
     storage clear (src/builtin.rs) and by `convert` on both routes, where a key's
     `storage_formats` or `texel_buffers` names such a format (src/lower.rs `storage_format` and the
-    typed buffer layout, src/dxil/images.rs). Not "nobody's": it is the refusal the Direct3D 11
-    front's `A8_UNORM` typed storage views meet (A28).
+    typed buffer layout, src/dxil/images.rs). Since run 81 `A8Unorm` storage views convert
+    natively (A28); through a buffer and by the clear they still meet this refusal.
 - A28. Two asks of the Direct3D 11 front (its status, "Asked", and its known failure
   `yuy2_view_sizes_read_as_direct3d_reads_them`), not on the pass bar's words, unlisted here until
   the fourth check of G6a found them. (1) A storage form of `A8Unorm`: the front holds A8 as
   `rgba8unorm` with its value in alpha, and `storage_format` has no `A8Unorm`, so a typed storage
-  view of it is `StorageFormatAbsent` (A27). Waits: the Direct3D 11 front (no Wine test reaches
-  it). Takes: `A8Unorm` given `Rgba8Unorm`'s storage form with loads read as `(0, 0, 0, a)` and
-  stores writing the value's alpha only, on both routes, and a drawn test against Direct3D 11
-  where the RTX 3080 has A8 typed storage. (2) A helper value giving a program a view's width
+  view of it was `StorageFormatAbsent` (A27). Built in run 81 (its section): declared
+  `rgba8unorm`, stores writing `(0, 0, 0, a)`, drawn equal to Direct3D 11 for stores on both
+  routes; loads not drawn; through a buffer and by the built-in clear still absent. (2) A helper value giving a program a view's width
   other than its texture's (`GetDimensions` of a YUY2 view: Direct3D gives the texture's width in
   pixels, ours the view's pixel pairs). Waits: the Direct3D 11 front. Takes: an interface helper
   value (the interface track's) and `TEXTURE_INFO` reading it in place of the texture's width.
-  Neither is built.
+  The second is not built.
 - A29. Three drawn test binaries, `draw`, `geometry_draw` and `variant_draw`, crash on the desktop
   when their tests run in parallel threads (cargo's default): ANGLE asserts in its Direct3D 11
   state manager (`StateManager11.cpp:1201`, `mVertexArray11 == ...`, and `:2968`,
@@ -1320,8 +1360,8 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6's gap list in the order the fronts need it: A28 (the Direct3D 11 front's `A8Unorm`
-   storage form and, with the interface track, a view's width for YUY2), A4's `SwizzledDepth`
+1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
+   view's width for YUY2), A4's `SwizzledDepth`
    (the Direct3D 12 front's runner: real Direct3D 12 drawn with mapped depth views first), A5's
    geometry replay streams past the first and A17's aliased lines into multisampled targets (the
    Direct3D 11 front's asks), A4's multisampled `combine`, A9, A7, A1, the DXIL route's
@@ -1489,6 +1529,10 @@ G6a run 5's tip):
 
 ## How the Direct3D fronts call `convert`
 
+- `A8_UNORM` typed unordered access views (since run 81): hold the texture as `Rgba8Unorm` with the
+  value in alpha and the colour channels zero (as the WebGPU back end holds `A8Unorm`), bind its
+  `Rgba8Unorm` view, and name `(slot, Format::A8Unorm)` in `storage_formats`; stores write alpha
+  alone. Not through `texels_through_buffer`, and not cleared by `builtin::storage_clear`.
 - `TargetInShader::combine` (blending or a logic operation in the program; since run 80 drawn
   equal to Direct3D 11 for single-sample targets). Set it on the target's entry with the guest's
   format and the key's `samples` (a multisampled target is refused, `BlendInShaderMultisampled`);
