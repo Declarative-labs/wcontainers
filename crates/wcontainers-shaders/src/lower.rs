@@ -1033,7 +1033,7 @@ impl<'a> Lowering<'a> {
             .ok_or(unsupported(crate::refusal::STORAGE_FORMAT))?
             .1;
         let format =
-            storage_format(format).ok_or(unsupported(crate::refusal::STORAGE_FORMAT_ABSENT))?;
+            storage_form(format).ok_or(unsupported(crate::refusal::STORAGE_FORMAT_ABSENT))?;
         let flags = op
             .lits
             .get(ir::resource_literal::UAV_FLAGS)
@@ -2057,6 +2057,14 @@ pub(crate) fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::Storage
         F::Rgba32Float => S::Rgba32Float,
         _ => return None,
     })
+}
+
+/// The storage texture format a program declares for a storage view of an interface format: WGSL's
+/// own, or `rgba8unorm` for `A8Unorm`, which the back ends hold so with the value in alpha (the
+/// variant's `alpha_only` keeps the colour channels zero).
+pub(crate) fn storage_form(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
+    storage_format(f)
+        .or((f == wcontainers_gpu::Format::A8Unorm).then_some(naga::StorageFormat::Rgba8Unorm))
 }
 
 /// The scalar kind a storage format's texels are read and written as.

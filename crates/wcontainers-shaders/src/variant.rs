@@ -17,6 +17,7 @@ use wcontainers_gpu::{
 
 use crate::ConvertError;
 
+mod alpha;
 mod constants;
 mod decoded;
 mod early;
@@ -44,6 +45,7 @@ pub(crate) fn apply(
     if variant.flags.contains(VariantFlags::STORAGE_OFFSET) {
         offset::storage_offsets(module, stage, reflection)?;
     }
+    alpha::alpha_only(module, variant, reflection)?;
     if !variant.swizzled.is_empty() {
         let mut outlined = Outlined::default();
         swizzle::swizzled(module, &variant.swizzled, reflection, &mut outlined)?;

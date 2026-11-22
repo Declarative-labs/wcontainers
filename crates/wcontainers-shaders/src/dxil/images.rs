@@ -7,7 +7,7 @@
 use super::{Placed, each_block, functions_first, place_calls};
 use crate::ConvertError;
 use crate::build::{Builder, Expr};
-use crate::lower::{storage_format, storage_kind};
+use crate::lower::{storage_form, storage_kind};
 use crate::variant::texel::{TexelBuffer, TexelPlace};
 use alloc::collections::BTreeMap;
 use alloc::vec;
@@ -592,7 +592,7 @@ fn storage_image(
         .find(|(s, _)| *s == slot)
         .ok_or(ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT))?
         .1;
-    let format = storage_format(format).ok_or(ConvertError::Unsupported(
+    let format = storage_form(format).ok_or(ConvertError::Unsupported(
         crate::refusal::STORAGE_FORMAT_ABSENT,
     ))?;
     let access = match (uses.load, uses.store) {
@@ -840,7 +840,7 @@ fn other_kind(
     let declared = texel_kind(&module.types[module.global_variables[var].ty].inner)?;
     let slot = d.slot(module, var);
     let &(_, format) = variant.storage_formats.iter().find(|(s, _)| *s == slot)?;
-    let view = storage_kind(storage_format(format)?);
+    let view = storage_kind(storage_form(format)?);
     (declared != view).then_some((declared, view))
 }
 

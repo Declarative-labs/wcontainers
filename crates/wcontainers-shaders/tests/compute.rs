@@ -230,6 +230,126 @@ fn views_of_another_kind_than_declared_convert_on_both_routes() {
     }
 }
 
+/// Each value stored through `global` in `block` and the blocks inside it.
+fn stored_values(
+    f: &naga::Function,
+    block: &naga::Block,
+    global: naga::Handle<naga::GlobalVariable>,
+    out: &mut Vec<naga::Handle<naga::Expression>>,
+) {
+    for s in block.iter() {
+        match s {
+            naga::Statement::ImageStore { image, value, .. }
+                if f.expressions[*image] == naga::Expression::GlobalVariable(global) =>
+            {
+                out.push(*value)
+            }
+            naga::Statement::Block(b) | naga::Statement::Loop { body: b, .. } => {
+                stored_values(f, b, global, out)
+            }
+            naga::Statement::If { accept, reject, .. } => {
+                stored_values(f, accept, global, out);
+                stored_values(f, reject, global, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
+    // cs_images' u0 bound as an `A8Unorm` view, which the back ends hold as rgba8unorm with the
+    // value in alpha: declared rgba8unorm, every store into it is (0, 0, 0, a) of its value.
+    let key = VariantKey {
+        storage_formats: vec![
+            (0, Format::A8Unorm),
+            (1, Format::R32Float),
+            (2, Format::Rgba16Uint),
+            (3, Format::Rg32Sint),
+        ],
+        ..Default::default()
+    };
+    let binding = SlotKind::Storage.binding(0).unwrap();
+    for dxil in [false, true] {
+        let file = format!("cs_images.{}", if dxil { "dxil" } else { "dxbc" });
+        let bytes = own(&file);
+        let source = match dxil {
+            true => Source::Dxil(&bytes),
+            false => Source::Dxbc(&bytes),
+        };
+        let c = convert(source, &key, None).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let m = &c.modules[0].module;
+        let (global, _) = m
+            .global_variables
+            .iter()
+            .find(|(_, g)| g.binding.is_some_and(|b| b.binding == binding))
+            .unwrap();
+        assert!(
+            matches!(
+                m.types[m.global_variables[global].ty].inner,
+                naga::TypeInner::Image {
+                    class: naga::ImageClass::Storage {
+                        format: naga::StorageFormat::Rgba8Unorm,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "{file}"
+        );
+        let mut stores = 0;
+        for f in m
+            .functions
+            .iter()
+            .map(|(_, f)| f)
+            .chain(m.entry_points.iter().map(|e| &e.function))
+        {
+            let mut values = Vec::new();
+            stored_values(f, &f.body, global, &mut values);
+            for v in values {
+                let naga::Expression::Compose { components, .. } = &f.expressions[v] else {
+                    panic!("{file}: {:?}", f.expressions[v]);
+                };
+                for &c in &components[..3] {
+                    assert_eq!(
+                        f.expressions[c],
+                        naga::Expression::Literal(naga::Literal::F32(0.0)),
+                        "{file}"
+                    );
+                }
+                assert!(
+                    matches!(
+                        f.expressions[components[3]],
+                        naga::Expression::AccessIndex { index: 3, .. }
+                    ),
+                    "{file}"
+                );
+                stores += 1;
+            }
+        }
+        assert_eq!(stores, 1, "{file}");
+        reads_back(&file, &c.modules[0]);
+        // Through a buffer the format has no layout.
+        let through = VariantKey {
+            texels_through_buffer: 1,
+            ..key.clone()
+        };
+        let source = match dxil {
+            true => Source::Dxil(&bytes),
+            false => Source::Dxbc(&bytes),
+        };
+        assert!(
+            matches!(
+                convert(source, &through, None),
+                Err(ConvertError::Unsupported(
+                    wcontainers_shaders::refusal::STORAGE_FORMAT_ABSENT
+                ))
+            ),
+            "{file}"
+        );
+    }
+}
+
 #[test]
 fn storage_textures_convert_through_buffers() {
     let bytes = own("cs_through.dxbc");

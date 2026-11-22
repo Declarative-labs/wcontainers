@@ -742,7 +742,26 @@ const OTHER_KIND_IMAGES: [Image; 4] = [
     ),
     (3, Format::Rg32Uint, DXGI_FORMAT_R32G32_UINT, 1, false),
 ];
+/// `cs_images` with u0 an `A8_UNORM` view: the colour stored there keeps its alpha alone.
+const ALPHA_IMAGES: [Image; 4] = [
+    (0, Format::A8Unorm, DXGI_FORMAT_A8_UNORM, 1, false),
+    IMAGES[1],
+    IMAGES[2],
+    IMAGES[3],
+];
 const IMAGE_SIZE: u32 = 16;
+
+/// The format the back ends hold a storage texture of `format` in, and its texels so held: `A8Unorm`
+/// as rgba8unorm with the value in alpha (the WebGPU back end's packed.rs).
+fn held(format: Format, texels: &[u8]) -> (Format, Vec<u8>) {
+    match format {
+        Format::A8Unorm => (
+            Format::Rgba8Unorm,
+            texels.iter().flat_map(|&a| [0, 0, 0, a]).collect(),
+        ),
+        _ => (format, texels.to_vec()),
+    }
+}
 
 fn image_texels(seed: u64, format: Format, layers: u32, seeded: bool) -> Vec<u8> {
     let n = (IMAGE_SIZE * IMAGE_SIZE * layers * format.block().2) as usize;
@@ -826,7 +845,8 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -
     .unwrap();
     assert!(c.reflection.helpers.is_empty());
     let mut textures = Vec::new();
-    for &(_, format, _, layers, seeded) in images {
+    for &(_, viewed, _, layers, seeded) in images {
+        let (format, texels) = held(viewed, &image_texels(seed, viewed, layers, seeded));
         let texture = b
             .create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -873,7 +893,7 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -
                 height: IMAGE_SIZE,
                 depth_or_layers: layers,
             },
-            &image_texels(seed, format, layers, seeded),
+            &texels,
             row,
             IMAGE_SIZE,
             WriteMode::Ordered,
@@ -945,6 +965,11 @@ fn storage_textures_match_direct3d() {
 }
 
 #[test]
+fn alpha_storage_textures_store_their_alpha_as_direct3d_does() {
+    storage_textures_alike(&ALPHA_IMAGES);
+}
+
+#[test]
 fn storage_textures_of_another_kind_read_and_write_their_bits_as_direct3d_does() {
     storage_textures_alike(&OTHER_KIND_IMAGES);
 }
@@ -970,6 +995,8 @@ fn storage_textures_alike(images: &[Image]) {
         for (dxil, source) in [(false, "dxbc"), (true, "dxil")] {
             let made = ours_images(&mut backend, seed, dxil, images);
             for ((a, o), &(slot, format, ..)) in reference.iter().zip(&made).zip(images) {
+                // Compared as held: Direct3D's texels in the back ends' form.
+                let (_, a) = held(format, a);
                 let apart = a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count();
                 eprintln!("seed {seed} {source} u{slot} {format:?}: {apart} words apart");
                 if apart > 0 {
