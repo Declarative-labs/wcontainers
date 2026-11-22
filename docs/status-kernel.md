@@ -338,8 +338,10 @@ was at load 20 to 25. No front-end event explains a difference: more instruction
 `ProcessTracer` were built on the kernel's side without making it generic over its executor, and
 undone: the interface gives a hook no way to keep a process it takes off the kernel, and the
 runtime's system would have to be generic over its executor (For the owner, with the kernel's side
-ready to redo). The ARM64 machine's inotify limit now matches Docker Desktop's (For the
-orchestrator). KA is not complete: the hooks wait for the owner's ruling, and as before warnings
+ready to redo). The whole suite at 05c95620 gave the K6c bar's 36 ARM-list failures and one
+regression of this milestone, layer 1's replay test, now fixed (e3ddd795); inotify's per-user
+limit test failed only from the ARM64 machine's setting, which now matches Docker Desktop's (For
+the orchestrator). KA is not complete: the hooks wait for the owner's ruling, and as before warnings
 through `FallbackObserver`, ICMP and raw sockets, the linter findings and the independent check.
 See "KA, tenth run".
 
@@ -664,10 +666,26 @@ own five files; nothing was committed):
 - A trial build of that state reached the ARM64 machine by the first pmu.sh run (it copies the
   checkout as it is) and failed there; the measurement was rerun from a clone.
 
+The whole suite at 05c95620 (the ninth run's job kernel/20261122-055108-3455272, 05:51 to 07:26
+UTC, load 17 at its start and 5 at its end; ka9/suite-final.log): 370 passed, 37 failed, 8
+ignored. The failures are the 36 of K6c's bar at 91d85e31 (k6c21/suite-91d85e31.log: the ARM
+list) and one more, layer1 `sequences_replay_from_their_record`, which passed in KF's second run
+(kf2/replay3.log) and needs no reference: a regression of this milestone, also in the eighth
+run's suite. Its cause: since the standard ends are the system's waited endpoints (seventh run),
+the kernel's first `next` after the start can be `Idle` at time 0 to settle a woken wait, and
+layer 1's runner took anything but `Run` there as a failed start (the other three layer1 tests
+failed at the same point, hidden behind their ARM-list verdict). Fixed in e3ddd795: the runner
+settles such a wait as its call loop already did. On the ARM64 machine (07:40 UTC, load 1 to 3;
+ka10/replay2.log, layer1.log): `sequences_replay_from_their_record` passes (64 sequences each of
+in memory, backend and cached backend, seed 0); the other three now run their sequences and
+differ from that machine's reference at sequence 0 (`mkdirat`), their ARM-list verdict; clippy
+with warnings denied on the stand-in passes. inotify `instances_are_limited_per_user`, rerun after
+the machine's limit was set (ka10/replay.log): 2 passed, 1 ignored. So the whole suite now gives
+the K6c bar's results on the ARM64 machine, by these reruns; the suite was not run whole again.
+
 Next, in order: the owner's ruling on `ProcessTracer` (then redo the kernel's side above, give the
-stand-in's hooks and the runtime their part, and remove the kernel's own `System` trait); read the
-whole suite at 05c95620 (job kernel/20261122-055108-3455272, still running at this run's end) and
-rerun inotify `instances_are_limited_per_user` on the ARM64 machine now that its limit is 8192;
+stand-in's hooks and the runtime their part, and remove the kernel's own `System` trait); the
+whole suite once more at the tip on the ARM64 machine (ka9/suite.sh), and the Mac's part of it;
 warnings through `FallbackObserver` once the owner rules; ICMP and raw sockets; the linter findings
 once the linter may run again; the independent check.
 
