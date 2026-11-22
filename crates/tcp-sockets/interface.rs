@@ -10,12 +10,12 @@ pub mod state;
 use core::net::SocketAddr;
 
 use wcontainers_abi::HostError;
+use wcontainers_abi::readiness::Readiness;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, LocalBinding, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
 use crate::authentication::TcpAuthenticationCounters;
@@ -72,8 +72,8 @@ pub trait TcpConnections:
     async fn wait_for_events(
         &self,
         connection: &Self::Connection,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError>;
+        interest: Readiness,
+    ) -> Result<Readiness, HostError>;
     fn close(&self, connection: Self::Connection, manner: TcpClose);
     /// Sends now what of the connection's queued data its windows, its cork and [Nagle's algorithm](https://man7.org/linux/man-pages/man7/tcp.7.html) allow, the cork and Nagle's algorithm not counting when the push ignores them and staying ignored for that data until more is queued.
     fn push_queued_data(
@@ -143,8 +143,8 @@ pub trait TcpListeners:
     async fn wait_for_listener_events(
         &self,
         listener: &Self::Listener,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError>;
+        interest: Readiness,
+    ) -> Result<Readiness, HostError>;
     fn stop_listening(&self, listener: Self::Listener);
 }
 

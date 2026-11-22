@@ -6,11 +6,12 @@
 use core::ops::{ControlFlow, Deref, Range};
 
 use domain::base::{Message, Name, Question};
+use wcontainers_abi::readiness::Readiness;
 use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_kernel::signal_information::{PollEvents, SignalInformation};
+use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
     AccessKind, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse, TaskId,
 };
@@ -174,8 +175,8 @@ pub trait StreamTransport {
     async fn wait_for_stream_events(
         &self,
         peer: &Self::Endpoint,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError>;
+        interest: Readiness,
+    ) -> Result<Readiness, HostError>;
     fn close_stream(&self, peer: &Self::Endpoint);
 }
 

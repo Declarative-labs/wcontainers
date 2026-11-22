@@ -4,12 +4,12 @@
 use core::num::NonZeroU16;
 
 use wcontainers_abi::HostError;
+use wcontainers_abi::readiness::Readiness;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Received, SendError,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
 
 /// Sockets for [ICMP](https://man7.org/linux/man-pages/man7/icmp.7.html) echo requests and replies.
 pub trait IcmpSockets: for<'a> Configurable<Self::Socket, IpSocketSetting<'a>> {
@@ -36,8 +36,8 @@ pub trait IcmpSockets: for<'a> Configurable<Self::Socket, IpSocketSetting<'a>> {
     async fn wait_for_events(
         &self,
         socket: &Self::Socket,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError>;
+        interest: Readiness,
+    ) -> Result<Readiness, HostError>;
     fn close(&self, socket: Self::Socket);
 }
 
