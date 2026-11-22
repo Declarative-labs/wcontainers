@@ -6033,7 +6033,6 @@ code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	5
-code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	0b101
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	10
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	1024
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	1024
@@ -6456,8 +6455,6 @@ code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	Swa
 code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	SwapChain<B>::set_max_latency	"frame latency is 1 to 16"
 code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	SwapChainDesc::check	"blit models take 1 to 16 buffers"
 code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	SwapChainDesc::check	"flip models take 2 to 16 buffers"
-code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	copy_program	"copy"
-code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	copy_program	"encode"
 code	crates/wcontainers-directx-graphics-infrastructure/src/swapchain.rs	str	copy_program	"vs"
 code	crates/wcontainers-directx/build.rs	int	main	3
 code	crates/wcontainers-directx/build.rs	str	main	"/DEF:{}"
