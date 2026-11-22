@@ -1,14 +1,15 @@
 //! Implements the local system's UDP on the host's sockets, each datagram given as a whole packet.
 
 use core::net::{IpAddr, SocketAddr};
+use core::num::NonZeroU32;
 
 use etherparse::{IpNumber, Ipv4Header, Ipv6Header, UdpHeader};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, DropCount, InterfaceIndex, IpHeaderFields, IpSendFields, IpVersion, LocalBinding,
-    PacketMark, PacketPriority, ProcessorIndex, ReceiveTimestamps, ReceivedPacketFields,
-    RouteSelectors, SendError, UpperLayerSelector,
+    BufferSizes, ByteCount, DropCount, InterfaceIndex, IpHeaderFields, IpSendFields, IpVersion,
+    LocalBinding, PacketMark, PacketPriority, ProcessorIndex, ReceiveTimestamps,
+    ReceivedPacketFields, RouteSelectors, SendError, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
@@ -94,7 +95,7 @@ pub fn received(length: usize) -> UdpReceived {
     UdpReceived::Packet(UdpReceivedPacket {
         fields: ReceivedPacketFields {
             length,
-            interface: InterfaceIndex(u32::MIN),
+            interface: InterfaceIndex(NonZeroU32::MIN),
             specific_destination: None,
             largest_fragment: None,
             link_layer_length: None,
@@ -183,6 +184,10 @@ impl UdpSockets for LocalSystem {
     }
 
     fn count_unsent_bytes(&self, _socket: &Self::Socket) -> Result<ByteCount, HostError> {
+        Err(HostError::NotSupported)
+    }
+
+    fn read_buffer_sizes(&self, _socket: &Self::Socket) -> Result<BufferSizes, HostError> {
         Err(HostError::NotSupported)
     }
 
