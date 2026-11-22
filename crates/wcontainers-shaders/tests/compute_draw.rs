@@ -1330,6 +1330,53 @@ fn typed_buffer_arrays_use_the_elements_picked_on_both_routes() {
     );
 }
 
+/// `cs_structured_array`'s arrays as declared (kind, first register, elements), the unbounded one
+/// sized as the test's ranges give it.
+const STRUCTURED_ARRAYS: [(SlotKind, u32, u32); 4] = [
+    (SlotKind::Uniform, 0, 1),
+    (SlotKind::Texture, 0, 3),
+    (SlotKind::Texture, 3, 2),
+    (SlotKind::Storage, 0, 3),
+];
+
+/// What `cs_structured_array` leaves in its storage views (u0 to u2), from the seeded constant (one
+/// buffer), sources (t0 to t4) and storage words, by Direct3D's rules; every view holds a word per
+/// invocation, so the length it takes is that many four-byte elements.
+fn structured_array_expected(
+    picks: &[[u32; 4]],
+    sources: &[Vec<u32>],
+    start: &[Vec<u32>],
+) -> Vec<Vec<u32>> {
+    let mut out = start.to_vec();
+    let rest = 3;
+    let p = picks[0];
+    let length = BUFFER_ARRAY_INVOCATIONS * size_of::<u32>() as u32;
+    for i in 0..BUFFER_ARRAY_INVOCATIONS {
+        let at = i as usize;
+        out[((p[0] + i) % 2) as usize][at] =
+            sources[((p[1] + i) % 3) as usize][at].wrapping_add(length);
+        let added = ((p[3] + i) % 3) as usize;
+        let before = out[added][at];
+        out[added][at] = before.wrapping_add(sources[rest + (i % 2) as usize][at]);
+        out[2][at] ^= before << 1;
+    }
+    out
+}
+
+/// Arrays of structured buffers (`cs_structured_array`, fxc's shader model 5.1 and dxc's 6.0), one
+/// declared without a length and sized by the root signature's ranges, read, stored to, added to
+/// atomically and measured through elements picked at run time, as
+/// `buffer_arrays_use_the_elements_picked`.
+#[test]
+fn structured_buffer_arrays_use_the_elements_picked_on_both_routes() {
+    buffer_arrays_alike(
+        "cs_structured_array",
+        &STRUCTURED_ARRAYS,
+        structured_array_expected,
+        &[false, true],
+    );
+}
+
 /// What an array test's shader leaves in its storage views, from its seeded constants (four words
 /// per constant buffer), sources and storage words.
 type ArrayResults = fn(&[[u32; 4]], &[Vec<u32>], &[Vec<u32>]) -> Vec<Vec<u32>>;

@@ -1372,6 +1372,41 @@ fn buffer_arrays_are_a_binding_per_element() {
     }
 }
 
+/// Arrays of structured buffers (`cs_structured_array`, fxc's shader model 5.1 and dxc's 6.0), one
+/// declared without a length, by both routes: every element a binding at its register, sized by the
+/// root signature's ranges, and refused by name without them.
+#[test]
+fn structured_buffer_arrays_are_a_binding_per_element_on_both_routes() {
+    let key = VariantKey {
+        register_ranges: vec![(SlotKind::Texture, 0, 0..5), (SlotKind::Storage, 0, 0..3)],
+        ..Default::default()
+    };
+    let without_ranges = VariantKey::default();
+    let dxbc = read("tests/own/cs_structured_array.dxbc");
+    let dxil = read("tests/own/cs_structured_array.dxil");
+    for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+        let c = convert(source, &key, None).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        for (kind, n) in [(SlotKind::Texture, 5), (SlotKind::Storage, 3)] {
+            for register in 0..n {
+                let b = c
+                    .reflection
+                    .bindings
+                    .iter()
+                    .find(|b| b.kind == kind && b.register == register)
+                    .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
+                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+            }
+        }
+        assert_eq!(
+            convert(source, &without_ranges, None).err(),
+            Some(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::UNBOUNDED_RESOURCE_ARRAY
+            )),
+            "{source:?}"
+        );
+    }
+}
+
 /// Arrays of typed buffers alone (`cs_typed_array`), one of each kind declared without a length, by
 /// both routes: every element a binding at its register, sized by the root signature's ranges, and
 /// refused by name without them or past the slots a kind holds.
