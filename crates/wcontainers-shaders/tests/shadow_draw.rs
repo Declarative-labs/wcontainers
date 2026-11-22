@@ -24,7 +24,8 @@ use wcontainers_gpu::{
     ViewComponent, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
-use wcontainers_shaders::{ConvertError, Converted, SWIZZLED_DEPTH, Source, convert};
+use wcontainers_shaders::refusal::SWIZZLED_DEPTH;
+use wcontainers_shaders::{ConvertError, Converted, Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;

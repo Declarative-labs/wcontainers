@@ -4,7 +4,7 @@
 
 use wcontainers_gpu::ViewComponent;
 
-use crate::SWIZZLED_DEPTH;
+use crate::refusal::SWIZZLED_DEPTH;
 
 use super::*;
 

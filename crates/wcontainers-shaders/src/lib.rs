@@ -84,9 +84,6 @@ pub const ENTRY_POINT: &str = "main";
 pub use build::ARGUMENTS_OFFSET;
 pub use container::token;
 
-/// The refusal of a view's component mapping that a depth texture's read cannot take exactly.
-pub const SWIZZLED_DEPTH: &str = "SwizzledDepth";
-
 /// What goes into every content key besides the source and the variant: this crate's version and the
 /// BLAKE3 hash of everything that makes the module (the converters' C++ as built, this crate's Rust
 /// and the carried naga).

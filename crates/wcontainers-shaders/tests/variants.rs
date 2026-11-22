@@ -1570,7 +1570,7 @@ fn mapped_depth_views_compose_what_they_read() {
                 Ok(c) => panic!("{name} route {route} converted:\n{}", wgsl(&c)),
                 Err(e) => assert_eq!(
                     e,
-                    ConvertError::Unsupported(wcontainers_shaders::SWIZZLED_DEPTH)
+                    ConvertError::Unsupported(wcontainers_shaders::refusal::SWIZZLED_DEPTH)
                 ),
             }
         }

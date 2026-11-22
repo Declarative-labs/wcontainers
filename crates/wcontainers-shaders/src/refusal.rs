@@ -127,6 +127,8 @@ pub const SUBGROUPS_IN_VERTEX: &str = "SubgroupsInVertex";
 pub const SUBGROUP_BARRIER: &str = "SubgroupBarrier";
 pub const SWITCH_FALLTHROUGH: &str = "SwitchFallthrough";
 pub const SWITCH_WITHOUT_MERGE: &str = "SwitchWithoutMerge";
+/// A view's component mapping that a depth texture's read cannot take exactly.
+pub const SWIZZLED_DEPTH: &str = "SwizzledDepth";
 pub const TARGETS_IN_SHADER: &str = "TargetsInShader";
 pub const TEXELS_THROUGH_BUFFER_IN_GEOMETRY: &str = "TexelsThroughBufferInGeometry";
 pub const TEXELS_THROUGH_BUFFER_USE: &str = "TexelsThroughBufferUse";
