@@ -41,7 +41,7 @@ fn main() -> windows::core::Result<()> {
     /// `PW_RENDERFULLCONTENT`: the window's content as the compositor shows it.
     const RENDER_FULL_CONTENT: PRINT_WINDOW_FLAGS = PRINT_WINDOW_FLAGS(2);
     /// How long the compositor is given to take a presented frame.
-    const SHOWN_WITHIN_MS: u32 = 300;
+    const SHOWN_WITHIN_MS: u32 = 400;
 
     let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
     let device_of = |level: D3D_FEATURE_LEVEL| -> windows::core::Result<_> {
