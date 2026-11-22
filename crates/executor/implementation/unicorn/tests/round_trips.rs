@@ -110,7 +110,7 @@ fn a_handle_takes_no_thread_of_another_process() {
 #[test]
 fn copies_are_made_and_let_go_of_on_several_threads() {
     const THREADS: usize = 4;
-    const ROUNDS: usize = 20_000;
+    const ROUNDS: usize = 200_000;
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let kernel = program_waiting("forked", &[], &out);
     std::thread::scope(|scope| {
