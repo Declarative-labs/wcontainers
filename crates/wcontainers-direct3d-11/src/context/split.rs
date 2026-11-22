@@ -4,6 +4,12 @@
 //! and stencil so that each sees the tests the first saw.
 
 use super::*;
+use crate::desc::COLOR_WRITE_ENABLE_ALL;
+
+/// What a later run of a split draw would do again.
+const SPLIT_WHILE_QUERIED: &str = "a draw run once per group of targets while queries run";
+const SPLIT_WITH_STORAGE: &str = "a draw run once per group of targets with storage writes";
+const SPLIT_WITH_STREAM_OUTPUT: &str = "a draw run once per group of targets with stream output";
 
 /// A group of targets (a mask of target slots) and the blend state its run draws with.
 type Group<B> = (u8, Rc<Blend<B>>);
@@ -33,10 +39,10 @@ impl<B: Backend> Device<B> {
         // A group writing no channel draws nothing; one run still draws depth and stencil.
         let writing = groups
             .iter()
-            .filter(|(_, g)| g.desc.targets[0].write_mask & 0xf != 0)
+            .filter(|(_, g)| g.desc.targets[0].write_mask & COLOR_WRITE_ENABLE_ALL != 0)
             .count();
         if writing > 0 {
-            groups.retain(|(_, g)| g.desc.targets[0].write_mask & 0xf != 0);
+            groups.retain(|(_, g)| g.desc.targets[0].write_mask & COLOR_WRITE_ENABLE_ALL != 0);
         } else {
             groups.truncate(1);
         }
@@ -72,13 +78,13 @@ impl<B: Backend> Device<B> {
         }
         // What a later run would do again, and must not.
         if self.queries.running_any() {
-            return not_implemented("a draw run once per group of targets while queries run");
+            return not_implemented(SPLIT_WHILE_QUERIED);
         }
         if self.ctx.uavs[PIXEL].iter().any(Option::is_some) {
-            return not_implemented("a draw run once per group of targets with storage writes");
+            return not_implemented(SPLIT_WITH_STORAGE);
         }
         if self.ctx.so_targets.iter().any(Option::is_some) {
-            return not_implemented("a draw run once per group of targets with stream output");
+            return not_implemented(SPLIT_WITH_STREAM_OUTPUT);
         }
         self.backend.slow_paths().hit(SlowPath::TargetsSplit);
         let targets = self.ctx.targets.clone();

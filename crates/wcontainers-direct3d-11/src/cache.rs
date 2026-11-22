@@ -66,8 +66,11 @@ pub(crate) fn convert(source: Source<'_>, key: &VariantKey) -> Result<Converted,
     Ok(converted)
 }
 
+/// A module's content key (`ShaderModule::key`), which this front makes with blake3.
+pub(crate) type ContentKey = [u8; blake3::OUT_LEN];
+
 /// The content keys of a program's vertex and pixel modules.
-pub(crate) type ModuleKeys = ([u8; 32], Option<[u8; 32]>);
+pub(crate) type ModuleKeys = (ContentKey, Option<ContentKey>);
 
 /// Tells this front's records from other fronts' in one file.
 const FRONT: [u8; 4] = *b"D311";
@@ -76,9 +79,9 @@ const FRONT: [u8; 4] = *b"D311";
 /// the blocks, targets, topology and binding layouts of its pipeline.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct Record {
-    front: [u8; 4],
-    pub vertex: [u8; 32],
-    pub fragment: Option<[u8; 32]>,
+    front: [u8; FRONT.len()],
+    pub vertex: ContentKey,
+    pub fragment: Option<ContentKey>,
     pub blend: BlendDesc,
     pub depth_stencil: DepthStencilDesc,
     pub raster: RasterDesc,
@@ -173,9 +176,9 @@ impl<B: Backend> Warm<B> {
         let records: Vec<Record> = file::combinations::<Record>(&s.cache)
             .filter(|r| r.front == FRONT)
             .collect();
-        let mut shaders: HashMap<[u8; 32], Option<B::Shader>> = HashMap::new();
+        let mut shaders: HashMap<ContentKey, Option<B::Shader>> = HashMap::new();
         for r in records {
-            let mut shader = |key: [u8; 32]| {
+            let mut shader = |key: ContentKey| {
                 shaders
                     .entry(key)
                     .or_insert_with(|| {
