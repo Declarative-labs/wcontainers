@@ -37,7 +37,44 @@ G6b's check's findings settled or recorded, A4's `combine` drawn for single-samp
 subnormal tessellation factors kept on the DXBC route. Run 2 (run 81, the section below): A28's
 first part, `A8Unorm` storage views, built and drawn. Run 3 (run 82, the section below): A4's
 `SwizzledDepth` measured on real Direct3D 12 and settled where the devices agree, gathers of a
-depth texture's other components on both routes. Not complete: the gap list below.
+depth texture's other components on both routes. Run 4 (run 83, the section below): A5's
+geometry replay of streams past the first, the Direct3D 11 front's ask. Not complete: the gap
+list below.
+
+## G6 run 4 (run 83): the geometry replay's streams past the first (A5)
+
+Logs and scripts in scratch `graphics-shaders/g6-r83` (run 82's with its folder; jobs `job1.log`,
+`job2.log`; `x86-checks.log`, `x86-tests.log`).
+- Built: on WebGL 2 a geometry shader writing several streams (points, as Direct3D allows) with a
+  stream output declaration no longer stops at `GeometryReplayStreams` (removed). The replay form
+  keeps the vertices of the stream the values block's new word `word::STREAM` names
+  (src/lower/geometry.rs, `replay_emit` gated on it; a shader of one stream converts as before);
+  `GeometryReplay::run` replays once a stream when stream output is bound, later streams first and
+  stream 0 last (the one drawn), and `stream_out` writes each stream's buffers and its written and
+  made counts at `STREAM_BUFFERS + 2k` on the host (src/stage/replay.rs). How the front calls it:
+  "How the Direct3D fronts call `convert`", geometry shaders on a back end without compute.
+- Tests (tests/geometry_draw.rs): `streams_past_the_first_match_direct3d` now runs the replay
+  route on ANGLE beside the compute route on WebGPU, against real Direct3D 11 (fxc) and 12 (dxc)
+  on the RTX 3080: 64 comparisons, 0 failed (32 replayed, every word and count equal; the unbound
+  fourth stream's made count equal and its written count 0, as gap A15 says), 16 known from A22's
+  zero positions. `geometry_shaders_with_rows_stream_as_direct3d_does` replays
+  `gs_rows_streams` (three streams) on both routes too, no longer expecting a refusal: 72
+  comparisons, 0 failed, 4 known (A22); its refusals are dxc's arrays of arrays alone
+  (`GeometryReplayArrayOfArrays`). Default seeds 1 to 4 (`WCONTAINERS_GEOMETRY_SEED`,
+  `WCONTAINERS_GEOMETRY_CASES`).
+
+Runs (code at the scratch clone's e1925a6a, the checkout's 960220c4 with this run's four files):
+- Desktop (RTX 3080, GPU jobs one at a time, 3 cargo jobs): Windows clippy of this crate with
+  warnings denied clean; `geometry_draw`'s `streams_past_the_first`, `geometry_shaders_with_rows`,
+  `stream_output_after_replay`, `geometry_shaders_replayed_on_webgl` and
+  `stream_output_matches`: 5 passed (job1.log; counts from job2.log with `--nocapture`).
+- x86 machine (load 6 to 31, other tracks' jobs beside): rustfmt clean, clippy of this crate and
+  the interface with warnings denied clean, the literal check prints no line of this crate
+  (baseline lines of this crate 4,786, unchanged); the CPU test binaries `geometry`, `variants`,
+  `rewrite`, `builtin`, `cache`, `glsl_writer` and `compute`: 99 passed, 2 ignored as before
+  (x86-tests.log).
+- Not run: the corpus records (the change touches only the stage helper's programs, which no
+  record holds), WebAssembly, Chrome.
 
 ## G6 run 3 (run 82): mapped depth views measured on Direct3D 12, depth gathers
 
@@ -718,8 +755,8 @@ The gap list (every item of the pass bar not met):
   output from a vertex shader alone runs since run 58 (`GeometryReplay::streamed`), refusing
   adjacency (`StreamOutputAdjacency`, as the compute route) and cull distances
   (`StreamOutCullDistance`); stream
-  output from a geometry shader writing several streams (`GeometryReplayStreams`: the replay runs
-  stream 0 only; stream output of stream 0 runs since run 53, `StreamOutAfterReplay`);
+  output from a geometry shader writing several streams runs since run 83 (the replay form keeps
+  the stream `word::STREAM` names, replayed once a stream, stream 0 last; its section);
   alpha-antialiased lines, cull distances,
   primitive numbers and tessellation on WebGL 2 (each the vertex stage captured the same way;
   the tessellator needs compute, so tessellation stays absent there). Waits: the Direct3D 11 front
@@ -1436,9 +1473,9 @@ G6a run 5's tip):
 ## Next
 
 1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
-   view's width for YUY2), A5's
-   geometry replay streams past the first and A17's aliased lines into multisampled targets (the
-   Direct3D 11 front's asks), A4's multisampled `combine`, A9, A7, A1, the DXIL route's
+   view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
+   front's asks, both waiting on the interface track; A5's replayed streams were done in run 83),
+   A5's alpha-antialiased lines on WebGL 2, A4's multisampled `combine`, A9, A7, A1, the DXIL route's
    `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's asks under "New for the owner" (the geometry and tessellation entry
@@ -1666,10 +1703,13 @@ G6a run 5's tip):
   at the format's largest index, as Direct3D does. Stream output (since run 53):
   pass the declaration to `new` and `ReplayDraw::stream_output` as on the compute route, but with
   buffers and the filled block made with `COPY_SRC` and `COPY_DST` (no storage); the route reads
-  the filled block, writes stream 0's whole primitives on the host as Direct3D does (a primitive
-  only while every bound buffer holds it, gaps keeping their bytes) and writes back the filled
-  sizes and stream 0's written and made counts. A shader writing streams past the first with a
-  declaration is refused (`GeometryReplayStreams`).
+  the filled block, writes each stream's whole primitives on the host as Direct3D does (a primitive
+  only while every bound buffer of its stream holds it, gaps keeping their bytes) and writes back
+  the filled sizes and each stream's written and made counts. A shader writing several streams
+  (since run 83) is replayed once a stream, stream 0 last for the draw: give a filled block of
+  `stage::STREAM_FILLED_WORDS` words (stream `k`'s counts at words `STREAM_BUFFERS + 2k` and
+  `+ 1`, as on the compute route; a shorter one is refused as malformed), and `stream_output` with
+  every buffer `None` when a statistics query runs and nothing is bound.
   `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` does exactly this.
 - Alpha-antialiased lines (Direct3D 10 and 11's `AntialiasedLineEnable` with `MultisampleEnable`
   off, on a line list or strip without a geometry or hull stage; WebGPU, `Features::COMPUTE`; since
