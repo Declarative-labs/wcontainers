@@ -7,7 +7,7 @@
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use std::sync::{Mutex, PoisonError};
 
-use wcontainers_abi::{BackendRequestId, Host, HostError, Warning};
+use wcontainers_abi::{Host, HostError, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_executor_hardware_virtualization::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
@@ -90,11 +90,6 @@ impl Recording {
             .calls
             .push(call);
     }
-
-    fn absent(&self, call: String) -> Result<(), HostError> {
-        self.call(call);
-        Err(HostError::NotSupported)
-    }
 }
 
 impl wcontainers_clock::Clock for Recording {
@@ -122,9 +117,6 @@ impl wcontainers_random_source::RandomSource for Recording {
 impl Host for Recording {
     fn warn(&self, warning: Warning<'_>) {
         self.call(format!("warn {warning:?}"));
-    }
-    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        self.absent(format!("backend {request:?} {message:02x?}"))
     }
 }
 

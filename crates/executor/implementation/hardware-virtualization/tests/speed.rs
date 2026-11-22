@@ -1099,7 +1099,7 @@ mod speed {
     /// the kernel over a CPU side that runs no instructions, the first process being `image`.
     fn kernel_share(image: &[u8]) -> f64 {
         let mut cpu = BufferCpu::new();
-        let host = TestHost::new(DEFAULT_SEED);
+        let host = std::sync::Arc::new(TestHost::new(DEFAULT_SEED));
         let mut kernel = Kernel::new();
         add_files(
             &mut kernel,
@@ -1138,11 +1138,18 @@ mod speed {
             )
             .expect("the kernel runs a default container's first process");
         assert_eq!(kernel.start_failure(), None, "starting {ANSWERED}");
-        let next = kernel.next();
-        assert!(
-            matches!(next, Next::Run { .. }),
-            "{ANSWERED} runs: {next:?}"
-        );
+        loop {
+            match kernel.next() {
+                Next::Run { .. } => break,
+                // A wait woken at the start (the standard ends') settles before anything runs.
+                Next::Idle {
+                    until_nanoseconds: Some(until),
+                } if until <= wcontainers_clock::Clock::monotonic_nanoseconds(&*host) => {
+                    kernel.event(&mut cpu, &host, wcontainers_abi::Event::Timer);
+                }
+                other => panic!("{ANSWERED} runs: {other:?}"),
+            }
+        }
         let call = Exit::Syscall(SystemCallRequest {
             number: wcontainers_abi::SystemCallNumber(__NR_getppid.into()),
             arguments: Default::default(),
