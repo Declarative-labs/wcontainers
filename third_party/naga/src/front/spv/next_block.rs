@@ -1572,6 +1572,10 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     inst.expect(4)?;
                     self.parse_image_query_other(crate::ImageQuery::NumSamples, ctx, block_id)?;
                 }
+                Op::ImageQueryLod => {
+                    inst.expect(image::IMAGE_QUERY_LOD_WORDS)?;
+                    self.parse_image_query_lod(ctx, &mut emitter, &mut block, block_id, body_idx)?;
+                }
                 // other ops
                 Op::Select => {
                     inst.expect(6)?;

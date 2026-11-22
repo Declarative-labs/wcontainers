@@ -7,6 +7,18 @@ use crate::{
 
 use super::{Error, LookupExpression, LookupHelper as _};
 
+/// The words of `OpImageQueryLod`: the opcode, the result's type and id, the sampled image and the
+/// coordinate.
+pub(super) const IMAGE_QUERY_LOD_WORDS: u16 = 5;
+
+/// The types of an `IMAGE_QUERY_LOD` function's image, sampler and coordinate, and of its result.
+pub(super) type LodSignature = (
+    Handle<crate::Type>,
+    Handle<crate::Type>,
+    Handle<crate::Type>,
+    Handle<crate::Type>,
+);
+
 #[derive(Clone, Debug)]
 pub(super) struct LookupSampledImage {
     image: Handle<crate::Expression>,
@@ -1105,6 +1117,93 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
             },
         );
 
+        Ok(())
+    }
+
+    /// `OpImageQueryLod`, which the IR lacks: a call of the `IMAGE_QUERY_LOD` function of its
+    /// signature, made on first use, which the module's user replaces.
+    pub(super) fn parse_image_query_lod(
+        &mut self,
+        ctx: &mut super::BlockContext,
+        emitter: &mut crate::proc::Emitter,
+        block: &mut crate::Block,
+        block_id: spirv::Word,
+        body_idx: usize,
+    ) -> Result<(), Error> {
+        let start = self.data_offset;
+        let result_type_id = self.next()?;
+        let result_id = self.next()?;
+        let sampled_image_id = self.next()?;
+        let coordinate_id = self.next()?;
+        let span = self.span_from_with_op(start);
+        let si = self.lookup_sampled_image.lookup(sampled_image_id)?.clone();
+        let coord_lexp = self.lookup_expression.lookup(coordinate_id)?;
+        let coordinate =
+            self.get_expr_handle(coordinate_id, coord_lexp, ctx, emitter, block, body_idx);
+        let types = (
+            ctx.get_image_expr_ty(si.image)?,
+            ctx.get_image_expr_ty(si.sampler)?,
+            self.lookup_type.lookup(coord_lexp.type_id)?.handle,
+            self.lookup_type.lookup(result_type_id)?.handle,
+        );
+        let (image_ty, sampler_ty, coordinate_ty, result_ty) = types;
+        let to = match self.lod_queries.iter().find(|(t, _)| *t == types) {
+            Some(&(_, id)) => id,
+            None => {
+                let id = self
+                    .id_bound
+                    .checked_add(self.lod_queries.len() as u32)
+                    .ok_or(Error::InvalidId(self.id_bound))?;
+                let function = crate::Function {
+                    name: Some(super::IMAGE_QUERY_LOD.into()),
+                    arguments: [image_ty, sampler_ty, coordinate_ty]
+                        .iter()
+                        .map(|&ty| crate::FunctionArgument {
+                            name: None,
+                            ty,
+                            binding: None,
+                        })
+                        .collect(),
+                    result: Some(crate::FunctionResult {
+                        ty: result_ty,
+                        binding: None,
+                    }),
+                    ..Default::default()
+                };
+                let handle = ctx.module.functions.append(function, span);
+                self.lookup_function.insert(
+                    id,
+                    super::LookupFunction {
+                        handle,
+                        parameters_sampling: Vec::new(),
+                    },
+                );
+                self.lod_queries.push((types, id));
+                id
+            }
+        };
+        block.extend(emitter.finish(ctx.expressions));
+        let function = self.add_call(ctx.function_id, to);
+        let result = ctx
+            .expressions
+            .append(crate::Expression::CallResult(function), span);
+        self.lookup_expression.insert(
+            result_id,
+            LookupExpression {
+                handle: result,
+                type_id: result_type_id,
+                block_id,
+            },
+        );
+        block.push(
+            crate::Statement::Call {
+                function,
+                arguments: alloc::vec![si.image, si.sampler, coordinate],
+                result: Some(result),
+            },
+            span,
+        );
+        emitter.start(ctx.expressions);
         Ok(())
     }
 }
