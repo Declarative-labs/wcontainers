@@ -48,6 +48,8 @@ static COUNTING: Counting = Counting;
 
 const DEFAULT_COUNT: u64 = 700;
 const DEFAULT_ROUNDS: usize = 5;
+/// For showing whole runs in microseconds.
+const NANOSECONDS_PER_MICROSECOND: u64 = 1_000;
 
 fn knob<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
@@ -121,7 +123,8 @@ fn median(mut values: Vec<f64>) -> f64 {
 #[test]
 #[ignore = "a measurement, run by name"]
 fn wait_costs() {
-    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    // A folder of its own, so the image holds this program alone and its size does not vary.
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("waitcost");
     let program = guest::build("waitcost", &[], &out);
     let directory = program.parent().expect("program has a directory");
     let count: u64 = knob("WAITCOST_COUNT", DEFAULT_COUNT);
@@ -147,7 +150,7 @@ fn wait_costs() {
     ];
     let only: String = knob("WAITCOST_KIND", String::new());
     for (what, arguments, backend) in kinds.into_iter().filter(|(what, ..)| what.contains(&only)) {
-        let (mut times, mut allocations) = (Vec::new(), Vec::new());
+        let (mut times, mut allocations, mut runs) = (Vec::new(), Vec::new(), Vec::new());
         for _ in 0..rounds {
             let at = |n: u64| {
                 let mut all: Vec<&str> = arguments.iter().map(String::as_str).collect();
@@ -158,10 +161,14 @@ fn wait_costs() {
             let (short, short_allocations) = at(count);
             let (long, long_allocations) = at(2 * count);
             times.push((long as f64 - short as f64) / count as f64);
+            runs.push((
+                short / NANOSECONDS_PER_MICROSECOND,
+                long / NANOSECONDS_PER_MICROSECOND,
+            ));
             allocations.push((long_allocations as f64 - short_allocations as f64) / count as f64);
         }
         println!(
-            "{what}: {:.0} ns and {:.2} allocations per repetition (median of {rounds}, {count} and {} repetitions; times {times:.0?})",
+            "{what}: {:.0} ns and {:.2} allocations per repetition (median of {rounds}, {count} and {} repetitions; times {times:.0?}; whole runs in microseconds {runs:?})",
             median(times.clone()),
             median(allocations),
             2 * count
