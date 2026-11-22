@@ -4,8 +4,11 @@
 - Crate `crates/tcp-sockets/implementation/host`, package `wcontainers-tcp-sockets-host`, type
   `HostTcpSockets`. It implements `TcpSockets` (and so `TcpConnections`, `TcpListeners`,
   `Configurable` for both setting types and `NegativeRouteAdvice`) with real Linux TCP and MPTCP sockets of the
-  machine it runs on, the exit node. Its whole body is `cfg(target_os = "linux")`, so the workspace still builds
-  on the Mac.
+  machine it runs on, the exit node. It builds on every unix system: implementation.rs holds the three exported
+  types (their Linux-only fields under `cfg`), linux.rs every call, request and setting on Linux, and portable.rs,
+  elsewhere, what socket2 covers (connect, listen, accept, plain send and receive, shutdown, close, buffers,
+  keep-alive, no-delay, urgent inline, address and port sharing, the waits) with a counted refusal for the rest.
+  The owner's linter reads the Mac's build, so the types and their trait impls must exist there.
 - A connection and a listener are its own types holding the socket as the shared crate's `readiness::Watched` (the
   descriptor and its registration with the host's readiness) and its family, ordered by descriptor. Every socket is
   non-blocking: every call but the two waits answers at once, `HostError::WouldBlock` when it would wait.
@@ -136,4 +139,8 @@
   `net.ipv4.tcp_fwmark_accept=1`, `net.ipv6.conf.lo.forwarding=1` (anycast joins on loopback), `dctcp` and a local route for 127.0.0.7 with the `tcp_usec_ts` feature (its
   connections' timestamps count microseconds); run-conformance.sh makes that namespace, with the iproute2 of the
   checkout's pinned nixpkgs (the machine's 6.1 does not know the feature).
-- `tests!` runs each function as its own test on a value made anew.
+- `tests!` runs each function as its own test on a value made anew, then the suites of the traits the interface
+  requires, as the layout writes them: `Configurable` on a connection and on a listener (`configured_connection`,
+  `configured_listener`), `NegativeRouteAdvice` (`advised_connection`) and `Readiness` (its bundles; see the status
+  file for why they are not yet the layout's one line). The implementation runs it from its own conformance.rs.
+- The suite builds on every unix system and runs on Linux: only Linux has the packet socket the wire checks read.

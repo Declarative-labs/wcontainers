@@ -3,16 +3,51 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## Run 10 (2026-11-22): the owner's linter
+- Linter run once at the start (Mac, 2 min 44 s, 96 073 findings in the workspace; log reviewable-start.log in
+  scratch): about 430 in this track's two crates, 150 in the shared crate linux-socket-options, 3 in tcp-sockets'
+  interface.rs (not ours).
+- Done: the implementation builds on every unix system, since the linter reads the Mac's build and found no
+  `TcpSockets` there (`trait_not_implemented`). implementation.rs holds the three exported types, their Linux-only
+  fields under `cfg`; linux.rs is the old Linux code unchanged but for imports; portable.rs (new, macOS and other
+  unix) does connect, listen, accept, plain send and receive, urgent data, peeks at offset 0, shutdown, close and
+  abort, buffers, keep-alive on or off, no-delay, urgent inline, address and port sharing and the waits on socket2,
+  rustix and the shared watcher, and answers every other call and setting with a counted refusal (named reasons in
+  portable.rs). It is built and linted on the Mac, not run: no check runs there (the suite needs Linux).
+- Done: the implementation runs the suite from its own `conformance.rs` (a `[[test]]`, one `tests!` invocation, as
+  the layout asks); its own four tests stay in linux.rs. run-conformance.sh runs every test binary of the package,
+  each in a namespace of its own. mutants.sh and scratch tools/check_mutants.sh now break linux.rs (all 130 texts
+  found once).
+- Done: the suite builds on every unix system (the packet socket is a `cfg`'d helper that fails the check off
+  Linux; BPF and IPv4 option codes from linux-raw-sys in place of libc). `tests!` is one arm: a `#[test]` per suite
+  function in file order, then the required suites as the layout writes them: `configurable_tcp_connections`,
+  `configurable_tcp_listeners` and `negative_route_advice` run the whole suites of those interfaces on
+  `configured_connection`, `configured_listener` and `advised_connection` (the three `*_contract_holds` functions are
+  gone). The readiness suite runs as before under `readiness_tcp_connections`, `readiness_tcp_connections_hanging_up`
+  and `readiness_tcp_listeners`.
+- Done: every doc summary in this track's files is one line, one sentence, at most 150 characters, and a function's
+  starts with a verb in the third person (suite functions "Checks that ..."); what a summary lost went into a second
+  paragraph.
+- Not done, still findings: `magic_literal` (about 160: mostly 0 and 1 given to a name, which want `u16::MIN` and
+  the like or a named constant) and `number_constant_without_link` (about 100: every numeric constant needs an https
+  link, also the suite's own choices, DECISIONS.md 11). The constructor `new()` and `counters()` are an impl block of
+  the exported type (`public_outside_interface`) until the interface has a `StandaloneTcpSockets` (For the owner).
+  The four readiness bundle functions (`waiting_for_*`) are reported as suite functions that return a value, and the
+  readiness modules are not the layout's one line: the readiness suite takes a `Waiting` bundle with a closure that
+  makes the handle ready, which a `(T, T::Connection)` tuple cannot carry (For the owner). Findings in the shared
+  crate linux-socket-options (made by this track, edited by three) are not touched yet.
+- Independent check: see Measurements, run 10.
+
 ## 2026-11-21: waiting is the Readiness trait
 - `wait_for_events`, `wait_for_listener_events` and `PollEvents` are gone. `HostTcpSockets` implements
   `wcontainers_readiness::Readiness<HostTcpConnection>` and `Readiness<HostTcpListener>` (`wait_until_ready` on the six
   facts of `ReadyFor`), through the shared `Watcher`, each socket watched with `ReadyFor::all()`. A wait gives every
   fact that holds, not only those asked for.
-- Suite: it re-exports the readiness suite as `readiness_conformance` and runs it as `connection_readiness_contract`
+- Suite (module names as of run 10 in brackets): it re-exports the readiness suite and runs it as `connection_readiness_contract` (`readiness_tcp_connections`)
   (`waiting_for_data`, and `waiting_for_urgent_data_until_a_report` for the failure check: a queued transmit report,
-  an error with no hang-up), `connection_hang_up_readiness_contract` (the failure check alone on
+  an error with no hang-up), `connection_hang_up_readiness_contract` (`readiness_tcp_connections_hanging_up`; the failure check alone on
   `waiting_for_urgent_data_until_both_ways_are_shut`, a hang-up with no error) and
-  `listener_readiness_contract` (`waiting_for_a_connection`). The listener runs five of the six checks, not the failure
+  `listener_readiness_contract` (`readiness_tcp_listeners`; `waiting_for_a_connection`). The listener runs five of the six checks, not the failure
   check: no call of the TCP traits makes a listener get an error or a hang-up.
 - Deleted as copies of the readiness suite: wait_for_events_finishes_when_data_arrives,
   wait_for_events_answers_at_once_when_ready, dropping_a_wait_cancels_it, wait_ends_with_the_errors_always_reported,
@@ -461,7 +496,7 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Suite on the ARM machine (needs sudo; makes its own network namespace):
   `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
-- Broken copies: the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
+- Broken copies (they break linux.rs): the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
   copy, 130 copies; names pick some). Whether every copy's text is still there once: scratch
   tools/check_mutants.sh <checkout> (on the Mac, no build).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
@@ -493,6 +528,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   both demand the real answer on Linux.
 
 ## Departures from the plan
+- Run 10: the implementation's body is no longer Linux only (plan corrected): the owner's linter reads the Mac's
+  build, so portable.rs gives the types and traits there.
 - Run 4: the plan's "the contract waits for nothing" is gone with the async ruling: the two waits are the shared
   readiness's (plan corrected), and the basic calls moved to socket2 (plan corrected).
 - The plan said `SO_KEEPALIVE` rearms the keep-alive timer; Linux re-times it only on `TCP_KEEPIDLE` (and on
@@ -519,6 +556,9 @@ readings, repair, authentication, multipath state, the privileged settings).
   method `set_authentication_counters` stay T2.
 
 ## Dependencies added
+- Run 10: the suite takes linux-raw-sys 0.12.1 (features net, if_tun: Linux's classic BPF and IPv4 option codes on
+  every system) in place of libc: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT. The implementation's socket2
+  and rustix (now with `process`, for the user the process runs as) are on every unix system.
 - Run 5: nix 0.31.4 in the suite too (Linux only, `net` feature: the loopback interface by its flag): MIT.
 - Run 4: socket2 0.6.5 with feature `all` (the basic calls): MIT OR Apache-2.0. polling 3.11.0 comes through the
   shared crate (the UDP track added it): Apache-2.0 OR MIT.
@@ -529,6 +569,11 @@ readings, repair, authentication, multipath state, the privileged settings).
   0.9.1: MIT.
 
 ## For the owner
+- The readiness suite cannot be run as the layout writes a required suite (`tests!($crate::f($value))` with
+  `f` giving `(T, T::Connection)`): its checks need a way to make the handle ready, so it takes a `Waiting` bundle
+  with a closure. Example: `a_wait_finishes_when_the_handle_becomes_ready` must send data to the connection while a
+  wait is pending, which nothing in `(sockets, connection)` can do. The TCP suite runs it in its bundle form until
+  the readiness suite changes.
 - `TcpSetting::NotSentLowWater(None)` does not say whether None is no bar or the host's default: Linux reads 0 as
   its sysctl `net.ipv4.tcp_notsent_lowat` and `u32::MAX` as no bar. Example: with the sysctl at 16384, None as 0
   bars a connection at 16 KiB unsent, as `u32::MAX` not at all. The implementation writes `u32::MAX`.
