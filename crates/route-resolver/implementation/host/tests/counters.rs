@@ -147,12 +147,17 @@ fn refusals_are_counted_under_their_reasons() {
         },
         ..v6(Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1))
     };
+    let mapped_from_ipv6 = Ipv6RouteSelectors {
+        source: Some(Ipv6Addr::LOCALHOST),
+        ..v6(Ipv4Addr::LOCALHOST.to_ipv6_mapped())
+    };
     for route in [
         RouteSelectors::V4(link_scope),
         RouteSelectors::V6(mobility),
         RouteSelectors::V6(anycast),
         RouteSelectors::V6(hashed),
         RouteSelectors::V6(labelled_with_preferences),
+        RouteSelectors::V6(mapped_from_ipv6),
     ] {
         assert_eq!(
             resolve(&resolver, route.clone()),
@@ -164,7 +169,7 @@ fn refusals_are_counted_under_their_reasons() {
     let mut reasons: Vec<_> = counters.iter().map(|reading| reading.reason).collect();
     reasons.sort();
     reasons.dedup();
-    assert_eq!(reasons.len(), 5, "{counters:?}");
+    assert_eq!(reasons.len(), 6, "{counters:?}");
     assert!(
         counters.iter().all(|reading| reading.count == 1),
         "{counters:?}"
