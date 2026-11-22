@@ -29,8 +29,9 @@ crates/runtime/implementation/single-kernel.
 - From KA's fifth run the kernel waits on the system's TCP connections and listeners through
   `Readiness::wait_until_ready` (see "KA, fifth run"). A guest's poll bits are not made from
   `ReadyFor`: the kernel pulls what the system has into its own socket queue when a wait ends and
-  gives the guest the poll bits of that socket, as for any socket inside the container. Nothing
-  implements `StreamTransport` yet.
+  gives the guest the poll bits of that socket, as for any socket inside the container. The
+  stand-in's test host, the test policy and the runtime implement `StreamTransport` (KA, seventh
+  run).
 - The literal check now also reports the twelve new `PollEvents` flags in signal_information.rs
   as redefinitions of linux-raw-sys's POLL constants (a reviewed file; nothing in the kernel's).
 - For the owner: `wait_until_ready`'s one-sentence comment does not say that ERROR and HANG_UP
@@ -354,7 +355,9 @@ the speed test's compute part fail as they did then. A getppid answered by the k
 machine is 4 percent slower with the release profile and 3 percent faster with thin LTO, the code
 generation already under For the owner; on the host the kernel's share is now below the start's,
 once the stand-in's test host stopped taking a lock at each clock read (ee57be38). ICMP and raw
-sockets are left out of KA with their reason (Departures). KA is not complete: the hooks as
+sockets are left out of KA with their reason (Departures). The whole suite at 606d8273 gives K6c
+bar's results (372 passed, 35 failed: the ARM list, now without the inotify limit test); one at the
+tip is running (job kernel/20261122-090337-871806). KA is not complete: the hooks as
 `ProcessTracer` and warnings through `FallbackObserver` wait for the owner's rulings, the linter may
 not run, the Mac's part of the suite may not run, and the independent check. See "KA, eleventh run".
 
@@ -705,6 +708,16 @@ which the pass bar (the same results as before) rules out inside KA.
 
 The Mac's part of the suite (scratch kernel/k6c19/mac5.sh) was not run: the notice of 2026-11-22
 allows no tests on the Mac.
+
+The whole suite at 606d8273 (the tenth run's job kernel/20261122-073407-1503526, 07:34 to 09:03
+UTC, load 16 at its start and 4 at its end; ka11/suite-606d8273.log): 372 passed, 35 failed, 8
+ignored. The failures are K6c's bar's ARM list (k6c21/suite-91d85e31.log) less inotify
+`instances_are_limited_per_user`, which passes since the machine's limit matches Docker Desktop's;
+layer 1's replay test passes. So the suite gives the bar's results on the ARM64 machine.
+ee57be38 (the test host's clock) came after it: the stand-in's saving, timers, repeats and embedder
+tests gave the same results after it (timers `timers_match_reference` fails, in the ARM list). The
+whole suite at the tip was started at this run's end: job kernel/20261122-090337-871806 (ka11/
+suite.sh; `arm-run --attach kernel 20261122-090337-871806` follows it).
 
 ## KA, tenth run
 
