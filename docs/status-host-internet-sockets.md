@@ -1,9 +1,49 @@
 # Status: host internet sockets
 
-Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done), I2 ICMP
-and raw sockets (redone in run 1 after the reorganization and the async ruling of 2026-11-21; runs 2 and 3
-answered the independent checks' findings, below; run 4 those of run 3's check; run 5 those of run 4's). Nothing of
+Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done; run again
+on 2026-11-21 evening for the owner's linter, below), I2 ICMP and raw sockets (redone in run 1 after the
+reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings). Nothing of
 this track is in progress.
+
+## 2026-11-21 evening: I1 in the linter's layout
+- Linter (`cargo reviewable check`, Mac) at the start: 149 findings in the I1 files besides the model's unanswered
+  names and summaries; at the end 15, each below. ICMP and raw files: 393 left, for an I2 run.
+- The resolver builds on every system (implementation.rs holds the type; linux.rs the lookup; elsewhere a counted
+  refusal, NO_ROUTING_SOCKET), so the linter sees `RouteResolver` implemented. Its helpers are methods of a private
+  `Lookup`, not of the exported type; the refusal reasons are private (the counter test checks three distinct
+  reasons, each counted once). `open()` no longer fails.
+- Each lookup opens its routing socket (connect autobinds it) in the calling thread's namespace: the layout's
+  `tests!` only names the value, so the suite enters its namespace after the value is made. Measured, ARM machine,
+  02:04 UTC, load 8.5 to 11.2, release, 20000 each, twice: a loopback lookup 18.0 and 17.8 us; a routing socket
+  opened, connected and closed 2.7 and 2.8 us, the cost this adds.
+- conformance.rs is the one invocation and a `[[test]] conformance`; the counter test is tests/counters.rs and names
+  no suite. The suite's `tests!` has exactly the layout's shape, in the file's order; its helpers are private; every
+  number constant has its link; summaries are third person, one line.
+- The ICMP suite keeps its own copies of the iproute2 tools it took from the resolver suite (the raw suite takes them
+  from it), so neither depends on the resolver suite.
+- Flake found and fixed: confirmed_neighbour_is_confirmed counted every frame da sent, and da's own multicast
+  reports failed it once in 40 rounds (and once in the broken copies). It now counts frames to the gateways' link
+  address with a tc flower filter on da's egress: 100 rounds, no failure; a broken copy that sends a real datagram
+  to the next hop fails it.
+- Independent check (`i1-linter/independent-check-i1b.sh`, 02:03 UTC, load 5.8 to 11.5): clean build with clippy
+  denied warnings clean, three rounds each resolver 30 of 30 and its counter test, Configurable 2 of 2,
+  NegativeRouteAdvice 3 of 3 (23 s with the build). Broken copies, each caught by its check: mark ignored
+  (mark_selects_the_route), owner ignored (owner_selects_the_route), confirmation skipped
+  (confirmed_neighbour_is_confirmed), locked MTU ignored (locked_mtu_without_value_uses_the_device_mtu), flow label
+  ignored (flow_label_selects_the_route), anycast as unicast (an_anycast_route_is_not_given_as_another_kind),
+  preferences ignored (source_preferences_choose_among_the_link_addresses), routing header ignored
+  (routing_header_goes_to_its_first_hop). cargo tree (normal, build, dev) of the 50 interface and conformance
+  crates against the 17 implementations: none reached (control: the resolver's own tree names it). No commit of
+  this run touches an interface.rs or a data file; the working tree's crates/abi/host.rs edit is another track's.
+- Which check fails when a method breaks: RouteResolver::resolve_route, all 30 checks, each selector its own (above);
+  Configurable::configure, setting_twice_equals_setting_once (its self-test catches a setting taken once only);
+  NegativeRouteAdvice::give_negative_route_advice, advice_is_taken and advice_is_taken_again (self-test likewise).
+- Final run (ARM, 02:08 UTC, load 0.8): clippy clean on the nine packages; ICMP 58 and 1, raw 47 and 1, resolver 30
+  and 1, Configurable 2, NegativeRouteAdvice 3; three rounds of the same at 02:07 UTC.
+- Linter findings left in the I1 files: the resolver's impl block, `open` and `counters` (no interface trait builds
+  or counts, see For the owner); seven `constant_defined_twice` between the resolver and ICMP suites (IP, PACKETS,
+  TRAFFIC_CONTROL, DEVICE, FIELD, LOCAL, JSON_QUOTE), since the layout gives two suites no shared home for their
+  test tools; `grammar_unclear` on `link` was answered by renaming it `read_link` (not yet re-checked).
 
 ## 2026-11-21: waiting is the Readiness trait
 - Repair after the independent check: three long comments of the ICMP suite and one of the raw suite made one
@@ -324,6 +364,9 @@ this track is in progress.
   - `lint-and-suites.sh`: clippy with warnings denied on the nine packages, then the ICMP, raw and resolver
     suites and the generic self-tests (`ROUNDS=3` before it for three rounds, `FILTER=<name>` to filter).
   - `independent-check-i2b.sh`: clean build with clippy, three rounds, 24 broken copies, cargo tree.
+  - `i1-linter/independent-check-i1b.sh`: I1's clean build with clippy, three rounds, 8 broken copies of the
+    resolver, cargo tree, and the lookup cost (a throwaway crate in /work outside the checkout).
+  - `i1-linter/hunt2.sh`: the resolver suite `ROUNDS` times (default 100), then a broken copy that sends.
   - `independent-check-i2d.sh`: clean build with clippy, three rounds, the 43 broken copies of runs 1 to 3, cargo
     tree, then the UDP and TCP suites (the shared crate is theirs too).
   - `findings-run2.sh` to `findings-run5.sh` (and `findings-run5b.sh`, `findings-run5c.sh`): the broken copies
@@ -497,8 +540,15 @@ this track is in progress.
 ## For the owner
 - No interface can build its implementation. Proposed, as `StandaloneRuntime` does:
   `pub trait StandaloneIcmpSockets: IcmpSockets + Sized { fn open_host() -> Result<Self, HostError>; }`, the same
-  for `RawSockets` and `RouteResolver`. Meanwhile `new()` (fallible now: it starts the readiness thread) and
-  `open()`.
+  for `RawSockets` and `RouteResolver`. Meanwhile `new()` (fallible: it starts the readiness thread) and the
+  resolver's `open()`, which the linter reports as constructors.
+- The route resolver contract does not say whose routes a lookup answers for. The layout's `tests!` makes the value
+  before a suite function runs, so the suite can only move the thread into its own network namespace after; it so
+  requires a resolver to answer for the calling thread's namespace at each lookup. Example: a resolver that bound
+  one routing socket when made answers 127.0.0.1 from the host's table, not the check's.
+- The layout gives no home to test tools two suites share (a conformance crate may export only suite functions, and
+  may not be a normal dependency of another), so the ICMP and resolver suites each keep their iproute2 wrappers,
+  and `constant_defined_twice` reports seven of their constants. Example: `IP = "ip"` in both.
 - The async ruling's `wait_for_events` fits as it stands; nothing found that does not work.
 - `ReceivedPacketFields.mark` and `.priority` are plain values, but Linux gives a ping socket neither: an `Option`
   would say so. Example: a reply that arrived with mark 7 reads mark 0.

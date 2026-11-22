@@ -13,8 +13,9 @@ for the datagram sockets of the IPv6 source check, the neighbour confirmation an
 shared crate `crates/internet-protocol/implementation/linux-socket-options` for
 `Shortfalls` (a counter per refusal reason and a warning on stderr at its first count), `host_error` and the
 option calls. Each lookup is one route request and one
-link request on a netlink socket the value holds, so a value answers for the network namespace it was made in;
-the request and reply buffers are kept in the value, so a lookup allocates no buffer once they have grown.
+link request on a netlink socket it opens in the calling thread's network namespace, so a value answers for the
+namespace of whoever asks; the request and reply buffers are kept in the value, so a lookup allocates no buffer once
+they have grown. The crate builds on every system; elsewhere than Linux each lookup is a counted refusal.
 
 Chosen over connect-and-read (connect a UDP socket, then getsockname and `IP_MTU`) because connect-and-read
 cannot tell the outgoing interface or the route kind, cannot take another user than the caller (`RTA_UID`),
@@ -68,14 +69,15 @@ interface, which a route must give; so those stay refused.
 
 ## The suites
 
-The route resolver's suite runs each check in a network namespace of its own: the `tests!` macro enters a
-new one on the test's thread (root, `unshare(CLONE_NEWNET)`) before the value is made, and the check
+The route resolver's suite runs each check in a network namespace of its own: the check enters a new one on
+its thread (root, `unshare(CLONE_NEWNET)`) after the value is made, since `tests!` only names the value, and
 builds its links, addresses, routes, rules and neighbours with `ip` (iproute2, a test tool, not a dependency). Each
 check knows the answer from what it built: loopback is local; a dummy device's route gives its interface,
 source, kind, MTUs and hop limit; a rule per selector (mark, owner, DSCP, source, interface, protocol, destination port, source port,
 ICMP type and code, flow label) sends the lookup to a second device only when the selector is honoured; type 2
 and type 4 routing headers and a loose source route through the second device's gateway go there; a
-confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`); a locked MTU with
+confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`) and sends no frame to
+the gateway's link address (a tc flower filter on the link's egress counts them); a locked MTU with
 no value gives 576 through a gateway; an encapsulating route's path MTU is what a connected socket is told; a broadcast
 address without permission is `EACCES`; a source the namespace lacks is refused when the check is required.
 
