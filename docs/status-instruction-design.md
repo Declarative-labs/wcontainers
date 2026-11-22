@@ -1,294 +1,75 @@
 # Status: the instruction design slice (ARM64, ten instructions)
 
-Scratch: pyro-parked/wcontainers-scratch/instruction-slice/design. Builds and tests run on the rented ARM64
-machine (`arm-run --name instruction-slice`); on the Mac only editing, rustfmt on single files and
-`cargo metadata --offline` for the lock.
+Builds and tests run on the rented ARM64 machine (`arm-run --name instruction-slice`); the M5 runs on the Mac at
+`nice -n 19`, one cargo command at a time, in a build folder deleted afterwards. The reading order and every open
+question for the owner are in pyro-parked/wcontainers-scratch/instruction-slice/FOR-THE-OWNER.md.
 
-## FOR THE OTHER ENGINEERS: the old input domain names are gone (2026-11-22, commit 66a69f24)
+## Where things are (2026-11-22, after the repair of both checks)
 
-- The draft trait `InstructionInputDomain` inside the generator crate is deleted; the slice uses the
-  committed interface crates/instruction-input-domain (`InstructionInputDomain<Architecture>`).
-- The ARM64 domain is the new crate crates/instruction-input-domain/implementation/arm64 (package
-  wcontainers-instruction-input-domain-arm64), value `Arm64InputDomain`. `Arm64Operand` is now
-  `OperandType`, `Arm64OperandValue` is `OperandValue` (its register variant is `RegisterNumber`);
-  `AccessPlacement` and `DataPage` moved with them.
-- `CriticalValueProduct` (crate wcontainers-distinguishing-state-generator-input-domain) is now generic over
-  the domain it holds. Where you wrote `&CriticalValueProduct`, write
-  `&CriticalValueProduct::new(Arm64InputDomain)` with
-  `use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;` and add to your Cargo.toml
-  `wcontainers-instruction-input-domain-arm64 = { path = "<up to crates>/instruction-input-domain/implementation/arm64" }`.
-  Its states are the same as before, in the same counts.
-- Not changed by me (their owners' files): crates/processor-architecture/implementation/arm64/conformance.rs,
-  the recording crate, the measured set, and the executors' conformance and tests; each needs the line above.
+- crates/processor-architecture/implementation/arm64: `Arm64`, its processor, page permissions, the ten
+  instructions and every behavior (implementation.rs); the operand fields (encoding.rs); the formulas
+  (simulation.rs); the syndrome parts and the memory readers the executors share (syndrome.rs, memory.rs);
+  `list_behaviors`, every behavior the crate defines, which the architecture and generator suites both use.
+  tests.rs: 23 hand-worked cases.
+- crates/instruction-input-domain/implementation/arm64: `Arm64InputDomain` on the committed interface.
+- crates/distinguishing-state-generator/implementation/input-domain: `CriticalValueProduct<Domain>`.
+- crates/processor-architecture/implementation/recording: `Recording` (a `Simulator` whose error is
+  `NotRecorded`) and its text form (text.rs).
+- crates/precise-instruction-set/implementation: `AppleM5` and `NeoverseV2`, each checked against its own
+  recordings (recordings/ beside each); `Translator` and `UnicornMax`, the WebAssembly and unicorn back ends;
+  `measured`, the probe (`MeasuredInstructionSet::measure`), its chip test (chip.rs) and the record tool
+  (`cargo run -p wcontainers-precise-instruction-set-measured --example record -- <folder>`).
+- crates/executor/implementation: hardware-virtualization/single_step.rs (`SingleStepMachine`, HVF and KVM),
+  wasmtime/single_instruction.rs and `Arm64Executor`, unicorn's `StandIn`, simulation (`Simulation`, a stand-in
+  chip that plays a set).
+- The suites: processor-architecture (simulate agrees with simulate_in_place, determinism, a failed simulation
+  leaves the processor; and `leave_same_memory`, the one memory comparison), instruction-input-domain,
+  distinguishing-state-generator (every two behaviors told apart), precise-instruction-set (a set against
+  recorded instruction, before and after triples), executor (an executor against a set on every generated state).
 
-## The input domain (2026-11-22)
+## Behaviors, all measured on both chips
 
-- crates/instruction-input-domain/implementation/arm64: the operand types, their critical values (the
-  same as step 3 below) and `build_state`. `list_operand_types` gives the operands of the assembly syntax in
-  its order, then what the instruction reads besides them (register values, flags, where the access lies,
-  the data pages' permissions). tests.rs: the counts per instruction, and every critical state decoded back
-  (word at the program counter, every field, register values, flags, access placement, page permissions)
-  gives the instruction and the operands asked for; the operands read back build the very same state.
-- The suite (crates/instruction-input-domain/conformance), three functions on `(domain, architecture)`:
-  every operand type an instruction lists has a critical value; one critical state per combination; the same
-  operands build the same state, and the state of the first critical values is a critical state.
-- crates/distinguishing-state-generator/implementation/input-domain: `CriticalValueProduct<Domain>`, whose
-  `generate_states` is the domain's `generate_critical_states`. Its suite (every two behaviors told apart)
-  passes for the 21 behaviors.
-- For the owner: a decoding check cannot be part of the generic suite: no interface reads the instruction
-  and its operands back out of a state. It needs something like
-  `fn decode(&self, state: &ExecutionState<'_, Architecture>) -> Option<(Instruction, Vec<OperandValue>)>`.
-  Until then the ARM64 crate checks it in its own tests.
-- For the owner: an instruction's operand values are not always independent in the state. Example: ADD with
-  Rn = Rm = X0 and the values 1 and all ones: X0 can hold only one of them (the last wins), and a value given
-  to the zero register (number 31) is held nowhere. Such states repeat others; ADD's 5184 states hold fewer
-  distinct ones.
-- For the owner: one `OperandValue` type for every operand type still lets `build_state` be handed a value of
-  the wrong kind (`Register(RD)` with `Integer(5)`); it panics, documented under `# Panics`.
+- ADD, ADDS, CSEL, BRK: one behavior.
+- LDR and STR (unsigned offset), STP, LDR (post-index): `MisalignedStackPointer` `Faults` (both chips) or
+  `Accesses` (unicorn, which leaves SCTLR_EL1.SA0's check out).
+- STR and STP across a fault: `StoreAcrossFault` `WritesNothing` (both chips, the translator) or
+  `WritesBytesBelowFault` (unicorn).
+- LDR post-index into its own base: `WritebackSuppressed` (V2), `Undefined` (M5), `WritebackOverwritesLoad`
+  (translator, unicorn), `NoOperation` (no chip seen).
+- RDVL: `Reads(Bits128)` (V2), `SmeTrapped(DisabledByCpacr)` (M5: syndrome 0x76000000, since
+  Hypervisor.framework shows no SME and EL1 leaves it trapped), `SmeTrapped(NotInStreamingMode)` (M5 with SMEN
+  forced open, 0x76000002, measured by the executor's engineer), `Undefined` (translator, unicorn).
+- MRS CTR_EL0: 0xB444C004 (V2 under KVM), 0x9_9444_C004 (M5 inside the virtual machine), 0x8444C004 (unicorn),
+  the translator's constant.
+- Every instruction: a misaligned program counter or a page without instruction fetch faults before it runs.
+  Hand-tested only: no generated state has such a code page, since it cannot tell two behaviors apart.
 
-## Step 1 (2026-11-22): the workspace compiles again
+## Measured (rented Graviton4 Neoverse V2 under KVM, load 6 to 15 on 96 cores; Mac M5, load 4.7 to 12.7)
 
-The new `Executor` trait needs `type Architecture` and `execute_single_instruction_in_place`. Two types
-implement it; each now names the ARM64 architecture and has a body that says single instruction execution
-is not built for it yet (`todo!`):
-- `StandIn` in crates/executor/implementation/unicorn/standin.rs (the Unicorn stand-in).
-- `Plain` in crates/kernel/implementation/linux/executing.rs (a test executor inside `#[cfg(test)]`).
+- States per instruction: ADD 5184, ADDS 5184, CSEL 6912, LDR 1728, STR 1728, STP 8640, LDR post-index 2880,
+  BRK 3, RDVL 15, MRS 3: 32,277 in all.
+- Start-up probe against the M5 and V2 sets (they differ on post-index, RDVL and MRS): V2 0.08 to 0.17 ms over
+  15 runs; M5 0.034 to 0.070 ms over 5. Both measure as their own set.
+- Batch, warm: V2 4.23 to 4.31 us a state (0.78 to 0.81 in the guest), M5 2.94 (0.71 to 0.79). Cold: V2 8.1 to
+  8.4, M5 4.1 to 4.3. One at a time through the executor suite: V2 10.7 to 10.8, M5 5.5 to 5.8.
+- Comparing written pages 64 bytes at a time took the V2's warm batch from 4.8 to 5.1 down to 4.2 to 4.3.
+- Full recording: V2 1.372 s (0.114 s in the guest), twice identical; M5 0.879 and 0.889 s (0.086 s), twice
+  identical.
+- The executor suite: the translator 3.95 s and the unicorn stand-in 15.3 s over every state, each against its own
+  set; both pass.
 
-The WebAssembly executor's `impl Executor for CpuSide` is the runtime's own trait
-(crates/runtime/implementation/single-kernel/container.rs), not this one, so it needed nothing. The hardware
-executor implements no `Executor` yet. No x86-64 architecture was needed: no executor of this trait runs x86.
+## Not done
 
-## Step 2: the ARM64 architecture (crates/processor-architecture/implementation/arm64)
-
-- implementation.rs: `Arm64`, `Processor` (X0-X30, SP, PC, NZCV, V0-V31, FPCR, FPSR, TPIDR_EL0, and the
-  exception the last instruction raised: ESR_EL1 and FAR_EL1 where valid), `PagePermission` (unmapped, or
-  mapped with a data access and an instruction fetch permission), the ten `Instruction`s, the
-  `PreciseInstruction`s with every behavior below.
-- encoding.rs: the operand fields and each instruction's fixed bits.
-- simulation.rs: the formulas. tests.rs: 20 hand-worked cases.
-- conformance.rs: runs the architecture suite on 15 behaviors over every state the generator makes.
-- The suite (crates/processor-architecture/conformance): simulate agrees with simulate_in_place; simulation
-  is deterministic; a failed simulation leaves the processor unchanged.
-
-Behaviors, and what is measured:
-- One behavior each (expected the same on both chips; not run on a chip yet): ADD, ADDS, CSEL, LDR and STR
-  (unsigned offset), BRK. Only the syndrome of a store to a read-only page (0x9200004F, ISV 0) was measured,
-  on both chips, by the earlier measure-in-vm work.
-- STP across a fault: `WritesNothing`, `WritesBytesBelowFault`. Expected, not measured.
-- LDR post-index with target = base: `WritebackSuppressed`, `WritebackOverwritesLoad` (the UNKNOWN value
-  taken as the written-back address), `Undefined`, `NoOperation`. Expected, not measured.
-- RDVL: `Undefined` (expected on the M5 outside streaming mode), `Reads(VectorLength)` (expected 128 bits
-  on the Neoverse V2, if the executor gives the guest SVE). Not measured.
-- MRS CTR_EL0: `MrsCtrEl0 { cache_type }`. The chips' values are not recorded yet.
-
-Assumptions the formulas make about EL1 (an executor must configure it so): SCTLR_EL1.SA0 set, A clear,
-E0E clear (little-endian), UCT set; 48-bit addresses; a missing page faults at level 3; SVE enabled for EL0
-where the chip has it.
-
-## Step 3: the generator (crates/distinguishing-state-generator/implementation/input-domain)
-
-- implementation.rs: the draft `InstructionInputDomain` trait, in the shape asked for, and the generic
-  `CriticalValueProduct` generator (every combination of each operand's critical values).
-- arm64.rs: the ARM64 domain. Operands: a register field's number (0, 1, 31), a register's value (0, 1,
-  sign bit, all ones), unsigned immediates (0, 1, largest), signed immediates (0, 1, -1, largest, smallest),
-  every value of a field of 4 bits or fewer, the flags (all 16), where the access lies around the boundary
-  of two data pages (4), and each data page's permission (unmapped, no access, read-only, read-write).
-- The suite (crates/distinguishing-state-generator/conformance): every two distinct candidates of an
-  instruction give different states after on at least one generated state. It passes for 21 candidates.
-
-States per instruction: ADD 5184, ADDS 5184, CSEL 6912, LDR 1728, STR 1728, STP 8640, LDR post-index
-2880, BRK 3, RDVL 15, MRS CTR_EL0 3.
-
-## Still to fill in
-
-- Single instruction execution for the Unicorn stand-in, the kernel's test executor and the hardware
-  executor (HVF and KVM); none implements it yet.
-- The probe, the recordings and one precise instruction set per chip; the chips' CTR_EL0 values and vector
-  lengths; running the generated states on both chips.
-- The EL0 state the processor does not hold yet (TODO in implementation.rs): DIT, SSBS, TCO, BTYPE,
-  TPIDRRO_EL0, SVE and SME state.
-- The fault address of an access that crosses into a faulting page in its middle is taken as the first
-  faulting byte; not measured.
-- The cargo reviewable check has not been run on these crates (paused for everyone).
+- The processor leaves out part of EL0's state (TODO on `Processor`: TPIDRRO_EL0, TPIDR2_EL0, DIT, SSBS, TCO,
+  BTYPE, SVCR, Z beyond 128 bits, P, FFR, ZA, ZT0, FPMR, GCSPR_EL0, the exclusive monitor).
+- The generator repeats states where operands alias (ADD and ADDS: 5184 states, 2052 distinct).
+- `cargo reviewable check` was not run (paused); the slice's implementation crates export helpers and constants
+  its rules will flag.
 
 ## For the owner
 
-- `ExecutionState` and `MemoryDelta` derive `Clone`, `PartialEq` and `Eq`, which puts those bounds on the
-  architecture type itself: generic code cannot clone or compare an `ExecutionState<'_, A>` without
-  `A: Clone + Eq` (the suites carry that bound now). Example: `first.simulate(before.clone())` in the
-  generator suite does not compile for `A: ProcessorArchitecture` alone.
-- `DistinguishingStateGenerator<Architecture>` is generic over the architecture, so a generator that serves
-  any architecture cannot be called as `generator.generate_states(instruction)`: the compiler cannot infer
-  the architecture from the instruction. Callers write
-  `DistinguishingStateGenerator::<Arm64>::generate_states(&generator, instruction)`.
-- The draft `InstructionInputDomain` has one `OperandValue` type for every operand, so `to_state` can be
-  given a value of the wrong kind for an operand and must panic on it. Example: `Register(RD)` paired with
-  `Integer(5)`.
-
-## The measured set and the recordings (2026-11-22)
-
-What exists:
-- crates/processor-architecture/implementation/recording: `Recording`, a `Simulator` whose error is
-  `NotRecorded`, holding each state before and the chip's state after in full; `record` runs one
-  instruction on an executor over every generated state; `leave_same_memory` compares two lists of memory
-  changes by the memory they leave. arm64.rs is the text form: one file per instruction, a `processor`
-  line with every field of the first state, then a `before` and an `after` line per state, each listing only
-  the fields that differ and the memory changes; a run of bytes longer than 16 is written once on a `bytes`
-  line and named by number. Plain text so a person can read it and a changed behavior shows as a changed line
-  in a diff. record.rs is the tool: `cargo test -p wcontainers-processor-architecture-recording --test record
-  -- <folder>` records this host's chip through the single step machine (HVF on the Mac, signed by itself;
-  KVM on Linux).
-- crates/precise-instruction-set/implementation/measured: `MeasuredInstructionSet::measure(chip, known sets,
-  generator)` keeps, per instruction, the one distinct known behavior the chip agrees with on every
-  generated state; an instruction all known sets agree on is not run. `MeasurementFailure` is
-  `NoBehaviorAgrees` (instruction, state before, each behavior with its state after, the chip's state after),
-  `IndistinguishableBehaviors` (instruction, behaviors) or `NoKnownBehavior` (no set given). chip.rs measures
-  the Linux host's chip and prints the time.
-- crates/precise-instruction-set/implementation/apple-m5 and neoverse-v2: each only its choices. The V2's
-  recordings are in neoverse-v2/recordings (32,277 states, 5.4 MB) and its suite runs against them.
-- crates/executor/implementation/simulation: `Simulation`, a stand-in chip that plays a precise instruction
-  set, for tests that must run on any machine.
-- crates/precise-instruction-set/conformance: `agrees_with_recordings(set, recordings)`: the set's behavior
-  of every listed instruction turns each recorded before into its after.
-
-Measured (rented Graviton4, Neoverse V2, KVM, load 18 to 29):
-- Recording all ten instructions, 32,277 states one at a time: 1.385 s, 0.123 s of it in the guest.
-- The V2's set agrees with every recorded state: STP across a fault writes nothing, LDR post-index into its
-  base suppresses the writeback, RDVL reads 128 bits, CTR_EL0 reads 0xB444C004 under KVM as on bare metal.
-- Start-up measurement against the M5 and V2 sets (RDVL and MRS CTR_EL0 run, 18 states): 0.236, 0.240
-  and 0.252 ms, about 0.14 ms of it in the guest; it measured the V2 set.
-
-Not done:
-- The M5's recordings: they need Hypervisor.framework, so the tool must run on the Mac, where nothing may be
-  built now. Until then the M5 set is expected, not measured (TODO in its file); the suite test for it is
-  held back (it would fail without recordings). To make them: run the record tool on the Mac into
-  crates/precise-instruction-set/implementation/apple-m5/recordings and add a conformance.rs like the V2's.
-- Recorded twice on the V2, with the old and with the committed input domain: the same 32,277 cases and the
-  same answers, in another order. The generator gives ADD and ADDS 5184 states of which only 2052 differ
-  (the same state comes several times); the recording keeps the repeats as the generator gives them.
-
-### For the owner (the measured set and the recordings)
-
-- `PreciseInstructionSet` has no way to build one, so the measured set has a placeholder `measure`. The trait
-  I would need: `trait MeasuredPreciseInstructionSet<A>: PreciseInstructionSet<A> + Sized { type Failure;
-  fn measure(chip: &mut impl Executor<Architecture = A>, known: &[&dyn PreciseInstructionSet<A>],
-  generator: &impl DistinguishingStateGenerator<A>) -> Result<Self, Self::Failure>; }`.
-- Two states holding the same memory are not equal under the derived `Eq` of `ExecutionState` when their
-  change lists differ. Example: STR of the value already there; the formula reports the store, the chip
-  reports nothing, and the memory is the same. The comparisons use `leave_same_memory` instead.
-- The precise instruction set suite takes `Recording`, a type of an implementation crate, because no
-  interface describes a recording. If recordings are to stay, a small interface for "the recorded pairs of
-  one instruction" would let the suite name no implementation.
-
-## Really executing one instruction (2026-11-22)
-
-What exists:
-- crates/executor/implementation/hardware-virtualization/single_step.rs: `SingleStepMachine`, the
-  `Executor` of ARM64 on Hypervisor.framework (Mac) and KVM (Linux). One virtual machine, one virtual CPU. Each
-  state is a slot in guest memory: its registers before and after, its own translation tables, frames and
-  ASID. A handler at EL1 loads the slot, enters EL0 with software step on, and saves everything when the step
-  or the instruction's own exception comes back; then it goes to the next slot without leaving the guest.
-  Pages a state can write are compared with their bytes before, and each changed run of bytes goes to the
-  hook as a slice of guest memory. `execute_each_single_instruction` is the batch form (one exit per batch,
-  65,536 slots at most, or 256 on a chip with 8-bit ASIDs); `time_in_guest` gives the time inside.
-- EL1 as Linux sets it: SA0 on, little-endian, CTR_EL0 readable at EL0, SVE open where the chip shows it, SME
-  open where the chip shows it. The OS lock is opened on entry; Hypervisor.framework traps that write, and the
-  executor steps past it.
-- crates/executor/conformance: `agrees_with_precise_instruction_set(executor, set, generator)` and its
-  `tests!`. A store of the bytes already there: the executor reports no change, a formula may report the
-  store; the suite compares the memory the two lists leave, through `leave_same_memory` of the recording
-  crate, the one place that rule lives.
-- tests/single_step.rs runs the batch twice and the suite once against this host's chip's set, and checks that
-  the suite rejects the other chip's set.
-
-Measured, warm batch (second pass), 32,277 states:
-- Apple M5 (this Mac, Hypervisor.framework, load 3.6 to 5): 2.79 us per state, 0.67 us of it in the guest.
-  First pass 4.20 (1.46 in the guest). One at a time through the suite: 5.46 us.
-- Neoverse V2 (rented Graviton4, KVM, load 14 to 18): 4.22 us per state, 0.78 in the guest. First pass 8.28
-  (2.55). One at a time: 10.6 us. Before the per-slot ASIDs the guest took 1.41 us per state.
-- The rest of each state's time is the host writing its tables and frames and comparing the written pages.
-
-What the chips did:
-- V2: agrees with the NeoverseV2 set on all 32,277 states.
-- M5, against the AppleM5 set (expected, not measured), three disagreements, FOR THE M5 SET'S ENGINEER:
-  - LDR (immediate, post-index) with the target as its base is UNDEFINED on the M5: syndrome 0x02000000 on
-    the 640 states where Rt = Rn. That is `LoadIntoBaseWithWriteback::Undefined`.
-  - RDVL raises SME's trap, syndrome 0x76000000, not 0x02000000. Hypervisor.framework shows no SME in
-    ID_AA64PFR1_EL1, so the executor leaves CPACR_EL1.SMEN closed. With SMEN forced open the M5 gives
-    0x76000002 (an SVE instruction outside streaming mode), which is what Linux turns into SIGILL.
-    `VectorLengthReading` has no behavior for either; the architecture's engineer must add one.
-  - CTR_EL0 reads 0x0000_0009_9444_C004 inside the virtual machine.
-- STP across a fault wrote nothing on both chips.
-
-Not done:
-- The host's part of each state (about 2 us on the M5, 3.4 on the V2) is not tuned: each slot gets a fresh
-  top-level table and fresh tables on each page's way.
-
-### For the owner (really executing one instruction)
-
-- The executor interface has no way to build an executor, and building one can fail (no hypervisor, no
-  entitlement). `SingleStepMachine::new() -> Result<Self, Error>` is a placeholder. The trait I would need:
-  `trait StandaloneExecutor: Executor + Sized { type Error; fn new() -> Result<Self, Self::Error>; }`.
-- The batch form is not in the interface, so the probe can only reach it by naming this crate. Example of
-  what would let it stay generic: a provided `fn execute_each_single_instruction<'memory>(&mut self, befores:
-  impl IntoIterator<Item = ExecutionState<'memory, Self::Architecture>>) -> Vec<ExecutionState<'memory,
-  Self::Architecture>>` on `Executor` that calls the single form, which this executor overrides.
-- `MemoryDelta::PermissionAssignment` allows any range, but a chip gives permissions to whole pages. Example:
-  `addresses: 0x1000..0x1800` cannot be run, and the executor panics on it.
-
-## The other executors: the translator and the Unicorn stand-in (2026-11-22)
-
-What exists:
-- crates/executor/implementation/wasmtime/single_instruction.rs: `execute_on_cpu`, one ARM64 instruction of an
-  execution state on any CPU side of the abi. The state's memory becomes a new memory, its processor a new
-  thread; the CPU side runs one instruction; its exit becomes the exception (syndrome built from
-  `aarch64-cpu`'s fields; translation or permission fault read from the state's pages). Also `Refusal` and
-  `check_honored`, and `FaultingWrite` (keep or undo the bytes a faulting store wrote).
-- crates/executor/implementation/wasmtime/implementation.rs: `CpuSide::run_one_instruction` (steps exactly the
-  instruction at the program counter and stops wherever control goes), and `Arm64Executor`, the `Executor`
-  of ARM64 through the translator. `Arm64Executor::for_precise_set(set, config)` fails with the list of
-  refusals when the set gives any instruction another behavior than the translator does.
-- crates/executor/implementation/unicorn/standin.rs: `StandIn` runs one instruction the same way;
-  `StandIn::for_precise_set(set)` refuses likewise. It checks the stack pointer's alignment itself (QEMU
-  leaves that check out), and undoes the bytes a faulting store wrote below the fault.
-- crates/precise-instruction-set/implementation/translator (`Translator`) and .../unicorn (`UnicornMax`): the
-  behavior each back end gives every instruction, as their suite runs show.
-- Each executor's conformance.rs runs the suite against its own back end's set, and checks the exact list of
-  instructions each chip's set is refused for. On every other instruction the chip's set and the back end's
-  set give the same behavior, so the suite's run shows the executor agrees with that chip there.
-- crates/kernel/implementation/linux/executing.rs, FOR THE KERNEL TRACK: `Plain` (the test executor) is
-  only named as a process's executor type and never run, so its body is `unreachable!` with that reason.
-
-Measured (rented Neoverse V2, load 13 to 18 on 96 cores), the suite over 32,277 generated states, simulation
-included: the translator 3.9 s (about 0.12 ms a state), the stand-in 16.6 s (about 0.51 ms a state). Both
-agree with their own sets on every state.
-
-Refused, today (each follows from a set, so a set change moves this list and fails the refusal tests):
-- Translator, for the AppleM5 set: LDR post-index with the target as its base (it overwrites the load with the
-  written-back address), MRS CTR_EL0 (it presents 0x8444C004). For the NeoverseV2 set: those two and RDVL (no
-  SVE: undefined).
-- Stand-in, the same three for the same reasons (unicorn's `max` model also has no SVE here).
-
-Found on the way:
-- Unicorn's fault hook fires once for every byte of a store that crosses into a faulting page, so the stand-in
-  reported the last byte (0x3003 instead of 0x3000). It now keeps the first. This changes the stand-in for
-  the kernel's tests too; only its library tests were rerun (they pass), not the kernel suites.
-- QEMU writes such a store's bytes below the fault one at a time before it faults; STR's one behavior writes
-  nothing, so the stand-in undoes them (STP too, so its set says `WritesNothing`).
-
-Not done:
-- Honoring more sets instead of refusing them: CTR_EL0's value would need a setting in the translator
-  (wcontainers-arm64 has it as a constant) and an MRS hook in the stand-in; the post-index choice and SVE
-  would need translator work.
-- x86: no executor of this trait runs x86 yet.
-
-### For the owner (the other executors)
-
-- How an executor is built is not in the interface. `for_precise_set` is the placeholder; the trait I would
-  need: `trait StandaloneExecutor: Executor + Sized { type Refusal; fn for_precise_set(set: &impl
-  PreciseInstructionSet<Self::Architecture>, config: Self::TranslatorConfig) -> Result<Self, Self::Refusal>; }`.
-- A store that crosses into a faulting page may write the bytes below the fault (QEMU does; the architecture
-  allows an unaligned access to be several smaller ones), but STR has only one behavior. Example: STR X0, [X0]
-  with X0 = 0x2FFC and 0x3000 not writable. STR may need the same choice STP has.
-- `execute_on_cpu` lives in the WebAssembly executor's crate and the stand-in depends on that crate for it,
-  so the stand-in now always builds wasmtime. The other place for it would be a small shared crate.
+Each is a question with one example in FOR-THE-OWNER.md: how executors and precise sets are built (placeholders
+`SingleStepMachine::new`, `Arm64Executor::new`, `StandIn::new`, `Simulation::new`, `MeasuredInstructionSet::measure`);
+when two execution states hold the same memory (`leave_same_memory` stands in); a batch form of execution;
+permissions on part of a page; listing an instruction's behaviors; reading operands back out of a state; operand
+independence and one value type in the input domain.
