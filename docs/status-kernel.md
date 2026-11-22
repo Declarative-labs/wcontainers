@@ -100,6 +100,22 @@ side of each is worked around without changing the interface.
 - Nothing in the kernel interface makes a process or hands out a `Process`, so the conformance
   suite takes its values ready made: a kernel with one of its processes, and a handle to a
   container's first process before it runs.
+- KA, fourth run: the linter's suite shape gives each suite function one value of the top-level
+  trait, so a kernel's checks cannot name one of its processes (no method of `ProcessController`
+  lists or finds one) and a process handle cannot reach its kernel. The three round trips that need
+  both (copy then resume, suspend then resume, tasks taken again) therefore moved out of the suite
+  into the stand-in's tests (tests/round_trips.rs, still against the traits alone). Example:
+  `copy_leaves_the_process(kernel, process)` needs the kernel and a `TaskId` together. So the
+  linter reports `ProcessController::resume_process` as untested by the suite: no context can be
+  had from a kernel alone.
+- KA, fourth run: an implementation's conformance.rs must hold a plain value that names an
+  exported type (a struct at the top of implementation.rs, made without an impl block of its own),
+  but the kernel interface declares no constructor and a kernel needs an executor, a system and a
+  started program. So the kernel's invocation calls the stand-in crate's `hello_not_run`, built
+  into `env!("CARGO_TARGET_TMPDIR")`, and the linter still reports it. Example:
+  crates/kernel/implementation/linux/conformance.rs.
+- KA, fourth run: `Process::watch_thread_memory` is in no suite: it is bounded by the executor's
+  `PerThreadWatch`, which no executor implements, and this kernel's body panics as not built.
 - `resolve_domain` can answer any question, but the kernel's name server still asks only for
   addresses (A and AAAA of class IN) and answers others "not implemented", counted, as before,
   so that the suite's results stay the same. Example: an MX question is not asked.
@@ -219,6 +235,14 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, fourth run: the interface changes of the evening (readiness trait, DNS answer bytes, poll
+flags) needed nothing more of the kernel's crates: everything builds. The kernel suite now has the
+linter's shape (one value per group, Process as a holder) and 14 checks, run from the kernel crate's
+own conformance target, which pass; every method of the kernel interface is called with its value
+used but `resume_process` and `watch_thread_memory` (For the owner). Not done: streams and sockets
+on their async calls, the kernel's own `System` trait's removal, and most linter findings in this
+track's files (about 38 thousand, below). KA is not complete. See "KA, fourth run".
 
 KA, third run: names are asked of the system's `DomainNameResolver::resolve_domain` as stored
 waiting calls (the abi's `Host::look_up` and `Event::LookedUp` are gone), and the kernel
@@ -440,6 +464,53 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, fourth run
+
+Started about 01:35 UTC on 2026-11-22 at d73d5af6 (branch agents, worktree wcontainers-agents).
+Everything ran on the Mac (load 14 to 18), cargo with -j 4 and 3 test threads, build folder
+target/kernel; scratch kernel/ka4.
+
+The independent check's findings handed to this run are the K6c thirteenth run's check again; each
+was answered in the K6c fourteenth run (see "KA, second run"), and ADSP038 is under "Waiting for
+the owner". Nothing more was done for them.
+
+Done:
+- The owner's interface changes (f6f01f09, b15e307a, 8a64cf87, 9ce79c65): the kernel, the
+  stand-in, the runtime and the policy build and lint as they are (1e9e4dcf had taken the poll
+  flags already). The kernel waits on no socket yet, so `Readiness` is not called anywhere here.
+- The kernel suite (crates/kernel/conformance, 187c91cd, b43958c0): `tests!` has the linter's fixed
+  shape, `tests!(<kernel>; Process: yes(<process>))`. The kernel's checks take a kernel alone (no
+  tasks, nothing back, an absent process). The process's checks are the four before and seven new
+  ones: no CPU time used while not running, runs as started, the state is one place, a copy leaves
+  the process, a thread taken is not taken again, SIGCONT leaves it as it was, watched memory is
+  still read and written. The suite runs from crates/kernel/implementation/linux/conformance.rs
+  (a `[[test]]` with the stand-in crate as a dev dependency, which makes the kernel through
+  `driver::hello_not_run`): 14 passed.
+- The three round trips that need a kernel and a process id together moved from the suite to the
+  stand-in's tests/round_trips.rs, unchanged: 3 passed (For the owner).
+- The stand-in runs the executor suite (its conformance.rs; the suite has no checks yet: 0 tests).
+- proc.rs's table names `/proc/sys` by `SYSCTL_ROOT` (a linter finding).
+- Tests run: kernel lib 15 passed; kernel conformance 14 passed; stand-in round_trips 3 passed and
+  conformance 0. Clippy with warnings denied (`--no-deps`, since crates/kernel/interface.rs fails
+  it) clean for the kernel, its suite and the stand-in. No kernel code a guest runs changed, so the
+  whole suite and the four measurements were not run again: the third run's stand.
+
+The owner's linter (`cargo reviewable check`, run at the start and the end, scratch
+ka4/lint-start.log and lint-end.log): 38018 findings in this track's files at the start and 38415
+at the end (the new checks' names and summaries wait for answers from the model, which is the
+orchestrator's; the kernel interface's untested methods went from 9 to 2). Of the start's: 12888
+`public_outside_interface` (every `pub` item of the kernel and the stand-in but structs at the top
+of implementation.rs), 10061 `number_constant_without_link` and 9023 `magic_literal` (21455 of all
+the findings are in the generated linux/ bindings), about 5000 on comments, 7
+`trait_outside_interface` (the kernel's `System`, ipc.rs `Object`, touch.rs `Memory`, the stand-in's
+`Hooks`, `BetweenSteps`, `DigestMemories`, `StreamHost`), 9 `implementation_folder` (the stand-in
+implements the abi's `Cpu` and `Host`, the kernel's `System` and the runtime's traits), 28
+`hook_name`, 6 `literal_restates_constant` (5 left, in the stand-in's tests, restating the
+translator's import names). Clearing the public items needs the kernel's whole surface used by the
+runtime, the executors and the tests to go through interfaces, which is part 2's remaining work and
+more; the generated bindings need the generator to write links or the rule to except generated
+files.
 
 ## KA, third run
 
@@ -5806,6 +5877,24 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KA, after its fourth run (the third run's list stands, with these notes):
+1. Read the whole suite at 02f8fb99 (third run's item 1) if nobody has.
+2. The standard streams on `StreamTransport`: the kernel's start then takes the system's
+   `Endpoint` for each standard stream in place of the abi's `End`, so `Start` becomes generic over
+   the system, and the runtime, the policy and the hypervisor link change with it; the pull model
+   (`receive_stream` at once, a readiness wait per end as a waiting call) replaces the data and
+   credit events, and the record and replay (replay.rs) keeps what `receive_stream` gave.
+3. Outside sockets on the four socket interfaces, waiting with `Readiness::wait_until_ready` per
+   watched socket; the guest's poll bits come from `ReadyFor` there (POLLRDNORM with POLLIN,
+   POLLWRNORM with POLLOUT, POLLNVAL from the descriptor table). The test host's made-up network
+   must then implement `TcpSockets`, `UdpSockets`, `IcmpSockets` and `RawSockets` with their
+   settings.
+4. Then the kernel's own `System` becomes the interface's, which clears its
+   `trait_outside_interface` and lets the hooks take `KernelProcess`.
+5. Linter findings that need no interface: the stand-in's `hook_name` (28) and its tests' restated
+   import names (5); the generated bindings' 21455 need a ruling (For the owner, or the generator
+   writing links).
 
 KA, after its third run:
 1. Read the whole suite at 02f8fb99 (scratch ka3/suite-after-02f8fb99.log; `arm-run --fetch
