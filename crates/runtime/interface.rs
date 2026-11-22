@@ -1,10 +1,8 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use oci_spec::runtime::Spec;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_kernel::signal::Signal;
-use wcontainers_kernel::{ExecutionConfig, ReplayDeterminism, ThreadOrdering};
+use wcontainers_kernel::{ExecutionConfig, Kernel, ReplayDeterminism, StopReason, ThreadOrdering};
 use wcontainers_system::{ProcessTracer, StreamTransport, System};
 
 /// A maker of containers that run on one kind of executor for one kind of system.
@@ -40,22 +38,6 @@ pub trait Container {
     fn run(&mut self) -> StopReason;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StopReason {
-    Interrupted,
-    Suspended,
-    Idle { until: Option<Duration> },
-    Finished(ProcessEnd),
-}
-
-/// The way a container's first process ended: its [wait status](https://man7.org/linux/man-pages/man2/wait.2.html#:~:text=If%20wstatus%20is%20not%20NULL), or the error that kept its program from starting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProcessEnd {
-    Exited { code: u8 },
-    Signaled { signal: Signal, core_dumped: bool },
-    NotStarted { error: Errno },
-}
-
 /// A handle that interrupts a container's run, idempotently.
 pub trait Interrupter: Send + Sync {
     fn interrupt(&self);
@@ -72,7 +54,7 @@ pub struct ContainerConfig<'a, R: Runtime + ?Sized> {
     pub system: R::System,
 }
 
-pub type ExecutorOf<R> = <<R as Runtime>::System as ProcessTracer>::Executor;
+pub type ExecutorOf<R> = <<<R as Runtime>::System as ProcessTracer>::Kernel as Kernel>::Executor;
 
 pub type EndpointOf<R> = <<R as Runtime>::System as StreamTransport>::Endpoint;
 

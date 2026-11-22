@@ -159,12 +159,21 @@ pub enum SourceAddressCheck {
     Waived,
 }
 
+/// The way a route lookup is held to an interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterfaceSelector {
+    /// The socket is [bound](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_BINDTODEVICE) to the interface, so only a route out of it matches.
+    Bound(InterfaceIndex),
+    /// The packet asks for the interface, which the lookup prefers.
+    Requested(InterfaceIndex),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ipv4RouteSelectors<'a> {
     pub destination: Ipv4Addr,
     pub source: Option<Ipv4Addr>,
     pub source_address_check: SourceAddressCheck,
-    pub interface: Option<InterfaceIndex>,
+    pub interface: Option<InterfaceSelector>,
     pub dscp: IpDscp,
     pub ecn: IpEcn,
     pub mark: PacketMark,
@@ -180,7 +189,7 @@ pub struct Ipv6RouteSelectors<'a> {
     pub destination: Ipv6Addr,
     pub source: Option<Ipv6Addr>,
     pub source_address_check: SourceAddressCheck,
-    pub interface: Option<InterfaceIndex>,
+    pub interface: Option<InterfaceSelector>,
     pub dscp: IpDscp,
     pub ecn: IpEcn,
     pub flow_label: Ipv6FlowLabel,
