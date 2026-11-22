@@ -15,15 +15,17 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - Suite: it runs the readiness suite (`crates/readiness/conformance`) as module `readiness_contract`, on
   `waiting_for_a_datagram` and `waiting_for_data_until_an_icmp_error`. Its own copies are deleted
   (a_wait_for_data_finishes_when_a_datagram_arrives, a_wait_for_writing_finishes_at_once, a_dropped_wait_is_withdrawn,
-  an_icmp_error_ends_a_wait_for_data, a_wait_for_no_event_ends_on_an_error), with a_wait_for_one_event_gives_that_event_alone
-  (normal and band bits) and `only_asked_for`. many_waits_each_wake_once is now waits_on_many_sockets_each_wake_once
+  an_icmp_error_ends_a_wait_for_data, a_wait_for_no_event_ends_on_an_error). Deleted as only of the twelve bits:
+  a_wait_for_one_event_gives_that_event_alone (normal and band bits) and the helper `only_asked_for`. many_waits_each_wake_once is now waits_on_many_sockets_each_wake_once
   (one wait on each of `MANY_WAITS` sockets). `WAITED_SOCKETS` and `WAITS_ON_ONE` are gone: raw and ICMP, take
   `MANY_WAITS` from the readiness suite. New check a_send_after_a_disconnect_carries_the_former_peers_address.
 - Waiting checks now: the readiness suite's 6 plus 10 of this suite's own, and the implementation's 5 readiness
   tests (the old "seventeen" was wrong: there were 16). Run on the ARM machine: 76 + 5 pass, ten runs in a row.
 - Next agent: the send without an address that the task asked a check of cannot be made through `send_to`, which always
   names a destination; the new check catches a disconnect that keeps the peer instead, since the implementation leaves out
-  the address only when sending to its peer. The literal check still reports `ROUTE_MTU` (1500), which predates this.
+  the address only when sending to its peer. `ROUTE_MTU` is now `linux_raw_sys::if_ether::ETH_DATA_LEN` (the
+  literal check took 1500 for ICMP's `NARROW_LINK_MTU`); the literal check reports nothing in this track's files.
+  Checked again later the same day: 76 + 5 pass, five runs before that change and five after; readiness suite 13, shared crate 1.
 - For the owner: the trait's comment does not say that ERROR and HANG_UP end a wait whether or not they were asked for,
   which the implementations do and the readiness suite checks.
 
