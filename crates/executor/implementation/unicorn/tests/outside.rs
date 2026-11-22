@@ -94,6 +94,17 @@ fn reads_woken_while_they_park_run_again() {
     assert!(text.contains("echoed 3000 wrong 0 end 0"), "{text}");
 }
 
+/// Bytes the peer sends after the program shut its connection for reading are still queued and
+/// read, as Linux queues them; a read finds the end only once they are read.
+#[test]
+fn bytes_after_a_read_shutdown_are_read() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let port = echoing_server().to_string();
+    let ours = assert_same_output(&out, "shutread", &[DOCKER_HOST_NAME, &port]);
+    let text = String::from_utf8_lossy(&ours.outcome.stdout);
+    assert!(text.contains("echoed after shutdown: 2 bc"), "{text}");
+}
+
 /// A server on this machine that sends a connection up to 1 MiB (as much as goes within 2 s), and
 /// once the next one comes, resets the first and tells the second "reset", for each pair in turn.
 /// Returns its port.

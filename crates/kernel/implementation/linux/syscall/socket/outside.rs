@@ -113,6 +113,9 @@ pub(crate) struct Outside {
     lookups: BTreeMap<u64, Lookup>,
     /// The system's handles let go, closed at the next flush once no wait holds them.
     closing: Vec<Rc<dyn Any>>,
+    /// What every pull receives into, kept between pulls so that one which finds nothing allocates
+    /// nothing; a queued packet holds a copy of only the bytes it received.
+    received: Vec<u8>,
 }
 
 /// A name query waiting for the system's resolver, which is asked as a waiting call of its number.
@@ -795,6 +798,19 @@ fn pull<S: crate::System>(
     socket: &SocketRef,
     id: u32,
 ) {
+    let mut received = core::mem::take(&mut kernel.sockets.inet.outside.received);
+    pull_into(kernel, cx, socket, id, &mut received);
+    kernel.sockets.inet.outside.received = received;
+}
+
+/// [`pull`], receiving into `buffer`.
+fn pull_into<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    id: u32,
+    buffer: &mut Vec<u8>,
+) {
     let Some(flow) = kernel
         .sockets
         .inet
@@ -815,7 +831,13 @@ fn pull<S: crate::System>(
         if stream && held >= room {
             return;
         }
-        if stream && socket.borrow().shutdown & RCV_SHUTDOWN != 0 {
+        // Bytes still arrive after the program's own SHUT_RD, as Linux queues them; nothing comes
+        // after the peer's end or once the connection is closed.
+        let ended = {
+            let own = socket.borrow();
+            own.state == State::Closed || own.inet.as_deref().is_some_and(|inet| inet.done)
+        };
+        if stream && ended {
             return;
         }
         let size = if stream {
@@ -823,8 +845,10 @@ fn pull<S: crate::System>(
         } else {
             PIECE + HEADROOM
         };
-        let mut buffer = alloc::vec![0u8; size];
-        match receive(kernel, cx, id, &mut buffer) {
+        if buffer.len() < size {
+            buffer.resize(size, 0);
+        }
+        match receive(kernel, cx, id, &mut buffer[..size]) {
             Ok(bytes) if stream && bytes.is_empty() => {
                 super::inet::carry_outside(kernel, socket, 0, true, false);
                 let mut own = socket.borrow_mut();
@@ -843,8 +867,6 @@ fn pull<S: crate::System>(
             }
             Ok(bytes) => {
                 let count = bytes.len();
-                buffer.copy_within(bytes, 0);
-                buffer.truncate(count);
                 let truesize = if stream {
                     count as u64
                 } else {
@@ -854,7 +876,7 @@ fn pull<S: crate::System>(
                     continue;
                 }
                 let packet = Packet {
-                    data: buffer,
+                    data: buffer[bytes].to_vec(),
                     consumed: 0,
                     files: Vec::new(),
                     cred: super::Cred {
