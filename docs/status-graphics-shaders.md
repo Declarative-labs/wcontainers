@@ -54,21 +54,21 @@ below): level-of-detail queries (`CalculateLevelOfDetail`) on the DXBC route (th
 `calculate-lod` files). Run 5 (run 92, the section below): the same on the DXIL route. Run 6
 (run 93, the section below): samples with a per-sample clamp (`SampleClamp`) on both routes. Run 7
 (run 94, the section below): inputs evaluated elsewhere in the pixel (`InterpolateAt`) on the DXIL
-route, and DXIL pixel inputs' sampling kept. Not complete: the gap list below.
+route, and DXIL pixel inputs' sampling kept. Run 8 (run 95, the section below): the Direct3D 11
+track's `B8G8R8X8_UNORM` vertex format committed, and A20, a geometry shader after a domain stage
+reading its primitive's number. Not complete: the gap list below.
 
-Asked by the Direct3D 11 track (2026-11-22, G4h; it blocks feature level 11_0 on both Direct3D
-fronts, which must not report a level whose requirements are unmet): `B8G8R8X8_UNORM` vertex
-elements, which Direct3D reads as blue, green and red with the fourth component 1. It needs a
-variant `VertexFormat::Bgrx8Unorm` in the interface, which breaks this crate's exhaustive match in
-variant/pull.rs `layout` the moment it lands, so it must land in one commit with this crate's arm.
-Every other crate's arm (interface, WebGPU and WebGL 2 back ends, wcontainers-gpu-test, the
-Direct3D 11 front's element size) is written in
-pyro-parked/wcontainers-scratch/graphics-direct3d-11/g4h/bgrx8-arms.patch, and this crate's arm
-(three bytes of `BGRA_BYTES`, so the fourth reads 1) in g4h/bgrx8-shaders-arm.patch; both apply to
-the tip and build together (cargo check of every graphics crate, and wcontainers-gpu-test's tests,
-on the x86 machine). Please commit both in one commit of your own (or say the Direct3D 11 track may
-commit the arm). Typed buffers of the format then want variant/texel.rs `vertex_format` to map
-`Format::Bgrx8Unorm` to the new variant.
+For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
+02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
+commit (every arm, so the shared worktree builds at each commit). Checked on the ARM64 machine
+(arm1.log of run 95): rustfmt of the eight files, `cargo check --all-targets` of every graphics crate
+(interface, both back ends, wcontainers-gpu-test, both Direct3D fronts, directx, its graphics
+infrastructure, opengl, nir, graphics-test) with no error or warning, clippy of this crate and the
+interface with warnings denied, the WebGPU back end's library tests (7) and this crate's CPU
+tests. Not drawn here (no GPU run of `every_vertex_format_reads_its_element`: the front's to run).
+Not done: typed buffers of the format (variant/texel.rs `vertex_format` has no arm for
+`Format::Bgrx8Unorm`, so such a view is still refused); that mapping is shared with targets in the
+shader and storage clears, so it waits on a drawn typed-buffer test of the X byte.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
@@ -114,6 +114,46 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 8 (run 95): the B8G8R8X8 vertex format, and A20
+
+Logs and scripts in scratch `graphics-shaders/g6-r95` (run 94's with its folder, plus
+`mutant-number.sh`, which applies A20's mutant to the clone `tip`; `arm1.log` to `arm4.log`,
+`job1.log`, `job2.log`, `gpu-suite.log`, `chrome.log`, `chrome-in/`, `changed.txt`). Nothing built
+on the Mac (rustfmt of single files only).
+- The Direct3D 11 track's ask (it blocks feature level 11_0 on both fronts): its two patches
+  committed as one (02049aeb, "For the Direct3D 11 track" at the top). The literal check then
+  found 20 new lines in the arms (draw.rs's new `'x'` code, routes.rs's second copy of the BGRA
+  element, the WebGL 2 back end's `3`, this crate's `[..3]`); 91d58837 folds each B8G8R8X8 arm
+  into its BGRA arm or names its size (WebGL 2 reads it as `Unorm8x3`'s attribute; the test writes
+  0 as the unread fourth byte, which must still read alpha one, so the test now shows the byte is
+  not read). Checked on ARM64 (arm4.log): `cargo check --all-targets` of wcontainers-gpu-test and
+  the WebGL 2 back end, clippy with warnings denied of both and this crate, this crate's library
+  tests, and the literal check prints no line of these files. Not drawn here.
+- A20 built (68d59b9d): the geometry compute form of a shader reading `SV_PrimitiveID` declares the
+  tessellator's points (`stage_points`, `POINTS_BINDING` of the stage set) and, for a listed
+  primitive (`word::LISTED`, after a domain stage), takes word 3 of its first vertex's point, the
+  number the domain program reads as its own primitive's; otherwise its place as before. The
+  helper binds the tessellator's points there after a domain stage and the unused range otherwise,
+  only for such shaders (`Geometry::numbered`). The refusal `GeometryPrimitiveIdAfterDomain` is
+  gone.
+- Drawn on the RTX 3080 (job1.log): `stream_output_after_the_domain_stage_matches_direct3d` has
+  four new cases, `gs_values_tess` (instanced twice, moving its location where the number it reads
+  is not the patch's) after `hs_values_odd_ccw` and `hs_values_even_cw`, both builds: seeds 1 to 4,
+  320 comparisons, none failed (every patch's primitives equal, primitives written and made as
+  Direct3D 11 counts them). Mutant (the place in the list kept as the number, job2.log): exactly the
+  four new cases fail at seed 1.
+- The whole GPU suite at 68d59b9d (gpu-suite.log, one job, one test thread, about 11 minutes): 25
+  binaries, every test passed (the geometry shaders reading their number without a domain stage
+  now take the unused range at the new binding).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 0 to 2.1): 13 passed, every
+  verdict unchanged. Written files changed: 31 WGSL files, the own geometry shaders reading their
+  primitive's number (both builds) and the rig's `geometry.gs_strips` (both builds); Chrome on the
+  desktop compiles all 31 (chrome.log). WebAssembly not rerun (no target-dependent code changed).
+- ARM64 (arm2.log, load 6 to 12): rustfmt clean, clippy with warnings denied, every CPU test binary
+  passed.
+- For the Direct3D fronts: nothing to call differently; a geometry shader reading `SV_PrimitiveID`
+  after a domain stage now runs through `Stages::tessellated_with` (was refused by name).
 
 ## G6 run 7 (run 94): inputs evaluated elsewhere in the pixel on the DXIL route
 
@@ -1777,13 +1817,10 @@ The gap list (every item of the pass bar not met):
   Direct3D 11 front (its difference list). Takes: an own program writing 0.5 and -0.5 into 8- and
   16-bit normalised targets, storage textures and typed buffers, compared exactly with real
   Direct3D 11 (fxc and dxc builds).
-- A20. A geometry shader after a domain stage reading `SV_PrimitiveID`
-  (`GeometryPrimitiveIdAfterDomain`, src/stage/helper.rs `tessellated_with`): refused by name. Own
-  `gs_values_tess` (both builds) and the check's `gs_own_tess` meet it. Cause: the domain stage's
-  records do not hold the patch's number, which Direct3D gives such a geometry shader. Waits:
-  nobody (no corpus or real program seen with it). Takes: the patch's number written into each
-  domain record by the domain program, read by the geometry stage as its primitive, and a drawn
-  test against Direct3D 11 (`gs_values_tess` with `hs_values_*`).
+- A20. A geometry shader after a domain stage reading `SV_PrimitiveID`: closed in run 95 (its
+  section). The geometry compute form reads a listed primitive's number from the tessellator's
+  point of its first vertex (`POINTS_BINDING` of the stage set, bound for every geometry shader
+  reading it); the refusal `GeometryPrimitiveIdAfterDomain` is gone.
 - A21. Float arithmetic is not bit-exact across compilers: Direct3D and the back ends' compilers
   may each contract a multiply and an add and divide by a constant's reciprocal, and a program
   built IEEE-strict (`-Gis`, `precise`) forbids it, which WGSL cannot say. Measured (G6b run 3,
@@ -2118,7 +2155,7 @@ G6a run 5's tip):
   (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
   `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
-  `GeometryPrimitiveIdAfterDomain` (A20, at `Stages::tessellated_with`, not a conversion verdict); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
+  `GeometryPrimitiveIdAfterDomain` gone in run 95 (A20); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
   writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) (A7; `CullDistance` 8 of
   geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL,
   gone in run 90: they convert); "convert rejected: Unknown type!" 1 (A1).
@@ -2144,8 +2181,11 @@ G6a run 5's tip):
 
 ## Next
 
-1. A20 (the plan in 2 below), the Direct3D 12 runner's next item (`InterpolateAt` on the DXIL
-   route was done in run 94).
+1. The DXIL part of A14 (the Direct3D 12 runner's `patch-syntax-11-ds.dxil`): in
+   src/dxil/tessellation.rs `prepare`, a domain shader of no input control points is refused; drop
+   dxil-spirv's control point input array of none from the SPIR-V before naga reads it (the
+   program reads no control point), then draw own `ds_tri_none.dxil` with `hs_tri_none` in
+   `hulls_giving_no_control_points_stream_as_direct3d_does` (WARP). A20 was done in run 95.
 2. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
@@ -2155,13 +2195,10 @@ G6a run 5's tip):
    shader), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
-   Direct3D 12 runner items are A20 and the DXIL parts of A13 and A14 (dxil-spirv's; A13 and A14's
-   DXBC parts closed in run 89, A7's cull distances from geometry shaders in run 90). A20 takes:
-   the geometry compute form reading the patch's primitive number from the tessellator's points
-   (word 3 of the point its first vertex's record is, `Tessellator::points`) when listed, which
-   needs the points bound at `POINTS_BINDING` of its set for every geometry shader reading
-   `SV_PrimitiveID` (so their converted modules change: Chrome again), and a drawn test
-   (`gs_values_tess` with `hs_values_*`).
+   Direct3D 12 runner items are the DXIL parts of A13 and A14 (dxil-spirv's; A13 and A14's DXBC
+   parts closed in run 89, A7's cull distances from geometry shaders in run 90, A20 in run 95).
+   Typed buffers of `B8G8R8X8_UNORM` (variant/texel.rs, with a drawn test of the X byte against
+   real Direct3D 11) when the Direct3D 11 front asks.
 3. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 4. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
    the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
@@ -3683,6 +3720,12 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 95's scripts in scratch `graphics-shaders/g6-r95` are run 94's with its folder; a mutant is
+  applied to the clone by a script (`mutant-number.sh`), run with `gpu-noclippy.sh`, and undone
+  with `git -C tip checkout -- <file>`. The literal check ran on the ARM64 machine as run 88's
+  line below says; fetch its whole output with `arm-run --fetch graphics-shaders
+  target/lit-shaders.txt <dir>` (lines of other tracks' work in progress and of the converters'
+  submodules, which the copy lists, are not this crate's).
 - Run 94's scripts in scratch `graphics-shaders/g6-r94` are run 93's with its folder, plus
   `gpu-noclippy.sh` (one GPU job without Windows clippy, for a mutant in the clone). Own shaders
   compiled one at a time on the desktop from the clone: `tools/graphics-rig/remote "cd
@@ -3984,6 +4027,12 @@ were already there.
 
 ## Departures from the plan
 
+- Run 95: an "interface:" commit (02049aeb) that also touches other tracks' crates, against
+  section 12's rule that such a commit touches only the interface. In the shared worktree a new
+  `VertexFormat` variant without its arms breaks every crate matching on it, so the interface
+  and the arms land together, as the Direct3D 11 track asked; 91d58837 then changed those arms in
+  wcontainers-gpu-test and the WebGL 2 back end for the literal check (same behaviour; the test's
+  unread byte is now 0).
 - Run 67: dxbc-spirv's `boundCheckShaderIo` is off (cpp/dxbc.cpp). Its check bounded every
   vertex-indexed input or output load by the input vertex count, so a hull shader's patch
   constant function read 0 from an output control point past the input count (the third check).
@@ -4321,6 +4370,13 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 95, `VertexFormat::Bgrx8Unorm` (commit 02049aeb "interface: a b8g8r8x8 vertex format read
+  as blue, green and red with alpha one, with every crate's arm"), the Direct3D 11 track's ask and
+  its patches: Direct3D's B8G8R8X8 element. The commit also holds every crate's arm (both back
+  ends, wcontainers-gpu-test, the Direct3D 11 front's element size, this crate's layout), not the
+  interface alone, because the new variant breaks their exhaustive matches the moment it lands in
+  the shared worktree (Departures).
 
 - Run 70, `BLEND_HALF_CODES` and `BLEND_CONSTANT_COMPONENTS` (commit "interface: the target combine
   value's code and constant counts are named once"): the array lengths of `TargetCombineValue`
