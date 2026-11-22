@@ -89,7 +89,7 @@ fn resolve(
     resolver.resolve_route(route, UserId(u32::MIN), NeighbourConfirmation::Unconfirmed)
 }
 
-/// Each refused lookup is counted once under a reason of its own.
+/// Checks that each refused lookup is counted once under a reason of its own.
 #[test]
 fn refusals_are_counted_under_their_reasons() {
     // SAFETY: a new network namespace shares no memory or file with the rest of the process.

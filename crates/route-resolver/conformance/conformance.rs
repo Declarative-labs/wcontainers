@@ -38,11 +38,11 @@ fn enter_network_namespace() {
 const IP: &str = "ip";
 const A: &str = "da";
 const B: &str = "db";
-/// da's MTU, more than the least IPv6 takes.
+/// The MTU of da, more than the least IPv6 takes.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-5
 const A_MTU: u32 = 1400;
-/// db's MTU, less than da's and more than the least IPv6 takes.
+/// The MTU of db, less than da's and more than the least IPv6 takes.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-5
 const B_MTU: u32 = 1300;
@@ -65,19 +65,19 @@ route add 10.9.0.0/16 via 10.2.0.2 table 100
 route add fd09::/64 via fd01::2
 route add fd09::/64 via fd02::2 table 100
 ";
-/// da's address, in private address space.
+/// The address of da, in private address space.
 ///
 /// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const A_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 1);
-/// db's address, in private address space.
+/// The address of db, in private address space.
 ///
 /// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const B_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 2, 0, 1);
-/// da's IPv6 address, a unique local one.
+/// The IPv6 address of da, a unique local one.
 ///
 /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const A_ADDRESS_V6: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 1);
-/// db's IPv6 address, a unique local one.
+/// The IPv6 address of db, a unique local one.
 ///
 /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const B_ADDRESS_V6: Ipv6Addr = Ipv6Addr::new(0xfd02, 0, 0, 0, 0, 0, 0, 1);

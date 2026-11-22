@@ -51,7 +51,7 @@ const CONFIRMATION_PORT: u16 = u16::MAX;
 /// The send flags that confirm the neighbour and send nothing.
 const CONFIRMING_PROBE: libc::c_int = libc::MSG_CONFIRM | MSG_PROBE as libc::c_int;
 
-/// No flags of a send or receive.
+/// The flags of a plain send or receive: none.
 ///
 /// https://man7.org/linux/man-pages/man2/send.2.html
 const NO_FLAGS: libc::c_int = 0;
@@ -213,7 +213,7 @@ impl Lookup<'_> {
         if found.kind == RouteKind::Broadcast && route.broadcast == BroadcastPermission::Refused {
             return Err(HostError::Errno(libc::EACCES));
         }
-        let link = self.link(found.interface)?;
+        let link = self.read_link(found.interface)?;
         let default_hop_limit = match found.hop_limit {
             Some(limit) => limit,
             // A socket whose `IP_TTL` was never set gives the namespace's default.
@@ -279,7 +279,7 @@ impl Lookup<'_> {
             route.upper_layer,
         )?;
         let found = self.found(&self.exchange_route(request)?, IpAddr::V6(destination))?;
-        let link = self.link(found.interface)?;
+        let link = self.read_link(found.interface)?;
         let source = match route.source {
             Some(source) => IpAddr::V6(source),
             None => found.source.ok_or(HostError::Errno(libc::EPROTO))?,
@@ -464,7 +464,7 @@ impl Lookup<'_> {
         })
     }
 
-    fn link(&self, interface: InterfaceIndex) -> Result<Link, HostError> {
+    fn read_link(&self, interface: InterfaceIndex) -> Result<Link, HostError> {
         let mut request = LinkMessage::default();
         request.header.index = interface.0;
         let RouteNetlinkMessage::NewLink(reply) =
