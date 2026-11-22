@@ -108,7 +108,11 @@ impl Recorder {
                 limits,
                 formats: FormatCaps {
                     uses: [FormatUse::all(); Format::COUNT],
-                    samples: [0b1101; Format::COUNT],
+                    // A bit per count: one sample and the counts the tables require.
+                    samples: [crate::required::SAMPLE_COUNTS
+                        .into_iter()
+                        .fold(1, |bits, count| bits | count as u8);
+                        Format::COUNT],
                 },
                 adapter: AdapterInfo {
                     name: "wcontainers recording back end (draws nothing)".into(),
