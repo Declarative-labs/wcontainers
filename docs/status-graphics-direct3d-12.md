@@ -7,20 +7,26 @@ to 47 (what the front does subject by subject, every run's numbers, older script
 commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
 Asked by the Direct3D 11 track (2026-11-22, G4h; the owner's ruling that a device reports no
-feature level whose requirements it does not meet): `R10G10B10_XR_BIAS_A2_UNORM` swap chains, the
-format's `DISPLAY` (10_0 and up) and `BACK_BUFFER_CAST` (11_0) in Microsoft's tables, are the last
-11_0 requirement besides one vertex format, and they live in this track's infrastructure crate
-(swapchain.rs, which refuses the format). A route that draws the same: back buffers held in
-`Rgb10a2Unorm`'s bits (as textures of the format already are), back buffer views of it as
-`R10G10B10A2_UNORM` and the reverse, and the present copy decoding each colour channel as the
-functional specification's extended-range mapping, `(c * 1023 - 384) / 510` (-0.7529 to 1.2529),
-alpha as stored, into an `rgba16float` surface (a canvas configured `rgba16float` with extended
-tone mapping in a browser; wgpu's `Rgba16Float` surface natively, which is linear scRGB, so the
-copy also applies sRGB's curve mirrored about 0); where no extended range is shown the values
-clamp to 0 to 1, as on a display without it. The Direct3D 11 track may build it if this track
-allows, or the orchestrator rules. Also, once the shaders track lands `VertexFormat::Bgrx8Unorm`
-(asked in its status file): the row `dxgi::B8G8R8X8_UNORM => (Bgrx8Unorm, 4)` in format.rs
-`dxgi_vertex_format`, which gives both fronts the format's `IA_VERTEX_BUFFER`, required from 10_0.
+feature level whose requirements it does not meet), READY AS A PATCH of this track's
+infrastructure crate, written and tested by the Direct3D 11 track (G4h run 3): the last two 11_0
+requirements of both fronts live here.
+1. `R10G10B10_XR_BIAS_A2_UNORM` swap chains (`DISPLAY` from 10_0, `BACK_BUFFER_CAST` at 11_0),
+   pyro-parked/wcontainers-scratch/graphics-direct3d-11/g4h/xr-infrastructure.patch: the format
+   joins `BACK_BUFFER_FORMATS` (blit models only, as DXGI rules; `back_buffer_format` holds it in
+   `Rgb10a2Unorm`'s bits), and the present copy's new entry `extended` decodes each colour code as
+   the functional specification's mapping, `(c - 384) / 510`, clamped to the 0 to 1 an SDR display
+   shows (the crate presents in SDR sRGB only, `presents_in`); `Shown` replaces the `encode` flag.
+   Two recorder tests added (format held, `extended` program, flip models refused, display modes).
+2. The row `dxgi::B8G8R8X8_UNORM => (Bgrx8Unorm, 4)` in format.rs `dxgi_vertex_format`
+   (g4h/bgrx8-infrastructure-row.patch, applied after the first), now that the variant is in
+   (02049aeb): `IA_VERTEX_BUFFER` and, with the shaders crate's texel arm, `BUFFER`, from 10_0.
+Tested at a trial commit of the tip with both (and the Direct3D 11 side) on the desktop: lint of
+this crate, the Direct3D 11 front and library with warnings denied (both builds), this crate's
+tests (11 pass, rented x86 machine), the format support comparisons and the requirement test of
+levels 10_0 to 11_0 pass on the RTX 3080, Wine's test_vertex_formats 100 checks as real Direct3D,
+test_buffer_srv passes, test_format_support and test_swapchain_formats fail no check. Please
+commit both (one small commit each), or say the Direct3D 11 track may; until then the Direct3D 11
+front cannot report its level truthfully. The Direct3D 12 crate passes clippy with warnings denied and its tests build with both patches (rented x86 machine).
 
 ## Where things stand
 
