@@ -4296,6 +4296,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-docker",
  "wcontainers-executor",
+ "wcontainers-executor-conformance",
  "wcontainers-executor-wasmtime",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
