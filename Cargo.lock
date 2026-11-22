@@ -4536,6 +4536,8 @@ dependencies = [
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
  "wcontainers-readiness",
+ "wcontainers-route-resolver",
+ "wcontainers-route-resolver-host",
 ]
 
 [[package]]
@@ -4780,6 +4782,8 @@ dependencies = [
  "wcontainers-raw-sockets",
  "wcontainers-raw-sockets-conformance",
  "wcontainers-readiness",
+ "wcontainers-route-resolver",
+ "wcontainers-route-resolver-host",
 ]
 
 [[package]]
