@@ -64,7 +64,8 @@ pub(crate) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
             return (Unorm, c, build::WORD);
         }
         V::Bgrx8Unorm => {
-            let c = BGRA_BYTES[..3].iter().map(|&b| (b, 0, u8::BITS)).collect();
+            let rgb = BGRA_BYTES.iter().take(VectorSize::Tri as usize);
+            let c = rgb.map(|&b| (b, 0, u8::BITS)).collect();
             return (Unorm, c, build::WORD);
         }
         V::Unorm10_10_10_2 => {

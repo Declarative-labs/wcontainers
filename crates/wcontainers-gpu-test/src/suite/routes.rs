@@ -1420,15 +1420,10 @@ fn vertex_elements(format: VertexFormat) -> Vec<([u8; 16], Read)> {
             e[..n].copy_from_slice(&values[..n]);
             Read::Float(e, 0.0)
         }
-        Bgrx8Unorm => {
-            element[..4].copy_from_slice(&[10, 20, 30, 77]);
-            Read::Float(
-                [30.0 / 255.0, 20.0 / 255.0, 10.0 / 255.0, 1.0],
-                1.0 / 1048576.0,
-            )
-        }
-        Bgra8Unorm => {
-            element[..4].copy_from_slice(&[10, 20, 30, 255]);
+        Bgra8Unorm | Bgrx8Unorm => {
+            // B8G8R8X8's fourth byte is not read: zero there still reads as alpha one.
+            let fourth = if format == Bgrx8Unorm { 0 } else { 255 };
+            element[..4].copy_from_slice(&[10, 20, 30, fourth]);
             Read::Float(
                 [30.0 / 255.0, 20.0 / 255.0, 10.0 / 255.0, 1.0],
                 1.0 / 1048576.0,

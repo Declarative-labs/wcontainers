@@ -680,8 +680,8 @@ fn attribute(f: VertexFormat) -> (i32, u32, bool, bool) {
         V::Unorm10_10_10_2 => (4, glow::UNSIGNED_INT_2_10_10_10_REV, true, false),
         // Read as bytes or one word and turned into their values in the program (`conversion`).
         V::Bgra8Unorm => (4, glow::UNSIGNED_BYTE, true, false),
-        // Three bytes, so the fourth component reads one.
-        V::Bgrx8Unorm => (3, glow::UNSIGNED_BYTE, true, false),
+        // Its three bytes as `Unorm8x3`'s, so the fourth component reads one.
+        V::Bgrx8Unorm => return attribute(V::Unorm8x3),
         V::Uint10_10_10_2 | V::Float11_11_10 => (1, glow::UNSIGNED_INT, false, true),
     };
     let components = if n != 0 {

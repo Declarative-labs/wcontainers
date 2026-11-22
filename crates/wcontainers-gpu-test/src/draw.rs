@@ -478,8 +478,7 @@ fn vertex_format(f: VertexFormat) -> Result<(usize, usize, char), Error> {
         Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 => (f as usize - Uint32x1 as usize + 1, 4, 'u'),
         Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => (f as usize - Sint32x1 as usize + 1, 4, 'i'),
         // The packed formats: four bytes in reverse order, or one word.
-        Bgra8Unorm => (4, 1, 'b'),
-        Bgrx8Unorm => (4, 1, 'x'),
+        Bgra8Unorm | Bgrx8Unorm => (4, 1, 'b'),
         Unorm10_10_10_2 => (1, 4, 'p'),
         Uint10_10_10_2 => (1, 4, 'q'),
         Float11_11_10 => (1, 4, 'e'),
@@ -502,14 +501,19 @@ fn small_float(bits: u32, m: u32) -> f64 {
 
 fn decode_vertex(f: VertexFormat, bytes: &[u8]) -> Result<Vec<f64>, Error> {
     let (n, size, num) = vertex_format(f)?;
-    if matches!(num, 'b' | 'x' | 'p' | 'q' | 'e') {
+    if matches!(num, 'b' | 'p' | 'q' | 'e') {
         let b = bytes
             .get(..4)
             .ok_or("a vertex read past the buffer's end")?;
         let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         let field = |at: u32, width: u32| f64::from((w >> at) & ((1 << width) - 1));
+        // B8G8R8X8's fourth byte is not read: its alpha is one.
+        let alpha = match f {
+            VertexFormat::Bgrx8Unorm => u8::MAX,
+            _ => b[3],
+        };
         return Ok(match num {
-            'b' | 'x' => vec![b[2], b[1], b[0], if num == 'b' { b[3] } else { u8::MAX }]
+            'b' => vec![b[2], b[1], b[0], alpha]
                 .into_iter()
                 .map(|x| f64::from(x) / 255.0)
                 .collect(),
