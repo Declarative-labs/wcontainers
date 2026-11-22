@@ -3,6 +3,33 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## Run 15 (2026-11-22): the owner's interfaces of a00ab267, and the check of run 14 answered
+- Conformed to the owner's interfaces merged at a00ab267 (commits 61bb2b6f, 223130ff): `wait_until_ready` answers
+  `ReadinessReport { ready_for, unconditional }`; `POLLERR` and `POLLHUP` are `UnconditionalEvents` and end every
+  wait, asked or not; `TcpSetting::Port(PortSetting)` is `TcpSetting::Binding(BindingSetting)`; the crate rename to
+  negative-route-advisable was already applied by the merge.
+- Shared crate readiness.rs (this track's): `hold` takes a `ReadinessReport`; `NOTHING` (a report of no fact) is
+  exported; `DATAGRAM_FACTS` is READABLE and WRITABLE only; the error and hang-up bits are their own table. The
+  shared linux.rs's `set_port_setting` is `set_binding_setting`. Its own test holds an unconditional error.
+- The readiness suite (crates/readiness/conformance), which every socket suite runs and nobody else had changed
+  yet: its checks read the report (`ready_for` for the facts asked for, `unconditional` for the failure check);
+  `ALWAYS_REPORTED` is gone, since a wait can no longer ask for an error or a hang-up; its doubles report the
+  unconditional events apart. 13 of its own tests pass.
+- TCP suite: the hang-up and error waits ask for nothing (`ReadyFor::empty()`), which only an unconditional event
+  ends, and demand exactly HANG_UP, or ERROR with HANG_UP; the exact-facts checks compare whole reports.
+- The stopped agent's uncommitted work (an answer to the independent check of run 14, whose eight broken copies
+  had passed: logs ic15-*.log in scratch) is finished and committed: set_timestamp_clock now sets the unit too,
+  from the value's low bit, as Linux 6.7 and later do in repair mode (`tp->tcp_usec_ts = val & 1`; run 6's
+  measurement that the route fixes it was wrong), with a counted refusal (`NO_MICROSECOND_CLOCK`) and the clock put
+  back on an older kernel; the check is now timestamp_clock_in_the_other_unit_counts_in_it (no refusal allowed). A
+  multipath socket's urgent mark reads not reached (`SIOCATMARK` is ENOTTY on MPTCP) and its tuned values are a
+  counted refusal (the clamp and quick acknowledgement are EOPNOTSUPP there); the unfilled `tcpi_last_ack_sent` and
+  `tcpi_fackets` and the 6.19 fullmesh limit are counted. New check multipath_connection_answers_every_query, and
+  more readings checked (windows, timers, segment counts, retransmission counts, Accurate ECN zeros, the multipath
+  checksums against the captured MP_CAPABLE, the subflow identifier, the repair window's update sequences and
+  largest window). Plan corrected for the clock.
+- Runs: see Measurements, run 15.
+
 ## Run 14 (2026-11-22): the independent check of run 13 answered
 - [blocking] LastReceivedHeader dropped every IPv6 extension header: it read `IPV6_2292PKTOPTIONS` into room for
   the packet information alone, and Linux stops at the first record that does not fit, silently. The room is now
@@ -250,6 +277,11 @@ readings, repair, authentication, multipath state, the privileged settings).
   which the implementation does and the readiness suite checks.
 
 ## For the UDP, ICMP and raw tracks
+- New, run 15 (61bb2b6f): the shared readiness answers `ReadinessReport`; `Watched::hold` takes a
+  `ReadinessReport` (the ICMP and raw hosts already call it so); `readiness::NOTHING` is a report of no fact;
+  `DATAGRAM_FACTS` is READABLE | WRITABLE (errors and hang-ups are always reported, no longer facts to watch). The
+  readiness suite's `ALWAYS_REPORTED` is gone and its checks read `ready_for` and `unconditional`. The shared
+  `set_port_setting` is now `set_binding_setting` (UDP track: your call at udp-sockets host linux.rs:784).
 - New, run 6: `receive_message` (TCP's only) no longer allocates: `ReceivedMessage` has `length`, `flags` and
   `control` (the bytes), and `messages()` walks them in place as level, type and data (`ControlMessages`, which
   takes any control bytes the kernel wrote). UDP track: `Ancillary::parse` could take its messages from
@@ -495,7 +527,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   delayed_acknowledgement_is_sent_on_demand. rearm_keep_alive_timer: rearming_the_keep_alive_timer_sends_a_due_probe.
   send_window_probe: window_probe_is_answered_and_changes_no_setting. set_timestamp_clock:
   timestamp_clock_set_in_repair_mode_stamps_segments (any refusal outside repair mode, the unit counted in it) and
-  timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused, timestamp_reads_the_clock_in_its_unit,
+  timestamp_clock_in_the_other_unit_counts_in_it, timestamp_reads_the_clock_in_its_unit,
   repaired_connection_continues_where_the_original_left_off (the listener's: refused unless the listener takes
   repair mode, see For the owner). set_authentication_counters and the listener's:
   authentication_counters_are_set_only_where_authentication_is, authentication_state_reads_the_keys_and_counters.
@@ -508,14 +540,16 @@ readings, repair, authentication, multipath state, the privileged settings).
   Timestamp timestamp_reads_the_clock_in_its_unit; Repair the repair check and
   authentication_repair_values_are_read_and_written; Authentication and AuthenticationKey
   authentication_state_reads_the_keys_and_counters and the set-twice checks; Multipath and MultipathSubflow
-  multipath_state_describes_the_connection; LastReceivedHeader last_received_header_records_where_the_last_packet_came
+  multipath_state_describes_the_connection; every query on a multipath connection and listener
+  multipath_connection_answers_every_query; LastReceivedHeader last_received_header_records_where_the_last_packet_came
   and the set-twice checks; IncomingProcessor incoming_processor_is_read_as_received_or_set. Repair settings:
   QueueSequence, RepairOptions, RepairWindow the repair check; AuthenticationRepair the authentication repair check. give_negative_route_advice: negative_route_advice_picks_a_new_flow and
   the module negative_route_advice. wait_until_ready on a connection: the modules readiness_tcp_connections and
   readiness_tcp_connections_hanging_up, waits_on_many_connections_each_wake_once,
   wait_for_room_finishes_when_the_peer_reads, wait_for_urgent_data_finishes_when_it_arrives,
   wait_for_the_peers_shutdown_finishes_when_it_comes, wait_for_a_hang_up_finishes_when_both_ways_are_shut,
-  wait_for_an_error_finishes_when_the_peer_resets, a_wait_gives_the_facts_the_connection_has_and_no_others; on a
+  wait_for_an_error_finishes_when_the_peer_resets (these two ask for nothing, so only an unconditional event ends
+  them), a_wait_gives_the_facts_the_connection_has_and_no_others (whole reports); on a
   listener: the module readiness_tcp_listeners and a_wait_gives_the_facts_the_listener_has_and_no_others. configure
   (both traits): the modules configurable_tcp_connections and configurable_tcp_listeners, and each setting's check:
   send and receive buffers, buffer locks, low waters (send_settings_*, receive_settings_*); window clamp
@@ -539,6 +573,31 @@ readings, repair, authentication, multipath state, the privileged settings).
   (saved_synchronize_is_taken_once).
 
 ## Measurements
+- Run 15, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22 05:15 to 05:16, load 7 to 8: clippy with
+  warnings denied (`--no-deps --all-targets`) clean on the TCP host, its suite, the shared crate and the readiness
+  suite; readiness suite 13, shared crate 1, TCP 125 + 4 pass.
+- Run 15 clean check (job host-tcp-sockets-clean, build folder deleted first, 05:18, load 19 to 21; log
+  clean-check-run15.log in scratch): the same clippy clean (10.6 s); readiness 13, shared 1, TCP 125 + 4 pass twice;
+  `cargo tree` (normal, build, dev) of tcp-sockets, internet-protocol, configurable, negative-route-advisable,
+  readiness, the TCP suite and the readiness suite names only interface and conformance crates (abi, configurable,
+  executor, internet-protocol, kernel, negative-route-advisable, readiness, tcp-sockets and their suites).
+  `git log a00ab267..HEAD` and `git status` of every interface.rs and the .rs files beside the tcp-sockets,
+  internet-protocol, readiness, negative-route-advisable, configurable, kernel and abi interfaces: none.
+- Run 15 broken copies (mutants.sh, 05:17 to 05:24, load 13 to 14; log mutants-readiness-report.log in scratch): 27
+  copies, each failed the suite. New: unconditional-events-end-no-wait, hang-up-unreported, error-unreported (each
+  fails the readiness modules' failure checks, the two waits that ask for nothing and the exact-facts check), the two
+  waits finishing at once (rewritten for the report type), clock-microseconds-refused-on-a-millisecond-route and
+  clock-milliseconds-refused-on-a-microsecond-route (timestamp_clock_in_the_other_unit_counts_in_it),
+  multipath-queues-refused and multipath-tuned-passes-the-errno (multipath_connection_answers_every_query). The
+  checker's ten of run 14 that had passed, ic-* (send buffer, timeouts, windows, multipath last times, subflow
+  identifier, segments in, authentication ICMP choice, repair options, largest window, checksums), now each fail
+  the check named under run 15 above. The three asked for by the milestone's check: more-to-come-ignored
+  (more_to_come_holds_data_until_pushed, push_ignoring_neither_sends_data_held_for_more), abort-closes-in-order
+  (abort_resets_the_peer, wait_for_an_error_finishes_when_the_peer_resets), peek-offset-ignored
+  (peek_at_an_offset_skips_bytes, peeks_from_two_threads_each_start_where_asked). 179 copies in mutants.sh, every
+  text found once (tools/check_mutants.sh).
+- Run 15: portable.rs (macOS and other unix) changed only by the renames and the report type; it was not built,
+  since builds may no longer run on the Mac and the ARM machine has no standard library for a non-Linux target.
 - Run 10, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22 01:48, load 4.8 to 5.1: after the split, clippy
   with warnings denied clean (tcp host, suite, shared crate); suite 113 passed, the implementation's own 4 passed.
 - Run 10 independent check, job host-tcp-sockets-clean (01:52 to 01:53, load 1.2 to 2.3; log clean-check-run10.log
@@ -690,7 +749,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
 - Broken copies (they break linux.rs): the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 90 s a
-  copy, 162 copies; names pick some). Whether every copy's text is still there once: scratch
+  copy, 179 copies; names pick some). Whether every copy's text is still there once: scratch
   tools/check_mutants.sh <checkout> (on the Mac, no build).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
   $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance --
@@ -711,7 +770,9 @@ readings, repair, authentication, multipath state, the privileged settings).
   implementation.rs staged as linux.rs): if this crate stops building on it, wait and try again.
 
 ## Next
-- T2 is done but for the owner's rulings below. The linter's structural findings in this track's files wait on them.
+- T1 and T2 are done but for the owner's rulings below. The linter's structural findings in this track's files wait
+  on them; the linter was not run in run 15 (the orchestrator stopped its use until it is incremental), so run it
+  once when told it may be used again.
 
 ## Departures from the plan
 - Run 13: Tuned's path MTU is `tcpi_pmtu` for connections and listeners alike (`IP_MTU` answers ENOTCONN on a
@@ -787,17 +848,9 @@ readings, repair, authentication, multipath state, the privileged settings).
 - A fixed IPv6 flow label (`FlowLabelChoice::Label`) can be asked of a listener or an established connection, but
   Linux fixes a TCP socket's label only as it connects (`np->flow_label` from the connect address). Example: a
   connection made without a label and then given a fixed label is answered NotSupported.
-- `set_timestamp_clock` asks for a unit, but Linux fixes a connection's clock unit from its route (the
-  `tcp_usec_ts` route feature) and `TCP_TIMESTAMP` only sets the value. Example: Microseconds on a connection over
-  127.0.0.1 is answered NotSupported. And "its low bit given as the unit" is not what Linux 7.0 reports: on a
-  microsecond connection, writing 0x40000000 reads back 0x40000000 (low bit 0), on a millisecond one writing
-  0x40000001 reads 0x40000003.
 - Building one now starts a host thread and an epoll set, so it can fail: the suggested trait is
   `pub trait StandaloneTcpSockets: TcpSockets + Sized { fn new() -> Result<Self, HostError>; }` (the crate has
   `HostTcpSockets::new() -> Result<Self, HostError>`).
-- `PollEvents` has `message_available` (`POLLMSG`), which Linux never reports for a socket: a wait asking only
-  for it finishes only on an error, hang-up or closed descriptor, as `poll` does on Linux. Not a fault, but the
-  contract does not say it.
 - `owner: UserId` is undefined when the exit node runs as one user: a guest's root (`UserId(0)`) connecting
   through a host process running as uid 1000 can only be answered EPERM (the host cannot make a socket owned
   by another user without CAP_SETUID), so on an unprivileged host every guest connect fails. The suite
