@@ -1,11 +1,12 @@
 //! A running container saved at moments drawn from a seed and brought back each time from the copy
 //! alone (a new process holding a copy of the kernel's memory, a new CPU side made from the saved
 //! memories and registers, and a new host whose monotonic clock reads from an earlier start)
-//! finishes as the reference does. `SAVING_SEEDS` sets how many seeds run for each program (default
-//! 3).
+//! finishes as the reference does, saved at every moment drawn before it ended. `SAVING_SEEDS` sets
+//! how many seeds run for each program (default 3).
 
 use std::path::Path;
 
+use wcontainers_executor_unicorn::driver::{Injections, save_moments};
 use wcontainers_executor_unicorn::{guest, reference, run_ours_saving};
 
 /// How many times each run is saved and brought back.
@@ -34,7 +35,20 @@ fn saved_and_brought_back(name: &str) {
             "{name} seed {seed}"
         );
         assert_eq!(ours.outcome, theirs, "{name} seed {seed}");
-        assert_eq!(ours.saved, SAVES, "{name} seed {seed}");
+        // A moment drawn after the program ended is never reached.
+        let injections = Injections {
+            saves: SAVES,
+            ..Injections::default()
+        };
+        let reached = save_moments(seed, injections)
+            .into_iter()
+            .filter(|&at| at <= ours.turns)
+            .count();
+        assert!(
+            reached > 0,
+            "{name} seed {seed} ended before its first save"
+        );
+        assert_eq!(ours.saved, reached, "{name} seed {seed}");
     }
 }
 

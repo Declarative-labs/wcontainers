@@ -319,7 +319,7 @@ impl Injecting {
         Self {
             seed,
             injections,
-            at: moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap),
+            at: save_moments(seed, injections),
             signal,
             signal_at: moments(seed ^ SIGNALS_SALT, signals),
             notice_at: moments_apart(seed ^ NOTICES_SALT, injections.notices, NOTICES_APART),
@@ -1144,6 +1144,11 @@ fn moments(seed: u64, count: usize) -> Vec<u64> {
     moments_apart(seed, count, MOMENTS_APART)
 }
 
+/// The turn counts at which a run of `seed` with `injections` is saved, as far as it lasts.
+pub fn save_moments(seed: u64, injections: Injections) -> Vec<u64> {
+    moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap)
+}
+
 /// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
 /// last.
 fn moments_apart(seed: u64, count: usize, apart: u64) -> Vec<u64> {
@@ -1313,12 +1318,13 @@ pub fn started_with_executor<State: Clone + 'static>(
 pub const FIRST_PROCESS: wcontainers_kernel::TaskId = wcontainers_kernel::TaskId(1);
 
 /// A kernel on the stand-in with a container started with the guest program `name`, built with
-/// `link_flags` into `out`, whose first process has not run; the kernel interface's suite takes it.
+/// `link_flags` into `out`, whose first process has not run and holds a number as the embedder's
+/// state; the kernel interface's suite takes it.
 pub fn program_not_run(
     name: &str,
     link_flags: &[&str],
     out: &std::path::Path,
-) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, ()> {
+) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64> {
     let program = crate::guest::build(name, link_flags, out);
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(
@@ -1339,7 +1345,7 @@ pub fn program_not_run(
         root_image: None,
         address_space: crate::standin::SPACE_32_BIT,
     };
-    started_with_executor(prepare(&container), &container, ()).0
+    started_with_executor(prepare(&container), &container, u64::MIN).0
 }
 
 fn run_hosted<H: BetweenSteps + Send>(
