@@ -450,10 +450,10 @@ const ONE_MEMBER: usize = 1;
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const ONE_SYNCHRONIZE_RETRY: RetryCount = RetryCount(1);
 
-/// How far a timestamp may stray: one tick of rounding, and the low bit the unit takes.
+/// How far a timestamp may stray: the low bit the unit takes, a tick of rounding, and a tick between the host's clock and ours.
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
-const TIMESTAMP_SLACK: u128 = 2;
+const TIMESTAMP_SLACK: u128 = 3;
 
 /// The smallest receive low water mark, Linux's default.
 ///
@@ -5746,11 +5746,14 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         [SegmentCount(u64::MIN); 4],
         "{sent:?}"
     );
-    // A transfer that needed no retransmission counts no timeout, and its receiver nothing out of order.
+    // A transfer that needed no retransmission counts no timeout, and a segment its receiver got out of order was
+    // reordered on the way (loopback reorders when the sending thread moves between processors), which the
+    // receiver's selective acknowledgement shows the sender.
     if sent.total_retransmissions == SegmentCount(u64::MIN) {
-        assert_eq!(
-            (sent.bytes_retransmitted, received.received_out_of_order),
-            (ByteTotal(u64::MIN), SegmentCount(u64::MIN)),
+        assert_eq!(sent.bytes_retransmitted, ByteTotal(u64::MIN), "{sent:?}");
+        assert!(
+            received.received_out_of_order == SegmentCount(u64::MIN)
+                || sent.reordering_seen.0 > u32::MIN,
             "{sent:?} {received:?}"
         );
         assert_eq!(

@@ -199,7 +199,10 @@ machine allows, and each stays clear of the value it is checked against.
   (tcp(7)), so that a push and not the ceiling sends. TIMER_SLACK 400 ms, how late a timer of about a second may fire
   under load. QUICK_WITHIN 20 ms, below the shortest delayed acknowledgement. COPY_GAP 5 ms between loopback's two
   copies of a packet. CLOCK_RUNS 50 ms of timestamp clock between setting and the segment that shows it.
-  TIMESTAMP_SLACK 2 ticks (one of rounding, one the unit bit takes).
+  TIMESTAMP_SLACK 3 ticks: one the unit bit takes, one of rounding (the kernel rounds both the time the clock is
+  set and the time a segment leaves down to the unit, so a segment's count can exceed the time measured around it,
+  rounded down, by two ticks with the bit), and one for the host's clock and the suite's, which measured up to
+  137 ns apart on the ARM machine (counts of 50 057 µs after 50 054 984 ns and 50 058 µs after 50 055 863 ns).
 - Settings. SETTING_TIME 10 s, SHORT_SETTING_TIME 40 ms, SETTING_COUNT 4, SETTING_BYTES 64 KiB: values every
   setting of their kind takes. KEEP_ALIVE_IDLE 2 s and KEEP_ALIVE_INTERVAL 1 s, KEEP_ALIVE_PROBE_COUNTS 1 and 2 (the
   least, and one that shows each probe counted). DELAYED_ACKNOWLEDGEMENT_MAXIMUM 5 ms. RETRANSMISSION_CEILING 1 s,
