@@ -5,6 +5,7 @@ use crate::settings::{MaximumSegmentSize, TcpSequenceNumber, WindowScale, Window
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpRepair {
     Off,
+    OffWithoutWindowProbe,
     On,
 }
 

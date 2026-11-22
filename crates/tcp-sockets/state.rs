@@ -1,10 +1,12 @@
 use core::time::Duration;
 
 use wcontainers_internet_protocol::{
-    ByteCount, BytesPerSecond, HopLimit, MaximumTransmissionUnit, ProcessorIndex,
+    ByteCount, BytesPerSecond, HopLimit, InterfaceIndex, MaximumTransmissionUnit, ProcessorIndex,
     ReceivedPacketFields, TransmitReport,
 };
+use wcontainers_kernel::errno::Errno;
 
+use crate::ListenBacklog;
 use crate::authentication::{
     TcpAuthenticationKeyCounters, TcpAuthenticationKeyIdentity, TcpAuthenticationStatus,
 };
@@ -23,6 +25,9 @@ pub struct ByteTotal(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventCount(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionCount(pub u32);
 
 /// An entry of a connection's [error queue](https://man7.org/linux/man-pages/man2/IP_RECVERR.2const.html), an ICMP error whole from its IP header in the buffer or a transmit report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +54,8 @@ pub enum TcpQuery<'a> {
     MultipathSubflow(MultipathSubflowPosition),
     LastReceivedHeader(&'a mut [u8]),
     IncomingProcessor,
+    /// Takes the socket's [`SO_ERROR`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_ERROR).
+    TakePendingError,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,11 +67,17 @@ pub enum TcpListenerQuery<'a> {
     Authentication,
     AuthenticationKey(TcpAuthenticationKeyIdentity),
     IncomingProcessor,
+    /// Takes the socket's [`SO_ERROR`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_ERROR).
+    TakePendingError,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpReading<'a> {
-    Information(TcpInformation),
+    Information {
+        information: TcpInformation,
+        unacknowledged: SegmentCount,
+        selectively_acknowledged: SegmentCount,
+    },
     CongestionControl {
         name: &'a str,
         information: Option<CongestionControlInformation>,
@@ -79,10 +92,32 @@ pub enum TcpReading<'a> {
     Multipath(MultipathInformation),
     MultipathSubflow(Option<MultipathSubflow>),
     LastReceivedHeader {
-        fields: ReceivedPacketFields,
+        /// None where Linux has recorded no arrival interface, as [`IP_PKTOPTIONS`](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/ip_sockglue.c#L1666) for a connection made by connect.
+        interface: Option<InterfaceIndex>,
         header: &'a [u8],
     },
     IncomingProcessor(Option<ProcessorIndex>),
+    PendingError(Option<Errno>),
+}
+
+/// A reading of a listening socket, whose [`TCP_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_INFO%20%28since) gives its accept queue where a connection's gives segment counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpListenerReading<'a> {
+    Information {
+        information: TcpInformation,
+        waiting_to_be_accepted: ConnectionCount,
+        backlog: ListenBacklog,
+    },
+    CongestionControl {
+        name: &'a str,
+        information: Option<CongestionControlInformation>,
+    },
+    Tuned(TcpTuned),
+    Timestamp(TcpTimestampClock),
+    Authentication(TcpAuthenticationStatus),
+    AuthenticationKey(Option<TcpAuthenticationKeyCounters>),
+    IncomingProcessor(Option<ProcessorIndex>),
+    PendingError(Option<Errno>),
 }
 
 /// The outcome of taking the SYN headers that [`TCP_SAVED_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_SAVED_SYN%20%28since) holds: taken, kept as too long for the buffer, or none.
@@ -151,7 +186,7 @@ pub enum CongestionControlInformation {
     },
 }
 
-/// A [TCP state](https://www.rfc-editor.org/rfc/rfc9293#section-3.3.2), with Linux's own `NEW_SYN_RECV` and `BOUND_INACTIVE`.
+/// A [TCP state](https://www.rfc-editor.org/rfc/rfc9293#section-3.3.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpState {
     Established,
@@ -165,8 +200,6 @@ pub enum TcpState {
     LastAcknowledgement,
     Listen,
     Closing,
-    NewSynchronizeReceived,
-    BoundInactive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,11 +216,20 @@ pub struct TcpNegotiatedOptions {
     pub timestamps: bool,
     pub selective_acknowledgements: bool,
     pub window_scaling: bool,
-    pub explicit_congestion_notification: bool,
+    pub explicit_congestion_notification: EcnMode,
     pub explicit_congestion_notification_seen: bool,
     pub synchronize_data_acknowledged: bool,
     pub microsecond_timestamps: bool,
     pub fast_open_child: bool,
+}
+
+/// The [ECN](https://www.rfc-editor.org/rfc/rfc9768.html#section-1.3) a connection uses, [`tcpi_ecn_mode`](https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L229-L233), pending while its SYN asking for Accurate ECN awaits an answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EcnMode {
+    Disabled,
+    Classic,
+    Accurate,
+    Pending,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +270,7 @@ pub enum AccurateEcnOptionSeen {
     FailSeen,
 }
 
-/// The [`TCP_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_INFO%20%28since) of a socket.
+/// The [`TCP_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_INFO%20%28since) of a socket, less `tcpi_unacked` and `tcpi_sacked`, which a listener gives other meanings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpInformation {
     pub state: TcpState,
@@ -244,8 +286,6 @@ pub struct TcpInformation {
     pub acknowledgement_timeout: Duration,
     pub send_maximum_segment_size: MaximumSegmentSize,
     pub receive_maximum_segment_size: MaximumSegmentSize,
-    pub unacknowledged: SegmentCount,
-    pub selectively_acknowledged: SegmentCount,
     pub lost: SegmentCount,
     pub retransmitted: SegmentCount,
     pub forward_acknowledged: SegmentCount,

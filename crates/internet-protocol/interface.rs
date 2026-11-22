@@ -1,9 +1,11 @@
 #![no_std]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::num::NonZeroU32;
 use core::time::Duration;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
+use mitsein::slice1::Slice1;
 use wcontainers_abi::HostError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +43,7 @@ pub struct DropCount(pub u32);
 
 /// A [network interface](https://man7.org/linux/man-pages/man7/netdevice.7.html) of the exit node, by its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InterfaceIndex(pub u32);
+pub struct InterfaceIndex(pub NonZeroU32);
 
 /// A [PTP hardware clock](https://docs.kernel.org/driver-api/ptp.html) of the exit node, by its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,7 +319,8 @@ pub enum Membership {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceFilter<'a, A> {
-    Include(&'a [A]),
+    /// Including no source leaves the group ([IGMPv3](https://www.rfc-editor.org/rfc/rfc3376.html#section-3.1), [MLDv2](https://www.rfc-editor.org/rfc/rfc3810.html#section-4.1)).
+    Include(&'a Slice1<A>),
     Exclude(&'a [A]),
 }
 
@@ -359,6 +362,13 @@ pub enum IpSocketSetting<'a> {
     Timestamping(Timestamping),
     MulticastLoopback(bool),
     MulticastAllGroups { version: IpVersion, enabled: bool },
+}
+
+/// The sizes of a socket's buffers as Linux [reads them back](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=this%20doubled%20value%20is%20returned): the size asked for, held to the exit node's limits, then doubled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferSizes {
+    pub send: ByteCount,
+    pub receive: ByteCount,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -471,10 +481,10 @@ pub enum IpPacketSetting<'a> {
         version: IpVersion,
         limit: Option<HopLimit>,
     },
+    /// The DSCP alone, as the [TCP sender sets the ECN field](https://www.rfc-editor.org/rfc/rfc3168.html#section-6.1.1) itself.
     TrafficClass {
         version: IpVersion,
         dscp: IpDscp,
-        ecn: IpEcn,
     },
     PathMtuDiscovery {
         version: IpVersion,
@@ -488,7 +498,6 @@ pub enum IpPacketSetting<'a> {
     FlowLabel(FlowLabelChoice),
     Mark(PacketMark),
     Priority(PacketPriority),
-    UnicastInterface(Option<InterfaceIndex>),
     RouteScope(RouteScope),
     SourcePreferences(SourcePreferences),
 }
@@ -555,7 +564,8 @@ pub enum TransmitEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransmitReport {
     pub key: TransmitReportKey,
-    pub interface: InterfaceIndex,
+    /// None where Linux [gives no sending interface](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/ip_sockglue.c#L507-L509): a report without its packet, of an acknowledgement, of a wireless status or of a rejected transmit time.
+    pub interface: Option<InterfaceIndex>,
     pub event: TransmitEvent,
     pub packet_length: Option<ByteCount>,
 }

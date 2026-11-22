@@ -8,8 +8,9 @@ use wcontainers_internet_protocol::{
 
 use crate::ListenBacklog;
 use crate::authentication::{
-    TcpAuthenticationCounters, TcpAuthenticationKeyAddition, TcpAuthenticationKeyRemoval,
-    TcpAuthenticationOptions, TcpAuthenticationRepair, TcpMd5KeyChange,
+    TcpAuthenticationCounters, TcpAuthenticationKeyAddition, TcpAuthenticationKeyIdentity,
+    TcpAuthenticationKeyRemoval, TcpAuthenticationOptions, TcpAuthenticationRepair,
+    TcpMd5KeyChange,
 };
 use crate::repair::{TcpRepair, TcpRepairOption, TcpRepairQueue, TcpRepairWindow};
 
@@ -102,6 +103,8 @@ pub enum TcpListenerSetting<'a> {
     FastOpenKeys(FastOpenKeys),
     SaveSynchronize(TcpSavedSynchronize),
     FlowLabelReflection(bool),
+    /// A key removal with [`del_async`](https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#L418), which Linux refuses on a connection.
+    RemoveAuthenticationKeyAsynchronously(TcpAuthenticationKeyIdentity),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
