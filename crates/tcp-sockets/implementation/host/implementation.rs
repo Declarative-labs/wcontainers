@@ -33,14 +33,14 @@ use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::{
 use wcontainers_internet_protocol_linux_socket_options::datagram::receive::Ancillary;
 use wcontainers_internet_protocol_linux_socket_options::datagram::send::Control;
 use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
-use wcontainers_internet_protocol_linux_socket_options::readiness::{Readiness, Watched};
+use wcontainers_internet_protocol_linux_socket_options::readiness::{Watched, Watcher};
 use wcontainers_internet_protocol_linux_socket_options::{
     self as options, ControlBuffer, Shortfalls, bind, family_of, get_int, host_error, open_socket,
     peer_for, set_flag, set_int, set_option,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
+use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_tcp_sockets::authentication::{
     TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
     TcpAuthenticationKeyIdentity, TcpAuthenticationKeyRemoval, TcpAuthenticationKeyUse,
@@ -135,7 +135,7 @@ const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow 
 pub struct HostTcpSockets {
     shortfalls: Shortfalls,
     interfaces: InterfaceAddresses,
-    readiness: Readiness,
+    readiness: Watcher,
 }
 
 impl HostTcpSockets {
@@ -143,7 +143,7 @@ impl HostTcpSockets {
         Ok(Self {
             shortfalls: Shortfalls::default(),
             interfaces: InterfaceAddresses::default(),
-            readiness: Readiness::new()?,
+            readiness: Watcher::new()?,
         })
     }
 
@@ -1577,12 +1577,10 @@ impl TcpConnections for HostTcpSockets {
     ) -> Result<TcpConnected<Self::Connection>, HostError> {
         let family = family_of(&local.address);
         let connection = HostTcpConnection::new(
-            self.readiness.watch(open_socket(
-                family,
-                SocketType::STREAM,
-                protocol_of(protocol),
-                owner,
-            )?)?,
+            self.readiness.watch(
+                open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
+                ReadyFor::all(),
+            )?,
             family,
             0,
         );
@@ -1857,14 +1855,6 @@ impl TcpConnections for HostTcpSockets {
             .map_err(io_host_error)
     }
 
-    async fn wait_for_events(
-        &self,
-        connection: &Self::Connection,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError> {
-        connection.socket.wait_for_events(interest).await
-    }
-
     fn close(&self, connection: Self::Connection, manner: TcpClose) {
         if manner == TcpClose::Abort {
             // A linger of zero makes the close send a reset; a failure leaves the orderly close.
@@ -2025,12 +2015,10 @@ impl TcpListeners for HostTcpSockets {
     ) -> Result<TcpListening<Self::Listener>, HostError> {
         let family = family_of(&local.address);
         let listener = HostTcpListener {
-            socket: self.readiness.watch(open_socket(
-                family,
-                SocketType::STREAM,
-                protocol_of(protocol),
-                owner,
-            )?)?,
+            socket: self.readiness.watch(
+                open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
+                ReadyFor::all(),
+            )?,
             family,
             protocol,
             receive_timestamping: AtomicU32::new(0),
@@ -2074,7 +2062,8 @@ impl TcpListeners for HostTcpSockets {
             .map_err(io_host_error)?;
         let peer = internet_address(Ok(peer))?;
         let connection = HostTcpConnection::new(
-            self.readiness.watch(OwnedFd::from(socket))?,
+            self.readiness
+                .watch(OwnedFd::from(socket), ReadyFor::all())?,
             listener.family,
             listener.receive_timestamping.load(Ordering::Relaxed),
         );
@@ -2150,16 +2139,28 @@ impl TcpListeners for HostTcpSockets {
         self.set_timestamp_clock(listener.socket.fd(), reading)
     }
 
-    async fn wait_for_listener_events(
-        &self,
-        listener: &Self::Listener,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError> {
-        listener.socket.wait_for_events(interest).await
-    }
-
     fn stop_listening(&self, listener: Self::Listener) {
         drop(listener);
+    }
+}
+
+impl Readiness<HostTcpConnection> for HostTcpSockets {
+    async fn wait_until_ready(
+        &self,
+        connection: &HostTcpConnection,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        connection.socket.wait_until_ready(interest).await
+    }
+}
+
+impl Readiness<HostTcpListener> for HostTcpSockets {
+    async fn wait_until_ready(
+        &self,
+        listener: &HostTcpListener,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        listener.socket.wait_until_ready(interest).await
     }
 }
 
@@ -2258,23 +2259,6 @@ mod tests {
         (listening.listener, client, server)
     }
 
-    fn events(data_to_read: bool, error_condition: bool) -> PollEvents {
-        PollEvents {
-            data_to_read,
-            exceptional_condition: false,
-            writing_possible: false,
-            error_condition,
-            hang_up: false,
-            descriptor_not_open: false,
-            normal_data_to_read: false,
-            priority_band_data_to_read: false,
-            normal_data_writable: false,
-            priority_data_writable: false,
-            message_available: false,
-            peer_shut_down_writing: false,
-        }
-    }
-
     fn reports(software: Report, packet: Report) -> TcpSendRequest {
         TcpSendRequest {
             urgency: TcpUrgency::Normal,
@@ -2298,15 +2282,15 @@ mod tests {
         reports(Report::NotRequested, Report::NotRequested)
     }
 
-    /// Waits on the connection until one of the events comes.
+    /// Waits on the connection until one of the facts holds.
     fn wait(
         sockets: &HostTcpSockets,
         connection: &HostTcpConnection,
-        interest: PollEvents,
+        interest: ReadyFor,
         waker: &Waker,
     ) {
         let mut context = Context::from_waker(waker);
-        let mut wait = pin!(sockets.wait_for_events(connection, interest));
+        let mut wait = pin!(sockets.wait_until_ready(connection, interest));
         let start = std::time::Instant::now();
         while wait.as_mut().poll(&mut context).is_pending() {
             assert!(start.elapsed() < DEADLINE, "the wait was not woken");
@@ -2320,10 +2304,9 @@ mod tests {
         let sockets = HostTcpSockets::new().expect("readiness");
         let (_listener, client, server) = connected(&sockets);
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
-        let interest = events(true, false);
         let mut byte = [0; 1];
         let mut cycle = || {
-            let mut wait = pin!(sockets.wait_for_events(&server, interest));
+            let mut wait = pin!(sockets.wait_until_ready(&server, ReadyFor::READABLE));
             let mut context = Context::from_waker(&waker);
             assert!(wait.as_mut().poll(&mut context).is_pending());
             sockets.send(&client, plain(), &byte).expect("send");
@@ -2370,7 +2353,7 @@ mod tests {
         let mut byte = [0; 1];
         let mut cycle = || {
             sockets.send(&client, plain(), &byte).expect("send");
-            wait(&sockets, &server, events(true, false), &waker);
+            wait(&sockets, &server, ReadyFor::READABLE, &waker);
             let received = sockets
                 .receive(&server, TcpReceiveRequest::Read, &mut byte)
                 .expect("receive");
@@ -2397,7 +2380,7 @@ mod tests {
         let offset = message.len() / 2;
         sockets.send(&client, plain(), message).expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
-        wait(&sockets, &server, events(true, false), &waker);
+        wait(&sockets, &server, ReadyFor::READABLE, &waker);
         let peek = |from: usize| {
             let mut buffer = [0; 16];
             sockets
@@ -2439,7 +2422,7 @@ mod tests {
             )
             .expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
-        wait(&sockets, &client, events(false, true), &waker);
+        wait(&sockets, &client, ReadyFor::ERROR, &waker);
         sockets
             .discard_error_queue_entries(&client)
             .expect("discard");

@@ -60,9 +60,8 @@ mutant fixed-flow-label-not-held "$implementation" 'hold_flow_label(socket, peer
 mutant fixed-flow-label-forgotten "$implementation" 'let _ = connection.fixed_flow_label.set(label);' ';'
 mutant multicast-refused "$implementation" 'TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group(' \
     'TcpSetting::Ip(IpSocketSetting::MulticastV4(_)) => Err(HostError::NotSupported), TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group('
-mutant urgent-wait-unregistered "$readiness" 'event.set_priority(interest.contains(PollFlags::PRI));' 'event.set_priority(false);'
-mutant peer-shutdown-unregistered "$readiness" $'    .union(PollFlags::RDHUP)\n    .union(PollFlags::from_bits_retain(' \
-    $'    .union(PollFlags::from_bits_retain('
+mutant urgent-wait-unregistered "$readiness" 'event.set_priority(interest.contains(ReadyFor::URGENT_DATA));' 'event.set_priority(false);'
+mutant peer-shutdown-unregistered "$readiness" '(ReadyFor::PEER_FINISHED_SENDING, PollFlags::RDHUP),' '(ReadyFor::empty(), PollFlags::RDHUP),'
 mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut scratch) {' \
     'match self.take_error_queue_entry(connection, &mut scratch).map(|entry| (entry, false)) {'
 mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n}' \
@@ -102,10 +101,10 @@ mutant saved-synchronize-not-kept "$implementation" \
 mutant saved-synchronize-off-ignored "$implementation" 'listener.saves_synchronize.store(value, Ordering::Relaxed);' \
     'listener.saves_synchronize.store(value.max(listener.saves_synchronize.load(Ordering::Relaxed)), Ordering::Relaxed);'
 mutant saved-synchronize-taken-twice "$implementation" '*saved = None;' ';'
-mutant wait-finishes-at-once "$implementation" 'connection.socket.wait_for_events(interest).await' 'Ok(interest)'
-mutant wait-never-finishes "$implementation" 'connection.socket.wait_for_events(interest).await' 'std::future::pending().await'
-mutant listener-wait-finishes-at-once "$implementation" 'listener.socket.wait_for_events(interest).await' 'Ok(interest)'
-mutant listener-wait-never-finishes "$implementation" 'listener.socket.wait_for_events(interest).await' \
+mutant wait-finishes-at-once "$implementation" 'connection.socket.wait_until_ready(interest).await' 'Ok(interest)'
+mutant wait-never-finishes "$implementation" 'connection.socket.wait_until_ready(interest).await' 'std::future::pending().await'
+mutant listener-wait-finishes-at-once "$implementation" 'listener.socket.wait_until_ready(interest).await' 'Ok(interest)'
+mutant listener-wait-never-finishes "$implementation" 'listener.socket.wait_until_ready(interest).await' \
     'std::future::pending().await'
 mutant readiness-withdraw-noop "$readiness" '    fn withdraw(&mut self) {' '    fn withdraw(&mut self) { if self.id.is_some() { return; }'
 mutant readiness-wakes-nothing "$readiness" '        waker.wake();' '        drop(waker);'

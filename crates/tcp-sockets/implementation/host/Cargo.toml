@@ -17,6 +17,7 @@ wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
+wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-tcp-sockets = { path = "../.." }
 etherparse.workspace = true
 
