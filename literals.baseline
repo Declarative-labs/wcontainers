@@ -5951,22 +5951,6 @@ code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::throug
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_layout	5
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_view	256
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Through	5
-code	crates/wcontainers-direct3d-11/src/counting.rs	bytestr	from_pixel_shader	b"counting"
-code	crates/wcontainers-direct3d-11/src/counting.rs	int	from_pixel_shader	16
-code	crates/wcontainers-direct3d-11/src/counting.rs	int	from_pixel_shader	16
-code	crates/wcontainers-direct3d-11/src/counting.rs	int	from_pixel_shader	16
-code	crates/wcontainers-direct3d-11/src/counting.rs	int	from_pixel_shader	3
-code	crates/wcontainers-direct3d-11/src/counting.rs	int	from_pixel_shader	3
-code	crates/wcontainers-direct3d-11/src/counting.rs	int	from_pixel_shader	4
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"Counting"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"count"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"counted occlusion of a pixel shader whose counting program does not validate"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"counted occlusion of a pixel shader with a vector built-in output"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"counted occlusion of a pixel shader without its entry point"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"counted occlusion of pixel shaders writing storage"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"main"
-code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"the counting program of a draw without a pixel shader"
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	3
 code	crates/wcontainers-direct3d-11/src/device.rs	float	gpu_sampler	32.0
@@ -6134,19 +6118,6 @@ code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders converted 
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders that read helper constants the front does not write"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"SampleCount"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"StorageImageAtomics"
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	3
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	3
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	3
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_any	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_stage	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::pipeline_root	b"RTS0"
