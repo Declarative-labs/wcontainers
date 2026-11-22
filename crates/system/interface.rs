@@ -181,6 +181,7 @@ pub trait FallbackObserver {
     fn on_fallback_used(&self, which: &Self::Fallback) {}
 }
 
+/// A [FUSE](https://man7.org/linux/man-pages/man4/fuse.4.html) server.
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;
 
