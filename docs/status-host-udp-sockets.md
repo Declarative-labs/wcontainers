@@ -1,6 +1,47 @@
 # Status of the host-udp-sockets track
 
-Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
+Plan: docs/plan-host-udp-sockets.md. Branch: agents, worktree /Users/thomaseaton/Documents/GitHub/wcontainers-agents.
+
+## 2026-11-22: milestone C22, the owner's networking interfaces of merge 158b6c62
+- Stand-ins first, each file its own commit (a53ba1fe to 166baf72): the test policy, the local system (single-kernel)
+  and the test host (unicorn) take `TcpLocalEnd` by value and answer `TcpLocalEndError`, have `type BoundSocket =
+  Infallible` (none binds on its own: `bind` refuses, as the policy's does after its seeded refusal), `disconnect`,
+  `release`, `TcpListenerReading`, `read_buffer_sizes` (`NotSupported`: their networks keep no such size), and name the
+  loopback, `InterfaceIndex(NonZeroU32::MIN)`, where they named 0. A stand-in's `disconnect` closes the connection and
+  leaves `ECONNRESET` pending, what Linux leaves on a connecting or connected socket it resets; it gives no socket back.
+  None of the three stand-ins implements an ICMP socket, so the ping bind is nothing of theirs.
+- NOT BUILT: the three stand-ins depend on wcontainers-kernel-linux, which does not build at 158b6c62 (64 errors, the
+  kernel interface's new `Kernel`; the kernel track's). Checked by reading only. Build them once it does:
+  `cargo clippy --all-targets -p wcontainers-runtime-single-kernel -p wcontainers-executor-unicorn -p wcontainers-system-seeded-test-policy`.
+- `Runtime` with `type Config` and `new`: nothing in the tree implements `Runtime` (single-kernel has no such impl),
+  so there was nothing to fold.
+- UDP host (a62b3f64): `read_buffer_sizes` is socket2's `send_buffer_size` and `recv_buffer_size` (`SO_SNDBUF`,
+  `SO_RCVBUF`); portable.rs refuses it with the counted reason `BUFFER_SIZES` (other systems keep no doubled size). A
+  received packet's interface comes from the shared `Ancillary::packet_fields`, which now refuses a packet without
+  packet information (`EPROTO`) instead of naming 0.
+- The shared crate linux-socket-options is being conformed by another track (uncommitted when this ran: `packet_fields`
+  answering a `Result`, `Ancillary::interface`, `selected_interface` for the `InterfaceSelector`, `Slice1` sources,
+  `REPORT_INTERFACE_NOT_GIVEN` gone). This track left those files alone; the UDP host's `?` on `packet_fields` needs it.
+- Suite: 78 checks (was 76). New: `a_datagram_names_the_interface_holding_its_destination` (`IP_PKTINFO` and
+  `IPV6_PKTINFO`: a datagram to 127.0.0.1 and to ::1 names one interface, to 192.0.2.3 the multicast route's, to
+  203.0.113.1 and to 2001:db8:1::1 a third, as the round-2 probe measured: to 10.9.0.1 on d1 named d1);
+  `buffer_sizes_read_back_as_set_and_doubled` (`SO_SNDBUF`, `SO_RCVBUF`: 16384 and 24576 read 32768 and 49152; 1 GiB
+  reads an even size below twice that). Added to old checks: a transmit report names the loopback beside its packet
+  and no interface without one (probe: TSONLY reports carry no `IP_PKTINFO`); a rejected transmit time names none;
+  an include filter of two sources (another, then the sender) takes the datagram. Gone: the check that an arrival
+  interface is not 0 (the type cannot be). Per-packet interfaces in the suite are `InterfaceSelector::Requested`;
+  the suite checks no `Bound` selector (its meaning is with the owner, through the internet sockets track).
+- Run on the ARM machine (job udp-conform, load 7 to 12): clippy of the host and the suite with their tests, no
+  finding in this track's files; the suite 78 + 5 pass; the macOS build (build-std, aarch64-apple-darwin) clean.
+- Check (pyro-parked/wcontainers-scratch/host-udp-sockets/c22-check.sh, log c22-check.log beside it; ARM, load 14 to
+  19): from a deleted build folder, clippy finds nothing in this track's files, the suite 78 + 5 pass, then 10 runs
+  in a row with none failing. Five broken copies, each caught: read_buffer_sizes swapped (buffer_sizes_read_back_as_set_and_doubled);
+  every arrival named the loopback (a_datagram_names_the_interface_holding_its_destination, a_bound_interface_is_taken,
+  ipv6_memberships_take_their_datagrams); a report with its packet naming no interface (transmit_reports_carry_the_key_of_their_send);
+  an include filter sending its first source only (multicast_membership_takes_the_groups_datagrams); a rejected
+  transmit time naming the control message's index (rejected_transmit_times_are_reported_with_their_keys).
+  `git diff main` of every interface crate's top-level files: nothing of the networking or runtime interfaces differs.
+
 
 ## 2026-11-22: conformed to the interfaces of a00ab267
 - `wait_until_ready` answers `ReadinessReport`. The host holds kept error queue entries as
@@ -222,7 +263,7 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 
 ## How to run
 - On the ARM64 machine (root):
-  `arm-run /Users/thomaseaton/Documents/GitHub/wcontainers --name host-udp-sockets -- 'crates/udp-sockets/implementation/host/conformance.sh 12'`
+  `arm-run /Users/thomaseaton/Documents/GitHub/wcontainers-agents --name udp-conform -- 'crates/udp-sockets/implementation/host/conformance.sh 12'`
   (the argument is the test threads; further arguments filter tests by name). It builds as the user and runs the
   two test binaries, `conformance` and `readiness`, with `sudo -n`.
 - The build for macOS, checked on the ARM machine: `RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=/work/target/host-udp-sockets-darwin
@@ -460,6 +501,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   `iovec`), so that a cut datagram's checksum is the whole datagram's.
 
 ## For the owner
+- `TcpConnections::disconnect` answers no error, so an implementation that cannot read the pending error must
+  choose one. Example: the in-process stand-ins (single-kernel, unicorn) close the connection and report
+  `ECONNRESET`, which is wrong for a connection whose connect already failed (Linux would leave its own error).
 - The interface has no constructor: proposed `trait StandaloneUdpSockets: UdpSockets { fn new() -> Result<Self, HostError>; }`
   (it can fail now: making the epoll set or its thread); meanwhile `HostUdpSockets::new()`.
 - `wait_for_events` works as written. One consequence: nothing in the interfaces lets the embedder wait on the

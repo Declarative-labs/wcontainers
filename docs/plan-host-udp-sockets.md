@@ -27,7 +27,7 @@
   call removes it from the list, and the last call waiting unwoken takes the registration with it.
 - Work on the shared types of crates/internet-protocol goes into the one shared crate
   `crates/internet-protocol/implementation/linux-socket-options`, which the TCP track created: its errno
-  mapping, raw option call, `IpSocketSetting` and `PortSetting` onto options, owner and bind. This track adds
+  mapping, raw option call, `IpSocketSetting` and `BindingSetting` onto options, owner and bind. This track adds
   to it the datagram half the ICMP and raw tracks need too: `IpHeaderFields` and `IpSendFields` onto options
   and control messages, and control messages and the error queue onto `ReceivedPacketFields`,
   `TransmitReport` and ICMP errors written whole from their IP header.
@@ -72,15 +72,19 @@
   is read on the stack, so only its own bytes are allocated (an ICMP error becomes the ICMP packet, IP header first, quoting the
   datagram's headers; a timestamp becomes a `TransmitReport`; a local error was already the send's answer),
   else `recvmsg(MSG_TRUNC)`; the payload is moved up and the IP and UDP headers written before it from the
-  control messages; `UDP_GRO` gives the segment size.
-- count_unsent_bytes: `ioctl(SIOCOUTQ)`. read_incoming_processor: socket2's `cpu_affinity` (`SO_INCOMING_CPU`),
+  control messages; `UDP_GRO` gives the segment size. The arrival interface is the index of `IP_PKTINFO` or
+  `IPV6_PKTINFO`, which the socket asks for at open; a packet without one is refused with `EPROTO`. A transmit
+  report names an interface only when Linux gives one (beside its packet), a rejected transmit time never.
+- count_unsent_bytes: `ioctl(SIOCOUTQ)`. read_buffer_sizes: socket2's `send_buffer_size` and
+  `recv_buffer_size` (`SO_SNDBUF`, `SO_RCVBUF`); the portable build refuses it, since other systems keep the
+  size without Linux's doubling. read_incoming_processor: socket2's `cpu_affinity` (`SO_INCOMING_CPU`),
   -1 is none.
 - give_negative_route_advice: Linux has no call for it; a connected socket is connected again to its peer,
   which drops its cached route and takes a new flow hash; an unconnected socket caches no route.
 - wait_until_ready (`Readiness<HostUdpSocket>`): `Watched::wait_until_ready`, the facts of `poll`, with an
   error held while entries a send read off the error queue wait for receives.
 - close: the registration is deleted, then the descriptor closes.
-- Settings: `Ip` and `Port` through the shared crate; `ReceiveCoalescing` is `UDP_GRO`,
+- Settings: `Ip` and `Binding` through the shared crate; `ReceiveCoalescing` is `UDP_GRO`,
   `ZeroChecksumReceipt` is `UDP_NO_CHECK6_RX`, `MinimumChecksumCoverage` is `UDPLITE_RECV_CSCOV`
   (none is 8, the UDP header, which takes every valid coverage).
 
