@@ -4212,6 +4212,17 @@ name = "wcontainers-distinguishing-state-generator-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-distinguishing-state-generator",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-distinguishing-state-generator-input-domain"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
@@ -4719,7 +4730,10 @@ version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "bitflags 2.13.2",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
