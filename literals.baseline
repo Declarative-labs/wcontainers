@@ -5878,14 +5878,10 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::try_dispatch	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::try_dispatch	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::unmap	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	16
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::vertex_layout_for	32
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::write_helpers	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::write_helpers	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	adjacency_indices	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	adjacency_indices	4
@@ -5946,32 +5942,11 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::set_constant_r
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an empty slot read as a depth texture, a multisampled array or a comparison sampler"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an empty unordered access slot a shader uses"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::write_helpers	"minimum level-of-detail clamps on textures both draw stages sample"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a draw through a geometry shader or stream output while a counted occlusion or \\n                 statistics query runs"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a geometry shader reading helper constants"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a vertex shader variant behind a geometry shader"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"an indirect draw through a geometry shader or stream output"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"a pixel shader reading helper constants behind a domain shader"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a hull shader"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::target_layers	"a geometry shader choosing a layer of a target view reinterpreting its texture"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::target_layers	"a geometry shader choosing a layer of target views of different layer counts"
 code	crates/wcontainers-direct3d-11/src/context/split.rs	int	Device<B>::split_groups	0xf
 code	crates/wcontainers-direct3d-11/src/context/split.rs	int	Device<B>::split_groups	0xf
 code	crates/wcontainers-direct3d-11/src/context/split.rs	str	Device<B>::try_draw	"a draw run once per group of targets while queries run"
 code	crates/wcontainers-direct3d-11/src/context/split.rs	str	Device<B>::try_draw	"a draw run once per group of targets with storage writes"
 code	crates/wcontainers-direct3d-11/src/context/split.rs	str	Device<B>::try_draw	"a draw run once per group of targets with stream output"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	int	Device<B>::run_tessellated	3
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	int	Device<B>::run_tessellated	3
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	int	patch_points	32
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a draw through hull and domain shaders while a counted occlusion or statistics \\n                 query runs"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a hull or domain shader reading helper constants"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a vertex shader variant behind a hull shader"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"an indirect draw through hull and domain shaders"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated_output	"a tessellation stage that made no tessellated draw"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::run_tessellated	"a pixel shader reading helper constants behind a domain shader"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::run_tessellated	"storage textures read through buffers behind a hull shader"
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_layout	5
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_layout	5
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_view	256
