@@ -3,6 +3,66 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## Run 13 (2026-11-22): T2, state, authentication, repair and multipath
+- read_state and read_listener_state answer every query (new file linux/state.rs; what each maps to is in the
+  plan): Information, CongestionControl, Queues, Tuned, TakeSavedSynchronize, Timestamp, Repair, Authentication,
+  AuthenticationKey, Multipath, MultipathSubflow, LastReceivedHeader, IncomingProcessor; the listener's seven
+  through the same code. set_authentication_counters and the listener's are `TCP_AO_INFO` with its counter flag.
+  The settings `RepairOptions`, `RepairWindow` and `AuthenticationRepair` are honoured. The four counted reasons
+  "not mapped to the host yet" are gone; new counted reasons: an older kernel's shorter `TCP_INFO` or `MPTCP_INFO`,
+  a state or congestion information form the contract has no name for, and the last header's missing length.
+- Measured first on the ARM machine as root in a namespace (scratch tools/probe_t2.py, Linux 7.0.0-1018-aws, load
+  2 to 4): repair reads out of repair mode EPERM (window) and EINVAL (sequence); `TCP_AO_INFO` without
+  authentication ENOENT; `MPTCP_INFO` 96 bytes on a multipath socket and its listener, EOPNOTSUPP on TCP and on a
+  fallen-back socket; `SO_INCOMING_CPU` -1 on a fresh listener, set and read back as given; `IP_MTU` ENOTCONN on a
+  listener; `TCP_CC_INFO` 0 bytes for cubic, 16 for vegas and dctcp, 20 for bbr; `TCP_TIMESTAMP` EOPNOTSUPP on
+  MPTCP; a connection read in repair mode, closed, and written into a new socket (sequence numbers, options,
+  window, clock) carries bytes both ways with the old peer.
+- Kernel and configuration each part needs: `CONFIG_TCP_AO` (6.7+), `CONFIG_MPTCP` with `MPTCP_FULL_INFO` (6.7+),
+  6.18+ for the Accurate ECN fields (zero and counted before), CAP_NET_ADMIN for repair mode, the `tcp_dctcp`,
+  `tcp_vegas` and `tcp_bbr` modules (run-conformance.sh now loads them with `modprobe`). The machine has all.
+- New checks (11): information_reads_what_the_connection_did, congestion_control_state_names_the_algorithm,
+  queues_count_unread_unacknowledged_and_unsent, tuned_values_follow_the_settings,
+  timestamp_reads_the_clock_in_its_unit, repaired_connection_continues_where_the_original_left_off,
+  authentication_state_reads_the_keys_and_counters, authentication_repair_values_are_read_and_written (the initial
+  sequence numbers against the captured SYN and SYN-ACK), multipath_state_describes_the_connection,
+  last_received_header_records_where_the_last_packet_came, incoming_processor_is_read_as_received_or_set.
+- The independent check's findings of run 12, answered: the suite tally (below, now 108 checks and 7 builders);
+  the reviewed-files claim (run 12's bullet now names abi apart); the set-twice checks now compare what the
+  readings show (tuned values, authentication state without the verified count, last received header) after
+  connect and after the settings are set, besides the outcomes; authentication_counters_are_set_only_where_
+  authentication_is and listener_state_reads_a_listener demand the real answers (a listener's counters set and
+  read back, no NotSupported way out); the listener clock check takes the listener into repair mode first and
+  demands the clock set if that is taken, refused if not (Linux refuses both, EPERM). The linter's structural
+  findings stay open under For the owner.
+- Suite now: 108 checks that each take one value plus 7 functions that build values (configured_connection,
+  configured_listener, advised_connection and the four waiting_* bundles); `tests!` runs 124 tests, the
+  implementation's own 4 beside them.
+- Runs (ARM machine, Graviton4, Linux 7.0.0-1018-aws, 03:50 to 04:05, load 0.5 to 5.7): 124 + 4 pass, seven full
+  runs at `RUST_TEST_THREADS=12`, each 7.3 s. Clean build (job host-tcp-sockets, build folder deleted first, log
+  clean-check-run13.log in scratch): clippy with warnings denied clean on the TCP host and suite, the shared crate
+  and the UDP, ICMP and raw hosts (9.5 s); 124 + 4 pass twice; `cargo tree` (normal, build, dev) of tcp-sockets,
+  internet-protocol, configurable, negative-route-advice, readiness and the suite names only interface and
+  conformance crates (abi, configurable, executor, internet-protocol, kernel, negative-route-advice, readiness,
+  tcp-sockets and their suites). `git log 5ec01130..HEAD` of the .rs files beside the tcp-sockets,
+  internet-protocol, configurable, negative-route-advice, readiness and kernel interfaces: none; abi's changed only
+  in other tracks' commits (listed under run 12).
+- Broken copies: 22 new ones in mutants.sh (one or more per new query, method and setting: the state number, the
+  bytes acknowledged, congestion information and name, the queues, the urgent mark, the clamp, the clock's unit,
+  the repair sequences, options, window and authentication values and their byte order, both counter methods, the
+  authentication requirement and key, the multipath bytes, the subflow's addresses, the last header, the listener's
+  state, the incoming processor); the three old ones for the refusals that are gone were replaced. Each of the 22
+  failed the suite (ARM machine 03:57 to 04:02, load 2.2 to 2.5; log mutants-t2.log in scratch). 152 copies; every
+  text found once (tools/check_mutants.sh, which now knows linux/state.rs).
+- Linter (Mac, once in the middle and once at the end; logs reviewable-t2.log and reviewable-t2-end.log in scratch):
+  the new code's findings were fixed (summaries that were only a link, an alignment and a reserved field written
+  with numbers, a constant without a link, `NO_PROCESSOR` defined twice, now exported by the shared crate, and
+  "bbr" defined in both crates, which the implementation no longer names: BBR's information is the only form of its
+  length); the two zero-length alignments it then reported were fixed after it and not run again. Left in this
+  track's files: the structural ones under For the owner (7 `conformance_not_run`, 7 `public_outside_interface`, 5
+  `implementation_folder`), 2 `grammar_unclear` (model confidence) and the orchestrator's name and summary answers.
+  `conformance_untested_method` reports nothing on the TCP interface.
+
 ## Run 12 (2026-11-22): the independent check of run 11 answered
 - record_end_starts_a_new_segment was flaky (the checker: 123 of 150 lone runs failed): it read the capture as soon
   as the data was read, before the capture thread had recorded the segments. It now waits (up to DEADLINE) until the
@@ -18,8 +78,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   `NO_SYNCHRONIZE_FRAME` when no IP header is found). `largest_fragment` stays None, now under its own counted reason
   `NO_SYNCHRONIZE_FRAGMENT_SIZE` (For the owner). connect_and_accept_name_both_ends checks that a frame length, when
   given, holds the whole packet; new broken copy synchronize-frame-is-the-link-header fails it.
-- The T1 section below is rewritten to match the suite as it is (99 checks, 113 tests, the readiness checks in the
-  method map).
+- The T1 section below is rewritten to match the suite as it is (113 tests, the readiness checks in the method
+  map; it said 99 checks and five builders, which was wrong: 97 checks and 7 builders, as the next check counted).
 - Linter at the start (Mac, load 9 to 21; log reviewable-run12-start.log in scratch): in this track's crates only
   what run 11 left (7 `conformance_not_run`, 7 `public_outside_interface`, 5 `implementation_folder`, 2
   `grammar_unclear`) and the orchestrator's `name_unanswered` and `summary_unanswered` (no key on this Mac).
@@ -30,7 +90,9 @@ readings, repair, authentication, multipath state, the privileged settings).
   pass. Clean build (job host-tcp-sockets-clean, build folder emptied): 113 + 4 pass; `cargo tree` (normal, build,
   dev) of tcp-sockets, internet-protocol, configurable, negative-route-advice, readiness and the suite names only
   interface and conformance crates (abi, configurable, executor, internet-protocol, kernel, negative-route-advice,
-  readiness, tcp-sockets and their suites). No reviewed file changed since 5ec01130.
+  readiness, tcp-sockets and their suites). No reviewed file of tcp-sockets, internet-protocol, configurable,
+  negative-route-advice, readiness or kernel changed since 5ec01130; abi's did, in other tracks' commits (357bd107,
+  56e334a8, 73b9e266, 9854b9b5, ca411e59).
 - Broken copies (mutants.sh, ARM machine, 02:53 to 03:20, load 1 to 4; log mutants-run12.log in scratch): all 133
   texts found once, and every copy fails the suite.
 
@@ -364,12 +426,12 @@ readings, repair, authentication, multipath state, the privileged settings).
   (backlogs among its settings applied after `listen`), accept (SYN header from `TCP_SAVED_SYN`, saved from the link
   header so the frame length is known), send and receive with every request, shut_down, close, stop_listening, the
   error queue (transmit reports with packet, statistics or wireless status; ICMP errors written whole), every plain
-  setting of settings.rs, the action methods, and `Readiness` for connections and listeners. read_state,
-  read_listener_state, authentication repair and the repair queues are T2 (counted refusals). On other unix systems
+  setting of settings.rs, the action methods, and `Readiness` for connections and listeners; since run 13 (T2) every
+  state query, the authentication counters, repair options and windows and authentication repair. On other unix systems
   (portable.rs) the basic calls only, everything else a counted refusal; built and linted on the Mac, never run.
-- Suite `crates/tcp-sockets/conformance`: 99 checks that each take one value, against the traits alone, plus five
-  functions that build values for the required suites (Configurable twice, NegativeRouteAdvice, Readiness three
-  times); `tests!` runs them as 113 tests, and the implementation's own four (allocation checks,
+- Suite `crates/tcp-sockets/conformance`: 108 checks (97 before T2) that each take one value, against the traits
+  alone, plus 7 functions that build values for the required suites (Configurable twice, NegativeRouteAdvice, and
+  four Readiness bundles); `tests!` runs them as 124 tests, and the implementation's own four (allocation checks,
   discarding_cuts_no_packet, the two-thread peeks) run beside it. The suite builds on every unix system and runs on
   Linux only: a capture thread reads the host's packet socket (`AF_PACKET`, every loopback packet seen twice, counted
   once) filtered to one listener's port, and the checks read headers, sequence numbers, windows, TCP timestamps,
@@ -389,10 +451,22 @@ readings, repair, authentication, multipath state, the privileged settings).
   delayed_acknowledgement_is_sent_on_demand. rearm_keep_alive_timer: rearming_the_keep_alive_timer_sends_a_due_probe.
   send_window_probe: window_probe_is_answered_and_changes_no_setting. set_timestamp_clock:
   timestamp_clock_set_in_repair_mode_stamps_segments (any refusal outside repair mode, the unit counted in it) and
-  timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused (the listener's: only its refusal, see For the
-  owner). set_authentication_counters and the listener's: authentication_counters_are_set_only_where_authentication_is.
-  read_listener_state: listener_state_reads_a_listener. read_state: saved_synchronize_is_taken_once
-  (TakeSavedSynchronize only; the rest is T2). give_negative_route_advice: negative_route_advice_picks_a_new_flow and
+  timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused, timestamp_reads_the_clock_in_its_unit,
+  repaired_connection_continues_where_the_original_left_off (the listener's: refused unless the listener takes
+  repair mode, see For the owner). set_authentication_counters and the listener's:
+  authentication_counters_are_set_only_where_authentication_is, authentication_state_reads_the_keys_and_counters.
+  read_listener_state: listener_state_reads_a_listener (Information, CongestionControl), tuned_values_follow_the_settings
+  (Tuned), timestamp_reads_the_clock_in_its_unit (Timestamp), the authentication checks (Authentication,
+  AuthenticationKey), incoming_processor_is_read_as_received_or_set (IncomingProcessor). read_state, by query:
+  Information information_reads_what_the_connection_did and the repair check; CongestionControl
+  congestion_control_state_names_the_algorithm; Queues queues_count_unread_unacknowledged_and_unsent; Tuned
+  tuned_values_follow_the_settings and the set-twice checks; TakeSavedSynchronize saved_synchronize_is_taken_once;
+  Timestamp timestamp_reads_the_clock_in_its_unit; Repair the repair check and
+  authentication_repair_values_are_read_and_written; Authentication and AuthenticationKey
+  authentication_state_reads_the_keys_and_counters and the set-twice checks; Multipath and MultipathSubflow
+  multipath_state_describes_the_connection; LastReceivedHeader last_received_header_records_where_the_last_packet_came
+  and the set-twice checks; IncomingProcessor incoming_processor_is_read_as_received_or_set. Repair settings:
+  QueueSequence, RepairOptions, RepairWindow the repair check; AuthenticationRepair the authentication repair check. give_negative_route_advice: negative_route_advice_picks_a_new_flow and
   the module negative_route_advice. wait_until_ready on a connection: the modules readiness_tcp_connections and
   readiness_tcp_connections_hanging_up, waits_on_many_connections_each_wake_once,
   wait_for_room_finishes_when_the_peer_reads, wait_for_urgent_data_finishes_when_it_arrives,
@@ -409,12 +483,14 @@ readings, repair, authentication, multipath state, the privileged settings).
   transmit rehash, repair, memberships, MD5 and authentication keys (their checks); cork, urgent inline, unread byte
   reports, maximum segment size, ICMP error reports; listener backlog (given to listen, as a setting or later), fast
   open queue and keys, flow label reflection (their checks).
-- Settings still checked only for being set twice the same, since loopback or the traits cannot show them yet:
-  multicast loopback and all-groups (no effect on TCP traffic), packet priority (not on the wire), unicast
-  interface, route scope, source preferences, bound interface, incoming processor (one interface, no read-back
-  before T2), IPv4 options and IPv6 extension headers, the IPv6 variants of traffic class and path MTU discovery,
-  `RecordsLastReceivedHeader` (shows only in `TcpQuery::LastReceivedHeader`, T2), `InitialAuthenticationCounters`
-  (shows only in read_state, T2) and the authentication options' ICMP choice. The mark is checked by
+- Settings whose effect only the set-twice checks see (now by the readings too, run 13), since loopback or the
+  traits show nothing more: multicast loopback and all-groups (no effect on TCP traffic), packet priority (not on
+  the wire), unicast interface, route scope, source preferences, bound interface (one interface), IPv4 options and
+  IPv6 extension headers on established connections, the IPv6 variants of traffic class and path MTU discovery, and
+  the authentication options' ICMP choice (in the authentication state the set-twice checks compare). Since run 13
+  `RecordsLastReceivedHeader` is checked by last_received_header_records_where_the_last_packet_came,
+  `InitialAuthenticationCounters` by authentication_state_reads_the_keys_and_counters and the incoming processor by
+  incoming_processor_is_read_as_received_or_set. The mark is checked by
   accept_names_where_the_synchronize_arrived; `SaveSynchronize` with all three values through `TakeSavedSynchronize`
   (saved_synchronize_is_taken_once).
 
@@ -590,17 +666,13 @@ readings, repair, authentication, multipath state, the privileged settings).
 - The shared crate linux-socket-options was being reorganized by another track during run 5 (its
   implementation.rs staged as linux.rs): if this crate stops building on it, wait and try again.
 
-## Next (T2)
-- read_state and read_listener_state (every query), the authentication repair values and
-  set_authentication_counters, repair options and windows: counted refusals now.
-- With read_state, give the settings listed above as unobservable a check of their effect, first
-  `RecordsLastReceivedHeader` through `TcpQuery::LastReceivedHeader` and `InitialAuthenticationCounters` through the
-  authentication status.
-- authentication_counters_are_set_only_where_authentication_is and listener_state_reads_a_listener still pass on
-  any NotSupported answer (conformance.rs, `assert_eq!(error, HostError::NotSupported)`): once T2 answers them, make
-  both demand the real answer on Linux.
+## Next
+- T2 is done but for the owner's rulings below. The linter's structural findings in this track's files wait on them.
 
 ## Departures from the plan
+- Run 13: Tuned's path MTU is `tcpi_pmtu` for connections and listeners alike (`IP_MTU` answers ENOTCONN on a
+  listener); the congestion information's form is chosen by name for DCTCP and by length for BBR and Vegas, since
+  `TCP_CC_INFO` does not say which it wrote.
 - Run 11: the suite's own numbers (timeouts, sizes, ports, keys) link to a section of the plan that writes each
   choice down, the only link DECISIONS.md 11 leaves for a number no standard fixes.
 - Run 10: the implementation's body is no longer Linux only (plan corrected): the owner's linter reads the Mac's
@@ -631,6 +703,10 @@ readings, repair, authentication, multipath state, the privileged settings).
   method `set_authentication_counters` stay T2.
 
 ## Dependencies added
+- Run 13: linux-raw-sys gains its `ioctl` feature (`FIONREAD`, `TIOCOUTQ`, `SIOCATMARK`); same licence. Neither
+  libc nor linux-raw-sys carries `struct mptcp_info`, `mptcp_full_info`, `mptcp_subflow_info`, the `tcp_cc_info`
+  forms or the Accurate ECN fields of `tcp_info`, so linux/state.rs defines them `repr(C)` from Linux's uapi headers
+  (each linked), and Linux's TCP state numbers (include/net/tcp_states.h, not uapi).
 - Run 10: the suite takes linux-raw-sys 0.12.1 (features net, if_tun: Linux's classic BPF and IPv4 option codes on
   every system) in place of libc: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT. The implementation's socket2
   and rustix (now with `process`, for the user the process runs as) are on every unix system.
@@ -712,9 +788,24 @@ readings, repair, authentication, multipath state, the privileged settings).
   SYN's and the handshake's windows (8000 with a segment size of 1000), then the windows grow (15 808, 23 712, ...)
   and the clamp reads 104 960. Set after the handshake it never shrinks the window already offered. So
   `WindowClamp` is honoured as Linux honours it, and the suite checks the SYN's window only.
+- The Vegas form of `CongestionControlInformation` names Linux's fields the other way round from what they hold:
+  `tcpv_rtt` (`round_trip_time`) is Vegas's base RTT, the lowest ever seen, and `tcpv_minrtt`
+  (`minimum_round_trip_time`) the lowest of the current round, 0x7fffffff µs before its first sample. Measured after
+  a 1 MiB transfer on loopback: round_trip_time 15 µs, minimum_round_trip_time 2147.483647 s. Given as Linux gives
+  them.
+- `MultipathInformation::fell_back_to_tcp` is never true on Linux 7.0: `MPTCP_INFO` on a connection that fell back
+  answers EOPNOTSUPP (only the diag interface reports the flag). Example: a multipath client to a plain listener.
+- `TcpReading::LastReceivedHeader` asks for the header and fields of the last packet, but Linux keeps for a TCP
+  socket only the records (`IP_PKTOPTIONS`, `IPV6_2292PKTOPTIONS`): no length and no fixed header. The
+  implementation gives length 0 and the IPv4 options or IPv6 extension headers recorded as the header bytes,
+  counted. Example: a plain IPv4 segment reads as header length 0 with interface 1 and destination 127.0.0.1.
+- `TcpQuery::CongestionControl` with a buffer shorter than the name: Linux cuts the name (`TCP_CONGESTION` copies
+  what fits), the implementation does the same, and the contract does not say. Example: "reno" into 3 bytes reads
+  "ren".
+- `TcpInformation::bytes_acknowledged` counts the SYN on Linux: 1 048 577 after 1 MiB acknowledged.
 - `set_listener_timestamp_clock` asks for a listener "in repair mode", but Linux never lets a listener into repair
-  mode (`tcp_can_repair_sock` refuses `TCP_LISTEN`): the call is always EPERM on Linux, and the suite checks only
-  that it is refused. Neither clock call names its error outside repair mode, so the suite takes any refusal
+  mode (`tcp_can_repair_sock` refuses `TCP_LISTEN`): the call is always EPERM on Linux. The suite asks the listener
+  into repair mode first and demands the clock set if it is taken, refused if not. Neither clock call names its error outside repair mode, so the suite takes any refusal
   (Linux: EPERM; example: an implementation answering NotSupported passes too).
 - `FlowLabelReflection` on Linux reflects the SYN's flow label in the SYN-ACK only (measured: the accepted
   connection's data then carries a label of its own); the contract does not say which segments reflect it.
