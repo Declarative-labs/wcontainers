@@ -461,7 +461,42 @@ pub fn translate_in_modules<G: Guest>(
     translate_within::<G>(blob, placed, starts, how, (host, offer), omit, module_bytes)
 }
 
+/// Tuning number: the stack of each of the translator's own threads. Emitting a function nests once for each
+/// level of its structure (at most [`FUNCTION_BLOCKS`] blocks), about 4 KB a level on x86-64, which a thread's
+/// usual 2 MB does not hold for every function (Java's runtime for x86-64 has one that nests about 800 levels).
+const THREAD_STACK_BYTES: usize = 16 << 20;
+
+/// Run `work` on the translator's own threads, each with [`THREAD_STACK_BYTES`] of stack, or where no thread
+/// can be made (a browser's WebAssembly), on this one.
+fn on_translator_threads<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    static THREADS: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    let threads = THREADS.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(THREAD_STACK_BYTES)
+            .build()
+            .ok()
+    });
+    match threads {
+        Some(threads) => threads.install(work),
+        None => work(),
+    }
+}
+
 fn translate_within<G: Guest>(
+    blob: &[u8],
+    placed: (Range<u64>, Option<u64>),
+    starts: &[u64],
+    how: (LookAhead, Optimise, ProgressCount),
+    chosen: (G::Host, G::Offer),
+    omit: Omit,
+    module_bytes: usize,
+) -> Result<Translation, Error> {
+    on_translator_threads(|| {
+        translate_on_this_thread::<G>(blob, placed, starts, how, chosen, omit, module_bytes)
+    })
+}
+
+fn translate_on_this_thread<G: Guest>(
     blob: &[u8],
     (code, link_address): (Range<u64>, Option<u64>),
     starts: &[u64],

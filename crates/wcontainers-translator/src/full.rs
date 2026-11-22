@@ -75,13 +75,11 @@ pub(crate) fn plan<'a, G: Guest>(
             if !pieced || plan.outside.is_empty() {
                 return Vec::new();
             }
-            // A stretch's loop piece stays within the stretch.
-            let within: Option<FxHashSet<u64>> =
-                bound.map(|_| function_instructions(function).collect());
-            let reach = match &within {
-                None => Reach::All,
-                Some(within) => Reach::Within(within),
-            };
+            // A loop piece stays within its function or stretch: walking back from a jump through a register
+            // without the function's other entries, it may recognise a switch the function did not, whose
+            // targets the function never decoded.
+            let within: FxHashSet<u64> = function_instructions(function).collect();
+            let reach = Reach::Within(&within);
             plan.outside
                 .iter()
                 .filter_map(|(h, others)| {
