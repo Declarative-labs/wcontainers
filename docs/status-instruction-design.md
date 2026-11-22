@@ -235,3 +235,60 @@ Not done:
   Self::Architecture>>` on `Executor` that calls the single form, which this executor overrides.
 - `MemoryDelta::PermissionAssignment` allows any range, but a chip gives permissions to whole pages. Example:
   `addresses: 0x1000..0x1800` cannot be run, and the executor panics on it.
+
+## The other executors: the translator and the Unicorn stand-in (2026-11-22)
+
+What exists:
+- crates/executor/implementation/wasmtime/single_instruction.rs: `execute_on_cpu`, one ARM64 instruction of an
+  execution state on any CPU side of the abi. The state's memory becomes a new memory, its processor a new
+  thread; the CPU side runs one instruction; its exit becomes the exception (syndrome built from
+  `aarch64-cpu`'s fields; translation or permission fault read from the state's pages). Also `Refusal` and
+  `check_honored`, and `FaultingWrite` (keep or undo the bytes a faulting store wrote).
+- crates/executor/implementation/wasmtime/implementation.rs: `CpuSide::run_one_instruction` (steps exactly the
+  instruction at the program counter and stops wherever control goes), and `Arm64Executor`, the `Executor`
+  of ARM64 through the translator. `Arm64Executor::for_precise_set(set, config)` fails with the list of
+  refusals when the set gives any instruction another behavior than the translator does.
+- crates/executor/implementation/unicorn/standin.rs: `StandIn` runs one instruction the same way;
+  `StandIn::for_precise_set(set)` refuses likewise. It checks the stack pointer's alignment itself (QEMU
+  leaves that check out), and undoes the bytes a faulting store wrote below the fault.
+- crates/precise-instruction-set/implementation/translator (`Translator`) and .../unicorn (`UnicornMax`): the
+  behavior each back end gives every instruction, as their suite runs show.
+- Each executor's conformance.rs runs the suite against its own back end's set, and checks the exact list of
+  instructions each chip's set is refused for. On every other instruction the chip's set and the back end's
+  set give the same behavior, so the suite's run shows the executor agrees with that chip there.
+- crates/kernel/implementation/linux/executing.rs, FOR THE KERNEL TRACK: `Plain` (the test executor) is
+  only named as a process's executor type and never run, so its body is `unreachable!` with that reason.
+
+Measured (rented Neoverse V2, load 13 to 18 on 96 cores), the suite over 32,277 generated states, simulation
+included: the translator 3.9 s (about 0.12 ms a state), the stand-in 16.6 s (about 0.51 ms a state). Both
+agree with their own sets on every state.
+
+Refused, today (each follows from a set, so a set change moves this list and fails the refusal tests):
+- Translator, for the AppleM5 set: LDR post-index with the target as its base (it overwrites the load with the
+  written-back address), MRS CTR_EL0 (it presents 0x8444C004). For the NeoverseV2 set: those two and RDVL (no
+  SVE: undefined).
+- Stand-in, the same three for the same reasons (unicorn's `max` model also has no SVE here).
+
+Found on the way:
+- Unicorn's fault hook fires once for every byte of a store that crosses into a faulting page, so the stand-in
+  reported the last byte (0x3003 instead of 0x3000). It now keeps the first. This changes the stand-in for
+  the kernel's tests too; only its library tests were rerun (they pass), not the kernel suites.
+- QEMU writes such a store's bytes below the fault one at a time before it faults; STR's one behavior writes
+  nothing, so the stand-in undoes them (STP too, so its set says `WritesNothing`).
+
+Not done:
+- Honoring more sets instead of refusing them: CTR_EL0's value would need a setting in the translator
+  (wcontainers-arm64 has it as a constant) and an MRS hook in the stand-in; the post-index choice and SVE
+  would need translator work.
+- x86: no executor of this trait runs x86 yet.
+
+### For the owner (the other executors)
+
+- How an executor is built is not in the interface. `for_precise_set` is the placeholder; the trait I would
+  need: `trait StandaloneExecutor: Executor + Sized { type Refusal; fn for_precise_set(set: &impl
+  PreciseInstructionSet<Self::Architecture>, config: Self::TranslatorConfig) -> Result<Self, Self::Refusal>; }`.
+- A store that crosses into a faulting page may write the bytes below the fault (QEMU does; the architecture
+  allows an unaligned access to be several smaller ones), but STR has only one behavior. Example: STR X0, [X0]
+  with X0 = 0x2FFC and 0x3000 not writable. STR may need the same choice STP has.
+- `execute_on_cpu` lives in the WebAssembly executor's crate and the stand-in depends on that crate for it,
+  so the stand-in now always builds wasmtime. The other place for it would be a small shared crate.
