@@ -154,7 +154,42 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   built FMA, F16C, the masked moves and the gathers, the host probe for a fusing multiply-add and the browser
   runner's offer; its tool access ended before it wrote this file, so run 5 records it. Run 5 (2026-11-21) ran
   the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
-  it found (see "X8, runs 4 and 5").
+  it found (see "X8, runs 4 and 5"). Run 6 (2026-11-21, the workflow's first dispatch of X8 after X7's check)
+  fixed the X7 check's three findings and ran X8's bar from the tree as it is (see "X8, run 6").
+
+## X8, run 6 (2026-11-21)
+
+X8 was dispatched as its first run by the workflow; runs 1 to 5 (below) had built all of it. Machines: the rented
+x86-64 machine (96 processors, kernel 7.0.0-1018-aws, 5-level paging) for lint, unit tests and the suite; the
+i7-8750H for layer 1 verdicts; the rented ARM64 machine for ARM64's tests; the Mac for git and the literal check.
+Logs and scripts in scratch `x8r6/`, on the laptop `~/wcontainers-x86/logs/x8r6-verdict.log`.
+
+The X7 check's three findings, fixed first (d839ac84):
+- [minor] Exact transcendental output differs from the CPU. Plan 5.8 now says it plainly: a program that prints
+  the exact bits of transcendental work (musl's `expl`, `logl`, `log2l`, `log10l`, `log1pl`, `atanl`, `atan2l`,
+  `asinl`, `acosl`, `powl`, or the instructions inline) does not give the CPU's output; the check's sweep
+  differed from the i7-8750H in 164 of 2,040 lines (about 8%), each by one unit at 64 bits or by C1 alone.
+  Printed to 16 digits the output is the CPU's. It stays the known failure of X7 (Intel's results are within one
+  unit, ours correctly rounded).
+- [minor] Plan 5.8 said an x87 operation at 64-bit precision is one `X87DoubleExtended` operation; it goes
+  through the wide path like the others. The plan now says that, and "Departures" lists it.
+- [minor] Layer 1's "C1 only" known failure did not check which side of the exact value the result lies on.
+  Now it passes a case only where ours tells the side: `x87::above_exact` works the exact value out again by
+  the full evaluation and compares the result with it, and gives no answer where the value is exact or the
+  reference follows a rule of its own (a tiny sine, cosine or `f2xm1`, a tiny quotient's arc tangent, a power of
+  two's logarithm), so such a case is a mismatch. `tests/transcendental.rs` gains `the_exact_side_is_c1`: for
+  the 640 mpmath values, 529 give a side and every one is the file's C1; 111 are under the reference's rules.
+  Rented machine: pass, with the old test; clippy of the two crates with warnings denied: pass.
+
+What a program is told (the plan's "AVX setting") is unchanged from runs 1 to 5: not a setting of the build or
+the container but the per-process list of the kernel interface (`X86_64Features`, x86's `Offer`), given with
+every translation, in the cache key and the description section, answering `cpuid` and `xgetbv`; "on" is
+`offer::V3`, "off" `offer::FULL_SPEED`. The kernel's asking of the embedder and /proc/cpuinfo are X10's.
+
+Verdicts (agents at d839ac84 with other agents' uncommitted edits in the copies):
+- The literal check (the Mac): exit 1 with 8,302 new findings, none in this track's crates (8,255 in the
+  shader submodules, the rest in other tracks' crates). Baseline lines: x86 117, guest-cpu 26, the test crate
+  1,738, the translator 8, unchanged.
 
 ## X7, run 5 (2026-11-21)
 
@@ -4457,6 +4492,11 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X8 run 6 (the X7 check's finding): at 64-bit precision, the default FCW 0x037F, an x87 add, subtract,
+  multiply or divide is not one `X87DoubleExtended` operation as plan 5.8 first said: every precision goes
+  through the wide semantics rounded toward zero, made odd and rounded once (`x87.rs`, `round_register`). The
+  results are the same (layer 1), and the one path is what gives x86's tininess after rounding and the
+  exponent adjustment of an unmasked overflow or underflow. Plan 5.8 now says so.
 - X8 run 3: `xsave` and `xrstor` check an area of 832 bytes (x87, SSE and AVX state) for every list that has
   XSAVE, also one without AVX, whose CPU would touch 576; no list built today has XSAVE without AVX. iced gives
   their memory operand no size, so the size is the crate's (`fpu::xsave_area_bytes`), in their accesses too.
