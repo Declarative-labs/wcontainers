@@ -155,7 +155,7 @@ pub struct ContextState<B: Backend> {
     pub(crate) targets: Vec<Option<Rc<View<B>>>>,
     pub(crate) depth: Option<Rc<View<B>>>,
     pub(crate) blend: Option<Rc<Blend<B>>>,
-    blend_factor: [f32; 4],
+    blend_factor: Color,
     sample_mask: u32,
     pub(crate) depth_stencil: Option<Rc<DepthStencil<B>>>,
     stencil_ref: u32,
@@ -238,7 +238,7 @@ impl<B: Backend> ContextState<B> {
             targets: vec![None; 8],
             depth: None,
             blend: None,
-            blend_factor: [1.0; 4],
+            blend_factor: [1.0; COLOR_COMPONENTS],
             sample_mask: u32::MAX,
             depth_stencil: None,
             stencil_ref: 0,
@@ -865,11 +865,11 @@ impl<B: Backend> Device<B> {
     pub fn om_set_blend_state(
         &mut self,
         blend: Option<Rc<Blend<B>>>,
-        factor: Option<[f32; 4]>,
+        factor: Option<Color>,
         mask: u32,
     ) {
         self.ctx.blend = blend;
-        self.ctx.blend_factor = factor.unwrap_or([1.0; 4]);
+        self.ctx.blend_factor = factor.unwrap_or([1.0; COLOR_COMPONENTS]);
         self.ctx.sample_mask = mask;
     }
 
@@ -894,11 +894,11 @@ impl<B: Backend> Device<B> {
     }
 
     /// Scissor rectangles as (left, top, right, bottom).
-    pub fn rs_set_scissor_rects(&mut self, rects: &[[i32; 4]]) {
+    pub fn rs_set_scissor_rects(&mut self, rects: &[Rect]) {
         self.ctx.scissors = rects.iter().map(|&r| pixel_rect(r)).collect();
     }
 
-    pub fn clear_render_target_view(&mut self, view: &Rc<View<B>>, color: [f32; 4]) {
+    pub fn clear_render_target_view(&mut self, view: &Rc<View<B>>, color: Color) {
         if self.predicated_out() {
             return;
         }
@@ -4271,55 +4271,62 @@ impl<B: Backend> Device<B> {
         args: Option<(&Rc<Buffer<B>>, u32, bool)>,
     ) -> Result<Vec<u8>> {
         let mut block = vec![0u8; h.size as usize];
+        let mut put = |at: u32, words: &[u32]| {
+            let bytes = &mut block[at as usize..][..size_of_val(words)];
+            for (b, w) in bytes
+                .as_chunks_mut::<{ size_of::<u32>() }>()
+                .0
+                .iter_mut()
+                .zip(words)
+            {
+                *b = w.to_le_bytes();
+            }
+        };
         for slot in &h.values {
-            let mut words = [0u32; 9];
-            let n = match slot.value {
-                HelperValue::DrawBase => {
-                    words[..3].copy_from_slice(&[bases[0], bases[1], 0]);
-                    3
-                }
+            let at = slot.offset;
+            match slot.value {
+                HelperValue::DrawBase => put(at, &[bases[0], bases[1], 0]),
                 HelperValue::DrawArguments => {
                     let (_, offset, indexed) = args.expect("an indirect draw");
-                    words[..3].copy_from_slice(&[offset / 4, u32::from(indexed), 0]);
-                    3
+                    put(
+                        at,
+                        &[offset / size_of::<u32>() as u32, u32::from(indexed), 0],
+                    );
                 }
                 HelperValue::PulledStream { input } => {
-                    words[..4].copy_from_slice(&self.pulled_stream(input, bases[1]));
-                    4
+                    put(at, &self.pulled_stream(input, bases[1]));
                 }
                 HelperValue::LodBias { sampler: s } => {
-                    words[0] = self
+                    let bias = self
                         .bound_sampler(stage, s)
-                        .map_or(0.0, |s| s.desc.mip_lod_bias)
-                        .to_bits();
-                    1
+                        .map_or(0.0, |s| s.desc.mip_lod_bias);
+                    put(at, &[bias.to_bits()]);
                 }
                 HelperValue::SamplerState { sampler: s } => {
-                    words = match self.bound_sampler(stage, s) {
+                    let state = match self.bound_sampler(stage, s) {
                         Some(b) => crate::device::sampler_state(b),
                         None => {
                             self.default_sampler()?;
                             crate::device::sampler_state(self.zeros.sampler.as_ref().expect("made"))
                         }
                     };
-                    9
+                    put(at, &state);
                 }
                 HelperValue::BorderColor { sampler: s } => {
                     let border = self
                         .bound_sampler(stage, s)
-                        .map_or([0.0; 4], |s| s.desc.border);
-                    words[..4].copy_from_slice(&border.map(f32::to_bits));
-                    4
+                        .map_or(Color::default(), |s| s.desc.border);
+                    put(at, &border.map(f32::to_bits));
                 }
                 HelperValue::TextureComponents { texture } => {
-                    words[0] = match self.ctx.resources[stage]
+                    let components = match self.ctx.resources[stage]
                         .get(texture as usize)
                         .and_then(Option::as_deref)
                     {
                         Some(ShaderView::Texture(v)) => crate::format::components(v.format),
                         _ => 0b1111,
                     };
-                    1
+                    put(at, &[components]);
                 }
                 HelperValue::DepthBias => {
                     let r = &self
@@ -4335,33 +4342,27 @@ impl<B: Backend> Device<B> {
                         r.depth_bias_clamp,
                         step,
                     ];
-                    words[..4].copy_from_slice(&values.map(f32::to_bits));
-                    4
+                    put(at, &values.map(f32::to_bits));
                 }
                 HelperValue::MinLod { texture } => {
                     let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
-                    words[..2].copy_from_slice(&[clamp.to_bits(), levels]);
-                    2
+                    put(at, &[clamp.to_bits(), levels]);
                 }
                 HelperValue::TexelBufferView { binding, .. } => {
-                    words[..2].copy_from_slice(&self.texel_view(stage, binding));
-                    2
+                    put(at, &self.texel_view(stage, binding));
                 }
                 HelperValue::ViewportAdjust => {
                     let adjust = self
                         .viewport_in_shader()
                         .map_or([1.0, 1.0, 0.0, 0.0], |a| a.adjust);
-                    words[..ADJUST_WORDS].copy_from_slice(&adjust.map(f32::to_bits));
-                    ADJUST_WORDS
+                    put(at, &adjust.map(f32::to_bits));
                 }
                 HelperValue::DepthRange => {
                     let v = self.ctx.viewports.first().copied().unwrap_or_default();
-                    words[..2].copy_from_slice(&[v.min_depth.to_bits(), v.max_depth.to_bits()]);
-                    2
+                    put(at, &[v.min_depth.to_bits(), v.max_depth.to_bits()]);
                 }
                 HelperValue::TexelLayout { slot } => {
-                    words[..5].copy_from_slice(&self.through_layout(stage, slot));
-                    5
+                    put(at, &self.through_layout(stage, slot));
                 }
                 // An empty slot, or one holding a buffer, answers zero as Direct3D's does.
                 HelperValue::TextureLevels { texture }
@@ -4376,11 +4377,11 @@ impl<B: Backend> Device<B> {
                         Some(ShaderView::Texture(v)) => Some(v),
                         _ => None,
                     };
-                    words[0] = view.map_or(0, |v| match slot.value {
+                    let info = view.map_or(0, |v| match slot.value {
                         HelperValue::TextureLevels { .. } => v.desc.mip_count,
                         _ => v.texture.desc.sample_count.max(1),
                     });
-                    1
+                    put(at, &[info]);
                 }
                 HelperValue::EarlyTests => {
                     let d = &self.bound_depth_stencil().desc;
@@ -4398,26 +4399,12 @@ impl<B: Backend> Device<B> {
                         u32::from(self.ctx.stencil_ref as u8),
                         u32::from(d.stencil_read_mask),
                     ];
-                    words[..values.len()].copy_from_slice(&values);
-                    values.len()
+                    put(at, &values);
                 }
-                HelperValue::Layer => {
-                    words[0] = self.ctx.run[0];
-                    1
-                }
-                HelperValue::Viewport => {
-                    words[0] = self.ctx.run[1];
-                    1
-                }
-                HelperValue::LayerCount => {
-                    words[0] = self.ctx.run_layers;
-                    1
-                }
+                HelperValue::Layer => put(at, &[self.ctx.run[0]]),
+                HelperValue::Viewport => put(at, &[self.ctx.run[1]]),
+                HelperValue::LayerCount => put(at, &[self.ctx.run_layers]),
                 _ => unreachable!("refused at conversion"),
-            };
-            for (k, w) in words[..n].iter().enumerate() {
-                let at = slot.offset as usize + 4 * k;
-                block[at..at + 4].copy_from_slice(&w.to_le_bytes());
             }
         }
         Ok(block)

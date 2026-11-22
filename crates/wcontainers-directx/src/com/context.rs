@@ -19,7 +19,8 @@ use wcontainers_direct3d_11::desc::{Box3, Viewport, map};
 use wcontainers_direct3d_11::object::Resource;
 use wcontainers_direct3d_11::query::Answer;
 use wcontainers_direct3d_11::{
-    COMPUTE, DOMAIN, GEOMETRY, HULL, PIXEL, STAGES, UAV_SLOTS, VERTEX, format,
+    COLOR_COMPONENTS, COMPUTE, Color, DOMAIN, GEOMETRY, HULL, PIXEL, Rect, STAGES, UAV_SLOTS,
+    VERTEX, format,
 };
 
 /// Stream output target slots.
@@ -189,7 +190,7 @@ struct Bound {
     topology: D3D_PRIMITIVE_TOPOLOGY,
     targets: Vec<Option<Held<RenderTargetView_Impl>>>,
     depth: Option<Held<DepthStencilView_Impl>>,
-    blend: (Option<Held<BlendState_Impl>>, [f32; 4], u32),
+    blend: (Option<Held<BlendState_Impl>>, Color, u32),
     depth_stencil: (Option<Held<DepthStencilState_Impl>>, u32),
     raster: Option<Held<RasterizerState_Impl>>,
     viewports: Vec<D3D11_VIEWPORT>,
@@ -218,7 +219,7 @@ impl Default for Bound {
             topology: D3D_PRIMITIVE_TOPOLOGY(0),
             targets: Vec::new(),
             depth: None,
-            blend: (None, [1.0; 4], u32::MAX),
+            blend: (None, [1.0; COLOR_COMPONENTS], u32::MAX),
             depth_stencil: (None, 0),
             raster: None,
             viewports: Vec::new(),
@@ -1134,13 +1135,13 @@ impl Context {
         mask: u32,
     ) {
         let h = held_one::<_, BlendState>(&state);
-        let f = (!factor.is_null()).then(|| unsafe { *factor.cast::<[f32; 4]>() });
+        let f = (!factor.is_null()).then(|| unsafe { *factor.cast::<Color>() });
         let s = h.as_ref().map(|s| (*s.front).clone());
         self.run("OMSetBlendState", move |front| {
             front.om_set_blend_state(s.clone(), f, mask);
             Ok(())
         });
-        self.kept.bound.borrow_mut().blend = (h, f.unwrap_or([1.0; 4]), mask);
+        self.kept.bound.borrow_mut().blend = (h, f.unwrap_or([1.0; COLOR_COMPONENTS]), mask);
     }
 
     pub(super) fn om_set_depth_stencil_state(
@@ -1209,7 +1210,7 @@ impl Context {
     }
 
     fn set_scissor_rects(&self, list: Vec<RECT>) {
-        let r: Vec<[i32; 4]> = list
+        let r: Vec<Rect> = list
             .iter()
             .map(|r| [r.left, r.top, r.right, r.bottom])
             .collect();
@@ -1231,7 +1232,7 @@ impl Context {
         if color.is_null() {
             return;
         }
-        let c = unsafe { *color.cast::<[f32; 4]>() };
+        let c = unsafe { *color.cast::<Color>() };
         self.run("ClearRenderTargetView", move |f| {
             f.clear_render_target_view(&v, c);
             Ok(())
@@ -1512,8 +1513,8 @@ impl Context {
         if color.is_null() {
             return;
         }
-        let c = unsafe { *color.cast::<wcontainers_direct3d_11::Color>() };
-        let rects: Vec<wcontainers_direct3d_11::Rect> = if n == 0 || rects.is_null() {
+        let c = unsafe { *color.cast::<Color>() };
+        let rects: Vec<Rect> = if n == 0 || rects.is_null() {
             Vec::new()
         } else {
             unsafe { std::slice::from_raw_parts(rects, n as usize) }
@@ -2032,7 +2033,7 @@ impl Context {
             return;
         };
         self.run("DispatchIndirect", move |f| {
-            f.dispatch([0; 3], Some((&b, offset)));
+            f.dispatch(Default::default(), Some((&b, offset)));
             Ok(())
         });
     }
@@ -2048,7 +2049,7 @@ impl Context {
         if values.is_null() {
             return;
         }
-        let values = unsafe { *values.cast::<[u32; 4]>() };
+        let values = unsafe { *values.cast::<[u32; COLOR_COMPONENTS]>() };
         self.run("ClearUnorderedAccessViewUint", move |f| {
             f.clear_uav(&v, values, false)
         });
@@ -2065,7 +2066,7 @@ impl Context {
         if values.is_null() {
             return;
         }
-        let values = unsafe { *values.cast::<[f32; 4]>() }.map(f32::to_bits);
+        let values = unsafe { *values.cast::<Color>() }.map(f32::to_bits);
         self.run("ClearUnorderedAccessViewFloat", move |f| {
             f.clear_uav(&v, values, true)
         });
@@ -2237,7 +2238,7 @@ impl Context {
         let _ = out.write(b);
         unsafe {
             if !factor.is_null() {
-                factor.cast::<[f32; 4]>().write(f);
+                factor.cast::<Color>().write(f);
             }
             if let Some(mask) = mask.as_mut() {
                 *mask = m;

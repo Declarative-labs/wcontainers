@@ -210,7 +210,7 @@ pub struct SamplerDesc {
     pub mip_lod_bias: f32,
     pub max_anisotropy: u32,
     pub comparison: u32,
-    pub border: [f32; 4],
+    pub border: crate::Color,
     pub min_lod: f32,
     pub max_lod: f32,
 }
@@ -224,7 +224,7 @@ impl SamplerDesc {
             mip_lod_bias: 0.0,
             max_anisotropy: 1,
             comparison: comparison::NEVER,
-            border: [1.0; 4],
+            border: [1.0; crate::COLOR_COMPONENTS],
             min_lod: -f32::MAX,
             max_lod: f32::MAX,
         }
