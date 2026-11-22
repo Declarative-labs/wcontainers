@@ -900,6 +900,10 @@ fn caps(
                 kept |= FormatUse::RENDER | FormatUse::BLEND | FormatUse::RESOLVE;
                 *allowed |= u & wgpu::TextureUsages::RENDER_ATTACHMENT;
             }
+            if packed::stored(format) {
+                kept |= FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE;
+                *allowed |= u & wgpu::TextureUsages::STORAGE_BINDING;
+            }
             uses &= kept;
             if !drawn {
                 formats.uses[i] = uses;

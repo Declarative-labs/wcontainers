@@ -41,6 +41,12 @@ pub(crate) fn drawn(format: Format) -> Option<wgpu::ColorWrites> {
     }
 }
 
+/// Whether programs store into a converted format through its held format: 8-bit alpha, whose
+/// stores the shaders crate makes write `(0, 0, 0, a)` (its `storage_formats`).
+pub(crate) fn stored(format: Format) -> bool {
+    format == Format::A8Unorm
+}
+
 /// A clear colour as a converted target keeps it.
 pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
     match format {
