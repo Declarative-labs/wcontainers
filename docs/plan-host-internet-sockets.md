@@ -99,7 +99,8 @@ builds its links, addresses, routes, rules and neighbours with `ip` (iproute2, a
 check knows the answer from what it built: loopback is local; a dummy device's route gives its interface,
 source, kind, MTUs and hop limit; a rule per selector (mark, owner, DSCP, source, interface, protocol, destination port, source port,
 ICMP type and code, mobility header type, flow label) sends the lookup to a second device only when the selector is honoured,
-and a rule on UDP leaves GRE and SCTP alone while one on GRE takes GRE; the unspecified destination is loopback's route; type 2
+and a protocol no rule names (GRE, SCTP) routes as any protocol would and must be answered, over IPv6 also beside a rule on UDP,
+while a rule on GRE takes GRE (a refusal accepted there, and over IPv4 beside a rule on UDP, which the routing socket asks as); the unspecified destination is loopback's route; type 2
 and type 4 routing headers and a loose source route through the second device's gateway go there; IPv6
 source preferences choose between each link's address and the temporary one Linux made from it, also on the
 link a mark or owner selects; a confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`) and sends no frame to

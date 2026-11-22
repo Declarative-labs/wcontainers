@@ -5,6 +5,27 @@ on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the che
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings). Nothing of
 this track is in progress.
 
+## 2026-11-22: I1 run 4, the independent check's findings, each
+- IPv4 never saw an answer for another protocol (blocking): true. other_protocols_route added its rule on UDP
+  before the first IPv4 lookup, so every IPv4 GRE and SCTP lookup was refused (RULE_ON_PROTOCOL) and accepted;
+  run 3's claim that the check sees answers in its first part held for IPv6 only. Now the first part puts only the
+  port rule on IPv4 (UDP and port rules on IPv6) and DEMANDS answers on both versions: GRE by da, SCTP to 2905 by
+  db, to 2906 by da. Then a rule on UDP over IPv4 (refusal accepted, the same answers checked if given), then a
+  rule on GRE on both (GRE by db, refusal accepted), and IPv6 SCTP to 2906 must still be answered by da. The
+  mobility check's first part (a port rule naming no protocol) now demands answers too; its second part (a rule on
+  protocol 135) accepts a refusal.
+  Broken copies (`i1-run4/check.sh`, log `i1-run4/check.log`), each caught: the verifier's
+  ipv4-other-protocols-always-refused (other_protocols_route fails; before: 31 of 31 passed), the same for IPv6
+  and for both (other protocols, mobility, counter test), rules ignored, mobility type dropped, other protocol as
+  UDP, IPv4's UDP forgotten. Vacuity copy (refusals fail the suite): 26 pass, the same five fail.
+- Generic suites see only answers (minor): unchanged, kept as recorded below and in the plan ("The suites").
+- Check (`i1-run4/check.sh`, ARM, 03:15 to 03:16 UTC, load 1.1 to 3.4): clean build and clippy with warnings
+  denied clean; three rounds, each resolver 31 of 31 and its counter test, Configurable 2 of 2,
+  NegativeRouteAdvice 3 of 3 (23 s with the build).
+- Linter (Mac, 03:17 UTC): in the I1 files the ten findings already raised, and one summary_too_long (the new
+  check's summary, 151 characters), fixed. crates/system/conformance's conformance_not_run for RouteResolver is
+  not this track's file.
+
 ## 2026-11-22: I1 run 3, the independent check's findings, each
 - Encapsulation check still accepted a refusal (blocking): it did; this run's status claim above was wrong. Now
   encapsulating_route_leaves_room_for_its_headers has no refusal branch and checks IPv4 too (a seg6 route of each
@@ -554,7 +575,7 @@ this track is in progress.
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
 - RouteResolver::resolve_route: 28 suite checks that see answers, each selector its own; 3 see only refusals
-  here, and 2 see refusals in their last part (see I1 run 3 above).
+  here, and 2 see refusals in their last part (see I1 runs 3 and 4 above).
 
 ## Honoured, and how each is checked
 - Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,
