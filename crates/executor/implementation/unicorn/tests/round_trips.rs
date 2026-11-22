@@ -86,7 +86,7 @@ fn suspended_tasks_come_back_and_are_taken_again() {
 
 /// The kernel the round trips start from: `hello`, not run yet.
 fn hello_not_run()
--> wcontainers_kernel_linux::KernelWithExecutor<wcontainers_executor_unicorn::standin::StandIn, ()>
+-> wcontainers_kernel_linux::KernelWithExecutor<wcontainers_executor_unicorn::standin::StandIn, u64>
 {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     program_not_run("hello", &["-nostdlib"], &out)

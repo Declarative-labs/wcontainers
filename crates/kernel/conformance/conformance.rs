@@ -40,17 +40,23 @@ pub fn first_process_tells_of_itself<P: Process>(process: P) {
     assert!(process.mapped_memory() > 0, "its program is mapped");
     assert!(process.address_ceiling_distance() > 0);
     assert!(!process.is_inspected());
-    assert_eq!(process.memory_id(), process.memory_id());
     assert_ne!(process.id(), ABSENT);
 }
 
-/// Checks that bytes written into the process's memory are read back.
+/// Checks that bytes written into the process's memory are read back, and that the process's
+/// memory is still the same memory.
 pub fn reads_back_what_it_writes<P: Process>(mut process: P) {
+    let memory = process.memory_id();
     let range = first_written(&mut process);
     process
         .write_memory(range.clone(), &WRITTEN)
         .expect("a written page is written");
     assert_eq!(read(&mut process, range), WRITTEN);
+    assert_eq!(
+        process.memory_id(),
+        memory,
+        "written, it is the same memory"
+    );
 }
 
 /// Checks that a range ending before it starts, and a page not mapped, are refused by name.
@@ -95,11 +101,30 @@ pub fn runs_as_started<P: Process>(process: P) {
     assert_eq!(config.replay_determinism, ReplayDeterminism::Exact);
 }
 
-/// Checks that the embedder's state of a process is one place, the same at every call.
-pub fn state_stays_in_one_place<P: Process>(mut process: P) {
-    let first: *mut P::State = process.state();
-    let second: *mut P::State = process.state();
-    assert_eq!(first, second);
+/// Checks that the embedder's state of a process keeps what the embedder puts in it while the
+/// embedder writes, reads and watches the process's memory and signals it.
+pub fn state_keeps_what_is_put_in<P: Process>(mut process: P)
+where
+    P::State: From<u8> + PartialEq + core::fmt::Debug,
+{
+    let range = first_written(&mut process);
+    let id = process.id();
+    for value in WRITTEN {
+        *process.state() = value.into();
+        process.watch_memory(range.clone(), WatchesFor::Writes);
+        process
+            .write_memory(range.clone(), &WRITTEN)
+            .expect("a written page is written");
+        assert_eq!(read(&mut process, range.clone()), WRITTEN);
+        process.watch_memory(range.clone(), WatchesFor::None);
+        process.send_signal(
+            id,
+            SignalInformation::SentByKernel {
+                signal: Signal::SIGCONT,
+            },
+        );
+        assert_eq!(*process.state(), value.into());
+    }
 }
 
 /// Checks that copying a process's context leaves the process as it was: its memory read and
@@ -217,8 +242,8 @@ macro_rules! tests {
                 $crate::runs_as_started($value);
             }
             #[test]
-            fn state_stays_in_one_place() {
-                $crate::state_stays_in_one_place($value);
+            fn state_keeps_what_is_put_in() {
+                $crate::state_keeps_what_is_put_in($value);
             }
             #[test]
             fn copy_leaves_the_process() {
