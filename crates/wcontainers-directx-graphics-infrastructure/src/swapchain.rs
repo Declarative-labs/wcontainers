@@ -175,11 +175,16 @@ impl Shown {
         }
     }
 
+    /// The present program's fragment entry point of each.
+    const COPIED: &str = "copy";
+    const ENCODED: &str = "encode";
+    const EXTENDED: &str = "extended";
+
     fn entry_point(self) -> &'static str {
         match self {
-            Shown::Copied => "copy",
-            Shown::Encoded => "encode",
-            Shown::Extended => "extended",
+            Shown::Copied => Self::COPIED,
+            Shown::Encoded => Self::ENCODED,
+            Shown::Extended => Self::EXTENDED,
         }
     }
 }
