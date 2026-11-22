@@ -7,7 +7,7 @@ use spin::Mutex;
 use wcontainers_abi::{Host, HostError, Warning};
 use wcontainers_clock::Clock;
 use wcontainers_random_source::RandomSource;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -118,9 +118,12 @@ impl<R: Ring + Send> Readiness<u32> for LinkHost<R> {
         &self,
         _peer: &u32,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         if interest.contains(ReadyFor::WRITABLE) {
-            return Ok(ReadyFor::WRITABLE);
+            return Ok(ReadinessReport {
+                ready_for: ReadyFor::WRITABLE,
+                unconditional: UnconditionalEvents::empty(),
+            });
         }
         core::future::pending().await
     }
@@ -273,7 +276,7 @@ mod tests {
             &self,
             _peer: &u32,
             _interest: wcontainers_readiness::ReadyFor,
-        ) -> Result<wcontainers_readiness::ReadyFor, HostError> {
+        ) -> Result<wcontainers_readiness::ReadinessReport, HostError> {
             Err(HostError::NotSupported)
         }
     }

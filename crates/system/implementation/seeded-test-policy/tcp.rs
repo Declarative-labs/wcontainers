@@ -9,7 +9,7 @@ use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{ByteCount, LocalBinding, LocalPort};
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
 use wcontainers_tcp_sockets::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
@@ -191,7 +191,7 @@ impl<H: Host> Readiness<Infallible> for TestPolicy<H> {
         &self,
         connection: &Infallible,
         _interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         match *connection {}
     }
 }

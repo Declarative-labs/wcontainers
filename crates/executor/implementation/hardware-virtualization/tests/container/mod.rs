@@ -157,9 +157,12 @@ impl wcontainers_readiness::Readiness<u32> for Recording {
         &self,
         _peer: &u32,
         interest: wcontainers_readiness::ReadyFor,
-    ) -> Result<wcontainers_readiness::ReadyFor, HostError> {
+    ) -> Result<wcontainers_readiness::ReadinessReport, HostError> {
         if interest.contains(wcontainers_readiness::ReadyFor::WRITABLE) {
-            return Ok(wcontainers_readiness::ReadyFor::WRITABLE);
+            return Ok(wcontainers_readiness::ReadinessReport {
+                ready_for: wcontainers_readiness::ReadyFor::WRITABLE,
+                unconditional: wcontainers_readiness::UnconditionalEvents::empty(),
+            });
         }
         std::future::pending().await
     }

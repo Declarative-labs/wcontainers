@@ -16,7 +16,7 @@ use polling::{Event as Interest, Events, Poller};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
 use wcontainers_abi::{Event, HostError};
 use wcontainers_kernel::errno::Errno;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::errno;
@@ -24,13 +24,24 @@ use crate::errno;
 /// The names of the network's threads.
 const NETWORK_THREAD: &str = "wcontainers network";
 
+/// A report of nothing ready.
+const NOTHING: ReadinessReport = ReadinessReport {
+    ready_for: ReadyFor::empty(),
+    unconditional: UnconditionalEvents::empty(),
+};
+
+/// Whether `ready` ends a wait for `interest`: something asked, an error or a hang-up.
+fn ends_wait(ready: &ReadinessReport, interest: ReadyFor) -> bool {
+    ready.ready_for.intersects(interest) || !ready.unconditional.is_empty()
+}
+
 /// A UDP socket, numbered here.
 struct Datagram {
     socket: UdpSocket,
     /// The address it is connected to.
     peer: Option<SocketAddr>,
     /// What the poller said it is ready for, not yet given to a wait.
-    ready: ReadyFor,
+    ready: ReadinessReport,
     waker: Option<Waker>,
 }
 
@@ -43,7 +54,7 @@ struct Stream {
     /// The error the connect failed with, given to the next receive.
     error: Option<i32>,
     /// What the poller said it is ready for, not yet given to a wait.
-    ready: ReadyFor,
+    ready: ReadinessReport,
     waker: Option<Waker>,
 }
 
@@ -151,7 +162,7 @@ impl Network {
         let datagram = Datagram {
             socket,
             peer: None,
-            ready: ReadyFor::empty(),
+            ready: NOTHING,
             waker: None,
         };
         self.datagrams.insert(id, datagram);
@@ -215,11 +226,11 @@ impl Network {
             socket: None,
             connecting: false,
             error: None,
-            ready: ReadyFor::empty(),
+            ready: NOTHING,
             waker: None,
         };
         match socket.connect(&to.into()) {
-            Ok(()) => stream.ready = ReadyFor::WRITABLE,
+            Ok(()) => stream.ready.ready_for = ReadyFor::WRITABLE,
             Err(error)
                 if error.kind() == ErrorKind::WouldBlock
                     || rustix::io::Errno::from_io_error(&error)
@@ -229,7 +240,8 @@ impl Network {
             }
             Err(error) => {
                 stream.error = Some(linux_error(&error, Errno::ECONNREFUSED as u32));
-                stream.ready = ReadyFor::ERROR | ReadyFor::HANG_UP;
+                stream.ready.unconditional =
+                    UnconditionalEvents::ERROR | UnconditionalEvents::HANG_UP;
                 self.streams.insert(id, stream);
                 return Ok(id);
             }
@@ -356,7 +368,7 @@ impl Network {
                 socket: Some(stream),
                 connecting: false,
                 error: None,
-                ready: ReadyFor::empty(),
+                ready: NOTHING,
                 waker: None,
             },
         );
@@ -370,14 +382,10 @@ impl Network {
         id: u32,
         interest: ReadyFor,
         waker: &Waker,
-    ) -> Poll<Result<ReadyFor, HostError>> {
-        let counted = interest | ReadyFor::ERROR | ReadyFor::HANG_UP;
+    ) -> Poll<Result<ReadinessReport, HostError>> {
         if let Some(datagram) = self.datagrams.get_mut(&id) {
-            if datagram.ready.intersects(counted) {
-                return Poll::Ready(Ok(core::mem::replace(
-                    &mut datagram.ready,
-                    ReadyFor::empty(),
-                )));
+            if ends_wait(&datagram.ready, interest) {
+                return Poll::Ready(Ok(core::mem::replace(&mut datagram.ready, NOTHING)));
             }
             keep_waker(&mut datagram.waker, waker);
             let read = interest.contains(ReadyFor::READABLE);
@@ -388,8 +396,8 @@ impl Network {
             return Poll::Pending;
         }
         if let Some(stream) = self.streams.get_mut(&id) {
-            if stream.ready.intersects(counted) {
-                return Poll::Ready(Ok(core::mem::replace(&mut stream.ready, ReadyFor::empty())));
+            if ends_wait(&stream.ready, interest) {
+                return Poll::Ready(Ok(core::mem::replace(&mut stream.ready, NOTHING)));
             }
             keep_waker(&mut stream.waker, waker);
             if let Some(socket) = &stream.socket {
@@ -406,7 +414,10 @@ impl Network {
         };
         if listener.ready && interest.contains(ReadyFor::READABLE) {
             listener.ready = false;
-            return Poll::Ready(Ok(ReadyFor::READABLE));
+            return Poll::Ready(Ok(ReadinessReport {
+                ready_for: ReadyFor::READABLE,
+                unconditional: UnconditionalEvents::empty(),
+            }));
         }
         keep_waker(&mut listener.waker, waker);
         if let Some(socket) = &listener.socket {
@@ -420,10 +431,10 @@ impl Network {
     fn ready(&mut self, id: u32, readable: bool, writable: bool) {
         if let Some(datagram) = self.datagrams.get_mut(&id) {
             if readable {
-                datagram.ready |= ReadyFor::READABLE;
+                datagram.ready.ready_for |= ReadyFor::READABLE;
             }
             if writable {
-                datagram.ready |= ReadyFor::WRITABLE;
+                datagram.ready.ready_for |= ReadyFor::WRITABLE;
             }
             if let Some(waker) = datagram.waker.take() {
                 waker.wake();
@@ -441,10 +452,10 @@ impl Network {
             return;
         };
         if readable {
-            stream.ready |= ReadyFor::READABLE;
+            stream.ready.ready_for |= ReadyFor::READABLE;
         }
         if writable {
-            stream.ready |= ReadyFor::WRITABLE;
+            stream.ready.ready_for |= ReadyFor::WRITABLE;
         }
         if core::mem::take(&mut stream.connecting)
             && let Some(socket) = &stream.socket
@@ -457,7 +468,8 @@ impl Network {
             };
             if error.is_some() {
                 stream.error = error;
-                stream.ready |= ReadyFor::ERROR | ReadyFor::HANG_UP;
+                stream.ready.unconditional |=
+                    UnconditionalEvents::ERROR | UnconditionalEvents::HANG_UP;
             }
         }
         if let Some(waker) = stream.waker.take() {

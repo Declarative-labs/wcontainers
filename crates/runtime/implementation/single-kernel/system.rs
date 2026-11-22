@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wcontainers_abi::{Cpu, Event, Host, HostError, PAGE_SIZE, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard};
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
 
 use crate::arrivals::{Arrival, Arrivals};
@@ -257,19 +257,22 @@ impl LocalState {
 
     /// What an endpoint is ready for: output is written as it comes, input once some is held or
     /// it ended.
-    fn stream_ready(&self, peer: u32) -> ReadyFor {
-        let mut ready = ReadyFor::empty();
+    fn stream_ready(&self, peer: u32) -> ReadinessReport {
+        let mut ready = ReadinessReport {
+            ready_for: ReadyFor::empty(),
+            unconditional: UnconditionalEvents::empty(),
+        };
         if peer != INPUT {
-            ready |= ReadyFor::WRITABLE;
+            ready.ready_for |= ReadyFor::WRITABLE;
         }
         if Some(peer) == self.input_end {
             // A terminal's input ending leaves the terminal, whose output goes on.
             let ended = self.input_ended && peer == INPUT;
             if !self.input_held.is_empty() || ended {
-                ready |= ReadyFor::READABLE;
+                ready.ready_for |= ReadyFor::READABLE;
             }
             if ended {
-                ready |= ReadyFor::HANG_UP;
+                ready.unconditional |= UnconditionalEvents::HANG_UP;
             }
         }
         ready
@@ -587,12 +590,12 @@ macro_rules! host_on_state {
                 &self,
                 peer: &u32,
                 interest: ReadyFor,
-            ) -> Result<ReadyFor, HostError> {
+            ) -> Result<ReadinessReport, HostError> {
                 let $this = self;
                 std::future::poll_fn(|context| {
                     let mut state = $state;
                     let ready = state.stream_ready(*peer);
-                    if ready.intersects(interest | ReadyFor::ERROR | ReadyFor::HANG_UP) {
+                    if ready.ready_for.intersects(interest) || !ready.unconditional.is_empty() {
                         return Poll::Ready(Ok(ready));
                     }
                     state.stream_wakers.insert(*peer, context.waker().clone());

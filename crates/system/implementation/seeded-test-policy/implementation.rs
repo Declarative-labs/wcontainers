@@ -21,7 +21,7 @@ use spin::Mutex;
 use wcontainers_abi::{Cpu, Event, Host, HostError, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
 use wcontainers_random_source::RandomSource;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
 use wcontainers_system::StreamTransport;
 
@@ -248,7 +248,7 @@ impl<H: StreamTransport<Endpoint = u32>> Readiness<u32> for TestPolicy<H> {
         &self,
         peer: &u32,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         self.services.wait_until_ready(peer, interest).await
     }
 }
