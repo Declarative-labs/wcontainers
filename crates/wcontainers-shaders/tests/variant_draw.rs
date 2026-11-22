@@ -128,6 +128,53 @@ fn clip_distances(draw: &Draw<'_>) -> u8 {
         .sum::<u32>() as u8
 }
 
+/// Direct3D 11's form of a target's blend.
+fn direct3d_11_blend(
+    target: &wcontainers_gpu::RenderTargetBlend,
+) -> D3D11_RENDER_TARGET_BLEND_DESC {
+    let factor = |f: BlendFactor| match f {
+        BlendFactor::Zero => D3D11_BLEND_ZERO,
+        BlendFactor::One => D3D11_BLEND_ONE,
+        BlendFactor::Src => D3D11_BLEND_SRC_COLOR,
+        BlendFactor::OneMinusSrc => D3D11_BLEND_INV_SRC_COLOR,
+        BlendFactor::SrcAlpha => D3D11_BLEND_SRC_ALPHA,
+        BlendFactor::OneMinusSrcAlpha => D3D11_BLEND_INV_SRC_ALPHA,
+        BlendFactor::Dst => D3D11_BLEND_DEST_COLOR,
+        BlendFactor::OneMinusDst => D3D11_BLEND_INV_DEST_COLOR,
+        BlendFactor::DstAlpha => D3D11_BLEND_DEST_ALPHA,
+        BlendFactor::OneMinusDstAlpha => D3D11_BLEND_INV_DEST_ALPHA,
+        BlendFactor::SrcAlphaSaturated => D3D11_BLEND_SRC_ALPHA_SAT,
+        BlendFactor::Constant => D3D11_BLEND_BLEND_FACTOR,
+        BlendFactor::OneMinusConstant => D3D11_BLEND_INV_BLEND_FACTOR,
+        BlendFactor::Src1 => D3D11_BLEND_SRC1_COLOR,
+        BlendFactor::OneMinusSrc1 => D3D11_BLEND_INV_SRC1_COLOR,
+        BlendFactor::Src1Alpha => D3D11_BLEND_SRC1_ALPHA,
+        BlendFactor::OneMinusSrc1Alpha => D3D11_BLEND_INV_SRC1_ALPHA,
+        BlendFactor::ConstantAlpha | BlendFactor::OneMinusConstantAlpha => {
+            panic!("Direct3D has no {f:?} factor")
+        }
+    };
+    let op = |o: BlendOp| match o {
+        BlendOp::Add => D3D11_BLEND_OP_ADD,
+        BlendOp::Subtract => D3D11_BLEND_OP_SUBTRACT,
+        BlendOp::ReverseSubtract => D3D11_BLEND_OP_REV_SUBTRACT,
+        BlendOp::Min => D3D11_BLEND_OP_MIN,
+        BlendOp::Max => D3D11_BLEND_OP_MAX,
+    };
+    let (color, alpha) = target.blend.expect("a blend");
+    D3D11_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: true.into(),
+        SrcBlend: factor(color.src),
+        DestBlend: factor(color.dst),
+        BlendOp: op(color.op),
+        SrcBlendAlpha: factor(alpha.src),
+        DestBlendAlpha: factor(alpha.dst),
+        BlendOpAlpha: op(alpha.op),
+        // Direct3D's write mask bits are the interface's channels in the same order.
+        RenderTargetWriteMask: target.writes.bits(),
+    }
+}
+
 fn floats(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -256,6 +303,192 @@ fn variants_draw_as_the_native_feature_does() {
                         false => (Format::Rgba32Uint, (0, 0)),
                     };
                     results.push(compare(name, &reference, &texels, format, allowed));
+                }
+            }
+        }
+
+        // Normalised targets held as their integer twins and blended in the program
+        // (`TargetInShader::combine`) with old values read from a copy, against Direct3D 11 blending
+        // into the normalised format, both back ends. The grid's triangles do not overlap, so the one
+        // copy taken before the draw holds every fragment's old value.
+        {
+            use BlendFactor as F;
+            use BlendOp as O;
+            use wcontainers_gpu::ColorWrites as W;
+            let half = |src, dst, op| BlendComponent { src, dst, op };
+            let blends = [
+                (
+                    half(F::SrcAlpha, F::OneMinusSrcAlpha, O::Add),
+                    half(F::One, F::OneMinusSrcAlpha, O::Add),
+                    W::all(),
+                ),
+                (
+                    half(F::Constant, F::OneMinusDst, O::ReverseSubtract),
+                    half(F::DstAlpha, F::OneMinusConstant, O::Subtract),
+                    W::R | W::G | W::A,
+                ),
+                (
+                    half(F::Dst, F::Src, O::Min),
+                    half(F::Zero, F::One, O::Max),
+                    W::G | W::B | W::A,
+                ),
+                (
+                    half(F::SrcAlphaSaturated, F::Dst, O::Add),
+                    half(F::OneMinusDstAlpha, F::Constant, O::Add),
+                    W::all(),
+                ),
+            ];
+            let constant = [0.375, -0.25, 0.625, 0.5];
+            let tolerance = (0.5 + D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP).floor() as u64;
+            for format in [
+                Format::R16Unorm,
+                Format::Rg16Snorm,
+                Format::Rgba16Unorm,
+                Format::Rgba8Snorm,
+            ] {
+                let stored = format.integer_twin().unwrap();
+                let signed = stored.kind() == wcontainers_gpu::FormatKind::Sint;
+                let channels = stored.components().count_ones();
+                let width = stored.block().2 / channels;
+                let largest = (1u64 << (u8::BITS * width - u32::from(signed))) - 1;
+                // Old values whose codes are exact.
+                let fractions: [f64; 4] = match signed {
+                    true => [-0.5, 0.25, 0.75, -0.375],
+                    false => [0.25, 0.5, 0.75, 0.375],
+                };
+                let codes = fractions.map(|f| (f * largest as f64).round() as i64);
+                let old = codes.map(|c| (c as f64 / largest as f64) as f32);
+                let texel: Vec<u8> = codes[..channels as usize]
+                    .iter()
+                    .flat_map(|c| c.to_le_bytes()[..width as usize].to_vec())
+                    .collect();
+                let copy = texel.repeat((SIZE * SIZE) as usize);
+                for (n, (color, alpha, writes)) in blends.into_iter().enumerate() {
+                    let target = wcontainers_gpu::RenderTargetBlend {
+                        blend: Some((color, alpha)),
+                        writes,
+                    };
+                    let (reference, _) = direct3d_11(
+                        &d3d,
+                        "vs_transform",
+                        "ps_textured",
+                        format,
+                        [1.0, 0.75, 0.5, 1.5],
+                        true,
+                        &Reference {
+                            blend: Some(direct3d_11_blend(&target)),
+                            blend_factor: constant,
+                            clear: Some(old),
+                            ..Default::default()
+                        },
+                    );
+                    let mut variant = grid_draw(&code, dxil, &grid);
+                    variant.format = stored;
+                    variant.clear = codes.map(|c| c as i32 as u32);
+                    variant.setup.target_copy = Some(copy.clone());
+                    variant.setup.ps_key.samples = 1;
+                    variant.setup.ps_key.targets_in_shader = vec![TargetInShader {
+                        target: 0,
+                        format,
+                        combine: true,
+                    }];
+                    let value = wcontainers_gpu::TargetCombineValue::new(&target, None, constant);
+                    variant.setup.helpers[1] = helper_block(
+                        variant.ps,
+                        &variant.setup.ps_key,
+                        &[(HelperValue::TargetCombine { target: 0 }, &value.bytes())],
+                    );
+                    for (back_end, texels) in [
+                        ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                        ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+                    ] {
+                        // Named by the blend's place in `blends`: the picture files take the name.
+                        let name = format!("combine {format:?} blend {n} {route} {back_end}");
+                        let allowed = ((SIZE * SIZE) as usize, tolerance);
+                        results.push(compare(name, &reference, &texels, stored, allowed));
+                    }
+                }
+            }
+        }
+
+        // Every logic operation in the program (`TargetInShader::combine`) into an integer target,
+        // ps_component's integer output (which no provoking vertex decides) against old values read
+        // from a copy, against Direct3D 11.1's logic operations, both back ends, with a write mask.
+        {
+            use wcontainers_gpu::LogicOp as L;
+            let code = [code[0].clone(), bytecode(&format!("ps_component.{route}"))];
+            let operations = [
+                (L::Clear, D3D11_LOGIC_OP_CLEAR),
+                (L::Set, D3D11_LOGIC_OP_SET),
+                (L::Copy, D3D11_LOGIC_OP_COPY),
+                (L::CopyInverted, D3D11_LOGIC_OP_COPY_INVERTED),
+                (L::Noop, D3D11_LOGIC_OP_NOOP),
+                (L::Invert, D3D11_LOGIC_OP_INVERT),
+                (L::And, D3D11_LOGIC_OP_AND),
+                (L::Nand, D3D11_LOGIC_OP_NAND),
+                (L::Or, D3D11_LOGIC_OP_OR),
+                (L::Nor, D3D11_LOGIC_OP_NOR),
+                (L::Xor, D3D11_LOGIC_OP_XOR),
+                (L::Equivalent, D3D11_LOGIC_OP_EQUIV),
+                (L::AndReverse, D3D11_LOGIC_OP_AND_REVERSE),
+                (L::AndInverted, D3D11_LOGIC_OP_AND_INVERTED),
+                (L::OrReverse, D3D11_LOGIC_OP_OR_REVERSE),
+                (L::OrInverted, D3D11_LOGIC_OP_OR_INVERTED),
+            ];
+            // Old values exact as the floats a clear of an integer target takes.
+            let old: [u32; 4] = [0x00f0f1, 0x00ff00, 0x13579b, 0x800001];
+            let format = Format::Rgba32Uint;
+            let writes = wcontainers_gpu::ColorWrites::R
+                | wcontainers_gpu::ColorWrites::B
+                | wcontainers_gpu::ColorWrites::A;
+            let copy: Vec<u8> = old
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect::<Vec<u8>>()
+                .repeat((SIZE * SIZE) as usize);
+            for (operation, direct3d_operation) in operations {
+                let (reference, _) = direct3d_11(
+                    &d3d,
+                    "vs_transform",
+                    "ps_component",
+                    format,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference {
+                        logic_op: Some(direct3d_operation),
+                        // Direct3D's write mask bits are the interface's channels in the same order.
+                        logic_op_writes: writes.bits(),
+                        clear: Some(old.map(|w| w as f32)),
+                        ..Default::default()
+                    },
+                );
+                let mut variant = grid_draw(&code, dxil, &grid);
+                variant.format = format;
+                variant.clear = old;
+                variant.setup.target_copy = Some(copy.clone());
+                variant.setup.ps_key.samples = 1;
+                variant.setup.ps_key.targets_in_shader = vec![TargetInShader {
+                    target: 0,
+                    format,
+                    combine: true,
+                }];
+                let target = wcontainers_gpu::RenderTargetBlend {
+                    blend: None,
+                    writes,
+                };
+                let value =
+                    wcontainers_gpu::TargetCombineValue::new(&target, Some(operation), [0.0; 4]);
+                variant.setup.helpers[1] = helper_block(
+                    variant.ps,
+                    &variant.setup.ps_key,
+                    &[(HelperValue::TargetCombine { target: 0 }, &value.bytes())],
+                );
+                for (back_end, texels) in [
+                    ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                    ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+                ] {
+                    let name = format!("logic {operation:?} {route} {back_end}");
+                    results.push(compare(name, &reference, &texels, format, (0, 0)));
                 }
             }
         }

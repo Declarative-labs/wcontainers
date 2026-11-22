@@ -245,6 +245,9 @@ pub struct Reference {
     pub lod_bias: f32,
     /// Target 0's blending.
     pub blend: Option<D3D11_RENDER_TARGET_BLEND_DESC>,
+    /// Target 0's logic operation (Direct3D 11.1), in place of `blend`, with this write mask.
+    pub logic_op: Option<D3D11_LOGIC_OP>,
+    pub logic_op_writes: u8,
     /// Counts the samples that pass, with an occlusion query.
     pub count: bool,
     /// With a D32_FLOAT depth buffer cleared to 1 and written by every fragment, and this viewport
@@ -437,11 +440,26 @@ pub fn direct3d_11(
             (texture, view)
         }
     };
-    let blend = reference.blend.map(|target| {
-        let mut desc = D3D11_BLEND_DESC::default();
-        desc.RenderTarget[0] = target;
-        gpu.blend(&desc).unwrap()
-    });
+    let blend = match reference.logic_op {
+        Some(op) => {
+            let mut desc = D3D11_BLEND_DESC1::default();
+            desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC1 {
+                LogicOpEnable: true.into(),
+                LogicOp: op,
+                RenderTargetWriteMask: reference.logic_op_writes,
+                ..Default::default()
+            };
+            let device: ID3D11Device1 = gpu.device.cast().unwrap();
+            let mut state = None;
+            unsafe { device.CreateBlendState1(&desc, Some(&mut state)) }.unwrap();
+            Some(state.unwrap().cast::<ID3D11BlendState>().unwrap())
+        }
+        None => reference.blend.map(|target| {
+            let mut desc = D3D11_BLEND_DESC::default();
+            desc.RenderTarget[0] = target;
+            gpu.blend(&desc).unwrap()
+        }),
+    };
     let query = reference.count.then(|| {
         let desc = D3D11_QUERY_DESC {
             Query: D3D11_QUERY_OCCLUSION,
