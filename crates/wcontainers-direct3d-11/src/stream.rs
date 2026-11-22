@@ -1,7 +1,7 @@
 //! Stream output declarations (`CreateGeometryShaderWithStreamOutput`), checked against the
 //! shader's output signature as Direct3D checks them.
 
-use wcontainers_shaders::stage::{StreamOutput, StreamOutputEntry};
+use wcontainers_shaders::stage::{STREAM_BUFFERS, STREAMS, StreamOutput, StreamOutputEntry};
 
 use crate::desc::level;
 use crate::error::{Error, Result};
@@ -26,6 +26,10 @@ pub type Declaration<'a> = (Option<&'a [DeclEntry]>, Option<&'a [u32]>, u32);
 pub use wcontainers_directx_graphics_infrastructure::d3d::SO_NO_RASTERIZED_STREAM as NO_RASTERIZED_STREAM;
 /// The largest stride of a stream output buffer.
 const MAX_STRIDE: u32 = 2048;
+/// The last geometry stream a rasterizer may draw.
+const LAST_STREAM: u32 = STREAMS as u32 - 1;
+/// The bytes of one stream output component.
+const STREAM_COMPONENT_BYTES: u32 = size_of::<u32>() as u32;
 
 const INVALID: Error = Error::InvalidArg("a stream output declaration Direct3D refuses");
 
@@ -44,11 +48,11 @@ pub fn declaration(
     let eleven = device_level >= level::L11_0;
     let drawn = match rasterized {
         0 => true,
-        1..=3 | NO_RASTERIZED_STREAM if eleven => false,
+        1..=LAST_STREAM | NO_RASTERIZED_STREAM if eleven => false,
         _ => return Err(INVALID),
     };
     let strides = strides.filter(|s| !s.is_empty());
-    if strides.is_some_and(|s| s.len() > 4 || (!eleven && s.len() > 1)) {
+    if strides.is_some_and(|s| s.len() > STREAM_BUFFERS || (!eleven && s.len() > 1)) {
         return Err(INVALID);
     }
     let Some(entries) = entries else {
@@ -62,17 +66,21 @@ pub fn declaration(
         return Err(INVALID);
     }
     // Components each buffer takes, and the entries of each.
-    let mut components = [0u32; 4];
-    let mut named = [0u32; 4];
-    let mut counts = [0u32; 4];
+    let mut components = [0u32; STREAM_BUFFERS];
+    let mut named = [0u32; STREAM_BUFFERS];
+    let mut counts = [0u32; STREAM_BUFFERS];
     let mut last_slot = None;
-    let mut closed = [false; 4];
+    let mut closed = [false; STREAM_BUFFERS];
     // The output components written, per stream, register and component.
     let mut written: Vec<(u32, u32, u8)> = Vec::new();
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
         let slot = usize::from(e.slot);
-        if e.stream > 3 || (!eleven && e.stream != 0) || slot > 3 || e.component_count == 0 {
+        if e.stream > LAST_STREAM
+            || (!eleven && e.stream != 0)
+            || slot >= STREAM_BUFFERS
+            || e.component_count == 0
+        {
             return Err(INVALID);
         }
         // Each buffer's entries come together.
@@ -127,27 +135,30 @@ pub fn declaration(
             slot: e.slot,
         });
     }
-    let used: Vec<usize> = (0..4).filter(|&b| counts[b] > 0).collect();
+    let used: Vec<usize> = (0..STREAM_BUFFERS).filter(|&b| counts[b] > 0).collect();
     // A buffer holding gaps alone is refused; at 10_x several buffers hold one value each.
     if used.iter().any(|&b| named[b] == 0)
         || (!eleven && used.len() > 1 && used.iter().any(|&b| counts[b] != 1))
     {
         return Err(INVALID);
     }
-    let mut chosen = [0u32; 4];
+    let mut chosen = [0u32; STREAM_BUFFERS];
     if let Some(s) = strides {
         for &b in &used {
             let stride = *s.get(b).ok_or(INVALID)?;
             if stride == 0
-                || !stride.is_multiple_of(4)
+                || !stride.is_multiple_of(STREAM_COMPONENT_BYTES)
                 || stride > MAX_STRIDE
-                || stride < 4 * components[b]
+                || stride < STREAM_COMPONENT_BYTES * components[b]
             {
                 return Err(INVALID);
             }
             chosen[b] = stride;
         }
-    } else if used.iter().any(|&b| 4 * components[b] > MAX_STRIDE) {
+    } else if used
+        .iter()
+        .any(|&b| STREAM_COMPONENT_BYTES * components[b] > MAX_STRIDE)
+    {
         return Err(INVALID);
     }
     Ok((

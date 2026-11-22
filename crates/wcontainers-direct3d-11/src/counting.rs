@@ -8,17 +8,35 @@ use naga::{
     StorageAccess, StructMember, Type, TypeInner, VectorSize,
 };
 use wcontainers_gpu::{ShaderModule, ShaderStage};
+use wcontainers_shaders::ENTRY_POINT;
 
 use crate::error::{Result, not_implemented};
 
+/// The fragment program of a draw without a pixel shader, entered at `ENTRY_POINT`.
+const WITHOUT_PIXEL_SHADER: &str =
+    "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+/// The names of the counting colour and of the rewritten result, and what a counting program's
+/// key adds to its pixel shader's.
+const COUNT_MEMBER: &str = "count";
+const COUNTING_RESULT: &str = "Counting";
+const COUNTING_KEY: &[u8] = b"counting";
+/// The alpha component of a colour.
+const ALPHA_COMPONENT: u32 = VectorSize::Quad as u32 - 1;
+/// The bytes of the counting colour, which also aligns the result; and of each built-in output.
+const COLOR_BYTES: u32 = size_of::<[f32; 4]>() as u32;
+const BUILT_IN_BYTES: u32 = size_of::<f32>() as u32;
+
+const WITHOUT_PIXEL_SHADER_UNMADE: &str = "the counting program of a draw without a pixel shader";
+const WRITES_STORAGE: &str = "counted occlusion of pixel shaders writing storage";
+const WITHOUT_ENTRY_POINT: &str = "counted occlusion of a pixel shader without its entry point";
+const VECTOR_BUILT_IN: &str = "counted occlusion of a pixel shader with a vector built-in output";
+const INVALID_COUNTING_PROGRAM: &str =
+    "counted occlusion of a pixel shader whose counting program does not validate";
+
 /// The fragment program of a draw without a pixel shader.
 pub fn without_pixel_shader() -> Result<ShaderModule> {
-    ShaderModule::from_wgsl(
-        "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
-        "main",
-        ShaderStage::Fragment,
-    )
-    .or_else(|_| not_implemented("the counting program of a draw without a pixel shader"))
+    ShaderModule::from_wgsl(WITHOUT_PIXEL_SHADER, ENTRY_POINT, ShaderStage::Fragment)
+        .or_else(|_| not_implemented(WITHOUT_PIXEL_SHADER_UNMADE))
 }
 
 /// What each return of the rewritten entry point builds.
@@ -46,14 +64,14 @@ pub fn from_pixel_shader(pixel: &ShaderModule) -> Result<ShaderModule> {
             || matches!(g.space, AddressSpace::Storage { access } if access.contains(StorageAccess::STORE))
     });
     if writes {
-        return not_implemented("counted occlusion of pixel shaders writing storage");
+        return not_implemented(WRITES_STORAGE);
     }
     let Some(index) = module
         .entry_points
         .iter()
         .position(|e| e.name == pixel.entry_point && e.stage == naga::ShaderStage::Fragment)
     else {
-        return not_implemented("counted occlusion of a pixel shader without its entry point");
+        return not_implemented(WITHOUT_ENTRY_POINT);
     };
     let color = module.types.insert(
         Type {
@@ -79,17 +97,17 @@ pub fn from_pixel_shader(pixel: &ShaderModule) -> Result<ShaderModule> {
                     if let Some(Binding::BuiltIn(b)) = m.binding {
                         outputs.push((Some(i as u32), m.ty, b));
                     } else if location0(&m.binding) && is_color(m.ty) {
-                        alpha = Some(vec![i as u32, 3]);
+                        alpha = Some(vec![i as u32, ALPHA_COMPONENT]);
                     }
                 }
             }
             (_, Some(Binding::BuiltIn(b))) => outputs.push((None, r.ty, *b)),
-            (_, b) if location0(b) && is_color(r.ty) => alpha = Some(vec![3]),
+            (_, b) if location0(b) && is_color(r.ty) => alpha = Some(vec![ALPHA_COMPONENT]),
             _ => {}
         },
     }
     let mut members = vec![StructMember {
-        name: Some("count".into()),
+        name: Some(COUNT_MEMBER.into()),
         ty: color,
         binding: Some(Binding::Location {
             location: 0,
@@ -100,12 +118,10 @@ pub fn from_pixel_shader(pixel: &ShaderModule) -> Result<ShaderModule> {
         }),
         offset: 0,
     }];
-    let mut offset = 16;
+    let mut offset = COLOR_BYTES;
     for (i, &(_, ty, b)) in outputs.iter().enumerate() {
         if !matches!(module.types[ty].inner, TypeInner::Scalar(_)) {
-            return not_implemented(
-                "counted occlusion of a pixel shader with a vector built-in output",
-            );
+            return not_implemented(VECTOR_BUILT_IN);
         }
         members.push(StructMember {
             name: Some(format!("kept{i}")),
@@ -113,14 +129,14 @@ pub fn from_pixel_shader(pixel: &ShaderModule) -> Result<ShaderModule> {
             binding: Some(Binding::BuiltIn(b)),
             offset,
         });
-        offset += 4;
+        offset += BUILT_IN_BYTES;
     }
     let ty = module.types.insert(
         Type {
-            name: Some("Counting".into()),
+            name: Some(COUNTING_RESULT.into()),
             inner: TypeInner::Struct {
                 members,
-                span: offset.div_ceil(16) * 16,
+                span: offset.next_multiple_of(COLOR_BYTES),
             },
         },
         Span::UNDEFINED,
@@ -148,13 +164,11 @@ pub fn from_pixel_shader(pixel: &ShaderModule) -> Result<ShaderModule> {
     )
     .validate(&module);
     let Ok(info) = info else {
-        return not_implemented(
-            "counted occlusion of a pixel shader whose counting program does not validate",
-        );
+        return not_implemented(INVALID_COUNTING_PROGRAM);
     };
     let key = *blake3::Hasher::new()
         .update(&pixel.key)
-        .update(b"counting")
+        .update(COUNTING_KEY)
         .finalize()
         .as_bytes();
     Ok(ShaderModule {
