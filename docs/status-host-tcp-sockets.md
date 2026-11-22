@@ -3,6 +3,40 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## Run 11 (2026-11-22): the linter's literal findings
+- Linter at the start (Mac, 2 min 37 s, load 133; log reviewable-run11-start.log in scratch): in this track's two
+  crates 113 + 48 `magic_literal` and 86 + 11 `number_constant_without_link`, as run 10 left them.
+- Done: every free 0, 1, 2 and -1 in linux.rs and conformance.rs that was a value is the type's `MIN`,
+  `u32::from(true)` for a C bit field, or a named constant (`UNSET`, `FIN_WAIT2_RESET`, `NO_PEEK_OFFSET`,
+  `NO_REPORT_FLAGS`, `ANY_PORT`, `NO_BYTES`, `RETRY_INTERVAL`, `ONE_WAKE` and the like); `windows(2)` and
+  `step_by(2)` became a zip and an even-index filter, and the no-delay check counts its sends instead of writing 1
+  and 2.
+- Done: every named number has an https link: values Linux or a standard fixes link to the man page, kernel
+  document, kernel source or RFC; the suite's own choices link to the new plan section "The suite's own choices"
+  (https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices),
+  which lists each value with its reason (DECISIONS.md 11 of the linter). The plan file reaches main only when the
+  orchestrator merges agents.
+- Done in the shared crate linux-socket-options (host.rs, linux.rs, icmp_error.rs, readiness.rs, implementation.rs,
+  tests/readiness.rs, the files this track made): its literal findings and summary findings, the same way; its own
+  choices (`REASON_SLOTS`, `CONTROL_ROOM`) link to the plan section "The shared crate's own choices".
+  `receive_message` gives `recvmsg` an array of one vector and its length in place of the number 1.
+- mutants.sh: nine texts it breaks had changed; all 130 are found once again, and the nine copies plus
+  peek-offset-ignored each fail named checks (ARM machine, load under 1).
+- Checks after the changes (ARM machine, load 0.4 to 8): clippy with warnings denied on the shared crate, the TCP,
+  UDP, ICMP and raw implementations and the TCP suite: clean; also on the Mac. TCP 113 + 4, UDP 76 + 5, the ICMP and
+  raw binaries 58 and 47, the shared crate's own test 1: all pass.
+- Linter at the end (Mac, load 22; log reviewable-run11-end.log): this track's crates have no `magic_literal` and no
+  `number_constant_without_link` left; after it the new `summary_without_full_stop` findings (a summary ending in its
+  link) were fixed by moving each link to a paragraph of its own, and one `magic_literal` (a comparison with zero of
+  a closure argument named `status`, which the rule reads as a status) by renaming it. Left in this track's crates:
+  the structural ones run 10 recorded (7 `conformance_not_run`, 7 `public_outside_interface`, 5
+  `implementation_folder`, all under For the owner) and 2 `grammar_unclear` (the model's low confidence).
+- Left in the shared crate: its datagram half (datagram.rs and datagram/*, the UDP track's files: about 60 summary
+  findings and 7 constants without a link), and 20 `public_outside_interface` plus a `conformance_not_run` on its
+  Cargo.toml, both because a helper crate that implements no interface has no place in the layout (For the owner).
+  `constant_defined_twice` in crates/udp-sockets/implementation/host/portable.rs (three reason texts the same as
+  this track's portable.rs) is reported on the UDP copy.
+
 ## Run 10 (2026-11-22): the owner's linter
 - Linter run once at the start (Mac, 2 min 44 s, 96 073 findings in the workspace; log reviewable-start.log in
   scratch): about 430 in this track's two crates, 150 in the shared crate linux-socket-options, 3 in tcp-sockets'
@@ -555,6 +589,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   both demand the real answer on Linux.
 
 ## Departures from the plan
+- Run 11: the suite's own numbers (timeouts, sizes, ports, keys) link to a section of the plan that writes each
+  choice down, the only link DECISIONS.md 11 leaves for a number no standard fixes.
 - Run 10: the implementation's body is no longer Linux only (plan corrected): the owner's linter reads the Mac's
   build, so portable.rs gives the types and traits there.
 - Run 4: the plan's "the contract waits for nothing" is gone with the async ruling: the two waits are the shared
@@ -596,6 +632,11 @@ readings, repair, authentication, multipath state, the privileged settings).
   0.9.1: MIT.
 
 ## For the owner
+- The shared helper crate crates/internet-protocol/implementation/linux-socket-options implements no interface,
+  so the layout reports everything it exports (`public_outside_interface`, 20: `Shortfalls`, `Watcher`, `host_error`,
+  ...) and wants a conformance target it cannot have. The brief asked for it (one crate the socket tracks share in
+  place of four private copies). Example: `Shortfalls::refuse`, used by all four socket implementations. It needs a
+  place in the layout (an interface of its own, or a kind of crate the linter allows to export).
 - The brief says an implementation's fields are private; the linter's `public_outside_interface` says a type that
   fills an associated type is plain data with every field `pub`. Example: `HostTcpConnection` holds its socket's
   descriptor and registration (`socket: Watched`); made public, any caller could take the descriptor out. Kept
