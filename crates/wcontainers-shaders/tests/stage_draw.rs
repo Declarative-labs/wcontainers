@@ -1,6 +1,7 @@
 //! The stage helper's routes of a vertex shader alone on the WebGPU back end, against real Direct3D 11:
 //! alpha-antialiased lines (and WARP drawing them), both blending each line's colour over the target
-//! by its alpha; and the primitive's number for a pixel shader reading it. Seeded vertices:
+//! by its alpha, and the same lines replayed on the WebGL 2 back end (ANGLE); and the primitive's
+//! number for a pixel shader reading it. Seeded vertices:
 //! `WCONTAINERS_LINE_SEED` (default 1) and `WCONTAINERS_LINE_CASES` seeds from it (default 4); every
 //! case runs per seed. An indexed list Direct3D draws nothing of is passed over for the seed's next
 //! (`scene`), and ours must draw nothing of it either.
@@ -13,15 +14,19 @@ use common::*;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
     BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc,
-    DrawBaseSource, DrawCall, DrawRange, Extent, FillMode, Format, FrontFace, HelperValue,
-    IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program, ProvokingVertex,
-    RasterDesc, ReadSource, RenderTargetBlend, ShaderStage, StageSet, StoreOp, TextureRegion,
-    TextureUsage, VariantFlags, VariantKey, VertexBinding, VertexFormat, Viewport, helper_binding,
+    DrawBaseSource, DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace,
+    HelperValue, IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program,
+    ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderModule, ShaderStage,
+    StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, VariantFlags, VariantKey,
+    VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
+    helper_binding,
 };
 use wcontainers_graphics_test::Driver;
 use wcontainers_graphics_test::d3d11::{self, Gpu};
-use wcontainers_shaders::stage::{InputTopology, StageDraw, StageIndex, Stages};
-use wcontainers_shaders::{Source, convert};
+use wcontainers_shaders::stage::{
+    FinalDraw, GeometryReplay, InputTopology, ReplayDraw, StageDraw, StageIndex, Stages,
+};
+use wcontainers_shaders::{Converted, Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -274,14 +279,10 @@ fn blended() -> BlendDesc {
     }
 }
 
-fn ours<B: Backend>(
-    b: &mut B,
-    case: &Case,
-    (vertices, indices): (&[f32], &[u8]),
-    dxil: bool,
-    blending: bool,
-    route: Route,
-) -> Vec<u8> {
+/// `vs_line` converted with `vs_key` and `route`'s pixel shader linked to it as a front links them:
+/// the pixel program's coverage or primitive number past every value either program passes. Returns
+/// both and the pixel program's key.
+fn linked(dxil: bool, route: Route, vs_key: &VariantKey) -> (Converted, Converted, VariantKey) {
     let kind = if dxil { "dxil" } else { "dxbc" };
     let code = |name: &str| bytecode(&format!("{name}.{kind}"));
     let (vs_code, ps_code) = (code("vs_line"), code(route.pixel_shader()));
@@ -293,15 +294,8 @@ fn ours<B: Backend>(
         }
     }
     let read = |c| source(c, dxil);
-    // Linked as a front links them: the pixel program's coverage or primitive number past every value
-    // either program passes, every vertex input pulled.
     let plain = convert(read(&ps_code), &VariantKey::default(), None).unwrap();
-    let vs_key = VariantKey {
-        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
-        draw_base: DrawBaseSource::Helpers,
-        ..Default::default()
-    };
-    let vs = convert(read(&vs_code), &vs_key, None).unwrap();
+    let vs = convert(read(&vs_code), vs_key, None).unwrap();
     let location = vs
         .reflection
         .outputs
@@ -323,6 +317,24 @@ fn ours<B: Backend>(
         ..Default::default()
     };
     let ps = convert(read(&ps_code), &ps_key, None).unwrap();
+    (vs, ps, ps_key)
+}
+
+fn ours<B: Backend>(
+    b: &mut B,
+    case: &Case,
+    (vertices, indices): (&[f32], &[u8]),
+    dxil: bool,
+    blending: bool,
+    route: Route,
+) -> Vec<u8> {
+    // Every vertex input pulled.
+    let vs_key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        draw_base: DrawBaseSource::Helpers,
+        ..Default::default()
+    };
+    let (vs, ps, ps_key) = linked(dxil, route, &vs_key);
     let mut stages = match route {
         Route::Lines => Stages::antialiased_lines(b, &vs, &ps_key).unwrap(),
         Route::Primitives => Stages::primitive_numbered(b, &vs, &ps_key).unwrap(),
@@ -419,8 +431,144 @@ fn ours<B: Backend>(
     }
     .unwrap()
     .expect("primitives");
+    let layout = stages.vertex_layout().unwrap();
+    let out = drawn(
+        b,
+        stages.passthrough().unwrap(),
+        &layout,
+        &ps,
+        &last,
+        blending,
+    );
+    stages.destroy(b);
+    out
+}
 
-    let vertex = b.create_shader(stages.passthrough().unwrap()).unwrap();
+/// `case`'s lines through the replay route ([`GeometryReplay::antialiased_lines`]), as a front on a
+/// back end without compute draws them: the vertex shader's inputs as drawn, its clip depth rewritten
+/// where the back end lacks clip depth from zero.
+fn ours_replayed<B: Backend>(
+    b: &mut B,
+    case: &Case,
+    (vertices, indices): (&[f32], &[u8]),
+    dxil: bool,
+    blending: bool,
+) -> Vec<u8> {
+    let zero_one = b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
+    let vs_key = VariantKey {
+        draw_base: DrawBaseSource::Helpers,
+        flags: match zero_one {
+            true => VariantFlags::empty(),
+            false => VariantFlags::CLIP_DEPTH_REWRITE,
+        },
+        ..Default::default()
+    };
+    let (vs, ps, ps_key) = linked(dxil, Route::Lines, &vs_key);
+    let mut replay = GeometryReplay::antialiased_lines(b, &vs, &ps_key).unwrap();
+    let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
+    let mut layout = VertexLayoutDesc {
+        streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+        attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+    };
+    layout.streams[0] = Some(VertexStream {
+        stride: COLOURED_VERTEX_BYTES,
+        step: StepMode::Vertex,
+    });
+    for (location, offset, format) in [
+        (0, 0, VertexFormat::Float32x3),
+        (1, POSITION_BYTES, VertexFormat::Float32x4),
+    ] {
+        layout.attributes[location as usize] = Some(VertexAttribute {
+            location,
+            stream: 0,
+            offset,
+            format,
+        });
+    }
+    let vertex_layout = b.create_vertex_layout(&layout).unwrap();
+    let mut helpers = vec![0u8; vs.reflection.helper_size as usize];
+    for h in &vs.reflection.helpers {
+        assert!(matches!(h.value, HelperValue::DrawBase), "{h:?}");
+        helpers[h.offset as usize..][..8].fill(0);
+    }
+    let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
+    let vertex_helpers = b
+        .create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Vertex),
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &helper_buffer,
+                offset: 0,
+                size: helpers.len() as u64,
+            }),
+        }])
+        .unwrap();
+    // The route reads an indexed strip's indices back.
+    let index_buffer = case
+        .indexed
+        .then(|| buffer(b, indices, BufferUsage::INDEX | BufferUsage::COPY_SRC));
+    let last = replay
+        .run_antialiased_lines(
+            b,
+            ReplayDraw {
+                vertex_sets: [None, None, None, Some(&vertex_helpers)],
+                vertex_layout: &vertex_layout,
+                vertex_buffers: &[Some(VertexBinding {
+                    buffer: &vertex_buffer,
+                    offset: 0,
+                })],
+                index: index_buffer.as_ref().map(|buffer| IndexBinding {
+                    buffer,
+                    offset: 0,
+                    format: IndexFormat::U16,
+                }),
+                immediates: &[],
+                geometry_sets: [None; 4],
+                topology: case.topology,
+                range: match case.indexed {
+                    true => DrawRange::Indexed {
+                        first: 0,
+                        count: case.count,
+                        base_vertex: 0,
+                        first_instance: 0,
+                        instances: case.instances,
+                    },
+                    false => DrawRange::Vertices {
+                        first: 0,
+                        count: case.count,
+                        first_instance: 0,
+                        instances: case.instances,
+                    },
+                },
+                stream_output: None,
+            },
+            [SIZE as f32; 2],
+        )
+        .unwrap()
+        .expect("primitives");
+    let out = drawn(
+        b,
+        replay.passthrough(),
+        &replay.vertex_layout(),
+        &ps,
+        &last,
+        blending,
+    );
+    replay.destroy(b);
+    out
+}
+
+/// `last` drawn through `passthrough` (its records laid out as `layout`) and the pixel program `ps`
+/// into a cleared target, blended by alpha with `blending`; returns the target's texels.
+fn drawn<B: Backend>(
+    b: &mut B,
+    passthrough: &ShaderModule,
+    layout: &VertexLayoutDesc,
+    ps: &Converted,
+    last: &FinalDraw<B>,
+    blending: bool,
+) -> Vec<u8> {
+    let vertex = b.create_shader(passthrough).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
     let program = b
         .create_program(&Program::Render {
@@ -428,9 +576,7 @@ fn ours<B: Backend>(
             fragment: Some(&fragment),
         })
         .unwrap();
-    let vertex_layout = b
-        .create_vertex_layout(&stages.vertex_layout().unwrap())
-        .unwrap();
+    let vertex_layout = b.create_vertex_layout(layout).unwrap();
     let blend = b
         .create_blend(&if blending {
             blended()
@@ -466,7 +612,7 @@ fn ours<B: Backend>(
             scissor: false,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::First,
-            depth_minus_one: false,
+            depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
             sample_mask: !0,
         })
         .unwrap();
@@ -559,7 +705,6 @@ fn ours<B: Backend>(
     )
     .unwrap();
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
-    stages.destroy(b);
     out
 }
 
@@ -641,6 +786,14 @@ fn apart(a: &[u8], b: &[u8]) -> Vec<u64> {
 #[test]
 fn antialiased_lines_draw_as_direct3d_does() {
     let mut backend = webgpu();
+    let mut gl = webgl();
+    let mut gl_no_clip = webgl_without(&["EXT_clip_control"]);
+    assert!(
+        !gl_no_clip
+            .caps()
+            .features
+            .contains(Features::CLIP_DEPTH_ZERO_ONE)
+    );
     let gpus: Vec<(Driver, Gpu)> = [Driver::Hardware, Driver::Warp]
         .into_iter()
         .map(|d| {
@@ -661,6 +814,9 @@ fn antialiased_lines_draw_as_direct3d_does() {
     if std::env::var_os("WCONTAINERS_LINE_COVERAGE").is_some() {
         print_coverage("ours", |case, v| {
             ours(&mut backend, case, (v, &[]), false, false, Route::Lines)
+        });
+        print_coverage("ours replayed on webgl", |case, v| {
+            ours_replayed(&mut gl, case, (v, &[]), false, false)
         });
     }
     let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
@@ -704,7 +860,13 @@ fn antialiased_lines_draw_as_direct3d_does() {
                             true,
                             Route::Lines,
                         );
-                        drawn_texels(&picture) == 0
+                        let replayed =
+                            ours_replayed(&mut gl, case, (&vertices, indices), dxil, true);
+                        let no_clip =
+                            ours_replayed(&mut gl_no_clip, case, (&vertices, indices), dxil, true);
+                        [picture, replayed, no_clip]
+                            .iter()
+                            .all(|p| drawn_texels(p) == 0)
                     })
                 },
             )
@@ -719,18 +881,32 @@ fn antialiased_lines_draw_as_direct3d_does() {
                 between.iter().max().unwrap()
             );
             spread = spread.max(*between.iter().max().unwrap());
-            for dxil in [false, true] {
-                let picture = ours(
-                    &mut backend,
-                    case,
-                    (&vertices, &indices),
-                    dxil,
-                    true,
-                    Route::Lines,
-                );
+            // 0: the compute route on WebGPU; 1: replayed on WebGL 2; 2: the same without
+            // EXT_clip_control.
+            for (dxil, replayed) in [false, true]
+                .into_iter()
+                .flat_map(|d| [(d, 0), (d, 1), (d, 2)])
+            {
+                let picture = match replayed {
+                    0 => ours(
+                        &mut backend,
+                        case,
+                        (&vertices, &indices),
+                        dxil,
+                        true,
+                        Route::Lines,
+                    ),
+                    1 => ours_replayed(&mut gl, case, (&vertices, &indices), dxil, true),
+                    _ => ours_replayed(&mut gl_no_clip, case, (&vertices, &indices), dxil, true),
+                };
+                let route = [
+                    "",
+                    " replayed on webgl",
+                    " replayed on webgl without clip control",
+                ][replayed];
                 for (driver, reference) in &references {
                     let name = format!(
-                        "{name} {} against {driver:?}",
+                        "{name} {}{route} against {driver:?}",
                         if dxil { "dxil" } else { "dxbc" }
                     );
                     let d = apart(reference, &picture);
@@ -749,7 +925,7 @@ fn antialiased_lines_draw_as_direct3d_does() {
                             Format::Rgba8Unorm,
                         );
                         keep(
-                            &format!("lines-{seed}-{i}-{kind}-ours"),
+                            &format!("lines-{seed}-{i}-{kind}-{replayed}-ours"),
                             &picture,
                             Format::Rgba8Unorm,
                         );

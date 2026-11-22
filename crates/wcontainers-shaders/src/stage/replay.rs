@@ -4,13 +4,15 @@
 //! output primitive slot; the pass-through draws what it captured, and stream output is written on
 //! the host from it. A geometry shader writing several streams is replayed once a stream for its
 //! stream output, stream 0 last for the draw. Stream output from a vertex shader alone is written on
-//! the host from the vertex stage's capture, which the pass-through draws.
+//! the host from the vertex stage's capture, which the pass-through draws. Alpha-antialiased lines
+//! take the vertex stage's capture through the line replay program, whose captured rectangles the
+//! line pass-through draws.
 
 use super::helper::{
-    FinalDraw, InputTopology, LINE_VERTICES, NOT_A_GEOMETRY_SHADER, Owned, STAGE_INDIRECT,
-    STREAM_BUFFERS, STREAM_FILLED_SIZE, STREAM_OUTPUT_ADJACENCY, StageError, StreamDeclaration,
-    StreamOutput, StreamTargets, grow, list_topology, record_layout, stream_declaration,
-    words_as_bytes,
+    FinalDraw, InputTopology, LINE_INDICES, LINE_TOPOLOGY, LINE_VERTICES, LINE_VIEWPORT,
+    NOT_A_GEOMETRY_SHADER, Owned, STAGE_INDIRECT, STREAM_BUFFERS, STREAM_FILLED_SIZE,
+    STREAM_OUTPUT_ADJACENCY, StageError, StreamDeclaration, StreamOutput, StreamTargets, grow,
+    list_topology, record_layout, stream_declaration, word_at, words_as_bytes,
 };
 use super::{
     LINE_ADJACENCY_VERTICES, RECORD_SLOT_BYTES, STAGE_SET, TRIANGLE_ADJACENCY_VERTICES,
@@ -18,14 +20,15 @@ use super::{
 };
 use crate::build::{VEC4, WORD};
 use crate::{ConvertError, Converted};
+use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
     CopyBufferTexture, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, Features, FillMode,
     Format, FrontFace, GpuError, IndexBinding, IndexFormat, MAX_BINDING_SETS, MAX_COLOR_TARGETS,
     Object, Origin, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, RingKind,
     ShaderModule, ShaderStage, SlowPath, StageExtras, StageSet, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexLayoutDesc,
-    ViewDimension, Viewport, WriteMode,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexBinding,
+    VertexLayoutDesc, ViewDimension, Viewport, WriteMode,
 };
 
 /// A strip with adjacency, which the capture cannot list.
@@ -50,6 +53,20 @@ const CAPTURE_VIEWPORT: Viewport = Viewport {
     min_depth: 0,
     max_depth: 1.0f32.to_bits(),
 };
+
+/// The line replay program's values (`line_replay.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct LineReplayValues {
+    interpolated: u32,
+    linear: u32,
+    near_w: f32,
+    pad: u32,
+    half_width: f32,
+    half_height: f32,
+    reach_across: f32,
+    reach_along: f32,
+}
 
 /// One API draw through [`GeometryReplay`].
 #[derive(Debug)]
@@ -86,6 +103,8 @@ pub struct GeometryReplay<B: Backend> {
     capture: B::Program,
     /// The geometry shader's replay; `None` for a vertex stage alone.
     geometry: Option<Replayed<B>>,
+    /// The line replay, for a vertex stage drawing alpha-antialiased lines.
+    lines: Option<ReplayedLines<B>>,
     passthrough: ShaderModule,
     states: CaptureStates<B>,
     /// Four-word slots per vertex record.
@@ -113,6 +132,15 @@ struct Replayed<B: Backend> {
     selects: bool,
     /// Streams the geometry shader writes, at least one.
     streams: u32,
+}
+
+/// The line replay program and which record slots it takes along the line
+/// ([`super::LinePrograms`]).
+struct ReplayedLines<B: Backend> {
+    program: B::Program,
+    no_streams: B::VertexLayout,
+    interpolated: u32,
+    linear: u32,
 }
 
 /// The states of a captured draw, which draws nothing: no colour writes, no depth test, no culling,
@@ -152,7 +180,11 @@ fn capture_states<B: Backend>(backend: &mut B) -> Result<CaptureStates<B>, GpuEr
         scissor: false,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::First,
-        depth_minus_one: false,
+        // Nothing is drawn; the clip depth convention the back end takes.
+        depth_minus_one: !backend
+            .caps()
+            .features
+            .contains(Features::CLIP_DEPTH_ZERO_ONE),
         sample_mask: !0,
     })?;
     Ok(CaptureStates {
@@ -195,6 +227,7 @@ impl<B: Backend> GeometryReplay<B> {
         Ok(GeometryReplay {
             capture,
             geometry: None,
+            lines: None,
             passthrough: programs.passthrough,
             states,
             in_slots: programs.slots,
@@ -276,10 +309,60 @@ impl<B: Backend> GeometryReplay<B> {
                 selects,
                 streams,
             }),
+            lines: None,
             passthrough: geometry.modules[1].clone(),
             states,
             in_slots,
             stream,
+            captured: None,
+            records: None,
+            out: None,
+        })
+    }
+
+    /// Makes the capture program of `vertex` (converted, its inputs as drawn) and the line replay
+    /// program drawing its lines antialiased for a pixel program converted with `pixel` (its key, with
+    /// `VariantFlags::LINE_COVERAGE`): each draw through [`Self::run_antialiased_lines`] captures the
+    /// vertex stage, then a rectangle around each line, which the front draws through
+    /// [`Self::passthrough`] with culling off ([`SlowPath::AntialiasedLinesAsQuads`]).
+    pub fn antialiased_lines(
+        backend: &mut B,
+        vertex: &Converted,
+        pixel: &VariantKey,
+    ) -> Result<Self, StageError> {
+        if !backend
+            .caps()
+            .features
+            .contains(Features::TRANSFORM_FEEDBACK)
+        {
+            return Err(GpuError::Absent(Features::TRANSFORM_FEEDBACK).into());
+        }
+        let programs = super::line_capture_programs(vertex, pixel)?;
+        let in_slots =
+            1 + programs.locations.len() as u32 + super::distance_slots(programs.clip_distances);
+        if (in_slots + 1) * VEC4 > backend.caps().limits.capture_components {
+            return Err(StageError::Unsupported(RECORD_COMPONENTS));
+        }
+        let capture = render_program(backend, &programs.records)?;
+        let program = render_program(backend, &super::line_replay_program(in_slots + 1)?)?;
+        let no_streams = backend.create_vertex_layout(&VertexLayoutDesc {
+            streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+            attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+        })?;
+        let states = capture_states(backend)?;
+        Ok(GeometryReplay {
+            capture,
+            geometry: None,
+            lines: Some(ReplayedLines {
+                program,
+                no_streams,
+                interpolated: programs.interpolated,
+                linear: programs.linear,
+            }),
+            passthrough: programs.passthrough,
+            states,
+            in_slots,
+            stream: None,
             captured: None,
             records: None,
             out: None,
@@ -299,9 +382,10 @@ impl<B: Backend> GeometryReplay<B> {
 
     /// The vertex layout of that draw.
     pub fn vertex_layout(&self) -> VertexLayoutDesc {
-        match &self.geometry {
-            Some(g) => record_layout(g.out_words, g.out_slots - 1),
-            None => record_layout(self.in_slots * VEC4, self.in_slots - 1),
+        match (&self.geometry, &self.lines) {
+            (Some(g), _) => record_layout(g.out_words, g.out_slots - 1),
+            (None, Some(_)) => record_layout((self.in_slots + 1) * VEC4, self.in_slots),
+            (None, None) => record_layout(self.in_slots * VEC4, self.in_slots - 1),
         }
     }
 
@@ -312,6 +396,29 @@ impl<B: Backend> GeometryReplay<B> {
         backend: &mut B,
         draw: ReplayDraw<'_, B>,
     ) -> Result<Option<FinalDraw<B>>, StageError> {
+        self.run_with(backend, draw, None)
+    }
+
+    /// [`Self::run`] for a route made by [`Self::antialiased_lines`], whose draw's viewport is
+    /// `viewport` pixels wide and high.
+    pub fn run_antialiased_lines(
+        &mut self,
+        backend: &mut B,
+        draw: ReplayDraw<'_, B>,
+        viewport: [f32; 2],
+    ) -> Result<Option<FinalDraw<B>>, StageError> {
+        self.run_with(backend, draw, Some(viewport))
+    }
+
+    fn run_with(
+        &mut self,
+        backend: &mut B,
+        draw: ReplayDraw<'_, B>,
+        viewport: Option<[f32; 2]>,
+    ) -> Result<Option<FinalDraw<B>>, StageError> {
+        if self.lines.is_some() != viewport.is_some() {
+            return Err(ConvertError::Malformed(LINE_VIEWPORT.into()).into());
+        }
         let (first, count, base_vertex, first_instance, instances) = match draw.range {
             DrawRange::Vertices {
                 first,
@@ -336,6 +443,9 @@ impl<B: Backend> GeometryReplay<B> {
                 | T::LineStripAdjacency
                 | T::TriangleStripAdjacency
         );
+        if self.lines.is_some() && !matches!(draw.topology, T::LineList | T::LineStrip) {
+            return Err(StageError::Unsupported(LINE_TOPOLOGY));
+        }
         if adjacent && self.geometry.is_none() {
             return Err(StageError::Unsupported(STREAM_OUTPUT_ADJACENCY));
         }
@@ -402,14 +512,15 @@ impl<B: Backend> GeometryReplay<B> {
         let slots = u64::from(listed) * u64::from(instances) * u64::from(self.in_slots);
         let slots = u32::try_from(slots).map_err(too_many)?;
         let captured_bytes = u64::from(slots) * u64::from(RECORD_SLOT_BYTES);
-        let (rows, records_bytes, usage) = match self.geometry {
-            Some(_) => {
+        let replayed = self.geometry.is_some() || self.lines.is_some();
+        let (rows, records_bytes, usage) = match replayed {
+            true => {
                 let width = self.records_for(backend, slots, limits.max_texture_2d)?;
                 let rows = slots.div_ceil(width);
                 let bytes = u64::from(width) * u64::from(rows) * u64::from(RECORD_SLOT_BYTES);
                 (Some((width, rows)), bytes, BufferUsage::COPY_SRC)
             }
-            None => (
+            false => (
                 None,
                 captured_bytes,
                 BufferUsage::COPY_SRC | BufferUsage::VERTEX,
@@ -465,6 +576,108 @@ impl<B: Backend> GeometryReplay<B> {
             false,
         )?;
         let drawn = listed.checked_mul(instances).ok_or(GpuError::OutOfMemory)?;
+        if let (Some(lines), Some((width, rows)), Some([view_width, view_height])) =
+            (&self.lines, rows, viewport)
+        {
+            // Six corners a line, each its record then the coverage slot, drawn as triangles.
+            backend.slow_paths().hit(SlowPath::AntialiasedLinesAsQuads);
+            // A back end without clip depth from zero draws vertex programs converted with
+            // `CLIP_DEPTH_REWRITE`.
+            let clip_zero_one = backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DEPTH_ZERO_ONE);
+            let records = self.records.as_ref().unwrap();
+            copy_records(backend, captured, records, width, rows);
+            let corners = drawn
+                .checked_mul(LINE_INDICES / LINE_VERTICES)
+                .ok_or(GpuError::OutOfMemory)?;
+            let out_words = (self.in_slots + 1) * VEC4;
+            let out_bytes = u64::from(corners) * u64::from(out_words) * u64::from(WORD);
+            grow(
+                backend,
+                &mut self.out,
+                out_bytes,
+                BufferUsage::CAPTURE | BufferUsage::VERTEX,
+            )?;
+            let mut values = [0u32; word_at(size_of::<LineReplayValues>())];
+            let at = |offset| word_at(offset);
+            values[at(offset_of!(LineReplayValues, interpolated))] = lines.interpolated;
+            values[at(offset_of!(LineReplayValues, linear))] = lines.linear;
+            values[at(offset_of!(LineReplayValues, near_w))] =
+                f32::from(u8::from(!clip_zero_one)).to_bits();
+            values[at(offset_of!(LineReplayValues, half_width))] = (view_width / 2.0).to_bits();
+            values[at(offset_of!(LineReplayValues, half_height))] = (view_height / 2.0).to_bits();
+            values[at(offset_of!(LineReplayValues, reach_across))] =
+                crate::variant::LINE_REACH_ACROSS.to_bits();
+            values[at(offset_of!(LineReplayValues, reach_along))] =
+                crate::variant::LINE_REACH_ALONG.to_bits();
+            let bytes = words_as_bytes(&values);
+            let mut offset = [0u64];
+            let ring = backend.write_buffer_ring(
+                RingKind::Data,
+                &[&bytes],
+                limits.min_uniform_offset_alignment,
+                &mut offset,
+            )?;
+            let set = backend.create_binding_set(&[
+                BindingEntry {
+                    binding: VALUES_BINDING,
+                    stages: StageSet::VERTEX,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset: offset[0],
+                        size: bytes.len() as u64,
+                    }),
+                },
+                BindingEntry {
+                    binding: VERTICES_BINDING,
+                    stages: StageSet::VERTEX,
+                    resource: BindingResource::Texture(&records.view),
+                },
+            ])?;
+            let mut sets = [None; MAX_BINDING_SETS];
+            sets[STAGE_SET as usize] = Some(&set);
+            let out = &self.out.as_ref().unwrap().buffer;
+            backend.capture_vertices(
+                &DrawCall {
+                    program: &lines.program,
+                    blend: &self.states.blend,
+                    depth_stencil: &self.states.depth_stencil,
+                    raster: &self.states.raster,
+                    vertex_layout: &lines.no_streams,
+                    bindings: sets,
+                    vertex_buffers: &[],
+                    index: None,
+                    topology: Topology::PointList,
+                    restart: false,
+                    viewports: &[CAPTURE_VIEWPORT],
+                    scissors: &[],
+                    blend_constant: Default::default(),
+                    stencil_reference: Default::default(),
+                    immediates: &[],
+                    range: DrawRange::Vertices {
+                        first: 0,
+                        count: corners,
+                        first_instance: 0,
+                        instances: 1,
+                    },
+                },
+                &[BufferRange {
+                    buffer: out,
+                    offset: 0,
+                    size: out_bytes,
+                }],
+                false,
+            )?;
+            return Ok(Some(FinalDraw {
+                buffer: out.clone(),
+                index_offset: None,
+                topology: Topology::TriangleList,
+                count: corners,
+                tessellated: None,
+            }));
+        }
         let (Some(geometry), Some((width, rows))) = (&self.geometry, rows) else {
             if let (Some(declared), Some(targets)) = (&self.stream, &draw.stream_output) {
                 let record = Record {
@@ -489,26 +702,7 @@ impl<B: Backend> GeometryReplay<B> {
             }));
         };
         let records = self.records.as_ref().unwrap();
-        backend.copy_buffer_to_texture(
-            &CopyBufferTexture {
-                buffer: captured,
-                offset: 0,
-                row_pitch: width * RECORD_SLOT_BYTES,
-                rows_per_layer: rows,
-            },
-            &TextureRegion {
-                texture: &records.texture,
-                mip: 0,
-                layer: 0,
-                origin: Origin::default(),
-                stencil: false,
-            },
-            Extent {
-                width,
-                height: rows,
-                depth_or_layers: 1,
-            },
-        );
+        copy_records(backend, captured, records, width, rows);
 
         // The replay: every corner of every output slot of every geometry invocation, per API
         // instance; of several streams, each later one for its stream output, then stream 0, drawn.
@@ -690,6 +884,10 @@ impl<B: Backend> GeometryReplay<B> {
             backend.destroy(Object::Program(g.program));
             backend.destroy(Object::VertexLayout(g.no_streams));
         }
+        if let Some(l) = self.lines {
+            backend.destroy(Object::Program(l.program));
+            backend.destroy(Object::VertexLayout(l.no_streams));
+        }
         for owned in [self.captured, self.out].into_iter().flatten() {
             backend.destroy(Object::Buffer(owned.buffer));
         }
@@ -698,6 +896,37 @@ impl<B: Backend> GeometryReplay<B> {
             backend.destroy(Object::Texture(r.texture));
         }
     }
+}
+
+/// Copies `rows` rows of `width` record slots from the vertex stage's capture into the records'
+/// texture.
+fn copy_records<B: Backend>(
+    backend: &mut B,
+    captured: &B::Buffer,
+    records: &Records<B>,
+    width: u32,
+    rows: u32,
+) {
+    backend.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: captured,
+            offset: 0,
+            row_pitch: width * RECORD_SLOT_BYTES,
+            rows_per_layer: rows,
+        },
+        &TextureRegion {
+            texture: &records.texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width,
+            height: rows,
+            depth_or_layers: 1,
+        },
+    );
 }
 
 /// A captured vertex's words, and whether its last says whether the vertex's primitive is whole

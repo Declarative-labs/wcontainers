@@ -284,13 +284,13 @@ const LINE_RECORDS_BINDING: u32 = 1;
 const LINE_CORNERS_BINDING: u32 = 2;
 /// Corners of a line's rectangle, and the indices of its two triangles.
 const LINE_CORNERS: u32 = 4;
-const LINE_INDICES: u32 = 2 * TRIANGLE_VERTICES;
+pub(super) const LINE_INDICES: u32 = 2 * TRIANGLE_VERTICES;
 /// The vertices of a line.
 pub(super) const LINE_VERTICES: u32 = 2;
 /// A draw on the line route of another topology than lines.
-const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
+pub(super) const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
 /// The line route run without the viewport's size, or another route with it.
-const LINE_VIEWPORT: &str = "the viewport's size, given to the line route alone";
+pub(super) const LINE_VIEWPORT: &str = "the viewport's size, given to the line route alone";
 
 /// The primitive program and what its copies hold.
 struct Numbered<B: Backend> {
@@ -467,7 +467,7 @@ const STREAM_OUT_BINDING: u32 = 3;
 const STREAM_LIST_BINDING: u32 = STREAM_OUT_BINDING + STREAM_BUFFERS as u32;
 
 /// The word `offset` bytes into a block of words.
-const fn word_at(offset: usize) -> usize {
+pub(super) const fn word_at(offset: usize) -> usize {
     offset / size_of::<u32>()
 }
 
@@ -634,7 +634,7 @@ impl<B: Backend> Stages<B> {
         pixel: &wcontainers_gpu::VariantKey,
     ) -> Result<Self, StageError> {
         let programs = super::line_programs(vertex, pixel)?;
-        let shader = backend.create_shader(&programs.compute)?;
+        let shader = backend.create_shader(&programs.records)?;
         let vertex_program = backend.create_program(&Program::Compute(&shader))?;
         let shader = backend.create_shader(&super::line_program()?)?;
         let program = backend.create_program(&Program::Compute(&shader))?;

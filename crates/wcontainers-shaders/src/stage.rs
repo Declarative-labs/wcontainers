@@ -16,11 +16,12 @@
 use crate::ConvertError;
 use crate::build::{self, Builder, Expr};
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use naga::{
     AddressSpace, BinaryOperator, Binding, BuiltIn, FunctionArgument, FunctionResult, Handle,
     Module, ResourceBinding, Scalar, ScalarKind, Span, StorageAccess, StructMember, Type,
-    TypeInner,
+    TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
     Interpolation, Reflection, ScalarKind as ValueKind, VariantFlags, VariantKey,
@@ -303,11 +304,7 @@ pub(crate) fn streamed_programs(vertex: &crate::Converted) -> Result<StreamedPro
         return Err(ConvertError::Unsupported(STREAMED_CULL_DISTANCE));
     }
     let capture = capture_program_for(vertex, &drawn.locations, drawn.clip, STREAMED_RECORDS)?;
-    let passed: Vec<(ScalarKind, Binding)> = drawn
-        .passed
-        .iter()
-        .map(|(_, k, b)| (*k, b.clone()))
-        .collect();
+    let passed = drawn.passthrough_values();
     let passthrough = passthrough_of(&passed, false, drawn.clip, None, None)?;
     let mut key = blake3::Hasher::new();
     key.update(&source.key).update(STREAMED_PASSTHROUGH);
@@ -702,11 +699,7 @@ pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
         &drawn.locations,
         CULL_RECORDS,
     )?;
-    let slots: Vec<(ScalarKind, Binding)> = drawn
-        .passed
-        .iter()
-        .map(|(_, k, b)| (*k, b.clone()))
-        .collect();
+    let slots = drawn.passthrough_values();
     let passthrough = passthrough_of(&slots, false, drawn.clip, None, None)?;
     let mut key = blake3::Hasher::new();
     key.update(&source.key).update(CULL_PASSTHROUGH);
@@ -733,10 +726,21 @@ fn vertex_module(module: Module, key: blake3::Hasher) -> Result<wcontainers_gpu:
 /// A vertex program's outputs as the stage helper's records hold them when it draws them itself: the
 /// located values (location, kind, binding) in location order, and its clip and cull distances.
 struct DrawnOutputs {
-    passed: Vec<(u32, ScalarKind, Binding)>,
+    /// Each location output's location, kind, width (`None` a scalar) and binding.
+    passed: Vec<(u32, ScalarKind, Option<VectorSize>, Binding)>,
     locations: Vec<u32>,
     clip: u32,
     cull: u32,
+}
+
+impl DrawnOutputs {
+    /// The values a pass-through writes, each as the vertex program declares it.
+    fn passthrough_values(&self) -> Vec<(ScalarKind, Option<VectorSize>, Binding)> {
+        self.passed
+            .iter()
+            .map(|(_, k, size, b)| (*k, *size, b.clone()))
+            .collect()
+    }
 }
 
 fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs> {
@@ -759,14 +763,16 @@ fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs>
                 .collect(),
             _ => Vec::new(),
         };
-    let mut passed: Vec<(u32, ScalarKind, Binding)> = Vec::new();
+    let mut passed: Vec<(u32, ScalarKind, Option<VectorSize>, Binding)> = Vec::new();
     let (mut clip, mut cull) = (0, 0);
     for (ty, binding) in outputs {
         let inner = &module.types[ty].inner;
         match (&binding, inner) {
-            (Binding::Location { location, .. }, TypeInner::Vector { scalar, .. })
-            | (Binding::Location { location, .. }, TypeInner::Scalar(scalar)) => {
-                passed.push((*location, scalar.kind, binding.clone()));
+            (Binding::Location { location, .. }, TypeInner::Vector { scalar, size }) => {
+                passed.push((*location, scalar.kind, Some(*size), binding.clone()));
+            }
+            (Binding::Location { location, .. }, TypeInner::Scalar(scalar)) => {
+                passed.push((*location, scalar.kind, None, binding.clone()));
             }
             (
                 Binding::BuiltIn(b),
@@ -783,8 +789,8 @@ fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs>
             _ => return Err(ConvertError::Unsupported(VERTEX_OUTPUT_FOR_GEOMETRY)),
         }
     }
-    passed.sort_unstable_by_key(|(l, _, _)| *l);
-    let locations: Vec<u32> = passed.iter().map(|(l, _, _)| *l).collect();
+    passed.sort_unstable_by_key(|(l, ..)| *l);
+    let locations: Vec<u32> = passed.iter().map(|(l, ..)| *l).collect();
     Ok(DrawnOutputs {
         passed,
         locations,
@@ -796,11 +802,12 @@ fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs>
 /// A vertex program's lines drawn antialiased through the stage helper
 /// ([`wcontainers_gpu::SlowPath::AntialiasedLinesAsQuads`]).
 pub struct LinePrograms {
-    /// Its compute form, writing records of its position, each output location (`locations`) and its
-    /// clip distances' slots.
-    pub compute: wcontainers_gpu::ShaderModule,
-    /// The vertex program drawing the rectangles' corners: a record as the compute form writes it,
-    /// then the coverage slot, passed on at the pixel program's [`line_coverage_location`].
+    /// The vertex stage writing records of its position, each output location (`locations`) and its
+    /// clip distances' slots: its compute form ([`line_programs`]), or the vertex program whose
+    /// output is captured ([`line_capture_programs`]).
+    pub records: wcontainers_gpu::ShaderModule,
+    /// The vertex program drawing the rectangles' corners: a record as `records` writes it, then the
+    /// coverage slot, passed on at the pixel program's [`line_coverage_location`].
     pub passthrough: wcontainers_gpu::ShaderModule,
     pub locations: Vec<u32>,
     pub clip_distances: u32,
@@ -820,6 +827,7 @@ pub(crate) mod coverage {
 
 /// What [`LinePrograms`] are, in their keys.
 const LINE_RECORDS: &[u8] = b"line records";
+const LINE_CAPTURED: &[u8] = b"line captured records";
 const LINE_PASSTHROUGH: &[u8] = b"line pass-through";
 /// The refusals of the line route by name: cull distances, and more record slots than its masks hold.
 const LINE_CULL_DISTANCE: &str = "AntialiasedLinesCullDistance";
@@ -836,6 +844,35 @@ pub fn line_coverage_location(pixel: &VariantKey) -> u32 {
 /// rewrite its key made reaches the pixel program as it would from the vertex program.
 pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<LinePrograms> {
     let source = &vertex.modules[0];
+    line_drawing(source, pixel, |drawn| {
+        compute_module(
+            source,
+            vertex_as_compute(&source.module, &drawn.locations, true)?,
+            &drawn.locations,
+            LINE_RECORDS,
+        )
+    })
+}
+
+/// [`line_programs`] for a back end without compute ([`replay::GeometryReplay::antialiased_lines`]):
+/// `vertex` converted with its inputs as drawn, its records written as flat four-word values from
+/// location 0 for capture.
+pub fn line_capture_programs(
+    vertex: &crate::Converted,
+    pixel: &VariantKey,
+) -> Result<LinePrograms> {
+    line_drawing(&vertex.modules[0], pixel, |drawn| {
+        capture_program_for(vertex, &drawn.locations, drawn.clip, LINE_CAPTURED)
+    })
+}
+
+/// [`line_programs`] of `source` with `records` making the vertex stage's program writing the
+/// records.
+fn line_drawing(
+    source: &wcontainers_gpu::ShaderModule,
+    pixel: &VariantKey,
+    records: impl FnOnce(&DrawnOutputs) -> Result<wcontainers_gpu::ShaderModule>,
+) -> Result<LinePrograms> {
     let drawn = drawn_outputs(source)?;
     if drawn.cull != 0 {
         return Err(ConvertError::Unsupported(LINE_CULL_DISTANCE));
@@ -844,8 +881,9 @@ pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<Li
     if slots > u32::BITS {
         return Err(ConvertError::Unsupported(LINE_SLOTS));
     }
+    let records = records(&drawn)?;
     let (mut interpolated, mut linear) = (0u32, 0u32);
-    for (i, (_, kind, binding)) in drawn.passed.iter().enumerate() {
+    for (i, (_, kind, _, binding)) in drawn.passed.iter().enumerate() {
         let Binding::Location { interpolation, .. } = binding else {
             continue;
         };
@@ -864,18 +902,8 @@ pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<Li
     for k in drawn.passed.len() as u32..slots {
         interpolated |= 1 << k;
     }
-    let compute = compute_module(
-        source,
-        vertex_as_compute(&source.module, &drawn.locations, true)?,
-        &drawn.locations,
-        LINE_RECORDS,
-    )?;
     let coverage = line_coverage_location(pixel);
-    let passed: Vec<(ScalarKind, Binding)> = drawn
-        .passed
-        .iter()
-        .map(|(_, k, b)| (*k, b.clone()))
-        .collect();
+    let passed = drawn.passthrough_values();
     let passthrough = passthrough_of(
         &passed,
         false,
@@ -888,7 +916,7 @@ pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<Li
         .update(LINE_PASSTHROUGH)
         .update(&coverage.to_le_bytes());
     Ok(LinePrograms {
-        compute,
+        records,
         passthrough: vertex_module(passthrough, key)?,
         locations: drawn.locations,
         clip_distances: drawn.clip,
@@ -941,11 +969,7 @@ pub fn primitive_programs(
         PRIMITIVE_RECORDS,
     )?;
     let at = primitive_id_location(pixel);
-    let passed: Vec<(ScalarKind, Binding)> = drawn
-        .passed
-        .iter()
-        .map(|(_, k, b)| (*k, b.clone()))
-        .collect();
+    let passed = drawn.passthrough_values();
     let passthrough = passthrough_of(
         &passed,
         false,
@@ -999,6 +1023,39 @@ pub fn line_program() -> Result<wcontainers_gpu::ShaderModule> {
         module,
         entry_point: crate::ENTRY_POINT.into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(text.as_bytes()).as_bytes(),
+    })
+}
+
+/// The line replay program's body: one invocation per corner of each line's two triangles, its
+/// record for capture.
+const LINE_REPLAY_PROGRAM: &str = include_str!("stage/line_replay.wgsl");
+
+/// The line replay program ([`LINE_REPLAY_PROGRAM`]) writing corner records of `slots` four-word
+/// slots, which [`replay::GeometryReplay::antialiased_lines`] captures after the vertex stage.
+pub(crate) fn line_replay_program(slots: u32) -> Result<wcontainers_gpu::ShaderModule> {
+    let members: String = (0..slots)
+        .map(|i| format!("    @location({i}) @interpolate(flat) s{i}: vec4<u32>,\n"))
+        .collect();
+    let written: String = (0..slots)
+        .map(|i| format!("    out.s{i} = c[{i}];\n"))
+        .collect();
+    let text = format!(
+        "const SLOTS: u32 = {slots}u;\n\
+         struct Corner {{\n    @builtin(position) position: vec4<f32>,\n{members}}}\n\
+         {LINE_REPLAY_PROGRAM}\n\
+         @vertex fn {entry}(@builtin(vertex_index) v: u32) -> Corner {{\n    \
+         let c = corner(v);\n    var out: Corner;\n    \
+         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);\n{written}    return out;\n}}\n",
+        entry = crate::ENTRY_POINT,
+    );
+    let module = naga::front::wgsl::parse_str(&text)
+        .map_err(|e| ConvertError::Malformed(format!("the line replay program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Vertex,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
@@ -1556,7 +1613,7 @@ pub(crate) fn named_layer_location(variant: &VariantKey) -> u32 {
 /// it passes the named layer at, a vertex naming a layer at or past [`PASSTHROUGH_LAYER_COUNT`] is
 /// kept in layer 0's run.
 pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> Result<Module> {
-    let passed: Vec<(ScalarKind, Binding)> = locations(&reflection.outputs)
+    let passed: Vec<(ScalarKind, Option<VectorSize>, Binding)> = locations(&reflection.outputs)
         .into_iter()
         .map(|loc| {
             // The drawn stream's value where several streams place one there.
@@ -1575,7 +1632,11 @@ pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> 
                 ScalarKind::Float => value.interpolation,
                 _ => Interpolation::Flat,
             };
-            (kind, location(loc, Some(interpolation)))
+            (
+                kind,
+                Some(VectorSize::Quad),
+                location(loc, Some(interpolation)),
+            )
         })
         .collect();
     let selects = selects(reflection);
@@ -1589,11 +1650,11 @@ pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> 
 }
 
 /// The pass-through vertex program reading records of a position slot, a slot for each of `passed`
-/// (written with its kind and binding), the layer and viewport slot when `selects`, then the slots of
+/// (written with its kind, its width's first components and its binding), the layer and viewport slot when `selects`, then the slots of
 /// `distances` clip distances, and the named layer as a flat value at `named_layer`; then the `extra`
 /// slot, passed on at its location.
 fn passthrough_of(
-    passed: &[(ScalarKind, Binding)],
+    passed: &[(ScalarKind, Option<VectorSize>, Binding)],
     selects: bool,
     distances: u32,
     named_layer: Option<u32>,
@@ -1611,24 +1672,43 @@ fn passthrough_of(
             binding: Some(location(slot as u32, None)),
         });
         let raw = b.argument(slot as u32);
-        let (kind, binding) = match slot {
+        let (kind, size, binding) = match slot {
             0 => (
                 ScalarKind::Float,
+                Some(VectorSize::Quad),
                 Binding::BuiltIn(BuiltIn::Position { invariant: false }),
             ),
             _ => passed[slot - 1].clone(),
         };
-        let ty = build::vec4(
-            &mut module,
-            Scalar {
-                kind,
-                width: Scalar::U32.width,
-            },
-        );
+        let scalar = Scalar {
+            kind,
+            width: Scalar::U32.width,
+        };
+        let inner = match size {
+            Some(size) => TypeInner::Vector { size, scalar },
+            None => TypeInner::Scalar(scalar),
+        };
+        let ty = module
+            .types
+            .insert(Type { name: None, inner }, Span::UNDEFINED);
         let v = if kind == ScalarKind::Uint {
             raw
         } else {
             b.bitcast(raw, kind)
+        };
+        let v = match size {
+            Some(VectorSize::Quad) => v,
+            Some(size) => b.expr(naga::Expression::Swizzle {
+                size,
+                vector: v,
+                pattern: [
+                    naga::SwizzleComponent::X,
+                    naga::SwizzleComponent::Y,
+                    naga::SwizzleComponent::Z,
+                    naga::SwizzleComponent::W,
+                ],
+            }),
+            None => b.field(v, 0),
         };
         members.push(StructMember {
             name: Some(format!("v{slot}")),
