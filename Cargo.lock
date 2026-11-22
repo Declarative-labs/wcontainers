@@ -4333,6 +4333,8 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
@@ -4617,6 +4619,8 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-kernel-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-system",
@@ -4708,6 +4712,15 @@ dependencies = [
 [[package]]
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
+
+[[package]]
+name = "wcontainers-processor-architecture-arm64"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "bitflags 2.13.2",
+ "wcontainers-processor-architecture",
+]
 
 [[package]]
 name = "wcontainers-processor-architecture-conformance"
