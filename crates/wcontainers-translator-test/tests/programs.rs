@@ -8,9 +8,9 @@ use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Position, Ran, boundaries, build, build_for, build_with, native, native_with_stop, ran,
-    reachable_memory, ready_on, ready_with, run_container, translated, translated_for,
-    translated_stopping_everywhere,
+    Blob, Library, Position, Ran, boundaries, build, build_for, build_with, native,
+    native_with_stop, ran, reachable_memory, ready_on, ready_with, run_container, translated,
+    translated_for, translated_stopping_everywhere,
 };
 use wcontainers_translator_test::reference::{DOCKER_MOUNT, IMAGE};
 use wcontainers_translator_test::runner::Machine;
@@ -1073,9 +1073,8 @@ fn benchmark_set_for_x86_64_v3_runs_only_when_told_x86_64() {
             "bench",
             optimisation,
             Library::None,
-            &[],
             Position::Fixed,
-            Some(V3_CPU),
+            V3_CPU,
         );
         blob.offer = Some(v3.key());
         let theirs = native::<X86_64>(&blob);

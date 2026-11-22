@@ -71,12 +71,8 @@ pub extern "C" fn translate(
     offered: u32,
     offer: u64,
 ) -> i32 {
-    let offer = match offered {
-        1 => match G::offer_from_key(offer) {
-            Some(offer) => offer,
-            None => return -1,
-        },
-        _ => <G as Guest>::Offer::default(),
+    let Some(offer) = told::<G>(offered, offer) else {
+        return -1;
     };
     let look_ahead = LookAhead::from_code(look_ahead, bound);
     let omit = Omit::from_bits(omit);
@@ -108,6 +104,14 @@ pub extern "C" fn translate(
             answer(first)
         }
         Err(_) => -1,
+    }
+}
+
+/// The offer whose key is `key` when `offered` is 1, else the default list; `None` for a key no offer has.
+fn told<C: Guest>(offered: u32, key: u64) -> Option<C::Offer> {
+    match offered {
+        1 => C::offer_from_key(key),
+        _ => Some(C::Offer::default()),
     }
 }
 

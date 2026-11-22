@@ -256,6 +256,17 @@ pub(crate) const NO_BUILD_ID: &str = "-Wl,--build-id=none";
 pub(crate) const LINK_SCRIPT: &str = "-Wl,-T,";
 /// The compiler's flag that names the file it writes.
 pub const OUTPUT_FLAG: &str = "-o";
+/// The compiler's flag that adds an include folder, joined to its path.
+pub(crate) const INCLUDE_FLAG: &str = "-I";
+/// The compiler's flags for a program without a C library: no hosted environment, no start files or libraries.
+const FREESTANDING_FLAGS: [&str; 2] = ["-ffreestanding", "-nostdlib"];
+/// The compiler's flags that keep such a program from needing the library: no stack protector, and signed
+/// arithmetic that wraps.
+const NO_LIBRARY_NEEDED_FLAGS: [&str; 2] = ["-fno-stack-protector", "-fwrapv"];
+/// What joins a blob's name to each of its definitions.
+const NAME_SEPARATOR: char = '-';
+/// What joins a definition's name to its value.
+const DEFINITION_ASSIGNMENT: char = '=';
 /// The extension of a linked program.
 pub(crate) const ELF_EXTENSION: &str = "elf";
 
@@ -300,31 +311,55 @@ pub fn build_with<G: GuestTest>(
     defines: &[&str],
     position: Position,
 ) -> Blob {
-    build_for::<G>(name, optimisation, library, defines, position, None)
+    let mut stem = format!("{name}{optimisation}{}", position.suffix());
+    for define in defines {
+        stem.push(NAME_SEPARATOR);
+        stem.push_str(&define.replace(DEFINITION_ASSIGNMENT, ""));
+    }
+    let defines: Vec<String> = defines.iter().map(|d| format!("-D{d}")).collect();
+    build_flagged::<G>(
+        (name, stem),
+        optimisation,
+        library,
+        &defines,
+        position,
+        None,
+    )
 }
 
-/// [`build_with`] for the processor named by a compiler flag, such as x86's [`crate::guest::x86_64::V3_CPU`],
-/// whose instructions the compiler may then use anywhere (a program without a C library too); `None` builds for
-/// the guest's baseline, a program without a C library for its general registers only.
+/// [`build`] for the processor named by a compiler flag, such as x86's [`crate::guest::x86_64::V3_CPU`], whose
+/// instructions the compiler may then use anywhere, in a program without a C library too.
 pub fn build_for<G: GuestTest>(
     name: &str,
     optimisation: &str,
     library: Library,
-    defines: &[&str],
+    position: Position,
+    processor: &str,
+) -> Blob {
+    let stem = format!("{name}{optimisation}{}{processor}", position.suffix());
+    build_flagged::<G>(
+        (name, stem),
+        optimisation,
+        library,
+        &[],
+        position,
+        Some(processor),
+    )
+}
+
+/// Build the program `name` into the blob named `stem`, with these flags of preprocessor definitions, for the
+/// processor named by a compiler flag or, when `None`, the guest's baseline (a program without a C library for
+/// its general registers only).
+fn build_flagged<G: GuestTest>(
+    (name, stem): (&str, String),
+    optimisation: &str,
+    library: Library,
+    defines: &[String],
     position: Position,
     processor: Option<&str>,
 ) -> Blob {
     let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
-    let mut stem = format!("{name}{optimisation}{}", position.suffix());
-    if let Some(processor) = processor {
-        stem.push_str(processor);
-    }
-    for define in defines {
-        stem.push('-');
-        stem.push_str(&define.replace('=', ""));
-    }
-    let defines: Vec<String> = defines.iter().map(|d| format!("-D{d}")).collect();
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
     let elf = out.join(&own).with_added_extension(ELF_EXTENSION);
@@ -333,12 +368,15 @@ pub fn build_for<G: GuestTest>(
     let script = source_directory().join(FLAT_SCRIPT);
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if language == Language::Rust {
-        assert!(processor.is_none(), "a Rust program is built for the baseline");
+        assert!(
+            processor.is_none(),
+            "a Rust program is built for the baseline"
+        );
         rust::<G>(&source, &elf, &script, optimisation, position);
         return flatten(&elf, &own, stem);
     }
     let script = [LINK_SCRIPT, &text(&script)].concat();
-    let include = format!("-I{}", text(&guest_directory::<G>()));
+    let include = [INCLUDE_FLAG, &text(&guest_directory::<G>())].concat();
     let driver = if language == Language::Cpp {
         CPP_DRIVER
     } else {
@@ -351,11 +389,11 @@ pub fn build_for<G: GuestTest>(
         arguments.push(LINK_ONLY_WHAT_IS_REACHED);
     }
     if library == Library::None {
-        arguments.extend(["-ffreestanding", "-nostdlib"]);
+        arguments.extend(FREESTANDING_FLAGS);
         if processor.is_none() {
             arguments.extend(G::GENERAL_ONLY);
         }
-        arguments.extend(["-fno-stack-protector", "-fwrapv"]);
+        arguments.extend(NO_LIBRARY_NEEDED_FLAGS);
     }
     arguments.extend(processor);
     arguments.extend(defines.iter().map(String::as_str));

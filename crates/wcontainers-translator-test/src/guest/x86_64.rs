@@ -2792,6 +2792,9 @@ fn table_cases() -> Vec<Designed> {
     cases
 }
 
+/// The name of [`gather_cases`]' case.
+pub const GATHER_UNDER_THE_TRAP_FLAG: &str = "a gather faulting part way with the trap flag set";
+
 /// A gather that faults part way with the trap flag set (plan 5.1's known difference): the reference first
 /// stops with a single step after the elements before the faulting one, and faults when run again; the
 /// translated gather faults at once, with the same elements gathered and their mask elements clear.
@@ -2823,7 +2826,7 @@ fn gather_cases() -> Vec<Designed> {
     state[RFLAGS] |= u128::from(wcontainers_x86::TF);
     let cleared = u128::MAX << u32::BITS;
     vec![Designed {
-        name: "a gather faulting part way with the trap flag set",
+        name: GATHER_UNDER_THE_TRAP_FLAG,
         stop: Some(Stop::MemoryFault(last + dword)),
         fields: vec![(RIP, CODE.into()), (XMM + mask as usize, cleared)],
         case,

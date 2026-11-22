@@ -4,9 +4,9 @@
 
 use crate::guest::GuestTest;
 use crate::programs::{
-    Blob, C_DRIVER, ELF_EXTENSION, FLAT_SCRIPT, LINK_SCRIPT, NO_BUILD_ID, NO_SANITIZERS,
-    OUTPUT_FLAG, Ran, SIGNALLED, ZIG_TARGET_FLAG, flatten, native, native_program, out_directory,
-    source_directory, unique, zig,
+    Blob, C_DRIVER, ELF_EXTENSION, FLAT_SCRIPT, INCLUDE_FLAG, LINK_SCRIPT, NO_BUILD_ID,
+    NO_SANITIZERS, OUTPUT_FLAG, Ran, SIGNALLED, ZIG_TARGET_FLAG, flatten, native, native_program,
+    out_directory, source_directory, unique, zig,
 };
 use crate::reference::{self, DOCKER, REFERENCE_CONTAINER, container_name, mount, mount_writable};
 use linux_raw_sys::general::SIGALRM;
@@ -22,8 +22,6 @@ const SOURCE_MOUNT: &str = "/s";
 const INCLUDE_MOUNT: &str = "/i";
 const SCRIPT_MOUNT: &str = "/l";
 const OUT_MOUNT: &str = "/o";
-/// The compiler's flags that add an include folder and give the link script, each joined to its value.
-const INCLUDE_FLAG: &str = "-I";
 /// The compiler's flag that turns warnings off (Csmith's programs set many off).
 const NO_WARNINGS: &str = "-w";
 /// gcc's command, in its image.
