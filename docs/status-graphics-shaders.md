@@ -69,6 +69,15 @@ tests. Not drawn here (no GPU run of `every_vertex_format_reads_its_element`: th
 Not done: typed buffers of the format (variant/texel.rs `vertex_format` has no arm for
 `Format::Bgrx8Unorm`, so such a view is still refused); that mapping is shared with targets in the
 shader and storage clears, so it waits on a drawn typed-buffer test of the X byte.
+Asked again by the Direct3D 11 track (G4h run 3, 2026-11-22): the drawn test exists and passes with
+the arm. The one line `F::Bgrx8Unorm => V::Bgrx8Unorm,` in variant/texel.rs `vertex_format`
+(pyro-parked/wcontainers-scratch/graphics-direct3d-11/g4h/bgrx8-shaders-texel.patch), at a trial
+commit of the tip on the RTX 3080: the front's `b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them`
+(own_cases `bgrx`: a pixel shader loads a `B8G8R8X8_UNORM` typed buffer's element whose X byte is
+0x20, and reads it as real Direct3D does, the fourth component 1) and Wine's test_buffer_srv (234
+checks as real Direct3D) pass. Targets and storage of the format are not served through it by the
+front (it claims no typed storage of `B8G8R8X8_UNORM`, as the RTX 3080 does not). Please commit it
+(it is the last of `BUFFER` for the format, required from 10_0), or say the Direct3D 11 track may.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
