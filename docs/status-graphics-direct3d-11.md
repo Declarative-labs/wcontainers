@@ -6,18 +6,46 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 3 (2026-11-22).
+(2026-11-21), G4h runs 1 to 4 (2026-11-22).
 
 ## Where things stand
 
 G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of
-2026-11-22) is in progress. Every 11_0 ability is now built and tested on the RTX 3080, but two
-pieces sit in crates of other tracks and are not committed: the extended-range swap chains and the
-`B8G8R8X8_UNORM` element row, both in the infrastructure crate (the Direct3D 12 track's), as
-tested patches asked in its status file (the shaders crate's typed buffer arm of the format, also
-asked, was committed by the shaders track in 1958e97b). This track's side, the device taking its
-level from Microsoft's tables, is a patch that lands with them (What comes next, item 1). Until then the device still reports 11_0
-with formats 88 and 89 short.
+2026-11-22) is in progress. The device now reports the highest level whose every format
+requirement of Microsoft's tables it meets (4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on
+Direct3D 12) is 11_0 with every requirement met and tested. Left: the WebGL 2 build now meets
+9_3 only, because five formats lack what 10_0 requires (What comes next, item 1), so G4's WebGL 2
+10_0 cases fail until they are built.
+
+G4h run 4 (2026-11-22, from about 11:25 Pacific):
+- The two infrastructure-crate pieces are committed (f9ecca97 extended-range swap chains,
+  c3879851 the `B8G8R8X8_UNORM` element row), by this track: the Direct3D 12 track, which owns
+  the crate, has not run since 2026-11-20, and the orchestrator's ruling says to build the missing
+  abilities in whichever crate owns them (Departures; noted in its status file).
+- The device's level from the tables (4c9d43b2, the run-3 patch): `Device::new` takes the highest
+  level whose `unmet_format_requirements` is empty, warning for each format short at each level
+  passed over. The B8G8R8X8, extended-range and requirement tests are no longer ignored and pass
+  on the RTX 3080.
+- A format of which no multisampled texture is made because the device reports no multisampling
+  (the WebGL 2 build: no route for a partial sample mask) is now given the multisample loads and
+  resolves Microsoft's tables require of it, as the run-2 rule already gave formats never drawn
+  into (Departures). The 10_0 table requires those bits without requiring any sample count. This
+  took the WebGL 2 build's 10_0 shortfall from 30 formats to 5.
+- The feature-off parts of three library tests are split into their own tests and marked known
+  failures. The tests are `float32_textures_filtered_in_the_program_as_direct3d_reads_them`,
+  `normalised_targets_through_integer_twins_as_direct3d_draws_them` and
+  `comparisons_through_integer_twins_of_colour_views_as_direct3d_does`; `clear_view_without_texture_formats_tier1`
+  and both `typed_storage_stores_without_texture_formats_tier1` tests are marked whole. Each asks
+  for an 11_0 device with WebGPU features off, which truthfully meets 9_3 only (Gap list). The
+  parts that run with every feature on still run and pass.
+- Results at 4c9d43b2's tree (trial b318d907, desktop i9-9900K with the RTX 3080, other tracks'
+  jobs queued; logs/g4h4-t2-*): lint of the infrastructure crate, front and library, both builds,
+  clean; front 60, unit 6, cache 1 and the infrastructure crate's 11 pass (rented x86 machine);
+  library com 15 (1 ignored) and programs 61 (8 ignored) pass; Wine's test_vertex_formats 100
+  checks as real Direct3D and test_buffer_srv pass; test_format_support (4223 checks, real
+  4667) and test_swapchain_formats (126, real 146) fail no check, each skipping real Direct3D's
+  11_1 device (absent, Gap list); d3d10core's two pass. The WebGL 2 build's 10_0 cases: 0 of 6
+  pass, each refusing its 10_0 device.
 
 G4h run 3 (2026-11-22, from about 10:20 Pacific):
 - The shaders track committed `VertexFormat::Bgrx8Unorm` with every crate's arm (02049aeb, this
@@ -200,21 +228,9 @@ Waiting on the joint step after G4 and G5 (orchestrator's ruling, 2026-11-20):
   (d3d11.dll, dxgi.dll, d3d10core.dll), the exports of Direct3D 10 and 11, and the WebGL 2 build of
   the same source are built and tested.
 
-Failures of the reported 11_0 against Microsoft's format table, built and tested, waiting on
-other tracks to commit them in their crates (G4h run 3, each a patch in scratch g4h/):
-- `R10G10B10_XR_BIAS_A2_UNORM`'s display and back buffer casts: xr-infrastructure.patch for the
-  infrastructure crate (`wcontainers-directx-graphics-infrastructure`, the Direct3D 12 track's;
-  asked in its status file, 0b8dfd95). test_format_support ("Format 0x59 - display not
-  supported", 1 check) and test_swapchain_formats (1 check) fail no check with it.
-- `B8G8R8X8_UNORM` vertex elements and typed buffers: the interface's variant is committed
-  (02049aeb); the infrastructure crate's row (bgrx8-infrastructure-row.patch, asked with the
-  above); the shaders crate's texel arm is committed (1958e97b). Wine test_vertex_formats runs 98 checks of real Direct3D's 100 without them, 100
-  with them.
-- `Device::new` taking the level from the tables, and the tests that then change
-  (front-truthful-level.patch, this track's): applied with the two above.
-
-What the truthful level then costs, measured at the trial commit (logs/g4h3-t6-*), each the
-highest level whose every requirement is met, on that back end only:
+The reported level is the highest whose every requirement of Microsoft's format tables is met
+(G4h run 4, 4c9d43b2); the RTX 3080 device meets 11_0. What that costs, measured (logs/g4h3-t6-*
+and logs/g4h4-t2-*), each the highest level met, on that back end only:
 - WebGPU in a browser: at most 10_1 ever. 11_0 requires 8-sample targets of most formats, and
   WebGPU's `GPUTextureDescriptor.sampleCount` takes 1 or 4 only; drawing 8 samples another way
   (two 4-sample passes at offset positions) would change every draw, sample mask and per-sample
@@ -224,16 +240,26 @@ highest level whose every requirement is met, on that back end only:
   resolves none of them) and of the normalised formats held as integer twins, which are not
   multisampled (plan 4.12) nor blended (`BlendInShader` not built for them). A resolve by a
   program averaging the samples would give the 32-bit float ones; not built.
-- The WebGL 2 build: 9_3 (it reports no multisampling since main run 3, so no resolves, and lacks
-  `A8_UNORM` targets and some 16-bit packed and `R8G8_B8G8` textures; the WebGL track's item).
-  Its 10_0 cases on G4's bar then fail by refusing a 10_0 device (6 of 7 at the trial commit).
-- The library tests that run cases on an 11_0 device with features off then fail by refusing that
-  device, until the abilities above are built for such back ends:
-  clear_view_without_texture_formats_tier1, comparisons_through_colour_views (its 16-bit norm
-  part), float32_textures_gathered_sampled_and_their_mips_generated (its unfiltered part),
-  normalised_targets_drawn_read_and_their_mips_generated (its untiered parts) and both
-  typed_storage_stores_without_texture_formats_tier1 tests. The three format support comparisons
-  without features instead check that no device above 9_3 is made and compare at 9_3.
+- The WebGL 2 build: 9_3, NOT MET for G4's bar. At 10_0 it lacks five formats (logs/g4h4-t2-webgl.log):
+  `A8_UNORM` (65: textures, render target, blending, mips and their generation, CPU access,
+  resolve, comparison sampling), `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (68, 69: 1D, 2D, 3D and
+  cube textures, loads, samples, mips, CPU access), `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM` (86,
+  115: the same and resolve). The back end (crates/wcontainers-gpu-webgl, `format::gl_format`)
+  holds none of them. WebGL 2 lacks none of them outright, so each can be built: the two 16-bit
+  packed ones natively as GL ES 3.0's `RGB5_A1` and `RGBA4` with their fields reordered on upload
+  and read back as `B5G6R5` is; `A8_UNORM` and the two-pixel formats in `RGBA8`, widened on upload
+  and packed on read back as the WebGPU back end holds them, `A8_UNORM` drawn with only alpha
+  written and cleared with colour zero (the per-target mask that keeps BGRX's alpha, widened to
+  any channels). Its 10_0 cases on G4's bar fail until then by refusing a 10_0 device (0 of 6
+  pass: the five `_at_10_0_` tests, `no_multisampling_without_a_sample_mask_route_at_10_0` and the
+  NV12 case).
+- The library tests that run cases on an 11_0 device with WebGPU features off fail by refusing
+  that device, and are marked known failures (G4h run 4): clear_view_without_texture_formats_tier1,
+  comparisons_through_integer_twins_of_colour_views,
+  float32_textures_filtered_in_the_program, normalised_targets_through_integer_twins and both
+  typed_storage_stores_without_texture_formats_tier1 tests. Their routes serve no level a browser
+  without those features meets. The three format support comparisons without features check that
+  no device above 9_3 is made and compare at 9_3.
 - Blending into the 8-bit signed and 16-bit normalised formats where the back end does not draw
   into them is part of the second item (`BlendInShader`, the shaders crate's `combine`, Asked).
 
@@ -462,30 +488,30 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 
 ## Known failures
 
-- `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does`,
-  `b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them`,
-  `extended_range_swap_chains_show_as_direct3d_shows_them`,
-  `yuy2_view_sizes_read_as_direct3d_reads_them` and
-  `every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it` (formats 88 and
-  89 short; the first, second and fourth pass with the three G4h patches) (programs.rs) and `constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu`
-  (com.rs) fail on every build and are marked `#[ignore]` with the reason (Gap list); run them
-  with `--include-ignored`.
-- On the WebGL 2 build only: the library tests that ask for 11_0 or 10_1 fail, as the build
-  reports 10_0, or reach the absences of the Gap list's WebGL 2 item. The bar's WebGL 2 run takes
-  the 10_0 cases alone; of those, `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does`
-  (an 11_0 device with a 10_1 state) is marked ignored on that build with that reason.
+- `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does` and
+  `yuy2_view_sizes_read_as_direct3d_reads_them` (programs.rs) and
+  `constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu` (com.rs) fail on every
+  build and are marked `#[ignore]` with the reason (Gap list); run them with `--include-ignored`.
+- The six tests with WebGPU features off named in the Gap list's truthful-level item, marked
+  `#[ignore]` with that reason.
+- On the WebGL 2 build only: every library test fails while the build meets 9_3 (Gap list); the
+  bar's WebGL 2 run takes the 10_0 cases, which pass again once the five formats are built. Of
+  those, `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` (an 11_0 device with a
+  10_1 state) is marked ignored on that build with that reason.
 
 ## What comes next
 
 In order (G4h, 11_0 reported truthfully):
-1. Land the three patches in scratch g4h/ once their owners commit or allow them (Asked; For the
-   owner): xr-infrastructure.patch then bgrx8-infrastructure-row.patch (infrastructure crate),
-   and this track's front-truthful-level.patch, which apply to fdbdb281 in that order (`git apply`, then `rustfmt` of nothing: they are
-   formatted). Check with g4h/trial.sh plus x86-front.sh, t-run.sh and t-suite.sh (How to run).
-   If the tip moved, regenerate the last from g4h/final/ (the five files in their landed form).
-2. Then the whole G4 bar again (main/q5-final.sh), recording what the Gap list says truthfulness
-   costs (the WebGL 2 build's 10_0 cases and six feature-off library tests refusing their device):
-   mark those as known failures with that reason in the same commit.
+1. The WebGL 2 build's five 10_0 formats, in crates/wcontainers-gpu-webgl (the task allows it
+   for exactly this), as the Gap list's WebGL 2 item says: `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`
+   natively (`RGB5_A1`, `RGBA4`; fields reordered on upload, `ReadAs`'s 565 repack widened to any
+   field order on read back), `A8_UNORM`, `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` in `RGBA8`
+   (widened on upload at lib.rs `write_texture`'s swapped path, packed on read back; `A8_UNORM`
+   drawn through a per-target channel mask, state.rs `blend`'s `alpha_one` widened to channels,
+   and cleared with colour zero, `format::clear_value`); `B4G4R4A4` and the two-pixel formats not
+   drawn into, as the RTX 3080 has them. Test each through the WebGL 2 build against the RTX 3080
+   (own_cases at 10_0), then the bar's WebGL 2 10_0 cases (g4h/t-suite.sh).
+2. Then the whole G4 bar again (main/q5-final.sh) and report the milestone.
 3. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
 4. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 2. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
@@ -609,8 +635,10 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 
 ## Tests
 
-At G4h run 3: programs.rs 66 (5 ignored, the known failures listed, of which the
-B8G8R8X8 and extended-range tests and the requirement test pass with the G4h patches). New in
+At G4h run 4: programs.rs 69 (8 ignored, the known failures listed); the infrastructure crate's
+swap chain tests gained two (extended-range buffers held and decoded; flip models refused).
+New in G4h run 4: the three split feature-off tests (Known failures).
+At G4h run 3: programs.rs 66 (5 ignored). New in
 G4h run 3: `extended_range_swap_chains_show_as_direct3d_shows_them` (example own_extended_range);
 own_cases `bgrx` also reads a typed buffer.
 At G4h run 1: front.rs 60, tests/cache.rs 1, unit 6 (shader.rs 5, stream.rs 1;
@@ -628,6 +656,19 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Departures from the plan
 
+- The infrastructure crate's two G4h pieces (extended-range swap chains, f9ecca97; the
+  `B8G8R8X8_UNORM` element row, c3879851) were committed by this track (G4h run 4), though the
+  crate is the Direct3D 12 track's and the task named only the interface and the two WebGPU and
+  WebGL back ends. The owning track has not run since 2026-11-20 and did not answer the ask, and
+  the orchestrator's ruling of 2026-11-22 says to build the missing abilities in whichever crate
+  owns them. Each is a commit of its own touching only that crate, tested there (its 11 tests,
+  lint) and through both fronts' builds; its status file says so.
+- Multisample loads and resolves without multisampling (G4h run 4): where the device reports no
+  sample count for a format, it reports the `MULTISAMPLE_LOAD` and `MULTISAMPLE_RESOLVE` that
+  Microsoft's tables require of the format. No multisampled texture of it can exist there, so no
+  call can rely on them. This is how Direct3D's drivers report formats they do not multisample
+  (the RTX 3080 for `R32G32B32_*`), and the 10_0 table requires these bits without requiring any
+  sample count. It applies on the WebGL 2 build, which has no route for a partial sample mask.
 - 16-bit packed targets (G4h run 2): drawn and blended in an 8-bit format and rounded to their
   bits at each end of a pass part, not after each draw, so a texel blended twice in one pass is
   rounded once. The specification allows blending at more precision than the format's; against
@@ -935,11 +976,9 @@ Earlier runs' measurements are in this file's git history.
 
 - Interface track: a `Caps` feature for cube arrays, declared by the WebGPU back end at the same
   time.
-- Infrastructure crate (the Direct3D 12 track, G5; G4h, blocking 11_0 for both fronts): the two
-  tested patches g4h/xr-infrastructure.patch (extended-range swap chains) and
-  g4h/bgrx8-infrastructure-row.patch (`dxgi_vertex_format`'s `B8G8R8X8_UNORM` row), asked in its
-  status file (0b8dfd95, replacing the asks of 7c1ea6ea and 9bf65fa6); and
-  `D3D11_FORMAT_SUPPORT2_SHAREABLE` in its `support2` list. Done by the shaders track at this
+- Infrastructure crate (the Direct3D 12 track, G5): `D3D11_FORMAT_SUPPORT2_SHAREABLE` in its
+  `support2` list. Its two G4h pieces were committed by this track in G4h run 4 (f9ecca97,
+  c3879851; Departures). Done by the shaders track at this
   track's ask: `VertexFormat::Bgrx8Unorm` with every arm (02049aeb) and its typed buffer arm
   (1958e97b).
 - WebGPU track: `FormatCaps` from the device's format features rather than the adapter's
