@@ -4220,7 +4220,7 @@ const LISTENER_OWNER: UserId = UserId(1002);
 const IPV4_TCP_SOCKETS: &str = "/proc/net/tcp";
 const IPV6_TCP_SOCKETS: &str = "/proc/net/tcp6";
 const ADDRESS_PORT_SEPARATOR: char = ':';
-const HEXADECIMAL: u32 = 16;
+const TABLE_NUMBER_RADIX: u32 = 16;
 const USER_COLUMN: usize = 7;
 
 /// The user the host's table of TCP sockets names for the socket between the ports, a listener's peer port being 0.
@@ -4233,7 +4233,7 @@ fn socket_owner(version: IpVersion, local: Port, peer: Port) -> Option<u32> {
         address
             .rsplit(ADDRESS_PORT_SEPARATOR)
             .next()
-            .and_then(|port| u16::from_str_radix(port, HEXADECIMAL).ok())
+            .and_then(|port| u16::from_str_radix(port, TABLE_NUMBER_RADIX).ok())
     };
     std::fs::read_to_string(table)
         .expect("the host's TCP sockets")
