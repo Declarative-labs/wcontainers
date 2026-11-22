@@ -505,7 +505,7 @@ pub(super) fn take<S: crate::System>(
         };
         let id = next_id(&mut kernel.sockets.inet.outside);
         let mut port = [0u8; 2];
-        cx.host.random(&mut port);
+        cx.random(&mut port);
         let (low, high) = (
             *super::inet::EPHEMERAL.start(),
             *super::inet::EPHEMERAL.end(),

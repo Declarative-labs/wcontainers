@@ -51,15 +51,7 @@ pub enum Event<'a> {
     TerminalResized { columns: u16, rows: u16 },
 }
 
-/// What the kernel asks of the host. First bodies may be naive or answer [`HostError::NotSupported`]; the
-/// interface is not optional.
+/// What the kernel tells the host: its warnings.
 pub trait Host: Sync {
-    /// Nanoseconds on a clock that never goes backwards.
-    fn monotonic_nanoseconds(&self) -> u64;
-    /// Nanoseconds since 1970 by the wall clock.
-    fn realtime_nanoseconds(&self) -> u64;
-    /// Fill with random bytes fit for cryptography.
-    fn random(&self, into: &mut [u8]);
-
     fn warn(&self, warning: Warning<'_>);
 }

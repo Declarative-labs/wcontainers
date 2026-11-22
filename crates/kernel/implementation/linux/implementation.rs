@@ -108,6 +108,14 @@ impl<S: System> Context<'_, S> {
         errno::from_cpu(error)
     }
 
+    /// Fills `into` from the system's random source. Linux's randomness never fails, so neither
+    /// may the kernel's: a failed source stops the kernel.
+    pub fn random(&self, into: &mut [u8]) {
+        if let Err(error) = self.host.fill_random_bytes(into) {
+            panic!("the system's random source failed: {error:?}");
+        }
+    }
+
     /// The kernel's monotonic clock, which never goes backwards, also across a restore on another
     /// host.
     pub fn monotonic(&mut self) -> u64 {

@@ -97,7 +97,7 @@ impl Recording {
     }
 }
 
-impl Host for Recording {
+impl wcontainers_clock::Clock for Recording {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.call("monotonic".into());
         MONOTONIC_NANOSECONDS
@@ -106,13 +106,20 @@ impl Host for Recording {
         self.call("realtime".into());
         REALTIME_NANOSECONDS
     }
-    fn random(&self, into: &mut [u8]) {
+}
+
+impl wcontainers_random_source::RandomSource for Recording {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
         self.random
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .fill(into);
         self.call(format!("random {into:02x?}"));
+        Ok(())
     }
+}
+
+impl Host for Recording {
     fn warn(&self, warning: Warning<'_>) {
         self.call(format!("warn {warning:?}"));
     }

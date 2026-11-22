@@ -927,7 +927,7 @@ pub(super) fn file_bytes<S: crate::System>(
             Some(Device::Zero | Device::Full) => vec![0; count as usize],
             Some(Device::Random | Device::Urandom) => {
                 let mut bytes = vec![0; count as usize];
-                cx.host.random(&mut bytes);
+                cx.random(&mut bytes);
                 bytes
             }
             _ => return Err(Errno::ENXIO),
@@ -1021,7 +1021,7 @@ pub(super) fn random_bytes<S: crate::System>(
     let mut bytes = vec![0; count.min(KERNEL_BUFFER) as usize];
     while done < count {
         let part = (count - done).min(KERNEL_BUFFER) as usize;
-        cx.host.random(&mut bytes[..part]);
+        cx.random(&mut bytes[..part]);
         let mut guest = guest(kernel, cx, tid);
         for block in bytes[..part].chunks(BLOCK) {
             let stored = copy_to_segments(&mut guest, parts, done, block, 8);

@@ -5,6 +5,8 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 use wcontainers_abi::{Host, HostError, Warning};
+use wcontainers_clock::Clock;
+use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_system::StreamTransport;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -45,7 +47,7 @@ impl<R> LinkHost<R> {
     }
 }
 
-impl<R: Ring + Send> Host for LinkHost<R> {
+impl<R: Ring + Send> Clock for LinkHost<R> {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.ring.lock().ask(&MonotonicNanoseconds {}, &[]).value
     }
@@ -53,8 +55,10 @@ impl<R: Ring + Send> Host for LinkHost<R> {
     fn realtime_nanoseconds(&self) -> u64 {
         self.ring.lock().ask(&RealtimeNanoseconds {}, &[]).value
     }
+}
 
-    fn random(&self, into: &mut [u8]) {
+impl<R: Ring + Send> RandomSource for LinkHost<R> {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
         let mut ring = self.ring.lock();
         ring.ask(
             &Random {
@@ -63,8 +67,11 @@ impl<R: Ring + Send> Host for LinkHost<R> {
             &[],
         );
         ring.take(into);
+        Ok(())
     }
+}
 
+impl<R: Ring + Send> Host for LinkHost<R> {
     fn warn(&self, warning: Warning<'_>) {
         self.ring.lock().ask(
             &Warn {
@@ -121,7 +128,7 @@ impl<R: Ring + Send> Readiness<u32> for LinkHost<R> {
 
 /// The monitor's half: answers `request`, whose whole bytes are `bytes`, by calling `host`; gives the answer's
 /// bytes.
-pub fn answer<H: Host + StreamTransport<Endpoint = u32>>(
+pub fn answer<H: Host + Clock + RandomSource + StreamTransport<Endpoint = u32>>(
     request: Request,
     link: &mut Link,
     bytes: &[u8],
@@ -142,7 +149,9 @@ pub fn answer<H: Host + StreamTransport<Endpoint = u32>>(
         Request::Random => {
             let Random { length } = link.get();
             answer.resize(length as usize, 0);
-            host.random(&mut answer);
+            // The link has no error for it: a monitor without randomness cannot run a kernel.
+            host.fill_random_bytes(&mut answer)
+                .expect("the monitor's random source works");
         }
         Request::Warn => {
             let Warn { count, detail } = link.get();
@@ -177,6 +186,8 @@ mod tests {
     use std::sync::Mutex;
 
     use wcontainers_abi::{Host, HostError, Warning};
+    use wcontainers_clock::Clock;
+    use wcontainers_random_source::RandomSource;
     use wcontainers_system::StreamTransport;
     use zerocopy::FromZeros;
 
@@ -212,7 +223,7 @@ mod tests {
     const MONOTONIC_NANOSECONDS: u64 = 123_456_789;
     const REALTIME_NANOSECONDS: u64 = 1_700_000_000_000_000_000;
 
-    impl Host for Recording {
+    impl Clock for Recording {
         fn monotonic_nanoseconds(&self) -> u64 {
             self.record(MONOTONIC, &[]);
             MONOTONIC_NANOSECONDS
@@ -221,10 +232,17 @@ mod tests {
             self.record(REALTIME, &[]);
             REALTIME_NANOSECONDS
         }
-        fn random(&self, into: &mut [u8]) {
+    }
+
+    impl RandomSource for Recording {
+        fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
             self.record(RANDOM, &[]);
             into.copy_from_slice(&self.given[..into.len()]);
+            Ok(())
         }
+    }
+
+    impl Host for Recording {
         fn warn(&self, warning: Warning<'_>) {
             let mut bytes = warning.reason.as_bytes().to_vec();
             bytes.extend_from_slice(&warning.count.to_le_bytes());
@@ -340,7 +358,7 @@ mod tests {
             let given: Vec<u8> = long(length).into_iter().rev().collect();
             host.ring.lock().host.given = given.clone();
             let mut into = vec![0; length];
-            host.random(&mut into);
+            assert_eq!(host.fill_random_bytes(&mut into), Ok(()));
             assert_eq!(into, given, "random of {length}");
         }
         host.warn(Warning {

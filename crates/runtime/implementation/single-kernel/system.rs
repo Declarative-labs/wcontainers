@@ -536,7 +536,7 @@ impl LocalState {
 /// The kernel's calls, each made on the state held for it.
 macro_rules! host_on_state {
     ($host:ty, $this:ident => $state:expr) => {
-        impl Host for $host {
+        impl wcontainers_clock::Clock for $host {
             fn monotonic_nanoseconds(&self) -> u64 {
                 let $this = self;
                 $state.monotonic_nanoseconds()
@@ -546,12 +546,17 @@ macro_rules! host_on_state {
                 let $this = self;
                 $state.realtime_nanoseconds()
             }
+        }
 
-            fn random(&self, into: &mut [u8]) {
+        impl wcontainers_random_source::RandomSource for $host {
+            fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
                 let $this = self;
                 $state.random(into);
+                Ok(())
             }
+        }
 
+        impl Host for $host {
             fn warn(&self, warning: Warning<'_>) {
                 let $this = self;
                 $state.warn(warning);
@@ -597,10 +602,13 @@ macro_rules! host_on_state {
             }
         }
 
-        /// Every task id is free, and no hook does anything.
-        impl wcontainers_kernel_linux::System for $host {
+        /// Every task id is free.
+        impl wcontainers_system::TaskIdAllocator for $host {
             fn free_task_id(&self, _: wcontainers_kernel_linux::TaskId) {}
         }
+
+        /// No hook does anything.
+        impl wcontainers_kernel_linux::System for $host {}
     };
 }
 

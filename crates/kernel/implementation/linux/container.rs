@@ -993,8 +993,8 @@ impl Kernel {
         self.boot_monotonic = cx.monotonic();
         self.entry_now = self.boot_monotonic;
         self.wall_offset = wall.wrapping_sub(self.boot_monotonic);
-        cx.host.random(&mut self.boot_id);
-        cx.host.random(&mut self.files.generation_key);
+        cx.random(&mut self.boot_id);
+        cx.random(&mut self.files.generation_key);
         self.machine.memory_bytes = start.memory_bytes;
         let space = start
             .address_space_bytes

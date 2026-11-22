@@ -12,6 +12,7 @@ use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
     CounterReading, Cpu, Event, Host, HostError, PAGE_SIZE, SystemCallRequest, Warning,
 };
+use wcontainers_clock::Clock as _;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel_linux::{
@@ -463,17 +464,22 @@ pub(crate) fn held<T>(mutex: &mut Mutex<T>) -> &mut T {
     mutex.get_mut().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl System for TestHost {
+impl wcontainers_system::TaskIdAllocator for TestHost {
     fn free_task_id(&self, _: TaskId) {}
 }
 
-impl System for TestHost<Box<dyn Hooks>> {
+impl System for TestHost {}
+
+impl wcontainers_system::TaskIdAllocator for TestHost<Box<dyn Hooks>> {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         self.hook().allocate_task_id(previous)
     }
     fn free_task_id(&self, id: TaskId) {
         self.hook().free_task_id(id);
     }
+}
+
+impl System for TestHost<Box<dyn Hooks>> {
     fn intercept_system_call_request(
         &self,
         process: Process<'_>,
@@ -734,7 +740,7 @@ impl<H: Send> TestHost<H> {
     }
 }
 
-impl<H: Send> Host for TestHost<H> {
+impl<H: Send> wcontainers_clock::Clock for TestHost<H> {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.answer(
             Entry::Monotonic,
@@ -759,8 +765,10 @@ impl<H: Send> Host for TestHost<H> {
             },
         )
     }
+}
 
-    fn random(&self, into: &mut [u8]) {
+impl<H: Send> wcontainers_random_source::RandomSource for TestHost<H> {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
         let bytes = self.answer(
             Entry::Random,
             |entry| match entry {
@@ -774,8 +782,11 @@ impl<H: Send> Host for TestHost<H> {
             },
         );
         into.copy_from_slice(&bytes);
+        Ok(())
     }
+}
 
+impl<H: Send> Host for TestHost<H> {
     fn warn(&self, warning: Warning<'_>) {
         // Only a missing call's detail is a call number.
         let name = if warning.reason == wcontainers_kernel_linux::reason::NOT_IMPLEMENTED {

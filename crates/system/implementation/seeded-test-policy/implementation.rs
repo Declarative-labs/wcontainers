@@ -20,6 +20,7 @@ use rand::{Rng, SeedableRng};
 use spin::Mutex;
 use wcontainers_abi::{Cpu, Event, Host, HostError, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
+use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
 use wcontainers_system::StreamTransport;
@@ -201,7 +202,8 @@ impl<H: Host> TestPolicy<H> {
     }
 }
 
-impl<H: Host> Host for TestPolicy<H> {
+/// The policy's own seeded clock.
+impl<H> wcontainers_clock::Clock for TestPolicy<H> {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.state.lock().clock.monotonic()
     }
@@ -209,11 +211,16 @@ impl<H: Host> Host for TestPolicy<H> {
     fn realtime_nanoseconds(&self) -> u64 {
         self.state.lock().clock.realtime()
     }
+}
 
-    fn random(&self, into: &mut [u8]) {
-        self.services.random(into);
+/// Randomness is the services' own.
+impl<H: RandomSource> RandomSource for TestPolicy<H> {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+        self.services.fill_random_bytes(into)
     }
+}
 
+impl<H: Host> Host for TestPolicy<H> {
     fn warn(&self, warning: Warning<'_>) {
         self.services.warn(warning);
     }
@@ -269,13 +276,17 @@ impl<H: Host> wcontainers_system::DomainNameResolver for TestPolicy<H> {
     }
 }
 
-impl<H: Host + StreamTransport<Endpoint = u32> + 'static> wcontainers_kernel_linux::System
-    for TestPolicy<H>
-{
+/// Every task id is free.
+impl<H> wcontainers_system::TaskIdAllocator for TestPolicy<H> {
     fn free_task_id(&self, _id: TaskId) {}
 }
 
-impl<H: Host + StreamTransport<Endpoint = u32> + 'static> System for TestPolicy<H> {
+impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static>
+    wcontainers_kernel_linux::System for TestPolicy<H>
+{
+}
+
+impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static> System for TestPolicy<H> {
     type End = Infallible;
 
     fn started(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) {}
