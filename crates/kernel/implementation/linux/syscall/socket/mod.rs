@@ -377,9 +377,10 @@ pub(crate) fn name_answered<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     number: u64,
-    answer: Result<Vec<u8>, wcontainers_abi::HostError>,
+    answer: Result<(), wcontainers_abi::HostError>,
+    bytes: Vec<u8>,
 ) {
-    outside::answered(kernel, cx, number, answer);
+    outside::answered(kernel, cx, number, answer, bytes);
 }
 
 /// The system's wait on the outside connection or listener `id` ended.

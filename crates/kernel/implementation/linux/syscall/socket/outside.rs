@@ -72,8 +72,12 @@ struct Link {
     handle: Rc<dyn Any>,
     /// The local port the system's UDP socket of a flow is bound to.
     local_port: u16,
-    /// What the wait kept for it asks; empty when none is kept.
-    asked: ReadyFor,
+    /// What the wait kept for it asks beside an error or hang-up, which every wait hears; none when
+    /// no wait is kept.
+    asked: Option<ReadyFor>,
+    /// A connection's wait heard an error or hang-up that nothing has taken yet (its queue had no
+    /// room to read up to it), so a wait that asks for nothing more would end at once.
+    heard: bool,
     /// A receive or accept found nothing waiting.
     drained: bool,
     /// A TCP connect not finished yet.
@@ -89,7 +93,8 @@ impl Link {
             flow,
             handle,
             local_port: u16::MIN,
-            asked: ReadyFor::empty(),
+            asked: None,
+            heard: false,
             drained: false,
             connecting: false,
             blocked: false,
@@ -541,14 +546,15 @@ pub(super) fn flush<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, 
     }
 }
 
-/// What a link's wait should ask for now: to read once a receive or accept found nothing, to
-/// send once the system took less than it was given, and a connect's end.
-fn interest(link: &Link) -> ReadyFor {
-    let Some(socket) = link.socket.upgrade() else {
-        return ReadyFor::empty();
-    };
+/// What a link's wait should ask for now beside an error or hang-up: to read once a receive or
+/// accept found nothing, to send once the system took less than it was given, and a connect's
+/// end. A connection keeps a wait that asks for nothing more, to hear of an error or hang-up as
+/// Linux's socket hears a reset whether or not it reads, until it heard one it cannot take yet;
+/// a listener keeps none.
+fn interest(link: &Link, connection: bool) -> Option<ReadyFor> {
+    let socket = link.socket.upgrade()?;
     if link.connecting {
-        return ReadyFor::WRITABLE;
+        return Some(ReadyFor::WRITABLE);
     }
     let mut interest = ReadyFor::empty();
     if link.drained {
@@ -561,13 +567,14 @@ fn interest(link: &Link) -> ReadyFor {
     if !room {
         interest |= ReadyFor::WRITABLE;
     }
-    interest
+    (!interest.is_empty() || (connection && !link.heard)).then_some(interest)
 }
 
 /// Keeps the wait of link `id` asking for what it needs now: none, the one kept, or a new one in
 /// place of the one kept. A new wait's first poll comes when the kernel next settles.
 fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32) {
     let outside = &mut kernel.sockets.inet.outside;
+    let connection = outside.connections.contains_key(&id);
     let Some(link) = outside
         .connections
         .get_mut(&id)
@@ -576,20 +583,20 @@ fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32
         return;
     };
     let handle = link.handle.clone();
-    let wanted = interest(link);
+    let wanted = interest(link, connection);
     if wanted == link.asked {
         return;
     }
-    let had = !link.asked.is_empty();
+    let had = link.asked.is_some();
     link.asked = wanted;
     if had {
         kernel
             .waiting
             .drop_where(|about| *about == WaitFor::Ready(id));
     }
-    if wanted.is_empty() {
+    let Some(wanted) = wanted else {
         return;
-    }
+    };
     let call: crate::waiting::Call = waiting_call!(ready_of(cx.system.clone(), handle, wanted));
     if Waiting::on_heap(&call) {
         kernel
@@ -627,10 +634,16 @@ async fn ready_of<S: crate::System>(
     Answer::Ready(ready)
 }
 
-/// The error a connect that failed ended with, as the system's connection reports it.
-fn connect_error<S: crate::System>(kernel: &Kernel, cx: &Context<'_, S>, id: u32) -> Errno {
+/// The error a connection the system reports failed ended with, as a peek at it says, else
+/// `otherwise` (a peek also finds bytes still before the error).
+fn failure<S: crate::System>(
+    kernel: &Kernel,
+    cx: &Context<'_, S>,
+    id: u32,
+    otherwise: Errno,
+) -> Errno {
     let Some(connection) = connection_of::<S>(kernel, id) else {
-        return Errno::ECONNREFUSED;
+        return otherwise;
     };
     let mut byte = [0u8; 1];
     let peek = TcpReceiveRequest::Peek {
@@ -638,7 +651,7 @@ fn connect_error<S: crate::System>(kernel: &Kernel, cx: &Context<'_, S>, id: u32
     };
     match TcpConnections::receive(&**cx.system, connection, peek, &mut byte) {
         Err(HostError::Errno(number)) => Errno(number as u32),
-        _ => Errno::ECONNREFUSED,
+        _ => otherwise,
     }
 }
 
@@ -656,7 +669,7 @@ pub(super) fn ready<S: crate::System>(
         || report.unconditional.contains(UnconditionalEvents::HANG_UP)
         || report.ready_for.contains(ReadyFor::WRITABLE);
     if let Some(link) = kernel.sockets.inet.outside.listeners.get_mut(&id) {
-        link.asked = ReadyFor::empty();
+        link.asked = None;
         link.drained = false;
         if let Some(listener) = link.socket.upgrade() {
             take(kernel, cx, &listener);
@@ -666,7 +679,9 @@ pub(super) fn ready<S: crate::System>(
     let Some(link) = kernel.sockets.inet.outside.connections.get_mut(&id) else {
         return;
     };
-    link.asked = ReadyFor::empty();
+    link.asked = None;
+    link.heard = !report.unconditional.is_empty();
+    let stream = link.flow.is_none();
     let connecting = core::mem::take(&mut link.connecting);
     if room {
         link.blocked = false;
@@ -676,7 +691,7 @@ pub(super) fn ready<S: crate::System>(
     };
     if connecting {
         if failed {
-            let error = connect_error(kernel, cx, id);
+            let error = failure(kernel, cx, id, Errno::ECONNREFUSED);
             if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
                 let_go(kernel, id, link);
             }
@@ -707,7 +722,21 @@ pub(super) fn ready<S: crate::System>(
     if let Some(link) = kernel.sockets.inet.outside.connections.get_mut(&id) {
         link.drained = false;
     }
-    pull_and_wait(kernel, cx, &socket, id);
+    pull(kernel, cx, &socket, id);
+    // A stream that failed with bytes its queue had no room for: Linux, whose window those bytes
+    // never entered, has its socket reset now (`tcp_reset`), its queue kept.
+    let taken = kernel
+        .sockets
+        .inet
+        .outside
+        .connections
+        .get(&id)
+        .is_none_or(|link| link.drained);
+    if failed && stream && !taken && socket.borrow().state != State::Closed {
+        let error = failure(kernel, cx, id, Errno::ECONNRESET);
+        reset(kernel, cx, &socket, error);
+    }
+    watch(kernel, cx, id);
     super::write_space(kernel, cx, &socket);
 }
 
@@ -844,6 +873,9 @@ fn pull<S: crate::System>(
                 };
                 if stream {
                     super::inet::carry_outside(kernel, socket, count as u64, false, false);
+                }
+                if let Some(link) = kernel.sockets.inet.outside.connections.get_mut(&id) {
+                    link.heard = false;
                 }
                 let mut own = socket.borrow_mut();
                 if let Some(inet) = own.inet.as_deref_mut() {
@@ -1251,28 +1283,32 @@ fn ask<S: crate::System>(
     number: u64,
     asked: super::resolver::Asked,
 ) {
+    let buffer = kernel.waiting.buffer();
     let call: crate::waiting::Call =
-        crate::waiting::waiting_call!(resolve(cx.system.clone(), asked));
+        crate::waiting::waiting_call!(resolve(cx.system.clone(), asked, buffer));
     if crate::waiting::Waiting::on_heap(&call) {
         kernel
             .counters
             .count(cx.host, crate::reason::WAITING_CALL_ON_HEAP, number);
     }
     let about = crate::waiting::WaitFor::Name(number);
-    if let Some(crate::waiting::Answer::Name(answer)) = kernel.waiting.start(about, call) {
-        answered(kernel, cx, number, answer);
+    if let Some(crate::waiting::Answer::Name(answer, bytes)) = kernel.waiting.start(about, call) {
+        answered(kernel, cx, number, answer, bytes);
     }
 }
 
-/// The system's answer to one question, owning what the question borrows.
-async fn resolve<S: crate::System>(
-    system: alloc::sync::Arc<S>,
+/// The system's answer to one question, owning what the question borrows, its message brought
+/// back in `buffer`.
+async fn resolve<R: wcontainers_system::DomainNameResolver>(
+    system: alloc::sync::Arc<R>,
     asked: super::resolver::Asked,
+    mut buffer: Vec<u8>,
 ) -> crate::waiting::Answer {
     let question =
         domain::base::Question::new(asked.qname().for_slice(), asked.qtype(), asked.qclass());
     let answer = system.resolve_domain(question).await;
-    crate::waiting::Answer::Name(answer.map(|message| message.as_slice().to_vec()))
+    let answer = answer.map(|message| buffer.extend_from_slice(message.as_slice()));
+    crate::waiting::Answer::Name(answer, buffer)
 }
 
 /// The resolver answered lookup `number`: its reply goes to the socket that asked, if still open.
@@ -1280,22 +1316,88 @@ pub(super) fn answered<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     number: u64,
-    answer: Result<Vec<u8>, HostError>,
+    answer: Result<(), HostError>,
+    bytes: Vec<u8>,
 ) {
-    let Some(lookup) = kernel.sockets.inet.outside.lookups.remove(&number) else {
-        return;
-    };
-    let Some(socket) = lookup.socket.upgrade() else {
-        return;
-    };
-    if let Err(error) = answer {
-        refusal(kernel, cx, error);
+    let socket = kernel
+        .sockets
+        .inet
+        .outside
+        .lookups
+        .remove(&number)
+        .and_then(|lookup| Some((lookup.socket.upgrade()?, lookup)));
+    if let Some((socket, lookup)) = socket {
+        if let Err(error) = answer {
+            refusal(kernel, cx, error);
+        }
+        let message = answer
+            .ok()
+            .and_then(|()| domain::base::Message::from_slice(&bytes).ok());
+        if let Some(reply) = super::resolver::answer(&lookup.query, message) {
+            deliver(kernel, cx, &socket, lookup.server, reply);
+        }
     }
-    let message = answer
-        .as_deref()
-        .ok()
-        .and_then(|bytes| domain::base::Message::from_slice(bytes).ok());
-    if let Some(reply) = super::resolver::answer(&lookup.query, message) {
-        deliver(kernel, cx, &socket, lookup.server, reply);
+    kernel.waiting.reuse(bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::waiting::tests::{Door, allocations};
+    use domain::base::iana::{Class, Rtype};
+    use domain::base::{Message, MessageBuilder, Name};
+
+    /// A resolver that answers every question with `answer` once its door opens.
+    struct Resolver {
+        door: Door,
+        answer: &'static [u8],
+    }
+
+    impl wcontainers_system::DomainNameResolver for Resolver {
+        type AnswerBytes = &'static [u8];
+
+        async fn resolve_domain(
+            &self,
+            _question: domain::base::Question<&Name<[u8]>>,
+        ) -> Result<Message<&'static [u8]>, HostError> {
+            self.door.pass().await;
+            Ok(Message::from_octets(self.answer).expect("a message"))
+        }
+    }
+
+    #[test]
+    fn a_lookup_answered_later_allocates_nothing_once_its_buffer_exists() {
+        let answer = MessageBuilder::new_vec().into_message().into_octets();
+        let resolver = Arc::new(Resolver {
+            door: Door::default(),
+            answer: answer.leak(),
+        });
+        // The questions are the guest's, made from its query before anything is asked.
+        let asked = super::super::resolver::Asked::new(Name::root_vec(), Rtype::A, Class::IN);
+        let mut questions: Vec<_> = (0..100).map(|_| asked.clone()).collect();
+        let mut waiting = Waiting::default();
+        let mut round = |number| {
+            resolver.door.shut();
+            let asked = questions.pop().expect("a question");
+            let buffer = waiting.buffer();
+            let call: crate::waiting::Call =
+                waiting_call!(resolve(resolver.clone(), asked, buffer));
+            assert!(waiting.start(WaitFor::Name(number), call).is_none());
+            resolver.door.open();
+            let (about, answer) = waiting.next_answer().expect("answered");
+            assert_eq!(about, WaitFor::Name(number));
+            let Answer::Name(Ok(()), bytes) = answer else {
+                panic!("not the answer");
+            };
+            assert!(Message::from_slice(&bytes).is_ok());
+            waiting.reuse(bytes);
+        };
+        // The first round makes the cell and the buffer.
+        round(0);
+        let before = allocations();
+        for number in 1..100 {
+            round(number);
+        }
+        assert_eq!(allocations(), before);
     }
 }

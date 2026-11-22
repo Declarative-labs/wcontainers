@@ -342,6 +342,9 @@ pub struct Kernel {
     last_object: u64,
     /// The calls the kernel waits on its system for.
     waiting: waiting::Waiting,
+    /// The system the backend's requests under way were handed to, by its address: a restore on
+    /// another drops them and asks again.
+    backend_system: usize,
 }
 
 impl Default for Kernel {
@@ -471,6 +474,7 @@ impl Kernel {
             move_cookie: 0,
             last_object: 0,
             waiting: waiting::Waiting::default(),
+            backend_system: 0,
         }
     }
 
@@ -612,6 +616,7 @@ impl Kernel {
             refused: 0,
         };
         self.entry_now = cx.monotonic();
+        self.backend_restored(&mut cx);
         // The wall clock moved against the monotonic clock while saved, as across a suspend, which
         // Linux's resume treats as a setting of the wall clock (`timerfd_resume`).
         let wall_offset = cx.host.realtime_nanoseconds().wrapping_sub(self.entry_now);

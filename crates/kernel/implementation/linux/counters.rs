@@ -99,6 +99,10 @@ pub mod reason {
     /// do not cover): that answer and the ones after it were dropped and the question sent, so the
     /// backend may have done an earlier one's work too. Detail: the FUSE opcode.
     pub const BACKEND_ASKED_AGAIN: &str = "backend question asked again";
+    /// A message the backend answers no one, under way when the container was saved, was lost when
+    /// it was brought back on another system (its requests a call waits for are asked again).
+    /// Detail: the FUSE opcode.
+    pub const BACKEND_MESSAGE_LOST: &str = "backend message lost at restore";
     /// A socket of an address family that is not built. Detail: the family.
     pub const FAMILY_NOT_BUILT: &str = "socket family not built";
     /// A socket option that is not built. Detail: the level times 2^32 plus the option.

@@ -1,6 +1,7 @@
 //! The calls the kernel waits on its system for. Each is the system's own future, kept in a cell
 //! of its own until it finishes and polled only here, after the waker that names its cell fired.
-//! Cells are made once and used again, so a call that waits allocates nothing.
+//! Cells are made once and used again, and a call that brings bytes back brings them in a buffer
+//! it was given, kept for the next call once read, so a call that waits allocates nothing.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -30,10 +31,12 @@ pub(crate) enum WaitFor {
 
 /// What a finished waiting call gives the kernel.
 pub(crate) enum Answer {
-    /// The backend's reply, as its error number (zero for none) and its body.
-    Backend(Result<(i32, alloc::rc::Rc<[u8]>), wcontainers_abi::HostError>),
-    /// The resolver's answer, as the message's bytes.
-    Name(Result<Vec<u8>, wcontainers_abi::HostError>),
+    /// The backend's reply, as its error number (zero for none), and the request's own buffer,
+    /// which now holds the reply's body.
+    Backend(Result<i32, wcontainers_abi::HostError>, Vec<u8>),
+    /// Whether the resolver answered, and the buffer the call was given, which then holds the
+    /// answer's message.
+    Name(Result<(), wcontainers_abi::HostError>, Vec<u8>),
     /// What a connection, listener or stream endpoint is ready for.
     Ready(Result<wcontainers_readiness::ReadinessReport, wcontainers_abi::HostError>),
 }
@@ -96,11 +99,11 @@ impl crate::Kernel {
         answer: Answer,
     ) {
         match (about, answer) {
-            (WaitFor::Backend(sent), Answer::Backend(answer)) => {
-                self.backend_answered(cx, sent, answer);
+            (WaitFor::Backend(sent), Answer::Backend(answer, bytes)) => {
+                self.backend_answered(cx, sent, answer, bytes);
             }
-            (WaitFor::Name(number), Answer::Name(answer)) => {
-                crate::syscall::socket::name_answered(self, cx, number, answer);
+            (WaitFor::Name(number), Answer::Name(answer, bytes)) => {
+                crate::syscall::socket::name_answered(self, cx, number, answer, bytes);
             }
             (WaitFor::Ready(id), Answer::Ready(ready)) => {
                 crate::syscall::socket::outside_ready(self, cx, id, ready);
@@ -115,15 +118,28 @@ impl crate::Kernel {
     }
 }
 
-/// Every call the kernel waits on, and the cells kept for the next ones.
+/// Every call the kernel waits on, and the cells and buffers kept for the next ones.
 #[derive(Default)]
 pub(crate) struct Waiting {
     live: Vec<(WaitFor, Cell)>,
     free: Vec<Cell>,
     any: Arc<AtomicBool>,
+    /// Buffers answers came back in, read and kept for the next calls'.
+    spare: Vec<Vec<u8>>,
 }
 
 impl Waiting {
+    /// An empty buffer for a call to bring its answer back in, one kept if there is one.
+    pub fn buffer(&mut self) -> Vec<u8> {
+        self.spare.pop().unwrap_or_default()
+    }
+
+    /// Keeps a buffer an answer came back in, once read, for a later call.
+    pub fn reuse(&mut self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        self.spare.push(buffer);
+    }
+
     /// Whether a waiting call's waker fired since the last [`Waiting::next_answer`] found none.
     pub fn woken(&self) -> bool {
         !self.live.is_empty() && self.any.load(Ordering::Acquire)
@@ -202,7 +218,7 @@ impl Waiting {
     }
 
     /// Drops the calls `which` names, unanswered: each is cancelled as its system's future says.
-    pub fn drop_where(&mut self, which: impl Fn(&WaitFor) -> bool) {
+    pub fn drop_where(&mut self, mut which: impl FnMut(&WaitFor) -> bool) {
         let mut index = 0;
         while index < self.live.len() {
             if which(&self.live[index].0) {
@@ -221,9 +237,48 @@ impl Waiting {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::cell::Cell as Shared;
+
+    /// Allocations this thread has made so far.
+    pub(crate) fn allocations() -> u64 {
+        ALLOCATIONS.with(Shared::get)
+    }
+
+    /// What a test system's call waits behind: shut, it keeps the waker it was last polled with;
+    /// opened, it wakes that waker and lets every call through.
+    #[derive(Default)]
+    pub(crate) struct Door {
+        open: AtomicBool,
+        waker: std::sync::Mutex<Option<Waker>>,
+    }
+
+    impl Door {
+        /// Waits until the door is open.
+        pub(crate) async fn pass(&self) {
+            core::future::poll_fn(|context| {
+                if self.open.load(Ordering::Acquire) {
+                    return Poll::Ready(());
+                }
+                *self.waker.lock().expect("a door") = Some(context.waker().clone());
+                Poll::Pending
+            })
+            .await;
+        }
+
+        pub(crate) fn open(&self) {
+            self.open.store(true, Ordering::Release);
+            let waker = self.waker.lock().expect("a door").take();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+
+        pub(crate) fn shut(&self) {
+            self.open.store(false, Ordering::Release);
+        }
+    }
 
     /// What a test's call `number` waits for.
     fn about(number: u64) -> WaitFor {
@@ -248,7 +303,10 @@ mod tests {
 
         fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Answer> {
             if self.ready.get() {
-                return Poll::Ready(Answer::Backend(Err(wcontainers_abi::HostError::Closed)));
+                return Poll::Ready(Answer::Backend(
+                    Err(wcontainers_abi::HostError::Closed),
+                    Vec::new(),
+                ));
             }
             *self.waker.borrow_mut() = Some(context.waker().clone());
             Poll::Pending
@@ -260,7 +318,9 @@ mod tests {
         let mut waiting = Waiting::default();
         let answer = waiting.start(
             about(1),
-            waiting_call!(async { Answer::Backend(Err(wcontainers_abi::HostError::Closed)) }),
+            waiting_call!(async {
+                Answer::Backend(Err(wcontainers_abi::HostError::Closed), Vec::new())
+            }),
         );
         assert!(answer.is_some());
         assert!(waiting.live.is_empty());

@@ -85,11 +85,15 @@ struct Request {
     version: u64,
 }
 
+/// A reply's body, as the kernel keeps it: shared by the runs of the call that asked, and used
+/// again for a later reply once nothing holds it.
+pub(crate) type Body = Rc<Vec<u8>>;
+
 /// An answer a call had, with the request it answers.
 #[derive(Clone)]
 struct Reply {
     request: Request,
-    result: Result<Rc<[u8]>, Errno>,
+    result: Result<Body, Errno>,
 }
 
 /// One call's questions: the replies its runs have had, how many of them this run has used, and
@@ -149,7 +153,7 @@ pub(crate) enum Answered {
         node: Option<Node>,
         pages: core::ops::Range<u64>,
         changes: u64,
-        result: Result<Rc<[u8]>, Errno>,
+        result: Result<Body, Errno>,
         waiters: Vec<Tid>,
         at: u64,
     },
@@ -169,6 +173,8 @@ struct State {
     asked_again: Vec<u32>,
     calls: BTreeMap<Tid, Asked>,
     outbox: Vec<Outgoing>,
+    /// The list the last requests were handed over in, kept empty for the next ones.
+    handed: Vec<Outgoing>,
     /// Mapped files' pages asked for, by request.
     fills: BTreeMap<u64, Fill>,
     /// Pages a fault or copy outside a call needed and could not ask for, for their counter.
@@ -180,6 +186,43 @@ struct State {
     /// Lookups the backend counted for each node, given back with FORGET when its inode goes.
     lookups: BTreeMap<u64, u64>,
     settled: Option<Settled>,
+    /// Buffers of requests answered, kept for the next requests and replies.
+    spare: Vec<Vec<u8>>,
+    /// Every reply body made, each used again once only this list holds it.
+    bodies: Vec<Body>,
+}
+
+impl State {
+    /// An empty buffer for a request, one kept if there is one.
+    fn buffer(&mut self) -> Vec<u8> {
+        self.spare.pop().unwrap_or_default()
+    }
+
+    /// Keeps a buffer done with for a later request.
+    fn keep(&mut self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        self.spare.push(buffer);
+    }
+
+    /// Keeps `bytes` as a reply's body: in a body nothing else holds now, whose own buffer is kept
+    /// for a later request, else in a new one.
+    fn body(&mut self, bytes: Vec<u8>) -> Body {
+        if let Some(free) = self
+            .bodies
+            .iter_mut()
+            .find(|body| Rc::strong_count(body) == 1)
+        {
+            let held = Rc::get_mut(free).expect("a body only this list holds");
+            let mut spare = core::mem::replace(held, bytes);
+            let body = free.clone();
+            spare.clear();
+            self.spare.push(spare);
+            return body;
+        }
+        let body = Rc::new(bytes);
+        self.bodies.push(body.clone());
+        body
+    }
 }
 
 /// The connection to one backend, reachable from every inode on it.
@@ -588,7 +631,15 @@ impl Client {
                 padding: 0,
             };
             let opcode = fuse_opcode::FUSE_READ as u32;
-            let bytes = message(unique, opcode, handle.nodeid, &asker, &[input.as_bytes()]);
+            let buffer = state.buffer();
+            let bytes = message(
+                buffer,
+                unique,
+                opcode,
+                handle.nodeid,
+                &asker,
+                &[input.as_bytes()],
+            );
             state.outbox.push(Outgoing {
                 sent: Sent {
                     unique,
@@ -623,12 +674,7 @@ impl Client {
     /// An answer an earlier run had is taken only for the same question; a call that asks
     /// something else in its place (what it read changed while it waited) drops that answer and
     /// the ones after it, and asks afresh.
-    pub fn ask(
-        &self,
-        opcode: fuse_opcode,
-        nodeid: u64,
-        parts: &[&[u8]],
-    ) -> Result<Rc<[u8]>, Errno> {
+    pub fn ask(&self, opcode: fuse_opcode, nodeid: u64, parts: &[&[u8]]) -> Result<Body, Errno> {
         let asked_now = fingerprint(opcode as u32, nodeid, parts);
         let mut state = self.state.borrow_mut();
         let asker = state
@@ -669,7 +715,8 @@ impl Client {
             };
             state.calls.get_mut(&asker.tid).expect("asked").waiting = Some(request);
             count_change(&state.nodes, opcode as u32, nodeid, parts);
-            let bytes = message(unique, opcode as u32, nodeid, &asker, parts);
+            let buffer = state.buffer();
+            let bytes = message(buffer, unique, opcode as u32, nodeid, &asker, parts);
             state.outbox.push(Outgoing {
                 sent: Sent {
                     unique,
@@ -697,7 +744,8 @@ impl Client {
             pid: 0,
         };
         count_change(&state.nodes, opcode, nodeid, parts);
-        let bytes = message(unique, opcode, nodeid, &nobody, parts);
+        let buffer = state.buffer();
+        let bytes = message(buffer, unique, opcode, nodeid, &nobody, parts);
         // FORGET and BATCH_FORGET have no answer.
         let answered = opcode != fuse_opcode::FUSE_FORGET as u32
             && opcode != fuse_opcode::FUSE_BATCH_FORGET as u32;
@@ -723,8 +771,10 @@ impl Client {
             pid: 0,
         };
         let opcode = fuse_opcode::FUSE_NOTIFY_REPLY as u32;
-        let bytes = message(unique, opcode, nodeid, &nobody, &[body]);
-        self.state.borrow_mut().outbox.push(Outgoing {
+        let mut state = self.state.borrow_mut();
+        let buffer = state.buffer();
+        let bytes = message(buffer, unique, opcode, nodeid, &nobody, &[body]);
+        state.outbox.push(Outgoing {
             sent: Sent {
                 unique,
                 tid: None,
@@ -737,22 +787,61 @@ impl Client {
         });
     }
 
-    /// The requests to hand to the system now, each marked sent at `now`.
+    /// The requests `sent` are lost (the system they went to is gone): each call that waits for
+    /// one asks it again when it next runs, as does each fault or copy that waits for pages. The
+    /// opcodes of the rest, which nothing asks again.
+    pub fn lose_sent(&self, sent: &[Sent]) -> Vec<u32> {
+        let mut state = self.state.borrow_mut();
+        let mut lost = Vec::new();
+        for sent in sent {
+            let waited = sent
+                .tid
+                .and_then(|tid| state.calls.get_mut(&tid))
+                .filter(|asked| {
+                    asked
+                        .waiting
+                        .is_some_and(|request| request.unique == sent.unique)
+                });
+            if let Some(asked) = waited {
+                asked.waiting = None;
+            } else if state.fills.remove(&sent.unique).is_none() {
+                lost.push(sent.opcode);
+            }
+        }
+        lost
+    }
+
+    /// The requests to hand to the system now, each marked sent at `now`; the list goes back with
+    /// [`Client::handed`].
     pub fn outgoing(&self, now: u64) -> Vec<Outgoing> {
-        let mut out = core::mem::take(&mut self.state.borrow_mut().outbox);
+        let mut held = self.state.borrow_mut();
+        let state = &mut *held;
+        let mut out = core::mem::replace(&mut state.outbox, core::mem::take(&mut state.handed));
         for request in &mut out {
             request.sent.at = now;
         }
         out
     }
 
-    /// The backend answered a request with an error, or with a body.
-    pub fn answered(&self, sent: Sent, error: i32, body: Rc<[u8]>) -> Answered {
+    /// The list [`Client::outgoing`] gave, now empty, kept for the next requests.
+    pub fn handed(&self, out: Vec<Outgoing>) {
+        debug_assert!(out.is_empty());
+        self.state.borrow_mut().handed = out;
+    }
+
+    /// A request's buffer, done with, is kept for a later one.
+    pub fn reuse(&self, buffer: Vec<u8>) {
+        self.state.borrow_mut().keep(buffer);
+    }
+
+    /// The backend answered a request with an error, or with the body `bytes` holds.
+    pub fn answered(&self, sent: Sent, error: i32, bytes: Vec<u8>) -> Answered {
         let unique = sent.unique;
         let mut state = self.state.borrow_mut();
-        let result: Result<Rc<[u8]>, Errno> = if error == 0 {
-            Ok(body)
+        let result: Result<Body, Errno> = if error == 0 {
+            Ok(state.body(bytes))
         } else {
+            state.keep(bytes);
             Err(Errno(error.unsigned_abs()))
         };
         if let Some(fill) = state.fills.remove(&unique) {
@@ -821,7 +910,7 @@ impl Client {
 
     /// An answer no call takes gives back what it handed out: a lookup the kernel holds no node for,
     /// and an open handle.
-    fn give_back(&self, opcode: u32, nodeid: u64, result: &Result<Rc<[u8]>, Errno>) {
+    fn give_back(&self, opcode: u32, nodeid: u64, result: &Result<Body, Errno>) {
         let Ok(body) = result else {
             return;
         };
@@ -840,8 +929,8 @@ impl Client {
             self.forget(entry.nodeid);
         }
         let open = match opcode {
-            known if known == fuse_opcode::FUSE_OPEN as u32 => Some((body.as_ref(), false)),
-            known if known == fuse_opcode::FUSE_OPENDIR as u32 => Some((body.as_ref(), true)),
+            known if known == fuse_opcode::FUSE_OPEN as u32 => Some((&body[..], false)),
+            known if known == fuse_opcode::FUSE_OPENDIR as u32 => Some((&body[..], true)),
             known if known == fuse_opcode::FUSE_CREATE as u32 => body
                 .get(size_of::<fuse_entry_out>()..)
                 .map(|rest| (rest, false)),
@@ -1171,7 +1260,15 @@ fn fingerprint(opcode: u32, nodeid: u64, parts: &[&[u8]]) -> u64 {
 }
 
 /// A request: the header, then its parts one after another.
-fn message(unique: u64, opcode: u32, nodeid: u64, asker: &Asker, parts: &[&[u8]]) -> Vec<u8> {
+/// Writes a request into `bytes`, an empty buffer.
+fn message(
+    mut bytes: Vec<u8>,
+    unique: u64,
+    opcode: u32,
+    nodeid: u64,
+    asker: &Asker,
+    parts: &[&[u8]],
+) -> Vec<u8> {
     let length = size_of::<fuse_in_header>() + parts.iter().map(|part| part.len()).sum::<usize>();
     let header = fuse_in_header {
         len: length as u32,
@@ -1184,7 +1281,7 @@ fn message(unique: u64, opcode: u32, nodeid: u64, asker: &Asker, parts: &[&[u8]]
         total_extlen: 0,
         padding: 0,
     };
-    let mut bytes = Vec::with_capacity(length);
+    bytes.reserve(length);
     bytes.extend_from_slice(header.as_bytes());
     for part in parts {
         bytes.extend_from_slice(part);
@@ -2025,19 +2122,29 @@ pub(crate) fn removexattr(node: &Node, name: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Where a system lives, to tell it from another.
+fn system_address<S>(system: &alloc::sync::Arc<S>) -> usize {
+    alloc::sync::Arc::as_ptr(system) as usize
+}
+
 /// Asks the system's file backend one request, owning what the question borrows: the reply's
-/// header and its body as the kernel keeps it.
-async fn ask_backend<S: crate::System>(system: alloc::sync::Arc<S>, request: Vec<u8>) -> Answer {
-    Answer::Backend(system.send_request(&request).await.map(|reply| {
-        match fuse_out_header::read_from_prefix(&reply) {
-            Ok((header, rest)) => {
-                let length = (header.len as usize).saturating_sub(size_of::<fuse_out_header>());
-                (header.error, Rc::from(&rest[..length.min(rest.len())]))
-            }
-            // A reply too short for its header is no answer at all.
-            Err(_) => (-(crate::Errno::EIO.0 as i32), Rc::from(&[][..])),
+/// error, and its body in the request's own buffer.
+async fn ask_backend<F: wcontainers_system::FuseServer>(
+    system: alloc::sync::Arc<F>,
+    mut buffer: Vec<u8>,
+) -> Answer {
+    let reply = system.send_request(&buffer).await;
+    buffer.clear();
+    let error = reply.map(|reply| match fuse_out_header::read_from_prefix(&reply) {
+        Ok((header, rest)) => {
+            let length = (header.len as usize).saturating_sub(size_of::<fuse_out_header>());
+            buffer.extend_from_slice(&rest[..length.min(rest.len())]);
+            header.error
         }
-    }))
+        // A reply too short for its header is no answer at all.
+        Err(_) => -(crate::Errno::EIO.0 as i32),
+    });
+    Answer::Backend(error, buffer)
 }
 
 impl crate::Kernel {
@@ -2055,7 +2162,8 @@ impl crate::Kernel {
             );
         }
         let now = cx.monotonic();
-        for request in client.outgoing(now) {
+        let mut out = client.outgoing(now);
+        for request in out.drain(..) {
             let sent = request.sent;
             // A message with no answer is counted when it goes; the rest when answered, with
             // the time the answer took.
@@ -2063,6 +2171,7 @@ impl crate::Kernel {
                 self.counters
                     .measure(crate::reason::BACKEND_MESSAGE, u64::from(sent.opcode), 0);
             }
+            self.backend_system = system_address(cx.system);
             let call: crate::waiting::Call =
                 crate::waiting::waiting_call!(ask_backend(cx.system.clone(), request.bytes));
             if crate::waiting::Waiting::on_heap(&call) {
@@ -2073,9 +2182,38 @@ impl crate::Kernel {
                 );
             }
             let answer = self.waiting.start(WaitFor::Backend(sent), call);
-            if let Some(Answer::Backend(answer)) = answer {
-                self.backend_answered(cx, sent, answer);
+            if let Some(Answer::Backend(answer, bytes)) = answer {
+                self.backend_answered(cx, sent, answer, bytes);
             }
+        }
+        client.handed(out);
+    }
+
+    /// Brought back on `cx`'s system: requests under way on another are dropped, and each call or
+    /// fault that waits for one asks again when it runs (a restore runs every parked call again).
+    /// On the same system they go on, since asking again would send a request twice to a backend
+    /// that already has it.
+    pub(crate) fn backend_restored<S: crate::System>(&mut self, cx: &mut crate::Context<'_, S>) {
+        if self.backend_system == system_address(cx.system) {
+            return;
+        }
+        let mut sent = Vec::new();
+        self.waiting.drop_where(|about| match about {
+            WaitFor::Backend(request) => {
+                sent.push(*request);
+                true
+            }
+            _ => false,
+        });
+        let Some(client) = self.files.backend.clone() else {
+            return;
+        };
+        for opcode in client.lose_sent(&sent) {
+            self.counters.count(
+                cx.host,
+                crate::reason::BACKEND_MESSAGE_LOST,
+                u64::from(opcode),
+            );
         }
     }
 
@@ -2084,10 +2222,11 @@ impl crate::Kernel {
         &mut self,
         cx: &mut crate::Context<'_, S>,
         sent: Sent,
-        answer: Result<(i32, Rc<[u8]>), wcontainers_abi::HostError>,
+        answer: Result<i32, wcontainers_abi::HostError>,
+        bytes: Vec<u8>,
     ) {
-        let (error, body) = match answer {
-            Ok(answer) => answer,
+        let error = match answer {
+            Ok(error) => error,
             Err(_) => {
                 self.counters.count(
                     cx.host,
@@ -2095,20 +2234,23 @@ impl crate::Kernel {
                     u64::from(sent.opcode),
                 );
                 // As from a connection that is gone: the call that waits gets ENOTCONN.
-                (-(crate::Errno::ENOTCONN.0 as i32), Rc::from(&[][..]))
+                -(crate::Errno::ENOTCONN.0 as i32)
             }
+        };
+        let Some(client) = self.files.backend.clone() else {
+            if sent.answered {
+                self.counters
+                    .count(cx.host, crate::reason::BACKEND_UNEXPECTED, sent.unique);
+            }
+            return;
         };
         // A message with no answer is done once the system has taken it.
         if !sent.answered {
+            client.reuse(bytes);
             return;
         }
-        let Some(client) = self.files.backend.clone() else {
-            self.counters
-                .count(cx.host, crate::reason::BACKEND_UNEXPECTED, sent.unique);
-            return;
-        };
         let now = self.entry_now;
-        match client.answered(sent, error, body) {
+        match client.answered(sent, error, bytes) {
             Answered::Call(tid, opcode, at) => {
                 self.counters.measure(
                     crate::reason::BACKEND_MESSAGE,
@@ -2324,5 +2466,96 @@ impl crate::Kernel {
                 .counters
                 .count(cx.host, crate::reason::BACKEND_UNEXPECTED, code as u64),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::waiting::tests::{Door, allocations};
+    use crate::waiting::{Waiting, waiting_call};
+    use alloc::sync::Arc;
+
+    /// A backend that answers every request with `reply` once its door opens.
+    struct Server {
+        door: Door,
+        reply: &'static [u8],
+    }
+
+    impl wcontainers_system::FuseServer for Server {
+        type Reply = &'static [u8];
+
+        async fn send_request(
+            &self,
+            _request: &[u8],
+        ) -> Result<&'static [u8], wcontainers_abi::HostError> {
+            self.door.pass().await;
+            Ok(self.reply)
+        }
+    }
+
+    #[test]
+    fn a_request_answered_later_allocates_nothing_once_its_buffers_exist() {
+        let page = alloc::vec![1u8; PAGE_SIZE as usize];
+        let header = fuse_out_header {
+            len: (size_of::<fuse_out_header>() + page.len()) as u32,
+            error: 0,
+            unique: 0,
+        };
+        let mut reply = header.as_bytes().to_vec();
+        reply.extend_from_slice(&page);
+        let server = Arc::new(Server {
+            door: Door::default(),
+            reply: reply.leak(),
+        });
+        let asker = Asker {
+            tid: 1,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let read = fuse_read_in {
+            size: PAGE_SIZE as u32,
+            ..Default::default()
+        };
+        let mut waiting = Waiting::default();
+        let mut state = State::default();
+        let mut round = |unique| {
+            server.door.shut();
+            let opcode = fuse_opcode::FUSE_READ as u32;
+            let request = message(
+                state.buffer(),
+                unique,
+                opcode,
+                1,
+                &asker,
+                &[read.as_bytes()],
+            );
+            let sent = Sent {
+                unique,
+                tid: Some(asker.tid),
+                opcode,
+                nodeid: 1,
+                at: 0,
+                answered: true,
+            };
+            let call: crate::waiting::Call = waiting_call!(ask_backend(server.clone(), request));
+            assert!(waiting.start(WaitFor::Backend(sent), call).is_none());
+            server.door.open();
+            let (about, answer) = waiting.next_answer().expect("answered");
+            assert_eq!(about, WaitFor::Backend(sent));
+            let Answer::Backend(Ok(0), bytes) = answer else {
+                panic!("not the reply");
+            };
+            assert_eq!(*state.body(bytes), page);
+        };
+        // The first two rounds make the cell, a body and the buffer a body gives back.
+        round(1);
+        round(2);
+        let before = allocations();
+        for unique in 3..100 {
+            round(unique);
+        }
+        assert_eq!(allocations(), before);
     }
 }

@@ -26,7 +26,8 @@ struct Flow {
     socket: UdpSocket,
     /// The address it is connected to, as the guest names it.
     peer: SocketAddr,
-    /// A wait asks for this, so the next change is told.
+    /// A wait is kept, which hears an error or hang-up, and what more it asks for.
+    armed: bool,
     read_armed: bool,
     write_armed: bool,
 }
@@ -37,7 +38,8 @@ struct Stream {
     socket: Option<TcpStream>,
     /// The error the connect failed with, given to the next receive.
     error: Option<i32>,
-    /// A wait asks for this, so the next change is told.
+    /// A wait is kept, which hears an error or hang-up, and what more it asks for.
+    armed: bool,
     read_armed: bool,
     write_armed: bool,
 }
@@ -178,6 +180,7 @@ impl Network {
                 let stream = Stream {
                     socket: Some(stream),
                     error: None,
+                    armed: false,
                     read_armed: false,
                     write_armed: false,
                 };
@@ -194,6 +197,7 @@ impl Network {
         let mut stream = Stream {
             socket: None,
             error: None,
+            armed: false,
             read_armed: false,
             write_armed: false,
         };
@@ -264,12 +268,15 @@ impl Network {
         self.listeners.remove(&number);
     }
 
-    /// Tells the next change a wait on socket `number` asks for.
+    /// Tells the next change a wait on socket `number` asks for, or an error or hang-up, which
+    /// every wait hears.
     pub fn arm(&mut self, number: u32, interest: ReadyFor) {
         if let Some(flow) = self.flows.get_mut(&number) {
+            flow.armed = true;
             flow.read_armed = interest.contains(ReadyFor::READABLE);
             flow.write_armed = interest.contains(ReadyFor::WRITABLE);
         } else if let Some(stream) = self.streams.get_mut(&number) {
+            stream.armed = true;
             stream.read_armed = interest.contains(ReadyFor::READABLE);
             stream.write_armed = interest.contains(ReadyFor::WRITABLE);
         } else if let Some(listener) = self.listeners.get_mut(&number) {
@@ -290,6 +297,7 @@ impl Network {
         let flow = Flow {
             socket,
             peer: to,
+            armed: false,
             read_armed: false,
             write_armed: false,
         };
@@ -346,14 +354,11 @@ impl Network {
     /// change.
     pub fn waiting(&self) -> bool {
         !self.owed.is_empty()
-            || self
-                .flows
-                .values()
-                .any(|flow| flow.read_armed || flow.write_armed)
+            || self.flows.values().any(|flow| flow.armed)
             || self
                 .streams
                 .values()
-                .any(|stream| stream.socket.is_some() && (stream.read_armed || stream.write_armed))
+                .any(|stream| stream.socket.is_some() && stream.armed)
             || self.listeners.values().any(|listener| listener.armed)
     }
 
@@ -379,16 +384,16 @@ impl Network {
         let mut armed: Vec<(Watched, i32, i16)> = self
             .flows
             .iter()
-            .filter(|(_, flow)| flow.read_armed || flow.write_armed)
+            .filter(|(_, flow)| flow.armed)
             .map(|(&id, flow)| {
                 let wanted = events(flow.read_armed, flow.write_armed);
                 (Watched::Flow(id), flow.socket.as_raw_fd(), wanted)
             })
             .collect();
         armed.extend(self.streams.iter().filter_map(|(&number, stream)| {
-            let socket = stream.socket.as_ref()?;
+            let socket = stream.socket.as_ref().filter(|_| stream.armed)?;
             let wanted = events(stream.read_armed, stream.write_armed);
-            (wanted != 0).then(|| (Watched::Stream(number), socket.as_raw_fd(), wanted))
+            Some((Watched::Stream(number), socket.as_raw_fd(), wanted))
         }));
         armed.extend(
             self.listeners
@@ -433,12 +438,14 @@ impl Network {
                 }
                 Watched::Stream(number) => {
                     let stream = self.streams.get_mut(&number).expect("an armed connection");
+                    stream.armed = false;
                     stream.read_armed = false;
                     stream.write_armed = false;
                     self.owed.push_back(Owed::Ready(number, ready_for(revents)));
                 }
                 Watched::Flow(number) => {
                     let flow = self.flows.get_mut(&number).expect("an armed flow");
+                    flow.armed = false;
                     flow.read_armed = false;
                     flow.write_armed = false;
                     self.owed.push_back(Owed::Ready(number, ready_for(revents)));

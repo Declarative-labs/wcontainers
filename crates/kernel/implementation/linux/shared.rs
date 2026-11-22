@@ -191,7 +191,7 @@ pub(crate) fn pages_came<S: crate::System>(
     node: &Node,
     pages: Range<u64>,
     changes: u64,
-    result: Result<Rc<[u8]>, Errno>,
+    result: Result<crate::fs::backend::Body, Errno>,
 ) {
     let mut inode = node.borrow_mut();
     let Content::Backend(remote) = &mut inode.content else {

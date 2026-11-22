@@ -94,6 +94,65 @@ fn reads_woken_while_they_park_run_again() {
     assert!(text.contains("echoed 3000 wrong 0 end 0"), "{text}");
 }
 
+/// A server on this machine that sends a connection up to 1 MiB (as much as goes within 2 s), and
+/// once the next one comes, resets the first and tells the second "reset", for each pair in turn.
+/// Returns its port.
+fn resetting_server() -> u16 {
+    let listener = TcpListener::bind("0.0.0.0:0").expect("a TCP port");
+    let port = listener.local_addr().expect("an address").port();
+    std::thread::spawn(move || {
+        loop {
+            let Ok((mut data, _)) = listener.accept() else {
+                return;
+            };
+            let _ = data.set_write_timeout(Some(Duration::from_secs(2)));
+            let chunk = vec![7u8; 1 << 16];
+            let mut sent = 0;
+            while sent < 1 << 20 {
+                match data.write(&chunk) {
+                    Ok(written) => sent += written,
+                    Err(_) => break,
+                }
+            }
+            let Ok((mut signal, _)) = listener.accept() else {
+                return;
+            };
+            // The program's queue has taken what fits by now.
+            std::thread::sleep(Duration::from_millis(500));
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: a setsockopt with a value of its own size, on a socket this thread owns.
+            unsafe {
+                libc::setsockopt(
+                    std::os::fd::AsRawFd::as_raw_fd(&data),
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    (&raw const linger).cast(),
+                    size_of::<libc::linger>() as libc::socklen_t,
+                );
+            }
+            drop(data);
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = signal.write_all(b"reset");
+            let _ = signal.read_to_end(&mut Vec::new());
+        }
+    });
+    port
+}
+
+/// A connection whose queue is full hears of a reset while its program reads nothing, as Linux's
+/// does: the reset ends it at once, its queued bytes still read before the end.
+#[test]
+fn a_full_connection_hears_a_reset() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let port = resetting_server().to_string();
+    let ours = assert_same_output(&out, "fullreset", &[DOCKER_HOST_NAME, &port]);
+    let text = String::from_utf8_lossy(&ours.outcome.stdout);
+    assert!(text.contains("so_error Connection reset by peer"), "{text}");
+}
+
 /// A connection to the outside reads as reset after the container is saved and brought back on
 /// a new host (plan section 12); without a save it goes on.
 #[test]
