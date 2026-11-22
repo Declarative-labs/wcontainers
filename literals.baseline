@@ -12603,17 +12603,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"a re
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::texel_buffer	"typed buffer type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::texel_image	"storage image type"
 code	crates/wcontainers-shaders/src/lower.rs	str	derivatives_anywhere	"subgroup_uniformity"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	float	Lowering<'_>::evaluate_prologue	0.5
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	int	Lowering<'_>::evaluate_prologue	4
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"an evaluation without its input"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"centroid"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"place"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"slope_x"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"slope_y"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"w_at"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"w_slope"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::evaluate_prologue	"the position is not a vector"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::sample_positions	"sample_positions"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	input_vertices	3
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	input_vertices	4
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	input_vertices	6
