@@ -18,7 +18,9 @@ alpha as stored, into an `rgba16float` surface (a canvas configured `rgba16float
 tone mapping in a browser; wgpu's `Rgba16Float` surface natively, which is linear scRGB, so the
 copy also applies sRGB's curve mirrored about 0); where no extended range is shown the values
 clamp to 0 to 1, as on a display without it. The Direct3D 11 track may build it if this track
-allows, or the orchestrator rules.
+allows, or the orchestrator rules. Also, once the shaders track lands `VertexFormat::Bgrx8Unorm`
+(asked in its status file): the row `dxgi::B8G8R8X8_UNORM => (Bgrx8Unorm, 4)` in format.rs
+`dxgi_vertex_format`, which gives both fronts the format's `IA_VERTEX_BUFFER`, required from 10_0.
 
 ## Where things stand
 
