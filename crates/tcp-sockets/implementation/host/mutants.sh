@@ -63,7 +63,7 @@ mutant window-probe-repair-queue-lost "$implementation" 'set_int(socket, uapi::S
 mutant push-leaves-no-delay-on "$implementation" 'if !no_delay {' 'if false {'
 mutant md5-key-ignored "$implementation" 'TcpSetting::Md5Key(change) => set_md5_key(socket, family, change),' 'TcpSetting::Md5Key(_) => Ok(()),'
 mutant md5-absent-removal-refused "$implementation" 'Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),' ''
-mutant fixed-flow-label-not-held "$implementation" 'hold_flow_label(socket, peer, label)?;' 'let _ = (peer, label);'
+mutant fixed-flow-label-not-held "$implementation" 'hold_flow_label(socket, peer, label).map_err(Failure::Before)?;' 'let _ = (peer, label);'
 mutant fixed-flow-label-forgotten "$implementation" 'let _ = connection.fixed_flow_label.set(label);' ';'
 mutant multicast-refused "$implementation" 'TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group(' \
     'TcpSetting::Ip(IpSocketSetting::MulticastV4(_)) => Err(HostError::NotSupported), TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group('
@@ -74,7 +74,7 @@ mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(
 mutant push-neither-noop "$implementation" 'let corked = socket.tcp_cork().map_err(io_host_error)?;' \
     'return Ok(()); #[allow(unreachable_code)] let corked = socket.tcp_cork().map_err(io_host_error)?;'
 mutant record-end-ignored "$implementation" 'flags |= libc::MSG_EOR;' ';'
-mutant fast-open-connect-ignored "$implementation" 'set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)?;' ';'
+mutant fast-open-connect-ignored "$implementation" $'set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)\n                        .map_err(Failure::Before)?;' ';'
 mutant fast-open-data-ignored "$implementation" 'let flags = libc::MSG_FASTOPEN | libc::MSG_NOSIGNAL' \
     'let flags = libc::MSG_NOSIGNAL'
 mutant setting-Timestamping-noop "$implementation" '            TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {' \
@@ -82,7 +82,7 @@ mutant setting-Timestamping-noop "$implementation" '            TcpSetting::Ip(I
 mutant exit-node-port-by-kernel-only "$implementation" 'options::bind_chosen_by_exit_node(socket, address, &choice, &self.shortfalls)' \
     'options::in_port_ranges(socket, Some(&choice), || rustix::net::bind(socket, &SocketAddr::new(address, 0)).map_err(host_error))'
 mutant accept-interface-none "$implementation" 'self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET);' \
-    'self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET); let interface = { let _ = interface; NO_INTERFACE };'
+    'self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET); let interface = { let _ = interface; InterfaceIndex(NonZeroU32::MAX) };'
 mutant accept-interface-exact-address-only "$implementation" '.or_else(|| table.iter().find(|held| held.holds(address)))' ''
 mutant accept-no-specific-destination "$implementation" 'IpAddr::V4(address) => Some(address),' 'IpAddr::V4(_) => None,'
 mutant accept-mark-zero "$implementation" 'mark: PacketMark(options::get_option(' 'mark: PacketMark(u32::MIN & options::get_option::<u32>('
@@ -165,8 +165,8 @@ for pattern in 'Backlog(..)' 'FastOpenQueue(..)' 'FastOpenKeys(..)' 'FlowLabelRe
     mutant "listener-setting-${pattern%%(*}-noop" "$implementation" '            TcpListenerSetting::Socket(setting) => self.configure_socket(' \
         "TcpListenerSetting::$pattern => Ok(()), TcpListenerSetting::Socket(setting) => self.configure_socket("
 done
-mutant listen-backlog-argument-ignored "$implementation" $'self.bind(socket, &local)?;\n        SockRef::from(&socket)\n            .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))' \
-    $'self.bind(socket, &local)?; let _ = backlog;\n        SockRef::from(&socket)\n            .listen(4096)'
+mutant listen-backlog-argument-ignored "$implementation" $'        SockRef::from(&socket)\n            .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))\n            .map_err(|error| Failure::Before' \
+    $'        let _ = backlog; SockRef::from(&socket)\n            .listen(4096)\n            .map_err(|error| Failure::Before'
 mutant clock-set-outside-repair "$implementation" 'return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);' \
     'return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value).or(Ok(()));'
 mutant synchronize-frame-is-the-link-header "$implementation" '.and_then(|link| u32::try_from(link + length).ok())' \
@@ -196,7 +196,8 @@ mutant last-header-ipv4-unread "$state" $'uapi::IP_PKTOPTIONS,\n                
 mutant last-header-bytes-dropped "$state" 'header: &into[..written],' 'header: &into[..usize::MIN],'
 mutant last-header-room-of-the-packet-information "$state" $'uapi::IPV6_2292PKTOPTIONS,\n            &mut control.bytes,' \
     $'uapi::IPV6_2292PKTOPTIONS,\n            &mut control.bytes[..super::PACKET_OPTIONS_ROOM],'
-mutant listener-state-refused "$implementation" 'self.read_socket_state(listener.socket.fd(), listener.family, query)' '{ let _ = (listener, query); Err(HostError::NotSupported) }'
+mutant listener-state-refused "$implementation" $'        let shortfalls = &self.shortfalls;\n        match query {' \
+    $'        let shortfalls = &self.shortfalls;\n        if true { let _ = (socket, shortfalls, query); return Err(HostError::NotSupported); }\n        #[allow(unreachable_code)]\n        match query {'
 mutant incoming-processor-none "$state" 'NO_PROCESSOR => Ok(None),' 'processor if processor >= NO_PROCESSOR => Ok(None),'
 mutant incoming-processor-always-first "$state" '.map(|index| Some(ProcessorIndex(index)))' '.map(|_index| Some(ProcessorIndex(u32::MIN)))'
 mutant tuned-path-mtu-fixed "$state" 'path_mtu: MaximumTransmissionUnit(information.tcpi_pmtu),' 'path_mtu: MaximumTransmissionUnit(1500),'
@@ -206,8 +207,8 @@ mutant information-rtt-is-variance "$state" 'round_trip_time: microseconds(info.
 mutant bbr-bandwidth-halves-swapped "$state" 'u64::from(found.bandwidth_high) << u32::BITS | u64::from(found.bandwidth_low),' \
     'u64::from(found.bandwidth_low) << u32::BITS | u64::from(found.bandwidth_high),'
 mutant multipath-token-zero "$state" 'token: MultipathToken(found.token),' 'token: MultipathToken(0),'
-mutant subflow-information-zeroed "$state" 'information: information_of(information, shortfalls)?,' \
-    'information: information_of(&{ let mut zeroed = *information; zeroed.bytes[8..].fill(0); zeroed }, shortfalls)?,'
+mutant subflow-information-zeroed "$state" 'information: information_of(information, layout, shortfalls)?,' \
+    'information: information_of(&{ let mut zeroed = *information; zeroed.bytes[8..].fill(0); zeroed }, layout, shortfalls)?,'
 mutant repair-window-read-swapped "$state" $'send_window: WindowSize(window.snd_wnd),\n            maximum_window: WindowSize(window.max_window),\n            receive_window: WindowSize(window.rcv_wnd),' \
     $'send_window: WindowSize(window.rcv_wnd),\n            maximum_window: WindowSize(window.max_window),\n            receive_window: WindowSize(window.snd_wnd),'
 mutant ic-send-buffer-is-receive "$state" 'send_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_SNDBUF)?)?),' 'send_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_RCVBUF)?)?),'
@@ -222,6 +223,15 @@ mutant ic-repair-max-window-is-send "$state" 'max_window: window.maximum_window.
 mutant send-claims-all "$implementation" $'.send_with_flags(bytes, flags)\n                .map(ByteCount)' \
     $'.send_with_flags(bytes, flags)\n                .map(|_| ByteCount(bytes.len()))'
 mutant ic-multipath-checksums-on "$state" 'checksums: found.csum_enabled != u8::MIN,' 'checksums: true,'
+mutant disconnect-keeps-every-port "$implementation" '(bound.bound_by_number.then_some(bound), pending_error)' '(Some(bound), pending_error)'
+mutant port-zero-bound-by-number "$implementation" '=> port != ANY_PORT,' '=> { let _ = port; true }'
+mutant clash-keeps-every-port "$implementation" 'let lost = error == HostError::Errno(libc::EADDRNOTAVAIL) && !bound_by_number;' 'let lost = false;'
+mutant pending-error-never "$implementation" $'.take_pending_error(socket)\n                .map(TcpReading::PendingError),' $'.take_pending_error(socket)\n                .map(|_| TcpReading::PendingError(None)),'
+mutant listener-queue-and-backlog-swapped "$implementation" $'waiting_to_be_accepted: ConnectionCount(waiting),\n                        backlog: ListenBacklog(backlog),' $'waiting_to_be_accepted: ConnectionCount(backlog),\n                        backlog: ListenBacklog(waiting),'
+mutant repair-off-probes-always "$implementation" 'TcpRepair::OffWithoutWindowProbe => uapi::TCP_REPAIR_OFF_NO_WP as c_int,' 'TcpRepair::OffWithoutWindowProbe => uapi::TCP_REPAIR_OFF as c_int,'
+mutant vrf-default-as-any "$implementation" 'TcpKeyVrf::Default => Ok(Some(DEFAULT_VRF_INDEX)),' 'TcpKeyVrf::Default => Ok(None),'
+mutant ecn-accurate-as-classic "$state" $'    EcnMode::Accurate,\n    EcnMode::Pending,\n];' $'    EcnMode::Classic,\n    EcnMode::Pending,\n];'
+mutant last-header-interface-none "$state" 'interface: Ancillary::parse(records).interface(),' 'interface: { let _ = records; None },'
 status=0
 for index in "${!names[@]}"; do
     name=${names[$index]}

@@ -262,6 +262,7 @@ fn asks_for_reports(request: &TransmitReportRequest) -> bool {
 
 impl TcpConnections for HostTcpSockets {
     type Connection = HostTcpConnection;
+    type BoundSocket = HostTcpBoundSocket;
 
     fn bind(
         &self,

@@ -30,6 +30,16 @@
   `StandaloneTcpSockets` trait.
 
 ## Methods on the host
+- bind: `socket` as connect opens it, `setsockopt` for each `BindingSetting` (the shared crate), `bind` as below,
+  `getsockname`. The bound socket is the descriptor, its family and protocol, and whether its port was bound by
+  number (a requested or kernel-chosen port other than 0), which Linux cannot report afterwards. release: `close`.
+- connect and listen take `TcpLocalEnd`: `Unbound` opens and binds as below; `Bound` takes the socket as it is. A
+  failure before the socket starts connecting or listening gives a `Bound` input back, except a connect's
+  `EADDRNOTAVAIL` on a port bound as 0 (Linux frees that port: the socket is closed, `Unbound`); a failure after it
+  started (only `getsockname`) disconnects it first. An `Unbound` input always fails as `Unbound`.
+- disconnect: the descriptor leaves the readiness watch, `connect` to `AF_UNSPEC` (rustix's `connect_unspec`), then
+  `SO_ERROR` for the pending error; the socket comes back only when its port was bound by number (never for an
+  accepted connection), else it is closed. A refused `AF_UNSPEC`, which Linux never answers, closes it, counted.
 - connect: `socket(family, SOCK_STREAM, IPPROTO_TCP or IPPROTO_MPTCP)`; the owner by the thread's
   filesystem user around `socket` (EPERM when the host may not act as that user); the settings by `configure`;
   `IPV6_V6ONLY` from the bind address; `bind` for a requested or kernel-chosen port; when the exit node chooses,
@@ -43,11 +53,14 @@
   `EINPROGRESS` is `SynchronizeSent`, an immediate success under `TCP_REPAIR` is `EstablishedForRepair`, an
   immediate success under `TCP_FASTOPEN_CONNECT` is `DeferredUntilFirstSend`.
 - listen: the same socket and bind, `TCP_SAVE_SYN` always (accept owes the SYN's IP header), the settings,
-  `listen(backlog)`. The `Backlog` setting is `listen` again.
+  `listen` once with the last `Backlog` among them, else the backlog given. The `Backlog` setting on a listener is
+  `listen` again. A listener that listened in repair mode stays in it and takes `TCP_TIMESTAMP`.
 - accept: `accept4` non-blocking; the SYN's header from `TCP_SAVED_SYN`, cut to the buffer, its IP header found
   after the link header when the listener saves that too (`TCP_SAVE_SYN` 2); its fields from that header and what
   the accepted socket reports, the arrival interface from `IP_PKTOPTIONS` or `IPV6_2292PKTOPTIONS` (the listener
-  keeps `IP_PKTINFO` and `IPV6_RECVPKTINFO` on), and from the host's addresses for multipath.
+  keeps `IP_PKTINFO` and `IPV6_RECVPKTINFO` on), and from the host's addresses for multipath; no interface at all
+  refuses the accept, counted. A connection keeps packet information on only while it records the last header or
+  reports ICMP errors (`IP_RECVERR`), since an ICMP error names its arrival interface only in it.
 - send: socket2's `send_with_flags`, or its `sendmsg` when the send asks for transmit reports, with `MSG_NOSIGNAL`
   and `MSG_OOB`, `MSG_MORE`, `MSG_EOR` from the request; transmit reports as an `SO_TIMESTAMPING` control message
   (written by the shared crate's `datagram::send::Control`) with the request's record flags, the socket's own option flags (`OPT_ID`,
@@ -84,7 +97,12 @@
   listener's: `TCP_AO_INFO` with its counter flag.
 - read_state and read_listener_state (linux/state.rs), one source per query: Information `TCP_INFO` (linux-raw-sys's
   structure, and the Accurate ECN fields after `tcpi_total_rto_time` from a structure of our own until it carries
-  them; a shorter answer from an older kernel is counted, its missing fields zero); CongestionControl
+  them; a shorter answer from an older kernel is counted, its missing fields zero), `tcpi_unacked` and `tcpi_sacked`
+  as a connection's segment counts and a listener's accept queue and backlog; the ECN mode from `tcpi_ecn_mode` on
+  Linux 7.0 and later, whose last word is bit fields, from `TCPI_OPT_ECN` before 6.18 (no Accurate ECN there), and
+  on 6.18 and 6.19, whose last word is two `u16`s and which flag Classic and Accurate ECN alike, Disabled when the
+  flag is clear and otherwise refused, counted (no guess); the layout by the kernel's release (`uname`), the only
+  thing that tells it; TakePendingError `SO_ERROR`, mapped to the kernel interface's error names; CongestionControl
   `TCP_CONGESTION` (cut to the buffer as Linux cuts it) and `TCP_CC_INFO` (DCTCP's and BBR's forms by name, Vegas's
   by its length, none when empty); Queues `SIOCINQ`, `SIOCOUTQ`, `SIOCOUTQNSD`, `SIOCATMARK`; Tuned `SO_SNDBUF`,
   `SO_RCVBUF`, `SO_RCVLOWAT`, `TCP_MAXSEG`, `TCP_WINDOW_CLAMP`, `TCP_QUICKACK` and `tcpi_pmtu`; TakeSavedSynchronize
@@ -109,7 +127,9 @@
   (`SO_BUF_LOCK`, `SO_RCVLOWAT`, `SO_ATTACH_FILTER`/`SO_DETACH_FILTER`, `SO_TXREHASH`, `IP_MINTTL`/
   `IPV6_MINHOPCOUNT`, `IP_PKTINFO`-family records, `IP_RECVERR`/`IPV6_RECVERR`, the `TCP_*` options of tcp(7),
   `TCP_MD5SIG_EXT` (an IPv4 prefix of an IPv6 socket mapped), `TCP_AO_ADD_KEY` and `TCP_AO_DEL_KEY` (a key added
-  again or removed when absent leaves the socket as asked), `TCP_AO_INFO` (read first, since Linux writes the
+  again or removed when absent leaves the socket as asked; `del_async` only for the listener's asynchronous
+  removal; a key's VRF as `TCP_AO_KEYF_IFINDEX` or `TCP_MD5SIG_FLAG_IFINDEX` with the index, 0 for the default VRF,
+  no flag for any), `TCP_REPAIR` with `TCP_REPAIR_OFF_NO_WP` for leaving without a window probe, `TCP_AO_INFO` (read first, since Linux writes the
   requirement and ICMP choice at every call), `TCP_REPAIR*`, `TCP_FASTOPEN`, `TCP_FASTOPEN_KEY`, `TCP_SAVE_SYN`, the flow label
   manager's reflection), and an internet-protocol setting goes through the shared crate, multicast groups through
   its `set_multicast_group` (`MCAST_JOIN_GROUP`, which Linux takes on TCP sockets) and anycast through its
@@ -120,13 +140,13 @@
 - Settings that need CAP_NET_ADMIN or CAP_NET_RAW (mark, repair, transparent addresses, priorities above six)
   answer Linux's own EPERM when the host lacks it.
 - A fixed IPv6 flow label on a listener, an accepted connection or after connect (Linux fixes it only at connect).
-- What Linux does not record of the last packet a TCP socket received: its length and fixed IP header
-  (`LastReceivedHeader` gives the IPv6 extension headers recorded, length 0, counted), and the IPv4 options of
+- What Linux does not record of the last packet a TCP socket received: its fixed IP header
+  (`LastReceivedHeader` gives the IPv6 extension headers recorded), and the IPv4 options of
   that packet (`IP_PKTOPTIONS` writes only `IP_PKTINFO`, `IP_TTL` and `IP_TOS`: do_ip_getsockopt in
   net/ipv4/ip_sockglue.c), so an IPv4 reading's header bytes are none, counted.
 - A multipath connection that fell back to TCP has no `MPTCP_INFO` (EOPNOTSUPP), so `fell_back_to_tcp` is never
   true in a reading on Linux 7.0.
-- A listener's timestamp clock: Linux never lets a listener into repair mode (EPERM).
+- The ECN mode of a connection using ECN on Linux 6.18 and 6.19, which report none (refused, counted).
 - Fields of `ReceivedPacketFields` that Linux never reports for a SYN (its IPv4 arrival interface, its
   timestamps, and everything of a multipath SYN): taken from what the accepted socket reports, each counted under
   a named reason.
@@ -215,6 +235,8 @@ machine allows, and each stays clear of the value it is checked against.
   buffer doubled, so that each buffer reads its own. SMALL_RECEIVE_BUFFER 8 KiB, the repair check's client receive
   buffer, well below the window a connection offers by default, so that the two ends' windows differ.
   SET_PROCESSOR 3, a processor a listener is told to receive on that is not the first (Linux takes any number).
+  SMALL_BACKLOG 7 with LEFT_WAITING 2 connections left unaccepted (fewer than it holds, and unlike each other);
+  LARGE_BACKLOG 100 000, above any `somaxconn` (4096 by default), so that the clamp shows.
 - Sizes. TRANSFER 1 MiB for the order check. ONE_SEND_OFFERED 32 MiB for one send to a peer that reads nothing,
   more than loopback's largest buffers take at once (the send buffer's and the peer's receive buffer's ceilings of
   tcp_wmem and tcp_rmem, 4 and 6 MiB by default), so that the send takes part. HEADER_ROOM 256 bytes for a SYN's headers, CUT_HEADER 3 to cut them.

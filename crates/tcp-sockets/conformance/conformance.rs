@@ -5643,9 +5643,7 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
-                // SAFETY: only the network namespace is unshared, so the thread shares its descriptors as before.
-                unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
-                    .expect("a network namespace of the check's own, as root");
+                own_network_namespace();
                 let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
                     .expect("a socket to bring the loopback up with");
                 // SAFETY: ifreq is plain data.
@@ -5653,7 +5651,7 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
                 // SAFETY: the name is the union's only member.
                 let name = unsafe { &mut request.ifr_ifrn.ifrn_name };
                 for (to, from) in name.iter_mut().zip(LOOPBACK_NAME.bytes()) {
-                    *to = from as core::ffi::c_char;
+                    *to = from as linux_raw_sys::ctypes::c_char;
                 }
                 request.ifr_ifru.ifru_flags = net_device_flags::IFF_UP as core::ffi::c_short;
                 // SAFETY: SIOCSIFFLAGS takes an ifreq that names the device and gives its flags.
@@ -5672,6 +5670,19 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
             .join()
             .expect("the check's thread")
     })
+}
+
+/// Moves the calling thread into a network namespace of its own, as root.
+#[cfg(target_os = "linux")]
+fn own_network_namespace() {
+    // SAFETY: only the network namespace is unshared, so the thread shares its descriptors as before.
+    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+        .expect("a network namespace of the check's own, as root");
+}
+
+#[cfg(not(target_os = "linux"))]
+fn own_network_namespace() {
+    panic!("network namespaces are Linux's");
 }
 
 /// The name Linux gives the loopback device of every network namespace.
