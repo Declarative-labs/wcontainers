@@ -626,7 +626,10 @@ fn geometry_shaders_pass_their_primitive_numbers_on() {
         let plain = convert(read(&gs_code), &VariantKey::default(), None)
             .unwrap_or_else(|e| panic!("{route}: {e}"));
         assert!(stage::writes_primitive_id(&plain.reflection), "{route}");
-        assert!(!wgsl(&plain.modules[1]).contains("primitive_id"), "{route}");
+        // The record: the position, each output location, then the number, which the pass-through
+        // reads only when it passes it on.
+        let slot = 1 + stage::locations(&plain.reflection.outputs).len();
+        assert!(!reads_slot(&wgsl(&plain.modules[1]), slot), "{route}");
         let location = stage::locations(&plain.reflection.outputs)
             .last()
             .map_or(0, |l| l + 1);
@@ -640,13 +643,10 @@ fn geometry_shaders_pass_their_primitive_numbers_on() {
         };
         let at = stage::primitive_id_location(&key);
         let flat = format!("@location({at}) @interpolate(flat");
-        // The record: the position, each output location, then the number.
-        let slot = 1 + stage::locations(&plain.reflection.outputs).len();
-        let read_at = format!("@location({slot}) primitive_id: vec4<u32>");
         let gs = convert(read(&gs_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
         let passthrough = wgsl(&gs.modules[1]);
         assert!(passthrough.contains(&flat), "{route}: {passthrough}");
-        assert!(passthrough.contains(&read_at), "{route}: {passthrough}");
+        assert!(reads_slot(&passthrough, slot), "{route}: {passthrough}");
         assert_ne!(gs.modules[1].key, plain.modules[1].key, "{route}");
         let ps = convert(read(&ps_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
         let fragment = wgsl(&ps.modules[0]);
@@ -675,9 +675,22 @@ fn geometry_shaders_pass_their_primitive_numbers_on() {
             passthrough.contains(&format!("@location({selection}) selection: vec4<u32>")),
             "{route}: {passthrough}"
         );
-        let read_at = format!("@location({}) primitive_id: vec4<u32>", selection + 1);
-        assert!(passthrough.contains(&read_at), "{route}: {passthrough}");
+        assert!(
+            reads_slot(&passthrough, selection + 1),
+            "{route}: {passthrough}"
+        );
     }
+}
+
+/// Whether a pass-through's entry point takes record slot `slot` (a `vec4<u32>` argument at that
+/// location).
+fn reads_slot(text: &str, slot: usize) -> bool {
+    let at = format!("@location({slot}) ");
+    text.match_indices(&at).any(|(i, _)| {
+        let rest = &text[i + at.len()..];
+        let argument = &rest[..rest.find([',', ')', '\n']).unwrap_or(rest.len())];
+        !argument.starts_with('@') && argument.trim_end().ends_with("vec4<u32>")
+    })
 }
 
 #[test]
