@@ -15,7 +15,9 @@ WebGL 2 gather for an untrue reason, and five minor points, which run 77 settled
 tip after the owner's interfaces were merged; the 15.4 entry point the NIR track asked for is
 `rewrite` (since run 57). The milestone is reported complete for its independent check.
 Its third check's findings were settled in run 72 and its fourth check's in run 73 (history).
-G6b (gap A6: DXIL geometry, hull and domain shaders), run 7: DXIL geometry, hull and domain
+G6a's fourth check (at 5c70cc91) found five minor points, settled in run 79 (its section below).
+G6b (gap A6: DXIL geometry, hull and domain shaders), given again on 2026-11-22 as its run 1 (run
+79, the section below; runs 65 to 74 built it, history): DXIL geometry, hull and domain
 shaders convert through the passes the DXBC route uses and draw equal to real Direct3D with dxc's
 builds. Of the four Direct3D 12 rig scenes that failed for A6, two draw equal to real Direct3D 12
 (geometry, streamout); raster-fill and tessellation still differ on the RTX 3080, only in cells
@@ -24,7 +26,91 @@ is WARP's word for word, and the scene drawn on WARP through the stage helper eq
 WARP in every texel; the RTX 3080 orders a patch's triangles its own way, which Direct3D leaves to
 the device. Raster-fill runs no stage of A6. Both meet the Vulkan path's line rule, a listed loss
 (plan 15.1). Not met as G6b writes it ("equal on the RTX 3080"), and not reachable by the
-converter: the owner's ruling is asked ("New for the owner").
+converter: the owner's ruling is asked ("New for the owner"), and the milestone is reported
+complete for its independent check with that one item named as waiting on it.
+
+## G6b again, run 1 (run 79): G6a's fourth check, and G6b's bar at the tip
+
+Logs, scripts and the written files in scratch `graphics-shaders/g6b-r79`. Code runs at 0b071580
+(laptop, desktop) and 2db605c2 (x86 machine); the two differ only in tests/geometry.rs, which the
+x86 machine ran at 2db605c2, and the commits after them change only this file.
+
+G6a's fourth check (at 5c70cc91), each settled:
+- Run 78's section named a00ab267, not the pushed tip: it now says so, with the check's rerun at
+  5c70cc91 that reproduced every figure.
+- The stale departure about the corpus test copying the WebGL 2 options: corrected (only
+  `naga_refusal` copies naga's options, for naga's own reason).
+- `SWIZZLED_DEPTH` was defined in lib.rs: it is now in src/refusal.rs with the others
+  (`wcontainers_shaders::refusal::SWIZZLED_DEPTH`; no other crate used the old path), so the claim
+  that every refusal name is defined there holds.
+- Seed 40961 of `geometry_draw` and seed 60606 of the fuzz test: the check's figures are in A10,
+  A11 and A12. Nothing of a new kind.
+
+G6b's bar, item by item at the tip:
+- The rig's DXIL shaders refused for A6 convert: all 16 of rig-dxil (`DxilGeometryShader` 6,
+  `DxilHullShader` 6, `DxilDomainShader` 3, the reader's "unsupported builtin" 1, in the records
+  before 7c988bce) are `ok`.
+- The runner's and own files refused for A6 give their recorded verdicts: runner-dxil's 40
+  (`DxilGeometryShader` 10, `DxilHullShader` 22, `DxilDomainShader` 6, "unsupported builtin" 2):
+  32 convert, 8 are refused by the DXBC route's names (`CullDistance` 4, `ClipDistance` 1,
+  `PrimitiveId` 1, `GeometryPatchInput` 1) and `DomainWithoutControlPoints` 1 (A14). Own-dxil's
+  11 (`DxilGeometryShader` 10, "unsupported builtin" 1): all convert; own-dxil now holds dxc's
+  builds of 17 geometry, 35 hull and 5 domain shaders, every one `ok`. The three old names are
+  gone from src. Counted from the records (before: `git show 7c988bce^`), which the laptop's
+  corpus test holds at the tip (below).
+- Every refusal that remains has a name, defined once in src/refusal.rs, and is counted per
+  corpus in the records, which the corpus test holds.
+- Drawn against real Direct3D at seeds of this run's own (79001, 16 cases; the checker picks its
+  own; RTX 3080, gpu-suite.log, one GPU job): `geometry_draw`'s geometry cases, both routes, 768
+  comparisons, 9 failed, every one gap A10's triangle edge pattern with 0 texels at a clipped line
+  end (79005 `gs_clip` TriangleList 30 from 3 x2, DXBC and DXIL, 6 of 920 texels, largest 127;
+  79015 `gs_clip` TriangleStrip 14 from 2, DXBC and DXIL, 5 of 802, largest 48; `vs_cull` DXBC at
+  79008, 79012 and 79015 three times, 2 to 18 texels, largest 167); the replay on ANGLE, 608
+  comparisons, 4 failed, the same `gs_clip` cases; depth clamping, 96 comparisons, 2 failed, gap
+  A12's pattern (79008 and 79016 `gs_cut` TriangleStrip, 24 and 30 steps); stream output after a
+  geometry shader 256, 384, 448 and 128 comparisons, 0 failed (16 and 64 known, A22);
+  `tessellation_draw` 832, 1,216 and 1,024 comparisons, 0 failed (80 known, subnormal factors). No
+  failure of a kind A10 and A12 do not list; each DXIL failure mirrors a DXBC one.
+- A mutated copy of each test proven to fail (scratch `mutant-*.diff`, applied alone; x86
+  machine, x86-mutants2.log at 2db605c2, where the unmutated test binary passes, 20 tests): the
+  hull's winding swapped for DXIL fails `hull_and_domain_shaders_declare_what_they_are` and
+  `hull_values_make_the_same_records_on_both_routes`; DXIL domain inputs read as patch constants
+  fails `hull_values_make_the_same_records_on_both_routes`; a DXIL geometry shader's instance
+  count taken as 1 passed every test that runs without a GPU, so `geometry_shaders_declare_what_they_are`
+  now checks dxc's build of each of its seven shaders too (2db605c2), and fails on that mutant
+  (gs_instances.dxil, instances 1 against 3). Drawn with the instance and domain input mutants
+  both applied (gpu-mutants.log, default seeds 1 to 4): `geometry_shaders_draw_as_direct3d_does`
+  fails exactly the four DXIL `gs_instances` cases (460 to 826 texels apart), the replay its four,
+  the rows stream test 8 of 64 (DXIL `gs_rows_lines`); every tessellation scene test fails for
+  dxc's builds (the solid patches up to 2,940 texels missed a cell) with fxc's cells all equal, and
+  stream output after the domain stage refuses (`DomainInputShape`). Run 66's drawn mutants
+  (winding, layer from the stage) are in the history.
+- The four Direct3D 12 rig scenes through the Direct3D 12 front built from the tip against real
+  Direct3D 12 (scenes1.log, RTX 3080): geometry (7 outputs) and streamout (3) pass with largest
+  difference 0; raster: cull, scissor and viewports pass, fill fails 64 of 16,384 pixels;
+  tessellation fails 310 of 32,768. The same figures as run 66 and every run since: the line cells
+  of A6 (gap entry), waiting on the owner's ruling, not reachable by the converter.
+
+Runs:
+- Laptop (i7-8750H, load 4.1 at the start, 5.0 at the end, another track's job beside; 4 build
+  jobs under `choom`): the whole suite with every corpus and glslang, `--include-ignored --skip
+  mutated` (laptop-suite.log): 124 passed, 1 failed, the known failure
+  `damaged_records_decode_without_a_panic` (A16; `ps_levels_past.dxil` case 17). Every corpus's
+  records hold (13 passed). WGSL files written: corpus 185, games 527, games DXIL 441, own 145, own
+  DXIL 136, rig 79, rig DXIL 72, runner 1438, runner DXIL 1418, rewrite 3. Every written WGSL and
+  GLSL file and every verdict is byte-equal to run 78's (`diff -r` with g6a-r78/out: only
+  `cache.txt` and `converter-version.txt` differ, as the crate's sources changed, besides
+  glslang's `.log` paths), so Chrome's compile of run 78's files stands for these.
+- x86 machine (load 2.0 at the start, 9.2 at the end): rustfmt of every file of this crate clean,
+  clippy of this crate and the interface with warnings denied clean (0b071580, and this crate
+  again at 2db605c2), the literal check prints no line of this crate (it fails on other tracks'
+  lines); this crate's baseline lines 4,787, 356 under src (x86-checks.log, x86-mutants2.log).
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs, queued 23:00, ran 23:02 to 23:16): Windows clippy
+  of this crate with warnings denied clean; every test binary at default seeds with
+  `--test-threads 1`: 171 passed, 0 failed, 6 ignored (gpu-suite.log), then the seeded draws
+  above.
+- Not run: WebAssembly (no input of its build changed but the refusal's place; run 78's figures),
+  the fuzz test (A11 holds the check's new figures).
 
 ## G6a run 10 (run 78): the first check's findings at the tip after the interface merge
 
@@ -106,6 +192,12 @@ target copy, a clear value and a blend constant, with no draw test using them ye
 45 literals it brought (the literal check failed at the tip on them) and changed nothing else of it.
 
 ## New for the owner
+
+- Run 79: G6b given again; its bar measured at the tip (section above). Unchanged since run 74:
+  of the four Direct3D 12 rig scenes, raster-fill and tessellation still differ on the RTX 3080 in
+  line cells only, which the converter cannot reach (A6); the ruling asked in run 74 is still
+  open. `SWIZZLED_DEPTH` moved to `wcontainers_shaders::refusal` (no other crate used it). The
+  geometry declaration test now checks dxc's builds too. No interface change.
 
 - Run 78: nothing new, no code changed. The owner's interface merge (a00ab267) touches nothing
   this crate builds; the whole suite, every corpus, WebAssembly, Chrome and the checks were run
@@ -489,7 +581,8 @@ The gap list (every item of the pass bar not met):
   of arrays among them is refused by name (`OutputArray`, no file of any corpus has one). Of the four
   Direct3D 12 rig scenes that failed for A6, two (geometry, streamout) draw equal to real Direct3D 12.
   Not met: raster-fill (64 of 16,384 pixels beyond 1) and tessellation (310 of 32,768 beyond 4) differ
-  on the RTX 3080, as since run 66 (the fifth check's scenes.log at 8c498a03), only in cells drawn as
+  on the RTX 3080, as since run 66 (the fifth check's scenes.log at 8c498a03, and run 79's
+  scenes1.log at 0b071580, the same counts), only in cells drawn as
   lines (wireframe, and the isoline patch). Tessellation, measured to the end in run 74 (its
   section): the tessellator's points and indices equal WARP's in order for every topology
   (`tessellator_matches_direct3d`), and the rig's scene drawn on WARP through the stage helper
@@ -2557,6 +2650,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 79's scripts in scratch `graphics-shaders/g6b-r79` are run 78's with its folder and
+  `out-r79`, plus `scenes.sh <n> [scenes]` (the Direct3D 12 rig scenes through the Direct3D 12
+  front built from the clone `tip`), `gpu-noclippy.sh` (one GPU job of `geometry_draw` and
+  `tessellation_draw` without clippy, for a mutant applied with `git -C tip apply
+  ../mutant-<name>.diff`, then `git -C tip checkout -- crates/wcontainers-shaders`) and
+  `x86-mutants2.sh` (each mutant alone against tests/geometry.rs on the x86 machine, from a bundle
+  of the checkout's HEAD sent as `/work/probes/shaders-tip2.bundle`, the patches as
+  `/work/probes/shaders-mutant-<name>.diff`).
 - Run 78's scripts in scratch `graphics-shaders/g6a-r78` are run 77's with its folder, `out-r78`
   and `outw-r78`, the clone `tip` (`tree-tar.sh`, and `x86-checks2.sh` on a bundle of its branch
   `x86tip`); Chrome ran as `crates/wcontainers-shaders/web/check ../out` from that clone after
