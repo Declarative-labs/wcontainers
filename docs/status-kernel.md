@@ -21,6 +21,8 @@ crates/runtime/implementation/single-kernel.
   is still to be built by the kernel track, when the kernel first waits on a host socket.
 - The literal check now also reports the twelve new `PollEvents` flags in signal_information.rs
   as redefinitions of linux-raw-sys's POLL constants (a reviewed file; nothing in the kernel's).
+- For the owner: `wait_until_ready`'s one-sentence comment does not say that ERROR and HANG_UP
+  end a wait whether or not they were asked for, which the suites keep checking.
 
 ## For the owner
 
