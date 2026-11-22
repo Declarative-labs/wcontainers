@@ -19,7 +19,7 @@ use crate::{ConvertError, refusal};
 pub(super) fn decoding(format: Format) -> Result<(Kind, Vec<u32>)> {
     let layout = match vertex_format(format) {
         // No integer format holds BGRA's bytes in red's place.
-        Some(VertexFormat::Bgra8Unorm) | None => None,
+        Some(VertexFormat::Bgra8Unorm | VertexFormat::Bgrx8Unorm) | None => None,
         Some(v) => Some(layout(v)),
     };
     match layout {

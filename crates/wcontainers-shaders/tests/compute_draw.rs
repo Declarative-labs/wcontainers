@@ -1586,6 +1586,13 @@ fn texel_views(gpu: &Gpu, seed: u64, kinds: Kinds) -> Vec<TexelView> {
     let floats = [LOADED_UINTS.as_slice(), &LOADED_SINTS].concat();
     let uints = [LOADED_FLOATS.as_slice(), &LOADED_SINTS].concat();
     let sints = [LOADED_FLOATS.as_slice(), &LOADED_UINTS].concat();
+    let read = match kinds {
+        Kinds::Read(f) => {
+            assert!(texel_supported(gpu, f, false), "{f:?} typed buffers");
+            vec![f]
+        }
+        _ => Vec::new(),
+    };
     let (floats, uints, sints, counts) = match kinds {
         Kinds::Declared => (
             LOADED_FLOATS.as_slice(),
@@ -1594,13 +1601,23 @@ fn texel_views(gpu: &Gpu, seed: u64, kinds: Kinds) -> Vec<TexelView> {
             Format::R32Uint,
         ),
         Kinds::Other => (floats.as_slice(), &uints[..], &sints[..], Format::R32Sint),
+        Kinds::Read(_) => (
+            read.as_slice(),
+            LOADED_UINTS.as_slice(),
+            LOADED_SINTS.as_slice(),
+            Format::R32Uint,
+        ),
+    };
+    let stored = match kinds {
+        Kinds::Read(_) => LOADED_FLOATS.as_slice(),
+        _ => floats,
     };
     let slots = [
         (SlotKind::Texture, 0, pick(floats, false, &mut next)),
         (SlotKind::Texture, 1, pick(uints, false, &mut next)),
         (SlotKind::Texture, 2, pick(sints, false, &mut next)),
         (SlotKind::Texture, 3, pick(floats, false, &mut next)),
-        (SlotKind::Storage, 0, pick(floats, true, &mut next)),
+        (SlotKind::Storage, 0, pick(stored, true, &mut next)),
         (SlotKind::Storage, 1, counts),
     ];
     slots
@@ -1932,11 +1949,20 @@ fn stored_apart(v: &TexelView, results: &[u8], a: &[u8], o: &[u8]) -> (usize, us
 enum Kinds {
     Declared,
     Other,
+    /// The float views (t0, t3) of this format, the others as `Declared`.
+    Read(Format),
 }
 
 #[test]
 fn typed_buffers_match_direct3d() {
     typed_buffers_alike(Kinds::Declared);
+}
+
+/// `B8G8R8X8_UNORM` views read as Direct3D 11 reads them: blue, green and red from their bytes, alpha
+/// one whatever the fourth byte holds.
+#[test]
+fn b8g8r8x8_typed_buffers_read_as_direct3d_reads_them() {
+    typed_buffers_alike(Kinds::Read(Format::Bgrx8Unorm));
 }
 
 #[test]

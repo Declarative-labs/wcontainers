@@ -47,6 +47,7 @@ pub(crate) fn vertex_format(format: Format) -> Option<VertexFormat> {
         F::Rgba8Uint => V::Uint8x4,
         F::Rgba8Sint => V::Sint8x4,
         F::Bgra8Unorm => V::Bgra8Unorm,
+        F::Bgrx8Unorm => V::Bgrx8Unorm,
         F::Rgb10a2Unorm => V::Unorm10_10_10_2,
         F::Rgb10a2Uint => V::Uint10_10_10_2,
         F::Rg11b10Float => V::Float11_11_10,

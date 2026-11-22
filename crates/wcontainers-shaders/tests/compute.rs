@@ -68,7 +68,7 @@ fn reads_back(file: &str, m: &wcontainers_gpu::ShaderModule) {
 
 /// Formats `cs_texels` can bind at each slot: t0 and t3 float, t1 unsigned, t2 signed, u0 float
 /// (stored), u1 32-bit unsigned (atomics).
-const FLOAT_FORMATS: [Format; 24] = [
+const FLOAT_FORMATS: [Format; 25] = [
     Format::R8Unorm,
     Format::R8Snorm,
     Format::R16Unorm,
@@ -83,6 +83,7 @@ const FLOAT_FORMATS: [Format; 24] = [
     Format::Rgba8Unorm,
     Format::Rgba8Snorm,
     Format::Bgra8Unorm,
+    Format::Bgrx8Unorm,
     Format::Rgb10a2Unorm,
     Format::Rg11b10Float,
     Format::Rg32Float,

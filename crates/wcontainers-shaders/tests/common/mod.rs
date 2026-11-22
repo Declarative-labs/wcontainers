@@ -203,6 +203,7 @@ pub fn dxgi(format: Format) -> DXGI_FORMAT {
         Format::Rgba8Uint => DXGI_FORMAT_R8G8B8A8_UINT,
         Format::Rgba8Sint => DXGI_FORMAT_R8G8B8A8_SINT,
         Format::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
+        Format::Bgrx8Unorm => DXGI_FORMAT_B8G8R8X8_UNORM,
         Format::Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
         Format::Rgb10a2Uint => DXGI_FORMAT_R10G10B10A2_UINT,
         Format::Rg11b10Float => DXGI_FORMAT_R11G11B10_FLOAT,
