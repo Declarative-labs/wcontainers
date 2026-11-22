@@ -6,7 +6,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 use wcontainers_kernel::UserId;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 
 use crate::{HostIcmpSocket, HostIcmpSockets};
 
@@ -71,7 +71,7 @@ impl Readiness<HostIcmpSocket> for HostIcmpSockets {
         &self,
         socket: &HostIcmpSocket,
         _interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         match socket.never {}
     }
 }

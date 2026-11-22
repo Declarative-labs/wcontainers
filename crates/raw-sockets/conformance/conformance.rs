@@ -42,7 +42,7 @@ use wcontainers_raw_sockets::{
     ChecksumOffset, HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket,
     RawSocketSetting, RawSockets, RouterAlert, RouterAlertIsolation,
 };
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
 
 #[doc(hidden)]
@@ -2118,7 +2118,11 @@ pub fn waits_on_many_sockets_each_wake_once<S: RawSockets>(sockets: S) {
     send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
     for (wait, wakes) in &mut waits {
         assert!(wakes.first_came(), "a wait woken when the packet arrives");
-        assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
+        assert!(
+            finished(poll_with(wait.as_mut(), wakes))
+                .ready_for
+                .contains(ReadyFor::READABLE)
+        );
     }
     std::thread::sleep(QUIET);
     for (_, wakes) in &waits {
@@ -2181,9 +2185,12 @@ pub fn a_wait_for_a_fact_a_raw_socket_never_has_waits_on<S: RawSockets>(sockets:
             &format!("{interest:?}: the ICMP error"),
         );
         let facts = finished(poll_with(wait.as_mut(), wakes));
-        assert!(facts.contains(ReadyFor::ERROR), "{interest:?}: {facts:?}");
+        assert!(
+            facts.unconditional.contains(UnconditionalEvents::ERROR),
+            "{interest:?}: {facts:?}"
+        );
         for never in NEVER_ON_DATAGRAMS {
-            assert!(!facts.contains(never), "{interest:?}: {facts:?}");
+            assert!(!facts.ready_for.contains(never), "{interest:?}: {facts:?}");
         }
     }
 }
@@ -2236,7 +2243,14 @@ pub fn a_wait_for_writing_finishes_at_once<S: RawSockets>(sockets: S) {
                 pin!(sockets.wait_until_ready(&socket, interest)),
                 &wakes,
             ));
-            assert_eq!(facts, ReadyFor::WRITABLE, "{version:?} {interest:?}");
+            assert_eq!(
+                facts,
+                ReadinessReport {
+                    ready_for: ReadyFor::WRITABLE,
+                    unconditional: UnconditionalEvents::empty(),
+                },
+                "{version:?} {interest:?}"
+            );
         }
     }
 }
@@ -2322,7 +2336,10 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
         pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
         &wakes,
     );
-    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
+    assert!(
+        facts.unconditional.contains(UnconditionalEvents::ERROR),
+        "{facts:?}"
+    );
     let long = vec![u8::MAX; OVERSIZED_PAYLOAD];
     let mtu = u32::try_from(OVERSIZED_PAYLOAD / 2).expect("a small MTU");
     ip(&format!("link set {DUMMY} mtu {mtu}"));
@@ -2347,7 +2364,10 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
         pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
         &wakes,
     ));
-    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
+    assert!(
+        facts.unconditional.contains(UnconditionalEvents::ERROR),
+        "{facts:?}"
+    );
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
     let packet = seen(&into[..fields.length]);

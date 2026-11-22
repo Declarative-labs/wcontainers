@@ -35,7 +35,7 @@ use wcontainers_internet_protocol::{
     TransmitTime, TransmitTimeError, TransmitTimeMode, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
 
 #[doc(hidden)]
@@ -2628,7 +2628,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
 pub const COUNTED_WAITS: usize = 100;
 
 /// Returns the bytes allocated in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
-pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
+pub fn wait_allocations<F: Future<Output = Result<ReadinessReport, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
     mut take: impl FnMut(),
@@ -2649,7 +2649,11 @@ pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
             arrive();
             assert!(wakes.first_came(), "the wait is woken");
             let before = allocations();
-            assert!(finished(poll_with(call.as_mut(), &wakes)).contains(ReadyFor::READABLE));
+            assert!(
+                finished(poll_with(call.as_mut(), &wakes))
+                    .ready_for
+                    .contains(ReadyFor::READABLE)
+            );
             during += allocations() - before;
             allocations()
         };
@@ -2743,7 +2747,7 @@ impl Wakes {
 }
 
 /// Checks that the wait is woken in time, and if not, whether its facts came anyway, telling a lost wake from a lost fact.
-pub fn woken<F: Future<Output = Result<ReadyFor, HostError>>>(
+pub fn woken<F: Future<Output = Result<ReadinessReport, HostError>>>(
     call: Pin<&mut F>,
     wakes: &Arc<Wakes>,
     by: &str,
@@ -2760,19 +2764,19 @@ pub fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Ou
     call.poll(&mut Context::from_waker(&waker))
 }
 
-/// Returns the facts a finished wait gave.
-pub fn finished(poll: Poll<Result<ReadyFor, HostError>>) -> ReadyFor {
+/// Returns the report a finished wait gave.
+pub fn finished(poll: Poll<Result<ReadinessReport, HostError>>) -> ReadinessReport {
     match poll {
         Poll::Ready(facts) => facts.expect("the wait succeeds"),
         Poll::Pending => panic!("the wait did not finish"),
     }
 }
 
-/// Returns the facts a wait gives at once or when it is next woken.
-pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
+/// Returns the report a wait gives at once or when it is next woken.
+pub fn finished_soon<F: Future<Output = Result<ReadinessReport, HostError>>>(
     mut call: Pin<&mut F>,
     wakes: &Arc<Wakes>,
-) -> ReadyFor {
+) -> ReadinessReport {
     match poll_with(call.as_mut(), wakes) {
         Poll::Pending => {
             if !wakes.first_came() {
@@ -2809,7 +2813,11 @@ pub fn waits_on_many_sockets_each_wake_once<S: IcmpSockets>(sockets: S) {
     }
     for (wait, wakes) in &mut waits {
         assert!(wakes.first_came(), "a wait woken when its reply arrives");
-        assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
+        assert!(
+            finished(poll_with(wait.as_mut(), wakes))
+                .ready_for
+                .contains(ReadyFor::READABLE)
+        );
     }
     std::thread::sleep(QUIET);
     for (_, wakes) in &waits {
@@ -2931,7 +2939,10 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
         pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
         &wakes,
     );
-    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
+    assert!(
+        facts.unconditional.contains(UnconditionalEvents::ERROR),
+        "{facts:?}"
+    );
     let message = echo(IpVersion::V6, &vec![u8::MAX; LONG_MESSAGE]);
     let forbidden = Ipv6HeaderFields {
         local_fragmentation: LocalFragmentation::Forbidden,
@@ -2953,7 +2964,10 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
         pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
         &wakes,
     ));
-    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
+    assert!(
+        facts.unconditional.contains(UnconditionalEvents::ERROR),
+        "{facts:?}"
+    );
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
     assert_eq!(seen(&into[..fields.length]).protocol, IpNumber::IPV6_ICMP);
@@ -3005,9 +3019,12 @@ pub fn a_wait_for_a_fact_icmp_never_has_waits_on<S: IcmpSockets>(sockets: S) {
             &format!("{interest:?}: the ICMP error"),
         );
         let facts = finished(poll_with(wait.as_mut(), wakes));
-        assert!(facts.contains(ReadyFor::ERROR), "{interest:?}: {facts:?}");
+        assert!(
+            facts.unconditional.contains(UnconditionalEvents::ERROR),
+            "{interest:?}: {facts:?}"
+        );
         for never in NEVER_ON_DATAGRAMS {
-            assert!(!facts.contains(never), "{interest:?}: {facts:?}");
+            assert!(!facts.ready_for.contains(never), "{interest:?}: {facts:?}");
         }
     }
 }
@@ -3098,7 +3115,14 @@ pub fn a_wait_for_writing_finishes_at_once<S: IcmpSockets>(sockets: S) {
                 pin!(sockets.wait_until_ready(&socket, interest)),
                 &wakes,
             ));
-            assert_eq!(facts, ReadyFor::WRITABLE, "{version:?} {interest:?}");
+            assert_eq!(
+                facts,
+                ReadinessReport {
+                    ready_for: ReadyFor::WRITABLE,
+                    unconditional: UnconditionalEvents::empty(),
+                },
+                "{version:?} {interest:?}"
+            );
         }
     }
 }

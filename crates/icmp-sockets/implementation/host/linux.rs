@@ -17,7 +17,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 
 use crate::{HostIcmpSocket, HostIcmpSockets};
 use shared::datagram::addresses::local_address;
@@ -165,10 +165,13 @@ impl HostIcmpSocket {
         let holds = state.errors.holds_entries();
         if holds != state.held_errors {
             state.held_errors = holds;
-            self.watched.hold(if holds {
-                ReadyFor::ERROR
-            } else {
-                ReadyFor::empty()
+            self.watched.hold(ReadinessReport {
+                ready_for: ReadyFor::empty(),
+                unconditional: if holds {
+                    UnconditionalEvents::ERROR
+                } else {
+                    UnconditionalEvents::empty()
+                },
             });
         }
     }
@@ -416,7 +419,7 @@ impl Readiness<HostIcmpSocket> for HostIcmpSockets {
         &self,
         socket: &HostIcmpSocket,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         socket.watched.wait_until_ready(interest).await
     }
 }

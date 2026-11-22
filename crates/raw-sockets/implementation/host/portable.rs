@@ -5,7 +5,7 @@ use wcontainers_internet_protocol::{ByteCount, IpSendFields, IpVersion, Received
 use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::{RawPacket, RawSocketSetting, RawSockets};
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 
 use crate::{HostRawSocket, HostRawSockets};
 
@@ -65,7 +65,7 @@ impl Readiness<HostRawSocket> for HostRawSockets {
         &self,
         socket: &HostRawSocket,
         _interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         match socket.never {}
     }
 }
