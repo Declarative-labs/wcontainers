@@ -238,7 +238,10 @@ pub struct Run {
 /// until a time, the host's clocks jump to it instead of waiting, unless the host waits. With
 /// `NoHooks` the kernel's own provided defaults answer every hook and task id call.
 pub struct TestHost<H = NoHooks> {
-    started: Mutex<Instant>,
+    /// The instant the monotonic clock is read against.
+    origin: Instant,
+    /// The time from `origin` to the start this host's monotonic clock counts from.
+    started: AtomicU64,
     /// How far the wall clock has jumped ahead.
     skipped: AtomicU64,
     random: Mutex<StdRng>,
@@ -332,7 +335,8 @@ impl TestHost {
     /// A host whose clock is the wall clock's.
     pub fn new(seed: u64) -> Self {
         Self {
-            started: Mutex::new(Instant::now()),
+            origin: Instant::now(),
+            started: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             random: Mutex::new(StdRng::seed_from_u64(seed)),
             streams: Mutex::default(),
@@ -373,6 +377,7 @@ impl TestHost {
     /// The same host with the test's side of the kernel's hooks.
     pub fn with_hooks(self, hooks: Box<dyn Hooks>) -> TestHost<Box<dyn Hooks>> {
         TestHost {
+            origin: self.origin,
             started: self.started,
             skipped: self.skipped,
             random: self.random,
@@ -416,7 +421,8 @@ impl<H: Send> TestHost<H> {
     /// test's hooks go on.
     fn move_on(&self, seed: u64, wall_step: u64) {
         let wall = self.realtime_nanoseconds();
-        *lock(&self.started) = Instant::now();
+        self.started
+            .store(self.origin.elapsed().as_nanos() as u64, Ordering::Relaxed);
         *lock(&self.random) = StdRng::seed_from_u64(seed);
         if let Some(now) = &self.virtual_now {
             now.store(0, Ordering::Relaxed);
@@ -733,7 +739,8 @@ impl<H: Send> TestHost<H> {
                 now.fetch_add(work, Ordering::Relaxed) + self.skipped.load(Ordering::Relaxed)
             }
             None => {
-                lock(&self.started).elapsed().as_nanos() as u64
+                (self.origin.elapsed().as_nanos() as u64)
+                    .wrapping_sub(self.started.load(Ordering::Relaxed))
                     + self.skipped.load(Ordering::Relaxed)
             }
         }
