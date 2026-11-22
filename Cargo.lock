@@ -4308,6 +4308,7 @@ dependencies = [
  "wcontainers-system",
  "wcontainers-system-seeded-test-policy",
  "wcontainers-tcp-sockets",
+ "wcontainers-udp-sockets",
  "zerocopy",
 ]
 
@@ -4565,6 +4566,7 @@ name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "etherparse",
  "flate2",
  "fuse-abi",
  "object 0.41.0",
@@ -4581,6 +4583,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-system",
  "wcontainers-tcp-sockets",
+ "wcontainers-udp-sockets",
  "zerocopy",
 ]
 
@@ -4817,6 +4820,7 @@ name = "wcontainers-runtime-single-kernel"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "etherparse",
  "flate2",
  "fuse-abi",
  "getrandom 0.3.4",
@@ -4839,6 +4843,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-system",
  "wcontainers-tcp-sockets",
+ "wcontainers-udp-sockets",
  "zerocopy",
  "zstd",
 ]
@@ -4909,6 +4914,7 @@ dependencies = [
  "wcontainers-runtime-single-kernel",
  "wcontainers-system",
  "wcontainers-tcp-sockets",
+ "wcontainers-udp-sockets",
 ]
 
 [[package]]
