@@ -21,8 +21,9 @@ crate::requests! {
     Random { length } -> ();
     /// A slow path: its reason in the bytes.
     Warn { count, detail } -> ();
-    /// The bytes the kernel sends on the endpoint numbered `stream`, all of which the monitor takes.
-    Output { stream } -> ();
+    /// The bytes the kernel sends on the endpoint numbered `stream`: the answer says how many the
+    /// monitor's host took, or why it took none.
+    Output { stream } -> Sent;
     /// The kernel let go of the endpoint numbered `stream`.
     CloseStream { stream } -> ();
 }
@@ -32,6 +33,48 @@ crate::requests! {
 #[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct Value {
     pub value: u64,
+}
+
+/// How a send on a stream ended, as the link carries it: `count` bytes taken, or the refusal
+/// `refused` names (with Linux's error number in `count` for [`REFUSED_ERRNO`]).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct Sent {
+    pub refused: u64,
+    pub count: u64,
+}
+
+/// What [`Sent::refused`] holds for each outcome of a send.
+const TAKEN: u64 = 0;
+const REFUSED_NOT_SUPPORTED: u64 = 1;
+const REFUSED_WOULD_BLOCK: u64 = 2;
+const REFUSED_CLOSED: u64 = 3;
+const REFUSED_ERRNO: u64 = 4;
+
+impl Sent {
+    /// A send's outcome as the link carries it.
+    fn of(sent: Result<usize, HostError>) -> Self {
+        let (refused, count) = match sent {
+            Ok(count) => (TAKEN, count as u64),
+            Err(HostError::NotSupported) => (REFUSED_NOT_SUPPORTED, 0),
+            Err(HostError::WouldBlock) => (REFUSED_WOULD_BLOCK, 0),
+            Err(HostError::Closed) => (REFUSED_CLOSED, 0),
+            Err(HostError::Errno(number)) => (REFUSED_ERRNO, number as u64),
+        };
+        Self { refused, count }
+    }
+
+    /// The send's outcome the link carried; a refusal the link does not name is one the inside
+    /// cannot take as any other.
+    fn outcome(self) -> Result<usize, HostError> {
+        match self.refused {
+            TAKEN => Ok(self.count as usize),
+            REFUSED_WOULD_BLOCK => Err(HostError::WouldBlock),
+            REFUSED_CLOSED => Err(HostError::Closed),
+            REFUSED_ERRNO => Err(HostError::Errno(self.count as i32)),
+            _ => Err(HostError::NotSupported),
+        }
+    }
 }
 
 /// The kernel's [`Host`] whose services are the monitor's, through a link, which one call holds at a time.
@@ -83,18 +126,21 @@ impl<R: Ring + Send> Host for LinkHost<R> {
     }
 }
 
-/// The standard streams: the monitor takes all the kernel sends, and gives no input.
+/// The standard streams: the monitor's host takes what it can of what the kernel sends, and gives no
+/// input.
 impl<R: Ring + Send> StreamTransport for LinkHost<R> {
     type Endpoint = u32;
 
     fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
-        self.ring.lock().ask(
-            &Output {
-                stream: (*peer).into(),
-            },
-            bytes,
-        );
-        Ok(bytes.len())
+        self.ring
+            .lock()
+            .ask(
+                &Output {
+                    stream: (*peer).into(),
+                },
+                bytes,
+            )
+            .outcome()
     }
 
     fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
@@ -111,8 +157,8 @@ impl<R: Ring + Send> StreamTransport for LinkHost<R> {
     }
 }
 
-/// Every endpoint can always take more and the monitor never lets go of one, so a wait for anything else never
-/// ends.
+/// Every endpoint is told it can take more at once (the link has no wait, so a send the monitor's host takes
+/// less of is tried again at once) and the monitor never lets go of one, so a wait for anything else never ends.
 impl<R: Ring + Send> Readiness<u32> for LinkHost<R> {
     async fn wait_until_ready(
         &self,
@@ -167,7 +213,7 @@ pub fn answer<H: Host + Clock + RandomSource + StreamTransport<Endpoint = u32>>(
         }
         Request::Output => {
             let Output { stream } = link.get();
-            let _ = host.send_stream(&(stream as u32), bytes);
+            link.put(&Sent::of(host.send_stream(&(stream as u32), bytes)));
         }
         Request::CloseStream => {
             let CloseStream { stream } = link.get();
@@ -190,6 +236,7 @@ mod tests {
 
     use wcontainers_abi::{Host, HostError, Warning};
     use wcontainers_clock::Clock;
+    use wcontainers_kernel::errno::Errno;
     use wcontainers_random_source::RandomSource;
     use wcontainers_system::StreamTransport;
     use zerocopy::FromZeros;
@@ -203,6 +250,8 @@ mod tests {
         calls: Mutex<Vec<(String, Vec<u8>)>>,
         /// What a random request gives.
         given: Vec<u8>,
+        /// How a send ends; all taken when none.
+        sends: Option<Result<usize, HostError>>,
     }
 
     impl Recording {
@@ -261,7 +310,7 @@ mod tests {
             let mut all = peer.to_le_bytes().to_vec();
             all.extend_from_slice(bytes);
             self.record(OUTPUT, &all);
-            Ok(bytes.len())
+            self.sends.unwrap_or(Ok(bytes.len()))
         }
         fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
             Err(HostError::NotSupported)
@@ -378,5 +427,23 @@ mod tests {
             last(&host),
             (CLOSE_STREAM.into(), ERROR_END.to_le_bytes().to_vec())
         );
+    }
+
+    /// A send the monitor's host takes part of, or refuses, ends so for the kernel too.
+    #[test]
+    fn a_send_ends_as_the_monitors_host_says() {
+        let host = host();
+        let bytes = long(3 * LINK_BYTES + 5);
+        for sends in [
+            Ok(LINK_BYTES + 1),
+            Ok(0),
+            Err(HostError::WouldBlock),
+            Err(HostError::Closed),
+            Err(HostError::NotSupported),
+            Err(HostError::Errno(Errno::EPIPE as i32)),
+        ] {
+            host.ring.lock().host.sends = Some(sends);
+            assert_eq!(host.send_stream(&ERROR_END, &bytes), sends, "{sends:?}");
+        }
     }
 }
