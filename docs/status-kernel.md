@@ -7,6 +7,21 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## 2026-11-21: waiting is the Readiness trait
+
+- The interface's `PollEvents` (signal_information.rs) is now a bitflags set with Linux's names.
+  siginfo.rs reads and writes a SIGPOLL record's band through one table of each flag beside Linux's
+  bit (commit 1e9e4dcf); behaviour is unchanged.
+- Ran on the ARM machine: kernel lib tests 15 passed; stand-in sigio 2 and signalfd 1 passed; inet
+  23 passed, 3 failed (proc_net, route_questions_and_rules, socket_edges: the known ARM-only list).
+- The kernel does not call any wait of the system (no `Readiness`, no `ReadyFor`) and nothing
+  implements `StreamTransport` yet, so nothing else changed here.
+- Turning the six `ReadyFor` facts into Linux's poll bits for a guest (POLLRDNORM with POLLIN,
+  POLLWRNORM with POLLOUT, POLLNVAL from the kernel's own descriptor table) is the kernel's job and
+  is still to be built by the kernel track, when the kernel first waits on a host socket.
+- The literal check now also reports the twelve new `PollEvents` flags in signal_information.rs
+  as redefinitions of linux-raw-sys's POLL constants (a reviewed file; nothing in the kernel's).
+
 ## For the owner
 
 Found while making the kernel implement the reviewed interface (KA, first run). Each is a place
