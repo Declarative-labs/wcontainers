@@ -82,10 +82,10 @@ impl StreamClient {
     }
 
     /// The ends the container sends on.
-    fn outputs(&self) -> Vec<End> {
+    fn outputs(&self) -> &'static [End] {
         match self.terminal {
-            Some(_) => vec![TERMINAL],
-            None => vec![OUTPUT, ERROR],
+            Some(_) => &[TERMINAL],
+            None => &[OUTPUT, ERROR],
         }
     }
 
@@ -345,7 +345,7 @@ fn fire(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) -> 
 /// the output when it takes everything, and the script's first steps that wait for nothing.
 pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) {
     let outputs = host.streams().client.outputs();
-    for end in outputs {
+    for &end in outputs {
         let unpaced = host.streams().pace(end).is_none();
         if unpaced {
             give(kernel, cpu, host, end, UNLIMITED);
@@ -383,7 +383,7 @@ pub fn act(
     let mut acted = fire(kernel, cpu, host);
     if idle {
         let outputs = host.streams().client.outputs();
-        for end in outputs {
+        for &end in outputs {
             let due = host.streams().due(end);
             if due > 0 {
                 give(kernel, cpu, host, end, due);
@@ -478,7 +478,7 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost
         };
         let mut gave = fire(kernel, cpu, host);
         let outputs = host.streams().client.outputs();
-        for end in outputs {
+        for &end in outputs {
             let due = host.streams().due(end);
             if due > 0 {
                 give(kernel, cpu, host, end, due);
@@ -498,7 +498,7 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost
         }
     }
     let closed = host.streams().outputs_closed();
-    let mut all: Vec<End> = host.streams().client.outputs();
+    let mut all: Vec<End> = host.streams().client.outputs().to_vec();
     let input = host.streams().client.input_end();
     all.extend(input);
     all.dedup();

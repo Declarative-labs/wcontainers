@@ -1660,7 +1660,10 @@ where
                 return;
             }
         }
-        if streams::act(kernel, cpu, self, true) {
+        // Coming back at once is the kernel settling what it was woken for, not a container that
+        // can go on no other way.
+        let settling = until_nanoseconds == Some(0);
+        if streams::act(kernel, cpu, self, !settling) {
             return;
         }
         let Some(until) = until_nanoseconds else {
