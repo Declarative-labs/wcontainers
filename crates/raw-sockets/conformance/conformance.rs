@@ -2140,7 +2140,11 @@ pub fn an_icmp_error_ends_a_wait_for_data<S: RawSockets>(sockets: S) {
         let sent = capture
             .next(|packet| seen(packet).protocol == EXPERIMENT && seen(packet).destination == to);
         let error = send_icmp_error_about(&sent);
-        assert!(wakes.reach(1), "{to}: woken by the ICMP error");
+        wcontainers_icmp_sockets_conformance::woken(
+            wait.as_mut(),
+            &wakes,
+            &format!("{to}: the ICMP error"),
+        );
         let events = finished(poll_with(wait.as_mut(), &wakes));
         assert!(events.error_condition, "{events:?}");
         let mut into = buffer();

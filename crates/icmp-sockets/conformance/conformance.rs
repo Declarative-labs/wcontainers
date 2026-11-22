@@ -2509,6 +2509,19 @@ impl Wakes {
     }
 }
 
+/// Checks that the wait is woken within the patience of a check; if not, tells whether polled again it has its
+/// events by now, a wake lost, or not, an event that never came.
+pub fn woken<F: Future<Output = Result<PollEvents, HostError>>>(
+    call: Pin<&mut F>,
+    wakes: &Arc<Wakes>,
+    by: &str,
+) {
+    if !wakes.reach(1) {
+        let now = poll_with(call, wakes);
+        panic!("not woken by {by}; polled again, the wait gives {now:?}");
+    }
+}
+
 /// Polls a waiting call once with a waker that counts into `wakes`.
 pub fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output> {
     let waker = Waker::from(Arc::clone(wakes));
@@ -2757,7 +2770,7 @@ pub fn an_icmp_error_ends_a_wait_for_data<S: IcmpSockets>(sockets: S) {
         let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
         assert!(poll_with(wait.as_mut(), &wakes).is_pending());
         provoke_icmp_error(&sockets, &socket, to, Quote::Least);
-        assert!(wakes.reach(1), "woken by the ICMP error");
+        woken(wait.as_mut(), &wakes, &format!("{to}: the ICMP error"));
         let events = finished(poll_with(wait.as_mut(), &wakes));
         assert!(events.error_condition, "{events:?}");
         assert!(matches!(
