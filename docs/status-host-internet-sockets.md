@@ -50,7 +50,8 @@ this track is in progress.
   interface.rs or data file.
 - Linter (Mac, 03:00 UTC, mid-run): in the I1 files only the ten findings already raised (three
   public_outside_interface, seven constant_defined_twice) and one new magic_literal (an array length in the
-  mobility check), fixed. Model-answer findings are the orchestrator's.
+  mobility check), fixed; at the end (after the commits) only the ten raised ones. Model-answer findings are the
+  orchestrator's.
 
 ## 2026-11-22: I1 run 2, the independent check's findings, each
 - Source preferences refused though the host can answer (blocking): honoured now. Linux keeps the route of the
