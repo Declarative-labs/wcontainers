@@ -124,3 +124,56 @@ States per instruction: ADD 5184, ADDS 5184, CSEL 6912, LDR 1728, STR 1728, STP 
 - The draft `InstructionInputDomain` has one `OperandValue` type for every operand, so `to_state` can be
   given a value of the wrong kind for an operand and must panic on it. Example: `Register(RD)` paired with
   `Integer(5)`.
+
+## The measured set and the recordings (2026-11-22)
+
+What exists:
+- crates/processor-architecture/implementation/recording: `Recording`, a `Simulator` whose error is
+  `NotRecorded`, holding each state before and the chip's state after in full; `record` runs one
+  instruction on an executor over every generated state; `leave_same_memory` compares two lists of memory
+  changes by the memory they leave. arm64.rs is the text form: one file per instruction, a `processor`
+  line with every field of the first state, then a `before` and an `after` line per state, each listing only
+  the fields that differ and the memory changes; a run of bytes longer than 16 is written once on a `bytes`
+  line and named by number. Plain text so a person can read it and a changed behavior shows as a changed line
+  in a diff. record.rs is the tool: `cargo test -p wcontainers-processor-architecture-recording --test record
+  -- <folder>` records this host's chip through the single step machine (HVF on the Mac, signed by itself;
+  KVM on Linux).
+- crates/precise-instruction-set/implementation/measured: `MeasuredInstructionSet::measure(chip, known sets,
+  generator)` keeps, per instruction, the one distinct known behavior the chip agrees with on every
+  generated state; an instruction all known sets agree on is not run. `MeasurementFailure` is
+  `NoBehaviorAgrees` (instruction, state before, each behavior with its state after, the chip's state after),
+  `IndistinguishableBehaviors` (instruction, behaviors) or `NoKnownBehavior` (no set given). chip.rs measures
+  the Linux host's chip and prints the time.
+- crates/precise-instruction-set/implementation/apple-m5 and neoverse-v2: each only its choices. The V2's
+  recordings are in neoverse-v2/recordings (32,277 states, 5.4 MB) and its suite runs against them.
+- crates/executor/implementation/simulation: `Simulation`, a stand-in chip that plays a precise instruction
+  set, for tests that must run on any machine.
+- crates/precise-instruction-set/conformance: `agrees_with_recordings(set, recordings)`: the set's behavior
+  of every listed instruction turns each recorded before into its after.
+
+Measured (rented Graviton4, Neoverse V2, KVM, load 18 to 29):
+- Recording all ten instructions, 32,277 states one at a time: 1.385 s, 0.123 s of it in the guest.
+- The V2's set agrees with every recorded state: STP across a fault writes nothing, LDR post-index into its
+  base suppresses the writeback, RDVL reads 128 bits, CTR_EL0 reads 0xB444C004 under KVM as on bare metal.
+- Start-up measurement against the M5 and V2 sets (RDVL and MRS CTR_EL0 run, 18 states): 0.236, 0.240
+  and 0.252 ms, about 0.14 ms of it in the guest; it measured the V2 set.
+
+Not done:
+- The M5's recordings: they need Hypervisor.framework, so the tool must run on the Mac, where nothing may be
+  built now. Until then the M5 set is expected, not measured (TODO in its file); the suite test for it is
+  held back (it would fail without recordings). To make them: run the record tool on the Mac into
+  crates/precise-instruction-set/implementation/apple-m5/recordings and add a conformance.rs like the V2's.
+- record.rs and chip.rs use the single step machine, which is not committed yet; they are committed once it is.
+
+### For the owner (the measured set and the recordings)
+
+- `PreciseInstructionSet` has no way to build one, so the measured set has a placeholder `measure`. The trait
+  I would need: `trait MeasuredPreciseInstructionSet<A>: PreciseInstructionSet<A> + Sized { type Failure;
+  fn measure(chip: &mut impl Executor<Architecture = A>, known: &[&dyn PreciseInstructionSet<A>],
+  generator: &impl DistinguishingStateGenerator<A>) -> Result<Self, Self::Failure>; }`.
+- Two states holding the same memory are not equal under the derived `Eq` of `ExecutionState` when their
+  change lists differ. Example: STR of the value already there; the formula reports the store, the chip
+  reports nothing, and the memory is the same. The comparisons use `leave_same_memory` instead.
+- The precise instruction set suite takes `Recording`, a type of an implementation crate, because no
+  interface describes a recording. If recordings are to stay, a small interface for "the recorded pairs of
+  one instruction" would let the suite name no implementation.
