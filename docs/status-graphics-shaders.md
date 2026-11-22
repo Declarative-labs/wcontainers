@@ -42,9 +42,9 @@ geometry replay of streams past the first, the Direct3D 11 front's ask. Run 5 (r
 section below): A5's alpha-antialiased lines on WebGL 2. Run 6 (run 85, the section below): A5's
 cull distances and primitive numbers on WebGL 2, A4's multisampled integer twins found absent by
 the plan. Run 7 (run 86, the section below): A9, vertex shaders writing storage, run as compute
-through the stage helper. Not complete: the gap list below.
+through the stage helper; A7's typed buffers in geometry shaders. Not complete: the gap list below.
 
-## G6 run 7 (run 86): vertex shaders writing storage through the stage helper (A9)
+## G6 run 7 (run 86): vertex shaders writing storage through the stage helper (A9), typed buffers in geometry shaders (A7)
 
 Logs and scripts in scratch `graphics-shaders/g6-r86` (run 85's with its folder; jobs `job1.log`
 to `job5.log`, `gpu-suite.log`, `chrome.log`; `x86-tests.log`, `x86-tests2.log`; the laptop's
@@ -72,13 +72,27 @@ corpus verdicts in `verdicts/`).
   records); the WGSL written for them is the storage route's compute form (as for cull distances),
   and Chrome on the desktop compiles all ten (chrome.log). 13 passed (the corpus test's log
   `logs/suite-r86c.log` there, load 0.4 to 1.1).
-- Runs: x86 machine (load 1 to 8, other tracks' jobs beside): rustfmt clean, clippy of this crate
-  and the interface with warnings denied clean, the CPU test binaries `geometry`, `variants`,
-  `rewrite`, `builtin`, `cache`, `glsl_writer` and `compute`: 99 passed, 2 ignored as before; the
-  literal check prints no line of this crate (x86-tests2.log). Desktop (RTX 3080, GPU jobs one at
-  a time, 3 cargo jobs): Windows clippy clean; the whole suite at this run's code (one job, one
-  test thread): 24 test binaries, 176 passed, 0 failed, 6 ignored as before (gpu-suite.log).
-- Not run: WebAssembly (no converted module of any other shader changed; the corpus's ten new
+- Runs, at the code of each commit: x86 machine (load 1 to 8 for the first, 22 to 53 for the
+  second, other tracks' jobs beside): rustfmt clean, clippy of this crate and the interface with
+  warnings denied clean, the CPU test binaries `geometry`, `variants`, `rewrite`, `builtin`,
+  `cache`, `glsl_writer` and `compute`: 99 passed, 2 ignored as before; the literal check prints no
+  line of this crate (x86-tests2.log, x86-tests3.log). Desktop (RTX 3080, GPU jobs one at a time, 3
+  cargo jobs): Windows clippy clean; the whole suite (one job, one test thread): 24 test binaries,
+  176 passed after A9 (gpu-suite.log) and 177 after the typed buffers (gpu-suite2.log), 0 failed,
+  6 ignored as before. The corpus test on the laptop: 13 passed (suite-r86c.log after A9; after
+  the typed buffers only `gs_typed`'s two new records differed, now added).
+- Also built (src/lower.rs): typed buffers in DXBC geometry shaders (gap A7's
+  `TypedBufferInGeometry`, refused since run 18 because the stage helper did not fill their helper
+  values; the front fills the geometry stage's helper block since). Test (tests/stage_draw.rs, own
+  `gs_typed`, fxc gs_5_0 and dxc gs_6_0 -Gis, `geometry_typed.hlsl`):
+  `typed_buffers_in_geometry_shaders_draw_as_direct3d_does` draws `vs_line`, `gs_typed` (a
+  `Buffer<float4>` of four elements read at the primitive's number modulo five, so every fifth
+  reads past the view) and `ps_line` through the stage helper on WebGPU against real Direct3D 11
+  on the RTX 3080, the triangle cases of the primitive-number test: seeds 1 to 4, 24 comparisons,
+  0 failed; seeds 100 to 115, 96 comparisons, 0 failed; every texel equal (job6.log, job7.log).
+  The DXIL build converted before this run too; both are drawn. Corpus: `gs_typed` added to the
+  own records (both convert); Chrome compiles both (chrome2.log).
+- Not run: WebAssembly (no converted module of any other shader changed; the corpus's new
   conversions are not compared with a WebAssembly build).
 
 ## G6 run 6 (run 85): cull distances and primitive numbers on WebGL 2 (A5)
@@ -655,9 +669,9 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (161 and 150 records, 151 and 142
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (162 and 151 records, 152 and 143
      converting, counted in run 86 with the vertex shaders writing storage, which convert since
-     that run) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1439 and 1414 converting,
+     that run, and `gs_typed`) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1439 and 1414 converting,
      counted in run 86). Every record holds at run 86's code (its section above).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
@@ -942,8 +956,11 @@ The gap list (every item of the pass bar not met):
   which Direct3D does not allow; several streams of points convert since run 49); indexed strips
   and triangle strips with adjacency run since run 50; indirect draws through the stages, the
   primitive's number behind a geometry shader (the rig's geometry scene's `ps_id`, the Direct3D 11
-  front, which draws it with the back end's native primitive index today), typed buffers in
-  geometry shaders (`TypedBufferInGeometry`). Cull distances written by a geometry or domain shader
+  front, which draws it with the back end's native primitive index today). Typed buffers in
+  geometry shaders convert and run since run 86 (`TypedBufferInGeometry` gone; drawn equal to
+  Direct3D 11, `typed_buffers_in_geometry_shaders_draw_as_direct3d_does`, both builds; the front
+  gives the view's `HelperValue::TexelBufferView` in the geometry stage's helper block, set 3 of
+  `geometry_sets`). Cull distances written by a geometry or domain shader
   are refused at conversion by name (`CullDistance`; DXBC: src/lower.rs accepts the
   built-in from a vertex program only, every other stage falls to the refusal; DXIL: src/dxil.rs
   refuses it in any entry point that is not a vertex program, and src/dxil/geometry.rs in a
@@ -1612,9 +1629,13 @@ G6a run 5's tip):
 1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
-   83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7,
-   A1, the DXIL route's
-   `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
+   (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
+   cull distances from geometry or domain shaders, the primitive's number behind a geometry
+   shader), A1, the DXIL route's `ResourceArray` (arrays of constant and structured buffers: an
+   element picked at run time needs each load, store and atomic through the array switched over
+   its elements, as src/dxil/arrays.rs does for textures; the same pass would serve `rewrite`,
+   which refuses buffer arrays alike), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
@@ -1825,6 +1846,10 @@ G6a run 5's tip):
   the stage helper runs it once per place in the draw (index list), and not for vertices of no
   whole primitive. On WebGL 2 there is no storage: the back end refuses the program
   (`GpuError::Absent(VERTEX_STORAGE_WRITE)`).
+- Typed buffers in geometry shaders (since run 86; `TypedBufferInGeometry` is gone): convert the
+  geometry shader with the typed buffer route and the view's format, as for any stage, bind the
+  buffer in set 0 of `geometry_sets` and its `HelperValue::TexelBufferView` in the geometry
+  stage's helper block (set 3, `helper_binding(ShaderStage::Compute)`), both `StageSet::COMPUTE`.
 - Views of depth textures with a component mapping (Direct3D 12's `Shader4ComponentMapping`; since
   run 82 measured on real Direct3D 12): name `(slot, mapping)` in `swizzled`. Every read converts
   but comparisons through a first component of green, blue or alpha and comparison gathers whose
@@ -3637,8 +3662,7 @@ were already there.
 - Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
   starts about two thirds of its triangles at another vertex (winding kept); ours follow the
   reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
-- Typed buffers: DXIL's atomics are refused by naga's SPIR-V reader; geometry shaders' are refused
-  (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
+- Typed buffers: DXIL's atomics are refused by naga's SPIR-V reader; through a texture, a view reaches at most 2048 times the back end's
   largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the
   front must report.
 
