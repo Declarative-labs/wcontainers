@@ -37,7 +37,7 @@ const NAME_WORDS: usize = 2;
 /// `OpLabel`'s words.
 const LABEL_WORDS: usize = 2;
 /// `OpTypePointer`'s storage class.
-const POINTER_STORAGE_CLASS: usize = 2;
+pub(super) const POINTER_STORAGE_CLASS: usize = 2;
 /// A compute program's one invocation a group.
 const LOCAL_SIZE: [u32; 3] = [1, 1, 1];
 

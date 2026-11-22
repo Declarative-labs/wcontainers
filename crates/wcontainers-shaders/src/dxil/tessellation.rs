@@ -5,6 +5,7 @@
 //! point and patch constant functions, and the domain program's inputs.
 
 use super::staged::{self, Entry, Ids, Interface, Privatise};
+use super::words;
 use crate::ConvertError;
 use crate::container::Element;
 use crate::ir::builtin;
@@ -17,7 +18,7 @@ use crate::lower::hull::{
 use crate::stage::tess;
 use alloc::vec::Vec;
 use naga::Module;
-use spirv::{BuiltIn, ExecutionMode, ExecutionModel, StorageClass};
+use spirv::{BuiltIn, ExecutionMode, ExecutionModel, Op, StorageClass};
 use wcontainers_gpu::{SourceStage, StageExtras, StageValue};
 
 /// The prefix of the names given to the stage values' variables.
@@ -30,6 +31,25 @@ const PATCH_CONSTANT_FUNCTION: &str = "patch_main";
 const NO_DOMAIN: &str = "a tessellation stage without its domain";
 const NO_OUTPUT: &str = "a hull shader without its partitioning or output primitive";
 const NO_INPUT_POINTS: &str = "a tessellation stage without its input control point count";
+
+/// `OpTypeArray`'s length.
+const ARRAY_LENGTH: usize = 3;
+/// The pointer an access chain starts from and a load reads, after the result type and result.
+const READ_POINTER: usize = words::RESULT_AFTER_TYPE + 1;
+/// The pointer a store or copy writes, and the one a copy reads.
+const WRITTEN_POINTER: usize = 1;
+const COPIED_POINTER: usize = WRITTEN_POINTER + 1;
+/// Where an instruction a function runs names a pointer it reads or writes through.
+const POINTER_OPERANDS: [(Op, &[usize]); 6] = [
+    (Op::AccessChain, &[READ_POINTER]),
+    (Op::InBoundsAccessChain, &[READ_POINTER]),
+    (Op::PtrAccessChain, &[READ_POINTER]),
+    (Op::Load, &[READ_POINTER]),
+    (Op::Store, &[WRITTEN_POINTER]),
+    (Op::CopyMemory, &[WRITTEN_POINTER, COPIED_POINTER]),
+];
+/// `OpFunctionCall`'s first argument.
+const CALL_ARGUMENTS: usize = 4;
 
 /// What a hull or domain shader declares, read from its SPIR-V before the reader takes it.
 pub(crate) struct Declared {
@@ -103,13 +123,14 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>, dxil: &[u8]) -> Result<Option<Declar
     let domain = domain(&entry)?;
     let points_in = crate::container::patch_input_points(dxil)
         .ok_or_else(|| ConvertError::Malformed(NO_INPUT_POINTS.into()))?;
-    if stage == SourceStage::Domain && points_in == 0 {
-        // A patch of no control points, which only a hull shader without control points (refused)
-        // hands on.
-        return Err(ConvertError::Unsupported(
-            crate::refusal::DOMAIN_WITHOUT_CONTROL_POINTS,
-        ));
-    }
+    let entry = match stage == SourceStage::Domain && points_in == 0 {
+        true => {
+            drop_arrays_of_none(spirv, &entry)?;
+            staged::entry(spirv, ExecutionModel::TessellationEvaluation)
+                .ok_or_else(|| ConvertError::Malformed(staged::NO_MAIN.into()))?
+        }
+        false => entry,
+    };
     let mut tessellation = Tessellation {
         domain,
         points_in,
@@ -147,6 +168,74 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>, dxil: &[u8]) -> Result<Option<Declar
         tessellation,
         entry,
     }))
+}
+
+/// A domain shader's control point inputs of a patch of none: dxil-spirv declares them input arrays of
+/// none, which naga's reader refuses. They are dropped (variables, their types, names and decorations)
+/// where no function reads them, and refused by name otherwise.
+fn drop_arrays_of_none(spirv: &mut Vec<u32>, entry: &Entry) -> Result<(), ConvertError> {
+    let (mut arrays, mut pointers, mut variables) = (Vec::new(), Vec::new(), Vec::new());
+    let mut uses = Vec::new();
+    let mut at = words::HEADER;
+    while let Some(i) = staged::instruction(spirv, at) {
+        at += i.len();
+        let op = Op::from_u32(staged::opcode(i));
+        match op {
+            Some(Op::TypeArray)
+                if i.len() > ARRAY_LENGTH && entry.constant(i[ARRAY_LENGTH]) == Some(0) =>
+            {
+                arrays.push(i[words::RESULT_ID])
+            }
+            Some(Op::TypePointer)
+                if i.len() > words::POINTER_TYPE
+                    && i[staged::POINTER_STORAGE_CLASS] == StorageClass::Input as u32
+                    && arrays.contains(&i[words::POINTER_TYPE]) =>
+            {
+                pointers.push(i[words::RESULT_ID])
+            }
+            Some(Op::Variable)
+                if i.len() > words::RESULT_AFTER_TYPE
+                    && pointers.contains(&i[words::RESULT_TYPE]) =>
+            {
+                variables.push(i[words::RESULT_AFTER_TYPE])
+            }
+            Some(Op::FunctionCall) => uses.extend(i.get(CALL_ARGUMENTS..).unwrap_or(&[])),
+            _ => {
+                let operands = POINTER_OPERANDS.iter().find(|(o, _)| Some(*o) == op);
+                uses.extend(
+                    operands
+                        .into_iter()
+                        .flat_map(|(_, w)| w.iter())
+                        .filter_map(|&w| i.get(w)),
+                );
+            }
+        }
+    }
+    if variables.is_empty() {
+        return Ok(());
+    }
+    if uses.iter().any(|u| variables.contains(u)) {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::DOMAIN_WITHOUT_CONTROL_POINTS,
+        ));
+    }
+    let dropped =
+        |id: u32| arrays.contains(&id) || pointers.contains(&id) || variables.contains(&id);
+    let mut out = Vec::from(&spirv[..words::HEADER]);
+    let mut at = words::HEADER;
+    while let Some(i) = staged::instruction(spirv, at) {
+        at += i.len();
+        match Op::from_u32(staged::opcode(i)) {
+            Some(Op::EntryPoint) => out.extend(staged::without_interface(i, &dropped)),
+            Some(Op::Name) if dropped(i[words::RESULT_ID]) => {}
+            Some(Op::Decorate) if dropped(i[words::decorate::TARGET]) => {}
+            Some(Op::TypeArray | Op::TypePointer) if dropped(i[words::RESULT_ID]) => {}
+            Some(Op::Variable) if dropped(i[words::RESULT_AFTER_TYPE]) => {}
+            _ => out.extend_from_slice(i),
+        }
+    }
+    *spirv = out;
+    Ok(())
 }
 
 /// A SPIR-V built-in as `ir::builtin` numbers it, or the refusal naming it.

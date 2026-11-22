@@ -863,7 +863,7 @@ hlsl+object-references-7-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE
 hlsl+object-references-8-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-1-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-10-hs.dxil	ok ; glsl absent compute
-hlsl+patch-syntax-11-ds.dxil	unsupported DomainWithoutControlPoints
+hlsl+patch-syntax-11-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+patch-syntax-12-gs.dxil	unsupported GeometryPatchInput
 hlsl+patch-syntax-13-hs.dxil	ok ; glsl absent compute
 hlsl+patch-syntax-14-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)

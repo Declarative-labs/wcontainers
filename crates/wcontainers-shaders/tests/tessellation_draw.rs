@@ -1077,7 +1077,10 @@ struct Staged<'a> {
     hs: &'a str,
     ds: &'a str,
     gs: Option<&'a str>,
+    /// The build of every program but the hull shader.
     route: Route,
+    /// The hull shader's build.
+    hull_route: Route,
     /// The hull and domain programs handed over as naga modules (`wcontainers_shaders::staged`), in
     /// place of the route's builds of `hs` and `ds`.
     from_module: bool,
@@ -1106,12 +1109,14 @@ fn ours_staged<B: Backend>(
         ds,
         gs,
         route,
+        hull_route,
         from_module,
     } = *programs;
     let plain = VariantKey::default();
     let read = |name: &str| bytecode(&format!("{name}.{}", route.extension()));
     let vs = convert(route.source(&read("vs_patch")), &plain, None).unwrap();
-    let mut hull = convert(route.source(&read(hs)), &plain, None).unwrap();
+    let hs_bytes = bytecode(&format!("{hs}.{}", hull_route.extension()));
+    let mut hull = convert(hull_route.source(&hs_bytes), &plain, None).unwrap();
     let mut domain = convert(route.source(&read(ds)), &plain, None).unwrap();
     if from_module {
         // The route's builds give the constant buffer's binding and the outputs' reflection.
@@ -1341,6 +1346,7 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
                         ds,
                         gs: *gs,
                         route,
+                        hull_route: route,
                         from_module: false,
                     },
                     *points,
@@ -1380,25 +1386,10 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
 /// and a domain shader taking none (`ds_tri_none`), streamed through the whole stage helper on the
 /// RTX 3080 against Direct3D 11 on WARP streaming the same draw (the RTX 3080's Direct3D 11 ends the
 /// process dividing by zero there), compared as [`stream_output_after_the_domain_stage_matches_direct3d`]
-/// compares. fxc's builds; dxc's domain shader is refused by name, as dxil-spirv declares its patch
-/// an array of none.
+/// compares. fxc's hull shader (dxc refuses to build one of no control points), with fxc's and dxc's
+/// builds of the others.
 #[test]
 fn hulls_giving_no_control_points_stream_as_direct3d_does() {
-    let refused = wcontainers_shaders::convert(
-        Route::Dxil.source(&bytecode("ds_tri_none.dxil")),
-        &wcontainers_gpu::VariantKey::default(),
-        None,
-    );
-    assert!(
-        matches!(
-            refused,
-            Err(wcontainers_shaders::ConvertError::Unsupported(
-                wcontainers_shaders::refusal::DOMAIN_WITHOUT_CONTROL_POINTS
-            ))
-        ),
-        "{:?}",
-        refused.err()
-    );
     let mut backend = webgpu();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Warp,
@@ -1422,31 +1413,40 @@ fn hulls_giving_no_control_points_stream_as_direct3d_does() {
         let (reference, written) = direct3d(&gpu, hs, ds, None, 1, bound, &factors);
         eprintln!("seed {seed}: direct3d streamed {written} primitives");
         let reference = &reference[..written as usize * 3];
-        let programs = Staged {
-            hs,
-            ds,
-            gs: None,
-            route: Route::Dxbc,
-            from_module: false,
-        };
-        let (streamed, counted) = ours_staged(&mut backend, &programs, 1, bound, &factors, None);
-        let name = format!("seed {seed} {hs}");
-        let counts = match counted == [written as u32; 2] {
-            true => Ok(()),
-            false => Err(format!(
-                "primitives written and made {counted:?}, direct3d {written}"
-            )),
-        };
-        match (counts, compare(reference, &streamed, 3)) {
-            (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
-            (counts, shape) => {
-                let why: Vec<String> = [counts.err(), shape.err()].into_iter().flatten().collect();
-                eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
-                failures.push(name);
+        for route in Route::BOTH {
+            let programs = Staged {
+                hs,
+                ds,
+                gs: None,
+                route,
+                hull_route: Route::Dxbc,
+                from_module: false,
+            };
+            let (streamed, counted) =
+                ours_staged(&mut backend, &programs, 1, bound, &factors, None);
+            let name = format!("seed {seed} {hs} {ds}.{}", route.extension());
+            let counts = match counted == [written as u32; 2] {
+                true => Ok(()),
+                false => Err(format!(
+                    "primitives written and made {counted:?}, direct3d {written}"
+                )),
+            };
+            match (counts, compare(reference, &streamed, 3)) {
+                (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+                (counts, shape) => {
+                    let why: Vec<String> =
+                        [counts.err(), shape.err()].into_iter().flatten().collect();
+                    eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
+                    failures.push(name);
+                }
             }
         }
     }
-    eprintln!("{seeds} comparisons, {} failed", failures.len());
+    eprintln!(
+        "{} comparisons, {} failed",
+        seeds * Route::BOTH.len() as u64,
+        failures.len()
+    );
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
@@ -1511,6 +1511,7 @@ fn hull_and_domain_programs_from_a_module_stream_as_direct3d_does() {
                 ds,
                 gs: *gs,
                 route: Route::Dxbc,
+                hull_route: Route::Dxbc,
                 from_module: true,
             };
             let (streamed, counted) = ours_staged(&mut backend, &staged, 1, bound, &factors, None);
@@ -1603,6 +1604,7 @@ fn stage_values_hold_wherever_the_data_ring_wraps() {
                     ds,
                     gs,
                     route,
+                    hull_route: route,
                     from_module: false,
                 };
                 let (streamed, counted) =

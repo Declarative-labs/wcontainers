@@ -710,8 +710,7 @@ fn hull_and_domain_shaders_declare_what_they_are() {
 }
 
 /// A hull shader handing the domain shader no control points (`hs_tri_none`, which dxc refuses to
-/// build) and a domain shader taking none (`ds_tri_none`) convert on the DXBC route; dxc's build of
-/// the domain shader is refused by name, as dxil-spirv declares its patch an array of none.
+/// build) and a domain shader taking none (`ds_tri_none`, fxc's and dxc's builds) convert.
 #[test]
 fn hulls_may_give_no_control_points() {
     let c = converted_own("hs_tri_none", "dxbc");
@@ -732,26 +731,18 @@ fn hulls_may_give_no_control_points() {
         c.reflection.extras
     );
     wgsl(&c.modules[0]);
-    let c = converted_own("ds_tri_none", "dxbc");
-    assert_eq!(
-        c.reflection.extras,
-        StageExtras::Domain {
-            domain: 0,
-            input_control_points: 0,
-        }
-    );
-    wgsl(&c.modules[0]);
-    assert_eq!(
-        convert(
-            Source::Dxil(&own("ds_tri_none.dxil")),
-            &VariantKey::default(),
-            None
-        )
-        .err(),
-        Some(ConvertError::Unsupported(
-            wcontainers_shaders::refusal::DOMAIN_WITHOUT_CONTROL_POINTS
-        ))
-    );
+    for ext in ["dxbc", "dxil"] {
+        let c = converted_own("ds_tri_none", ext);
+        assert_eq!(
+            c.reflection.extras,
+            StageExtras::Domain {
+                domain: 0,
+                input_control_points: 0,
+            },
+            "{ext}"
+        );
+        wgsl(&c.modules[0]);
+    }
 }
 
 /// An own shader as fxc (`dxbc`) or dxc (`dxil`) builds it, converted under the default key.
