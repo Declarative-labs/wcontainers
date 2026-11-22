@@ -318,9 +318,11 @@ pub trait Emitter<G: Guest> {
     /// Pop an i32; when it is not zero, raise the thread's stop flag, so the stop hook is called before
     /// the next instruction runs.
     fn raise_stop(&mut self);
-    /// Go to the target. Nothing after it in this instruction runs.
+    /// Go to the target, which when relative is the instruction's `Flow::target`. Nothing after it in this
+    /// instruction runs.
     fn jump(&mut self, target: Target);
-    /// Pop an i32 and go to the target if it is not zero.
+    /// Pop an i32 and go to the target if it is not zero; a relative target is the instruction's
+    /// `Flow::target`, since the translator places the code of each way out once.
     fn jump_if(&mut self, target: Target);
     /// Call the target with the next instruction as the return address, already written where the CPU
     /// keeps it (`Guest::RETURN_ADDRESS`; on the stack the meaning has also moved the stack pointer).

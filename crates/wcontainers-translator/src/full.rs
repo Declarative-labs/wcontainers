@@ -3019,6 +3019,11 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.count_event();
         match target {
             Target::Relative(by) => {
+                debug_assert_eq!(
+                    G::flow(&self.decoded().instruction).target,
+                    Some(by),
+                    "a jump its instruction's flow does not name"
+                );
                 let to = self.at.offset.wrapping_add_signed(by);
                 self.goto(to);
             }

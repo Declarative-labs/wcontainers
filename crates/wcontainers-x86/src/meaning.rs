@@ -1237,9 +1237,14 @@ fn repeated_string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, kind
         repeated_compare(e, i, kind, count_register);
         return;
     }
+    // A count of zero does no pass and falls through, so the next instruction is reached from one place.
+    let ran = e.local(ValType::I32);
     get_general(e, count_register);
-    e.sink().i64_eqz();
-    e.jump_if(Target::Relative(i.iced.len() as i64));
+    e.sink()
+        .i64_eqz()
+        .i32_eqz()
+        .local_tee(ran)
+        .if_(BlockType::Empty);
     let elements = e.local(ValType::I64);
     if kind != StringKind::Load && !i.address32 {
         bulk_or_element(e, i, kind, elements);
@@ -1253,11 +1258,12 @@ fn repeated_string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, kind
         string_element(e, i, kind, source_at, destination_at);
         e.sink().i64_const(1).local_set(elements);
     }
+    e.sink().else_().i64_const(0).local_set(elements).end();
     let left = e.local(ValType::I64);
     get_general(e, count_register);
     e.sink().local_get(elements).i64_sub().local_set(left);
     set_general(e, count_register, left);
-    string_advance(e, i, kind, Some(elements), None);
+    string_advance(e, i, kind, Some(elements), Some(ran));
     e.sink().local_get(left).i64_const(0).i64_ne();
     e.jump_if(Target::Relative(0));
 }

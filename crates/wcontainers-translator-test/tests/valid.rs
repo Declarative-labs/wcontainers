@@ -193,6 +193,62 @@ fn long_chains_translate_on_a_small_stack_arm64() {
     }
 }
 
+/// Repeated string instructions one after another, as a compiler writes a run of fills and copies.
+const REPEATED_STRINGS: [&[u8]; 3] = [
+    // mov rdi, rsi; mov ecx, 11; rep stosq
+    &[0x48, 0x89, 0xf7, 0xb9, 0x0b, 0, 0, 0, 0xf3, 0x48, 0xab],
+    // mov ecx, 11; rep movsb
+    &[0xb9, 0x0b, 0, 0, 0, 0xf3, 0xa4],
+    // mov ecx, 11; repe cmpsb
+    &[0xb9, 0x0b, 0, 0, 0, 0xf3, 0xa6],
+];
+
+/// `ret`, which ends the run.
+const RETURN: u8 = 0xc3;
+
+/// How many of them the longer run has.
+const LONG_RUN: usize = 16;
+
+/// The bytes of WebAssembly for `count` copies of `unit` and a return, at full look-ahead.
+fn run_bytes_x86_64(unit: &[u8], count: usize, optimise: Optimise) -> usize {
+    let mut blob = unit.repeat(count);
+    blob.push(RETURN);
+    let translation = translate::<X86_64>(
+        &blob,
+        0..blob.len() as u64,
+        None,
+        &[0],
+        LookAhead::Full,
+        optimise,
+        wcontainers_translator::ProgressCount::Absent,
+        HOST_X86_64,
+        Offer::default(),
+    )
+    .unwrap();
+    for module in &translation.modules {
+        validate(&module.wasm);
+    }
+    translation.modules.iter().map(|m| m.wasm.len()).sum()
+}
+
+/// Each repeated string instruction of a run adds about as much code as the first: the code after one is
+/// placed once, not once for each way out of it.
+#[test]
+fn a_run_of_repeated_strings_grows_linearly_x86_64() {
+    for unit in REPEATED_STRINGS {
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let first = run_bytes_x86_64(unit, 2, optimise) - run_bytes_x86_64(unit, 1, optimise);
+            let last = run_bytes_x86_64(unit, LONG_RUN + 1, optimise)
+                - run_bytes_x86_64(unit, LONG_RUN, optimise);
+            assert!(
+                last <= 2 * first,
+                "{unit:02x?} for {optimise:?}: the second adds {first} bytes, the {}th {last}",
+                LONG_RUN + 1
+            );
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(config())]
     #[test]

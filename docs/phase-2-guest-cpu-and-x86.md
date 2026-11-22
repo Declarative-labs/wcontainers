@@ -1983,6 +1983,12 @@ otherwise; `mov` to cs is illegal. All of this was decided by layer 1 against th
   exact to the element. This is the slow twin, counted "string instruction one element at a time" with the
   reason (direction flag set, trap flag set, overlap, range not all allowed).
 - **repe and repne cmps and scas** stop on data, so they are always one element per pass.
+- **A count of zero** does no pass: the pass sits in an `if` on rcx (ecx with 32-bit addresses), and the
+  instruction falls through. It never jumps to the next instruction, because a meaning's direct jumps go only
+  to its flow's target (section 3): the translator places the code a block's way out leads to once for each
+  way out it knows of, so an unnamed second way to the next instruction would place the rest of the function
+  twice, and a run of rep string instructions (a C++ static constructor in Java's runtime clears its register masks
+  this way) doubled the code at each one (X9, run 2).
 - **Stops between any two elements**: every pass of either path ends on an element boundary with exact rcx,
   rsi and rdi and goes through the one stop check, and a bulk pass's element count is the one value a
   stop limit would bound (the brief: the stop flag becomes a limit on a progress count), so a stop can land
