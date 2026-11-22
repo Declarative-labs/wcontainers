@@ -45,6 +45,13 @@ pub use next_block::helper_invocation_flag;
 /// the module's user replaces each call.
 pub const IMAGE_QUERY_LOD: &str = "image_query_lod";
 
+/// The name of the functions a sample with a minimum level (`MinLod`) calls, one per signature:
+/// arguments the image, the sampler, the coordinate (the layer left out), the sample's bias or its two
+/// gradients where it has them, and the minimum level; result the two gradients the sample takes, as
+/// the columns of a `mat2x3<f32>` (a coordinate's axes, padded with zeros). Their bodies are empty: the
+/// module's user replaces each call.
+pub const IMAGE_SAMPLE_CLAMP: &str = "image_sample_clamp";
+
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{convert::TryInto, mem, num::NonZeroU32};
 
@@ -660,10 +667,11 @@ pub struct Frontend<I> {
     // dummy `Handle<crate::Function>` of the call site.
     deferred_function_calls: Vec<spirv::Word>,
     dummy_functions: Arena<crate::Function>,
-    /// The module's id bound: the ids past it name the `IMAGE_QUERY_LOD` functions.
+    /// The module's id bound: the ids past it name the stand-in functions (`IMAGE_QUERY_LOD`,
+    /// `IMAGE_SAMPLE_CLAMP`).
     id_bound: spirv::Word,
-    /// Each `IMAGE_QUERY_LOD` function's signature and id.
-    lod_queries: Vec<(image::LodSignature, spirv::Word)>,
+    /// Each stand-in function's signature and id.
+    stand_ins: Vec<(image::StandInSignature, spirv::Word)>,
     // Graph of all function calls through the module.
     // It's used to sort the functions (as nodes) topologically,
     // so that in the IR any called function is already known.
@@ -723,7 +731,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
             deferred_function_calls: Vec::default(),
             dummy_functions: Arena::new(),
             id_bound: 0,
-            lod_queries: Vec::new(),
+            stand_ins: Vec::new(),
             function_call_graph: GraphMap::new(),
             options: options.clone(),
             switch_cases: FastIndexMap::default(),
@@ -2008,7 +2016,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
         self.layouter.clear();
         self.dummy_functions = Arena::new();
-        self.lod_queries.clear();
+        self.stand_ins.clear();
         self.lookup_function.clear();
         self.function_call_graph.clear();
 

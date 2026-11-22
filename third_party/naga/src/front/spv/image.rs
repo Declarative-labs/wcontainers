@@ -11,13 +11,8 @@ use super::{Error, LookupExpression, LookupHelper as _};
 /// coordinate.
 pub(super) const IMAGE_QUERY_LOD_WORDS: u16 = 5;
 
-/// The types of an `IMAGE_QUERY_LOD` function's image, sampler and coordinate, and of its result.
-pub(super) type LodSignature = (
-    Handle<crate::Type>,
-    Handle<crate::Type>,
-    Handle<crate::Type>,
-    Handle<crate::Type>,
-);
+/// A stand-in function's name, the types of its arguments and the type of its result.
+pub(super) type StandInSignature = (&'static str, Vec<Handle<crate::Type>>, Handle<crate::Type>);
 
 #[derive(Clone, Debug)]
 pub(super) struct LookupSampledImage {
@@ -571,6 +566,9 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
         let mut image_ops = if words_left != 0 { self.next()? } else { 0 };
 
         let mut level = crate::SampleLevel::Auto;
+        // The types of the level's operands, and the minimum level with its type.
+        let mut level_types = Vec::new();
+        let mut min_lod = None;
         let mut offset = None;
         let mut moved = None;
         while image_ops != 0 {
@@ -582,6 +580,7 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     let bias_handle =
                         self.get_expr_handle(bias_expr, bias_lexp, ctx, emitter, block, body_idx);
                     level = crate::SampleLevel::Bias(bias_handle);
+                    level_types = alloc::vec![self.lookup_type.lookup(bias_lexp.type_id)?.handle];
                 }
                 spirv::ImageOperands::LOD => {
                     let lod_expr = self.next()?;
@@ -630,6 +629,8 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                         block,
                         body_idx,
                     );
+                    let grad_ty = self.lookup_type.lookup(grad_x_lexp.type_id)?.handle;
+                    level_types = alloc::vec![grad_ty, grad_ty];
                     let grad_y_expr = self.next()?;
                     let grad_y_lexp = self.lookup_expression.lookup(grad_y_expr)?;
                     let grad_y_handle = self.get_expr_handle(
@@ -680,13 +681,22 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     );
                     moved = Some((offset_handle, offset_lexp.type_id));
                 }
+                // A comparison takes no gradients, through which the minimum level is taken.
+                spirv::ImageOperands::MIN_LOD if !options.compare && !options.gather => {
+                    let clamp_expr = self.next()?;
+                    let clamp_lexp = self.lookup_expression.lookup(clamp_expr)?;
+                    let clamp_handle =
+                        self.get_expr_handle(clamp_expr, clamp_lexp, ctx, emitter, block, body_idx);
+                    let clamp_ty = self.lookup_type.lookup(clamp_lexp.type_id)?.handle;
+                    min_lod = Some((clamp_handle, clamp_ty));
+                }
                 // Skipping an operand (a run-time `Offset` among them) would change what is sampled.
                 other => return Err(Error::UnsupportedImageSampleOperand(other.bits())),
             }
             image_ops ^= bit;
         }
 
-        let si_lexp = self.lookup_sampled_image.lookup(sampled_image_id)?;
+        let si_lexp = self.lookup_sampled_image.lookup(sampled_image_id)?.clone();
         let coord_lexp = self.lookup_expression.lookup(coordinate_id)?;
         let coord_handle =
             self.get_expr_handle(coordinate_id, coord_lexp, ctx, emitter, block, body_idx);
@@ -802,7 +812,7 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
             ref other => return Err(Error::InvalidGlobalVar(other.clone())),
         }
 
-        let ((coordinate, array_index), depth_ref, is_depth) =
+        let ((coordinate, array_index), depth_ref, is_depth, dim) =
             match ctx.module.types[image_ty].inner {
                 crate::TypeInner::Image {
                     dim,
@@ -853,9 +863,25 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                         }
                     },
                     class.is_depth(),
+                    dim,
                 ),
                 _ => return Err(Error::InvalidImage(image_ty)),
             };
+
+        if let Some(clamp) = min_lod {
+            level = self.sample_clamp_gradients(
+                ctx,
+                emitter,
+                block,
+                si_lexp.image,
+                si_lexp.sampler,
+                coordinate,
+                dim,
+                (level, level_types),
+                clamp,
+                span,
+            )?;
+        }
 
         let coordinate = match moved {
             Some((offset, offset_type_id)) => self.gather_offset_coordinate(
@@ -1140,48 +1166,16 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
         let coord_lexp = self.lookup_expression.lookup(coordinate_id)?;
         let coordinate =
             self.get_expr_handle(coordinate_id, coord_lexp, ctx, emitter, block, body_idx);
-        let types = (
-            ctx.get_image_expr_ty(si.image)?,
-            ctx.get_image_expr_ty(si.sampler)?,
-            self.lookup_type.lookup(coord_lexp.type_id)?.handle,
+        let signature = (
+            super::IMAGE_QUERY_LOD,
+            alloc::vec![
+                ctx.get_image_expr_ty(si.image)?,
+                ctx.get_image_expr_ty(si.sampler)?,
+                self.lookup_type.lookup(coord_lexp.type_id)?.handle,
+            ],
             self.lookup_type.lookup(result_type_id)?.handle,
         );
-        let (image_ty, sampler_ty, coordinate_ty, result_ty) = types;
-        let to = match self.lod_queries.iter().find(|(t, _)| *t == types) {
-            Some(&(_, id)) => id,
-            None => {
-                let id = self
-                    .id_bound
-                    .checked_add(self.lod_queries.len() as u32)
-                    .ok_or(Error::InvalidId(self.id_bound))?;
-                let function = crate::Function {
-                    name: Some(super::IMAGE_QUERY_LOD.into()),
-                    arguments: [image_ty, sampler_ty, coordinate_ty]
-                        .iter()
-                        .map(|&ty| crate::FunctionArgument {
-                            name: None,
-                            ty,
-                            binding: None,
-                        })
-                        .collect(),
-                    result: Some(crate::FunctionResult {
-                        ty: result_ty,
-                        binding: None,
-                    }),
-                    ..Default::default()
-                };
-                let handle = ctx.module.functions.append(function, span);
-                self.lookup_function.insert(
-                    id,
-                    super::LookupFunction {
-                        handle,
-                        parameters_sampling: Vec::new(),
-                    },
-                );
-                self.lod_queries.push((types, id));
-                id
-            }
-        };
+        let to = self.stand_in(ctx, signature, span)?;
         block.extend(emitter.finish(ctx.expressions));
         let function = self.add_call(ctx.function_id, to);
         let result = ctx
@@ -1205,5 +1199,156 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
         );
         emitter.start(ctx.expressions);
         Ok(())
+    }
+
+    /// The id of the stand-in function of `signature`, made on first use: its body is empty, and the
+    /// module's user replaces each call of it.
+    fn stand_in(
+        &mut self,
+        ctx: &mut super::BlockContext,
+        signature: StandInSignature,
+        span: crate::Span,
+    ) -> Result<spirv::Word, Error> {
+        if let Some(&(_, id)) = self.stand_ins.iter().find(|(s, _)| *s == signature) {
+            return Ok(id);
+        }
+        let id = self
+            .id_bound
+            .checked_add(self.stand_ins.len() as u32)
+            .ok_or(Error::InvalidId(self.id_bound))?;
+        let (name, ref arguments, result) = signature;
+        let function = crate::Function {
+            name: Some(name.into()),
+            arguments: arguments
+                .iter()
+                .map(|&ty| crate::FunctionArgument {
+                    name: None,
+                    ty,
+                    binding: None,
+                })
+                .collect(),
+            result: Some(crate::FunctionResult {
+                ty: result,
+                binding: None,
+            }),
+            ..Default::default()
+        };
+        let handle = ctx.module.functions.append(function, span);
+        self.lookup_function.insert(
+            id,
+            super::LookupFunction {
+                handle,
+                parameters_sampling: Vec::new(),
+            },
+        );
+        self.stand_ins.push((signature, id));
+        Ok(id)
+    }
+
+    /// The gradients a sample with a minimum level (`MinLod`, which the IR lacks) takes: the two
+    /// columns, cut to the coordinate's size, of a call of the `IMAGE_SAMPLE_CLAMP` function of its
+    /// signature, made on first use, which the module's user replaces.
+    #[allow(clippy::too_many_arguments)]
+    fn sample_clamp_gradients(
+        &mut self,
+        ctx: &mut super::BlockContext,
+        emitter: &mut crate::proc::Emitter,
+        block: &mut crate::Block,
+        image: Handle<crate::Expression>,
+        sampler: Handle<crate::Expression>,
+        coordinate: Handle<crate::Expression>,
+        dim: crate::ImageDimension,
+        level: (crate::SampleLevel, Vec<Handle<crate::Type>>),
+        clamp: (Handle<crate::Expression>, Handle<crate::Type>),
+        span: crate::Span,
+    ) -> Result<crate::SampleLevel, Error> {
+        let f32_scalar = Scalar::F32;
+        let size = dim.required_coordinate_size();
+        let coordinate_ty = ctx.module.types.insert(
+            crate::Type {
+                name: None,
+                inner: match size {
+                    Some(size) => crate::TypeInner::Vector {
+                        size,
+                        scalar: f32_scalar,
+                    },
+                    None => crate::TypeInner::Scalar(f32_scalar),
+                },
+            },
+            span,
+        );
+        let result_ty = ctx.module.types.insert(
+            crate::Type {
+                name: None,
+                inner: crate::TypeInner::Matrix {
+                    columns: crate::VectorSize::Bi,
+                    rows: crate::VectorSize::Tri,
+                    scalar: f32_scalar,
+                },
+            },
+            span,
+        );
+        let mut arguments = alloc::vec![image, sampler, coordinate];
+        let mut types = alloc::vec![
+            ctx.get_image_expr_ty(image)?,
+            ctx.get_image_expr_ty(sampler)?,
+            coordinate_ty
+        ];
+        match level.0 {
+            crate::SampleLevel::Auto => {}
+            crate::SampleLevel::Bias(bias) => arguments.push(bias),
+            crate::SampleLevel::Gradient { x, y } => arguments.extend([x, y]),
+            _ => {
+                return Err(Error::UnsupportedImageSampleOperand(
+                    spirv::ImageOperands::MIN_LOD.bits(),
+                ))
+            }
+        }
+        types.extend(level.1);
+        arguments.push(clamp.0);
+        types.push(clamp.1);
+        let to = self.stand_in(ctx, (super::IMAGE_SAMPLE_CLAMP, types, result_ty), span)?;
+        block.extend(emitter.finish(ctx.expressions));
+        let function = self.add_call(ctx.function_id, to);
+        let result = ctx
+            .expressions
+            .append(crate::Expression::CallResult(function), span);
+        block.push(
+            crate::Statement::Call {
+                function,
+                arguments,
+                result: Some(result),
+            },
+            span,
+        );
+        emitter.start(ctx.expressions);
+        let [x, y] = [0, 1].map(|index| {
+            let column = ctx.expressions.append(
+                crate::Expression::AccessIndex {
+                    base: result,
+                    index,
+                },
+                span,
+            );
+            match size {
+                Some(crate::VectorSize::Tri) => column,
+                Some(size) => ctx.expressions.append(
+                    crate::Expression::Swizzle {
+                        size,
+                        vector: column,
+                        pattern: crate::SwizzleComponent::XYZW,
+                    },
+                    span,
+                ),
+                None => ctx.expressions.append(
+                    crate::Expression::AccessIndex {
+                        base: column,
+                        index: 0,
+                    },
+                    span,
+                ),
+            }
+        });
+        Ok(crate::SampleLevel::Gradient { x, y })
     }
 }
