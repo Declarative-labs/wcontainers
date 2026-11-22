@@ -44,7 +44,75 @@ cull distances and primitive numbers on WebGL 2, A4's multisampled integer twins
 the plan. Run 7 (run 86, the section below): A9, vertex shaders writing storage, run as compute
 through the stage helper; A7's typed buffers in geometry shaders. Run 8 (run 87, the section
 below): arrays of constant and structured buffers on the DXIL route, and dxc's `vs_cull` drawn on
-both cull routes. Not complete: the gap list below.
+both cull routes. G6 given again on 2026-11-22 as its run 1 (run 88, the section below): the NIR
+track's public entry for geometry, hull and domain programs from a naga module (`staged`), and its
+three asks of `rewrite`. Not complete: the gap list below.
+
+## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
+
+Built in run 88 (its G9 run 12 ask, "Requests to other tracks"). `staged::geometry`, `staged::hull`
+and `staged::domain` take `(module, &program, reflection, &variant, &route_key)` and return the
+`Converted` that `stage::Stages::new`, `Stages::tessellated` and `tessellated_with` read, made by
+the same passes the DXBC and DXIL routes run (`lower::geometry`, `lower::hull`), then 15.4's
+rewrites and the variant's as `rewrite` makes them; the modules carry `cache::rewritten_key` of
+`route_key` (the geometry pass-through `module_key(.., 1)` of it, as `convert` gives).
+- The module: the program's stage values are private globals (`StageVariable`: the variable,
+  input or output, `Place::Location { location, component }` or `Place::BuiltIn(staged::BuiltIn)`,
+  a geometry output's stream, `patch` for hull outputs and domain inputs held once a patch). Types:
+  a scalar or vector, or an array of them one location a row; per-vertex and per-control-point
+  values arrayed by vertex or control point outermost (GLSL's `gl_in[]`, `gl_out[]`).
+- `GeometryProgram`: `main` (run once per input primitive and instance after its inputs are
+  filled), `emit` (one empty function without arguments per stream, at least one), `cut` (empty),
+  all three placed in the function arena before every function calling them; input and output
+  primitive, most vertices, instances (`BuiltIn::GeometryInstance` is GLSL's `gl_InvocationID`
+  there). Entry points of the module are replaced.
+- `HullProgram`: `control_point` run once per output control point in order with
+  `BuiltIn::ControlPointId` set, then `patch_constant` if given (`None` for a GLSL control program
+  written as one function; it then runs after the last point); domain, partitioning and
+  tessellator output (OpenGL declares them in the evaluation program: hand them over here), input
+  and output control points. The factors are `BuiltIn::OuterFactors` (array of 4 floats) and
+  `InnerFactors` (array of 2), as GLSL declares them; only the domain's count is read.
+- `DomainProgram`: the module's one vertex entry point, its outputs its own (the given
+  reflection's outputs are kept); domain, the patch's control points (the hull's output count),
+  and the inputs (`BuiltIn::TessellationCoordinate` is a vec3 as `gl_TessCoord`).
+- Refusals are the routes' own names (`refusal::GEOMETRY_OUTPUT`, `HULL_INPUT_SHAPE`,
+  `DOMAIN_WITHOUT_CONTROL_POINTS`, ...); a program that does not hold to the above is `Malformed`.
+- Tests: `tests/staged.rs` (any machine): own `gs_cut` and the hull and domain shaders of
+  `tessellation.hlsl` written in WGSL as such a module (`tests/own/staged_*.wgsl`,
+  `tests/forms/mod.rs`) give the same extras, stage values (but semantics), bindings and module
+  stages as fxc's builds through `convert`, under the compute and replay forms; refusals by name.
+  Drawn on the RTX 3080 against real Direct3D 11 drawing fxc's builds:
+  `geometry_programs_from_a_module_draw_as_direct3d_does` (tests/geometry_draw.rs) and
+  `hull_and_domain_programs_from_a_module_stream_as_direct3d_does` (tests/tessellation_draw.rs,
+  every domain with three partitionings and each output, streamed and through a geometry shader).
+- The other asks, in `rewrite` since run 88: the sampled pairs are always taken from the module;
+  a vertex program writing no position is given (0, 0, 0, -1) as `convert` gives it (the NIR
+  track's own copy of `clip_unpositioned` can go); `BuiltIn::BaseVertex` and `BaseInstance`
+  arguments read the draw's bases from where `draw_base` says (the DXIL route's pass). Test
+  `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
+  (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
+  unordered not-equal items (A26), below.
+
+## G6 run 1 again (run 88): the NIR track's entry for geometry and tessellation, its `rewrite` asks
+
+Logs and scripts in scratch `graphics-shaders/g6-r88` (`gpu.sh` as run 87's, from the clone
+`tip` on branch `shaders-tip`; `job1.log`, `job2.log`). Builds and CPU tests ran on the rented
+ARM64 machine (`arm-run <checkout> --name graphics-shaders`), none on the Mac.
+- Built: `src/staged.rs` (public `staged`, the section above); `lower::hull::call_domain_inputs`
+  (the DXIL route's and `staged::domain`'s one way of calling a domain program's input function);
+  `HullPass::entry_point` takes the patch constant function as optional (the DXBC route refuses
+  its absence as before, as `Malformed`); `convert` and `rewrite` share their tail (`varied`,
+  `finished`, `route_rewrites` in src/lib.rs).
+- `rewrite` changed (the NIR track's asks): sampled pairs always from the module, the position
+  for an unpositioned vertex program, the draw bases' rewrite.
+- Runs (ARM64 machine, load 3 to 8): clippy of this crate with warnings denied clean; CPU test
+  binaries `staged` 3, `geometry` 20 (1 ignored as before), `variants` 40, `rewrite` 13, `builtin`
+  5, `cache` 7 (1 ignored as before), `compute` 5, and the library's 12: all passed. Desktop (RTX
+  3080, one GPU job, 3 cargo jobs): Windows clippy clean; the two new drawn tests (job2.log):
+  seeds 1 to 4, geometry 16 comparisons and tessellation 168, 0 failed; seeds 100 to 115, 64 and
+  672, 0 failed; every geometry case 0 texels apart from Direct3D 11.
+- Literals: the new files add no finding of this crate (one `position` name restating a stage
+  constant was renamed before the commit).
 
 ## G6 run 8 (run 87): arrays of constant and structured buffers on the DXIL route, dxc's `vs_cull` drawn
 
@@ -573,6 +641,12 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- Run 88: a public entry for geometry, hull and domain programs another route brought into the
+  common form (`wcontainers_shaders::staged`), which the NIR track's OpenGL geometry and
+  tessellation stages wait on; drawn equal to real Direct3D 11 with programs written that way.
+  `rewrite` now also gives the sampled pairs, an unpositioned vertex program's position and the
+  draw bases as `convert` does (the NIR track's asks). No interface change.
+
 - Run 82: depth views with component mappings measured on real Direct3D 12 (RTX 3080 and WARP)
   and converted wherever the devices agree; where they disagree (a comparison through a moved red
   source) it stays refused by name, as the RTX 3080 and WARP give different answers and vkd3d's
@@ -707,13 +781,11 @@ Runs at a00ab267:
   carried reader is this track's work (it carries naga's patches), new work after this
   milestone's check.
 - The NIR track's other asks of this crate (its status, "Requests to other tracks", "Shaders
-  track"), not built, new work after this milestone's check: `rewrite` recomputing
-  `sampled_pairs` whatever it splits, or a public `sampled_pairs` of a module (its run 14; today
-  `rewrite` recomputes them only when it splits an array, and keeps the given pairs otherwise),
-  `stage::clip_unpositioned` and the draw's bases rewrite in the entry point, and naga's reader
-  rounding an array layer and keeping an unordered not-equal (the DXIL route reaches the same
-  reader; the DXBC route does not, and drops the unordered not-equal in this crate's own lowering
-  instead: gap A26).
+  track"): `rewrite` taking `sampled_pairs` from the module, `stage::clip_unpositioned` and the
+  draw's bases rewrite in the entry point were built in run 88 (the section "For the NIR track");
+  not built: naga's reader rounding an array layer and keeping an unordered not-equal (the DXIL
+  route reaches the same reader; the DXBC route does not, and drops the unordered not-equal in
+  this crate's own lowering instead: gap A26).
 
 ## G6: the pass bar item by item, and the gap list (checked at G6a run 6; A10, A11 and A19 at run 65; A6 at run 66; A4 and the figures of items 1, 2 and 4 at run 70; item 2's figures, A7, A21 and A26 to A27 at run 72; item 6, A8, A10 to A12, A27 and A30 at run 76; A10, A11, A31 and A32 at run 77)
 
@@ -1704,8 +1776,9 @@ G6a run 5's tip):
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-3. Besides, as asked: the NIR track's asks under "New for the owner" (the geometry and tessellation entry
-   point its G9 waits on first), A26 (the unordered not-equal, both routes, with its drawn NaN
+3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
+   the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
+   in run 88), A26 (the unordered not-equal, both routes, with its drawn NaN
    test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
    cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv and
    A8 (both want a way to carry dxbc-spirv patches), A22 on WARP.
