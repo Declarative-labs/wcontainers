@@ -85,6 +85,17 @@ const IR_ENUMS: &[HeaderEnum] = &[
 /// The directory of this crate's own C++ boundary.
 const BOUNDARY: &str = "cpp";
 
+/// Changes carried to the converters until upstream has them: `<converter>/<file>.patch` here is a
+/// unified diff of `<file>`, one of the converter's compiled sources, which is then compiled from
+/// the build directory in place of the submodule's.
+const PATCHES: &str = "converter-patches";
+
+/// A carried patch's file extension.
+const PATCH_EXTENSION: &str = "patch";
+
+/// Left out of sources before they are hashed or patched, so every checkout reads the same.
+const CARRIAGE_RETURN: u8 = b'\r';
+
 /// The boundary's enums, in the same form, so both sides share one table.
 const BOUNDARY_ENUMS: &[HeaderEnum] = &[
     ("boundary.h", "ResourceClass", "class", "u32"),
@@ -169,6 +180,7 @@ fn main() {
             true,
         ),
         (PathBuf::from(BOUNDARY), true),
+        (PathBuf::from(PATCHES), true),
         (PathBuf::from("build.rs"), false),
     ];
     let mut sources = blake3::Hasher::new();
@@ -183,14 +195,13 @@ fn main() {
     );
     let objects = objects.finalize().to_hex().to_string();
 
+    let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let mut build = base();
     build
         .std("c++17")
         .include(root)
         .define("DXBC_SPV_ENABLE_SM5", None);
-    for file in DXBC_SPIRV {
-        build.file(root.join(file));
-    }
+    add_sources(&mut build, &build_dir, root, DXBC_SPIRV);
     build.file("cpp/dxbc.cpp");
     compile(&build, "dxbc_spirv", &objects);
 
@@ -214,9 +225,7 @@ fn main() {
         .define("AMD_EXTENSIONS", None)
         .define("DXBC_SPV_ENABLE_SM5", None)
         .define("NOMINMAX", None);
-    for file in DXIL_SPIRV {
-        build.file(dxil.join(file));
-    }
+    add_sources(&mut build, &build_dir, dxil, DXIL_SPIRV);
     build.file("cpp/dxil.cpp");
     compile(&build, "dxil_spirv", &objects);
     // Linked after both, which call it.
@@ -226,7 +235,7 @@ fn main() {
 
     ir_codes(
         &[(root, IR_ENUMS), (Path::new(BOUNDARY), BOUNDARY_ENUMS)],
-        &PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ir_codes.rs"),
+        &build_dir.join("ir_codes.rs"),
     );
 
     // The converter as a whole: the C++ above, this crate's Rust, and the naga carried in the
@@ -243,12 +252,50 @@ fn main() {
         converter.finalize().to_hex()
     );
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
-    for watched in [BOUNDARY, "dxbc-spirv", "dxil-spirv", "src"] {
+    for watched in [BOUNDARY, PATCHES, "dxbc-spirv", "dxil-spirv", "src"] {
         println!("cargo:rerun-if-changed={watched}");
     }
     if naga.exists() {
         println!("cargo:rerun-if-changed={}", naga.display());
     }
+}
+
+/// Adds the converter's `files` under `root` to `build`, each with its carried patch applied
+/// (`PATCHES`) into `build_dir`; a patch naming no file of the list stops the build.
+fn add_sources(build: &mut cc::Build, build_dir: &Path, root: &Path, files: &[&str]) {
+    let converter = root.file_name().unwrap();
+    let patches = Path::new(PATCHES).join(converter);
+    let mut unused = list_files(&[(patches.clone(), true)]);
+    let out = build_dir.join(PATCHES).join(converter);
+    for file in files {
+        let original = root.join(file);
+        let patch = patches.join(file).with_added_extension(PATCH_EXTENSION);
+        let Some(place) = unused.iter().position(|p| *p == patch) else {
+            build.file(original);
+            continue;
+        };
+        unused.swap_remove(place);
+        let text = |path: &Path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .replace(char::from(CARRIAGE_RETURN), "")
+        };
+        let diff = text(&patch);
+        let diff = diffy::Patch::from_str(&diff)
+            .unwrap_or_else(|e| panic!("{}: not a unified diff: {e}", patch.display()));
+        let changed = diffy::apply(&text(&original), &diff)
+            .unwrap_or_else(|e| panic!("{} does not apply: {e}", patch.display()));
+        let target = out.join(file);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, changed).unwrap();
+        // Its quoted includes name files beside the original.
+        build.include(original.parent().unwrap());
+        build.file(target);
+    }
+    assert!(
+        unused.is_empty(),
+        "patches naming no compiled source: {unused:?}"
+    );
 }
 
 /// Writes each list's enums, read from the headers under its directory, as Rust constants, so the
@@ -392,6 +439,21 @@ fn compile(build: &cc::Build, name: &str, hash: &str) {
 /// extension, as its sources all have one: git's files there have none, among them the submodule's
 /// `.git` link, which depends on where the checkout keeps git's data.
 fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
+    for file in list_files(paths) {
+        let name = file.to_string_lossy().replace('\\', "/");
+        let bytes: Vec<u8> = std::fs::read(&file)
+            .unwrap()
+            .into_iter()
+            .filter(|&b| b != CARRIAGE_RETURN)
+            .collect();
+        hasher.update(name.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+}
+
+/// The files under each `(path, recursive)`, sorted, as `hash_files` takes them.
+fn list_files(paths: &[(PathBuf, bool)]) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for (path, recursive) in paths {
         if path.is_file() {
@@ -417,17 +479,7 @@ fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
     }
     files.sort();
     files.dedup();
-    for file in files {
-        let name = file.to_string_lossy().replace('\\', "/");
-        let bytes: Vec<u8> = std::fs::read(&file)
-            .unwrap()
-            .into_iter()
-            .filter(|&b| b != b'\r')
-            .collect();
-        hasher.update(name.as_bytes());
-        hasher.update(&(bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
-    }
+    files
 }
 
 /// The common C++ setup: the converters' assertions as `cpp/assert` defines them, C++ exceptions on

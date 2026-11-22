@@ -1,0 +1,41 @@
+--- a/ir/passes/ir_pass_arithmetic.cpp
++++ b/ir/passes/ir_pass_arithmetic.cpp
+@@ -936,9 +936,9 @@
+       auto refByte = m_builder.add(Op::UBitExtract(ScalarType::eU32, ref, m_builder.makeConstant(8u * i), m_builder.makeConstant(8u)));
+       auto srcByte = m_builder.add(Op::UBitExtract(ScalarType::eU32, src, m_builder.makeConstant(8u * i), m_builder.makeConstant(8u)));
+ 
+-      auto absDiff = m_builder.add(Op::ISub(ScalarType::eU32,
+-        m_builder.add(Op::UMax(ScalarType::eU32, refByte, srcByte)),
+-        m_builder.add(Op::UMin(ScalarType::eU32, refByte, srcByte))));
++      auto maxByte = m_builder.add(Op::UMax(ScalarType::eU32, refByte, srcByte));
++      auto minByte = m_builder.add(Op::UMin(ScalarType::eU32, refByte, srcByte));
++      auto absDiff = m_builder.add(Op::ISub(ScalarType::eU32, maxByte, minByte));
+ 
+       auto isNonZero = m_builder.add(Op::INe(ScalarType::eBool, refByte, m_builder.makeConstant(0u)));
+       absDiff = m_builder.add(Op::Select(ScalarType::eU32, isNonZero, absDiff, m_builder.makeConstant(0u)));
+@@ -1372,9 +1372,9 @@
+     auto isNz = m_builder.add(Op::INe(ScalarType::eBool, b, m_builder.makeConstantZero(type)));
+     auto ifValid = m_builder.add(Op::Label());
+ 
+-    auto result = m_builder.add(Op::CompositeConstruct(resultType,
+-      m_builder.add(Op::UDiv(type, a, b)),
+-      m_builder.add(Op::UMod(type, a, b))));
++    auto quotient = m_builder.add(Op::UDiv(type, a, b));
++    auto remainder = m_builder.add(Op::UMod(type, a, b));
++    auto result = m_builder.add(Op::CompositeConstruct(resultType, quotient, remainder));
+     m_builder.add(Op::Return(resultType, result));
+ 
+     auto ifZero = m_builder.add(Op::Label());
+@@ -1912,9 +1912,9 @@
+       bool sfIsZero = isConstantValue(sf, 0.0) || isConstantValue(sf, -0.0);
+ 
+       if (stIsZero || sfIsZero) {
+-        m_builder.rewriteOp(op->getDef(), Op::Select(op->getType(), sc.getDef(),
+-          m_builder.addBefore(op->getDef(), Op::FAdd(op->getType(), st.getDef(), valueOp.getDef())),
+-          m_builder.addBefore(op->getDef(), Op::FAdd(op->getType(), sf.getDef(), valueOp.getDef()))).setFlags(op->getFlags()));
++        auto tSum = m_builder.addBefore(op->getDef(), Op::FAdd(op->getType(), st.getDef(), valueOp.getDef()));
++        auto fSum = m_builder.addBefore(op->getDef(), Op::FAdd(op->getType(), sf.getDef(), valueOp.getDef()));
++        m_builder.rewriteOp(op->getDef(), Op::Select(op->getType(), sc.getDef(), tSum, fSum).setFlags(op->getFlags()));
+         return std::make_pair(true, op);
+       }
+     }

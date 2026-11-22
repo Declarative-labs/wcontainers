@@ -565,7 +565,7 @@ const WEBGL_DECLARABLE: [&str; 3] = ["DUAL_SOURCE_BLEND", "POINT_SIZE", "SAMPLE_
 /// equal the record.
 const KNOWN_UNNAMED: [(&str, &str); 1] = [(
     "hlsl+distance-4-ps.dxil",
-    "gap A1: dxc 10.0.26100 writes a PPC_FP128 type record, which dxil-spirv's reader does not know",
+    "gap A1: dxc 10.0.26100 writes a PPC_FP128 constant, cast to the float the program stores, which dxil-spirv's reader does not know",
 )];
 
 /// A verdict's GLSL ES part as its `needs` words (with their space, empty where none) and the

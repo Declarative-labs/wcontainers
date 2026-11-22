@@ -1,0 +1,26 @@
+--- a/dxbc/dxbc_registers.cpp
++++ b/dxbc/dxbc_registers.cpp
+@@ -572,8 +572,9 @@
+     ? builder.add(ir::Op::ParamLoad(ir::ScalarType::eU32, functionDef, param))
+     : builder.makeConstant(fpIndex);
+ 
+-  auto ftIndex = builder.add(ir::Op::BufferLoad(ir::ScalarType::eU32, loadThisCb(builder),
+-    builder.add(ir::Op::CompositeConstruct(ir::BasicType(ir::ScalarType::eU32, 2u), thisIndex, builder.makeConstant(1u))), 4u));
++  auto thisCb = loadThisCb(builder);
++  auto ftAddress = builder.add(ir::Op::CompositeConstruct(ir::BasicType(ir::ScalarType::eU32, 2u), thisIndex, builder.makeConstant(1u)));
++  auto ftIndex = builder.add(ir::Op::BufferLoad(ir::ScalarType::eU32, thisCb, ftAddress, 4u));
+ 
+   /* Select function body to call */
+   auto switchConstruct = builder.add(ir::Op::ScopedSwitch(ir::SsaDef(), ftIndex));
+@@ -624,8 +625,9 @@
+   builder.add(ir::Op::DebugName(m_thisFunction, "this"));
+ 
+   auto thisIndex = builder.add(ir::Op::ParamLoad(ir::ScalarType::eU32, m_thisFunction, param));
+-  auto packedData = builder.add(ir::Op::BufferLoad(ir::ScalarType::eU32, loadThisCb(builder),
+-    builder.add(ir::Op::CompositeConstruct(ir::BasicType(ir::ScalarType::eU32, 2u), thisIndex, builder.makeConstant(0u))), 4u));
++  auto thisCb = loadThisCb(builder);
++  auto thisAddress = builder.add(ir::Op::CompositeConstruct(ir::BasicType(ir::ScalarType::eU32, 2u), thisIndex, builder.makeConstant(0u)));
++  auto packedData = builder.add(ir::Op::BufferLoad(ir::ScalarType::eU32, thisCb, thisAddress, 4u));
+ 
+   ir::Op compositeOp(ir::OpCode::eCompositeConstruct, ir::BasicType(ir::ScalarType::eU32, 4u));
+   compositeOp.addOperand(builder.add(ir::Op::UBitExtract(ir::ScalarType::eU32, packedData, builder.makeConstant(0u), builder.makeConstant(4u))));

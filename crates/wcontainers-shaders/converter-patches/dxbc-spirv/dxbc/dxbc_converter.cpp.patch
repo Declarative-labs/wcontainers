@@ -1,0 +1,15 @@
+--- a/dxbc/dxbc_converter.cpp
++++ b/dxbc/dxbc_converter.cpp
+@@ -3657,9 +3657,9 @@
+   if (!valueOp.getType().isStructType())
+     return std::make_pair(ir::SsaDef(), valueOp.getDef());
+ 
+-  return std::make_pair(
+-    builder.add(ir::Op::CompositeExtract(valueOp.getType().getSubType(0u), value, builder.makeConstant(0u))),
+-    builder.add(ir::Op::CompositeExtract(valueOp.getType().getSubType(1u), value, builder.makeConstant(1u))));
++  auto first = builder.add(ir::Op::CompositeExtract(valueOp.getType().getSubType(0u), value, builder.makeConstant(0u)));
++  auto second = builder.add(ir::Op::CompositeExtract(valueOp.getType().getSubType(1u), value, builder.makeConstant(1u)));
++  return std::make_pair(first, second);
+ }
+ 
+ 

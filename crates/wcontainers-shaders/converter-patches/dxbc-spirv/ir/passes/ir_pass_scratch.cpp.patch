@@ -1,0 +1,17 @@
+--- a/ir/passes/ir_pass_scratch.cpp
++++ b/ir/passes/ir_pass_scratch.cpp
+@@ -1286,9 +1286,11 @@
+           SsaDef cond = { };
+ 
+           if (e.count > 1u) {
+-            cond = m_builder.addBefore(loadOp.getDef(), Op::BAnd(ScalarType::eBool,
+-              m_builder.addBefore(loadOp.getDef(), Op::UGe(ScalarType::eBool, indexInfo.indexDef, m_builder.makeConstant(e.index))),
+-              m_builder.addBefore(loadOp.getDef(), Op::ULt(ScalarType::eBool, indexInfo.indexDef, m_builder.makeConstant(e.index + e.count)))));
++            auto lower = m_builder.makeConstant(e.index);
++            auto ge = m_builder.addBefore(loadOp.getDef(), Op::UGe(ScalarType::eBool, indexInfo.indexDef, lower));
++            auto upper = m_builder.makeConstant(e.index + e.count);
++            auto lt = m_builder.addBefore(loadOp.getDef(), Op::ULt(ScalarType::eBool, indexInfo.indexDef, upper));
++            cond = m_builder.addBefore(loadOp.getDef(), Op::BAnd(ScalarType::eBool, ge, lt));
+           } else {
+             cond = m_builder.addBefore(loadOp.getDef(), Op::IEq(ScalarType::eBool, indexInfo.indexDef, m_builder.makeConstant(e.index)));
+           }
