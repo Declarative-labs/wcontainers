@@ -1,5 +1,4 @@
-//! The local system's TCP: connections and listeners are the host's sockets, made and waited on
-//! by the network; what Linux's sockets offer beyond moving bytes is not supported.
+//! The local system's TCP on the host's sockets, made and waited on by the network.
 
 use std::net::{Ipv4Addr, Shutdown};
 
@@ -31,7 +30,7 @@ use crate::LocalSystem;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NetworkHandle(u32);
 
-/// The unspecified address of a peer's family, for a local address the host chooses.
+/// Gives the unspecified address of a peer's family, for a local address the host chooses.
 fn unspecified(peer: SocketAddr) -> SocketAddr {
     match peer {
         SocketAddr::V4(_) => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),

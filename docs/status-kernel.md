@@ -14,11 +14,11 @@ crates/runtime/implementation/single-kernel.
   bit (commit 1e9e4dcf); behaviour is unchanged.
 - Ran on the ARM machine: kernel lib tests 15 passed; stand-in sigio 2 and signalfd 1 passed; inet
   23 passed, 3 failed (proc_net, route_questions_and_rules, socket_edges: the known ARM-only list).
-- The kernel does not call any wait of the system (no `Readiness`, no `ReadyFor`) and nothing
-  implements `StreamTransport` yet, so nothing else changed here.
-- Turning the six `ReadyFor` facts into Linux's poll bits for a guest (POLLRDNORM with POLLIN,
-  POLLWRNORM with POLLOUT, POLLNVAL from the kernel's own descriptor table) is the kernel's job and
-  is still to be built by the kernel track, when the kernel first waits on a host socket.
+- From KA's fifth run the kernel waits on the system's TCP connections and listeners through
+  `Readiness::wait_until_ready` (see "KA, fifth run"). A guest's poll bits are not made from
+  `ReadyFor`: the kernel pulls what the system has into its own socket queue when a wait ends and
+  gives the guest the poll bits of that socket, as for any socket inside the container. Nothing
+  implements `StreamTransport` yet.
 - The literal check now also reports the twelve new `PollEvents` flags in signal_information.rs
   as redefinitions of linux-raw-sys's POLL constants (a reviewed file; nothing in the kernel's).
 - For the owner: `wait_until_ready`'s one-sentence comment does not say that ERROR and HANG_UP
@@ -119,6 +119,24 @@ side of each is worked around without changing the interface.
 - `resolve_domain` can answer any question, but the kernel's name server still asks only for
   addresses (A and AAAA of class IN) and answers others "not implemented", counted, as before,
   so that the suite's results stay the same. Example: an MX question is not asked.
+
+- KA, fifth run: the TCP interfaces have no call that gives a failed connect's error (Linux's
+  `SO_ERROR`). The kernel takes it from a one-byte peek (`TcpReceiveRequest::Peek`) after the wait
+  says ERROR, and the test host and the runtime answer that peek with `HostError::Errno` of the
+  connect's error. Example: a connect to a closed port must end the guest's connect with
+  ECONNREFUSED, and only the peek's error says so.
+- KA, fifth run: a system's TCP handles are of the system's types, and the kernel is not generic
+  over its system, so it keeps each connection's and listener's handle without its type (an
+  `Rc<dyn Any>`, one allocation per connection, a type check per call), as it does each process's
+  state. Example: syscall/socket/outside.rs `Link::handle`.
+- KA, fifth run: the kernel uses 8 of the 20 TCP methods (connect, send, receive, shut_down,
+  close, listen, accept, stop_listening) and `wait_until_ready`; every implementation in the tree
+  (test host, runtime, policy) answers the other 12, `configure` and
+  `give_negative_route_advice` with `NotSupported`, since the kernel's own TCP model keeps those
+  options. Example: crates/runtime/implementation/single-kernel/tcp.rs.
+- KA, fifth run: `TcpListeners::listen` must give a listener even for a container port nothing
+  outside reaches (one not published); the test host and the runtime give one that never becomes
+  ready and whose accept answers `Closed` (counted "listening outside failed"), as before.
 
 ## For the orchestrator
 
@@ -235,6 +253,15 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, fifth run: TCP to the outside runs on the system's `TcpConnections` and `TcpListeners`, each
+connection and listener waited on through `Readiness::wait_until_ready` as one stored waiting
+call (`WaitFor::Ready`), first polled when the kernel next settles; the abi's TCP calls (finish,
+listen, accept, the stream flag of connect) and `Event::Connected` are gone, and the test host,
+the runtime and the policy implement the TCP interfaces. Not done: UDP flows (still the abi's
+`connect`, `send`, `receive` and `Event::ConnectionReady`), ICMP and raw sockets, standard
+streams on `StreamTransport`, the kernel's own `System` trait's removal, most linter findings.
+KA is not complete. See "KA, fifth run".
 
 KA, fourth run: the interface changes of the evening (readiness trait, DNS answer bytes, poll
 flags) needed nothing more of the kernel's crates: everything builds. The kernel suite now has the
@@ -464,6 +491,101 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, fifth run
+
+Started about 01:50 UTC on 2026-11-22 at ddcded53 (branch agents, worktree wcontainers-agents).
+Builds and lints on the x86 machine, tests and measurements on the ARM64 machine, the literal
+check and the linter on the Mac (load 17 to 19); scratch kernel/ka5.
+
+Done (56e334a8, 13175969):
+- The kernel's `System` also requires `TcpConnections<Connection: 'static>` and
+  `TcpListeners<Listener: 'static>`. syscall/socket/outside.rs keeps, per connection or listener,
+  the system's handle (type-erased, For the owner), what its wait asks for, and whether a receive
+  or accept found nothing. A connect asks `TcpConnections::connect` and waits for WRITABLE; ERROR
+  ends it with the error a one-byte peek gives (For the owner). A connection waits for READABLE
+  once a receive gave `WouldBlock` and for WRITABLE once a send took less than it was given; a
+  listener for READABLE once an accept gave `WouldBlock`. One wait per link at most: a new
+  interest drops the kept wait and starts another. Shutting a connection's sending side is
+  `shut_down(Write)`; a released one is `close(Orderly)`, a stopped listener `stop_listening`,
+  both handed back at the next flush once their wait is dropped.
+- waiting.rs: `start_woken` keeps a call marked as woken, so its first poll (and an answer it has
+  at once) comes when the kernel next settles, after the system call that started it, as the
+  host's event used to come. `WaitFor::Ready(id)` and `Answer::Ready`. A restore drops the
+  name and readiness waits and the old system's handles, reports connections closed and listens
+  again, as before.
+- The abi's host keeps only UDP flows: `connect` lost its stream flag; `finish`, `listen`,
+  `accept` and `Event::Connected` are gone.
+- `driver::hello_not_run` is `program_not_run(name, link_flags, out)`, its callers (tests) give
+  `hello`, `-nostdlib` and the folder: the literal check's two findings in it are gone.
+
+Changed outside this track's crates, the smallest change that keeps them building and passing:
+- crates/runtime/implementation/single-kernel: tcp.rs (new) implements the TCP interfaces on
+  `LocalSystem` (connect, send, receive and a peek at offset 0, shut_down, close, listen, accept,
+  stop_listening, `wait_until_ready`; the rest `NotSupported`), handle `NetworkHandle`. net.rs
+  keeps UDP flows by the kernel's numbers and TCP connections and listeners by its own, each with
+  the readiness the poller reported and the waker of its wait (the poller's key tells the two
+  apart); a readiness arrival wakes the wait instead of handing an event. `Arrival::Connected`
+  gone, `Arrival::Ready` carries the poller's key; `LocalSystem::state`, `LocalState` and
+  `LocalState::network` are `pub(crate)`; five interface crates added to its manifest.
+- crates/system/implementation/seeded-test-policy: tcp.rs (new) refuses TCP as every other
+  request to the outside (handles of type `Infallible`; the warning's detail is the peer's or the
+  listener's port, where it was the connection number); the host's connect without the flag.
+- crates/executor/implementation/hardware-virtualization-inside: the link's Finish, Listen and
+  Accept requests, Connect's stream word and their test lines go with the abi calls.
+- crates/executor/implementation/hardware-virtualization: tests/container/mod.rs loses `finish`,
+  `listen`, `accept` and connect's flag.
+- Cargo.lock: the new interface edges only.
+- In the unicorn crate (this track's): tcp.rs (new) implements the TCP interfaces on the test
+  host the same way, each call kept in the record (`Entry::TcpMade` for a connect, listen or
+  accept and the number it gave, `Entry::Sent`/`Received` as before) and each readiness kept as
+  `Entry::TcpReady` when the network says it and given to the wait from the record in a replay,
+  as names are; network.rs keeps flows and TCP apart and arms a connection as its wait asks.
+
+Tests run (ARM64 machine, 02:15 to 02:22 UTC, load 0 to 5; scratch ka5/subset-after.log, then
+the reruns after the last changes): kernel lib 15, runtime 13, abi 1, policy 0 passed; unicorn
+outside 5, away 12 (1 ignored), embedder 35, edges 7, streams 20, taskend 7, procsignals 4,
+script 1, repeats 5, round_trips 3, conformance 0, saving 1 passed; kernel conformance 14 passed;
+inet 23 passed and 3 failed (proc_net, route_questions_and_rules, socket_edges: the ARM list);
+backend 18 passed and 3 failed: file_capabilities and special_files (the ARM list) and
+transfers_match_reference, which passed when run alone straight after (load 4 to 7), so it is
+counted as a flake under load, not a result of this change. Clippy with warnings denied
+(`--no-deps`) clean for every changed crate.
+
+The literal check (Mac): no new finding in any file this run changed (the old names `pull` and
+`local` were kept so the baseline's lines still match).
+
+Measurements of the four waits (scratch ka5/ab.sh, ka5/ab.log: ARM64 machine, release build of
+tests/waitcost.rs, median of 9 of 500 and 1000 repetitions; before is the milestone's start
+e5d693d2 (ka3/before-tree), after is 13175969 with this run's status edits; alternately three
+times, 02:27 to 02:31 UTC, load 2 to 4 on 96 cores):
+- pipe ping-pong: before 11663, 11825, 11809 ns; after 12060, 12408, 12212 ns (about 3 percent
+  more, as in the second and third runs; this run changed nothing a pipe runs, and the third run
+  found the cause, lost inlining across crates, gone with thin LTO: For the owner).
+- outside socket read (now a wait on the system's TCP connection): before 14622, 14015, 13762;
+  after 16391, 14526, 13874 ns. The first after-run is 1.8 microseconds above every before-run,
+  the other two within 0.5; where the difference goes was not measured (expected, not measured:
+  the test host's timer event and two locks per readiness).
+- backend open and read: before 522342, 494790, 495631; after 524213, 520687, 505661 ns.
+- name lookup: before 136401, 136831, 136269; after 138530, 138241, 138288 ns (1.4 percent more,
+  as in the third run).
+- Allocations per repetition (the whole test process): pipe 142.00 both; socket 78.73 to 78.95
+  before, 78.93 to 79.01 after; backend 347.99 before, 340.99 after; name 711.00 before, 709.00
+  after. The kernel's waiting calls allocate nothing once their cell exists (waiting.rs's test);
+  a readiness wait reuses its cell the same way.
+
+The owner's linter (start and end, scratch ka5/lint-start.log and lint-end.log): 38538 findings
+in this track's files at the start, 38620 at the end; the rise is the new tcp.rs and outside.rs
+code's names and summaries waiting for the model's answers (the orchestrator's), the stand-in's
+6 new `implementation_folder` findings (it implements the TCP interfaces, as it does the system's
+others) and literal zeros of the TCP data it fills (`ByteCount(0)`, unspecified ports). The
+kernel interface's untested methods are the same two as before (For the owner).
+
+Next, in order: UDP flows on `UdpSockets` (its receive gives the whole IP packet and its send the
+header fields, so the kernel parses and builds them; then the abi's `connect`, `send`, `receive`,
+`close` and `Event::ConnectionReady` go); ICMP and raw sockets if the kernel ever carries them
+outside; standard streams on `StreamTransport`; then the kernel's own `System` trait replaced by
+the interface's.
 
 ## KA, fourth run
 

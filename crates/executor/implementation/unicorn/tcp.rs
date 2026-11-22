@@ -1,6 +1,4 @@
-//! The test host's TCP: connections and listeners are this machine's sockets, each call kept in
-//! the record and each readiness waited for until the network says it, as names are; what
-//! Linux's sockets offer beyond moving bytes is not supported.
+//! The test host's TCP on this machine's sockets, each call and readiness kept in the record.
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -37,8 +35,7 @@ use crate::replay::Entry;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TcpHandle(u32);
 
-/// What the TCP connections and listeners became ready for and is not taken yet, and the waker of
-/// each wait on one, by number.
+/// The readiness each TCP connection or listener reported and the waker of each wait, by number.
 #[derive(Default)]
 pub(super) struct Readied {
     pub(super) arrived: BTreeMap<u32, ReadyFor>,
@@ -46,7 +43,7 @@ pub(super) struct Readied {
 }
 
 impl Readied {
-    /// What `number` is ready for once the network says it; a wait let go forgets it.
+    /// Waits until the network says what `number` is ready for, forgetting it if let go.
     async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadyFor {
         /// Forgets the readiness waited for, when the wait is let go.
         struct Forget<'a>(&'a Mutex<Readied>, u32);
@@ -72,7 +69,7 @@ impl Readied {
     }
 }
 
-/// The unspecified address of a peer's family, for a local address the machine chooses.
+/// Gives the unspecified address of a peer's family, for a local address the machine chooses.
 fn unspecified(peer: SocketAddr) -> SocketAddr {
     match peer {
         SocketAddr::V4(_) => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
