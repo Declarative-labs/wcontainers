@@ -1,8 +1,106 @@
-# Shaders track (G6): the record of runs 1 to 74
+# Shaders track (G6): the record of runs 1 to 75
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
 superseded by the status file's.
+
+## G6a run 7 (run 75): the first check's carried findings at the tip
+
+Every figure here is from runs at 05a2cff4 (the tip of `agents` when the run started; this crate
+unchanged since run 74's 7f291fa6, and the commits after 05a2cff4 touch only this file and the
+history). The pushed tip after this run (982208db) differs from 05a2cff4 in nothing this crate
+builds (other tracks' socket crates and their lock lines). Logs and the written files Chrome
+compiled (`out`, 50 MB) in scratch `graphics-shaders/g6a-r75`. No code changed in this run.
+Clean-up: this run's build folders deleted (laptop `target/shaders-tip`, 4.9 GB, its source copy
+and `out-r75`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
+`C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clones).
+
+The carried findings, each against the tip:
+- Four corpus record tests failing (eb202617 wrote GLSL under the WebGL 2 key without new
+  records): settled. Every corpus test passes (laptop-suite.log, `corpus`: 13 passed, 0 failed,
+  every corpus and glslang 8.13; `game_shaders_give_their_recorded_verdicts` checks games and games
+  DXIL, tests/corpus.rs:739-744). The records the check named now read: `020_ps_ld_code.dxbc` and
+  `ps_levels`, `ps_levels_past` (both routes) `ok ; glsl compiles`; `hlsl+getdimensions-3-ps`
+  (both routes) and the games' `5c32b4c746957b52.dxbc` `ok ; glsl needs MULTISAMPLE_READ compile
+  'sampler2DMS' : Reserved word.`
+- Run 46's figures taken before its code: settled; run 46's section is history, and this section's
+  figures come from runs at the tip named above.
+- Gap A3's cause stale: settled; A3 is closed (gap list), and the corpus test writes GLSL with the
+  WebGL 2 back end's own `wcontainers_gpu_webgl::glsl::write` (tests/corpus.rs:301), on a module
+  converted under the WebGL 2 key. Chrome on the files written at the tip: below.
+- GLSL refusals recorded only by their first two words: settled. Each record is the whole verdict:
+  the needs the back end reads, glslang's first error, and for a write refusal naga's own reason
+  (`; naga alone: ...`); a glslang refusal is a named outcome only where its error cites a form of
+  a need its record names (`CITED_FORMS`), and a file lacking the directive of a need it declares
+  through an extension fails before glslang (`a_written_file_without_its_needs_directive_is_not_a_named_outcome`).
+  The check's examples at the tip: `ps_shadow`, `ps_shadow_wide` (both routes) and `ps_shade.dxbc`
+  compile; `106_ps_code_ddy_fine.dxbc`, `ps_deriv`, `ps_helper` and `hlsl+ddxddy-4-ps` (both
+  routes) record the need `FINE_DERIVATIVES` (GLSL ES 3.00 has no fine derivatives; pass bar item
+  2 lists it among the needs absent on WebGL 2) with naga's reason `DERIVATIVE_CONTROL`.
+- The pass bar's unbuilt parts: listed by name in the gap list with cause, waiting front and what
+  each takes: A1 (distance-4), A4 (`ProvokingRewrite`, `StoragePacked`, `RootSignatureLayout`,
+  `combine`, `SwizzledDepth`; `decoded` is built and drawn since run 54, and `NormAsInteger`, which
+  the check named, now refuses only a target of a normalised format no integer format holds,
+  src/variant/targets.rs:25-35), A5 (the stage helper on WebGL 2), A6 (DXIL geometry, hull and domain
+  shaders, built since G6b; the converter's part closed), A7 (streams and other stage helper
+  routes), A8 (native and WebAssembly bytes).
+- The vertex-stage storage write route: listed as gap A9 (`VertexStorageWrite`, plan section 7's
+  `VertexStorageAsCompute`).
+- `geometry_shaders_draw_as_direct3d_does` at seed 4747, 12 cases: the check's figures replay at
+  the tip (gpu-suite.log): 576 comparisons, 6 failed, its four cases and the DXIL builds of the two
+  `gs_clip` ones: 4749 `vs_cull` TriangleList indexed (1 of 1,011 texels, largest 159), 4753
+  `gs_clip` TriangleStrip (4 of 811, largest 88, both routes), 4756 `gs_clip` TriangleStrip (20 of
+  924, largest 100, both routes), 4756 `vs_cull` TriangleList indexed (6 of 891, largest 75). Gap
+  A10 holds them; pass bar item 3 calls `CLIP_DISTANCE` behind a geometry stage met at the default
+  seeds only.
+- The tessellator's MIT notice: settled; src/stage/tessellator.wgsl lines 1 to 16 carry
+  Microsoft's copyright line and the whole permission notice.
+- A cache file cut inside its header: settled; `Cache::load` loads it as an empty cache with the
+  cut bytes dropped, and `a_cut_file_keeps_every_whole_entry_before_the_cut` cuts at every length
+  inside the header (tests/cache.rs:154-160; passes, laptop-suite.log).
+- Refusal names and offsets written twice: settled; every refusal name the check listed is defined
+  once in src/refusal.rs (`StorageImageAtomics`, `ProvokingRewrite`, `StoragePacked`,
+  `RootSignatureLayout`: no other file of the crate spells them), and the cache's field offsets come
+  from `offset_of!` on the `#[repr(C)]` `Header` and `EntryHead` (src/cache.rs:30-59). One refusal
+  name lives outside refusal.rs, defined once: `SWIZZLED_DEPTH` in src/lib.rs. The literal check
+  prints no line of this crate.
+- `filter_draw` counting any failure of an anisotropic case as known: settled; only a mode whose
+  footprint comes from derivatives with anisotropy above 1 is known (`anisotropic_footprint`,
+  tests/filter_draw.rs:104); an explicit level, a gather and a load must match.
+- The 15.4 entry point for the NIR track: `wcontainers_shaders::rewrite` (src/lib.rs:199, since run
+  57), which that track calls on route B's output ("New for the owner").
+
+Runs at 05a2cff4:
+- Laptop (i7-8750H, load 0.1 at the start, 2.0 at the end; 4 build jobs, under `choom`): the
+  whole suite with every corpus and glslang 8.13, `--include-ignored --skip mutated`
+  (laptop-suite.log): 24 test binaries and doc tests, 124 passed, 1 failed: the known failure
+  `damaged_records_decode_without_a_panic` (ignored by default, gap A16: naga's validator panics on
+  a damaged record whose checksum matches, here `ps_levels_past.dxil` case 17). Written files
+  (out/): WGSL corpus 185, games 527, games DXIL 441, own 145, own DXIL 136, rig 79, rig DXIL 72,
+  runner 1438, runner DXIL 1418; GLSL 126, 463, 300, 69, 57, 55, 53, 1275, 1229.
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy of this crate with warnings denied
+  clean; every test binary with `--test-threads 1` (gpu-suite.log): 171 passed, 0 failed, 6 ignored.
+  The same job ran `draw`, `geometry_draw` and `variant_draw` with parallel test threads: all three
+  crashed in ANGLE again (`StateManager11.cpp:1201` and `:2968` asserts, access violation, exit
+  code 2173), as in run 74; gap A29.
+- Chrome on the RTX 3080 (`web/check` on the laptop run's written files, one GPU job;
+  chrome.log): every WGSL file compiles (corpus 185, games 527, games DXIL 441, own 145, own DXIL
+  136, rig 79, rig DXIL 72, runner 1438, runner DXIL 1418, and the 3 of `rewrite`). WebGL 2
+  compiles 3,587 GLSL files and refuses 40 (corpus 1, games 6, games DXIL 1, own 5, own DXIL 3, rig
+  2, rig DXIL 2, runner 11, runner DXIL 9), each a shader whose record names the need its error is
+  about: multisampled reads 23 (`sampler2DMS`, `MULTISAMPLE_READ`), the primitive index 8
+  (`gl_PrimitiveID`, `PRIMITIVE_INDEX`), cull distances 9 (vertex programs, `CULL_DISTANCE`; the
+  writer's array size, Known gaps), all three declared absent by the WebGL 2 back end; the same 40
+  as run 70's.
+- x86 machine (load 3 to 9): rustfmt of every file of this crate clean, clippy of this crate and
+  the interface with warnings denied clean, the literal check prints no line of this crate (it
+  fails on other tracks' lines: the OpenGL, NIR, kernel and socket crates); this crate's baseline
+  lines unchanged (4,820, 389 under src) (x86-checks.log, literals.txt).
+- Not run: WebAssembly (A8's figures are from G6a run 4), the fuzz test (A11's from the checks),
+  the Direct3D 12 scenes (A6's from run 74 and the fifth check).
+- By mistake this run started the rig's `queue-check` once while its first GPU job waited (sleeping
+  test jobs, stopped after a minute); that job then stopped ("another remote ran after this job's
+  build", gpu-suite-stopped.log) and was run again whole.
 
 ## G6a again, run 2 (run 71): the second check's findings at the tip of main
 
