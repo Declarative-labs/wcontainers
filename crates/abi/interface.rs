@@ -14,6 +14,11 @@
 //! driver turns into a plain return from the translated code's system call import, with no stack switch.
 
 #![no_std]
+// TODO: remove these two lines, and `RUSTC_BOOTSTRAP` in .cargo/config.toml, once Rust lets a tool register its own lints on a stable compiler (https://github.com/rust-lang/rust/issues/66079).
+#![feature(register_tool)]
+#![register_tool(reviewable)]
+
+pub mod readiness;
 
 mod cpu;
 mod exit;
