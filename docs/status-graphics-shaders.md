@@ -21,13 +21,56 @@ G6b (gap A6: DXIL geometry, hull and domain shaders), given again on 2026-11-22 
 shaders convert through the passes the DXBC route uses and draw equal to real Direct3D with dxc's
 builds. Of the four Direct3D 12 rig scenes that failed for A6, two draw equal to real Direct3D 12
 (geometry, streamout); raster-fill and tessellation still differ on the RTX 3080, only in cells
-drawn as lines. Run 74 measured the tessellation scene's cause to the end: our tessellator's order
-is WARP's word for word, and the scene drawn on WARP through the stage helper equals Direct3D 11 on
-WARP in every texel; the RTX 3080 orders a patch's triangles its own way, which Direct3D leaves to
-the device. Raster-fill runs no stage of A6. Both meet the Vulkan path's line rule, a listed loss
-(plan 15.1). Not met as G6b writes it ("equal on the RTX 3080"), and not reachable by the
-converter: the owner's ruling is asked ("New for the owner"), and the milestone is reported
-complete for its independent check with that one item named as waiting on it.
+drawn as lines. The causes, picture by picture: in both Direct3D 12 rig pictures nearly every
+differing pixel is a line pixel ours draws and Direct3D 12 leaves clear (tessellation 308 of 310),
+the line rule of wgpu's Vulkan path where the Direct3D 12 front draws, a listed loss (plan 15.1);
+the rig's topology picture, with no stage of A6, fails the same way. Raster-fill runs no stage of
+A6. The order of a patch's triangles (the RTX 3080's own, which Direct3D leaves to the device; ours
+is WARP's word for word, equal to Direct3D 11 on WARP in every texel) is the cause of the Direct3D
+11 harness's tessellation differences (`tessellation_draw`, run 74), not of the rig picture's.
+Not met as G6b writes it ("equal on the RTX 3080"), and not reachable by the converter: the
+owner's ruling, or a line allowance in the rig's comparison, is asked ("New for the owner"); the
+item stays open until one of them comes.
+
+G6 (the rest of the gap list), given on 2026-11-22 as its run 1 (run 80, the section below):
+G6b's check's findings settled or recorded, A4's `combine` drawn for single-sample targets, and
+subnormal tessellation factors kept on the DXBC route. Not complete: the gap list below.
+
+## G6 run 1 (run 80): G6b's check's findings, `combine` drawn, subnormal factors kept
+
+Logs and scripts in scratch `graphics-shaders/g6-r80` (clone `tip`, `gpu.sh`, `gpu-noclippy.sh`,
+`x86-checks.sh`). G6b's check's findings (at 13d2f093), each:
+- The two Direct3D 12 rig scenes (raster-fill, tessellation): still open, waiting on the owner's
+  ruling or a line allowance in the rig (A6); nothing of the converter stands in the way.
+- The lead paragraph now says which cause belongs to which picture (line rule in the Direct3D 12
+  rig pictures, triangle order in the Direct3D 11 harness), with the check's per-cell counts in A6.
+- Subnormal factors: the stated cause was wrong. It was dxbc-spirv's clamp of each tessellation
+  factor (`IoMap::applyMaxTessFactor`), which the back end's compiler flushes; the lowering now
+  keeps a subnormal factor's bits past that clamp, and the drawn tests no longer excuse or flush
+  subnormal factors (4284c582). At the check's seed 80701, 20 cases (RTX 3080, job2.log):
+  `stream_output_after_the_domain_stage_matches_direct3d` 1,040 comparisons, 0 failed (the check
+  had 120 known, all DXBC); `stage_values_hold_wherever_the_data_ring_wraps` 1,520, 0 failed.
+- A10's and A16's figures at the check's seeds: added to those entries; nothing of a new kind.
+- Hand-rolled SPIR-V on the DXIL route: new gap A33 (rspirv 0.13 fits; not ported this run, by
+  priority).
+- The x86 machine's corpora: all three copied there, and "How to run" says how to copy them.
+
+New work: A4's `combine` for single-sample targets is drawn against real Direct3D 11 (four blends
+into the four integer twins within one code, all sixteen logic operations exact; both routes,
+both back ends; 4694656f; A4 has the figures). The Direct3D 11 front can now blend into integer
+twins and do logic operations ("How the Direct3D fronts call `convert`").
+
+Runs (at 4694656f's code, from the scratch clone):
+- Desktop (RTX 3080, GPU jobs one at a time, 3 cargo jobs): Windows clippy of this crate with
+  warnings denied clean; the tests above (job2.log, job4.log).
+- x86 machine (load 17 at the start, 29 at the end, other tracks' jobs beside): rustfmt clean,
+  clippy of this crate and the interface with warnings denied clean, the whole suite with every
+  corpus (`--include-ignored --skip mutated --skip damaged_records_decode_without_a_panic`, the
+  last being A16's known failure): every test passed, the four corpus record tests among them (13
+  passed); the literal check prints no line of this crate (it fails on 413 lines of other
+  tracks); this crate's baseline lines 4,787, 356 under src (x86-checks.log).
+- Not run: WebAssembly and Chrome (the converter changed only for DXBC hull programs' factor
+  clamp; the corpus verdicts hold), the whole GPU suite.
 
 ## G6b again, run 1 (run 79): G6a's fourth check, and G6b's bar at the tip
 
@@ -180,22 +223,13 @@ Runs at a00ab267:
   `out-r78` and `outw-r78`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
   `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
-## The unfinished combine work (paused 2026-11-20)
-
-The owner paused every track on 2026-11-20 to bring all branches onto one line. This track was
-stopped while building gap A4's `TargetInShader::combine` (a target blended, or put through a logic
-operation, with its old value in the program), and that work is committed as it stood (1efc1d61). It
-is not finished; gap A4 says what it holds and what is missing.
-
-What the commit holds: `combine.wgsl` (blend factors, operations, logic operations) imported into
-the pixel program by `src/variant/targets.rs`, which reads the old value from the copy at
-`TARGET_COPY_BINDING` and the codes from `HelperValue::TargetCombine`; the interface's
-`TargetCombineValue` (under "Interface changes" since run 70); the refusal `BlendInShader` replaced
-by `BlendInShaderMultisampled` (single-sample targets only); and the draw test's helpers given a
-target copy, a clear value and a blend constant, with no draw test using them yet. Run 70 named the
-45 literals it brought (the literal check failed at the tip on them) and changed nothing else of it.
-
 ## New for the owner
+
+- Run 80: single-sample `TargetInShader::combine` is drawn equal to Direct3D 11 (blends into
+  the integer twins within one code, logic operations exact), so the Direct3D 11 front may set it
+  ("How the Direct3D fronts call `convert`"). A DXBC hull program's subnormal tessellation factor
+  now reaches the tessellator unflushed, as on the DXIL route. The ruling on A6's two rig scenes
+  is still open. New gap A33 (rspirv for the DXIL passes). No interface change.
 
 - Run 79: G6b given again; its bar measured at the tip (section above). Unchanged since run 74:
   of the four Direct3D 12 rig scenes, raster-fill and tessellation still differ on the RTX 3080 in
@@ -400,7 +434,8 @@ The pass bar, item by item:
    WebGL 2 track to export). Takes: the constant exported and added to `DIRECTIVES`.
 3. Each variant field and flag of 6.4 has a test showing the rewritten program's result equals the
    unrewritten one's with the native feature, or real Direct3D's picture. Met for every field and
-   flag but four, and for `swizzled` but one case (gap A4). Where each is tested (drawn on the RTX 3080; test binaries of
+   flag but three, for `swizzled` but one case, and for `targets_in_shader`'s `combine` but
+   multisampled targets (gap A4; `combine` drawn since run 80). Where each is tested (drawn on the RTX 3080; test binaries of
    `crates/wcontainers-shaders/tests`):
    - `variant_draw` (`variants_draw_as_the_native_feature_does` unless named): `CLIP_DEPTH_REWRITE`
      (WebGL 2 with and without EXT_clip_control against WebGPU), `VIEWPORT_DEPTH_FLIP`,
@@ -510,8 +545,8 @@ The gap list (every item of the pass bar not met):
   at a level as its cause, but that back end has written all three since its commit 2080826c; the
   refusals came from the corpus test writing GLSL with naga itself. The test now uses the back
   end's writing (item 2), and every shader needing nothing beyond GLSL ES 3.00 compiles.
-- A4. Four parts of the variant key, and one case of a fifth, are refused by name and have no test of
-  a result (`decoded` built in run 54):
+- A4. Three parts of the variant key, and one case each of two more, are refused by name and have
+  no test of a result (`decoded` built in run 54, single-sample `combine` drawn in run 80):
   - `PROVOKING_LAST` (`ProvokingRewrite`): no rewrite of the programs alone can give a flat input the
     last vertex's value, since a pixel program sees one value per primitive. The exact route is the
     front's (indices rotated per primitive, strips and fans made lists). Waits: nobody (both fronts
@@ -525,25 +560,21 @@ The gap list (every item of the pass bar not met):
     immediates in the program from the root signature's parameters.
   - `TargetInShader::combine` (plan 6.4 and 4.12): a target combined with its old value in the
     program, read from a copy of the target at `TARGET_COPY_BINDING`, by the factors and operations
-    of `HelperValue::TargetCombine`. Partly built, untested (the paused commit 1efc1d61, "The
-    unfinished combine work" above): `src/variant/targets.rs` `combine` declares the copy, loads
-    the old value at the fragment's position, and applies `combine.wgsl`'s blend, logic operation
-    and write mask before the encoding `targets_in_shader` does, for single-sample targets; a
-    multisampled target is refused by name (`BlendInShaderMultisampled`), and a key without a
-    sample count as `SampleCount`. No test draws its output, so whether it equals Direct3D is not
-    known. `convert` returns it for single-sample targets (the second check: every pixel shader of
-    every corpus with all targets combined converts or is refused by name, `TargetsInShader`, and
-    its WGSL validates and compiles in Chrome), so a front asking for it gets an unverified program,
-    not a refusal. It is left reachable, not refused again, because no front sets `combine` (no
-    `combine: true` in the Direct3D crates at the tip) and refusing it would turn `tests/variants.rs`'s
-    checks of the combined programs into checks of a refusal; no front may set it before the drawn
-    test below exists ("How the Direct3D fronts call `convert`"). Waits: the Direct3D 11 front, to blend into 16-bit normalised textures it holds as their
-    integer twins (its status: "Blending into integer twins (`BlendInShader`) once the shaders
-    crate builds `combine`"; such formats are reported without `BLENDABLE` meanwhile), and every
-    front for logic operations and the blends a back end lacks. Takes: a drawn test against
-    Direct3D 11 blending into R16_UNORM and R16G16B16A16_SNORM targets and with logic operations
-    into integer targets (the front draws such a draw one primitive at a time where primitives
-    overlap), then the multisampled case (every sample's old value).
+    of `HelperValue::TargetCombine`. Single-sample targets met in run 80: `src/variant/targets.rs`
+    `combine` loads the old value at the fragment's position and applies `combine.wgsl`'s blend,
+    logic operation and write mask before the encoding `targets_in_shader` does, and
+    `variants_draw_as_the_native_feature_does` draws it against real Direct3D 11 on the RTX 3080,
+    both routes, WebGPU and WebGL 2 (g6-r80/job4.log): four blends (every factor kind but the
+    second source's, every operation, partial write masks, a signed blend constant) into
+    R16_UNORM, R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their integer twins,
+    from old values, each within one code of Direct3D in every texel (Direct3D's float-to-integer
+    tolerance; up to 882 of 4,096 texels a code apart); and all sixteen logic operations into
+    R32G32B32A32_UINT with a write mask, against Direct3D 11.1's, equal in every texel. Not met:
+    a multisampled target, refused by name (`BlendInShaderMultisampled`), and a key without a
+    sample count (`SampleCount`). Waits: the Direct3D 11 front can now blend into integer twins
+    (its status: "Blending into integer twins (`BlendInShader`) once the shaders crate builds
+    `combine`") and do logic operations ("How the Direct3D fronts call `convert`"). Takes, for
+    the rest: every sample's old value from a multisampled copy, and its drawn test.
   - `swizzled` on a depth texture (`SwizzledDepth`, src/variant/swizzle.rs, `depth_mapped` and
     `swizzled`): a texture the program compares against, gathers from or reads as its depth alone,
     whose view's component mapping moves red off the first component (a plain read of such a
@@ -598,7 +629,14 @@ The gap list (every item of the pass bar not met):
   Direct3D leaves to the device. Raster-fill runs no geometry, hull or domain shader; its line cells
   are the wireframe of wgpu's Vulkan path, where the Direct3D 12 front draws (the WebGPU track's
   measurement: 214 pixels of that picture apart on Vulkan, none on wgpu's Direct3D 12 path), the
-  listed loss of plan 15.1, which the Direct3D 12 tessellation scene's lines meet too. Waits:
+  listed loss of plan 15.1, which the Direct3D 12 tessellation scene's lines meet too. The order
+  measurement above is of the Direct3D 11 harness (`tessellation_draw`); the Direct3D 12 rig
+  picture's differences are another cause. G6b's check counted them per 64-pixel cell (its
+  cats.py, threshold 4): 308 of the tessellation picture's 310 are pixels Direct3D 12 left at the
+  clear colour and ours drew, all in line cells, so a rasterisation (line rule) difference, not
+  an order one; raster-fill's 64 are 44 drawn by ours only, 6 by Direct3D 12 only and 14 by both;
+  and the rig's topology picture, which runs no geometry, hull or domain stage, fails the same way
+  (43 of 65,536 beyond 1, largest 229). Waits:
   nobody (no front program seen depending on it). Takes: nothing of the converter. Either the
   owner rules the WARP proof the bar for line cells whose order the device chooses, or the rig's
   comparison of the Direct3D 12 scenes takes an allowance for line cells (the rig's work; plan
@@ -748,6 +786,14 @@ The gap list (every item of the pass bar not met):
   TriangleList 24 from 3 indexed base 4 (3 of 1,268, largest 113), 40981 `gs_clip` TriangleList 30
   from 3 x2 DXBC (14 of 1,071, largest 111), and `gs_clip` on both routes at 40962, 40980, 40982 and
   40983; the replay on ANGLE, 912 comparisons, 12 failed, the same `gs_clip` cases.
+  G6b's check (seed 80701, 24 cases, at 13d2f093; its gpu1.log): 1,344 comparisons, 63 failed, 48
+  of them the checker's own degenerate input and 15 this pattern, each DXIL failure mirroring a
+  DXBC one: 80703 `gs_clip` TriangleStrip 14 from 2 (4 of 689, largest 141, both routes), 80721
+  `gs_clip` TriangleList 30 from 3 x2 (6 of 1,027, largest 130, both routes), 80704 `vs_cull`
+  TriangleList 24 from 3 indexed base 4 (7 of 795, largest 96), 80715 `vs_cull` LineList 20 from 0
+  (3 differ, 1 at a clipped end, largest of the others 103, the line pattern of seeds 7313 and
+  8503); the replay on ANGLE, 1,104 comparisons, 60 failed, 48 the checker's and 12 the same
+  `gs_clip` cases. Depth clamping passed all 24 seeds.
 - A11. `mutated_bytecode_converts_or_fails_without_ending_the_process` (tests/fuzz.rs, ignored by
   default as a long run) fails: signed but malformed bytecode can end the process (G6a run 1,
   fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; the second check, seed 8128,
@@ -874,7 +920,9 @@ The gap list (every item of the pass bar not met):
   index past the arguments, 935; typifier.rs:122 57; compose.rs:22, a composed type's handle, 35;
   function.rs:617 and :592, an atomic's result type, which naga's handle check skips, 9;
   analyzer.rs:1116, a called function's information before it is made, 6; expression.rs:1326 3;
-  analyzer.rs:1247 3; constant_evaluator.rs:768 1), none in this crate.
+  analyzer.rs:1247 3; constant_evaluator.rs:768 1), none in this crate. G6b's check reproduced
+  it on other files: x86 machine, seed 80777, 80 damages, `cs_divide.dxbc` case 18 (analyzer.rs:641,
+  index 76 past a length of 1); laptop, seed 80778, `ps_levels_past.dxil` case 6.
   Waits: nobody (no host shares a cache file it did not write yet). Takes: either naga's validator
   checking every index and handle before use (carried patches, then upstream), or a record
   signed with a key the host holds so a foreign record is never decoded.
@@ -1203,6 +1251,15 @@ The gap list (every item of the pass bar not met):
   finite. Waits: nobody (an overflow to infinity in a dxc build). Takes: dxc's disassembly of the
   case read for the product's form, the converted WGSL and GLSL compared at it, the case added to
   the own shaders and drawn on both routes against Direct3D 12.
+- A33. The DXIL route's passes on dxil-spirv's SPIR-V walk and re-write raw words by hand
+  (src/dxil/staged.rs, geometry.rs, tessellation.rs, and before them registers.rs and widths.rs:
+  instruction walking, literal strings, entry points and execution modes, stub functions, the id
+  bound), where rspirv loads and assembles modules (G6b's check). rspirv 0.13.0+sdk-1.4.341.0
+  (Apache-2.0, crates.io, 2026-03-13) is built on the same `spirv` 0.4 header crate this crate
+  uses, so it fits without a second header version. Not done in run 80, by priority: the fronts
+  wait on A4's `combine` and the other items below, while these passes are proven by the drawn
+  tests and the corpus records today. Waits: nobody. Takes: each pass on rspirv's `dr::Module`
+  (load, edit, assemble), proven by every corpus record and written file staying byte-equal.
 - Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
   for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
   holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
@@ -1260,12 +1317,14 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6a's check of run 77's state (the third check's findings settled at the tip), and G6b's
-   check of run 74's, after the owner's ruling on A6's two scenes (New for the owner): nothing of
-   the converter is left on them.
-2. After it, as the fronts need them: A28 (the Direct3D 11 front's `A8Unorm` storage form and,
-   with the interface track, a view's width for YUY2), A4's `combine` drawn against Direct3D 11 (the Direct3D 11
-   front), the NIR track's asks under "New for the owner" (the geometry and tessellation entry
+1. G6's gap list in the order the fronts need it: A28 (the Direct3D 11 front's `A8Unorm`
+   storage form and, with the interface track, a view's width for YUY2), A4's `SwizzledDepth`
+   (the Direct3D 12 front's runner: real Direct3D 12 drawn with mapped depth views first), A5's
+   geometry replay streams past the first and A17's aliased lines into multisampled targets (the
+   Direct3D 11 front's asks), A4's multisampled `combine`, A9, A7, A1, the DXIL route's
+   `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches).
+2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
+3. Besides, as asked: the NIR track's asks under "New for the owner" (the geometry and tessellation entry
    point its G9 waits on first), A26 (the unordered not-equal, both routes, with its drawn NaN
    test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
    cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv and
@@ -1427,9 +1486,17 @@ G6a run 5's tip):
 
 ## How the Direct3D fronts call `convert`
 
-- `TargetInShader::combine` (blending or a logic operation in the program): do not set it yet. It
-  converts for single-sample targets, but no drawn test has compared its result with Direct3D
-  (gap A4); until one does, report the blend or logic operation as the back end has it.
+- `TargetInShader::combine` (blending or a logic operation in the program; since run 80 drawn
+  equal to Direct3D 11 for single-sample targets). Set it on the target's entry with the guest's
+  format and the key's `samples` (a multisampled target is refused, `BlendInShaderMultisampled`);
+  copy the target before the draw into a texture of the stored format bound at
+  `TARGET_COPY_BINDING`, and give `HelperValue::TargetCombine { target }` the value
+  `TargetCombineValue::new(&blend, logic_op, blend_constant)`. The pipeline's own blending stays
+  off. The program reads one old value per fragment from that copy, so split a draw whose
+  primitives overlap (one primitive per draw, the copy taken again between). Blending takes a
+  float or normalised output; a logic operation an integer output into an integer target (Direct
+  3D 11.1's rule); a float output with combine into an integer target is refused
+  (`TargetsInShader`).
 - Normalised textures and targets the back end lacks (`NormAsInteger`, plan 4.12; since run 54).
   Hold the texture as the integer format of the same bits: unsigned for UNORM (`R16_UNORM` as
   `r16uint`, `R10G10B10A2_UNORM` as `rgb10a2uint`), signed for SNORM (`R16G16_SNORM` as `rg16sint`,
@@ -2752,9 +2819,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   checkout, `<orchestrator>/cloud/x86-run . --name graphics-shaders -- '<command>'` copies the
   working tree (submodules included) and runs the command in the checkout's `nix develop`, cargo
   building into `/work/target/graphics-shaders`. Clippy and the crate's tests run as on the
-  laptop. The corpora are at `/work/probes/shaders-corpus/{dxbc,games,runner}` (copied from the
-  laptop's `~/wcontainers-graphics/corpus`; copy again without macOS `._` files if the machine is
-  new): `C=/work/probes/shaders-corpus; export WCONTAINERS_SHADER_CORPUS=$C/dxbc
+  laptop. The corpora go to `/work/probes/shaders-corpus/{dxbc,games,runner}`, and a new machine
+  has none or only some of them (G6b's check found only `dxbc`; run 80 copied all three): copy them
+  from the laptop each run with `ssh tom@192.168.2.240 'cd ~/wcontainers-graphics/corpus && tar
+  --exclude="._*" -cf - dxbc games runner' > <scratch>/corpus.tar`, then `x86-run --ssh 'mkdir -p
+  /work/probes/shaders-corpus && cd /work/probes/shaders-corpus && tar -xf -' <
+  <scratch>/corpus.tar` (191, 973 and 3,020 files); a missing corpus fails its record test, it
+  never skips. `C=/work/probes/shaders-corpus; export WCONTAINERS_SHADER_CORPUS=$C/dxbc
   WCONTAINERS_GAME_SHADERS=$C/games WCONTAINERS_RUNNER_SHADERS=$C/runner
   WCONTAINERS_SHADERS_OUT=$PWD/target/shaders-out; cargo test --no-fail-fast -p
   wcontainers-shaders -- --include-ignored --skip mutated` (about 3 minutes). It has no glslang,
@@ -3173,12 +3244,14 @@ were already there.
 - A geometry shader's strip whose vertices name different layers or viewports (run 30): each vertex
   is drawn in its own run's layer, where Direct3D takes a primitive's layer from its first vertex.
   Shaders that write one layer per strip (the usual form) are exact.
-- Run 30: a subnormal tessellation factor (1e-40 in the seeded tests) moved through a hull shader
-  keeps its bits on Direct3D and is flushed to zero by the hull program on wgpu's Direct3D 12 path,
-  so the patch is culled where Direct3D draws it. The isolated tessellator test feeds factors
-  directly and does not see it. Confirmed by the drawn test: each such case equals Direct3D
-  drawing the same factors flushed (4 of 66 cases at seeds 1 and 2), and the test counts them as
-  known. Real programs are not expected to write subnormal factors.
+- Run 30 to 79, closed in run 80: a subnormal tessellation factor (1e-40 in the seeded tests)
+  moved through a DXBC hull shader was flushed to zero, so the patch was culled where Direct3D
+  draws it, and the drawn test counted such cases as known. The stated cause (wgpu's Direct3D 12
+  path flushing) was wrong, as G6b's check found: only DXBC cases were known, and the DXIL route on
+  the same back end kept the factor. The cause was dxbc-spirv's clamp of each factor to the
+  declared largest (`IoMap::applyMaxTessFactor`), which the back end's compiler flushes; the
+  lowering now keeps a subnormal factor's bits past that clamp (src/lower.rs,
+  `loads_tessellation_factor`), and the drawn tests no longer flush or excuse any factor.
   To size by the counts instead (read back later, grown before the next draw) once draws run.
 - Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
   starts about two thirds of its triangles at another vertex (winding kept); ours follow the
