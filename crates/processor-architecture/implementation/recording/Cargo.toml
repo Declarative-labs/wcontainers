@@ -15,6 +15,11 @@ path = "implementation.rs"
 name = "conformance"
 path = "conformance.rs"
 
+[[test]]
+name = "record"
+path = "record.rs"
+harness = false
+
 [dependencies]
 wcontainers-processor-architecture = { path = "../.." }
 wcontainers-processor-architecture-arm64 = { path = "../arm64" }
@@ -27,6 +32,10 @@ wcontainers-distinguishing-state-generator-input-domain = { path = "../../../dis
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 wcontainers-executor-simulation = { path = "../../../executor/implementation/simulation" }
 wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
+
+# The chip the record tool runs on.
+[target.'cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))'.dev-dependencies]
+wcontainers-executor-hardware-virtualization = { path = "../../../executor/implementation/hardware-virtualization" }
 
 [lints]
 workspace = true
