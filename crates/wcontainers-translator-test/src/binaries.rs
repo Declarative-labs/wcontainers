@@ -105,7 +105,8 @@ impl Source {
             self.name,
             String::from_utf8_lossy(&made.stderr)
         );
-        let partial = directory.join(format!("{}.partial", self.name));
+        // Its own name, so that tests taking the same file at once do not meet.
+        let partial = directory.join(format!("{container}.partial"));
         let copied = Command::new(DOCKER)
             .args(["cp", "-L", &format!("{container}:{}", self.path)])
             .arg(&partial)
