@@ -11,13 +11,36 @@ round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents 
 ## Where things stand
 
 G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of
-2026-11-22) is complete as of run 5, and the G4 bar was run again at its end (Measurements). The
-device reports the highest level whose every format requirement of Microsoft's tables it meets
-(4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on Direct3D 12) is 11_0 with every
-requirement met and tested, and the WebGL 2 build (ANGLE on the RTX 3080) is 10_0 again since
-G4h run 5 built its five missing formats in the WebGL 2 back end. Still differing from real
-Direct3D: the Gap list's absent features, and atg-simplecomputepc, a real difference waiting on
-the shaders track's division (Asked).
+2026-11-22) was reported complete at run 5; run 6 fixed what the sixth check found (below). The
+device reports the highest level whose every format requirement of Microsoft's tables (their
+video columns aside, Departures) it meets (4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on
+Direct3D 12) is 11_0 with every requirement met and tested, and the WebGL 2 build (ANGLE on the
+RTX 3080) is 10_0 since G4h run 5. Still differing from real Direct3D: the Gap list's absent
+features, and atg-simplecomputepc, whose difference is a division the specification lets go
+either way and the RTX 3080 itself gives both ways (Gap list).
+
+G4h run 6 (2026-11-22, from about 14:00 Pacific), the sixth check's findings:
+- Packed targets read by blends: the WebGPU back end ends the pass part and rounds the
+  `B5G6R5_UNORM` and `B5G5R5A1_UNORM` targets before any blend that reads them, when a draw wrote
+  them since (draw.rs `reads_target`, `PackedTargetReadByBlend`, a new slow path at the interface's
+  end). Test: programs.rs `packed_targets_read_by_blends_as_direct3d_reads_them` (own_cases
+  `packed_blend_reads`: the 1-bit alpha as a blend factor both ways, and ten additive draws of 0.3,
+  1 and 2 steps). The increments are chosen where the RTX 3080 and WARP round alike, by the sixth
+  check's own measurements (both drop 0.3 of a step and below; they differ near 0.6, where the
+  RTX 3080 rounds down to 0.81 of a step), so the case's verdict needs no WARP run; WARP was not
+  run on it.
+- Typed storage loads: a program that loads from a storage texture of a format other than the
+  three one-channel 32-bit ones reads and writes it through a buffer of its texels
+  (`StorageReadWriteThroughBuffer`, a new slow path; `TypedView::loaded` from the program's
+  `ld_uav_typed`). `UAV_TYPED_LOAD` is claimed only where served: no longer for `A8_UNORM`
+  (optional; the RTX 3080 claims it). Test: `typed_storage_loads_as_direct3d_does` (each of the
+  15 formats of Microsoft's set loaded, changed and stored twice).
+- `B5G6R5_UNORM`'s "Other Multisample Count RT" at 11_0 is now a requirement row
+  (`required::SAMPLES_OTHER`: a count other than 1, 4 and 8); the video columns are recorded as
+  not part of a level (Departures, For the owner).
+- atg-simplecomputepc traced (Gap list); the extended-range test's tolerance is one 8-bit step as
+  its comment says; the WebGL 2 build's failing scenes re-judged (Gap list); this file's stale
+  lines corrected.
 
 G4h run 5 (2026-11-22, from about 11:50 Pacific):
 - The WebGL 2 back end (crates/wcontainers-gpu-webgl, the task allows it for this) holds the five
@@ -148,8 +171,8 @@ G4h run 2 (2026-11-22, from about 09:00 Pacific):
   (Measurements): the RTX 3080 and WARP differ in 94 of the case's 1,232 channel codes, by 1 at
   most; ours differs from the RTX 3080 in 116 and from WARP in 114, by 1 at most. Most of ours'
   extra differences are in the twice-blended rows (72 against the RTX 3080, where WARP differs by
-  12): ours blends at 8 bits and rounds once, at the pass's end, which the specification allows
-  (blending at equal or more precision).
+  12): ours blended at 8 bits and rounded once, at the pass's end (since run 6 also before each
+  blend reading the target, Departures).
 - The seven format support comparisons pass, and the requirement test (still ignored) lacks only
   formats 88 and 89 at each level (logs/g4h2-b.log).
 - The B8G8R8X8 vertex format's arms in every crate but the shaders crate are written and checked
@@ -163,7 +186,7 @@ G4h run 1 (2026-11-22, from about 08:00 Pacific):
   `A8Unorm` through the `rgba8unorm` it holds it in (packed.rs `stored`), and the front binds such
   views with `A8Unorm` in the shaders crate's `storage_formats` (its run 81 makes every store keep
   alpha alone). `CheckFormatSupport` now claims `TYPED_UNORDERED_ACCESS_VIEW`, `UAV_TYPED_STORE`
-  and `UAV_TYPED_LOAD` for it as the RTX 3080 does (its row left `support_differences`). Test:
+  and `UAV_TYPED_LOAD` for it as the RTX 3080 does (typed loads withdrawn in run 6). Test:
   programs.rs `a8_storage_views_store_as_direct3d_does` (stores, then sampled), against the RTX
   3080: passed.
 - `required::LEVEL_REQUIRED`: Microsoft's 10_0, 10_1 and 11_0 format tables, generated (scratch
@@ -228,12 +251,11 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
-3080 through the queue, not alone, rigfix/wine.sh, agents run 3 at 3b1cd4f3 (logs/a3b-wine*.log):
-- d3d11: 151 pass of 166, the same 15 failing as since round 4 run 3; the failing tests are in the
-  Gap list. test_format_support fails 1 check, XR_BIAS's display (the B5 targets' 6 pass since
-  G4h run 2; logs/g4h2-wine.log).
-- d3d10core: 110 of 111: test_desktop_window (Gap list). Its test_format_support passes since
-  G4h run 2 (it failed on the B5 targets' blending).
+3080 through the queue, not alone, at beeec184 (G4h run 5, logs/g4h5-bar*):
+- d3d11: 152 pass of 166; the 14 failing are the Gap list's absent features. test_format_support
+  and test_swapchain_formats fail no check (each runs fewer than real Direct3D, which also makes an
+  11_1 device), and test_vertex_formats passes, since G4h run 4.
+- d3d10core: 110 of 111: test_desktop_window (Gap list).
 - d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/a3b-wine10gl.log): the 13 failing
   since round 2 run 12 and, since main run 3 reports no multisampling there,
   test_alpha_to_coverage and test_check_multisample_quality_levels; all are under the WebGL 2
@@ -291,9 +313,7 @@ Found in G4h run 3: on the rig's hidden desktop real Direct3D's presents to a sh
 verdicts; own_extended_range leaves that answer out.
 
 Absent features (each reported absent through its own query, so Wine's verdicts there differ):
-every failing test of Wine's d3d11 file but test_format_support and test_swapchain_formats (the
-11_0 shortfalls above; with the patches, only real Direct3D's 11_1 device, skipped by ours) and
-test_vertex_formats (fewer checks, the B8G8R8X8 shortfall) sits behind one of these:
+every failing test of Wine's d3d11 file sits behind one of these:
 - The 11_1 device and Wine's WARP fallback: `D3D11CreateDevice` with 11_1 alone fails, logic
   operations have no route (plan section 9), and this library offers no WARP adapter:
   test_state_refcounting, test_logic_op, test_create_shader, test_shared_resource (its 11_1 part).
@@ -321,7 +341,12 @@ Not on Wine's verdicts, against the RTX 3080:
 
 The WebGL 2 build (10_0; the bar's WebGL 2 cases match real Direct3D through it): what it does
 not give real Direct3D's verdict on (G4h run 5: Wine's d3d10core 97 of 111; the rig's scenes 95
-pass, 17 fail, 30 absent), each with its owner:
+pass, 17 fail, 30 absent), each with its owner. Re-judged under the orchestrator's rule (G4h run
+6, from logs/g4h5-bar-webgl.log): no scene fails by its pixels. The 17 are the pictures of three
+scenes (raster, views, geometry), each of which stops at a refusal (`E_NOTIMPL`, named below:
+`FillModeConverted`, `TEXTURE_VIEWS`, `SV_PrimitiveID` and layers without compute) before writing
+them, so there are no pixels to set against WARP's. The 95 that are drawn pass against the RTX
+3080's references.
 - Multisampling: plan section 9 makes it optional at 10_0 (Microsoft's 10_0 table requires no
   sample count, so the device meets 10_0 without it), and without a route for a partial
   sample mask (WebGL 2's `gl_SampleMask` needs OES_sample_variables and `SampleMaskInShader`,
@@ -379,9 +404,22 @@ the bar's three, three differ:
   `IDXGIAdapter1` alone and reports memory sizes of zero, as no browser API reports memory (the
   infrastructure crate's rule). An absent feature, reported absent through `QueryInterface`; the
   occlusion queries themselves match. Found in main run 1; earlier runs thought it the counts.
-- atg-simplecomputepc: every pixel inside the Mandelbrot set differs; the converted compute
-  program's division gives just below 4 where real Direct3D gives 4 (inferred). The shaders
-  track's (Asked).
+- atg-simplecomputepc: every pixel inside the Mandelbrot set differs (154,515; WARP 1,889):
+  the real program shows the colour map's first texel there (64, 0, 0), ours its last (255, 255,
+  0). Traced in G4h run 6 (logs/r6a-*, scratch g4h/scp): the colour is `frac(1200 / 300)` sampled
+  clamped; just below 4 gives the last texel, 4 or just above the first. The shaders track
+  measured that the converter gives real Direct3D's bits for this division and named the colour
+  map's sample as left (its status, 2026-11-22). The colour map's sample matches the RTX 3080 bit
+  for bit (own_cases `colour_map_edge`: the worked coordinate 0x3f7ffffc, and fixed ones around
+  both edges). So does the whole program: its own compute shader (its compiled fractal.cso, and the
+  source through D3DCompile) run on the RTX 3080 as the program runs it (its constants through a
+  mapped dynamic buffer, its 1280 by 720 target of 32-bit floats, 160 by 90 groups; at 11_0 and
+  11_1; once and 40 and 400 times; under the program's file name) gives the last texel inside the
+  set, as ours does. Only the real program itself shows the first. The functional specification
+  allows `div` 2.5 ULP, so 3.9999998 and 4.0000001 are both correct, and they give the two ends of
+  the colour map. The RTX 3080 gives either: what makes it choose 4 in the program is not
+  found. Judged under the orchestrator's rule as a choice the specification leaves open, which the
+  RTX 3080 itself makes both ways (For the owner). Not the shaders track's.
 - atg-simplemsaa_pc: frame 10 has 8 pixels beyond the channel tolerance (largest 11), 4 of them
   beyond their tiles' allowance; frames 60 and 120 pass. Real Direct3D's own two runs had 0 and 1
   such pixels in frame 10 (logs/q3j-sysruns.log). WARP, drawing the same program, has 25 such
@@ -492,9 +530,17 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 - Optional video formats absent altogether: AYUV, Y410, Y416, P010, P016, Y210, Y216, NV11, AI44,
   IA44, P8, A8P8.
 - Shortfalls of the reported level: none. Every requirement of Microsoft's 10_0, 10_1 and 11_0
-  tables is met at 11_0 on the WebGPU build (G4h runs 1 to 4: `A8_UNORM` storage views, the B5
-  targets, `B8G8R8X8_UNORM` elements and typed buffers, the extended-range display), and of 10_0 on
-  the WebGL 2 build (G4h run 5); the device reports the highest level met.
+  tables but their video columns (Departures) is met at 11_0 on the WebGPU build (G4h runs 1 to 4:
+  `A8_UNORM` storage views, the B5 targets, `B8G8R8X8_UNORM` elements and typed buffers, the
+  extended-range display; run 6: the B5 targets blended in one pass as stored, and `B5G6R5_UNORM`'s
+  "Other Multisample Count RT", now a row), and of 10_0 on the WebGL 2 build (G4h run 5); the
+  device reports the highest level met.
+- Typed storage loads (`UAV_TYPED_LOAD`, optional): claimed only where served (G4h run 6). WebGPU
+  loads and stores one storage texture in one program only in `r32float`, `r32uint` and
+  `r32sint`, so a program that loads from a storage view of another format reads and writes it
+  through a buffer of its texels (`StorageReadWriteThroughBuffer`). `A8_UNORM` has no such buffer
+  route (the shaders crate decodes no 8-bit alpha in a buffer) and claims no typed loads, where the
+  RTX 3080 does.
 - Below 10_0, as the RTX 3080 answers: only the 10Level9 table's bits; no buffers, comparisons,
   gathers or storage; `SHAREABLE` for the 17 formats the RTX 3080 reports it for, and shared
   textures made of them but `R8G8B8A8_UNORM` and its sRGB twin (both refused there, measured in
@@ -529,7 +575,9 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 ## What comes next
 
 In order:
-1. atg-simplecomputepc: re-run against WARP once the shaders track's division lands (Asked).
+1. atg-simplecomputepc: find what makes the RTX 3080 divide 1200 by 300 as 4 in the real program
+   and as 3.9999998 in the same shader run alone (Gap list), if the orchestrator does not accept
+   it as a choice the specification leaves open.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
 3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
@@ -689,12 +737,13 @@ listed case of section 12 has its test against real Direct3D.
   call can rely on them. This is how Direct3D's drivers report formats they do not multisample
   (the RTX 3080 for `R32G32B32_*`), and the 10_0 table requires these bits without requiring any
   sample count. It applies on the WebGL 2 build, which has no route for a partial sample mask.
-- 16-bit packed targets (G4h run 2): drawn and blended in an 8-bit format and rounded to their
-  bits at each end of a pass part, not after each draw, so a texel blended twice in one pass is
-  rounded once. The specification allows blending at more precision than the format's; against
-  the RTX 3080 it leaves more channels a code apart than WARP does (72 against 12 of the case's
-  twice-blended codes), never more than one code. Rounding after each draw would split every
-  pass at every draw.
+- 16-bit packed targets (G4h runs 2 and 6): drawn and blended in an 8-bit format and rounded to
+  their bits at each end of a pass part and before every blend that reads the target
+  (`PackedTargetReadByBlend` ends the pass part there), so every blend reads values the format
+  holds, as on real Direct3D (the sixth check found blends reading the 8-bit values of earlier
+  draws in the same pass: a 1-bit alpha as a blend factor, small increments added up). Draws
+  without such a blend are not split: a texel they write is rounded later, which gives the same
+  value. Each such blend costs a pass split.
 - Multisample loads and resolves of formats with no multisampled textures (G4h run 2): reported
   where Microsoft's tables require them, though no sample count of the format exists, exactly as
   the RTX 3080 reports them (`R32G32B32_*`: load from 10_1, the float one's resolve from 10_0;
@@ -721,7 +770,14 @@ listed case of section 12 has its test against real Direct3D.
 - Normalised clear values of integer twins round halves toward zero, as the RTX 3080 clears.
 - 16-bit normalised textures held as integer twins are blended nowhere (refused by name) where plan
   4.12 blends them in the program (`BlendInShader`, refused by the shaders crate).
-- 11_0 is reported with the shortfalls of the Gap list, against section 9's rule (Gap list).
+- The level reported is the highest whose every requirement of Microsoft's format tables is met
+  (section 9's rule), but for their video columns: video is reported through its own interface
+  (`ID3D11VideoDevice`), which a device of any level may lack (`D3D11_CREATE_DEVICE_VIDEO_SUPPORT`
+  fails creation where the driver has none), and ours serves none (Gap list, Absent features), so
+  `VIDEO_PROCESSOR_OUTPUT` and the other video bits are never claimed. The RTX 3080 claims
+  `VIDEO_PROCESSOR_OUTPUT` of the formats the 10_0 and 11_0 tables mark (10, 24, 28, 29, 87, 88,
+  and 89 at 11_0). required.rs says so; its generator (scratch g4h/required_rows.py) names why it
+  skips them.
 - A swap chain on another process's window is refused with `DXGI_ERROR_INVALID_CALL` (warned): the
   WebGPU back end presents through a flip-model swap chain, which presents only to the process's
   own windows.
@@ -834,22 +890,29 @@ listed case of section 12 has its test against real Direct3D.
 
 ## For the owner
 
-- G4h needs two commits in another track's crate, both written and tested by this track (scratch
-  g4h/xr-infrastructure.patch and bgrx8-infrastructure-row.patch): extended-range swap chains and
-  one `B8G8R8X8_UNORM` row in the infrastructure crate (the Direct3D 12 track's, which has not run
-  on it since 2026-11-21). Until they land the device reports 11_0 with two formats short. If the orchestrator lets
-  this track commit them, the milestone closes in one run.
 - Truthful levels cost the browsers: WebGPU allows 1 or 4 samples only, so a browser's Direct3D 11
   can never be 11_0 (11_0 requires 8-sample targets), and without texture-formats-tier1 it is 9_3
   until resolves of 32-bit float targets and multisampled integer twins are built; the WebGL 2
-  build is 9_3 until its multisampling is. Programs requiring 10_0 or 11_0 then refuse to start
-  there, as on hardware without the level. Building 8 samples from two 4-sample passes is possible
-  but costly in every draw; say if you want it.
+  build is 10_0 (10_1 needs 4-sample targets, which need a partial sample mask WebGL 2 has no route
+  for). Programs requiring a higher level then refuse to start there, as on hardware without the
+  level. Building 8 samples from two 4-sample passes is possible but costly in every draw; say if
+  you want it.
+- atg-simplecomputepc (Gap list): its one difference, inside the Mandelbrot set, comes from
+  `frac(1200 / 300)`, which the specification's 2.5-ULP division lets be 3.9999998 or 4.0000001,
+  giving opposite ends of its colour map. The RTX 3080 gives 3.9999998, as ours does, when the
+  program's own shader runs alone, and 4 in the program. It is judged a choice the specification
+  leaves open; if you want it to match the real program anyway, say so.
+- Video is read as no part of a feature level (Departures): the tables' video columns are not
+  required of ours, which serves no video device. If you read them as required, 10_0 and above
+  need a video processor (`ID3D11VideoDevice`, `VideoProcessorBlt`) built first.
 
 - `R32G32B32_*` and `B4G4R4A4_UNORM` report the multisample load and resolve bits Microsoft's
-  11_0 table requires while reporting no sample count, as the RTX 3080 does (Departures). If you
-  read the tables as requiring real multisampled textures of them, say so: then 11_0 needs those
-  textures built (natively on the RTX 3080 through `rgba32` twins; no route in core WebGPU).
+  11_0 table requires while reporting no sample count, as the RTX 3080 does (Departures). The
+  WebGL 2 build, which makes no multisampled texture at all, does the same for every format at
+  10_0 (G4h run 4; without it that build would be 9_3): the bits promise nothing a program can
+  use, as no multisampled texture of the format can be made. If you read the tables as requiring
+  real multisampled textures of them, say so: then 11_0 needs those textures built (natively on the
+  RTX 3080 through `rgba32` twins; no route in core WebGPU), and the WebGL 2 build is 9_3.
 
 - Sharing at 9_x copies the RTX 3080's own contradiction: `R8G8B8A8_UNORM` and its sRGB twin are
   reported shareable and refused when made, and `R32_FLOAT` is made though not reported
@@ -858,6 +921,9 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Interface changes
 
+- 8a714142 "interface: named the slow paths of a packed target read by a blend and of a storage
+  texture loaded and stored through a buffer": `SlowPath::PackedTargetReadByBlend` and
+  `SlowPath::StorageReadWriteThroughBuffer`, at the list's end (G4h run 6).
 - 45a4e0b7 "interface: named the slow path of packed targets drawn wider and rounded to their
   bits": `SlowPath::PackedTargetQuantised` (G4h run 2).
 
@@ -877,6 +943,19 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
+G4h run 6 (2026-11-22, Pacific). Logs in scratch logs/r6*; the desktop (i9-9900K, RTX 3080),
+library tests through the queue, not alone, other tracks' jobs queued.
+- Trial 3 (g4h/r6-trial3.commit, r6c): lint of the interface crate, both back ends, the
+  infrastructure crate, the front and the library, both builds, clean; the interface crate's and
+  the front's tests pass (front 60, unit 6, cache 1 after the recording back end took two samples
+  too); the library's `packed_targets`, `typed_storage`, `colour_map`, `format_support`,
+  `every_format_requirement`, `a8_storage` and `extended_range` tests, 15 pass, 2 ignored (as
+  before), against the RTX 3080. The WebGPU back end's own `raster` test
+  `wireframe_fill_matches_direct3d` fails (214 pixels, on Vulkan) at HEAD 2338bf61 as at the
+  trial (r6d-raster-head.log): not this change's; the WebGPU track's test.
+- atg-simplecomputepc through ours at trial 1: 154,515 pixels beyond, as before; real Direct3D
+  through the rig at 14:40: passes, 0 beyond. The replicas (own_cases `colour_map_edge`): real and
+  ours both give 0x3f7ffffc and the colour map's last texel, bit for bit (r6a-*; Gap list).
 G4h run 5 (2026-11-22, Pacific). Logs in scratch logs/g4h5-*; the desktop (i9-9900K, RTX 3080)
 through the queue, not alone, other tracks' jobs queued; the rented x86 machine (96 cores, load 0
 to 5).
@@ -1037,13 +1116,12 @@ Earlier runs' measurements are in this file's git history.
   format features are on; wgpu-core takes it away on the device);
   the uniform arena admitting uniform buffers whose other usages lie within the arena's
   own; `B8G8R8X8_UNORM`'s X byte kept as given and written 0 by clears and draws.
-- WebGL 2 track: the 10_0 format abilities of the Gap list's WebGL 2 item; copies from a depth
-  texture into a colour texture stored as a half float keeping every bit pattern; mips of whole
+- WebGL 2 track: copies from a depth texture into a colour texture stored as a half float keeping every bit pattern; mips of whole
   3D views as Direct3D generates them.
 - Interface and shaders tracks: a helper value giving a program a view's width other than its
   texture's (YUY2 views).
 - Shaders track: blending into integer twins (`TargetInShader::combine`, built in its run 80 for
-  single-sample targets; not yet used here); atg-simplecomputepc's division; the geometry replay's streams past
+  single-sample targets; not yet used here); the geometry replay's streams past
   the first; an aliased-line route for multisampled targets (with the interface track).
 - NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/wcontainers-nir/src/lib.rs in place of
   its own copy; until then the literal check reports that copy as a redefinition (its one finding
