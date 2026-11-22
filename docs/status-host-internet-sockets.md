@@ -5,6 +5,29 @@ and raw sockets (redone in run 1 after the reorganization and the async ruling o
 answered the independent checks' findings, below; run 4 those of run 3's check; run 5 those of run 4's). Nothing of
 this track is in progress.
 
+## 2026-11-21: waiting is the Readiness trait
+- The interfaces lost `wait_for_events`; IcmpSockets and RawSockets now require `Readiness<Self::Socket>`
+  (crates/readiness), whose facts are the six of `ReadyFor`. Both host implementations write
+  `impl Readiness<HostXSocket> for HostXSockets` on the shared `Watcher`, watching with `DATAGRAM_FACTS`; a held
+  ICMP error is `hold(ReadyFor::ERROR)`.
+- Both suites run the whole readiness suite (module `readiness_contract`): ready by an echo reply (ICMP) or a packet
+  of the socket's protocol (raw), failing by an ICMP error about a request. Each re-exports it as
+  `readiness_conformance`.
+- Deleted as now in the readiness suite: a_wait_for_data_finishes_when_the_reply_arrives (raw: ..._a_packet_arrives),
+  a_wait_for_writing_finishes_at_once, a_dropped_wait_is_withdrawn, an_icmp_error_ends_a_wait_for_data. Deleted as
+  only the twelve poll bits' (normal and band bits): `only_asked_for`, `NO_EVENTS`, `READABLE`, `WRITABLE`.
+- many_waits_each_wake_once is now waits_on_many_sockets_each_wake_once: the several waits on one socket are the
+  readiness suite's; its count is the readiness suite's `MANY_WAITS`. `WAITED_SOCKETS` and `WAITS_ON_ONE` are gone
+  (the UDP suite deleted its copies too), which ends the literal check's report of them.
+- New in each suite: a wait for a fact it never has (URGENT_DATA, PEER_FINISHED_SENDING, the ICMP suite's
+  `NEVER_ON_DATAGRAMS`) waits on with a reply to read, until an ICMP error ends it, never giving either fact.
+- Run on the ARM machine (`--name readiness-icmp-raw`), five rounds: ICMP 58 and 1, raw 47 and 1, resolver 31,
+  every round; clippy on the six packages without a warning.
+- Still reported by the literal check, from run 5 and not of this change: the ICMP suite's `ROUTE_MTU = 1300`
+  restates the resolver suite's private `B_MTU`; a different fact (a narrow route, not link db), so left for the owner.
+- For the owner: the trait's one-sentence comment does not say that ERROR and HANG_UP end a wait whether or not they
+  were asked for; the implementations do and the readiness suite checks it.
+
 ## I2 run 5: the independent check's findings, each
 - Largest fragment checked by nothing (blocking): new checks a_fragmented_reply_tells_its_largest_fragment (ICMP)
   and a_fragmented_packet_tells_its_largest_fragment (raw): loopback's MTU lowered to 1280, a 3000-byte echo or
