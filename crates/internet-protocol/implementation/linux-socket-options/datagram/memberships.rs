@@ -22,7 +22,7 @@ pub struct AnycastMemberships(Vec<(Ipv6Addr, u32)>);
 impl AnycastMemberships {
     /// Joins or leaves an anycast address, doing nothing when the socket already is as asked.
     pub fn set(&mut self, fd: BorrowedFd<'_>, anycast: &AnycastAddress) -> Result<(), HostError> {
-        let interface = anycast.interface.map_or(u32::MIN, |index| index.0);
+        let interface = anycast.interface.map_or(u32::MIN, |index| index.0.get());
         let key = (anycast.address, interface);
         let joined = self.0.contains(&key);
         let mut request = zeroed::<uapi::ipv6_mreq>();
@@ -89,7 +89,7 @@ pub fn set_multicast_group<A: Copy>(
     request.gr_group = storage(group);
     let filter = match setting.membership {
         MulticastMembership::Left => {
-            request.gr_interface = setting.interface.map_or(u32::MIN, |index| index.0);
+            request.gr_interface = setting.interface.map_or(u32::MIN, |index| index.0.get());
             return match set_option(fd, level, uapi::MCAST_LEAVE_GROUP, &request) {
                 Err(HostError::Errno(libc::EADDRNOTAVAIL)) => Ok(()),
                 other => other,
@@ -98,7 +98,7 @@ pub fn set_multicast_group<A: Copy>(
         MulticastMembership::Joined(filter) => filter,
     };
     let interface = match setting.interface {
-        Some(index) => index.0,
+        Some(index) => index.0.get(),
         None => chosen_interface(level, group)?,
     };
     request.gr_interface = interface;
@@ -107,7 +107,7 @@ pub fn set_multicast_group<A: Copy>(
         Err(error) => return Err(error),
     }
     let (mode, sources) = match filter {
-        SourceFilter::Include(sources) => (uapi::MCAST_INCLUDE, sources),
+        SourceFilter::Include(sources) => (uapi::MCAST_INCLUDE, sources.as_slice()),
         SourceFilter::Exclude(sources) => (uapi::MCAST_EXCLUDE, sources),
     };
     type Header = uapi::group_filter__bindgen_ty_1__bindgen_ty_2;

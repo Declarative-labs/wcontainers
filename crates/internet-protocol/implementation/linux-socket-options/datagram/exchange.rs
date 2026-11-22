@@ -11,8 +11,8 @@ use linux_raw_sys::net as uapi;
 use socket2::{MsgHdr, SockAddr};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    ByteCount, InterfaceIndex, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent,
-    TransmitReport, TransmitReportKey, TransmitReportRequest, TransmitTimeError,
+    ByteCount, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent, TransmitReport,
+    TransmitReportKey, TransmitReportRequest, TransmitTimeError,
 };
 
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
@@ -22,8 +22,8 @@ pub const TRANSMIT_TIME_REJECTION_WITHOUT_KEY: &str =
     "linux reports a rejected transmit time with the time, not the key of its send";
 pub const ERROR_OF_NO_REPORT: &str =
     "an error queue entry of an origin the contract has no report for";
-pub const REPORT_INTERFACE_NOT_GIVEN: &str = "linux gives no interface with a transmit report \
-     that holds no packet (SOF_TIMESTAMPING_OPT_TSONLY): told as interface 0";
+pub const NO_ARRIVAL_INTERFACE: &str =
+    "an ICMP error came without the packet information that names its arrival interface";
 
 /// The most an error queue entry is read of: a whole IP packet.
 const LARGEST_ENTRY: usize = u16::MAX as usize;
@@ -191,12 +191,10 @@ impl ErrorQueue {
             into[..copied].copy_from_slice(&entry.data[..copied]);
             ByteCount(entry.data.len())
         });
-        if ancillary.interface.is_none() {
-            shortfalls.count(REPORT_INTERFACE_NOT_GIVEN);
-        }
+        // Linux puts the frame's length where a report's interface would be.
         Some(Received::TransmitReport(TransmitReport {
             key: send.key,
-            interface: InterfaceIndex(ancillary.interface.unwrap_or(u32::MIN)),
+            interface: None,
             event: TransmitEvent::TransmitTimeRejected(reason),
             packet_length: packet,
         }))
@@ -323,20 +321,23 @@ pub fn error_entry(
     match error.ee_origin {
         libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 => {
             let length = write_icmp_error(into, copied, &ancillary, &error, offender);
-            if length.is_none() {
-                shortfalls.count(ERROR_OF_NO_REPORT);
+            match length.map(|length| ancillary.packet_fields(length, u32::MIN)) {
+                None => {
+                    shortfalls.count(ERROR_OF_NO_REPORT);
+                    None
+                }
+                Some(Err(_)) => {
+                    shortfalls.count(NO_ARRIVAL_INTERFACE);
+                    None
+                }
+                Some(Ok(fields)) => Some(Received::Packet(fields)),
             }
-            length.map(|length| Received::Packet(ancillary.packet_fields(length, u32::MIN)))
         }
         libc::SO_EE_ORIGIN_TIMESTAMPING => {
             let packet = (!entry.data.is_empty()).then_some(entry.data.len());
             let report = ancillary.transmit_report(&error, packet);
-            match report {
-                None => shortfalls.count(ERROR_OF_NO_REPORT),
-                Some(_) if ancillary.interface.is_none() => {
-                    shortfalls.count(REPORT_INTERFACE_NOT_GIVEN)
-                }
-                Some(_) => {}
+            if report.is_none() {
+                shortfalls.count(ERROR_OF_NO_REPORT);
             }
             report.map(Received::TransmitReport)
         }

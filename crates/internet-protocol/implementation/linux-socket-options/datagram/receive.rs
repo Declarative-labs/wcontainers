@@ -2,6 +2,7 @@
 //! packets written whole from their IP header.
 
 use core::mem::{MaybeUninit, size_of};
+use core::num::NonZeroU32;
 use core::time::Duration;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, BorrowedFd};
@@ -259,11 +260,16 @@ impl<'a> Ancillary<'a> {
         }
     }
 
-    /// The fields of a received packet of the given length.
-    pub fn packet_fields(&self, length: usize, drops_since_previous: u32) -> ReceivedPacketFields {
-        ReceivedPacketFields {
+    /// The fields of a received packet of the given length, refused with `EPROTO` when Linux named no arrival interface.
+    pub fn packet_fields(
+        &self,
+        length: usize,
+        drops_since_previous: u32,
+    ) -> Result<ReceivedPacketFields, HostError> {
+        let interface = self.interface().ok_or(HostError::Errno(libc::EPROTO))?;
+        Ok(ReceivedPacketFields {
             length,
-            interface: InterfaceIndex(self.interface.unwrap_or(u32::MIN)),
+            interface,
             specific_destination: self.specific_destination,
             largest_fragment: self.largest_fragment.map(FragmentSize),
             link_layer_length: self.link.map(|(_, length)| FrameLength(length)),
@@ -274,7 +280,12 @@ impl<'a> Ancillary<'a> {
             mark: PacketMark(self.mark.unwrap_or(u32::MIN)),
             priority: PacketPriority(self.priority.unwrap_or(u32::MIN)),
             drops_since_previous: DropCount(drops_since_previous),
-        }
+        })
+    }
+
+    /// The interface the packet information names, none when it is missing or names none.
+    pub fn interface(&self) -> Option<InterfaceIndex> {
+        self.interface.and_then(NonZeroU32::new).map(InterfaceIndex)
     }
 
     /// The transmit report of a timestamp entry of the error queue, with the length of the packet it holds.
@@ -297,7 +308,7 @@ impl<'a> Ancillary<'a> {
         };
         Some(TransmitReport {
             key: TransmitReportKey(error.ee_data),
-            interface: InterfaceIndex(self.interface.unwrap_or(u32::MIN)),
+            interface: self.interface(),
             event: TransmitEvent::Timestamp {
                 stage,
                 source,

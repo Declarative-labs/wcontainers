@@ -4,7 +4,6 @@ use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
-use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
@@ -289,7 +288,7 @@ pub fn set_binding_setting(
             .map_err(|error| io_host_error(&error))
         }
         BindingSetting::BoundInterface(interface) => {
-            let index = interface.and_then(|interface| NonZeroU32::new(interface.0));
+            let index = interface.map(|interface| interface.0);
             match family {
                 IpVersion::V4 => sock(&socket).bind_device_by_index_v4(index),
                 IpVersion::V6 => sock(&socket).bind_device_by_index_v6(index),
@@ -346,7 +345,6 @@ fn path_mtu_discovery(mode: PathMtuDiscovery) -> u32 {
 /// Sets a field the socket's stack gives every packet it sends.
 pub fn set_packet_setting(
     socket: BorrowedFd<'_>,
-    family: IpVersion,
     setting: &IpPacketSetting<'_>,
     shortfalls: &Shortfalls,
 ) -> Result<(), HostError> {
@@ -367,8 +365,8 @@ pub fn set_packet_setting(
             uapi::IPV6_UNICAST_HOPS,
             default_or(*limit),
         ),
-        IpPacketSetting::TrafficClass { version, dscp, ecn } => {
-            let class = c_int::from(dscp.value()) << ECN_FIELD_BITS | c_int::from(ecn.value());
+        IpPacketSetting::TrafficClass { version, dscp } => {
+            let class = c_int::from(dscp.value()) << ECN_FIELD_BITS;
             match version {
                 IpVersion::V4 => set_int(socket, uapi::SOL_IP, uapi::IP_TOS, class),
                 IpVersion::V6 => set_int(socket, uapi::SOL_IPV6, uapi::IPV6_TCLASS, class),
@@ -434,21 +432,6 @@ pub fn set_packet_setting(
         IpPacketSetting::Mark(mark) => set_option(socket, uapi::SOL_SOCKET, uapi::SO_MARK, &mark.0),
         IpPacketSetting::Priority(priority) => {
             set_option(socket, uapi::SOL_SOCKET, uapi::SO_PRIORITY, &priority.0)
-        }
-        IpPacketSetting::UnicastInterface(interface) => {
-            let index = interface.map_or(u32::MIN, |interface| interface.0);
-            // Both versions take the index in network byte order.
-            match family {
-                IpVersion::V4 => {
-                    set_option(socket, uapi::SOL_IP, uapi::IP_UNICAST_IF, &index.to_be())
-                }
-                IpVersion::V6 => set_option(
-                    socket,
-                    uapi::SOL_IPV6,
-                    uapi::IPV6_UNICAST_IF,
-                    &index.to_be(),
-                ),
-            }
         }
         IpPacketSetting::RouteScope(scope) => set_flag(
             socket,

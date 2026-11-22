@@ -31,9 +31,14 @@ struct Shared {
 
 /// A socket the host's readiness watches, until it drops and its descriptor closes after its registration.
 pub struct Watched {
+    registration: Registration,
+    fd: OwnedFd,
+}
+
+/// A watched socket's place in the watcher, withdrawn when it drops, before the socket's descriptor closes.
+struct Registration {
     watch: Arc<Watch>,
     shared: Arc<Shared>,
-    fd: OwnedFd,
 }
 
 struct Watch {
@@ -207,8 +212,10 @@ impl Watcher {
         });
         locked(&self.shared.watches).insert(raw, Arc::clone(&watch));
         Ok(Watched {
-            watch,
-            shared: Arc::clone(&self.shared),
+            registration: Registration {
+                watch,
+                shared: Arc::clone(&self.shared),
+            },
             fd,
         })
     }
@@ -333,10 +340,10 @@ impl Watched {
 
     /// Sets the facts the implementation holds for the socket beside the host's, waking the calls they finish.
     pub fn hold(&self, held: ReadinessReport) {
-        locked(&self.watch.state).held = held;
+        locked(&self.registration.watch.state).held = held;
         // One waker at a time, each woken outside the lock.
         loop {
-            let waker = locked(&self.watch.state)
+            let waker = locked(&self.registration.watch.state)
                 .waiters
                 .iter_mut()
                 .filter(|waiter| ends(held, waiter.interest))
@@ -348,22 +355,31 @@ impl Watched {
         }
     }
 
+    /// Stops watching the socket and gives it back open.
+    pub fn unwatch(self) -> OwnedFd {
+        let Self { registration, fd } = self;
+        drop(registration);
+        fd
+    }
+
     /// Makes a call that finishes when the socket has one of the facts asked for, giving every fact it has.
     pub fn wait_until_ready(&self, interest: ReadyFor) -> WaitUntilReady<'_> {
         WaitUntilReady {
             watched: self,
-            interest: interest & self.watch.possible,
+            interest: interest & self.registration.watch.possible,
             id: None,
         }
     }
 }
 
-impl Drop for Watched {
+impl Drop for Registration {
     fn drop(&mut self) {
         {
             let mut state = locked(&self.watch.state);
             state.open = false;
-            self.shared.disarm(self.fd.as_fd(), &mut state);
+            // SAFETY: a Watched's descriptor closes after its registration drops.
+            let fd = unsafe { BorrowedFd::borrow_raw(self.watch.fd) };
+            self.shared.disarm(fd, &mut state);
         }
         locked(&self.shared.watches).remove(&self.watch.fd);
     }
@@ -372,18 +388,21 @@ impl Drop for Watched {
 impl WaitUntilReady<'_> {
     fn withdraw(&mut self) {
         if let Some(id) = self.id.take() {
-            let mut state = locked(&self.watched.watch.state);
+            let mut state = locked(&self.watched.registration.watch.state);
             state.waiters.retain(|waiter| waiter.id != id);
             // The last call waiting unwoken takes the registration with it.
             if waiting_interest(&state).is_none() {
-                self.watched.shared.disarm(self.watched.fd(), &mut state);
+                self.watched
+                    .registration
+                    .shared
+                    .disarm(self.watched.fd(), &mut state);
             }
         }
     }
 
     /// Gives every fact the socket has once one asked for or always reported holds, withdrawing the wait, or none yet.
     fn answer(&mut self) -> Option<Result<ReadinessReport, HostError>> {
-        let watch = &self.watched.watch;
+        let watch = &self.watched.registration.watch;
         let held = locked(&watch.state).held;
         match facts_now(self.watched.fd(), watch.possible).map(|now| union(now, held)) {
             Ok(now) if !ends(now, self.interest) => None,
@@ -408,7 +427,7 @@ impl Future for WaitUntilReady<'_> {
         }
         {
             // Listed before the socket is asked, so a fact after the asking finds the waiter.
-            let mut state = locked(&this.watched.watch.state);
+            let mut state = locked(&this.watched.registration.watch.state);
             match this.id {
                 None => {
                     let id = state.next;
@@ -437,8 +456,11 @@ impl Future for WaitUntilReady<'_> {
         }
         // Armed after the asking: a registration made or changed reports a fact already there.
         let armed = {
-            let mut state = locked(&this.watched.watch.state);
-            this.watched.shared.arm(&this.watched.watch, &mut state)
+            let mut state = locked(&this.watched.registration.watch.state);
+            this.watched
+                .registration
+                .shared
+                .arm(&this.watched.registration.watch, &mut state)
         };
         match armed {
             Ok(()) => Poll::Pending,

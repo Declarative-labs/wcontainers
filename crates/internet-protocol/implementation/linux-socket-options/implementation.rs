@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod datagram;
+pub mod errno;
 mod host;
 #[cfg(target_os = "linux")]
 pub mod icmp_error;

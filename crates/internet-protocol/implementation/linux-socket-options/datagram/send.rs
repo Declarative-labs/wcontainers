@@ -8,9 +8,10 @@ use libc::c_int;
 use linux_raw_sys::net as uapi;
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    BroadcastPermission, IpHeaderFields, IpSendFields, LocalFragmentation, MobileAddressPreference,
-    NeighbourConfirmation, PathMtuDiscovery, Report, RouteScope, RouteSelectors,
-    SourceAddressCheck, TemporaryAddressPreference, TransmitClock, TransmitTimeMode,
+    BroadcastPermission, InterfaceSelector, IpHeaderFields, IpSendFields, LocalFragmentation,
+    MobileAddressPreference, NeighbourConfirmation, PathMtuDiscovery, Report, RouteScope,
+    RouteSelectors, SourceAddressCheck, TemporaryAddressPreference, TransmitClock,
+    TransmitTimeMode,
 };
 
 use crate::datagram::addresses::{in_addr, in6_addr, zeroed};
@@ -185,7 +186,7 @@ impl SendState {
             RouteSelectors::V4(route) => {
                 let tos = (route.dscp.value() << IP_DSCP_SHIFT) | route.ecn.value();
                 sticky.ensure_int(fd, Slot::TypeOfService, c_int::from(tos))?;
-                let interface = route.interface.map_or(u32::MIN, |index| index.0);
+                let interface = selected_interface(route.interface);
                 sticky.ensure(fd, Slot::Ipv4UnicastInterface, &interface.to_be())?;
                 sticky.ensure(fd, Slot::Mark, &route.mark.0)?;
                 sticky.ensure_flag(fd, Slot::DontRoute, route.scope == RouteScope::Link)?;
@@ -208,7 +209,7 @@ impl SendState {
             RouteSelectors::V6(route) => {
                 let class = (route.dscp.value() << IP_DSCP_SHIFT) | route.ecn.value();
                 sticky.ensure_int(fd, Slot::TrafficClass, c_int::from(class))?;
-                let interface = route.interface.map_or(u32::MIN, |index| index.0);
+                let interface = selected_interface(route.interface);
                 // Linux takes this index in network byte order, as it takes IP_UNICAST_IF's.
                 sticky.ensure_int(fd, Slot::Ipv6UnicastInterface, interface.to_be() as c_int)?;
                 sticky.ensure(fd, Slot::Mark, &route.mark.0)?;
@@ -264,8 +265,7 @@ impl SendState {
                             .source
                             .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
                     );
-                    information.ipi_ifindex =
-                        header.route.interface.map_or(u32::MIN, |index| index.0) as c_int;
+                    information.ipi_ifindex = selected_interface(header.route.interface) as c_int;
                     control.push(uapi::SOL_IP, uapi::IP_PKTINFO, &information);
                 }
                 if let Some(limit) = header.time_to_live {
@@ -291,8 +291,7 @@ impl SendState {
                             .source
                             .unwrap_or(std::net::Ipv6Addr::UNSPECIFIED),
                     );
-                    information.ipi6_ifindex =
-                        header.route.interface.map_or(u32::MIN, |index| index.0) as c_int;
+                    information.ipi6_ifindex = selected_interface(header.route.interface) as c_int;
                     control.push(uapi::SOL_IPV6, uapi::IPV6_PKTINFO, &information);
                 }
                 if let Some(limit) = header.hop_limit {
@@ -451,5 +450,15 @@ pub fn unspecified_like(address: IpAddr) -> IpAddr {
 impl Default for Control {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The interface a route names, given per packet alike whether the socket is bound to it or the packet asks for it.
+fn selected_interface(selector: Option<InterfaceSelector>) -> u32 {
+    match selector {
+        None => u32::MIN,
+        Some(InterfaceSelector::Bound(index) | InterfaceSelector::Requested(index)) => {
+            index.0.get()
+        }
     }
 }
