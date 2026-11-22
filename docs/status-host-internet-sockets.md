@@ -3,8 +3,44 @@
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done; run again
 on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the checks' findings, below), I2 ICMP and raw sockets (redone in run 1 after the
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings; a new run 1
-on 2026-11-22 put the ICMP and raw crates in the linter's layout). Next: the 75 comment and literal findings left in
-the two suites (below). Nothing of this track is in progress.
+on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared the suites' comment and literal
+findings and checked itself, below). Next: the independent check of I2; the linter findings left all wait on a ruling
+(below). Nothing of this track is in progress.
+
+## 2026-11-22: I2 run 2 (the suites' comment and literal findings, then a self-check)
+- Linter (Mac, `cargo reviewable check`, besides the model's unanswered names and summaries): 170 findings in this
+  track's files at the start (04:05 UTC), 93 at the end (04:22 UTC). Gone: every summary over one line or 150
+  characters or of two sentences (the detail now follows a blank `///` line), the five literals that restated
+  STATISTICS, JSON and DEVICE, and the 25 magic literals: `LOOK_AGAIN_SOON` names the 1 ms pause; the routing header
+  is built from `AT_THE_FIRST_OF_TWO` and `FLAGS_AND_TAG` (the raw suite's copy of it is gone, it calls the ICMP
+  suite's `segment_routing_header`, and its own `FAR_V6_SEGMENT` copy too); `PAD_N` names the hop-by-hop padding;
+  `TYPE_AND_CODE` the ICMP error's first two bytes; `Wakes::reach(1)` became `first_came()` (every caller asked for
+  one); the source filter pair is a tuple and the preference sources a `Vec`; zero counters start at `usize::MIN`;
+  and `counting_allocator!` counts the bytes asked for instead of calls (a number in a macro body is always a
+  finding; zero bytes is zero allocations, and the shrinking broken copy still fails both allocation tests).
+- Left, each waiting on a ruling already raised (For the owner): 61 public_outside_interface (the shared test tools,
+  the inherent `new` and `counters`, and the new one below on `never`), 21 conformance_not_run (the readiness line,
+  whose required form the readiness suite's `tests!` does not take; the `waiting_for_*` bundles; `counting_allocator!`
+  as a second macro; the crate tests naming the suite for its tools; `#![cfg(target_os = "linux")]` in conformance.rs),
+  4 implementation_folder (`impl Readiness` and `impl Configurable`), 7 constant_defined_twice with the resolver suite.
+- Self-check (`i2-run2/check.sh`, then `check2.sh` and `check3.sh`, ARM, 04:15 to 04:23 UTC, load 3.7 to 20):
+  - Clean build in a fresh folder, clippy with warnings denied clean on the nine packages, three rounds each ICMP 51
+    of 51 and 5 crate tests, raw 44 of 44 and 1, both allocation tests, resolver 35 of 35 and its counter test,
+    Configurable 2 of 2, NegativeRouteAdvice 3 of 3, the shared readiness test (35 s with the build).
+  - 64 broken copies of runs 1 to 5, rewritten for the code now in linux.rs: every one is caught but one. The eight
+    whose text had moved (the waits answering at once and errors not held, now on `wait_until_ready` and
+    `ReadyFor::ERROR`, the checksum offset, the IPv6 alert never cleared, the resolver's preferences, the readiness
+    hold) were written again and each fails; the counts are caught by tests/counters.rs, which the old script did not
+    run. The one not caught is known since run 5: an ICMP send that answers only EINVAL as a refusal passes, because
+    an absent source gives a ping socket another error; the copy that refuses any other errno fails
+    a_waived_source_check_sends_from_an_absent_address.
+  - A broken wait fails eight checks, five of them the readiness suite's (a_wait_does_not_finish_before_the_handle_is_ready
+    and the rest), in both suites.
+  - cargo tree (normal, build, dev) of the 16 interface crates and 14 conformance crates against the 17 implementation
+    crates: none named (control: the raw host's tree names itself and the shared crate). The literal check: 0
+    findings. No commit since 46e143ea touches an interface.rs or a data file beside one, nor does the working tree.
+- Final run (ARM, 04:22 UTC, load 20, `lint-and-suites.sh`, `ROUNDS=3`): clippy clean; each round ICMP 51, raw 44,
+  resolver 35, the crate tests, Configurable 2, NegativeRouteAdvice 3.
 
 ## 2026-11-22: I2 run 1 after the reorganization (the I1 check's findings, then the linter's layout)
 - The I1 check's eight findings, each (broken copies in `i2-run1/findings.sh`, log `i2-run1/findings.log`, ARM,
@@ -553,6 +589,9 @@ the two suites (below). Nothing of this track is in progress.
     resolver, cargo tree, and the lookup cost (a throwaway crate in /work outside the checkout).
   - `i1-linter/hunt2.sh`: the resolver suite `ROUNDS` times (default 100), then a broken copy that sends.
   - `i1-run3/resolver.sh`: clippy on the four I1 packages, then their tests (`ROUNDS`, `FILTER`).
+  - `i2-run2/check.sh`: clean build with clippy, three rounds, 64 broken copies of runs 1 to 5, cargo tree, the
+    literal check; `i2-run2/check2.sh` the copies rewritten for linux.rs and the counter tests, `check3.sh` the
+    allocation copies. `i2-run2/summaries.py <files>` lists summaries over one line or 150 characters.
   - `i2-run1/findings.sh`: the I1 packages' clippy and three rounds, then the seven broken resolver copies of the
     2026-11-22 findings (`NO_MUTANTS=1` skips them). Linter tools of that run: `i2-lint/*.py`.
   - `i1-run3/independent-check-i1d.sh`: I1's clean build, three rounds, 19 broken copies, vacuity, cargo tree.
@@ -636,11 +675,11 @@ the two suites (below). Nothing of this track is in progress.
   check; each header and send field its own, below), receive (echo reply, ICMP error, short buffer of a reply or
   an error, would block,
   transmit report and rejection, drops checks), count_unsent_bytes (pacing_holds_messages_in_the_send_buffer),
-  wait_for_events (the six wait checks), close (close_frees_the_identifier), configure (each setting's check and
+  Readiness::wait_until_ready (the readiness suite's five, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight), close (close_frees_the_identifier), configure (each setting's check and
   Configurable's suite).
 - RawSockets: open (every check, open_takes_each_version_and_protocol), send_to (payload, header included,
   reassembly, route selector, mobility header, path MTU, send field checks), receive (arrival, mark and
-  priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), wait_for_events (the six wait checks),
+  priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), Readiness::wait_until_ready (the readiness suite's five, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight),
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
 - RouteResolver::resolve_route: 28 suite checks that see answers, each selector its own; 3 see only refusals
@@ -728,6 +767,13 @@ the two suites (below). Nothing of this track is in progress.
 - The shared readiness (the UDP track's file) was changed here, in a commit of its own, for the double wake.
 
 ## For the owner
+- The linter's public_outside_interface wants every field of a type that fills an associated type pub ("plain
+  data"), which the brief's private fields forbid, and on Linux the socket holds a registered descriptor and its
+  state, which pub fields would let anyone build or change. Example: crates/icmp-sockets/implementation/host/
+  implementation.rs, `HostIcmpSocket.never` (the portable build's `Infallible`; the Mac is where the linter runs).
+- The linter asks for `mod readiness { ...::tests!($crate::<function>($value)); }` with a function giving
+  `(T, T::Socket)`, but the readiness suite's `tests!` takes a module name, a ready value and a failing value. Example:
+  crates/icmp-sockets/conformance/conformance.rs, `waiting_for_a_reply` and `waiting_for_data_until_an_icmp_error`.
 - The linter's implementation_folder reports `impl Readiness<HostIcmpSocket> for HostIcmpSockets` (and Configurable)
   in the ICMP and raw host crates, though IcmpSockets requires both as supertraits, so the implementation cannot
   live anywhere else. Example: crates/icmp-sockets/implementation/host/linux.rs, `impl Readiness`.
