@@ -2447,9 +2447,12 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   below is no setting of the build or the container: the kernel asks the embedder once per program, before its
   first instruction, which features it is told (`choose_processor_features`, handed what this host runs at full
   speed), and that list, the kernel interface's `X86_64Features`, is x86's `Offer`: `Offer::new(features)`
-  takes it and refuses a feature with no meanings here by name (`NotBuilt`, for AES, PCLMULQDQ, SHA, RDRAND,
-  AVX-512 and every other family not built yet; a family is added later by writing its meanings and its name
-  in `claims::TOLD_FEATURES`). The translator takes the offer with every translation and `offer_key` (now a
+  takes it and refuses a feature with no meanings here by name (`Refused::NotBuilt`, for AES, PCLMULQDQ, SHA,
+  RDRAND, AVX-512 and every other family not built yet; a family is added later by writing its meanings and
+  its name in `claims::TOLD_FEATURES`), and a list no processor could have (`Refused::MissingPrerequisite`:
+  AVX without XSAVE, whose XCR0 enables AVX's registers, or AVX2, FMA or F16C without AVX, whose registers they
+  work on), so that every VEX vector instruction that runs has XCR0's AVX state and `cpuid`'s AVX and OSXSAVE
+  behind it. The translator takes the offer with every translation and `offer_key` (now a
   u64: the told features' bits and the signature) puts it in the cache key and the description section;
   `cpuid` answers leaf 1's signature and every feature bit the list has a field for from it (OSXSAVE with
   XSAVE, XCR0 and leaf 0xD from XSAVE and AVX), the bits every x86-64 processor has from `cpuid`'s own
@@ -2461,30 +2464,36 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   are answered as told. `offer::FULL_SPEED` is the default (the list below, x86-64-v2, the reference's
   identity) and `offer::V3` adds the v3 level's families; which list a host reports as full speed is the
   owner's to rule on (orchestrator/cpu-features/REPORT.md). What the kernel answers in /proc/cpuinfo and
-  AT_HWCAP2 comes from the same offer (X10). The text below says "the AVX setting" for the v3 families.
-- **The AVX setting**: one container setting turns on the claim of the x86-64-v3 level: AVX, AVX2, FMA,
-  F16C, BMI2, XSAVE and OSXSAVE (with `xgetbv` answering x87, SSE and AVX state). AVX and AVX2 are built in
-  full, each 256-bit operation as two 128-bit ones; 128-bit VEX forms clear the upper half, legacy SSE
-  forms keep it. FMA is fast where the host probe says the host fuses, else software with "software fused
-  multiply-add" counted (section 2). `pdep` and `pext` are software loops, counted "software bit deposit or
-  extract". The setting is given with each translation as the guest's `Offer` (section 3.2: `translate`
-  takes it, meanings read it through `Emitter::offer()`, `offer_key` puts it in the cache key and the
-  description section; `()` for ARM64); the kernel answers `/proc/cpuinfo` and AT_HWCAP2 from the same value.
-  Deciding the setting covers the whole v3 level rather than AVX alone is this plan's choice: programs
-  built for x86-64-v3 check all of it.
+  AT_HWCAP2 comes from the same offer (X10). Where other sections say "the AVX setting", read the v3 families of
+  the program's list.
+- **The x86-64-v3 families** (`offer::V3`): AVX, AVX2, FMA, F16C, BMI2 and XSAVE, with OSXSAVE (and `xgetbv`
+  answering x87, SSE and AVX state). AVX and AVX2 are built in full, each 256-bit operation as two 128-bit
+  ones; 128-bit VEX forms clear the upper half, legacy SSE forms keep it. FMA is fast where the host probe
+  says the host fuses, else software with "software fused multiply-add" counted (section 2). `pdep` and
+  `pext` are software loops, counted "software bit deposit or extract"; `vcvtps2ph` rounds in software,
+  counted "half precision rounding in software". The list is given with each translation as the guest's
+  `Offer` (section 3.2: `translate` takes it, meanings read it through `Emitter::offer()`, `offer_key` puts it
+  in the cache key and the description section; `()` for ARM64). `xsave` reports in XSTATE_BV, for each
+  component it saves, whether that component is out of its initial configuration (Intel SDM Vol. 1 13.6: x87
+  as `fninit` leaves it with every register zero, SSE with every xmm register zero, AVX with every upper half
+  zero; MXCSR is in neither), the rule of a processor that tracks it exactly. A real processor tracks it by
+  what ran instead and may report a component in use that is back in its initial configuration (a 256-bit
+  instruction writing zero upper halves leaves AVX in use until `vzeroupper`); Intel allows both, they agree
+  after `xrstor`, `vzeroupper`, `vzeroall` and any write of a non-zero value, and `xsave` and `xrstor` are
+  marked as varying between CPUs (`may_vary`).
 - **The two counters**, x86's own reasons, each with a warning: "a program asked whether AVX is available
-  and was told no" (CPUID leaf 1, or leaf 7 sub-leaf 0, read while the setting is off) and "an AVX
-  instruction was reached while AVX is not offered" (a `Code` whose claim group in the build-time table is
-  the AVX setting, reached while the setting is off, which raises illegal instruction). The counter is
-  keyed on the claim group, not on the VEX encoding, because the setting would make exactly those
-  instructions run: a VEX-encoded instruction of a feature never claimed (AVX-VNNI, VAES, VPCLMULQDQ, the
-  AMX tile instructions) raises illegal instruction under the generic "unsupported instruction reached"
-  whatever the setting, so it never suggests the setting would help. BMI2, F16C and FMA are in the AVX
-  setting's group, so they count here. No program is restarted automatically.
+  and was told no" (CPUID leaf 1, or leaf 7 sub-leaf 0, read by a program whose list has no AVX) and "an
+  instruction of a feature the program was not told of was reached" (a `Code` whose claim byte names a told
+  feature the program's list leaves out, which raises illegal instruction, for every family of the list,
+  the v3 ones and the default ones alike). The counter is keyed on the claim byte, not on the VEX encoding,
+  because telling the program of that feature would make exactly those instructions run: a VEX-encoded
+  instruction of a feature never claimed (AVX-VNNI, VAES, VPCLMULQDQ, the AMX tile instructions) raises
+  illegal instruction under the generic "unsupported instruction reached" whatever the list, so it never
+  suggests a longer list would help. No program is restarted automatically.
 - The first counter is expected to fire in nearly every glibc program: its start-up
   (`init_cpu_features`) reads both leaves to pick string and math routines. That is intended, not noise to
   narrow away: such a program really did take its non-AVX routines because the answer was no, which is
-  what someone deciding on the setting wants to know, and nothing narrower can be seen (which bit the
+  what someone deciding on the list wants to know, and nothing narrower can be seen (which bit the
   program then tests is not visible). The counter counts every read; like every warning (phase one), it is
   raised once per address past its threshold, so a program that reads CPUID from one place warns once.
 - **rdtsc and rdtscp** return the clock hook's nanoseconds (a 1 GHz counter, as leaf 0x15 says); `rdtscp`
@@ -3109,7 +3118,10 @@ iced decodes as `INVALID` are compared with the CPU's stop: SIGILL, or general p
 bytes (section 5.2), which `no_form` draws on purpose as runs of prefixes before a body (a legacy one, or a
 VEX or EVEX one after a 66, F2, F3 or REX that makes it invalid); valid ones also check the length (where the
 CPU lands). Exclusions, each with a reason: a jump to itself; the instructions answered by design (CPUID,
-rdtsc, rdtscp, xgetbv), which a designed-answers test checks instead; `int 0x80` and `sysenter`, which the
+rdtsc, rdtscp, xgetbv), which a designed-answers test checks instead; `xsave` and `xrstor` (their four
+memory forms), whose XCR0 is the program's list and whose XSTATE_BV follows section 5.10's rule where the
+reference's follows what it tracked since the runner loaded its state, which `programs/x86_64/xstate.c`
+compares with Linux instead; `int 0x80` and `sysenter`, which the
 reference kernel runs as 32-bit system calls and this phase does not provide (section 5.2), also checked by
 the designed-answers test; the VMX instructions, whose answer on the reference depends on its KVM setting
 (section 5.2); and `sgdt`, `sidt` and `lsl` of segment 0x7b, whose answer depends on which processor ran
