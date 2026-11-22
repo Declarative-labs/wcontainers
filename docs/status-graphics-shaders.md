@@ -46,7 +46,9 @@ through the stage helper; A7's typed buffers in geometry shaders. Run 8 (run 87,
 below): arrays of constant and structured buffers on the DXIL route, and dxc's `vs_cull` drawn on
 both cull routes. G6 given again on 2026-11-22 as its run 1 (run 88, the section below): the NIR
 track's public entry for geometry, hull and domain programs from a naga module (`staged`), and its
-three asks of `rewrite`. Not complete: the gap list below.
+three asks of `rewrite`. Run 2 (run 89, the section below): A13, geometry shaders taking patches
+drawn without tessellation, and A14, hull shaders giving no control points, both on the DXBC route
+(the Direct3D 12 runner's six files). Not complete: the gap list below.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
@@ -92,6 +94,61 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 2 (run 89): geometry shaders taking patches (A13), hulls giving no control points (A14)
+
+Logs and scripts in scratch `graphics-shaders/g6-r89` (run 88's with its folder: `gpu.sh`,
+`tree-tar.sh`, `suite-laptop.sh` as `~/wcontainers-graphics/suite-r89.sh` writing `out-r89`; jobs
+`job1.log` to `job3.log`, `gpu-suite.log`; `arm1.log` to `arm4.log`, `arm-lit.log`; `chrome.log` and
+`chrome-out/`). Builds, clippy and CPU tests on the rented ARM64 machine from the scratch clone
+`tip`; nothing built on the Mac.
+- A13 built (src/lower/geometry.rs `input_vertices`, src/stage/helper.rs): a DXBC geometry shader
+  taking `InputPatch<T, n>` takes each patch's control points as its primitive's vertices, and the
+  stage helper draws `InputTopology::PatchList(n)` into such a geometry shader when no hull stage is
+  bound (lists, indexed or not; a patch count other than the shader's is `TopologyMismatch`, as for
+  every topology). DXIL stays refused (`GeometryPatchInput`): dxil-spirv converts no geometry
+  shader taking patches ("Unexpected input primitive"). The replay route (WebGL 2) still refuses a
+  patch list (`TopologyMismatch`): not built or drawn there.
+  Test: own `gs_patch` (geometry_patch.hlsl, fxc gs_5_0 and dxc gs_6_0; quadrilaterals of four
+  control points picked at run time, coloured by the patch's number) with `vs_line` and `ps_line`,
+  `geometry_shaders_taking_patches_draw_as_direct3d_does` (tests/stage_draw.rs) on WebGPU against
+  real Direct3D 11 drawing `D3D11_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST` with no hull stage on
+  the RTX 3080: four cases a seed (24 points x1, 22 x2 cutting a patch short, 16 x3 and 18 x1
+  indexed), seeds 1 to 4, 16 comparisons, 0 failed, every texel equal (job1.log). CPU test
+  `geometry_shaders_take_patches_as_primitives` (tests/geometry.rs; compute and replay forms; dxc's
+  build refused by name).
+- A14 built (src/lower/hull.rs): a DXBC hull shader of no output control points converts; its
+  control point function never runs (its body is dropped, as it would index arrays of none), and
+  the patch's record holds the patch constants alone. A DXBC domain shader of no input control
+  points converts too. dxc refuses to build such a hull shader ("number of control points 0 is
+  outside the valid range"), and dxc's domain shader taking none stays refused
+  (`DomainWithoutControlPoints`: dxil-spirv declares its patch an array of none).
+  Test: own `hs_tri_none` (hull_none.hlsl, fxc only) and `ds_tri_none` (tessellation.hlsl, both),
+  `hulls_giving_no_control_points_stream_as_direct3d_does` (tests/tessellation_draw.rs): streamed
+  through the whole stage helper on WebGPU (RTX 3080) against Direct3D 11 on WARP streaming the same
+  draw, seeds 1 to 4: 4 comparisons, 0 failed, every patch's primitives equal and in the same order
+  (9,342 to 20,694 primitives a seed; job3.log). Against real Direct3D 11 on the RTX 3080 the test
+  process ended with STATUS_INTEGER_DIVIDE_BY_ZERO (job2.log); only the reference device changed
+  between that run and WARP's, so the RTX 3080's Direct3D 11 is inferred to end there (not traced
+  further). CPU test `hulls_may_give_no_control_points` (tests/geometry.rs).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 1 to 4): the runner's six
+  DXBC records (`geometry-shader-syntax-6`, `-7`, `-8`, `-10`, `patch-syntax-12`,
+  `hull-shader-attributes-10`) now convert; own records added for `gs_patch`, `hs_tri_none` and
+  `ds_tri_none` (fxc's convert; dxc's two refused by name). The other 11 corpus tests passed and
+  every other record held (`logs/suite-r89.log` there). Chrome on the desktop compiles all nine new
+  WGSL files (chrome.log). The runner's DXIL `patch-syntax-12-gs` and `patch-syntax-11-ds` stay
+  refused by name, dxil-spirv's.
+- Runs: ARM64 machine (load 2 to 11): rustfmt clean, clippy of this crate with warnings denied
+  clean, CPU test binaries `geometry` 22 (1 ignored as before), `staged` 3, `variants` 40, `rewrite`
+  13, `builtin` 5, `cache` 7 (1 ignored as before), `compute` 5, the library 10: all passed
+  (arm4.log); the literal check prints no line of this crate (arm-lit.log). Desktop (RTX 3080, GPU
+  jobs one at a time, 3 cargo jobs): Windows clippy clean; the whole suite at 829bf2e3 (one job,
+  one test thread): 25 test binaries, 189 passed, 0 failed, 6 ignored as before (gpu-suite.log).
+- Not run: WebAssembly (no converted module of an existing record changed).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip` and tar (its
+  `out-r89` and log kept), the scratch clone and tar (logs kept in `g6-r89`). The ARM64 machine's
+  `/work/target/graphics-shaders` is kept (the machine's own build folder for this track).
 
 ## G6 run 1 again (run 88): the NIR track's entry for geometry and tessellation, its `rewrite` asks
 
@@ -814,10 +871,11 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (163 and 152 records, 152 and 143
-     converting, counted in run 86 with the vertex shaders writing storage, which convert since
-     that run, and `gs_typed`; run 87 added `cs_structured_array`, refused for want of ranges) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1439 and 1414 converting,
-     counted in run 86). Every record holds at run 86's code (its section above).
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (166 and 154 records, 155 and 143
+     converting, counted in run 89 with `gs_patch`, `hs_tri_none` and `ds_tri_none`) and vkd3d's
+     shader runner files (1503 DXBC, 1517 DXIL; 1445 and 1414 converting, counted in run 89, the
+     DXBC six more than run 86's by A13 and A14). Every record holds at run 89's code (its section
+     above).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
    since run 47 the corpus test writes it with the WebGL 2 back end's own writing
@@ -954,8 +1012,9 @@ The pass bar, item by item:
    Since run 86, vertex shaders writing storage through `Stages::stored` (`stage_draw`, A9).
    Not met: some topologies and streams (A7), single texels on
    the edges of clipped triangles and a few of culled lines (A10), clamped depth behind a
-   geometry stage at some seeds (A12), geometry shaders taking patches (A13), hull shaders
-   giving no control points (A14) and the written count of a stream with no buffer bound (A15).
+   geometry stage at some seeds (A12), geometry shaders taking patches and hull shaders giving no
+   control points on the DXIL route (A13, A14: dxil-spirv's) and the written count of a stream
+   with no buffer bound (A15).
 5. The built-in programs: the storage clear (`clear_draw`, every storage format and dimension
    against WARP and the GPU's Direct3D 11), and since run 56 the pixel program of a pipeline
    without a pixel shader (`builtin::pixel_program_for_variant`, `tests/builtin.rs` and the
@@ -1330,26 +1389,27 @@ The gap list (every item of the pass bar not met):
   triangles (inferred, not measured). Waits: nobody (depths some millionths
   apart). Takes: the depths compared texel by texel at those seeds to find whether the
   interpolation or the clamp moves them, then the rewrite changed and every seed compared again.
-- A13. A geometry shader taking patches as its input, drawn without tessellation
-  (`GeometryPatchInput`, src/lower/geometry.rs `input_vertices`): not built, refused by name.
-  Runner (DXBC): `geometry-shader-syntax-6`, `-7`, `-8`, `-10` and `patch-syntax-12` (5 files).
-  Cause: the geometry lowering knows the vertex counts of points, lines and triangles (with
-  adjacency) only; the stage helper's `PatchList` is drawn into a hull stage, not yet into a
-  geometry stage. Waits: the
-  Direct3D 12 front's runner (those files); the Direct3D 11 front for Wine's files if they hold one;
-  no real program seen with it. Takes: the patch's control point count as the input's vertex count,
-  the stage helper's geometry route taking `PatchList`, and a drawn test against Direct3D 11
-  drawing a patch list into a geometry shader.
-- A14. A hull shader that gives the domain shader no control points (output control point count 0,
-  `HullWithoutControlPoints`, src/lower/hull.rs): not built, refused by name. Runner (DXBC):
-  `hull-shader-attributes-10` (1 file). Cause: the hull lowering's compute program and the records
-  it hands the domain stage are built for one output control point or more; a patch with none was
-  not built (`HullPass::entry_point` refuses it before anything else). Since run 66 its DXIL partner
-  is refused too: a domain shader of no input control points (`DomainWithoutControlPoints`, runner
-  `patch-syntax-11-ds.dxil`, which dxil-spirv gives an array of zero). Waits:
-  the Direct3D 12 front's runner (those files); no real program seen with them. Takes: the hull's
-  records written with the patch constants alone and the domain stage reading no control point,
-  and a drawn test against Direct3D 11.
+- A13. DXBC part closed in run 89 (its section): a geometry shader taking patches converts and the
+  stage helper draws a patch list into it without tessellation, drawn equal to real Direct3D 11 on
+  the RTX 3080 (`geometry_shaders_taking_patches_draw_as_direct3d_does`); the runner's five DXBC
+  files convert. Left: the DXIL route (`GeometryPatchInput`, runner `patch-syntax-12-gs.dxil`, 1
+  file): cause, dxil-spirv converts no geometry shader taking patches (its input primitive switch
+  ends "Unexpected input primitive"); and the replay route on WebGL 2 (`TopologyMismatch` for a
+  patch list, not built or drawn). Waits: the Direct3D 12 front's runner (that file); nobody for
+  WebGL 2 (no program seen). Takes: dxil-spirv taking patch input (upstream, or a patch carried
+  as naga's are, which needs the way to carry C++ patches A8 also waits on), then dxc's `gs_patch`
+  drawn; for WebGL 2, the replay capturing a patch list as points, as lists with adjacency are,
+  and a case of the replayed test.
+- A14. DXBC part closed in run 89 (its section): a hull shader of no output control points and a
+  domain shader of none convert, streamed equal to Direct3D 11 on WARP
+  (`hulls_giving_no_control_points_stream_as_direct3d_does`); the runner's
+  `hull-shader-attributes-10` converts. Real Direct3D 11 on the RTX 3080 ended the test process
+  dividing by zero on the same draw, so the RTX 3080 gives no reference for it. Left: dxc's domain
+  shader of no input control points (`DomainWithoutControlPoints`, runner `patch-syntax-11-ds.dxil`,
+  own `ds_tri_none.dxil`), as dxil-spirv declares its patch an array of none; dxc builds no hull
+  shader of none. Waits: the Direct3D 12 front's runner (that file). Takes: the array of none
+  dropped from dxil-spirv's SPIR-V before naga reads it (the domain program reads no control
+  point), then the own pair drawn with dxc's domain shader.
 - A15. Stream output of a stream whose buffers are all unbound (`streams_past_the_first_match_direct3d`,
   tests/geometry_draw.rs): the primitives made match Direct3D 11, the primitives written do not.
   On the RTX 3080 real Direct3D 11 counts some of such a stream's primitives as written, ours 0
@@ -1746,9 +1806,11 @@ is accounted for (counted with `grep` over the records, G6a run 4; the records a
 G6a run 5's tip):
 - On the gap list: none left of A6 (`DxilGeometryShader` 26 gone in run 65; `DxilHullShader` 28
   and `DxilDomainShader` 9 gone in run 66: 36 convert, 1 is `DomainWithoutControlPoints`, next to
-  A14's `HullWithoutControlPoints`);
-  `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` 6 (A13; DXBC 5, DXIL 1 since run 65);
-  `HullWithoutControlPoints` 1 and `DomainWithoutControlPoints` 1 (A14); `ComponentPastVector` 1
+  A14's `HullWithoutControlPoints`, gone in run 89);
+  `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` 2 (A13; DXIL
+  `patch-syntax-12-gs` and own `gs_patch.dxil`; the DXBC 5 convert since run 89);
+  `DomainWithoutControlPoints` 2 (A14; runner `patch-syntax-11-ds.dxil`, own `ds_tri_none.dxil`;
+  `HullWithoutControlPoints` gone in run 89); `ComponentPastVector` 1
   (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
   `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
@@ -1784,7 +1846,9 @@ G6a run 5's tip):
    cull distances from geometry or domain shaders, the primitive's number behind a geometry
    shader), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
-   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5).
+   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); A7's cull
+   distances from geometry shaders are the next Direct3D 12 runner item (8 files), then A20 and
+   the DXIL parts of A13 and A14 (dxil-spirv's; A13 and A14's DXBC parts closed in run 89).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
    the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
@@ -1794,6 +1858,14 @@ G6a run 5's tip):
    A8 (both want a way to carry dxbc-spirv patches), A22 on WARP.
 
 ## Asked of other tracks
+
+- For the Direct3D 12 front (run 89, A13 and A14; its runner): the runner's DXBC
+  `geometry-shader-syntax-6`, `-7`, `-8`, `-10`, `patch-syntax-12` and `hull-shader-attributes-10`
+  convert now. A geometry shader taking patches is drawn through the stage helper as any geometry
+  shader: pass the patch list as `InputTopology::PatchList(n)` with no hull stage (`Stages::new`
+  with the geometry shader); drawn equal to Direct3D 11 here. A hull shader of no output control
+  points and its domain shader go through `Stages::tessellated` as any pair. The same holds for
+  the Direct3D 11 front. On WebGL 2 a patch list into a geometry shader is still `TopologyMismatch`.
 
 - The WebGL 2 track (run 77, gap A31): `gathers_by_samples` finds the footprint's corner as
   `floor(p * size - 0.5)` at full precision; Direct3D rounds the position to 8 bits of subtexel
