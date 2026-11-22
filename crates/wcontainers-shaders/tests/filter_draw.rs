@@ -8,6 +8,10 @@
 //! the variant), an RGBA8 one, and normalised ones the back ends hold as the integer format of the
 //! same bits, read through `VariantKey::decoded` (`NormAsInteger`).
 //!
+//! `ps_clamp` samples with Direct3D's per-sample clamp (`Sample` with its clamp argument, as
+//! `sample_cl`, `sample_b_cl` and `sample_d_cl`) at an implicit level, with a bias, and with
+//! gradients.
+//!
 //! `ps_lod` asks the level of detail an implicit sample takes (`CalculateLevelOfDetail` and its
 //! unclamped form, which the program computes from its derivatives and the sampler's state) over the
 //! same plane, at its coordinate and at the coordinate scaled.
@@ -39,6 +43,9 @@ use windows::core::Interface;
 const TEX: u32 = 16;
 const FILTER: &str = "ps_filter";
 const LOD: &str = "ps_lod";
+const CLAMP: &str = "ps_clamp";
+/// `ps_clamp`'s ways of sampling, each with the clamp.
+const CLAMP_MODES: [&str; 3] = ["implicit", "bias", "gradients"];
 const LEVELS: u32 = 5;
 const LEVEL_MODE: &str = "level";
 const GATHER_MODE: &str = "gather";
@@ -533,6 +540,24 @@ const SHIFT: f32 = 1.0 / 256.0;
 
 #[test]
 fn filtering_in_the_program_matches_direct3d() {
+    let decoded = DECODED.iter().map(|&(format, _)| format);
+    let formats: Vec<_> = [Format::R32Float, Format::Rgba8Unorm]
+        .into_iter()
+        .chain(decoded)
+        .collect();
+    samples_match_direct3d(FILTER, &MODES, &formats);
+}
+
+/// Samples with Direct3D's per-sample clamp (`ps_clamp`), filtered by the back ends' samplers and in
+/// the program.
+#[test]
+fn clamped_samples_match_direct3d() {
+    samples_match_direct3d(CLAMP, &CLAMP_MODES, &[Format::Rgba8Unorm]);
+}
+
+/// Pixel program `pixel` sampling in each of `modes` (its constant's values in order) textures of
+/// each of `formats`, drawn by the back ends against real Direct3D 11 on the GPU and on warp.
+fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
     let seed: u64 = std::env::var("WCONTAINERS_FILTER_SEED").map_or(1, |s| s.parse().unwrap());
     let cases: u64 = std::env::var("WCONTAINERS_FILTER_CASES").map_or(8, |s| s.parse().unwrap());
     let mut gpu = webgpu();
@@ -547,17 +572,15 @@ fn filtering_in_the_program_matches_direct3d() {
     };
     let d3d = device(wcontainers_graphics_test::Driver::Hardware);
     let warp = device(wcontainers_graphics_test::Driver::Warp);
+    // The pictures kept are named by the program without its stage.
+    let prefix = pixel.trim_start_matches("ps_");
     let mut failed = Vec::new();
     let mut known = Vec::new();
     let mut compared = 0;
     for case_seed in seed..seed + cases {
         let case = Case::new(case_seed);
         println!("case {case_seed}: {case:?}");
-        let decoded = DECODED.iter().map(|&(format, _)| format);
-        for format in [Format::R32Float, Format::Rgba8Unorm]
-            .into_iter()
-            .chain(decoded)
-        {
+        for &format in formats {
             let texels = levels(format, case_seed);
             // R32_FLOAT is filtered by its texture's bit, RGBA8 by the sampler's border bit, and the
             // normalised formats are decoded from their integer formats and filtered in the program.
@@ -580,10 +603,10 @@ fn filtering_in_the_program_matches_direct3d() {
                 },
             };
             let stored = stored.unwrap_or(format);
-            for (mode, name) in MODES.iter().enumerate() {
+            for (mode, name) in modes.iter().enumerate() {
                 let mode = mode as u32;
-                let reference = direct3d_11(&d3d, FILTER, format, &texels, &case, mode);
-                let software = direct3d_11(&warp, FILTER, format, &texels, &case, mode);
+                let reference = direct3d_11(&d3d, pixel, format, &texels, &case, mode);
+                let software = direct3d_11(&warp, pixel, format, &texels, &case, mode);
                 let between = differences(&reference, &software);
                 let (apart, largest) = count(&between, FILTER_ALLOWANCE);
                 println!(
@@ -606,12 +629,12 @@ fn filtering_in_the_program_matches_direct3d() {
                             };
                             if back_end == "webgpu" {
                                 ours(
-                                    &mut gpu, FILTER, route, stored, &texels, &moved, mode, &key,
+                                    &mut gpu, pixel, route, stored, &texels, &moved, mode, &key,
                                     None,
                                 )
                             } else {
                                 ours(
-                                    &mut gl, FILTER, route, stored, &texels, &moved, mode, &gl_key,
+                                    &mut gl, pixel, route, stored, &texels, &moved, mode, &gl_key,
                                     None,
                                 )
                             }
@@ -674,7 +697,7 @@ fn filtering_in_the_program_matches_direct3d() {
                             );
                         }
                         keep(
-                            &format!("filter_{case_seed}_{format:?}_{name}_{route}_{back_end}"),
+                            &format!("{prefix}_{case_seed}_{format:?}_{name}_{route}_{back_end}"),
                             &picture,
                             Format::Rgba32Float,
                         );
@@ -702,7 +725,7 @@ fn filtering_in_the_program_matches_direct3d() {
                         let plain = VariantKey::default();
                         let own = ours(
                             &mut gpu,
-                            FILTER,
+                            pixel,
                             route,
                             format,
                             &texels,
@@ -737,12 +760,12 @@ fn filtering_in_the_program_matches_direct3d() {
                     }
                 }
                 keep(
-                    &format!("filter_{case_seed}_{format:?}_{name}_direct3d"),
+                    &format!("{prefix}_{case_seed}_{format:?}_{name}_direct3d"),
                     &reference,
                     Format::Rgba32Float,
                 );
                 keep(
-                    &format!("filter_{case_seed}_{format:?}_{name}_warp"),
+                    &format!("{prefix}_{case_seed}_{format:?}_{name}_warp"),
                     &software,
                     Format::Rgba32Float,
                 );

@@ -50,6 +50,19 @@ float4 ps_filter(FilterOut i) : SV_Target {
     return t.Load(int3(int2(frac(i.uv) * float2(width, height)), 0));
 }
 
+// Samples with Direct3D's per-sample clamp, one above the value, in the way the constants pick: an
+// implicit level, a bias, or gradients.
+float4 ps_clamp(FilterOut i) : SV_Target {
+    float lowest = value + 1.0;
+    if (mode == 0) {
+        return t.Sample(s, i.uv, int2(0, 0), lowest);
+    }
+    if (mode == 1) {
+        return t.SampleBias(s, i.uv, scale.x - 1.0, int2(0, 0), lowest);
+    }
+    return t.SampleGrad(s, i.uv, ddx(i.uv) * scale.x, ddy(i.uv) * scale.y, int2(0, 0), lowest);
+}
+
 // The level of detail an implicit sample takes, clamped and unclamped, at the coordinate and at the
 // coordinate scaled by `scale` (an anisotropic footprint where the two scales differ).
 float4 ps_lod(FilterOut i) : SV_Target {

@@ -77,6 +77,8 @@ for %%e in (ps_dual ps_levels ps_levels_past ps_samples ps_ids ps_minlod ps_ming
 "%DXC%" -nologo -T vs_6_0 -E vs_filter -Gis -Fo vs_filter.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_filter /Fo ps_filter.dxbc filter.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_filter -Gis -Fo ps_filter.dxil filter.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_clamp /Fo ps_clamp.dxbc filter.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_clamp -Gis -Fo ps_clamp.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_lod /Fo ps_lod.dxbc filter.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_lod -Gis -Fo ps_lod.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_geometry /Fo vs_geometry.dxbc geometry.hlsl || exit /b 1

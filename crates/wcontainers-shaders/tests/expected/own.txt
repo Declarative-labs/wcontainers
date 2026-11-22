@@ -81,6 +81,7 @@ hs_values_integer_point.dxbc	ok ; glsl absent compute
 hs_values_odd_ccw.dxbc	ok ; glsl absent compute
 ps_array.dxbc	ok ; glsl compiles
 ps_cases.dxbc	ok ; glsl compiles
+ps_clamp.dxbc	ok ; glsl compiles
 ps_clip.dxbc	ok ; glsl compiles
 ps_coarse.dxbc	ok ; glsl compiles
 ps_component.dxbc	ok ; glsl compiles

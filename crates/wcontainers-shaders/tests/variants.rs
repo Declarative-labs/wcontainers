@@ -1881,3 +1881,44 @@ fn level_of_detail_queries_read_the_samplers_state_from_the_helpers() {
     let text = wgsl(&convert(Source::Dxbc(&code[0]), &VariantKey::default(), None).unwrap());
     assert_eq!(text.matches("level_of_detail(").count(), 3, "{text}");
 }
+
+/// Samples with Direct3D's per-sample clamp (implicit, biased and with gradients) take gradients from
+/// the library's `clamped_gradients`, which reads the sampler's state and bias from the helper block;
+/// both routes alike, the DXIL route's reader stand-ins gone, and the GLSL ES 3.00 writer takes them.
+/// A sampler's bias applied by the variant (`lod_bias`) is read once.
+#[test]
+fn clamped_samples_take_their_gradients_from_the_library() {
+    let code = own_pair("ps_clamp");
+    for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
+        let plain = convert(source, &VariantKey::default(), None).unwrap();
+        assert_eq!(
+            plain
+                .reflection
+                .helpers
+                .iter()
+                .map(|h| h.value)
+                .collect::<Vec<_>>(),
+            [
+                HelperValue::SamplerState { sampler: 0 },
+                HelperValue::LodBias { sampler: 0 }
+            ]
+        );
+        let text = wgsl(&plain);
+        assert_eq!(text.matches("fn clamped_gradients(").count(), 1, "{text}");
+        assert_eq!(text.matches("textureSampleGrad(").count(), 3, "{text}");
+        assert!(!text.contains("image_sample_clamp"), "{text}");
+        glsl(&plain).unwrap();
+        let key = VariantKey {
+            lod_bias: 1,
+            min_lod_clamped: 1,
+            ..Default::default()
+        };
+        let varied = convert(source, &key, None).unwrap();
+        let mut found: Vec<_> = varied.reflection.helpers.iter().map(|h| h.value).collect();
+        found.sort_by_key(|v| format!("{v:?}"));
+        let before = found.len();
+        found.dedup();
+        assert_eq!(found.len(), before, "{found:?}");
+        glsl(&varied).unwrap();
+    }
+}

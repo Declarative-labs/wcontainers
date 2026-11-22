@@ -4337,6 +4337,24 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok(v)
     }
 
+    /// A sample's gradient `id` in image kind `k`: as its coordinate, but a 1D texture's row has no
+    /// extent in y.
+    fn gradient(&mut self, b: &mut Block, k: u64, id: u32) -> Result<Handle<Expression>> {
+        let v = self.get_as(b, id, Scalar::F32)?;
+        if !matches!(k, kind::IMAGE_1D | kind::IMAGE_1D_ARRAY) {
+            return Ok(v);
+        }
+        let y = self.lit(b, Literal::F32(0.0));
+        let ty = self.l.vec_ty(2, Scalar::F32)?;
+        Ok(self.add(
+            b,
+            Expression::Compose {
+                ty,
+                components: vec![v, y],
+            },
+        ))
+    }
+
     /// `lod`: the level of detail an implicit sample of image `r[0]` through sampler `r[1]` at
     /// coordinate `r[2]` takes, clamped and unclamped (`variant::lod`), from the sampler's state, bias
     /// and the resource's clamp in the helper block.
@@ -4362,6 +4380,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             sampler,
             coordinate,
             coordinate_size: n,
+            gradients: None,
         };
         // The query emits its own expressions.
         self.e.flush(&self.f, b);
@@ -4378,6 +4397,67 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         )?;
         self.e.start = self.f.expressions.len();
         Ok(result)
+    }
+
+    /// The gradients a sample (operands `r`, its clamp present) of image `image` of kind `k` at
+    /// `coordinate` takes for Direct3D's per-sample clamp (`variant::lod::clamped`), from its own
+    /// gradients or bias where it has them.
+    fn clamped_gradients(
+        &mut self,
+        b: &mut Block,
+        image: Handle<Expression>,
+        k: u64,
+        coordinate: Handle<Expression>,
+        r: &[u32],
+        Clamped {
+            bias,
+            clamp,
+            dx,
+            dy,
+        }: Clamped,
+    ) -> Result<[Handle<Expression>; 2]> {
+        let n = if k == kind::IMAGE_3D {
+            VectorSize::Tri
+        } else {
+            VectorSize::Bi
+        } as u8;
+        let gradients = if dx != 0 {
+            Some([self.gradient(b, k, dx)?, self.gradient(b, k, dy)?])
+        } else {
+            None
+        };
+        let shift = if bias != 0 && dx == 0 {
+            Some(self.get_as(b, bias, Scalar::F32)?)
+        } else {
+            None
+        };
+        let clamp = self.get_as(b, clamp, Scalar::F32)?;
+        let q = crate::variant::lod::Query {
+            image,
+            dimensions: n,
+            texture: self.slot_of(r[0])?,
+            sampler: self.slot_of(r[1])?,
+            coordinate,
+            coordinate_size: n,
+            gradients,
+        };
+        // The library's call emits its own expressions.
+        self.e.flush(&self.f, b);
+        let l = &mut *self.l;
+        let result = crate::variant::lod::clamped(
+            &mut l.module,
+            &mut l.reflection,
+            crate::variant::lod::gradients_function,
+            &mut self.f,
+            b,
+            &q,
+            shift,
+            clamp,
+            None,
+        )?;
+        let columns = crate::variant::lod::columns(&mut self.f, b, result, n);
+        self.e.start = self.f.expressions.len();
+        Ok(columns)
     }
 
     fn layer(&mut self, b: &mut Block, id: u32) -> Result<Option<Handle<Expression>>> {
@@ -4444,9 +4524,26 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         } else {
             let (lod, bias, clamp, dx, dy) = (r[5], r[6], r[7], r[8], r[9]);
             if clamp != 0 {
-                return Err(unsupported(crate::refusal::SAMPLE_CLAMP));
-            }
-            if lod != 0 {
+                // The clamp is taken through gradients, which neither a depth texture nor a cube
+                // takes in the library, and which need derivatives where the sample has no gradients.
+                let cube = matches!(k, kind::IMAGE_CUBE | kind::IMAGE_CUBE_ARRAY);
+                if depth_ref.is_some()
+                    || res.depth
+                    || cube
+                    || lod != 0
+                    || self.l.stage != SourceStage::Pixel
+                {
+                    return Err(unsupported(crate::refusal::SAMPLE_CLAMP));
+                }
+                let operands = Clamped {
+                    bias,
+                    clamp,
+                    dx,
+                    dy,
+                };
+                let [x, y] = self.clamped_gradients(b, image, k, coordinate, r, operands)?;
+                SampleLevel::Gradient { x, y }
+            } else if lod != 0 {
                 let is_zero = {
                     let o = self.l.ir.op(lod)?;
                     o.code == code::CONSTANT && f32::from_bits(o.lits[0] as u32) == 0.0
@@ -4484,8 +4581,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 if res.depth {
                     return Err(unsupported(crate::refusal::DEPTH_SAMPLE_GRADIENT));
                 }
-                let x = self.coords(b, k, dx, true)?;
-                let y = self.coords(b, k, dy, true)?;
+                let x = self.gradient(b, k, dx)?;
+                let y = self.gradient(b, k, dy)?;
                 SampleLevel::Gradient { x, y }
             } else {
                 SampleLevel::Auto
@@ -5273,4 +5370,13 @@ fn rank(kind: SlotKind) -> u32 {
         SlotKind::Counter => SlotKind::Storage as u32,
         k => k as u32,
     }
+}
+
+/// The operands of a sample with Direct3D's per-sample clamp that its gradients take (zero where
+/// absent).
+struct Clamped {
+    bias: u32,
+    clamp: u32,
+    dx: u32,
+    dy: u32,
 }
