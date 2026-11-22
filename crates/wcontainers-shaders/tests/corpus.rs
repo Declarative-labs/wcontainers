@@ -249,6 +249,7 @@ const GLSL_PART: &str = " ; glsl ";
 const WRITTEN: &str = "written";
 
 /// The need a cube array view names beside the back end's features.
+#[cfg(not(target_arch = "wasm32"))]
 const CUBE_ARRAY_VIEW: &str = "CUBE_ARRAY_VIEW";
 
 /// The GLSL ES outcomes from glslang; a refusal is followed by glslang's first error.
@@ -447,6 +448,7 @@ fn glslang_error(output: &str) -> String {
 }
 
 /// Appended to a GLSL file's name for glslang's output where it refuses the file.
+#[cfg(not(target_arch = "wasm32"))]
 const GLSLANG_LOG: &str = ".log";
 
 /// What a record says as far as this run checks: without glslang, a compile outcome reads as

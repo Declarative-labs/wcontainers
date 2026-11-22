@@ -247,7 +247,13 @@ struct Parsed {
 // has (vertex, hull, domain, geometry, pixel): each stage's views, declared registers and constant
 // buffer sizes are read from one parse of its module, in whatever order the stages are read.
 constexpr size_t REMEMBERED = 5;
+#if defined(__wasm__) && !defined(__wasm_atomics__)
+// WebAssembly without threads has one thread, and its C++ runtime has no thread exit hook
+// (`__cxa_thread_atexit`) to destroy a `thread_local`.
+std::vector<Parsed> remembered;
+#else
 thread_local std::vector<Parsed> remembered;
+#endif
 
 // The module of a container's `DXIL` chunk, or of its DXBC program where `dxbc` allows one; null with
 // the reason in `error` where there is none or it does not parse. Valid until the next call.
