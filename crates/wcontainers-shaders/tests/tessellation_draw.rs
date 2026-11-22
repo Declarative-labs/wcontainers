@@ -1302,7 +1302,6 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
         cases.push((hs.into(), "ds_values".into(), gs, per, 3));
     }
     let mut failures = Vec::new();
-    let mut known_cases = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {
         for (i, (hs, ds, gs, per, points)) in cases.iter().enumerate() {
@@ -1344,36 +1343,13 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
                         let why = [counts.err(), shape.err()].into_iter().flatten();
                         let why: Vec<String> = why.collect();
                         eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
-                        // A subnormal factor moved through the hull shader: Direct3D keeps its bits, the
-                        // back end's compiled program flushes it to zero. Known when ours equals
-                        // Direct3D drawing the factors flushed.
-                        let flushed: Vec<[f32; 8]> = factors
-                            .iter()
-                            .map(|f| f.map(|v| if v.is_subnormal() { 0.0 } else { v }))
-                            .collect();
-                        let known = factors.iter().flatten().any(|v| v.is_subnormal()) && {
-                            let (r, w) = direct3d(&gpu, hs, ds, *gs, *points, bound, &flushed);
-                            counted == [w as u32; 2]
-                                && compare(&r[..w as usize * per], &streamed, *per).is_ok()
-                        };
-                        if known {
-                            eprintln!(
-                                "{name}: known, equal to direct3d with subnormal factors flushed"
-                            );
-                            known_cases.push(name);
-                        } else {
-                            failures.push(name);
-                        }
+                        failures.push(name);
                     }
                 }
             }
         }
     }
-    eprintln!(
-        "{compared} comparisons, {} failed, {} known (subnormal factors)",
-        failures.len(),
-        known_cases.len()
-    );
+    eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
@@ -1432,12 +1408,8 @@ fn stage_values_hold_wherever_the_data_ring_wraps() {
     });
     for (seed, (i, gs)) in cases {
         let (hs, ds, per, points) = ("hs_tri_odd_cw", "ds_tri", 3, 1);
-        // Subnormal factors are another matter (the stream test's known cases): flushed here.
         let mut rng = fastrand::Rng::with_seed(seed * 1000 + i as u64);
-        let factors: Vec<[f32; 8]> = factors(&mut rng)
-            .iter()
-            .map(|f| f.map(|v| if v.is_subnormal() { 0.0 } else { v }))
-            .collect();
+        let factors = factors(&mut rng);
         let (reference, written) = direct3d(&gpu, hs, ds, gs, points, bound, &factors);
         let reference = &reference[..written as usize * per];
         for parts in 0..=RING_PLACES {

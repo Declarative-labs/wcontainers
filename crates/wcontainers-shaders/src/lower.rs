@@ -4703,6 +4703,24 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok(())
     }
 
+    /// Whether instruction `id` loads a hull program's tessellation factor output.
+    fn loads_tessellation_factor(&self, id: u32) -> bool {
+        let Ok(op) = self.l.ir.op(id) else {
+            return false;
+        };
+        op.code == code::OUTPUT_LOAD
+            && op
+                .refs
+                .first()
+                .and_then(|dcl| self.l.io_index.get(dcl))
+                .is_some_and(|&i| {
+                    matches!(
+                        self.l.io[i].1.builtin,
+                        Some(builtin::TESS_FACTOR_INNER | builtin::TESS_FACTOR_OUTER)
+                    )
+                })
+    }
+
     fn arithmetic(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
         use BinaryOperator as B;
         use MathFunction as M;
@@ -4830,6 +4848,26 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::F_MIN | c::S_MIN | c::U_MIN => math(self, b, M::Min, rs)?,
             c::F_MAX | c::S_MAX | c::U_MAX => math(self, b, M::Max, rs)?,
+            // dxbc-spirv clamps a hull program's tessellation factors to the declared largest. A
+            // subnormal factor keeps its bits, as Direct3D hands it to the tessellator; the back
+            // end's compiled clamp would flush it to zero.
+            c::F_CLAMP if self.loads_tessellation_factor(r[0]) => {
+                let clamped = math(self, b, M::Clamp, rs)?;
+                let factor = self.get_as(b, r[0], rs)?;
+                let bits = self.get_as(b, r[0], Scalar::U32)?;
+                let mask = self.lit(b, Literal::U32(crate::build::F32_EXPONENT_MASK));
+                let exponent = self.bin(b, B::And, bits, mask);
+                let zero = self.lit(b, Literal::U32(0));
+                let subnormal = self.bin(b, B::Equal, exponent, zero);
+                self.add(
+                    b,
+                    Expression::Select {
+                        condition: subnormal,
+                        accept: factor,
+                        reject: clamped,
+                    },
+                )
+            }
             c::F_CLAMP | c::S_CLAMP | c::U_CLAMP => math(self, b, M::Clamp, rs)?,
             c::F_DOT => math(self, b, M::Dot, rs)?,
             c::F_SIN => math(self, b, M::Sin, rs)?,
