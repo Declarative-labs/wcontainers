@@ -1,5 +1,7 @@
 //! The test host's TCP on this machine's sockets, each call and readiness kept in the record.
 
+use core::convert::Infallible;
+use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
@@ -14,18 +16,21 @@ use wcontainers_tcp_sockets::TcpConnectStart;
 
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
-use wcontainers_internet_protocol::{ByteCount, LocalBinding, LocalPort};
+use wcontainers_internet_protocol::{BindingSetting, ByteCount, LocalBinding, LocalPort};
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::errno::Errno;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
 use wcontainers_tcp_sockets::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
-use wcontainers_tcp_sockets::state::{TcpErrorQueueEntry, TcpListenerQuery, TcpQuery, TcpReading};
+use wcontainers_tcp_sockets::state::{
+    TcpErrorQueueEntry, TcpListenerQuery, TcpListenerReading, TcpQuery, TcpReading,
+};
 use wcontainers_tcp_sockets::{
-    ListenBacklog, TcpAccepted, TcpClose, TcpConnected, TcpConnections, TcpFastOpen, TcpListeners,
-    TcpListening, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest,
-    TcpShutdown,
+    ListenBacklog, TcpAccepted, TcpBound, TcpClose, TcpConnected, TcpConnections, TcpDisconnected,
+    TcpFastOpen, TcpListeners, TcpListening, TcpLocalEnd, TcpLocalEndError, TcpProtocol,
+    TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest, TcpShutdown,
 };
 
 use super::{TestHost, lock};
@@ -93,28 +98,43 @@ fn unspecified(peer: SocketAddr) -> SocketAddr {
 
 impl<H: Send> TcpConnections for TestHost<H> {
     type Connection = TcpHandle;
+    type BoundSocket = Infallible;
 
-    fn connect(
+    /// Refuses: the network binds a socket only as it connects or listens.
+    fn bind(
         &self,
         _protocol: TcpProtocol,
         _owner: UserId,
         _local: LocalBinding<'_>,
+        _settings: &[BindingSetting<'_>],
+    ) -> Result<TcpBound<Self::BoundSocket>, HostError> {
+        Err(HostError::NotSupported)
+    }
+
+    fn connect(
+        &self,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
         peer: SocketAddr,
         _settings: &[TcpSetting<'_>],
         _fast_open: TcpFastOpen<'_>,
-    ) -> Result<TcpConnected<Self::Connection>, HostError> {
+    ) -> Result<TcpConnected<Self::Connection>, TcpLocalEndError<Self::BoundSocket>> {
+        if let TcpLocalEnd::Bound(bound_socket) = local {
+            match bound_socket {}
+        }
         let number = self.last_socket.fetch_add(1, Ordering::Relaxed) + 1;
-        let number = self.answer(
-            Entry::SocketMade,
-            |entry| match entry {
-                Entry::SocketMade(result) => Ok(result),
-                other => Err(other),
-            },
-            || {
-                lock(&self.network).tcp_connect(number, peer);
-                Ok(number)
-            },
-        )?;
+        let number = self
+            .answer(
+                Entry::SocketMade,
+                |entry| match entry {
+                    Entry::SocketMade(result) => Ok(result),
+                    other => Err(other),
+                },
+                || {
+                    lock(&self.network).tcp_connect(number, peer);
+                    Ok(number)
+                },
+            )
+            .map_err(TcpLocalEndError::Unbound)?;
         Ok(TcpConnected {
             connection: TcpHandle(number),
             local: unspecified(peer),
@@ -211,6 +231,21 @@ impl<H: Send> TcpConnections for TestHost<H> {
         }
     }
 
+    /// Closes the connection, whose port no bind of its own holds, leaving the reset Linux leaves pending.
+    fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
+        if !self.replaying() {
+            lock(&self.network).tcp_close(connection.0);
+        }
+        TcpDisconnected {
+            bound_socket: None,
+            pending_error: Some(Errno::ECONNRESET),
+        }
+    }
+
+    fn release(&self, bound_socket: Self::BoundSocket) {
+        match bound_socket {}
+    }
+
     fn push_queued_data(
         &self,
         _connection: &Self::Connection,
@@ -261,24 +296,28 @@ impl<H: Send> TcpListeners for TestHost<H> {
 
     fn listen(
         &self,
-        _protocol: TcpProtocol,
-        _owner: UserId,
-        local: LocalBinding<'_>,
+        local: TcpLocalEnd<'_, Self::BoundSocket>,
         _backlog: ListenBacklog,
         _settings: &[TcpListenerSetting<'_>],
-    ) -> Result<TcpListening<Self::Listener>, HostError> {
+    ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>> {
+        let local = match local {
+            TcpLocalEnd::Bound(bound_socket) => match bound_socket {},
+            TcpLocalEnd::Unbound { local, .. } => local,
+        };
         let LocalPort::Requested(port) = local.port else {
-            return Err(HostError::NotSupported);
+            return Err(TcpLocalEndError::Unbound(HostError::NotSupported));
         };
         let number = self.last_socket.fetch_add(1, Ordering::Relaxed) + 1;
-        let number = self.answer(
-            Entry::SocketMade,
-            |entry| match entry {
-                Entry::SocketMade(result) => Ok(result),
-                other => Err(other),
-            },
-            || lock(&self.network).listen(number, port.0).map(|()| number),
-        )?;
+        let number = self
+            .answer(
+                Entry::SocketMade,
+                |entry| match entry {
+                    Entry::SocketMade(result) => Ok(result),
+                    other => Err(other),
+                },
+                || lock(&self.network).listen(number, port.0).map(|()| number),
+            )
+            .map_err(TcpLocalEndError::Unbound)?;
         Ok(TcpListening {
             listener: TcpHandle(number),
             local: SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port.0),
@@ -310,7 +349,7 @@ impl<H: Send> TcpListeners for TestHost<H> {
             local: unknown,
             synchronize: ReceivedPacketFields {
                 length: 0,
-                interface: InterfaceIndex(0),
+                interface: InterfaceIndex(NonZeroU32::MIN),
                 specific_destination: None,
                 largest_fragment: None,
                 link_layer_length: None,
@@ -330,7 +369,7 @@ impl<H: Send> TcpListeners for TestHost<H> {
         &self,
         _listener: &Self::Listener,
         _query: TcpListenerQuery<'a>,
-    ) -> Result<TcpReading<'a>, HostError> {
+    ) -> Result<TcpListenerReading<'a>, HostError> {
         Err(HostError::NotSupported)
     }
 
