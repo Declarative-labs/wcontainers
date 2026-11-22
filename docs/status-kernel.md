@@ -4449,6 +4449,19 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- KA (by the orchestrator's rulings of 2026-11-22): the hooks as `ProcessTracer` and warnings
+  through `FallbackObserver` are the owner's interface questions and are not part of KA; the
+  release profile stays as it is (the pipe's cycles without thin LTO are recorded and accepted);
+  the Mac's part of the suite (layer 1 seeds and the tests the ARM64 machine's kernel answers
+  differently from Docker Desktop's, scratch kernel/k6c19/mac5.sh) was not run, since nothing may
+  build or test on the owner's Mac; the linter was not run (not allowed for now). The whole suite
+  is scratch kernel/ka11/suite.sh (ARM64 machine; its failures must be the ARM list, the 35 of
+  ka12/failed-606d8273.txt); it includes the kernel conformance suite (the kernel crate's `conformance`
+  test, 14 checks). The four waits are measured by tests/waitcost.rs of the stand-in (scratch
+  ka8/ab.sh, before at e5d693d2, the milestone's start; ka10/pmu2.sh for the pipe's cycles). ICMP
+  and raw sockets to the outside are not carried (Departures, KA eleventh run). The places a
+  waiting call is dropped are listed in "KA, thirteenth run".
+
 - K6c: the bar is the LTP verdicts (`ltp ours` then `ltp compare` against
   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv, the reference run once at load 20 to
   30), each difference either fixed or named on the gap list with its section 15 cause; tests
