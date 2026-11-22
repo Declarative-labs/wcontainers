@@ -22,6 +22,8 @@ pub mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub mod kvm;
 pub mod routines;
+#[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+pub mod single_step;
 pub mod translate;
 
 /// The host's hypervisor.
@@ -75,6 +77,8 @@ pub enum Register {
     Affinity,
     /// ID_AA64MMFR0_EL1.
     MemoryModelFeatures,
+    /// ID_AA64PFR0_EL1.
+    ProcessorFeatures,
     /// SP_EL0: the guest's level's stack pointer.
     StackEl0,
     /// ELR_EL1: where an exception taken to the inside came from, and where `eret` goes.

@@ -200,6 +200,7 @@ fn which(register: Register) -> Which {
         Register::Ttbr1 => Which::System(SysReg::TTBR1_EL1),
         Register::Affinity => Which::System(SysReg::MPIDR_EL1),
         Register::MemoryModelFeatures => Which::System(SysReg::ID_AA64MMFR0_EL1),
+        Register::ProcessorFeatures => Which::System(SysReg::ID_AA64PFR0_EL1),
         Register::StackEl0 => Which::System(SysReg::SP_EL0),
         Register::ExceptionLink => Which::System(SysReg::ELR_EL1),
         Register::SavedState => Which::System(SysReg::SPSR_EL1),
@@ -211,6 +212,14 @@ fn which(register: Register) -> Which {
         Register::FloatStatus => Which::General(Reg::FPSR),
         Register::FloatControl => Which::General(Reg::FPCR),
         Register::InsideThread => Which::System(SysReg::TPIDR_EL1),
+    }
+}
+
+impl HvfCpu {
+    /// Leaves debug exceptions and the debug registers to the guest, so that its own handler takes a software step.
+    pub fn leave_debugging_to_guest(&self) -> Result<()> {
+        check(self.vcpu.set_trap_debug_exceptions(false))?;
+        check(self.vcpu.set_trap_debug_reg_accesses(false))
     }
 }
 

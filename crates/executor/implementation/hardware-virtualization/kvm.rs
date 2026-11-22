@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Once};
 use aarch64_cpu::registers::{CNTVCT_EL0, Read};
 use arm_gic::IntId;
 use kvm_bindings::{
-    KVM_ARM_IRQ_TYPE_SHIFT, KVM_ARM_IRQ_TYPE_SPI, KVM_ARM_VCPU_TIMER_CTRL,
+    KVM_ARM_IRQ_TYPE_SHIFT, KVM_ARM_IRQ_TYPE_SPI, KVM_ARM_VCPU_SVE, KVM_ARM_VCPU_TIMER_CTRL,
     KVM_ARM_VCPU_TIMER_IRQ_VTIMER, KVM_ARM_VM_SMCCC_CTRL, KVM_ARM_VM_SMCCC_FILTER,
     KVM_DEV_ARM_VGIC_CTRL_INIT, KVM_DEV_ARM_VGIC_GRP_ADDR, KVM_DEV_ARM_VGIC_GRP_CTRL,
     KVM_REG_ARM_CORE, KVM_REG_ARM64, KVM_REG_ARM64_SYSREG, KVM_REG_ARM64_SYSREG_CRM_SHIFT,
@@ -22,7 +22,7 @@ use kvm_bindings::{
     kvm_smccc_filter_action_KVM_SMCCC_FILTER_FWD_TO_USER, kvm_userspace_memory_region,
     kvm_vcpu_init, user_fpsimd_state, user_pt_regs,
 };
-use kvm_ioctls::{DeviceFd, Kvm, VcpuExit, VcpuFd, VmFd};
+use kvm_ioctls::{Cap, DeviceFd, Kvm, VcpuExit, VcpuFd, VmFd};
 use vmm_sys_util::ioctl::ioctl_with_ref;
 use vmm_sys_util::ioctl_iow_nr;
 use vmm_sys_util::signal::SIGRTMIN;
@@ -188,11 +188,27 @@ fn set_up(gic: &DeviceFd) -> Result<()> {
     .map_err(|e| refused(format_args!("setting up the interrupt controller: {e}")))
 }
 
+/// Whether a machine's virtual CPUs have the host's [SVE](https://docs.kernel.org/arch/arm64/sve.html#:~:text=KVM%20guests), which KVM hides unless asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalableVectors {
+    Hidden,
+    /// Shown where the host has it, at every vector length the host has.
+    Shown,
+}
+
 impl Hypervisor for KernelVirtualMachine {
     type VirtualMachine = KvmVirtualMachine;
 
-    /// KVM refuses a virtual CPU once the interrupt controller is set up, so every one is made here.
     fn machine(cpus: u64) -> Result<KvmVirtualMachine> {
+        Self::machine_with(cpus, ScalableVectors::Hidden)
+    }
+}
+
+impl KernelVirtualMachine {
+    /// Makes the machine as [`Hypervisor::machine`] does, with SVE as asked.
+    ///
+    /// KVM refuses a virtual CPU once the interrupt controller is set up, so every one is made here.
+    pub fn machine_with(cpus: u64, scalable_vectors: ScalableVectors) -> Result<KvmVirtualMachine> {
         install_stop_signal()?;
         let kvm = Kvm::new().map_err(|e| refused(format_args!("opening KVM: {e}")))?;
         let vm = kvm
@@ -211,6 +227,10 @@ impl Hypervisor for KernelVirtualMachine {
         let mut init = kvm_vcpu_init::default();
         vm.get_preferred_target(&mut init)
             .map_err(|e| refused(format_args!("the preferred CPU: {e}")))?;
+        let sve = scalable_vectors == ScalableVectors::Shown && kvm.check_extension(Cap::ArmSve);
+        if sve {
+            init.features[0] |= 1 << KVM_ARM_VCPU_SVE;
+        }
         let mut made = VecDeque::new();
         for id in 0..cpus {
             let vcpu = vm
@@ -218,6 +238,10 @@ impl Hypervisor for KernelVirtualMachine {
                 .map_err(|e| refused(format_args!("making a virtual CPU: {e}")))?;
             vcpu.vcpu_init(&init)
                 .map_err(|e| refused(format_args!("starting a virtual CPU: {e}")))?;
+            if sve {
+                vcpu.vcpu_finalize(&(KVM_ARM_VCPU_SVE as c_int))
+                    .map_err(|e| refused(format_args!("fixing a virtual CPU's SVE: {e}")))?;
+            }
             made.push_back(vcpu);
         }
         let gic = interrupt_controller(&vm)?;
@@ -381,6 +405,7 @@ const TCR_EL1: SystemRegister = system(3, 0, 2, 0, 2);
 const MAIR_EL1: SystemRegister = system(3, 0, 10, 2, 0);
 const MPIDR_EL1: SystemRegister = system(3, 0, 0, 0, 5);
 const ID_AA64MMFR0_EL1: SystemRegister = system(3, 0, 0, 7, 0);
+const ID_AA64PFR0_EL1: SystemRegister = system(3, 0, 0, 4, 0);
 const ESR_EL1: SystemRegister = system(3, 0, 5, 2, 0);
 const FAR_EL1: SystemRegister = system(3, 0, 6, 0, 0);
 const VBAR_EL1: SystemRegister = system(3, 0, 12, 0, 0);
@@ -428,6 +453,7 @@ fn place(register: Register) -> Place {
         Register::Ttbr1 => Place::System(TTBR1_EL1),
         Register::Affinity => Place::System(MPIDR_EL1),
         Register::MemoryModelFeatures => Place::System(ID_AA64MMFR0_EL1),
+        Register::ProcessorFeatures => Place::System(ID_AA64PFR0_EL1),
         Register::Syndrome => Place::System(ESR_EL1),
         Register::FaultAddress => Place::System(FAR_EL1),
         Register::Vectors => Place::System(VBAR_EL1),

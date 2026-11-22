@@ -23,6 +23,12 @@ object = { version = "0.37.3", default-features = false, features = ["read_core"
 libc = "0.2.178"
 # Exception syndrome fields.
 aarch64-cpu = "12.0.0"
+# Page table entry bits of the single step executor's tables, as the inside uses them.
+aarch64-paging = { version = "0.12.3", default-features = false }
+# The single step executor: the trait it implements and the ARM64 state it runs.
+wcontainers-executor = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The files of kept translations: their names and the running program's build, and their contents.
 blake3 = "1"
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
@@ -74,6 +80,16 @@ unicorn-engine = "2.1.5"
 # The system calls the exits test answers, by Linux's numbers.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
 
+# The single step test: the suite, the slice's generator, the chips' precise instruction sets and the comparison.
+wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
+wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
+wcontainers-precise-instruction-set-neoverse-v2 = { path = "../../../precise-instruction-set/implementation/neoverse-v2" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The speed test's counts of the whole process's cycles and instructions.
 perf-event2 = "0.7.4"
@@ -116,6 +132,10 @@ harness = false
 
 [[test]]
 name = "registers"
+harness = false
+
+[[test]]
+name = "single_step"
 harness = false
 
 [lints]
