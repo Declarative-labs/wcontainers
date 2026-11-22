@@ -359,6 +359,14 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KA, fifteenth run: every finding of KA's independent check is dealt with: zero allocations per
+waiting call (answers come back in kept buffers; tests through the real backend and lookup calls),
+`is_inspected` answered from the open mem files, a full outside stream hears its reset, a restore on
+another system asks the backend again, the kernel's second `ExecutionConfig` is gone, and the weak
+suite checks use what they take; the rest are answered in place (see "KA, fifteenth run"). The
+whole suite at c1a6cb72 fails only the ARM list (376 passed, 35 failed). KA is complete under the
+rulings of 2026-11-22 and goes back to its independent check.
+
 KA, fourteenth run: KA is complete under the orchestrator's rulings of 2026-11-22 and goes to its
 independent check. The hooks as `ProcessTracer` and warnings through `FallbackObserver` are the
 owner's interface questions and outside KA (For the owner); the release profile stays as it is;
@@ -755,6 +763,15 @@ execution configuration, and `Kernel::start`, which can no longer fail): the `ex
 the `expect` on the start in crates/runtime/implementation/single-kernel/container.rs,
 crates/executor/implementation/hardware-virtualization-inside/container.rs and
 crates/executor/implementation/hardware-virtualization/tests/speed.rs.
+
+The whole suite at c1a6cb72 (scratch ka11/suite.sh; job kernel/20261122-130228-3320037, 13:02 to
+14:30 UTC, load 2 at its start and 9 at its end; ka15/suite.log, failed-now.txt): 376 passed, 35
+failed, 8 ignored. The 35 are exactly the ARM list (ka12/failed-606d8273.txt); the four new tests
+pass. Before this run's changes the tip gave 371 passed and 36 failed (the 36th the reference-side
+`large_writes` flake fixed in 1fcc83c8). Workspace check with all targets, clippy with warnings
+denied and fmt for this track's crates and the kernel conformance crate, and the kernel
+conformance suite (14 of 14) passed at c1a6cb72 (ka15/wcheck1.log). Not run, by the rulings of
+2026-11-22: the Mac's part of the suite and the linter.
 
 Measurements (ARM64 machine, scratch ka15/ab.sh and ab.log: tests/waitcost.rs in release, before
 at e5d693d2, the milestone's start, and after at c1a6cb72, alternately three times each, 12:59 to
