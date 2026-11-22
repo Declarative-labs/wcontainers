@@ -2771,8 +2771,9 @@ fn geometry_shaders_draw_as_direct3d_does() {
             .map_err(|e| failures.push(format!("{name}: {e}"))) else {
                 continue;
             };
+            let mut planes = 0;
             if let Some(total) = i.checked_sub(CASES.len()).and_then(|c| dropped.get_mut(c)) {
-                let planes = dropped_by_planes(case, &vertices, &indices);
+                planes = dropped_by_planes(case, &vertices, &indices);
                 eprintln!("{name}: the planes drop {planes} primitives");
                 *total += planes;
             }
@@ -2834,7 +2835,10 @@ fn geometry_shaders_draw_as_direct3d_does() {
                     Format::Rgba8Unorm,
                 );
             }
-            if drawn == 0 || largest > allowed {
+            // An empty scene shows nothing, unless the planes dropped what it held and ours drew
+            // nothing either.
+            let empty = drawn == 0 && (planes == 0 || count > 0);
+            if empty || largest > allowed {
                 // The first texels apart, where and what each drew, to find the cause.
                 let apart = reference
                     .chunks(4)
