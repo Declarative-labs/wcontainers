@@ -1,8 +1,75 @@
-# Shaders track (G6): the record of runs 1 to 75
+# Shaders track (G6): the record of runs 1 to 76
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
 superseded by the status file's.
+
+## G6a run 8 (run 76): the second check's findings at the tip
+
+Every figure here is from runs at b93b4888 (this run's one code commit; the commits after it touch
+only this file and the history). Logs and the files Chrome compiled (`out`, 51 MB) in scratch
+`graphics-shaders/g6a-r76`. The second check (at 9fb6e0d1) carried two blocking findings and six
+minor ones; each against the tip:
+- The WebAssembly build did not link (`__cxa_thread_atexit` undefined from cpp/dxil.cpp's
+  `thread_local` list of parsed modules, added by another track's 260d36d8): fixed. WebAssembly
+  without threads keeps that list in a plain global (it has one thread, and wasi-sdk's C++ runtime
+  for `wasm32-wasip1` has no thread exit hook); every other target keeps the `thread_local`. At the
+  tip `wasm_imports` links (6,875,229 bytes) and the corpus test builds and passes under wasmtime
+  (12 passed, every corpus; wasm.log). Gap A8 and pass bar item 6 now say the build was broken
+  from 260d36d8 to this run.
+- Gap A27 incomplete: fixed. It now names the 24 refusals the check found and three more this run
+  found (`StorageFormat`, `TypedBuffer`, `StorageImageAtomics`), and no longer lists
+  `CompareExchangeResult` (a type name). Checked by script (names.txt, gaps.txt, records.txt in
+  scratch): of 174 names (every string of src/refusal.rs and the check's list of names defined
+  elsewhere in src), every refusal appears in the gap list or a record; the three left are type
+  names of the stage helper (`StageValues`, `PositionedOutputs`, `ReplayOutputs`). Every other
+  CamelCase string in src is in a record (`Int64`). The stage helper's list that sat inside A28 by
+  mistake is back in A27.
+- DXIL `saturate` of a NaN on WebGL 2: new gap A30, cause read in the code (dxil-spirv's `NClamp`
+  read by naga as `Clamp`), not fixed: the fix changes the carried reader for every route and
+  needs the check's case drawn on both routes, new work after this check (Next 2).
+- `geometry_draw` at seed 2718: its figures added to A10 and A12; nothing new.
+- The fuzz test at seed 2718: its crash counts added to A11, and the carried naga reader's panic
+  (contained natively, would end a WebAssembly instance) named in A11.
+- The corpus test's two constants unused on wasm32: fixed (both `cfg(not(target_arch =
+  "wasm32"))`). Clippy of the crate for `wasm32-wasip1`, every target, warnings denied: clean
+  (wasm-clippy.log).
+- `TargetInShader::combine` reachable and unverified: kept as it is, with the reason A4 gives (no
+  front sets it; refusing it would turn the variant tests of the combined programs into tests of a
+  refusal); the drawn test is on Next 2.
+- The stale "Next (5)" in "Asked of other tracks": corrected to Next 2.
+
+The 15.4 entry point for the NIR track: `wcontainers_shaders::rewrite` (since run 57), which that
+track calls ("New for the owner", run 65 and below).
+
+Runs at b93b4888:
+- Laptop (i7-8750H, load 3.7 at the start, 1.2 at the end; 4 build jobs, under `choom`): the
+  whole suite with every corpus and glslang 8.13, `--include-ignored --skip mutated`
+  (laptop-suite.log): 124 passed, 1 failed: the known failure
+  `damaged_records_decode_without_a_panic` (ignored by default, gap A16; `ps_levels_past.dxil`
+  case 17). Written files: WGSL corpus 185, games 527, games DXIL 441, own 145, own DXIL 136, rig
+  79, rig DXIL 72, runner 1438, runner DXIL 1418; GLSL 126, 463, 300, 69, 57, 55, 53, 1275, 1229.
+- Laptop, WebAssembly (wasi-sdk 25, wasmtime, load about 4 to 5; wasm.log): the corpus test for
+  `wasm32-wasip1` on every corpus, 12 passed. Against the native files: every verdict's WebGPU
+  part equal in all nine corpora; WGSL bytes differ in 27 files, exactly A8's (corpus 1, own 1,
+  games 3, runner 22; no DXIL file), so `cache.txt` differs in those four corpora only.
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy of this crate with warnings denied
+  clean; every test binary with `--test-threads 1` (gpu-suite.log): 171 passed, 0 failed, 6 ignored.
+- Chrome on the RTX 3080 (`web/check` on the laptop's written files, one GPU job; chrome.log):
+  every WGSL file compiles (the counts above and the 3 of `rewrite`); WebGL 2 compiles 3,587 GLSL
+  files and refuses 40, the same 40 files as run 75 (multisampled reads, the primitive index,
+  vertex cull distances: needs each file's record names and the WebGL 2 back end declares absent).
+- x86 machine (load 1 to 3): rustfmt of every file of this crate clean, clippy of this crate and the
+  interface with warnings denied clean, the literal check prints no line of this crate (it fails
+  on other tracks' lines); this crate's baseline lines unchanged (4,820, 389 under src)
+  (x86-checks.log, literals.txt).
+- Not run: the fuzz test and the seeded `geometry_draw` (the check's figures, at 9fb6e0d1, whose
+  difference from the tip is the WebAssembly-only global and two test constants), the Direct3D 12
+  scenes (A6's figures from run 74 and the fifth check). Gap A29 not met again: the GPU suite ran
+  with one test thread.
+- Clean-up: this run's build folders deleted (laptop `target/shaders-tip`, 7.0 GB, its source
+  copy, `out-r76` and `outw-r76`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
+  `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
 ## G6a run 7 (run 75): the first check's carried findings at the tip
 
