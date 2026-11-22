@@ -161,7 +161,72 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   runner's offer; its tool access ended before it wrote this file, so run 5 records it. Run 5 (2026-11-21) ran
   the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
   it found (see "X8, runs 4 and 5"). Run 6 (2026-11-21, the workflow's first dispatch of X8 after X7's check)
-  fixed the X7 check's three findings and ran X8's bar from the tree as it is (see "X8, run 6").
+  fixed the X7 check's three findings and ran X8's bar from the tree as it is (see "X8, run 6"). Run 7
+  (2026-11-22, X8 dispatched again with the fourth X7 check's three findings) fixed them (`fyl2x` of a power of
+  two with an inexact product) and verified X8's whole bar from a clean build: every part holds (see "X8, run 7").
+
+## X8, run 7 (2026-11-22)
+
+X8 was dispatched again with three findings of the X7 check. All of X8 is in the tree (runs 1 to 5). Every build and
+test ran on the rented machines and the i7-8750H; the Mac only edited and committed. Logs and scripts in scratch
+`x8r7/` (the fix's probes in `x8w1/`).
+
+The check's findings:
+- [minor] `fyl2x` of a power of two whose product `y * k` is inexact (fixed, c8cc7d04). The unit's value was
+  already the correctly rounded product with C1 by its side, but `above_exact` gave no side for any power of two,
+  so a case where only the reference's C1 differed was a mismatch (seed 40975 at 5,000 cases). The reference's
+  own rule (flagged inexact, and for a negative `k` just below the product) holds only for a product exact at 64
+  bits: a probe of 20,000 powers of two each for `fyl2x` and `fyl2xp1` on the i7-8750H (`x8w1/pow2.c`, every
+  rounding control) matched the unit's value and C1 in every case with `k > 0` and in every exact one; of the
+  inexact ones with `k < 0` (5,627 and 4,697) the reference gave a value one unit off ours in about 9% (none
+  further) and a C1 not telling its value's side in about 5%: the same within-one-unit approximation as its
+  other logarithms. So `above_exact` now tells the side of an inexact product (rounded to odd, so on the side of
+  the exact value) and keeps `None` for an exact one. `tests/transcendental.rs`
+  `a_power_of_two_logarithm_has_its_side_where_the_product_is_inexact` holds the check's cases. Layer 1, Fyl2x and
+  Fyl2xp1 at 5,000 cases a form on the i7-8750H (load 0.1), seeds 40975 and 41001: 0 failing (41 and 26 known
+  failures, each with its reason).
+- [minor] The status file's "494 forms" for X7's layer 1 now says 248 of the 256 x87, MMX and `fxsave` forms, in
+  a run of 494 with every other form whose name holds "mm".
+- [minor] The long double program prints transcendental results to 16 digits. Not changed, and cannot be: the
+  CPU's transcendental results are an approximation within one unit whose rounding Intel does not document, and
+  ours are correctly rounded (plan 5.8, the known failure of X7). The plan's X7 bar now says the 16 digits and
+  points to 5.8, so the bar states what is proven.
+
+What a program is told (the plan's "AVX setting") is unchanged: no setting of the build or the container but the
+per-process list of the kernel interface (`X86_64Features`, x86's `Offer`), given with every translation, in the
+cache key and the description section, answering `cpuid` and `xgetbv`; "on" is `offer::V3`, "off"
+`offer::FULL_SPEED`. The kernel's asking of the embedder and /proc/cpuinfo are X10's. The owner's interface
+changes merged at a00ab267 reach none of this track's crates (checked again: no use of `ReadyFor`,
+`BindingSetting`, `negative-route-advisable` or `DomainNameResolver`).
+
+Verdicts (agents at 8b37e93f with other agents' uncommitted edits in the copies):
+- Rented x86-64 machine (96 processors, kernel 7.0.0-1018-aws, 5-level paging; load 0.1 at the start, 7 to 34
+  from other jobs during it), a new build folder (`--name x8r7`, `verify.log`): fmt of the five crates; clippy
+  `--no-deps` with warnings denied of them and the wasmtime executor, all targets; the browser crate's wasm32
+  clippy for both guests: pass. Unit tests of the translator, guest-cpu, x86 and arm64 crates, the executor's
+  unit and cache tests (7 + 4), the test crate's library: pass. The told-features tests (offered features, every
+  default and unoffered code drawn, the time stamp): 5 passed. `--test programs --test checks --test smoke --
+  x86_64`: 28 + 2 + 6 passed (the v3 programs `avx2_integer.c`, `fma_f16c.c`, `xstate.c` and the v3 benchmark
+  test, told v3 and told the default list, among them); the same three v3 tests with `WC_PROBE_ANSWER=1` (the
+  software fused multiply-add): 3 passed. Browser, every x86 test (the v3 programs every way among them): 4
+  passed. Valid, PROPTEST_CASES=40000 seed 13701, every-form seed 13706: 6 passed. Lookaheads, 500, seed 13702:
+  pass (992 s under load). Changes, 400 cases, 6 program seeds, seed 13703: 3 passed. Layer 2, 10,000 all on the
+  CPU, seed 13704: 0 failing (3,456 faulted, 1,130 left to an address, 23,850 stacks lost, 23,746 pieces
+  forgotten).
+  Layer 3 Csmith, 1,000, seed 13705: 887 compared, 113 did not end in time on Linux, 0 failing (1,511 s). The
+  literal check (over a git index made in the copy): marks 0, no change that could add a line, nothing in this
+  track's crates among the lines it says may go. Baseline lines: x86 117, guest-cpu 26, the test crate 1,738,
+  the translator 8, unchanged.
+- The i7-8750H (load 1.4 to 4, 4 at once; `laptop-verdict.log`): layer 1 of the whole v3 list and the eight
+  transcendental forms (687 forms), 1,000 cases a form, seed 13711: 0 failing (1,880 s); 19 known failures, each
+  with its reason (C1 only: Fptan 1, Fsin 2, Fyl2x 1, Fyl2xp1 2; one unit: Fcos 2, Fpatan 1, Fptan 3, Fsin 1,
+  Fsincos 1, Fyl2x 3, Fyl2xp1 2). Hand cases (112, the gather faulting part way under the trap flag among them),
+  64 cases in no form and the Chrome sample (2,008 cases, 1 a form), seed 13712: pass. The unoffered forms (2,986
+  forms, 20 a form, seed 13713): 0 failing. Every form (2,008 forms, 100 a form, seed 13714): 0 failing, 0 known
+  failures. The reference tests: 5 of 6 pass; `the_x86_64_reference_runs_programs` fails there only because zig
+  is not on the job's path outside Nix (as at every run since X7 run 6).
+- Rented ARM64 machine (load 9 to 20; `arm.log`): ARM64's programs, output, browser, layer 2, valid and checks
+  tests: 28 passed, 0 failed (467 s).
 
 ## X7, run 6 (2026-11-22)
 
@@ -4077,6 +4142,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X8 run 7's whole bar from a clean build: `x86-run <checkout> --name <new name> -- "$(cat <scratch>/x8r7/verify.sh)"`;
+  the laptop's layer 1 verdicts: copy `x8r7/verdict.sh` to `~/wcontainers-x86/x8r7-verdict.sh` there (and
+  `x8r7/forms.csv` to `~/wcontainers-x86/x8r6-forms.csv`), then `<scratch>/x8w1/laptop-bg.sh <name> 'bash
+  ~/wcontainers-x86/x8r7-verdict.sh'`. Powers of two's logarithms on the CPU: `x8w1/pow2.c` (`pow2 <fyl2x|fyl2xp1>
+  <count> <seed>`), compared by `x8w1/model.py`, `neigh.py`, `far.py`.
 - Since 2026-11-22 nothing builds, tests or checks on the Mac. X6f run 4's bar from a clean build:
   `x86-run <checkout> --name <new name> -- "$(cat <scratch>/x6f4/verify.sh)"`, then `x6f4/second.sh` the same way
   (lint alone, the wasmtime executor, and the literal check, which needs a git index: the script makes one in the
@@ -4370,6 +4440,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X8 run 7: layer 1 on the i7-8750H, Fyl2x and Fyl2xp1 at 5,000 a form (seeds 40975, 41001), the 687 v3 and
+  transcendental forms at 1,000 a form (seed 13711), every form at 100 a form (seed 13714), the unoffered forms at
+  20 a form (seed 13713), 64 cases in no form, the hand cases and the Chrome sample at 1 a form (seed 13712); on
+  the rented x86-64 machine valid at 40,000 (seed 13701; every form at 16 words, seed 13706), lookaheads at 500
+  (seed 13702), changes at 400 cases and 6 program seeds (seed 13703), layer 2 for x86 at 10,000 all on the CPU
+  (seed 13704), layer 3 Csmith at 1,000 (seed 13705); ARM64's tests at their defaults, rented ARM64 machine.
 - X6f run 4: valid at 40,000 (seed 11413), changes at 200 cases and 4 program seeds (seed 11414), layer 2 for x86 at
   10,000, all on the CPU (seed 11412), rented x86-64 machine; ARM64's tests at their defaults, rented ARM64 machine.
 - X7 run 5: layer 1 on the i7-8750H, the 1,375 x87 and "mm" forms at 1,000 a form (seed 11852), the hand cases,
