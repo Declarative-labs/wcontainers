@@ -23,14 +23,20 @@ and needs `CAP_NET_RAW` or `CAP_NET_ADMIN` for a mark (`SO_MARK`). Two answers o
 by a probe (below): the source IPv6 source preferences choose, and an encapsulating route's path MTU.
 
 What each selector maps to:
-- destination `RTA_DST` (for IPv4, a loose source route's first hop instead; for IPv6, a routing header's first
+- destination `RTA_DST` (IPv6's unspecified address as `::1`, where every IPv6 send of Linux takes it; IPv4's
+  0.0.0.0 the kernel's lookup makes loopback itself; for IPv4, a loose source route's first hop instead; for IPv6, a routing header's first
   hop, as the kernel's `fl6_update_dst`: a type 2 header's address, a type 4 header's segment at its segments
   left. The header is first set as `IPV6_RTHDR` on a new socket, so the host's own check refuses what it
   refuses, type 0 with `EINVAL`), source `RTA_SRC`, interface
   `RTA_OIF`, mark `RTA_MARK`, owner `RTA_UID`, DSCP and ECN the header's `rtm_tos` (the kernel ignores ECN),
-  flow label `RTA_FLOWLABEL`, upper-layer protocol `RTA_IP_PROTO` (always given: the kernel takes UDP
-  when it is absent), ports `RTA_SPORT`/`RTA_DPORT`, an ICMP type and code `RTA_DPORT` in the bytes the
-  kernel's flow keeps them in (the flow's ICMP fields share the destination port's place). A link-local
+  flow label `RTA_FLOWLABEL`, upper-layer protocol `RTA_IP_PROTO` for TCP, UDP and the version's ICMP (the
+  only ones the routing socket takes), ports `RTA_SPORT`/`RTA_DPORT`, an ICMP type and code, or a mobility
+  header type, `RTA_DPORT` in the bytes the kernel's flow keeps them in (they share the destination port's
+  place). Any other protocol is left out of the request, which the routing socket then asks as UDP (IPv4,
+  `inet_rtm_getroute`) or protocol 0 (IPv6). Linux routes that alike but where a rule selects on the protocol
+  or on UDP (IPv4), or the entry chooses among next hops by a hash that may take the protocol; so the version's
+  rules are dumped first (`RTM_GETRULE`) and the entry read (`RTM_F_FIB_MATCH`), and either case is refused
+  (below). Rules on ports see the same ports either way. A link-local
   destination with no interface is looked up as any other, as Linux's UDP and raw sends take it (only a
   connect, and a ping socket's send, need the interface: measured, EINVAL).
 - source check: IPv4's is the kernel's own (`ENETUNREACH` for an address the host lacks); IPv6's lookup has
@@ -68,15 +74,22 @@ Refused with `HostError::NotSupported`, a counter and a warning, each with a nam
 - IPv4 waived source check with an address the host lacks: the routing socket always checks.
 - A probe that cannot take the lookup's routing entry: its connect fails (setting another owner takes
   `CAP_SETUID`, a mark `CAP_NET_ADMIN`), or the entries differ (for example a flow label selected the route:
-  a socket's connect takes a label only from a flow label lease).
-- An upper-layer protocol the routing socket refuses (it takes TCP, UDP, and ICMP or ICMPv6), and so a
-  mobility header selector, refused before asking.
+  a socket's connect takes a label only from a flow label lease). The probe takes no lease: a lease outlives
+  its socket by at least six seconds (`FL_MIN_LINGER`, `check_linger` in ip6_flowlabel.c) and while it lingers
+  another user's lease of that label fails (`EPERM`), so a lookup would change the namespace for others.
+- An upper-layer protocol the routing socket does not take, when one of the version's rules selects on it (or
+  on UDP, over IPv4), or
+  when the routing entry has several next hops or a nexthop object (Linux may hash the protocol to choose
+  one: always over IPv6, under hash policies other than 0 over IPv4; not told apart here).
 - A route kind the contract has no name for (for example the subnet-router anycast address of a link that
   forwards).
 
 A probe could also try link scope (`SO_DONTROUTE`), a waived IPv4 source (`IP_TRANSPARENT`) and, on a raw
 socket, any protocol, but each needs the route's interface first, which is what the routing socket cannot find
 for them; so those stay refused.
+
+The suite's checks of the refused selectors accept `NotSupported` and check any other answer, since another
+host may answer them.
 
 ## The suites
 
@@ -85,7 +98,8 @@ its thread (root, `unshare(CLONE_NEWNET)`) after the value is made, since `tests
 builds its links, addresses, routes, rules and neighbours with `ip` (iproute2, a test tool, not a dependency). Each
 check knows the answer from what it built: loopback is local; a dummy device's route gives its interface,
 source, kind, MTUs and hop limit; a rule per selector (mark, owner, DSCP, source, interface, protocol, destination port, source port,
-ICMP type and code, flow label) sends the lookup to a second device only when the selector is honoured; type 2
+ICMP type and code, mobility header type, flow label) sends the lookup to a second device only when the selector is honoured,
+and a rule on UDP leaves GRE and SCTP alone while one on GRE takes GRE; the unspecified destination is loopback's route; type 2
 and type 4 routing headers and a loose source route through the second device's gateway go there; IPv6
 source preferences choose between each link's address and the temporary one Linux made from it, also on the
 link a mark or owner selects; a confirmed lookup makes the gateway's neighbour entry confirmed 0 seconds ago (`ip -s neigh`) and sends no frame to

@@ -1,9 +1,56 @@
 # Status: host internet sockets
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done; run again
-on 2026-11-21 evening for the owner's linter and on 2026-11-22 for the check's findings, below), I2 ICMP and raw sockets (redone in run 1 after the
+on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the checks' findings, below), I2 ICMP and raw sockets (redone in run 1 after the
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings). Nothing of
 this track is in progress.
+
+## 2026-11-22: I1 run 3, the independent check's findings, each
+- Encapsulation check still accepted a refusal (blocking): it did; this run's status claim above was wrong. Now
+  encapsulating_route_leaves_room_for_its_headers has no refusal branch and checks IPv4 too (a seg6 route of each
+  version on da; the told MTU must be below da's, and the route's path MTU equal to it). Broken copy (MTU from the
+  route) fails it.
+- Unspecified IPv6 destination (minor): resolve_v6 now looks `::` up as `::1`, as every IPv6 send of Linux does
+  (udpv6_sendmsg, rawv6_sendmsg, the connects); IPv4 0.0.0.0 the kernel already makes loopback. New check
+  unspecified_destination_is_loopback: both versions equal loopback's route and the source and path MTU a socket
+  connected to the unspecified address gets. Broken copy (no mapping) fails it. The verifier's seeded comparison
+  (its verify.rs, run unchanged by `i1-run3/verify-run.sh`), 20000 lookups for each seed 0x5eed1234, 987654321
+  and 42: no mismatch (before: 50 of 2000, 530 and 458 of 20000, all `::`).
+- Generic suites see only answers (minor): unchanged and kept in view. Neither trait reads back, the one-tuple
+  form is the brief's, and the requiring suites check the effects (plan, "The suites").
+- other_protocols_route checked nothing when answered, and other protocols were always refused (minor): both
+  changed. A protocol the routing socket does not take (it takes TCP, UDP and the version's ICMP) is now looked
+  up without one. Read in the kernel: the IPv4 routing socket then asks as UDP (`ip_proto = IPPROTO_UDP`,
+  inet_rtm_getroute), the IPv6 one as protocol 0 (found when the first version of the new check failed). That is
+  Linux's own answer except where a rule selects on the protocol (or on UDP, over IPv4), or where the entry hashes
+  among next hops (IPv6's hash always takes the protocol). So the version's rules are dumped (`RTM_GETRULE`) and
+  the entry read (`RTM_F_FIB_MATCH`, `RTA_MULTIPATH` or `RTA_NH_ID`), each a new counted refusal
+  (RULE_ON_PROTOCOL, HASHED_PROTOCOL). Ports are given as before, so port rules see them. A mobility header type
+  is now `RTA_DPORT`'s first byte, as the kernel's flow keeps it, so mobility headers are answered too. Not done:
+  IPv4 under hash policy 0 ignores the protocol, so its multipath entries could be answered; refused alike.
+  The check now: rules on UDP and on destination port 2905: GRE goes by main (da), SCTP to 2905 by table 100 (db),
+  to 2906 by main; then a rule on GRE: GRE by db. Each part accepts NotSupported. The mobility check: a port rule
+  without protocol (type 5 to db, 6 and 7 to da), then one on protocol 135 (5 and 6 to db, 7 to da). Measured with
+  `ip` first: a port rule without a protocol is accepted, and `ip route get ... ipproto gre` is "Unsupported ip proto".
+  Broken copies, each caught: rules not looked at (both checks and the counter test), the IPv4 UDP rule
+  forgotten, another protocol asked as UDP over IPv6, the mobility type dropped; the hash check skipped (counter
+  test, which now has five reasons: a rule on protocol 135 and a GRE lookup over a two-way IPv6 route are new).
+- Flow label lease (minor): the reason is now in the plan. A lease outlives its socket by at least six seconds
+  (FL_MIN_LINGER, check_linger in net/ipv6/ip6_flowlabel.c) and meanwhile another user's lease of that label fails
+  with EPERM, so a lookup that takes one would change the namespace for others. Such lookups stay refused (PROBE).
+- Vacuity copy (unless_refused panics on NotSupported) now: 26 checks pass. Five fail: the three that only ever
+  see a refusal here (link scope, strict source route, waived source) and mobility and other protocols, which see
+  answers in their first part (the broken copies above fail them) and refusals once a rule names their protocol.
+- Independent check (`i1-run3/independent-check-i1d.sh`, ARM, 02:59 to 03:01 UTC, load 2.3 to 3.6): clean build
+  and clippy with warnings denied clean; three rounds, each resolver 31 of 31 and its counter test, Configurable 2
+  of 2, NegativeRouteAdvice 3 of 3 (22 s with the build). 19 broken copies, each caught: the 13 of run 2 (routing
+  header rerun alone with this run's text, `i1-run3/rh.sh`), and unspecified not loopback, rules ignored, hash
+  check skipped, mobility type dropped, other protocol as UDP, IPv4's UDP forgotten. cargo tree of the 50 interface
+  and conformance crates: none reaches any of the 17 implementations. No commit of this run touches an
+  interface.rs or data file.
+- Linter (Mac, 03:00 UTC, mid-run): in the I1 files only the ten findings already raised (three
+  public_outside_interface, seven constant_defined_twice) and one new magic_literal (an array length in the
+  mobility check), fixed. Model-answer findings are the orchestrator's.
 
 ## 2026-11-22: I1 run 2, the independent check's findings, each
 - Source preferences refused though the host can answer (blocking): honoured now. Linux keeps the route of the
@@ -18,7 +65,8 @@ this track is in progress.
   without the mark (and the old mark and owner breaks now fail it too). The plan's reason for refusing is gone.
 - Encapsulating route refused though a socket is told its MTU (minor): the same probe gives its path MTU
   (`IP_MTU`/`IPV6_MTU`), both versions. Broken copy (MTU from the route) fails
-  encapsulating_route_leaves_room_for_its_headers, which has no refusal branch now.
+  encapsulating_route_leaves_room_for_its_headers. Wrong when written: the check still accepted a refusal
+  until run 3 below.
 - The entry comparison has its own case in tests/counters.rs (a flow label selects db's /64 in table 100, and a
   probe, which takes no label, gets main's wider fd09::/16 via db): refused and counted. The broken copy that skips
   the comparison fails that test; no suite check can reach it (it needs an implementation that probes).
@@ -415,6 +463,9 @@ this track is in progress.
   - `i1-linter/independent-check-i1b.sh`: I1's clean build with clippy, three rounds, 8 broken copies of the
     resolver, cargo tree, and the lookup cost (a throwaway crate in /work outside the checkout).
   - `i1-linter/hunt2.sh`: the resolver suite `ROUNDS` times (default 100), then a broken copy that sends.
+  - `i1-run3/resolver.sh`: clippy on the four I1 packages, then their tests (`ROUNDS`, `FILTER`).
+  - `i1-run3/independent-check-i1d.sh`: I1's clean build, three rounds, 19 broken copies, vacuity, cargo tree.
+  - `i1-run3/verify-run.sh`: the verifier's seeded comparison with connected sockets, three seeds of 20000.
   - `independent-check-i2d.sh`: clean build with clippy, three rounds, the 43 broken copies of runs 1 to 3, cargo
     tree, then the UDP and TCP suites (the shared crate is theirs too).
   - `findings-run2.sh` to `findings-run5.sh` (and `findings-run5b.sh`, `findings-run5c.sh`): the broken copies
@@ -501,8 +552,8 @@ this track is in progress.
   priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), wait_for_events (the six wait checks),
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
-- RouteResolver::resolve_route: 25 suite checks that see answers, each selector its own; 5 see only refusals
-  here (see 2026-11-22 above).
+- RouteResolver::resolve_route: 28 suite checks that see answers, each selector its own; 3 see only refusals
+  here, and 2 see refusals in their last part (see I1 run 3 above).
 
 ## Honoured, and how each is checked
 - Header fields, by what leaves a dummy link (packet socket) or what a rule does: IPv4 TTL, DSCP, ECN, options,
