@@ -64,7 +64,10 @@ reader. Run 11 (run 98, the section below): A26, float comparisons with Direct3D
 both routes (the carried reader's unordered comparisons, the NIR track's finding), and A30,
 saturate of a NaN on the DXIL route through WebGL 2. Run 12 (run 99, the section below): the NIR
 track's pulled inputs at any byte and 3D texel offsets through naga's HLSL writer, and A26's
-WebGL 2 part for selects. Not complete: the gap list below.
+WebGL 2 part for selects. Run 13 (run 100, the section below): carried patches to the
+converters (`converter-patches/`), with which A8 closed: the native and WebAssembly builds give
+the same bytes for every shader; A1's cause read again (the program uses the type). Not complete:
+the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -146,6 +149,41 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   offset's own type (`int3(...)` for a 3D texture, was always `int2(...)`), so wgpu's Direct3D 12
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
+
+## G6 run 13 (run 100): carried converter patches, A8 closed, A1's cause
+
+Logs and scripts in scratch `graphics-shaders/g6-r100`. Nothing built on the Mac (no cargo there).
+- Nothing of the owner's interface changes of 2026-11-21 and 22 (readiness, binding settings,
+  negative route advice, the resolver) is used by this crate; it built unchanged at the merge.
+- Carried patches (build.rs, `add_sources`): `converter-patches/<converter>/<file>.patch`, a
+  unified diff of one compiled source, applied with `diffy` (carriage returns dropped on both
+  sides, so Windows checkouts apply too) and compiled from the build directory, with the
+  original's directory on the include path for its quoted includes. A patch that does not apply,
+  or names no compiled source, stops the build; the patches are part of the converter's content
+  key. Written by scratch `make-patches.py` from the pristine submodule.
+- A8: scratch `unsequenced.py` lists calls whose arguments hold two or more side-effecting calls
+  (builder adds, loads) in dxbc-spirv's sources; the sites with two adds or a load and an add are
+  sequenced (one local each, in reading order): the unsigned divide helper's two results, the
+  scratch pass's range check, msad's max and min, the select of two sums, a sparse result's two
+  extracts, and the two function-table loads of the register file. The sites pairing an add with
+  a constant, and two constants, were left: they made no difference anywhere measured.
+- Measured on the laptop (load 1.0 to 1.8): the native build (gcc 9.4) and the WebAssembly build
+  (wasi-sdk 25's clang 19.1.5, under wasmtime) over all nine corpora: 0 WGSL files and 0 of 13,193 cache
+  record hashes differ (r100-wasm3.log; before, 27 WGSL files, run 76's measurement). Against run
+  99's native output exactly the 27 files A8 lists changed (gcc now builds them in clang's order),
+  nothing else. The native suite with every corpus and glslang: every test passed but the known
+  A16 failure `damaged_records_decode_without_a_panic`, run by `--include-ignored`
+  (r100-gcc4.log); the corpus test 13 passed.
+- A1 (the runner's `distance-4-ps.dxil`): read with llvm-bcanalyzer; the program does use its
+  `PPC_FP128` constant (a `sitofp` of it is the first stored output). A carried patch reading the
+  type, then its constant, got as far as an assertion in dxil-spirv; dropped (gap A1).
+- A first attempt to build with the laptop's clang 10 failed on dxbc-spirv (lambdas capturing
+  structured bindings, C++20); the WebAssembly build is the clang comparison instead.
+- Checks (ARM64, arm3.log, load 6 to 11): `cargo fmt -p wcontainers-shaders --check` clean, clippy
+  with warnings denied clean, every CPU test binary passed, the literal check prints no line of
+  this crate (it found the new build-script literals first; named, and the build directory passed
+  from `main`; the baseline's `b'\r'` line went, 192df8ba). Windows clippy with warnings denied
+  clean, and the MSVC build applies the patches (gpu-suite.log).
 
 ## G6 run 12 (run 99): the NIR track's pulled inputs at any byte, 3D texel offsets on Direct3D 12, A26 on WebGL 2
 
@@ -1608,19 +1646,26 @@ The pass bar, item by item:
    shader under the WebGPU key, the WebGL 2 key (`TEXTURE_INFO`, since run 46), the bases from the
    helpers and the view keys, twice each, and decodes each record back to the same bytes;
    `cache.txt` holds each record's hash so the native and WebAssembly builds can be compared. Met
-   but for gaps A8 and A16 (the WebAssembly build links and is compared again since run 76; it was
-   broken from 260d36d8 to run 76).
+   but for gap A16 (the WebAssembly build links and is compared again since run 76; it was
+   broken from 260d36d8 to run 76; since run 100, A8 closed, every record's hash is the same in
+   both builds).
 
 The gap list (every item of the pass bar not met):
 
 - A1. `hlsl+distance-4-ps.dxil` (runner corpus) ends "convert rejected: Unknown type!", not a named
   refusal. Since G6a run 2 the corpus test names it as a known unnamed verdict with this gap
   (`KNOWN_UNNAMED` in tests/corpus.rs): its verdict must still equal its record, and the runner
-  test passes and catches any other change. Cause: dxc
-  10.0.26100 writes a `PPC_FP128` record into the program's LLVM type table, which dxil-spirv's
-  bitcode reader does not know; the program never uses the type. Waits: nobody (a vkd3d runner file
-  of the Direct3D 12 track's runner; no real program seen with it). Takes: dxil-spirv's reader
-  taking the record (upstream, or a patch carried as naga's are).
+  test passes and catches any other change. Cause, read in run 100 with llvm-bcanalyzer 10 on the
+  file's bitcode (scratch g6-r100): dxc 10.0.26100 writes a `PPC_FP128` type, a constant of it
+  (the words of 1.0 and 0) and a constant `sitofp` of that constant to float, which is the value
+  the program stores in its first output (the other three are 320.0, 3.0 and 80.0); so the program
+  does use the type, which DXIL does not have (the earlier "never uses" was wrong). Tried in run
+  100 with a carried patch: the type read as opaque gives "Constant type is not FP."; its constant
+  read as undefined too gives an assertion in dxil-spirv's integer width; dropped. Waits: nobody
+  (a vkd3d runner file; no real program seen with it). Takes: knowing what real Direct3D 12 on the
+  RTX 3080 stores for it (the Direct3D 12 front's runner), then either reading the constant as the
+  double it holds (a carried patch, `converter-patches/dxil-spirv/`) or a refusal by name from the
+  boundary.
 - A2. Closed in run 55: a typed buffer or storage texture bound as a view of another kind than
   the program declares is read and written by its bits, as Direct3D gives it (no refusal by kind
   is left), so every such shader converts under the corpus's one-kind view keys.
@@ -1753,7 +1798,10 @@ The gap list (every item of the pass bar not met):
   same cull program over the tessellator's listed primitives and a drawn test), and a geometry
   shader writing them in the replay form (`GeometryCullDistanceReplay`, WebGL 2; takes a replay
   slot that sees every vertex of its primitive).
-- A8. The WebAssembly build converts 27 shaders, all DXBC, to modules whose expression order
+- A8. Closed in run 100 (its section): dxbc-spirv's operands are sequenced by carried patches
+  (`converter-patches/dxbc-spirv/`), and the native (gcc) and WebAssembly (wasi-sdk's clang)
+  builds give the same WGSL and the same cache record hashes for every shader of all nine corpora.
+  What it was: the WebAssembly build converted 27 shaders, all DXBC, to modules whose expression order
   differs from the native build's (G6a run 4, wasm.log, every corpus including the runner's; no
   DXIL file differs; the same 27 and nothing else at run 76's tip, g6a-r76/wasm.log, where every
   verdict's WebGPU part equals the native one in all nine corpora). The build did not link from
@@ -1770,9 +1818,7 @@ The gap list (every item of the pass bar not met):
   meaning (read in four of the runner's, the rest sorted by the lines that differ); a cache made
   natively and one made in the browser disagree on those entries (counted, the first kept),
   against section 8's "same bytes on both". Cause: dxbc-spirv builds operands inside one call's
-  arguments, whose order C++ leaves free (gcc and MSVC right to left, clang left to right). Waits:
-  nobody until a native and a browser host share one cache. Takes: the operands sequenced in
-  dxbc-spirv (upstream, or a patch carried as naga's are).
+  arguments, whose order C++ leaves free (gcc and MSVC right to left, clang left to right).
 - A9. Closed in run 86 (its section): vertex shaders writing storage buffers or storage textures
   convert (no longer `VertexStorageWrite`), `stage::writes_storage` names them, and the stage
   helper runs them as compute and draws their records through the cull route's pass-through
@@ -2427,7 +2473,7 @@ G6a run 5's tip):
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
    cull distances from domain shaders; a geometry shader's written primitive number done in run
-   97), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   97), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87; the runner file waits on what real Direct3D 12 stores for it, run 100), A33 (rspirv), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
    Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
@@ -2438,8 +2484,8 @@ G6a run 5's tip):
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
    rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
    `saturate` of a NaN added to `ps_compare` and drawn on WebGL 2), A32 (the DXIL overflow's
-   cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv and
-   A8 (both want a way to carry dxbc-spirv patches), A22 on WARP.
+   cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv (a carried
+   patch now can, `converter-patches/`, run 100; A8 closed that way), A22 on WARP.
 
 ## Asked of other tracks
 
@@ -3975,6 +4021,19 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 100's scripts in scratch `graphics-shaders/g6-r100` are run 99's with its folder, plus
+  `sync.sh` (copies this crate from the checkout into the clone `tip`, the submodules left out),
+  `make-patches.py <crate dir>` (writes the dxbc-spirv patches from its replacement list),
+  `unsequenced.py <C++ files>` (lists unsequenced side-effecting arguments) and
+  `lock-diffy.py`/`baseline-edit.py` (the shared files' one-line edits). `suite-laptop.sh <out>
+  [cargo test args]` now takes the output folder and `CXX` (each compiler its own source and
+  build folder, as the converters' objects are reused by their sources' hash alone); the laptop's
+  `wasm-r100.sh` builds the corpus test for WebAssembly from that source and compares with the
+  native output, record hashes included.
+- A shared file other agents have also changed (Cargo.lock in run 100) is committed with only
+  this track's lines through a temporary index: `git read-tree HEAD`, `git update-index
+  --cacheinfo` of the edited blob, `git write-tree`, `git commit-tree`, `git update-ref` against
+  the old head, then the same `update-index` on the real index.
 - Run 99's scripts in scratch `graphics-shaders/g6-r99` are run 98's with its folder. Make
   `tip-arm` with `git clone -q tip tip-arm` before `arm-sync.sh` (arm-run refuses a folder that is
   not a git checkout). A foreground shell is cut at 10 minutes and a background one at its own
@@ -4271,6 +4330,10 @@ were already there.
 
 ## Dependencies and licences
 
+- Run 100: build dependency `diffy` 0.5.2 (MIT OR Apache-2.0, crates.io's record; released
+  2026-08-31; its one dependency `hashbrown` 0.17.1 was already in the lock), which applies the
+  carried converter patches. The patches in `converter-patches/dxbc-spirv/` hold lines of
+  dxbc-spirv (MIT, as below) and our changes to them.
 - G6a run 5: dev-dependency `md-5` 0.11 (MIT OR Apache-2.0, its Cargo.toml; already in the
   workspace's lock through wcontainers-direct3d-12), whose `block_api::compress` signs the fuzz
   test's mutated containers.
@@ -4310,6 +4373,12 @@ were already there.
 
 ## Departures from the plan
 
+- Run 100: the converters are no longer built exactly as upstream has them. `build.rs` applies
+  each unified diff in `converter-patches/<converter>/<file>.patch` to that source (with the
+  `diffy` crate) and compiles the result from the build directory; a patch that does not apply,
+  or names no compiled source, stops the build. Four dxbc-spirv files carry one today (A8, the
+  order of operands built inside one call's arguments). Each is small and meant for upstream; the
+  submodules stay at their pinned upstream commits.
 - Run 95: an "interface:" commit (02049aeb) that also touches other tracks' crates, against
   section 12's rule that such a commit touches only the interface. In the shared worktree a new
   `VertexFormat` variant without its arms breaks every crate matching on it, so the interface
