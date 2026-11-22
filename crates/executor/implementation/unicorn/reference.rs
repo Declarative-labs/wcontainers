@@ -503,7 +503,6 @@ pub fn run_with_client(
             Step::ChangeServed { .. } => {
                 panic!("only a run with a backend changes its files; see backend::reference_run")
             }
-            Step::Credit { .. } => panic!("Docker's client gives no credit"),
         }
     }
     let status = child.wait().expect("docker ran");

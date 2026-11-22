@@ -69,7 +69,7 @@ impl ExecutionConfig {
 pub use wcontainers_kernel::signal_information::SignalInformation;
 
 /// What an embedder implements: the abi's services, the file backend, the name resolver, TCP
-/// and UDP sockets, the task ids, and the hooks. Every hook is synchronous, fires only when every operation on its process is legal, and
+/// and UDP sockets, the stream endpoints, the task ids, and the hooks. Every hook is synchronous, fires only when every operation on its process is legal, and
 /// never nests.
 pub trait System:
     Host
@@ -78,6 +78,7 @@ pub trait System:
     + wcontainers_tcp_sockets::TcpConnections<Connection: 'static>
     + wcontainers_tcp_sockets::TcpListeners<Listener: 'static>
     + wcontainers_udp_sockets::UdpSockets<Socket: 'static>
+    + wcontainers_system::StreamTransport<Endpoint: 'static>
     + Sync
     + 'static
 {

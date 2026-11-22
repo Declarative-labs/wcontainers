@@ -1120,7 +1120,7 @@ mod speed {
             .start(
                 &mut cpu,
                 &host,
-                &Start {
+                Start {
                     path: &starting.path,
                     arguments: &arguments,
                     environment: &environment,

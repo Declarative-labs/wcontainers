@@ -435,27 +435,26 @@ pub(super) fn write<S: crate::System>(
         if done == total {
             break Ok(());
         }
-        // An end reads it: with the pipe empty, bytes go out at once as far as its credit
-        // allows, in one send (a page that cannot be read in full ends the write, unsent, as when
-        // the write fills pages).
+        // An end reads it: with the pipe empty, bytes go out at once as far as the system takes
+        // them, in one send (a page that cannot be read in full ends the write, unsent, as when
+        // the write fills pages); what it does not take goes into the pipe.
         if let Some(end) = embedder
+            && kernel.ends.takes(end)
             && with_pipe(file, |pipe| pipe.is_empty())
         {
-            let credit = kernel.ends.credit(end);
-            if credit > 0 {
-                let (mut bytes, faulted) = next(kernel, cx, done, credit);
-                if faulted {
-                    bytes.truncate(bytes.len() / PAGE_SIZE as usize * PAGE_SIZE as usize);
-                }
-                if !bytes.is_empty() {
-                    kernel.ends.send(cx, end, &bytes);
-                    done += bytes.len() as u64;
-                }
-                if faulted {
-                    break Err(fault(kernel));
-                }
-                continue;
+            let (mut bytes, faulted) = next(kernel, cx, done, total - done);
+            if faulted {
+                bytes.truncate(bytes.len() / PAGE_SIZE as usize * PAGE_SIZE as usize);
             }
+            let taken = match bytes.is_empty() {
+                true => 0,
+                false => kernel.ends.send(cx, end, &bytes),
+            };
+            done += taken as u64;
+            if faulted && taken == bytes.len() {
+                break Err(fault(kernel));
+            }
+            continue;
         }
         // The part that is not whole pages joins the last page if it fits; a fault in it ends the
         // write with nothing merged.
@@ -557,73 +556,31 @@ pub(super) fn put<S: crate::System>(
     taken as u64
 }
 
-/// The embedder's bytes into a pipe whose writer its end holds, within its credit: put in as far as
-/// there is space and the readers woken, the rest kept until there is; with no reader left they are
-/// dropped, as a write with none fails. Returns how many were past the credit, which are dropped.
+/// The system's bytes into a pipe whose writer its end holds, no more than there is space for,
+/// the readers woken; with no reader left they are dropped, as a write with none fails.
 pub(crate) fn receive_from_end<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     file: &FileRef,
     bytes: &[u8],
-) -> usize {
+) {
     let node = file.borrow().node.clone();
-    let (taken, delivered) = with_pipe(file, |pipe| {
-        let taken = bytes
-            .len()
-            .min(usize::try_from(pipe.promised).unwrap_or(usize::MAX));
-        pipe.promised -= taken as u64;
-        if pipe.readers() == 0 {
-            return (taken, 0);
-        }
-        // Bytes kept from before go in first.
-        let delivered = match pipe.inbox.is_empty() {
-            true => pipe.deliver(&bytes[..taken]),
-            false => 0,
-        };
-        pipe.inbox.extend_from_slice(&bytes[delivered..taken]);
-        (taken, delivered)
+    let delivered = with_pipe(file, |pipe| match pipe.readers() {
+        0 => 0,
+        _ => pipe.deliver(bytes),
     });
+    debug_assert!(delivered == bytes.len() || no_reader(file));
     if delivered > 0 {
-        woken_by_end(kernel, cx, &node);
+        kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
+        signal_ends(kernel, cx, &node, true);
     }
-    bytes.len() - taken
 }
 
-/// Moves the embedder's kept bytes into a pipe whose writer its end holds, as far as there is space
-/// (all are dropped once no reader is left). Returns whether any went in or were dropped.
-pub(crate) fn from_inbox<S: crate::System>(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
-    file: &FileRef,
-) -> bool {
-    let node = file.borrow().node.clone();
-    let (delivered, dropped) = with_pipe(file, |pipe| match pipe.readers() {
-        0 => (0, core::mem::take(&mut pipe.inbox).len()),
-        _ => (pipe.deliver_inbox(), 0),
-    });
-    if delivered > 0 {
-        woken_by_end(kernel, cx, &node);
-    }
-    delivered + dropped > 0
-}
-
-fn woken_by_end<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, node: &Node) {
-    kernel.wake_poll(channel(node), EPOLLIN | EPOLLRDNORM);
-    signal_ends(kernel, cx, node, true);
-}
-
-/// Credit to give the embedder writing a pipe: the space its writes can take past what it may
-/// already send or has sent and waits, once that is worth a credit (a page, or any space with
-/// nothing outstanding).
-pub(crate) fn credit_for_end(file: &FileRef) -> u64 {
-    with_pipe(file, |pipe| {
-        let outstanding = pipe.promised + pipe.inbox.len() as u64;
-        let space = pipe.free_bytes_for_end().saturating_sub(outstanding);
-        if space < PAGE_SIZE && (outstanding > 0 || space == 0) {
-            return 0;
-        }
-        pipe.promised += space;
-        space
+/// The space a pipe the system writes has for it.
+pub(crate) fn room_for_end(file: &FileRef) -> usize {
+    with_pipe(file, |pipe| match pipe.readers() {
+        0 => 0,
+        _ => usize::try_from(pipe.free_bytes_for_end()).unwrap_or(usize::MAX),
     })
 }
 
@@ -632,31 +589,32 @@ pub(crate) fn no_reader(file: &FileRef) -> bool {
     with_pipe(file, |pipe| pipe.readers() == 0)
 }
 
-/// Whether the embedder's bytes kept for a pipe are all in.
-pub(crate) fn inbox_empty(file: &FileRef) -> bool {
-    with_pipe(file, |pipe| pipe.inbox.is_empty())
-}
-
-/// Up to `most` bytes of a pipe whose reader an end holds, taken as a read takes them, writers
-/// woken; nothing while another call holds the pipe's lock.
-pub(crate) fn send_to_end<S: crate::System>(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
-    file: &FileRef,
-    most: u64,
-) -> Vec<u8> {
+/// What a pipe whose reader an end holds has for the system, left in it until the system takes
+/// it; none while it is empty or another call holds the pipe's lock.
+pub(crate) fn held_for_end(kernel: &Kernel, file: &FileRef) -> Option<Vec<u8>> {
     let node = file.borrow().node.clone();
     let holder = with_pipe(file, |pipe| pipe.held_by);
     if kernel.held_by_other(NO_THREAD, holder, channel(&node)) {
-        return Vec::new();
+        return None;
     }
-    let most = usize::try_from(most).unwrap_or(usize::MAX);
-    let bytes = with_pipe(file, |pipe| pipe.take_into(most, most).0);
-    if !bytes.is_empty() {
-        kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
-        signal_ends(kernel, cx, &node, false);
-    }
-    bytes
+    let bytes = with_pipe(file, |pipe| {
+        pipe.unread_bytes(usize::try_from(pipe.unread()).unwrap_or(usize::MAX))
+    });
+    (!bytes.is_empty()).then_some(bytes)
+}
+
+/// The system took `count` bytes of what [`held_for_end`] gave: they leave the pipe as a read
+/// takes them, writers woken.
+pub(crate) fn sent_to_end<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    file: &FileRef,
+    count: usize,
+) {
+    let node = file.borrow().node.clone();
+    with_pipe(file, |pipe| pipe.consume_front(count));
+    kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
+    signal_ends(kernel, cx, &node, false);
 }
 
 /// Whether a pipe whose reader an end holds is finished: empty, with no writer left.

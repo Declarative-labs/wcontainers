@@ -164,7 +164,7 @@ impl<E: Executor> Runtime<E> {
             .start(
                 &mut cpu,
                 &system,
-                &Start {
+                Start {
                     path: path.as_bytes(),
                     arguments: &arguments,
                     environment: &environment,

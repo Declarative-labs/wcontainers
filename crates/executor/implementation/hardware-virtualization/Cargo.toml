@@ -61,6 +61,8 @@ wcontainers-executor-wasmtime = { path = "../wasmtime" }
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }
 # The kernel test's policy, the same on both sides.
 wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
+wcontainers-readiness = { path = "../../../readiness" }
+wcontainers-system = { path = "../../../system" }
 # The root's files at a container's end.
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 # The busybox test's commands, reference image and check against the reference (GPL-2.0-only, test only).

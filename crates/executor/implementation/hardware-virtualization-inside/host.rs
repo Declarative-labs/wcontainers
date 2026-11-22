@@ -1,10 +1,12 @@
-//! The kernel's [`Host`] through the link: each call is a request the monitor answers by calling the host's
-//! services.
+//! The kernel's [`Host`] and standard streams through the link: each call is a request the monitor answers by
+//! calling the host's services.
 
 use alloc::vec::Vec;
 
 use spin::Mutex;
-use wcontainers_abi::{End, Host, Warning};
+use wcontainers_abi::{Host, HostError, Warning};
+use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_system::StreamTransport;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{Link, Ring};
@@ -17,11 +19,9 @@ crate::requests! {
     Random { length } -> ();
     /// A slow path: its reason in the bytes.
     Warn { count, detail } -> ();
-    /// The bytes the kernel sends on the end numbered `stream`.
+    /// The bytes the kernel sends on the endpoint numbered `stream`, all of which the monitor takes.
     Output { stream } -> ();
-    /// The kernel may take `bytes` more on the end numbered `stream`.
-    CreditStream { stream, bytes } -> ();
-    /// The kernel let go of the end numbered `stream`.
+    /// The kernel let go of the endpoint numbered `stream`.
     CloseStream { stream } -> ();
 }
 
@@ -74,37 +74,59 @@ impl<R: Ring + Send> Host for LinkHost<R> {
             warning.reason.as_bytes(),
         );
     }
+}
 
-    fn send_stream(&self, end: End, bytes: &[u8]) {
+/// The standard streams: the monitor takes all the kernel sends, and gives no input.
+impl<R: Ring + Send> StreamTransport for LinkHost<R> {
+    type Endpoint = u32;
+
+    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
         self.ring.lock().ask(
             &Output {
-                stream: end.0.into(),
+                stream: (*peer).into(),
             },
             bytes,
         );
+        Ok(bytes.len())
     }
 
-    fn credit_stream(&self, end: End, bytes: u64) {
-        let message = CreditStream {
-            stream: end.0.into(),
-            bytes,
-        };
-        self.ring.lock().ask(&message, &[]);
+    fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+        Err(HostError::NotSupported)
     }
 
-    fn close_stream(&self, end: End) {
+    fn close_stream(&self, peer: &u32) {
         self.ring.lock().ask(
             &CloseStream {
-                stream: end.0.into(),
+                stream: (*peer).into(),
             },
             &[],
         );
     }
 }
 
+/// Every endpoint can always take more and the monitor never lets go of one, so a wait for anything else never
+/// ends.
+impl<R: Ring + Send> Readiness<u32> for LinkHost<R> {
+    async fn wait_until_ready(
+        &self,
+        _peer: &u32,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        if interest.contains(ReadyFor::WRITABLE) {
+            return Ok(ReadyFor::WRITABLE);
+        }
+        core::future::pending().await
+    }
+}
+
 /// The monitor's half: answers `request`, whose whole bytes are `bytes`, by calling `host`; gives the answer's
 /// bytes.
-pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) -> Vec<u8> {
+pub fn answer<H: Host + StreamTransport<Endpoint = u32>>(
+    request: Request,
+    link: &mut Link,
+    bytes: &[u8],
+    host: &H,
+) -> Vec<u8> {
     let mut answer = Vec::new();
     match request {
         Request::MonotonicNanoseconds => {
@@ -133,15 +155,11 @@ pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) 
         }
         Request::Output => {
             let Output { stream } = link.get();
-            host.send_stream(End(stream as u32), bytes);
-        }
-        Request::CreditStream => {
-            let CreditStream { stream, bytes } = link.get();
-            host.credit_stream(End(stream as u32), bytes);
+            let _ = host.send_stream(&(stream as u32), bytes);
         }
         Request::CloseStream => {
             let CloseStream { stream } = link.get();
-            host.close_stream(End(stream as u32));
+            host.close_stream(&(stream as u32));
         }
     }
     answer
@@ -158,7 +176,8 @@ mod tests {
 
     use std::sync::Mutex;
 
-    use wcontainers_abi::{End, Host, Warning};
+    use wcontainers_abi::{Host, HostError, Warning};
+    use wcontainers_system::StreamTransport;
     use zerocopy::FromZeros;
 
     use super::{LinkHost, Request};
@@ -187,7 +206,6 @@ mod tests {
     const RANDOM: &str = "random";
     const WARN: &str = "warn";
     const OUTPUT: &str = "output";
-    const CREDIT: &str = "credit";
     const CLOSE_STREAM: &str = "close stream";
 
     /// The clocks' readings.
@@ -213,18 +231,32 @@ mod tests {
             bytes.extend_from_slice(&warning.detail.to_le_bytes());
             self.record(WARN, &bytes);
         }
-        fn send_stream(&self, end: End, bytes: &[u8]) {
-            let mut all = end.0.to_le_bytes().to_vec();
+    }
+
+    impl StreamTransport for Recording {
+        type Endpoint = u32;
+
+        fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+            let mut all = peer.to_le_bytes().to_vec();
             all.extend_from_slice(bytes);
             self.record(OUTPUT, &all);
+            Ok(bytes.len())
         }
-        fn credit_stream(&self, end: End, bytes: u64) {
-            let mut all = end.0.to_le_bytes().to_vec();
-            all.extend_from_slice(&bytes.to_le_bytes());
-            self.record(CREDIT, &all);
+        fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+            Err(HostError::NotSupported)
         }
-        fn close_stream(&self, end: End) {
-            self.record(CLOSE_STREAM, &end.0.to_le_bytes());
+        fn close_stream(&self, peer: &u32) {
+            self.record(CLOSE_STREAM, &peer.to_le_bytes());
+        }
+    }
+
+    impl wcontainers_readiness::Readiness<u32> for Recording {
+        async fn wait_until_ready(
+            &self,
+            _peer: &u32,
+            _interest: wcontainers_readiness::ReadyFor,
+        ) -> Result<wcontainers_readiness::ReadyFor, HostError> {
+            Err(HostError::NotSupported)
         }
     }
 
@@ -268,8 +300,8 @@ mod tests {
             .collect()
     }
 
-    /// An end the kernel sends on.
-    const ERROR_END: End = End(2);
+    /// An endpoint the kernel sends on.
+    const ERROR_END: u32 = 2;
 
     /// Lengths around the link's size.
     const LENGTHS: [usize; 6] = [
@@ -295,13 +327,13 @@ mod tests {
         for length in LENGTHS {
             let bytes = long(length);
             let rung = host.ring.lock().rung;
-            host.send_stream(ERROR_END, &bytes);
+            assert_eq!(host.send_stream(&ERROR_END, &bytes), Ok(length));
             assert_eq!(
                 host.ring.lock().rung - rung,
                 length.div_ceil(LINK_BYTES).max(1),
                 "one request a link's worth"
             );
-            let mut expected = ERROR_END.0.to_le_bytes().to_vec();
+            let mut expected = ERROR_END.to_le_bytes().to_vec();
             expected.extend_from_slice(&bytes);
             assert_eq!(last(&host), (OUTPUT.into(), expected), "output of {length}");
 
@@ -320,14 +352,10 @@ mod tests {
         expected.extend_from_slice(&7u64.to_le_bytes());
         expected.extend_from_slice(&0x40_1000u64.to_le_bytes());
         assert_eq!(last(&host), (WARN.into(), expected));
-        host.credit_stream(ERROR_END, wcontainers_abi::PAGE_SIZE);
-        let mut expected = ERROR_END.0.to_le_bytes().to_vec();
-        expected.extend_from_slice(&wcontainers_abi::PAGE_SIZE.to_le_bytes());
-        assert_eq!(last(&host), (CREDIT.into(), expected));
-        host.close_stream(ERROR_END);
+        host.close_stream(&ERROR_END);
         assert_eq!(
             last(&host),
-            (CLOSE_STREAM.into(), ERROR_END.0.to_le_bytes().to_vec())
+            (CLOSE_STREAM.into(), ERROR_END.to_le_bytes().to_vec())
         );
     }
 }

@@ -6,11 +6,11 @@ use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, End, NANOSECONDS_PER_SECOND, PAGE_SIZE, Resume};
+use wcontainers_abi::{Cpu, NANOSECONDS_PER_SECOND, PAGE_SIZE, Resume};
 
 use crate::counters::reason;
 use crate::credentials::{CapabilitySets, Credentials, DOCKER_CAPABILITY_SETS, ROOT_GID, ROOT_UID};
-use crate::ends::Standard;
+use crate::ends::{EndNumber, Standard};
 use crate::file::{FdTable, OpenFile};
 use crate::fs::dev::DOCKER_DEVICES;
 use crate::fs::mounts::Mount;
@@ -53,9 +53,10 @@ pub enum NewFile<'a> {
     Fifo,
 }
 
-/// How the container's first process starts, as `docker run` gives it.
+/// How the container's first process starts, as `docker run` gives it, its standard streams the
+/// system's endpoints `E`.
 #[derive(Clone, Copy, Debug)]
-pub struct Start<'a> {
+pub struct Start<'a, E> {
     pub path: &'a [u8],
     pub arguments: &'a [&'a [u8]],
     pub environment: &'a [&'a [u8]],
@@ -68,7 +69,7 @@ pub struct Start<'a> {
     /// memory.
     pub backend: Option<&'a [u8]>,
     /// What descriptors 0 to 2 are.
-    pub standard: Standard,
+    pub standard: Standard<E>,
     /// The container's address-space size: one past the highest address its processes may use,
     /// at most [`crate::ARM64_ADDRESS_SPACE_BYTES`], the reference's.
     pub address_space_bytes: u64,
@@ -334,7 +335,7 @@ pub(crate) struct Starting {
     arguments: Vec<Vec<u8>>,
     environment: Vec<Vec<u8>>,
     working_directory: Vec<u8>,
-    standard: Standard,
+    standard: Standard<EndNumber>,
     /// Which of Docker's mounts it has.
     mounts: Vec<DockerMount>,
     /// Whether the mounts are made.
@@ -976,7 +977,7 @@ impl Kernel {
         &mut self,
         cpu: &mut dyn Cpu,
         system: &alloc::sync::Arc<S>,
-        start: &Start<'_>,
+        start: Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
     ) -> Result<(), crate::Unsupported> {
         assert!(self.init.is_none(), "the container has already started");
         start.execution.supported()?;
@@ -1008,9 +1009,7 @@ impl Kernel {
         self.hostname = start.hostname.to_vec();
         self.domainname = start.options.domain_name.to_vec();
         self.docker_profile = matches!(start.options.seccomp, Seccomp::DockerProfile);
-        for (end, sends) in start.standard.ends() {
-            self.ends.name(end, sends);
-        }
+        let standard = self.name_ends::<S>(start.standard);
         if let Some(path) = start.backend {
             self.mount_backend(path);
         }
@@ -1028,7 +1027,7 @@ impl Kernel {
             Err(error) => {
                 self.start_failure = Some(error);
                 self.finished = Some(start_failed(error));
-                self.close_unmade(&mut cx, &start.standard);
+                self.close_unmade(&mut cx, &standard);
                 return Ok(());
             }
         };
@@ -1106,7 +1105,7 @@ impl Kernel {
             self.ids_let_go.push(pid);
             self.start_failure = Some(error);
             self.finished = Some(start_failed(error));
-            self.close_unmade(&mut cx, &start.standard);
+            self.close_unmade(&mut cx, &standard);
             return Ok(());
         }
         let owned = |strings: &[&[u8]]| strings.iter().map(|string| string.to_vec()).collect();
@@ -1116,7 +1115,7 @@ impl Kernel {
             arguments: owned(start.arguments),
             environment: owned(start.environment),
             working_directory: start.working_directory.to_vec(),
-            standard: start.standard,
+            standard,
             mounts: start.options.mounts.to_vec(),
             mounted: false,
         }));
@@ -1350,7 +1349,7 @@ impl Kernel {
         &mut self,
         cx: &mut Context<'_, S>,
         pid: Pid,
-        standard: Standard,
+        standard: Standard<EndNumber>,
         null: Option<Node>,
     ) -> Result<(), Errno> {
         let limit = u64::MAX;
@@ -1403,7 +1402,7 @@ impl Kernel {
     fn end_pipe<S: crate::System>(
         &mut self,
         cx: &mut Context<'_, S>,
-        end: End,
+        end: EndNumber,
         flags: u32,
     ) -> crate::file::FileRef {
         let now = self.now(cx);

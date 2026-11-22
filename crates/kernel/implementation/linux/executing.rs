@@ -82,15 +82,15 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> KernelWithExecutor<C, 
         mut kernel: crate::Kernel,
         mut executor: C,
         system: &alloc::sync::Arc<S>,
-        start: &crate::Start<'_>,
+        start: crate::Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
         config: interface::ExecutionConfig<C>,
         state: State,
     ) -> Result<Self, crate::Unsupported> {
         let start = crate::Start {
             execution: kernel_config(&config),
-            ..*start
+            ..start
         };
-        kernel.start(&mut executor, system, &start)?;
+        kernel.start(&mut executor, system, start)?;
         let first = kernel
             .init
             .expect("a started container has a first process");

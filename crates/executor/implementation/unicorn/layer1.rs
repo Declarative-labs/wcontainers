@@ -4647,7 +4647,7 @@ fn run_ours_on(
         options: wcontainers_kernel_linux::StartOptions::default(),
     };
     kernel
-        .start(cpu, &host, &start)
+        .start(cpu, &host, start)
         .expect("the kernel runs a process serially with exact replay");
     crate::streams::begin(&mut kernel, cpu, &host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");

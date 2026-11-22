@@ -6,17 +6,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, MutexGuard};
 
 use rand::Rng;
-use wcontainers_abi::{Cpu, End, Event};
+use wcontainers_abi::{Cpu, Event, HostError};
 use wcontainers_kernel_linux::{Kernel, Standard};
+use wcontainers_readiness::ReadyFor;
 use wcontainers_system_seeded_test_policy::Schedule;
 
-/// The ends the test host names.
+/// One of the test host's stream endpoints, by its number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct End(pub u32);
+
+/// The endpoints the test host names.
 pub const INPUT: End = End(0);
 pub const OUTPUT: End = End(1);
 pub const ERROR: End = End(2);
 pub const TERMINAL: End = End(3);
 
-/// The output credit of a client that reads everything as it comes.
+/// The output room of a client that reads everything as it comes.
 pub const UNLIMITED: u64 = u64::MAX;
 
 /// The largest piece the client sends at once; pieces are drawn from the seed up to this.
@@ -33,7 +38,7 @@ pub enum Step {
     /// Waits until what the container has shown (its output or error, or all its terminal shows)
     /// holds these bytes after what the last step that waited found.
     Expect(Vec<u8>),
-    /// Sends bytes in, in pieces as credit allows.
+    /// Sends bytes in, in pieces, each once the kernel waits for input.
     Send(Vec<u8>),
     /// Gives the terminal a new size.
     Resize { columns: u16, rows: u16 },
@@ -44,8 +49,6 @@ pub enum Step {
     /// Writes bytes over the start of a file the backend serves (a path in its directory), as
     /// another program beside the backend would, not through the container's kernel.
     ChangeServed { path: String, bytes: Vec<u8> },
-    /// Gives the kernel credit on an end, whichever way the end goes (to break the rules).
-    Credit { end: End, bytes: u64 },
 }
 
 /// What the client is and does.
@@ -59,13 +62,11 @@ pub struct StreamClient {
     /// How many bytes of output (not error) it takes at a time, and only when the container can go
     /// on no other way (none at all for 0); none to take everything as it comes.
     pub output_pace: Option<u64>,
-    /// Breaks the credit rule on purpose: sends all its credit and this many bytes more each time.
-    pub excess: u64,
 }
 
 impl StreamClient {
     /// What the kernel is asked for at start.
-    pub fn standard(&self) -> Standard {
+    pub fn standard(&self) -> Standard<End> {
         match self.terminal {
             Some((columns, rows)) => Standard::Terminal {
                 end: TERMINAL,
@@ -108,14 +109,13 @@ pub struct Streams {
     since_sent: u64,
     /// How far into the output and the error the last step that waited found what it waited for.
     found: Found,
-    /// Credit the kernel gave on the input end and not yet used, and the most it ever was.
-    pub input_credit: u64,
-    pub most_input_credit: u64,
-    /// Input bytes sent within the credit, and sends that went past it.
-    pub sent_within_credit: u64,
-    pub sends_past_credit: u64,
-    /// Credit given to the kernel on each output end and not yet used.
+    /// The piece sent that the kernel has not taken yet, and the most it ever asked for at once.
+    pending: Vec<u8>,
+    pub most_input_asked: u64,
+    /// Room given to the kernel on each output end and not yet used.
     given: BTreeMap<End, u64>,
+    /// What the kernel's wait on each endpoint asks for.
+    armed: BTreeMap<End, ReadyFor>,
     /// What came out: the output end's (or the terminal's) and the error end's.
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -123,7 +123,7 @@ pub struct Streams {
     pub closed_by_kernel: BTreeSet<End>,
     closed_here: BTreeSet<End>,
     input_closed_first: bool,
-    /// What the kernel did against the rules: sending past credit, or after its close.
+    /// What the kernel did against the rules: sending after its close, or closing twice.
     pub broken: Vec<String>,
     /// Whether what comes out also goes to this process's own streams.
     pub echo: bool,
@@ -137,18 +137,28 @@ impl Streams {
         }
     }
 
-    pub fn send(&mut self, end: End, bytes: &[u8]) {
-        let given = self.given.entry(end).or_default();
-        if bytes.len() as u64 > *given {
-            self.broken.push(format!(
-                "{end:?}: {} bytes sent with {given} credit",
-                bytes.len()
-            ));
-        }
-        *given = given.saturating_sub(bytes.len() as u64);
+    /// The kernel's send: as much as the room given takes.
+    pub fn send(&mut self, end: End, bytes: &[u8]) -> Result<usize, HostError> {
         if self.closed_by_kernel.contains(&end) {
             self.broken.push(format!("{end:?}: sent after its close"));
         }
+        if self.closed_here.contains(&end) {
+            return Err(HostError::Closed);
+        }
+        let given = self.given.entry(end).or_default();
+        let taken = usize::try_from(*given)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        if taken == 0 {
+            return Err(HostError::WouldBlock);
+        }
+        *given -= taken as u64;
+        self.show(end, &bytes[..taken]);
+        Ok(taken)
+    }
+
+    /// What the kernel sent on an output end, as the client shows it.
+    pub fn show(&mut self, end: End, bytes: &[u8]) {
         if self.echo {
             use std::io::Write;
             let _ = match end {
@@ -162,18 +172,25 @@ impl Streams {
         }
     }
 
-    pub fn credit(&mut self, end: End, bytes: u64) {
+    /// The kernel's receive: what is left of the piece sent; after the input's close, its end.
+    pub fn receive(&mut self, end: End, into: &mut [u8]) -> Result<usize, HostError> {
         if Some(end) != self.client.input_end() {
-            self.broken
-                .push(format!("{end:?}: credit on an end that takes nothing"));
+            return Err(HostError::NotSupported);
         }
-        if self.closed_by_kernel.contains(&end) {
-            self.broken.push(format!("{end:?}: credit after its close"));
+        self.most_input_asked = self.most_input_asked.max(into.len() as u64);
+        if self.pending.is_empty() {
+            return Err(match self.closed_here.contains(&end) {
+                true => HostError::Closed,
+                false => HostError::WouldBlock,
+            });
         }
-        self.input_credit = self.input_credit.saturating_add(bytes);
-        self.most_input_credit = self.most_input_credit.max(self.input_credit);
+        let count = into.len().min(self.pending.len());
+        into[..count].copy_from_slice(&self.pending[..count]);
+        self.pending.drain(..count);
+        Ok(count)
     }
 
+    /// The kernel let go of an endpoint.
     pub fn close(&mut self, end: End) {
         if Some(end) == self.client.input_end() && !self.closed_here.contains(&end) {
             self.input_closed_first = true;
@@ -181,6 +198,56 @@ impl Streams {
         if !self.closed_by_kernel.insert(end) {
             self.broken.push(format!("{end:?}: closed twice"));
         }
+        self.armed.remove(&end);
+    }
+
+    /// The kernel waits on an endpoint for `interest`.
+    pub fn arm(&mut self, end: End, interest: ReadyFor) {
+        self.armed.insert(end, interest);
+    }
+
+    /// What an endpoint is ready for now.
+    fn ready(&self, end: End) -> ReadyFor {
+        let mut ready = ReadyFor::empty();
+        let closed = self.closed_here.contains(&end);
+        if closed {
+            ready |= ReadyFor::HANG_UP;
+        }
+        if self.client.outputs().contains(&end)
+            && self.given.get(&end).is_some_and(|room| *room > 0)
+        {
+            ready |= ReadyFor::WRITABLE;
+        }
+        if Some(end) == self.client.input_end() && (!self.pending.is_empty() || closed) {
+            ready |= ReadyFor::READABLE;
+        }
+        ready
+    }
+
+    /// The waits whose endpoint is now ready for something they ask for, each taken off with
+    /// what it is ready for.
+    fn take_ready(&mut self) -> Vec<(End, ReadyFor)> {
+        let ready: Vec<(End, ReadyFor)> = self
+            .armed
+            .iter()
+            .map(|(end, interest)| {
+                let asked = *interest | ReadyFor::ERROR | ReadyFor::HANG_UP;
+                (*end, self.ready(*end) & asked)
+            })
+            .filter(|(_, ready)| !ready.is_empty())
+            .collect();
+        for (end, _) in &ready {
+            self.armed.remove(end);
+        }
+        ready
+    }
+
+    /// Whether the kernel waits for input.
+    fn input_wanted(&self) -> bool {
+        self.client
+            .input_end()
+            .and_then(|end| self.armed.get(&end))
+            .is_some_and(|interest| interest.contains(ReadyFor::READABLE))
     }
 
     /// Whether the script has steps left.
@@ -201,13 +268,13 @@ impl Streams {
         self.input_closed_first
     }
 
-    /// How much output credit the client gives on `end` at a time, if it is slow.
+    /// How much output room the client gives on `end` at a time, if it is slow.
     fn pace(&self, end: End) -> Option<u64> {
         self.client.output_pace.filter(|_| end != ERROR)
     }
 
-    /// The credit the client gives on an output end now: what it gives at a time, once the end
-    /// is open and the credit given before is used up.
+    /// The room the client gives on an output end now: what it gives at a time, once the end
+    /// is open and the room given before is used up.
     fn due(&self, end: End) -> u64 {
         let open = !self.closed_by_kernel.contains(&end) && !self.closed_here.contains(&end);
         let used = self.given.get(&end).copied().unwrap_or(0) == 0;
@@ -261,9 +328,20 @@ pub trait StreamHost: wcontainers_kernel_linux::System {
     fn change_served(&self, path: &str, bytes: &[u8]);
     /// Hands the kernel an event.
     fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>);
+    /// Ends the kernel's wait on an endpoint with what it is ready for.
+    fn ready(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, end: End, ready: ReadyFor);
 }
 
-/// What the client does at the start, which may still be waiting on the backend: credit for all
+/// Ends every wait whose endpoint is now ready. Whether any did.
+fn fire(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) -> bool {
+    let ready = host.streams().take_ready();
+    for (end, ready) in &ready {
+        host.ready(kernel, cpu, *end, *ready);
+    }
+    !ready.is_empty()
+}
+
+/// What the client does at the start, which may still be waiting on the backend: room for all
 /// the output when it takes everything, and the script's first steps that wait for nothing.
 pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) {
     let outputs = host.streams().client.outputs();
@@ -282,18 +360,18 @@ fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end
         let given = streams.given.entry(end).or_default();
         *given = given.saturating_add(bytes);
     }
-    host.hand(kernel, cpu, Event::StreamCredit { end, bytes });
+    fire(kernel, cpu, host);
 }
 
 fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end: End) {
     let closes = host.streams().closed_here.insert(end);
     if closes {
-        host.hand(kernel, cpu, Event::StreamClosed { end });
+        fire(kernel, cpu, host);
     }
 }
 
 /// The client's next move, after a turn or (`idle`) when the container can go on no other way:
-/// a piece of what it sends (when idle, or after [`BUSY_TURNS`] turns without), output credit
+/// a piece of what it sends (when idle, or after [`BUSY_TURNS`] turns without), output room
 /// when it is slow and the container idle, and the script's other steps. Whether it did anything.
 pub fn act(
     kernel: &mut Kernel,
@@ -301,7 +379,8 @@ pub fn act(
     host: &Arc<impl StreamHost>,
     idle: bool,
 ) -> bool {
-    let mut acted = false;
+    // A wait that began after its endpoint became ready ends now.
+    let mut acted = fire(kernel, cpu, host);
     if idle {
         let outputs = host.streams().client.outputs();
         for end in outputs {
@@ -331,7 +410,7 @@ pub fn act(
                     .input_end()
                     .expect("a script that sends has an input");
                 let left = streams.sending.get_or_insert(bytes).clone();
-                let credit = streams.input_credit;
+                let wanted = streams.input_wanted() && streams.pending.is_empty();
                 let closed = streams.closed_by_kernel.contains(&end);
                 if closed {
                     // The kernel takes no more: what is left is never sent.
@@ -340,45 +419,27 @@ pub fn act(
                     continue;
                 }
                 streams.since_sent += u64::from(!idle);
-                if credit == 0 || !(idle || streams.since_sent >= BUSY_TURNS) {
+                if !wanted || !(idle || streams.since_sent >= BUSY_TURNS) {
                     return acted;
                 }
                 streams.since_sent = 0;
-                let excess = streams.client.excess;
-                // Within the credit, a piece drawn from the seed; breaking the rule, all the
-                // credit and the excess past it.
-                let piece = match excess {
-                    0 => {
-                        let most = credit.min(left.len() as u64).min(MOST_AT_ONCE);
-                        host.choices().draws().random_range(1..=most)
-                    }
-                    _ => credit.min(left.len() as u64),
-                } as usize;
-                let sent = &left[..(piece as u64 + excess).min(left.len() as u64) as usize];
-                streams.input_credit -= piece as u64;
-                streams.sent_within_credit += piece as u64;
-                streams.sends_past_credit += u64::from(sent.len() > piece);
-                streams.sending = Some(left[sent.len()..].to_vec());
-                if sent.len() == left.len() {
+                // A piece drawn from the seed.
+                let most = (left.len() as u64).min(MOST_AT_ONCE);
+                let piece = host.choices().draws().random_range(1..=most) as usize;
+                streams.pending = left[..piece].to_vec();
+                streams.sending = Some(left[piece..].to_vec());
+                if piece == left.len() {
                     streams.sending = None;
                     streams.step += 1;
                 }
                 drop(streams);
-                host.hand(kernel, cpu, Event::StreamData { end, bytes: sent });
+                fire(kernel, cpu, host);
                 return true;
             }
             Step::Resize { columns, rows } => {
                 streams.step += 1;
                 drop(streams);
-                host.hand(
-                    kernel,
-                    cpu,
-                    Event::TerminalResized {
-                        end: TERMINAL,
-                        columns,
-                        rows,
-                    },
-                );
+                host.hand(kernel, cpu, Event::TerminalResized { columns, rows });
                 acted = true;
             }
             Step::CloseInput => {
@@ -400,12 +461,6 @@ pub fn act(
                 host.change_served(&path, &bytes);
                 acted = true;
             }
-            Step::Credit { end, bytes } => {
-                streams.step += 1;
-                drop(streams);
-                host.hand(kernel, cpu, Event::StreamCredit { end, bytes });
-                acted = true;
-            }
         }
     }
 }
@@ -421,7 +476,7 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost
             let streams = host.streams();
             (streams.stdout.len(), streams.stderr.len())
         };
-        let mut gave = false;
+        let mut gave = fire(kernel, cpu, host);
         let outputs = host.streams().client.outputs();
         for end in outputs {
             let due = host.streams().due(end);
@@ -438,7 +493,7 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost
             break;
         }
         if gave && before == after && !host.streams().outputs_closed() {
-            // Credit taken nowhere: nothing is held, and an end is still open.
+            // Room taken nowhere: nothing is held, and an end is still open.
             break;
         }
     }

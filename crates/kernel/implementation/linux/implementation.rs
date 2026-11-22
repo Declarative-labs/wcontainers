@@ -551,17 +551,8 @@ impl Kernel {
             Event::BackendNotice { notice } => {
                 self.backend_notice(&mut cx, notice);
             }
-            Event::StreamData { end, bytes } => {
-                self.stream_data(&mut cx, end, bytes);
-            }
-            Event::StreamCredit { end, bytes } => {
-                self.credit_stream(&mut cx, end, bytes);
-            }
-            Event::StreamClosed { end } => {
-                self.stream_closed(&mut cx, end);
-            }
-            Event::TerminalResized { end, columns, rows } => {
-                self.terminal_resized(&mut cx, end, columns, rows);
+            Event::TerminalResized { columns, rows } => {
+                self.terminal_resized(&mut cx, columns, rows);
             }
         }
         self.settle(&mut cx);
@@ -642,8 +633,9 @@ impl Kernel {
         if moved != 0 {
             self.clock_was_set(moved, &tids);
         }
-        // The new host knows none of the old one's connections.
+        // The new host knows none of the old one's connections, and none of its waits.
         syscall::socket::restored(self, &mut cx);
+        self.ends_restored();
         self.settle(&mut cx);
     }
 

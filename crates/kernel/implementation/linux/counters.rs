@@ -169,9 +169,6 @@ pub mod reason {
     /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
     /// later change to them shows in what is read. Detail: the call number.
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
-    /// An embedder sent more on an end than the credit the kernel gave; what was past it is
-    /// dropped. Detail: the end.
-    pub const STREAM_PAST_CREDIT: &str = "stream data past its credit";
     /// While the embedder watches memory, a call copied memory its description
     /// (`syscall/touch.rs`) did not name, so a watch there is met only at the copy. Detail: the
     /// call's number.
