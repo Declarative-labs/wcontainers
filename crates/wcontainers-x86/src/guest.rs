@@ -1031,8 +1031,9 @@ impl Guest for X86_64 {
                 }),
                 None,
             ],
-            // The upper half, then the lower, each wrapped by itself under an address-size prefix.
-            Maskmovdqu => {
+            // The upper half, then the lower, each wrapped by itself under an address-size prefix; the VEX form
+            // runs as the legacy one.
+            Maskmovdqu | Vmaskmovdqu => {
                 let half = crate::XMM_BYTES / 2;
                 [half, 0].map(|by| {
                     Some(MemoryAccess {
