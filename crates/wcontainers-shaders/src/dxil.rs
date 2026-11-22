@@ -1420,7 +1420,7 @@ fn output_interpolation(module: &mut Module, asked: &[(u32, Interpolation)]) {
 /// point that passes the bases from the variant's source: zero (the front promises bases of zero) or
 /// the vertex stage's helper constants (which the variant pass reads from an indirect draw's
 /// arguments for [`DrawBaseSource::Arguments`]).
-fn draw_bases(
+pub(crate) fn draw_bases(
     module: &mut Module,
     variant: &VariantKey,
     reflection: &mut Reflection,

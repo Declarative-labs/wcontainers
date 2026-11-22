@@ -527,3 +527,73 @@ fn the_variant_rewrites_apply_as_on_the_direct3d_routes() {
     );
     assert!(!converted.reflection.helpers.is_empty());
 }
+
+const BASES: &str = "
+struct U { scale: f32 }
+@group(0) @binding(UNIFORM) var<uniform> u: U;
+@group(0) @binding(SAMPLER) var s: sampler;
+@group(0) @binding(TEXTURE) var t: texture_2d<f32>;
+struct Out { @location(0) colour: vec4<f32> }
+@vertex fn ENTRY(@builtin(vertex_index) base: u32, @builtin(instance_index) first: u32) -> Out {
+    return Out(textureSampleLevel(t, s, vec2(f32(base), f32(first)) * u.scale, 0.0));
+}
+";
+
+/// What [`convert`] makes of every vertex program, `rewrite` makes too: the sampled pairs taken from
+/// the module, a position outside every clip volume for a program writing none, and the draw's first
+/// vertex and instance (built-ins WGSL lacks) read from the helper constants the key names.
+#[test]
+fn a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them() {
+    let mut module = parse(BASES);
+    let ep = &mut module.entry_points[0].function;
+    for (a, base) in ep
+        .arguments
+        .iter_mut()
+        .zip([naga::BuiltIn::BaseVertex, naga::BuiltIn::BaseInstance])
+    {
+        a.binding = Some(naga::Binding::BuiltIn(base));
+    }
+    let reflection = Reflection {
+        stage: SourceStage::Vertex,
+        extras: StageExtras::None,
+        ..compute_reflection(&module)
+    };
+    let key = VariantKey {
+        draw_base: wcontainers_gpu::DrawBaseSource::Helpers,
+        ..Default::default()
+    };
+    let c = rewrite(module, reflection, &key, &ROUTE_KEY).unwrap();
+    let r = &c.reflection;
+    let (texture, sampler) = (0, 0);
+    assert_eq!(r.sampled_pairs, [(texture, sampler)]);
+    assert!(
+        r.helpers
+            .iter()
+            .any(|h| h.value == wcontainers_gpu::HelperValue::DrawBase),
+        "{:?}",
+        r.helpers
+    );
+    let m = &c.modules[0];
+    let ep = &m.module.entry_points[0];
+    let bound = |b: &naga::Binding| {
+        matches!(
+            b,
+            naga::Binding::BuiltIn(naga::BuiltIn::BaseVertex | naga::BuiltIn::BaseInstance)
+        )
+    };
+    assert!(
+        !ep.function
+            .arguments
+            .iter()
+            .any(|a| a.binding.as_ref().is_some_and(bound))
+    );
+    let result = ep.function.result.as_ref().unwrap();
+    let TypeInner::Struct { members, .. } = &m.module.types[result.ty].inner else {
+        panic!("outputs");
+    };
+    assert!(members.iter().any(|m| matches!(
+        m.binding,
+        Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { .. }))
+    )));
+    written("vertex_bases", &m.module, &m.info);
+}

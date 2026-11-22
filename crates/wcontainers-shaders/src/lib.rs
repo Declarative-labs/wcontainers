@@ -219,9 +219,13 @@ fn finished(
 /// `module` with one entry point named [`ENTRY_POINT`], bound by 6.4's rule with an array's elements
 /// at consecutive bindings from the array's, and `reflection` its reflection. A storage texture keeps
 /// the module's format unless `storage_formats` names its slot, so a route that read one without a
-/// format refuses it where the key does not name it. A vertex program writing storage converts, as
-/// [`convert`] gives it ([`stage::writes_storage`]). `route_key` is the key the route gives the program it made; the
-/// module carries [`cache::rewritten_key`] of it.
+/// format refuses it where the key does not name it. The reflection's sampled pairs are taken from the
+/// module. As [`convert`] gives them, a vertex program writing storage converts
+/// ([`stage::writes_storage`]), one writing no position is given one outside every clip volume, and
+/// one reading the draw's first vertex or instance (`BuiltIn::BaseVertex`, `BaseInstance`) reads them
+/// from where `draw_base` says.
+/// `route_key` is the key the route gives the program it made; the module carries
+/// [`cache::rewritten_key`] of it. Geometry, hull and domain programs take [`staged`]'s entries.
 pub fn rewrite(
     module: naga::Module,
     reflection: Reflection,
@@ -241,6 +245,8 @@ pub fn rewrite(
             _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
         };
         route_rewrites(&mut module, &mut reflection, stage, variant)?;
+        // The draw's bases a vertex program reads as built-ins WGSL lacks, as the DXIL route's.
+        dxil::draw_bases(&mut module, variant, &mut reflection)?;
         varied(&mut module, &mut reflection, stage, variant)?;
         Ok((module, reflection, stage))
     })?;
