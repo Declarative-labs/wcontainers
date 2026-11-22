@@ -185,9 +185,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
         c,
         get_query_result_resource,
         render_condition,
-        create_gs_state,
-        bind_gs_state,
-        delete_gs_state,
         create_tcs_state,
         bind_tcs_state,
         delete_tcs_state,
@@ -589,6 +586,7 @@ pub fn stage(stage: mesa_shader_stage) -> Option<Stage> {
         MESA_SHADER_VERTEX => Some(Stage::Vertex),
         MESA_SHADER_FRAGMENT => Some(Stage::Fragment),
         MESA_SHADER_COMPUTE => Some(Stage::Compute),
+        MESA_SHADER_GEOMETRY => Some(Stage::Geometry),
         _ => None,
     }
 }

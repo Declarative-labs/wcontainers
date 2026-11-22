@@ -68,6 +68,19 @@ pub fn declaration(outputs: &[StreamedOutput], strides: [u32; STREAM_BUFFERS]) -
     StreamOutput { entries, strides }
 }
 
+/// A geometry program's outputs, as the shaders crate reflects them, named as [`declaration`]
+/// names streamed values: the position, and every other value by its location.
+pub fn name_outputs(outputs: &mut [StageValue]) {
+    for value in outputs {
+        let (semantic, index) = match value.system {
+            Some(SystemValue::Position) => (POSITION_SEMANTIC, 0),
+            _ => (LOCATION_SEMANTIC, value.location),
+        };
+        value.semantic = semantic.into();
+        value.semantic_index = index;
+    }
+}
+
 /// A converted vertex program's outputs in the stage helper's terms (`declaration`'s names).
 pub fn outputs(module: &naga::Module) -> Vec<StageValue> {
     let mut values = Vec::new();

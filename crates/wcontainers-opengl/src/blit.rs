@@ -38,7 +38,7 @@ fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
     blitter.saved_velem_state = bound.elements.cast_mut().cast();
     blitter.saved_vs = context.stages.get(Stage::Vertex).shader.cast_mut().cast();
     blitter.saved_fs = context.stages.get(Stage::Fragment).shader.cast_mut().cast();
-    blitter.saved_gs = std::ptr::null_mut();
+    blitter.saved_gs = context.stages.get(Stage::Geometry).shader.cast_mut().cast();
     blitter.saved_tcs = std::ptr::null_mut();
     blitter.saved_tes = std::ptr::null_mut();
     blitter.saved_ms = std::ptr::null_mut();

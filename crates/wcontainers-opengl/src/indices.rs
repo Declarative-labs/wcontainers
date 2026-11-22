@@ -13,7 +13,8 @@ use crate::gallium::*;
 
 /// A draw's indices as the host draws them.
 pub struct Rewritten {
-    pub topology: Topology,
+    /// Mesa's primitive of the indices: a list or strip, or a list with adjacency.
+    pub primitive: mesa_prim,
     pub format: IndexFormat,
     /// The indices, little-endian, as words so that either width is aligned.
     words: Vec<u32>,
@@ -29,6 +30,11 @@ impl Rewritten {
     pub fn count(&self) -> u32 {
         (self.bytes / self.format.size() as usize) as u32
     }
+
+    /// The host's topology of the indices, which have no adjacency.
+    pub fn topology(&self) -> Result<Topology, String> {
+        topology(self.primitive)
+    }
 }
 
 /// The primitives the host draws as they come, and those that never restart there.
@@ -39,7 +45,13 @@ const STRIPS_AND_LISTS: &[mesa_prim] = &[
     MESA_PRIM_TRIANGLES,
     MESA_PRIM_TRIANGLE_STRIP,
 ];
-const LISTS: &[mesa_prim] = &[MESA_PRIM_POINTS, MESA_PRIM_LINES, MESA_PRIM_TRIANGLES];
+const LISTS: &[mesa_prim] = &[
+    MESA_PRIM_POINTS,
+    MESA_PRIM_LINES,
+    MESA_PRIM_TRIANGLES,
+    MESA_PRIM_LINES_ADJACENCY,
+    MESA_PRIM_TRIANGLES_ADJACENCY,
+];
 
 /// Whether the host's lists and strips would draw `mode` otherwise than OpenGL with restart as
 /// given: lists never restart there.
@@ -95,11 +107,13 @@ fn words_for(bytes: usize) -> Vec<u32> {
 }
 
 /// The vertices `first..first + count` drawn as `mode` without indices, as indices that draw them
-/// with the host's provoking vertex `host` where OpenGL's is `api`.
+/// (as lists only where `lists_only`) with the host's provoking vertex `host` where OpenGL's is
+/// `api`.
 pub fn generated(
     mode: mesa_prim,
     first: u32,
     count: u32,
+    lists_only: bool,
     api: ProvokingVertex,
     host: ProvokingVertex,
 ) -> Result<Option<Rewritten>, String> {
@@ -112,7 +126,7 @@ pub fn generated(
     // SAFETY: Mesa's generator fills the four values it is given.
     let mode_of = unsafe {
         u_index_generator(
-            mask(STRIPS_AND_LISTS),
+            mask(if lists_only { LISTS } else { STRIPS_AND_LISTS }),
             mode,
             first,
             count,
@@ -132,7 +146,7 @@ pub fn generated(
     // SAFETY: the generator writes `out` indices of `size` bytes, which the words hold.
     unsafe { generate(first, out, words.as_mut_ptr().cast::<c_void>()) };
     Ok(Some(Rewritten {
-        topology: topology(primitive)?,
+        primitive,
         format: format(size),
         words,
         bytes,
@@ -227,7 +241,7 @@ pub fn translated(
         at += out as usize * size as usize;
     }
     Ok(Some(Rewritten {
-        topology: topology(primitive)?,
+        primitive,
         format: format(size),
         words,
         bytes,

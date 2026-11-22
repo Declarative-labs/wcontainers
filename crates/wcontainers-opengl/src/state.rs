@@ -41,16 +41,24 @@ pub enum Stage {
     Vertex,
     Fragment,
     Compute,
+    Geometry,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 3] = [Stage::Vertex, Stage::Fragment, Stage::Compute];
+    pub const ALL: [Stage; 4] = [
+        Stage::Vertex,
+        Stage::Fragment,
+        Stage::Compute,
+        Stage::Geometry,
+    ];
 
+    /// The route's stage of a program: a geometry program runs as the stage helper's compute work,
+    /// which binds its resources in compute's set.
     pub fn nir(self) -> wcontainers_nir::mesa::Stage {
         match self {
             Stage::Vertex => wcontainers_nir::mesa::Stage::Vertex,
             Stage::Fragment => wcontainers_nir::mesa::Stage::Fragment,
-            Stage::Compute => wcontainers_nir::mesa::Stage::Compute,
+            Stage::Compute | Stage::Geometry => wcontainers_nir::mesa::Stage::Compute,
         }
     }
 }
@@ -254,9 +262,6 @@ pub struct Elements<B: Backend> {
     /// The back end's layouts of the inputs it reads, by the inputs fetched in the program (a bit
     /// a location).
     pub blocks: RefCell<HashMap<u32, B::VertexLayout>>,
-    /// The bytes of each input's components, by location: a fetched input's components must lie
-    /// within words.
-    pub component_bytes: Vec<(u32, u32)>,
 }
 
 impl<B: Backend> Elements<B> {
@@ -335,7 +340,7 @@ fn pulled_because<B: Backend>(backend: &B, element: &pipe_vertex_element) -> Opt
 pub struct Shader {
     pub stage: Stage,
     pub nir: Nir,
-    /// What a vertex program streams while stream output is bound: the stage helper's
+    /// What a vertex or geometry program streams while stream output is bound: the stage helper's
     /// declaration, none, or why it cannot.
     pub streamed: Result<Option<StreamOutput>, &'static str>,
 }
@@ -880,14 +885,12 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
     };
     let mut streams = 0;
     let mut pulled = Vec::new();
-    let mut component_bytes = Vec::new();
     let backend = context.screen().backend();
     for (location, element) in elements.iter().enumerate() {
         if let Some(path) = pulled_because(&*backend, element) {
             pulled.push((location as u32, path));
         }
         let format = pipe_format::from(element.src_format);
-        component_bytes.push((location as u32, resource::component_bytes(format)));
         let stream = element.vertex_buffer_index();
         let Some(format) = crate::format::vertex_format(format) else {
             // SAFETY: Mesa describes every format it names.
@@ -917,7 +920,6 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         streams,
         pulled,
         blocks: RefCell::new(HashMap::new()),
-        component_bytes,
     })
 }
 
@@ -968,14 +970,17 @@ fn create_shader(
     match stage {
         Stage::Vertex => {
             nir.number_vertex_elements();
-            streamed = match nir.stream_outputs::<STREAM_BUFFERS>() {
-                Some((outputs, _)) if outputs.is_empty() => Ok(None),
-                Some((outputs, strides)) => Ok(Some(stream::declaration(&outputs, strides))),
-                None => Err("a streamed value that is neither at a location nor the position"),
-            };
         }
         Stage::Fragment => nir.fragcolor_to_buffers(PIPE_MAX_COLOR_BUFS),
-        Stage::Compute => {}
+        Stage::Compute | Stage::Geometry => {}
+    }
+    // The last stage before the rasterizer streams its outputs.
+    if matches!(stage, Stage::Vertex | Stage::Geometry) {
+        streamed = match nir.stream_outputs::<STREAM_BUFFERS>() {
+            Some((outputs, _)) if outputs.is_empty() => Ok(None),
+            Some((outputs, strides)) => Ok(Some(stream::declaration(&outputs, strides))),
+            None => Err("a streamed value that is neither at a location nor the position"),
+        };
     }
     object(Shader {
         stage,
@@ -1013,6 +1018,21 @@ unsafe extern "C" fn create_fs_state(
     state: *const pipe_shader_state,
 ) -> *mut c_void {
     create_stage(pipe, state, Stage::Fragment)
+}
+
+unsafe extern "C" fn create_gs_state(
+    pipe: *mut pipe_context,
+    state: *const pipe_shader_state,
+) -> *mut c_void {
+    create_stage(pipe, state, Stage::Geometry)
+}
+
+unsafe extern "C" fn bind_gs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+    // SAFETY: Mesa passes this driver's context.
+    unsafe { Context::<B>::of(pipe) }
+        .stages
+        .get_mut(Stage::Geometry)
+        .shader = state.cast();
 }
 
 unsafe extern "C" fn create_compute_state(
@@ -1316,6 +1336,9 @@ pub fn fill<B: Backend>(c: &mut pipe_context) {
     c.create_fs_state = Some(create_fs_state);
     c.bind_fs_state = Some(bind_fs_state::<B>);
     c.delete_fs_state = Some(delete_shader_state::<B>);
+    c.create_gs_state = Some(create_gs_state);
+    c.bind_gs_state = Some(bind_gs_state::<B>);
+    c.delete_gs_state = Some(delete_shader_state::<B>);
     c.set_blend_color = Some(set_blend_color::<B>);
     c.set_stencil_ref = Some(set_stencil_ref::<B>);
     c.set_sample_mask = Some(set_sample_mask::<B>);

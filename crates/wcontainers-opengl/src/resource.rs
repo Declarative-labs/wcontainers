@@ -449,18 +449,6 @@ pub fn block_bytes(format: pipe_format) -> u32 {
     block(format).2
 }
 
-/// The bytes of one component of a vertex format: of its first channel where the format is an
-/// array of channels, of its whole element where they are packed.
-pub fn component_bytes(format: pipe_format) -> u32 {
-    // SAFETY: Mesa's table holds every format.
-    let description = unsafe { &*util_format_description(format) };
-    if description.is_array() != 0 {
-        description.channel[0].size() / u8::BITS
-    } else {
-        description.block.bits / u8::BITS
-    }
-}
-
 /// Gallium's block of a format: width and height in texels, and bytes.
 fn block(format: pipe_format) -> (u32, u32, u32) {
     // SAFETY: Mesa's table holds every format.

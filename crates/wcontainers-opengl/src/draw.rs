@@ -6,17 +6,20 @@ use std::collections::hash_map::Entry;
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange,
-    CullMode, DrawCall, DrawRange, FanOrLoop, Features, FormatKind, FormatUse, HELPER_SET,
-    HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS, Object,
-    PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
-    RingKind, STORAGE_WORD, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
-    SourceStage, StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding,
-    VertexFormat, Viewport, cut_scissors, helper_binding,
+    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferDesc,
+    BufferRange, BufferUsage, CullMode, DrawCall, DrawRange, FanOrLoop, Features, FormatKind,
+    FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource,
+    Interpolation, MAX_BINDING_SETS, MapIntent, Object, PassTracker, Program, ProvokingVertex,
+    RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind, STORAGE_WORD, ScissorRect,
+    ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageSet, StepMode,
+    Topology, VariantKey, VertexBinding, VertexFormat, Viewport, WriteMode, cut_scissors,
+    helper_binding,
 };
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
-use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
+use wcontainers_shaders::stage::{
+    FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages,
+};
 
 use crate::context::Context;
 use crate::gallium::*;
@@ -115,8 +118,54 @@ pub struct Programs<B: Backend> {
     /// Rasterizer blocks of a bound state with a sample mask of fewer than all samples.
     masked: HashMap<RasterDesc, B::Raster>,
     pub(crate) compute: HashMap<(ShaderId, Variant), B::Program>,
-    /// The stage helpers of vertex programs streamed, by program and variant.
-    streamed: HashMap<(ShaderId, Variant), Stages<B>>,
+    /// The stage helpers of vertex programs and the geometry programs after them (none: zero),
+    /// by both programs and variants.
+    staged: HashMap<(ShaderId, Variant, ShaderId, Variant), Staged<B>>,
+}
+
+/// A vertex program and the geometry program after it run by the stage helper, and the vertex
+/// layout a geometry program's output is drawn with.
+struct Staged<B: Backend> {
+    stages: Stages<B>,
+    layout: Option<B::VertexLayout>,
+    /// Indices made on the host, and the buffer's bytes, grown as draws need.
+    indices: Option<(B::Buffer, u64)>,
+}
+
+impl<B: Backend> Staged<B> {
+    fn destroy(self, backend: &mut B) {
+        self.stages.destroy(backend);
+        if let Some(layout) = self.layout {
+            backend.destroy(Object::VertexLayout(layout));
+        }
+        if let Some((buffer, _)) = self.indices {
+            backend.destroy(Object::Buffer(buffer));
+        }
+    }
+
+    /// Writes `bytes` at the start of the host's index buffer, grown to hold them; earlier work
+    /// still reads the bytes it was recorded with.
+    fn write_indices(&mut self, backend: &mut B, bytes: &[u8]) -> Result<(), String> {
+        let size = (bytes.len() as u64).next_multiple_of(STORAGE_WORD);
+        if self.indices.as_ref().is_none_or(|&(_, held)| held < size) {
+            if let Some((old, _)) = self.indices.take() {
+                backend.destroy(Object::Buffer(old));
+            }
+            let buffer = backend
+                .create_buffer(&BufferDesc {
+                    size,
+                    usage: BufferUsage::INDEX.union(BufferUsage::STORAGE),
+                    intent: MapIntent::Often,
+                })
+                .map_err(|e| format!("{e:?}"))?;
+            self.indices = Some((buffer, size));
+        }
+        let (buffer, _) = self.indices.as_ref().ok_or("the helper's indices")?;
+        let mut words = bytes.to_vec();
+        words.resize(size as usize, 0);
+        backend.write_buffer(buffer, 0, &words, WriteMode::Discard);
+        Ok(())
+    }
 }
 
 impl<B: Backend> Default for Programs<B> {
@@ -127,7 +176,7 @@ impl<B: Backend> Default for Programs<B> {
             blends: HashMap::new(),
             masked: HashMap::new(),
             compute: HashMap::new(),
-            streamed: HashMap::new(),
+            staged: HashMap::new(),
         }
     }
 }
@@ -159,15 +208,15 @@ impl<B: Backend> Programs<B> {
                 screen.retire(Object::Program(p));
             }
         }
-        let streamed: Vec<_> = self
-            .streamed
+        let staged: Vec<_> = self
+            .staged
             .keys()
-            .filter(|k| k.0 == id)
+            .filter(|k| k.0 == id || k.2 == id)
             .cloned()
             .collect();
-        for key in streamed {
-            if let Some(stages) = self.streamed.remove(&key) {
-                stages.destroy(&mut screen.backend());
+        for key in staged {
+            if let Some(staged) = self.staged.remove(&key) {
+                staged.destroy(&mut screen.backend());
             }
         }
     }
@@ -189,14 +238,14 @@ impl<B: Backend> Programs<B> {
         for (_, r) in self.masked.drain() {
             screen.retire(Object::Raster(r));
         }
-        for (_, stages) in self.streamed.drain() {
-            stages.destroy(&mut screen.backend());
+        for (_, staged) in self.staged.drain() {
+            staged.destroy(&mut screen.backend());
         }
     }
 }
 
-/// The bytes of each uniform block a converted program declares, by binding.
-fn uniform_sizes(module: &naga::Module) -> HashMap<u32, u64> {
+/// The bytes of each uniform block a converted program declares in its stage's `set`, by binding.
+fn uniform_sizes(module: &naga::Module, set: u32) -> HashMap<u32, u64> {
     let mut layouter = naga::proc::Layouter::default();
     if layouter.update(module.to_ctx()).is_err() {
         return HashMap::new();
@@ -205,7 +254,33 @@ fn uniform_sizes(module: &naga::Module) -> HashMap<u32, u64> {
         .global_variables
         .iter()
         .filter(|(_, g)| g.space == naga::AddressSpace::Uniform)
-        .filter_map(|(_, g)| Some((g.binding.as_ref()?.binding, u64::from(layouter[g.ty].size))))
+        .filter_map(|(_, g)| {
+            let binding = g.binding.as_ref().filter(|b| b.group == set)?;
+            Some((binding.binding, u64::from(layouter[g.ty].size)))
+        })
+        .collect()
+}
+
+/// How the fragment program interpolates each input, as the interface names it, where not as
+/// perspective at the pixel's centre.
+fn output_interpolation(inputs: &[Interpolated]) -> Vec<(u32, Interpolation)> {
+    use naga::Interpolation as I;
+    use naga::Sampling as S;
+    inputs
+        .iter()
+        .filter_map(|&(location, interpolation, sampling)| {
+            let linear = interpolation == Some(I::Linear);
+            let named = match (interpolation, sampling) {
+                (Some(I::Flat), _) => Interpolation::Flat,
+                (_, Some(S::Centroid)) if linear => Interpolation::LinearCentroid,
+                (_, Some(S::Sample)) if linear => Interpolation::LinearSample,
+                _ if linear => Interpolation::Linear,
+                (_, Some(S::Centroid)) => Interpolation::PerspectiveCentroid,
+                (_, Some(S::Sample)) => Interpolation::PerspectiveSample,
+                _ => return None,
+            };
+            Some((location, named))
+        })
         .collect()
 }
 
@@ -362,7 +437,11 @@ fn convert<B: Backend>(
     }
     let key = nir.key().map_err(|e| e.to_string())?;
     let stage = shader.stage.nir();
+    let set = wcontainers_nir::bind::stage_set(stage.shader_stage());
     let bindings = nir.to_common_form(stage).map_err(|e| e.to_string())?;
+    if shader.stage == Stage::Geometry {
+        return convert_geometry(backend, &mut nir, bindings, variant, &key);
+    }
     let rewrites = VariantKey {
         pulled: variant.pulled.clone(),
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
@@ -416,7 +495,7 @@ fn convert<B: Backend>(
             slow_paths: Vec::new(),
         },
     });
-    let uniform_sizes = uniform_sizes(&module.module);
+    let uniform_sizes = uniform_sizes(&module.module, set);
     let layered = layered_textures(&module.module);
     let flat_inputs = flat_inputs(&module.module);
     let inputs = input_interpolation(&module.module);
@@ -444,6 +523,48 @@ fn convert<B: Backend>(
     })
 }
 
+/// A geometry program through route B in the stage helper's forms: its compute form, which each
+/// draw's stage helper is made from, and the pass-through vertex program the draw of its output
+/// runs, made here. Its outputs are written as the fragment program interpolates them.
+fn convert_geometry<B: Backend>(
+    backend: &mut B,
+    nir: &mut wcontainers_nir::mesa::Nir,
+    bindings: Vec<ReflectedBinding>,
+    variant: &Variant,
+    key: &[u8; wcontainers_shaders::cache::KEY_BYTES],
+) -> Result<Built<B>, String> {
+    let rewrites = VariantKey {
+        border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        output_interpolation: output_interpolation(&variant.interpolation),
+        ..VariantKey::default()
+    };
+    let routed = wcontainers_nir::direct::route(nir).map_err(|e| e.to_string())?;
+    let mut converted = wcontainers_nir::direct::geometry(routed, bindings, &rewrites, key)
+        .map_err(|e| e.to_string())?;
+    stream::name_outputs(&mut converted.reflection.outputs);
+    let [compute, passthrough] = converted.modules.as_slice() else {
+        return refused(format_args!(
+            "a geometry program's forms other than compute work and its pass-through"
+        ));
+    };
+    let shader = backend
+        .create_shader(passthrough)
+        .map_err(|e| format!("{e:?}"))?;
+    let set = wcontainers_nir::bind::stage_set(ShaderStage::Compute);
+    Ok(Built {
+        shader,
+        bindings: converted.reflection.bindings.clone(),
+        uniform_sizes: uniform_sizes(&compute.module, set),
+        flat_inputs: false,
+        inputs: Vec::new(),
+        helpers: converted.reflection.helpers.clone(),
+        helper_size: converted.reflection.helper_size,
+        pulled: Vec::new(),
+        layered: layered_textures(&compute.module),
+        converted: Some(converted),
+    })
+}
+
 /// The bindings of a program's sampled 2D array textures.
 fn layered_textures(module: &naga::Module) -> Vec<u32> {
     module
@@ -463,9 +584,10 @@ fn layered_textures(module: &naga::Module) -> Vec<u32> {
         .collect()
 }
 
-/// The interface's topology of a Gallium primitive, and whether it is a fan or loop.
-fn topology(mode: u8) -> Topology {
-    match mesa_prim::from(mode) {
+/// The interface's topology of a Gallium primitive; none for a primitive with adjacency, which
+/// only a geometry program takes, or one the screen does not report.
+fn topology(mode: mesa_prim) -> Option<Topology> {
+    Some(match mode {
         MESA_PRIM_POINTS => Topology::PointList,
         MESA_PRIM_LINES => Topology::LineList,
         MESA_PRIM_LINE_STRIP => Topology::LineStrip,
@@ -473,8 +595,8 @@ fn topology(mode: u8) -> Topology {
         MESA_PRIM_TRIANGLES => Topology::TriangleList,
         MESA_PRIM_TRIANGLE_STRIP => Topology::TriangleStrip,
         MESA_PRIM_TRIANGLE_FAN => Topology::TriangleFan,
-        _ => refuse(format_args!("a primitive the screen does not report")),
-    }
+        _ => return None,
+    })
 }
 
 fn index_format(size: u16) -> IndexFormat {
@@ -766,7 +888,7 @@ pub(crate) fn binding_sets<B: Backend>(
     let visibility = |stage| match stage {
         Stage::Vertex => vertex_visible,
         Stage::Fragment => StageSet::FRAGMENT,
-        Stage::Compute => StageSet::COMPUTE,
+        Stage::Compute | Stage::Geometry => StageSet::COMPUTE,
     };
     // Every stage's helper constants, in the one helper set.
     let mut blocks = Vec::new();
@@ -1144,11 +1266,26 @@ fn draw_indirect<B: Backend>(
     Ok(())
 }
 
+/// One draw: the API's vertices drawn by the vertex program, or, behind a geometry program, what
+/// the stage helper made of them drawn by its pass-through program, with the fragment program.
 fn draw<B: Backend>(
     context: &mut Context<B>,
     info: &pipe_draw_info,
     draws: &[pipe_draw_start_count_bias],
 ) -> Result<(), String> {
+    let gs = context.stages.get(Stage::Geometry).shader;
+    // Behind a geometry program each range runs the stage helper and draws what it made.
+    if !gs.is_null() && draws.len() > 1 {
+        for d in draws {
+            draw(context, info, std::slice::from_ref(d))?;
+        }
+        return Ok(());
+    }
+    // A geometry program emitting no vertex makes nothing to draw, stream or count.
+    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+    if !gs.is_null() && unsafe { &*gs }.nir.geometry_vertices_out() == 0 {
+        return Ok(());
+    }
     let bound = &context.bound;
     let (raster, depth_stencil, blend, elements) = (
         bound.raster,
@@ -1164,12 +1301,14 @@ fn draw<B: Backend>(
     // SAFETY: bound states live until Mesa unbinds and deletes them.
     let (raster, depth_stencil, blend, elements) =
         unsafe { (&*raster, &*depth_stencil, &*blend, &*elements) };
-    let topology = topology(info.mode);
-    let triangles = matches!(
-        topology,
-        Topology::TriangleList | Topology::TriangleStrip | Topology::TriangleFan
-    );
-    if raster.cull_both && triangles {
+    let api_topology = topology(mesa_prim::from(info.mode));
+    if gs.is_null() && api_topology.is_none() {
+        return refused(format_args!(
+            "a primitive with adjacency without a geometry program, or one the screen does not \
+             report"
+        ));
+    }
+    if raster.cull_both && gs.is_null() && api_topology.is_some_and(triangles) {
         return Ok(());
     }
     let [vs, fs] = [Stage::Vertex, Stage::Fragment].map(|s| context.stages.get(s).shader);
@@ -1204,22 +1343,19 @@ fn draw<B: Backend>(
         backend.slow_paths().hit(SlowPath::BlendInShader);
     }
     let programs = &mut context.programs;
-    // The fragment program first: the vertex program's outputs are interpolated as its inputs.
+    // The fragment program first: the last stage's outputs are interpolated as its inputs.
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
     let inputs = programs
         .built_for(backend, unsafe { &*fs }, &fragment)?
         .inputs
         .clone();
     let (pulled, paths) = pulled_inputs(elements, &bound.vertex_buffers);
-    for path in paths {
-        backend.slow_paths().hit(path);
-    }
     let vertex = Variant {
         transform,
         swizzles: swizzles(context.stages.get(Stage::Vertex)),
         nearest: nearest_samplers(context.stages.get(Stage::Vertex)),
         border: border_in_program(context.stages.get(Stage::Vertex)),
-        interpolation: inputs,
+        interpolation: inputs.clone(),
         pulled: pulled
             .iter()
             .filter_map(|&l| Some((l, elements.format(l)?)))
@@ -1228,45 +1364,89 @@ fn draw<B: Backend>(
         targets: Vec::new(),
         second_source: None,
     };
+    // The geometry program takes the position's transform, the vertex program's streamed as
+    // written.
+    let geometry = Variant {
+        transform,
+        swizzles: swizzles(context.stages.get(Stage::Geometry)),
+        nearest: nearest_samplers(context.stages.get(Stage::Geometry)),
+        border: border_in_program(context.stages.get(Stage::Geometry)),
+        interpolation: inputs,
+        ..Variant::default()
+    };
+    let (first, first_variant) = if gs.is_null() {
+        (vs, vertex.clone())
+    } else {
+        (gs, geometry.clone())
+    };
     // SAFETY: as above.
-    programs.built_for(backend, unsafe { &*vs }, &vertex)?;
-    if !vertex.swizzles.is_empty() || !fragment.swizzles.is_empty() {
+    programs.built_for(backend, unsafe { &*first }, &first_variant)?;
+    if !first_variant.swizzles.is_empty() || !fragment.swizzles.is_empty() {
         backend.slow_paths().hit(SlowPath::SwizzleInShader);
     }
-    if vertex.border != 0 || fragment.border != 0 {
+    if first_variant.border != 0 || fragment.border != 0 {
         backend.slow_paths().hit(SlowPath::BorderInShader);
     }
-    if context.streams.active() {
+    let made = if gs.is_null() {
+        for path in paths {
+            backend.slow_paths().hit(path);
+        }
+        if context.streams.active() {
+            for d in draws {
+                // SAFETY: as above.
+                let vertex_stage = (unsafe { &*vs }, &vertex);
+                run_stages(context, backend, vertex_stage, None, elements, info, d)?;
+            }
+        }
+        None
+    } else {
+        let Some(d) = draws.first() else {
+            return Ok(());
+        };
         // SAFETY: as above.
-        stream_out(
+        let (vertex_stage, geometry_stage) = unsafe { ((&*vs, &vertex), (&*gs, &geometry)) };
+        let made = run_stages(
             context,
             backend,
-            unsafe { &*vs },
-            &vertex,
+            vertex_stage,
+            Some(geometry_stage),
             elements,
             info,
-            draws,
+            d,
         )?;
-    }
-    if raster.discard {
+        match made {
+            Some(made) => Some(made),
+            None => return Ok(()),
+        }
+    };
+    let topology = match &made {
+        Some(m) => m.out.topology,
+        None => api_topology.ok_or("a primitive the screen does not report")?,
+    };
+    if raster.discard || (raster.cull_both && triangles(topology)) {
         return Ok(());
     }
     let bound = &context.bound;
     let programs = &mut context.programs;
     let built = [
-        &programs.built[&(vs as ShaderId, vertex.clone())],
+        &programs.built[&(first as ShaderId, first_variant.clone())],
         &programs.built[&(fs as ShaderId, fragment.clone())],
     ];
     // Flat values from the vertex OpenGL names where the host takes the other: indices rewritten.
-    let provoking = (raster.provoking != raster.host_provoking
+    let flat_from_other = raster.provoking != raster.host_provoking
         && built[1].flat_inputs
-        && topology != Topology::PointList)
-        .then_some(Provoking {
-            api: raster.provoking,
-            host: raster.host_provoking,
-        });
+        && topology != Topology::PointList;
+    if flat_from_other && made.is_some() {
+        return refused(format_args!(
+            "flat values from the last vertex of a geometry program's primitives (not built)"
+        ));
+    }
+    let provoking = flat_from_other.then_some(Provoking {
+        api: raster.provoking,
+        host: raster.host_provoking,
+    });
     let fragment_second_source = fragment.second_source.is_some();
-    let program_key = (vs as ShaderId, vertex, fs as ShaderId, fragment);
+    let program_key = (first as ShaderId, first_variant, fs as ShaderId, fragment);
     if let Entry::Vacant(slot) = programs.programs.entry(program_key.clone()) {
         slot.insert(
             backend
@@ -1277,19 +1457,30 @@ fn draw<B: Backend>(
                 .map_err(|e| format!("a program: {e:?}"))?,
         );
     }
-    let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?;
+    // Behind a geometry program the vertex stage ran already: the draw binds the fragment stage's.
+    let both = [(Stage::Vertex, built[0]), (Stage::Fragment, built[1])];
+    let (fetched, drawn) = match &made {
+        Some(_) => (Vec::new(), &both[1..]),
+        None => (
+            fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?,
+            &both[..],
+        ),
+    };
     let mut images = Images::default();
     let sets = binding_sets(
         backend,
         &context.stages,
-        &[(Stage::Vertex, built[0]), (Stage::Fragment, built[1])],
+        drawn,
         &fetched,
         info.start_instance,
         StageSet::VERTEX,
         &mut images,
     )?;
     let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
-    let layout = elements.block(backend, pulled_mask)?;
+    let layout = match &made {
+        Some(m) => m.layout.clone(),
+        None => elements.block(backend, pulled_mask)?,
+    };
     let program = programs.programs[&program_key].clone();
     let (blend, alpha_constant) = blend_for(
         programs,
@@ -1307,36 +1498,46 @@ fn draw<B: Backend>(
         bound.blend_color
     };
     let mut streams = Vec::new();
-    for i in 0..elements.streams as usize {
-        let read = elements
-            .desc
-            .attributes
-            .iter()
-            .flatten()
-            .any(|a| usize::from(a.stream) == i && pulled_mask & (1 << a.location) == 0);
-        let stream = bound
-            .vertex_buffers
-            .get(i)
-            .filter(|s| read && !s.resource.is_null());
-        streams.push(stream.and_then(|s| {
-            // SAFETY: a bound stream holds a reference on a live buffer.
-            let resource = unsafe { Resource::<B>::of(s.resource) };
-            Some(VertexBinding {
-                buffer: resource.buffer()?,
-                offset: u64::from(s.offset),
-            })
-        }));
+    match &made {
+        Some(m) => streams.push(Some(VertexBinding {
+            buffer: &m.out.buffer,
+            offset: 0,
+        })),
+        None => {
+            for i in 0..elements.streams as usize {
+                let read =
+                    elements.desc.attributes.iter().flatten().any(|a| {
+                        usize::from(a.stream) == i && pulled_mask & (1 << a.location) == 0
+                    });
+                let stream = bound
+                    .vertex_buffers
+                    .get(i)
+                    .filter(|s| read && !s.resource.is_null());
+                streams.push(stream.and_then(|s| {
+                    // SAFETY: a bound stream holds a reference on a live buffer.
+                    let resource = unsafe { Resource::<B>::of(s.resource) };
+                    Some(VertexBinding {
+                        buffer: resource.buffer()?,
+                        offset: u64::from(s.offset),
+                    })
+                }));
+            }
+        }
     }
     let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
     let mode = mesa_prim::from(info.mode);
-    let restart = info.primitive_restart();
+    let restart = match &made {
+        Some(m) => m.out.index_offset.is_some(),
+        None => info.primitive_restart(),
+    };
     // Indices in a buffer the host cannot draw as they are (a fan or loop, flat values from the
     // other vertex, restart in a list, 8-bit indices the back end lacks): read back now
     // (`ReadBackWait`), then converted as the program's own.
-    let rewritten_on_host = fan
-        || provoking.is_some()
-        || indices::restarts_otherwise(mode, restart)
-        || needs_widening(backend, index_format(info.index_size));
+    let rewritten_on_host = made.is_none()
+        && (fan
+            || provoking.is_some()
+            || indices::restarts_otherwise(mode, restart)
+            || needs_widening(backend, index_format(info.index_size)));
     let read = if rewritten_on_host && info.index_size > 0 && !info.has_user_indices() {
         Some(read_indices(&mut context.tracker, backend, info, draws)?)
     } else {
@@ -1362,7 +1563,7 @@ fn draw<B: Backend>(
     }
     let index_size = info.index_size;
     let format = index_format(index_size);
-    if restart && index_size > 0 && info.restart_index != format.restart_value() {
+    if made.is_none() && restart && index_size > 0 && info.restart_index != format.restart_value() {
         return refused(format_args!(
             "primitive restart at an index that is not the largest"
         ));
@@ -1377,7 +1578,7 @@ fn draw<B: Backend>(
         depth_stencil,
         &blocks,
         raster.cull,
-        triangles,
+        triangles(topology),
         bound.stencil_ref,
     )?;
     let base = DrawCall {
@@ -1417,21 +1618,399 @@ fn draw<B: Backend>(
             },
             ..base
         };
-        draw_ranges(
-            backend,
-            &pass,
-            info,
-            draws,
-            read.as_ref(),
-            raster.host_provoking,
-            provoking,
-        )?;
+        match &made {
+            Some(m) => draw_made(backend, &pass, &m.out),
+            None => draw_ranges(
+                backend,
+                &pass,
+                info,
+                draws,
+                read.as_ref(),
+                raster.host_provoking,
+                provoking,
+            )?,
+        }
     }
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
     }
     images.finish(backend);
     Ok(())
+}
+
+/// Whether a topology draws triangles, which have faces.
+fn triangles(topology: Topology) -> bool {
+    matches!(
+        topology,
+        Topology::TriangleList | Topology::TriangleStrip | Topology::TriangleFan
+    )
+}
+
+/// What the geometry stage made of one range of a draw: the stage helper's output, and the vertex
+/// layout it is drawn with.
+struct Made<B: Backend> {
+    out: FinalDraw<B>,
+    layout: B::VertexLayout,
+}
+
+/// The draw of what the stage helper made, as `pass` binds it otherwise: its vertices from the
+/// helper's buffer as stream 0, through its indices (32-bit, strips restarting) where it gives them.
+fn draw_made<B: Backend>(backend: &mut B, pass: &DrawCall<'_, B>, out: &FinalDraw<B>) {
+    let index = out.index_offset.map(|offset| IndexBinding {
+        buffer: &out.buffer,
+        offset,
+        format: IndexFormat::U32,
+    });
+    let range = match index {
+        Some(_) => DrawRange::Indexed {
+            first: 0,
+            count: out.count,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        },
+        None => DrawRange::Vertices {
+            first: 0,
+            count: out.count,
+            first_instance: 0,
+            instances: 1,
+        },
+    };
+    backend.draw(&DrawCall {
+        index,
+        range,
+        ..*pass
+    });
+}
+
+/// The stage helper's topology of a Gallium primitive, adjacency included; none for a fan or loop.
+fn stage_topology(mode: mesa_prim) -> Option<InputTopology> {
+    Some(match mode {
+        MESA_PRIM_LINES_ADJACENCY => InputTopology::LineListAdjacency,
+        MESA_PRIM_LINE_STRIP_ADJACENCY => InputTopology::LineStripAdjacency,
+        MESA_PRIM_TRIANGLES_ADJACENCY => InputTopology::TriangleListAdjacency,
+        MESA_PRIM_TRIANGLE_STRIP_ADJACENCY => InputTopology::TriangleStripAdjacency,
+        _ => return topology(mode).and_then(input_topology),
+    })
+}
+
+/// The indices of one range of a draw behind a geometry program, as the stage helper takes them.
+enum HelperIndices {
+    /// The draw's own: none, or its index buffer.
+    Own,
+    /// Lists made on the host from the draw's vertices or indices.
+    Rewritten(indices::Rewritten),
+    /// Not one whole primitive.
+    Nothing,
+}
+
+/// Lists made on the host where the stage helper cannot take a draw's own indices: a fan or loop,
+/// indices in the program's memory or of 8 bits, restart in a list or at an index other than the
+/// largest, an indexed strip without restart (the helper restarts strips at the largest index,
+/// as Direct3D does), or a triangle strip whose odd triangles OpenGL orders otherwise. The
+/// vertices keep OpenGL's order for its provoking vertex `provoking` (Mesa's index translator
+/// with it as both conventions).
+fn helper_indices<B: Backend>(
+    tracker: &mut PassTracker<B>,
+    backend: &mut B,
+    info: &pipe_draw_info,
+    d: &pipe_draw_start_count_bias,
+    provoking: ProvokingVertex,
+) -> Result<HelperIndices, String> {
+    let mode = mesa_prim::from(info.mode);
+    let fan = stage_topology(mode).is_none();
+    let strip = matches!(
+        mode,
+        MESA_PRIM_LINE_STRIP
+            | MESA_PRIM_TRIANGLE_STRIP
+            | MESA_PRIM_LINE_STRIP_ADJACENCY
+            | MESA_PRIM_TRIANGLE_STRIP_ADJACENCY
+    );
+    let indexed = info.index_size > 0;
+    let format = index_format(info.index_size);
+    let restart = info.primitive_restart();
+    let restarts_as_helper =
+        restart == strip && (!restart || info.restart_index == format.restart_value());
+    // The helper reads 16- and 32-bit indices.
+    let widened = indexed && format == IndexFormat::U8;
+    // The helper gives an odd triangle of a strip its first vertex first, as Direct3D does;
+    // OpenGL with the last vertex provoking gives it the strip's order of its first two.
+    let reordered = provoking == ProvokingVertex::Last
+        && matches!(
+            mode,
+            MESA_PRIM_TRIANGLE_STRIP | MESA_PRIM_TRIANGLE_STRIP_ADJACENCY
+        );
+    let own = !indexed || (!info.has_user_indices() && !widened && restarts_as_helper);
+    if !fan && !reordered && own {
+        return Ok(HelperIndices::Own);
+    }
+    let paths = [
+        (fan, SlowPath::FanConverted),
+        (reordered, SlowPath::ProvokingRewrite),
+        (indexed && !restarts_as_helper, SlowPath::RestartRewrite),
+        (widened, SlowPath::IndexWidened),
+    ];
+    for (_, path) in paths.into_iter().filter(|&(taken, _)| taken) {
+        backend.slow_paths().hit(path);
+    }
+    let rewritten = if !indexed {
+        indices::generated(mode, d.start, d.count, true, provoking, provoking)?
+    } else if info.has_user_indices() {
+        let size = usize::from(info.index_size);
+        let length = d.count as usize * size;
+        // SAFETY: st/mesa's indices in memory hold the draw's range.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                info.index.user.cast::<u8>().add(d.start as usize * size),
+                length,
+            )
+        };
+        indices::translated(info, bytes, restart, true, provoking, provoking)?
+    } else {
+        let (bytes, _) = read_indices(tracker, backend, info, std::slice::from_ref(d))?;
+        indices::translated(info, &bytes, restart, true, provoking, provoking)?
+    };
+    Ok(rewritten.map_or(HelperIndices::Nothing, HelperIndices::Rewritten))
+}
+
+/// One range of a draw run by the stage helper outside the pass: the vertex program, then the
+/// geometry program where one is given (`GeometryAsCompute`), the last of them streamed to the
+/// bound targets where stream output is active (`StreamOutAsCompute`). What a geometry program
+/// made, to draw; `None` without one, or where it made no primitive.
+fn run_stages<B: Backend>(
+    context: &mut Context<B>,
+    backend: &mut B,
+    (vs, vertex): (&Shader, &Variant),
+    geometry: Option<(&Shader, &Variant)>,
+    elements: &state::Elements<B>,
+    info: &pipe_draw_info,
+    d: &pipe_draw_start_count_bias,
+) -> Result<Option<Made<B>>, String> {
+    let declared = geometry
+        .map_or(&vs.streamed, |(gs, _)| &gs.streamed)
+        .clone()?;
+    let streaming = context.streams.active() && declared.is_some();
+    if geometry.is_none() && !streaming {
+        return Ok(None);
+    }
+    let mode = mesa_prim::from(info.mode);
+    // A draw of no whole primitive records nothing, its statistics included.
+    if indices::trimmed(mode, d.count) == 0 {
+        return Ok(None);
+    }
+    // SAFETY: a bound rasterizer state lives until Mesa unbinds and deletes it.
+    let provoking = unsafe { &*context.bound.raster }.provoking;
+    let host_indices = helper_indices(&mut context.tracker, backend, info, d, provoking)?;
+    let (topology, range_count) = match &host_indices {
+        HelperIndices::Nothing => return Ok(None),
+        HelperIndices::Own => (stage_topology(mode).ok_or("a fan or loop")?, d.count),
+        HelperIndices::Rewritten(r) => (
+            stage_topology(r.primitive).ok_or("rewritten indices of a fan or loop")?,
+            r.count(),
+        ),
+    };
+    let (streamed, locations) = streamed_variant(vertex, elements);
+    let programs = &mut context.programs;
+    programs.built_for(backend, vs, &streamed)?;
+    let vertex_key = (std::ptr::from_ref(vs) as ShaderId, streamed);
+    let geometry_key = geometry.map(|(gs, v)| (std::ptr::from_ref(gs) as ShaderId, v.clone()));
+    let built_vertex = &programs.built[&vertex_key];
+    let built_geometry = match &geometry_key {
+        Some(key) => Some(&programs.built[key]),
+        None => None,
+    };
+    if built_geometry.is_some_and(|g| g.helper_size != 0) {
+        return refused(format_args!(
+            "helper constants in a geometry program (not built)"
+        ));
+    }
+    let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
+    let mut images = Images::default();
+    let vertex_sets = binding_sets(
+        backend,
+        &context.stages,
+        &[(Stage::Vertex, built_vertex)],
+        &fetched,
+        info.start_instance,
+        StageSet::VERTEX.union(StageSet::COMPUTE),
+        &mut images,
+    )?;
+    let geometry_sets = match built_geometry {
+        Some(g) => binding_sets(
+            backend,
+            &context.stages,
+            &[(Stage::Geometry, g)],
+            &[],
+            info.start_instance,
+            StageSet::COMPUTE,
+            &mut images,
+        )?,
+        None => [const { None }; MAX_BINDING_SETS],
+    };
+    let (geometry_id, geometry_variant) = geometry_key.unwrap_or_default();
+    let key = (
+        vertex_key.0,
+        vertex_key.1.clone(),
+        geometry_id,
+        geometry_variant,
+    );
+    if !programs.staged.contains_key(&key) {
+        let vertex_forms = built_vertex
+            .converted
+            .as_ref()
+            .ok_or("a streamed program without its module")?;
+        let geometry_forms = match built_geometry {
+            Some(g) => Some(
+                g.converted
+                    .as_ref()
+                    .ok_or("a geometry program without its forms")?,
+            ),
+            None => None,
+        };
+        let stages = Stages::new(backend, vertex_forms, geometry_forms, declared.as_ref())
+            .map_err(|e| format!("the stage helper: {e:?}"))?;
+        if stages.selects() {
+            stages.destroy(backend);
+            return refused(format_args!(
+                "a geometry program writing a layer or viewport (not built)"
+            ));
+        }
+        let layout = match stages.vertex_layout() {
+            Some(desc) => Some(
+                backend
+                    .create_vertex_layout(&desc)
+                    .map_err(|e| format!("{e:?}"))?,
+            ),
+            None => None,
+        };
+        programs.staged.insert(
+            key.clone(),
+            Staged {
+                stages,
+                layout,
+                indices: None,
+            },
+        );
+    }
+    let staged = programs.staged.get_mut(&key).ok_or("the stage helper")?;
+    context
+        .tracker
+        .close(backend)
+        .map_err(|e| format!("{e:?}"))?;
+    // Rewritten indices go to a buffer of the helper's, which it reads as storage.
+    if let HelperIndices::Rewritten(r) = &host_indices {
+        staged.write_indices(backend, r.indices())?;
+    }
+    let index = match &host_indices {
+        HelperIndices::Rewritten(r) => Some(StageIndex {
+            buffer: &staged.indices.as_ref().ok_or("the helper's indices")?.0,
+            size: (r.indices().len() as u64).next_multiple_of(STORAGE_WORD),
+            offset: 0,
+            format: r.format,
+        }),
+        _ if info.index_size == 0 => None,
+        _ => {
+            // SAFETY: an indexed draw without indices in memory names a live buffer.
+            let resource = unsafe { Resource::<B>::of(info.index.resource) };
+            Some(StageIndex {
+                buffer: resource.buffer().ok_or("indices in a texture")?,
+                size: u64::from(resource.base.width0).next_multiple_of(STORAGE_WORD),
+                offset: 0,
+                format: index_format(info.index_size),
+            })
+        }
+    };
+    let range = match (&host_indices, index.is_some()) {
+        // Indices made from a draw without any name the vertices themselves.
+        (HelperIndices::Rewritten(_), _) => DrawRange::Indexed {
+            first: 0,
+            count: range_count,
+            base_vertex: if info.index_size > 0 { d.index_bias } else { 0 },
+            first_instance: info.start_instance,
+            instances: info.instance_count,
+        },
+        (_, true) => DrawRange::Indexed {
+            first: d.start,
+            count: range_count,
+            base_vertex: d.index_bias,
+            first_instance: info.start_instance,
+            instances: info.instance_count,
+        },
+        (_, false) => DrawRange::Vertices {
+            first: d.start,
+            count: range_count,
+            first_instance: info.start_instance,
+            instances: info.instance_count,
+        },
+    };
+    let stream_output = if streaming {
+        Some(context.streams.targets()?)
+    } else {
+        None
+    };
+    let ran = staged.stages.run(
+        backend,
+        &StageDraw {
+            vertex_sets: std::array::from_fn(|set| vertex_sets[set].as_ref()),
+            geometry_sets: std::array::from_fn(|set| geometry_sets[set].as_ref()),
+            index,
+            topology,
+            range,
+            stream_output,
+        },
+    );
+    for set in vertex_sets.into_iter().chain(geometry_sets).flatten() {
+        backend.destroy(Object::BindingSet(set));
+    }
+    images.finish(backend);
+    let out = ran.map_err(|e: StageError| format!("the stage helper: {e:?}"))?;
+    if streaming {
+        let statistics = context
+            .streams
+            .filled
+            .as_ref()
+            .ok_or("stream output's block")?;
+        query::count_emitted(context.counting, backend, statistics)?;
+    }
+    let made = match (out, &staged.layout) {
+        (Some(out), Some(layout)) => Some(Made {
+            out,
+            layout: layout.clone(),
+        }),
+        _ => None,
+    };
+    Ok(made)
+}
+
+/// The variant of a vertex program the stage helper runs, and the locations of its inputs: every
+/// input fetched in it, its position streamed as written (before the host's depth range and
+/// flips, which a stage after it or the stream's reader takes).
+fn streamed_variant<B: Backend>(
+    vertex: &Variant,
+    elements: &state::Elements<B>,
+) -> (Variant, Vec<u32>) {
+    let mut locations: Vec<u32> = elements
+        .desc
+        .attributes
+        .iter()
+        .flatten()
+        .map(|a| a.location)
+        .collect();
+    locations.sort_unstable();
+    let variant = Variant {
+        pulled: locations
+            .iter()
+            .filter_map(|&l| Some((l, elements.format(l)?)))
+            .collect(),
+        interpolation: Vec::new(),
+        streamed: true,
+        transform: PositionTransform {
+            fixed_point_size: vertex.transform.fixed_point_size,
+            ..PositionTransform::default()
+        },
+        ..vertex.clone()
+    };
+    (variant, locations)
 }
 
 /// The streams of the inputs at `pulled`, which the vertex program fetches itself.
@@ -1459,17 +2038,6 @@ fn fetched_streams<'a, B: Backend + 'a>(
             .ok_or("a fetched vertex stream that is not bound")?;
         // SAFETY: a bound stream holds a reference on a live buffer.
         let resource = unsafe { Resource::<B>::of(bound_stream.resource) };
-        let component = elements
-            .component_bytes
-            .iter()
-            .find(|&&(l, _)| l == location)
-            .map_or(1, |&(_, bytes)| bytes);
-        let starts = [bound_stream.offset, attribute.offset, layout.stride];
-        if starts.iter().any(|s| !s.is_multiple_of(component)) {
-            return refused(format_args!(
-                "a fetched vertex component across words (the shaders crate's fetch reads aligned components)"
-            ));
-        }
         fetched.push(Pulled {
             location,
             buffer: resource.buffer().ok_or("a vertex stream in a texture")?,
@@ -1496,113 +2064,6 @@ fn input_topology(topology: Topology) -> Option<InputTopology> {
         Topology::TriangleStrip => InputTopology::TriangleStrip,
         _ => return None,
     })
-}
-
-/// The vertex program's outputs streamed to the bound targets for each range of a draw, by the
-/// stage helper (`StreamOutAsCompute`), before the draw itself.
-fn stream_out<B: Backend>(
-    context: &mut Context<B>,
-    backend: &mut B,
-    vs: &Shader,
-    vertex: &Variant,
-    elements: &state::Elements<B>,
-    info: &pipe_draw_info,
-    draws: &[pipe_draw_start_count_bias],
-) -> Result<(), String> {
-    let Some(declared) = vs.streamed.clone()? else {
-        return Ok(());
-    };
-    if info.index_size > 0 {
-        return refused(format_args!(
-            "stream output of an indexed draw (OpenGL ES 3.0 has none)"
-        ));
-    }
-    let topology = input_topology(topology(info.mode)).ok_or("stream output of a fan or loop")?;
-    let mut locations: Vec<u32> = elements
-        .desc
-        .attributes
-        .iter()
-        .flatten()
-        .map(|a| a.location)
-        .collect();
-    locations.sort_unstable();
-    let variant = Variant {
-        pulled: locations
-            .iter()
-            .filter_map(|&l| Some((l, elements.format(l)?)))
-            .collect(),
-        interpolation: Vec::new(),
-        streamed: true,
-        // The program's own position is streamed, before the host's depth range and flips.
-        transform: PositionTransform {
-            fixed_point_size: vertex.transform.fixed_point_size,
-            ..PositionTransform::default()
-        },
-        ..vertex.clone()
-    };
-    let programs = &mut context.programs;
-    let key = (std::ptr::from_ref(vs) as ShaderId, variant.clone());
-    let made = programs.streamed.contains_key(&key);
-    let built = programs.built_for(backend, vs, &variant)?;
-    let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
-    let mut images = Images::default();
-    let sets = binding_sets(
-        backend,
-        &context.stages,
-        &[(Stage::Vertex, built)],
-        &fetched,
-        info.start_instance,
-        StageSet::VERTEX.union(StageSet::COMPUTE),
-        &mut images,
-    )?;
-    if !made {
-        let converted = built
-            .converted
-            .clone()
-            .ok_or("a streamed program without its module")?;
-        let stages = Stages::new(backend, &converted, None, Some(&declared))
-            .map_err(|e| format!("stream output: {e:?}"))?;
-        programs.streamed.insert(key.clone(), stages);
-    }
-    let stages = programs.streamed.get_mut(&key).ok_or("the stage helper")?;
-    context
-        .tracker
-        .close(backend)
-        .map_err(|e| format!("{e:?}"))?;
-    let fragment_set = wcontainers_nir::bind::stage_set(ShaderStage::Fragment) as usize;
-    let vertex_sets = std::array::from_fn(|set| sets[set].as_ref().filter(|_| set != fragment_set));
-    // A draw of no whole primitive records nothing, its statistics included.
-    let whole =
-        |d: &&pipe_draw_start_count_bias| indices::trimmed(info.mode as mesa_prim, d.count) > 0;
-    for d in draws.iter().filter(whole) {
-        let draw = StageDraw {
-            vertex_sets,
-            geometry_sets: [None; MAX_BINDING_SETS],
-            index: None,
-            topology,
-            range: DrawRange::Vertices {
-                first: d.start,
-                count: d.count,
-                first_instance: info.start_instance,
-                instances: info.instance_count,
-            },
-            stream_output: Some(context.streams.targets()?),
-        };
-        stages
-            .run(backend, &draw)
-            .map_err(|e| format!("stream output: {e:?}"))?;
-        let statistics = context
-            .streams
-            .filled
-            .as_ref()
-            .ok_or("stream output's block")?;
-        query::count_emitted(context.counting, backend, statistics)?;
-    }
-    for set in sets.into_iter().flatten() {
-        backend.destroy(Object::BindingSet(set));
-    }
-    images.finish(backend);
-    Ok(())
 }
 
 /// One depth, stencil and rasterizer block and stencil reference a draw is made with.
@@ -1792,7 +2253,7 @@ fn draw_rewritten<B: Backend>(
         )
         .map_err(|e| format!("{e:?}"))?;
     backend.draw(&DrawCall {
-        topology: rewritten.topology,
+        topology: rewritten.topology()?,
         restart: false,
         index: Some(IndexBinding {
             buffer: &ring,
@@ -1838,7 +2299,7 @@ fn draw_ranges<B: Backend>(
         }
         if let (0, Some(p)) = (index_size, provoking) {
             backend.slow_paths().hit(SlowPath::ProvokingRewrite);
-            if let Some(r) = indices::generated(mode, d.start, d.count, p.api, p.host)? {
+            if let Some(r) = indices::generated(mode, d.start, d.count, false, p.api, p.host)? {
                 draw_rewritten(backend, base, &r, 0, info)?;
             }
             continue;
