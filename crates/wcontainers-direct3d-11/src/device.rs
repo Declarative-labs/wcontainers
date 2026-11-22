@@ -618,6 +618,17 @@ impl<B: Backend> Device<B> {
         if format::back_buffer_cast(dxgi) && s.support1 & DISPLAY != 0 {
             s.support1 |= BACK_BUFFER_CAST;
         }
+        // A format held but neither drawn into nor a depth format has no multisampled textures
+        // (`CheckMultisampleQualityLevels` answers no count of it), so the multisample loads and
+        // resolves Microsoft's tables require of it apply to no texture, and are reported as
+        // Direct3D's drivers report them (the RTX 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`).
+        if s.support1 != 0
+            && s.support1 & (RENDER_TARGET | crate::desc::support::DEPTH_STENCIL) == 0
+            && let Some((_, row)) =
+                crate::required::at(level).and_then(|mut rows| rows.find(|&(d, _)| d == dxgi))
+        {
+            s.support1 |= row.0 & (MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE);
+        }
         if level < level::L11_0 && format::from_11_0(dxgi) {
             s.support1 = 0;
         }

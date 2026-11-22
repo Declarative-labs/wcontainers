@@ -202,8 +202,9 @@ fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
 }
 
 /// Runs one case of `own_cases` beside both libraries and compares what each printed: lines
-/// naming a filtered result within one unit a channel (Direct3D's filtering tolerance), every
-/// other line exactly.
+/// naming a filtered result within one unit a channel (Direct3D's filtering tolerance), lines of
+/// channels rounded to fewer than 8 bits within one code a channel (the specification's 0.6 of a
+/// step, by which the RTX 3080 and WARP differ), every other line exactly.
 fn case(name: &str) {
     case_env(name, "ours", &[]);
 }
@@ -227,7 +228,7 @@ fn case_args(args: &[&str], label: &str, env: &[(&str, &str)]) -> String {
     );
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
-        if w.starts_with("filtered") {
+        if w.starts_with("filtered") || w.starts_with("rounded") {
             assert!(
                 within_one(w, g),
                 "the first line that differs by more than one\n{w}\n{g}"
@@ -324,6 +325,13 @@ fn a8_storage_views_store_as_direct3d_does() {
     case("a8_storage");
 }
 
+/// `B5G6R5_UNORM` and `B5G5R5A1_UNORM` targets cleared, drawn, blended, drawn with 4 and 8
+/// samples and resolved, and their mips generated, as on the RTX 3080.
+#[test]
+fn packed_targets_drawn_blended_and_resolved_as_direct3d_does() {
+    case("packed_targets");
+}
+
 /// Format support bits of abilities this device reports absent through their own queries, which
 /// real Direct3D may have and ours never claims: video, the first word's bits from
 /// `DECODER_OUTPUT` up (`ID3D11VideoDevice` is not served), logic
@@ -368,18 +376,10 @@ const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
 /// are 11_0's alone.
 fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)> {
     use windows::Win32::Graphics::Dxgi::Common::*;
-    const TARGET: i32 = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
-        | D3D11_FORMAT_SUPPORT_BLENDABLE.0
-        | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN.0;
     let at_11_0 = level == "11_0";
-    // Below 10_0 the 10Level9 tables give none of the other formats' named abilities.
+    // Below 10_0 the 10Level9 tables give none of the named abilities.
     if level.starts_with("9_") {
-        return vec![(
-            DXGI_FORMAT_B5G6R5_UNORM,
-            TARGET,
-            0,
-            "B5G6R5 targets: the back end has no such target",
-        )];
+        return Vec::new();
     }
     let gather = if at_11_0 {
         D3D11_FORMAT_SUPPORT_SHADER_GATHER.0
@@ -392,18 +392,6 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
             D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
             0,
             "sampling, optional: served, where the back end filters the format",
-        ),
-        (
-            DXGI_FORMAT_B5G6R5_UNORM,
-            TARGET,
-            0,
-            "B5G6R5 targets: the back end has no such target",
-        ),
-        (
-            DXGI_FORMAT_B5G5R5A1_UNORM,
-            TARGET,
-            0,
-            "B5G5R5A1 targets: the back end has no such target",
         ),
         (
             DXGI_FORMAT_B8G8R8X8_UNORM,

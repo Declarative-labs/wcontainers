@@ -4,6 +4,8 @@
 //! views' rectangles and of whole views of buffers and of 1D, 2D and 3D textures), `cs_min_lod` (a compute shader sampling, loading and
 //! gathering under `SetResourceMinLOD` clamps), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
+//! `packed_targets` (16-bit packed targets drawn, blended, multisampled, resolved and their mips
+//! generated),
 //! `depth_filter` (an `R32_FLOAT` depth and a colour texture sampled through one linear
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
 //! multisampled textures), `stream` (stream output whose stream is also drawn), `early`
@@ -81,11 +83,17 @@ fn main() -> windows::core::Result<()> {
         }
     };
 
+    // WARP, Microsoft's software renderer, in place of the GPU where `OWN_CASES_DRIVER` is `warp`:
+    // the second real implementation results are judged against.
+    let driver = match std::env::var("OWN_CASES_DRIVER").as_deref() {
+        Ok("warp") => D3D_DRIVER_TYPE_WARP,
+        _ => D3D_DRIVER_TYPE_HARDWARE,
+    };
     let (mut device, mut context) = (None, None);
     unsafe {
         D3D11CreateDevice(
             None::<&IDXGIAdapter>,
-            D3D_DRIVER_TYPE_HARDWARE,
+            driver,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_FLAG(0),
             Some(&[level]),
@@ -131,39 +139,45 @@ fn main() -> windows::core::Result<()> {
         };
         Ok(out.unwrap())
     };
-    // Prints a single-sampled texture's rows through a staging copy of its format.
-    let print = |what: &str, t: &ID3D11Texture2D, texel: u32| {
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        unsafe { t.GetDesc(&mut desc) };
-        desc.Usage = D3D11_USAGE_STAGING;
-        desc.BindFlags = 0;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
-        desc.MiscFlags = 0;
-        let mut staging = None;
-        let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) };
-        println!("{what}: staging {:#010x}", code(r));
-        let Some(staging) = staging else { return };
-        unsafe { context.CopyResource(&staging, t) };
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        let r = unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) };
-        let ok = r.is_ok();
-        println!("{what}: Map {:#010x}", code(r));
-        if ok {
-            for y in 0..desc.Height {
-                let row = unsafe {
-                    std::slice::from_raw_parts(
-                        mapped
-                            .pData
-                            .cast::<u8>()
-                            .add((y * mapped.RowPitch) as usize),
-                        (desc.Width * texel) as usize,
-                    )
-                };
-                let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
-                println!("{what}: row {y} {}", hex.join(""));
+    // Prints a single-sampled texture's rows through a staging copy of its format, each row of
+    // `texel`-byte texels as `write` writes it.
+    let print_rows =
+        |what: &str, t: &ID3D11Texture2D, texel: u32, write: &dyn Fn(&[u8]) -> String| {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { t.GetDesc(&mut desc) };
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            desc.MiscFlags = 0;
+            let mut staging = None;
+            let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) };
+            println!("{what}: staging {:#010x}", code(r));
+            let Some(staging) = staging else { return };
+            unsafe { context.CopyResource(&staging, t) };
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            let r = unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) };
+            let ok = r.is_ok();
+            println!("{what}: Map {:#010x}", code(r));
+            if ok {
+                for y in 0..desc.Height {
+                    let row = unsafe {
+                        std::slice::from_raw_parts(
+                            mapped
+                                .pData
+                                .cast::<u8>()
+                                .add((y * mapped.RowPitch) as usize),
+                            (desc.Width * texel) as usize,
+                        )
+                    };
+                    println!("{what}: row {y} {}", write(row));
+                }
+                unsafe { context.Unmap(&staging, 0) };
             }
-            unsafe { context.Unmap(&staging, 0) };
-        }
+        };
+    let print = |what: &str, t: &ID3D11Texture2D, texel: u32| {
+        print_rows(what, t, texel, &|row| {
+            row.iter().map(|b| format!("{b:02x}")).collect()
+        })
     };
     let print_buffer = |what: &str, b: &ID3D11Buffer, bytes: u32| {
         let desc = D3D11_BUFFER_DESC {
@@ -1637,6 +1651,148 @@ fn main() -> windows::core::Result<()> {
             }
             print("A8_UNORM", &a, 1);
             print("read", &o, 4);
+        }
+        // The 16-bit packed targets: cleared, drawn, blended, drawn with 4 and 8 samples and
+        // resolved, and their mips generated.
+        "packed_targets" => {
+            let gradient = ps("float4 main(float4 p : SV_Position) : SV_Target {
+                    return float4(p.x / 8.0, p.y / 4.0, (p.x + p.y) / 12.0, p.x / 8.0);
+                }");
+            let over = ps("float4 main(float4 p : SV_Position) : SV_Target {
+                    return float4(0.5 + p.x / 16.0, 0.25, 0.75 - p.y / 8.0, 0.5);
+                }");
+            let flat = ps("float4 main() : SV_Target { return float4(0.9, 0.1, 0.55, 0.3); }");
+            // The upper left half of the target, its edge crossing pixels.
+            let half = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                    return float4(id == 2 ? 1 : -1, id == 0 ? -1 : 1, 0, 1);
+                }");
+            let mut blend_desc = D3D11_BLEND_DESC::default();
+            blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: true.into(),
+                SrcBlend: D3D11_BLEND_SRC_ALPHA,
+                DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+            };
+            let mut blend = None;
+            unsafe { device.CreateBlendState(&blend_desc, Some(&mut blend))? };
+            // Each texel's channel codes, red first, as bytes: implementations round to a 5- or
+            // 6-bit channel differently within the specification's 0.6 of a step.
+            let codes = |five_alpha: bool| {
+                move |row: &[u8]| -> String {
+                    row.chunks(2)
+                        .flat_map(|t| {
+                            let w = u16::from_le_bytes([t[0], t[1]]);
+                            let fields = if five_alpha {
+                                vec![(w >> 10) & 31, (w >> 5) & 31, w & 31, w >> 15]
+                            } else {
+                                vec![w >> 11, (w >> 5) & 63, w & 31]
+                            };
+                            fields.into_iter().map(|c| format!("{c:02x}"))
+                        })
+                        .collect()
+                }
+            };
+            let (w, h) = (8, 4);
+            for (name, format) in [
+                ("B5G6R5_UNORM", DXGI_FORMAT_B5G6R5_UNORM),
+                ("B5G5R5A1_UNORM", DXGI_FORMAT_B5G5R5A1_UNORM),
+            ] {
+                let at = |samples, bind| Tex {
+                    w,
+                    h,
+                    format,
+                    samples,
+                    bind,
+                };
+                let target = make(&at(1, D3D11_BIND_RENDER_TARGET), None)?;
+                let rt = rtv(&target);
+                unsafe {
+                    viewport(w, h);
+                    context.VSSetShader(vs(FULL).as_ref(), None);
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.3, 0.6, 0.9, 0.4]);
+                }
+                let codes = codes(format == DXGI_FORMAT_B5G5R5A1_UNORM);
+                let print = |what: &str, t: &ID3D11Texture2D| {
+                    print_rows(&format!("rounded {name} {what}"), t, 2, &codes)
+                };
+                print("cleared", &target);
+                unsafe {
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.PSSetShader(gradient.as_ref(), None);
+                    context.Draw(3, 0);
+                }
+                print("drawn", &target);
+                unsafe {
+                    context.OMSetBlendState(blend.as_ref(), None, u32::MAX);
+                    context.PSSetShader(over.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.Draw(3, 0);
+                    context.OMSetBlendState(None, None, u32::MAX);
+                    context.OMSetRenderTargets(None, None);
+                }
+                print("blended twice", &target);
+                for samples in [4, 8] {
+                    let many = make(&at(samples, D3D11_BIND_RENDER_TARGET), None)?;
+                    let resolved = make(&at(1, D3D11_BIND_SHADER_RESOURCE), None)?;
+                    let rt = rtv(&many);
+                    unsafe {
+                        context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.2, 0.4, 0.6, 1.0]);
+                        context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                        context.VSSetShader(half.as_ref(), None);
+                        context.PSSetShader(flat.as_ref(), None);
+                        context.Draw(3, 0);
+                        context.OMSetRenderTargets(None, None);
+                        context.ResolveSubresource(&resolved, 0, &many, 0, format);
+                    }
+                    print(&format!("{samples} samples resolved"), &resolved);
+                }
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: w,
+                    Height: w,
+                    MipLevels: 0,
+                    ArraySize: 1,
+                    Format: format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                    MiscFlags: D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
+                    ..Default::default()
+                };
+                let mut chain = None;
+                unsafe { device.CreateTexture2D(&desc, None, Some(&mut chain))? };
+                let chain = chain.unwrap();
+                let level1 = make(
+                    &Tex {
+                        w: w / 2,
+                        h: w / 2,
+                        format,
+                        samples: 1,
+                        bind: D3D11_BIND_SHADER_RESOURCE,
+                    },
+                    None,
+                )?;
+                unsafe {
+                    let rt = rtv(&chain);
+                    viewport(w, w);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.VSSetShader(vs(FULL).as_ref(), None);
+                    context.PSSetShader(gradient.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.OMSetRenderTargets(None, None);
+                    let mut view = None;
+                    device.CreateShaderResourceView(&chain, None, Some(&mut view))?;
+                    context.GenerateMips(view.as_ref().unwrap());
+                    context.CopySubresourceRegion(&level1, 0, 0, 0, 0, &chain, 1, None);
+                }
+                print("level 1", &level1);
+            }
         }
         "split" => {
             let target = make(
