@@ -3,6 +3,50 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## Run 14 (2026-11-22): the independent check of run 13 answered
+- [blocking] LastReceivedHeader dropped every IPv6 extension header: it read `IPV6_2292PKTOPTIONS` into room for
+  the packet information alone, and Linux stops at the first record that does not fit, silently. The room is now
+  the packet information, three integer records and four extension headers of the largest size (RFC 8200's
+  hop-by-hop, destination, routing, destination; about 8.3 KiB on the stack); a room filled to its end is counted
+  (`RECORDS_FILL_THE_ROOM`), as is a guest buffer shorter than the headers (`HEADERS_CUT`). The headers are now
+  walked from the control messages directly, in order, not through the shared parser's four slots. IPv4: Linux's
+  `IP_PKTOPTIONS` gives TCP no options, so an IPv4 reading's header bytes are none, counted
+  (`NO_RECORDED_IPV4_OPTIONS`); plan and For the owner corrected (they claimed IPv4 options). The check now sends
+  an 8-byte hop-by-hop header from the IPv6 client and demands it back, with the next header filled in (`[6, 0, 0,
+  0, 0, 0, 0, 0]`, as the checker's Python reference read), and empty header bytes over IPv4.
+- [minor] Readings mapped but not checked, each now checked: the client's round trip time equals its smallest and
+  its variance is half of it (one measurement, the SYN's: RFC 6298's first estimate); Tuned's path MTU equals
+  Information's; the receive buffer is set four times the send buffer and read at least that; BBR's bandwidth is at
+  most every segment sent delivered within the smallest round trip (Linux takes no delivery rate measured over less);
+  the two ends' multipath tokens differ (Linux keeps tokens unique per host); the first subflow's information reads
+  the bytes it received and acknowledged and a segment size; the repair check gives the client a small receive
+  buffer (8 KiB) so the windows differ, and demands each end's send window be the other's receive window, the
+  client's the smaller (a small window on the server's side bounds the repaired client's segment size to half of it:
+  measured 524, so the small buffer is the client's).
+- [minor] The incoming processor check sets a listener to processor 3 as well as 0 and None, and checks a
+  connection's processor is below the machine's count.
+- [minor] `MPTCP_FULL_INFO` is in Linux 6.5, not 6.7 (status and plan corrected); the newest `mptcp_info` fields are
+  later still, zero and counted on an older kernel.
+- [minor] MultipathSubflow allocated two vectors and made two calls each time: now one call with arrays on the
+  stack for nine subflows (the first and the eight more the in-kernel path manager allows); only a subflow past
+  those reads again through vectors, counted (`SUBFLOWS_PAST_THE_ROOM`).
+- Broken copies: the checker's seven that passed (tuned-path-mtu-fixed, tuned-receive-buffer-is-send,
+  information-rtt-is-variance, bbr-bandwidth-halves-swapped, multipath-token-zero, subflow-information-zeroed,
+  repair-window-read-swapped), its last-header-bytes-dropped and incoming-processor-always-first, and
+  last-header-room-of-the-packet-information (the old room) are in mutants.sh, 162 copies, every text found once.
+  Each of these ten, the reworded last-header-ipv4-unread and the two subflow and processor copies beside them
+  failed the suite (ARM machine 04:28 to 04:32, load 7 to 21; log mutants-run14.log in scratch).
+- Runs (ARM machine, Graviton4, Linux 7.0.0-1018-aws, 04:26 to 04:34, load 7 to 24): clippy with warnings denied
+  clean on the TCP host, its suite and the shared crate. Clean build (job host-tcp-sockets-clean, build folder
+  deleted first; log clean-check-run14.log): 124 + 4 pass twice; `cargo tree` (normal, build, dev) of tcp-sockets,
+  internet-protocol, configurable, negative-route-advice, readiness and the suite names only interface and
+  conformance crates. The seven changed checks run alone 30 times and the whole suite 10 times at 12 threads: no
+  failure (log repeat-run14.log). `git log debb8c65..HEAD` and `git status` of the .rs files beside the
+  tcp-sockets, internet-protocol, configurable, negative-route-advice, readiness, kernel and abi interfaces: none.
+- Linter (Mac, once, after the changes; log reviewable-run14.log): in this track's files only what run 13 left (7
+  `conformance_not_run`, 7 `public_outside_interface`, 5 `implementation_folder`, 2 `grammar_unclear`, the
+  orchestrator's name and summary answers); nothing in the new code.
+
 ## Run 13 (2026-11-22): T2, state, authentication, repair and multipath
 - read_state and read_listener_state answer every query (new file linux/state.rs; what each maps to is in the
   plan): Information, CongestionControl, Queues, Tuned, TakeSavedSynchronize, Timestamp, Repair, Authentication,
@@ -18,7 +62,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   listener; `TCP_CC_INFO` 0 bytes for cubic, 16 for vegas and dctcp, 20 for bbr; `TCP_TIMESTAMP` EOPNOTSUPP on
   MPTCP; a connection read in repair mode, closed, and written into a new socket (sequence numbers, options,
   window, clock) carries bytes both ways with the old peer.
-- Kernel and configuration each part needs: `CONFIG_TCP_AO` (6.7+), `CONFIG_MPTCP` with `MPTCP_FULL_INFO` (6.7+),
+- Kernel and configuration each part needs: `CONFIG_TCP_AO` (6.7+), `CONFIG_MPTCP` with `MPTCP_FULL_INFO` (6.5+; run 14 corrected this from 6.7),
   6.18+ for the Accurate ECN fields (zero and counted before), CAP_NET_ADMIN for repair mode, the `tcp_dctcp`,
   `tcp_vegas` and `tcp_bbr` modules (run-conformance.sh now loads them with `modprobe`). The machine has all.
 - New checks (11): information_reads_what_the_connection_did, congestion_control_state_names_the_algorithm,
@@ -645,8 +689,8 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Suite on the ARM machine (needs sudo; makes its own network namespace):
   `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
-- Broken copies (they break linux.rs): the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
-  copy, 130 copies; names pick some). Whether every copy's text is still there once: scratch
+- Broken copies (they break linux.rs): the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 90 s a
+  copy, 162 copies; names pick some). Whether every copy's text is still there once: scratch
   tools/check_mutants.sh <checkout> (on the Mac, no build).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
   $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance --
@@ -796,9 +840,11 @@ readings, repair, authentication, multipath state, the privileged settings).
 - `MultipathInformation::fell_back_to_tcp` is never true on Linux 7.0: `MPTCP_INFO` on a connection that fell back
   answers EOPNOTSUPP (only the diag interface reports the flag). Example: a multipath client to a plain listener.
 - `TcpReading::LastReceivedHeader` asks for the header and fields of the last packet, but Linux keeps for a TCP
-  socket only the records (`IP_PKTOPTIONS`, `IPV6_2292PKTOPTIONS`): no length and no fixed header. The
-  implementation gives length 0 and the IPv4 options or IPv6 extension headers recorded as the header bytes,
-  counted. Example: a plain IPv4 segment reads as header length 0 with interface 1 and destination 127.0.0.1.
+  socket only the records (`IP_PKTOPTIONS`, `IPV6_2292PKTOPTIONS`): no length and no fixed header, and for IPv4 no
+  options (`IP_PKTOPTIONS` writes only `IP_PKTINFO`, `IP_TTL` and `IP_TOS`). The implementation gives length 0 and
+  the IPv6 extension headers recorded as the header bytes, both counted, and none for IPv4, counted. Example: a plain
+  IPv4 segment reads as header length 0 with interface 1 and destination 127.0.0.1; an IPv6 segment with an 8-byte
+  hop-by-hop header reads its 8 bytes, `[6, 0, 0, 0, 0, 0, 0, 0]` (6 the next header its sender filled in).
 - `TcpQuery::CongestionControl` with a buffer shorter than the name: Linux cuts the name (`TCP_CONGESTION` copies
   what fits), the implementation does the same, and the contract does not say. Example: "reno" into 3 bytes reads
   "ren".

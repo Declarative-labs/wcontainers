@@ -8,7 +8,8 @@
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
 //! multisampled textures), `stream` (stream output whose stream is also drawn), `early`
 //! (`[earlydepthstencil]` with storage writes, depth writes off), `early_writes` (the same with
-//! depth writes on), `stencil` (a stencil view read after clears and a stencil draw),
+//! depth writes on), `stencil` (a stencil view read after clears and a stencil draw, and by a
+//! compute program),
 //! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted),
 //! `aliased_msaa_lines` (the same lines without it),
 //! `biased_lines` (a constant depth bias on a line and points), `staged_bias` (the same bias on
@@ -21,6 +22,10 @@
 //! in place of 11_0. Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
+
+/// The steps of a filter weight: the specification's least fractional precision, 8 bits.
+#[cfg(windows)]
+const WEIGHT_STEPS: f32 = (1 << 8) as f32;
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -434,7 +439,7 @@ fn main() -> windows::core::Result<()> {
                         ((texel + c) as f32 * 0.25).to_le_bytes()
                     })
                     .collect();
-                let tolerance = 3.0 * 1.75 / 256.0;
+                let tolerance = 3.0 * 1.75 / WEIGHT_STEPS;
                 let desc = D3D11_TEXTURE3D_DESC {
                     Width: 2,
                     Height: 2,
@@ -568,7 +573,7 @@ fn main() -> windows::core::Result<()> {
                     o[uint2(2, 0)] = t.SampleLevel(p, float3(0.3, 0.9, 0.1), 0);
                     f[uint2(0, 0)] = t.SampleLevel(l, float3(0.3, 0.9, 0.1), 0);
                 }");
-            let tolerance = 3.0 * 2.0 / 256.0;
+            let tolerance = 3.0 * 2.0 / WEIGHT_STEPS;
             let made = |w| {
                 make(
                     &Tex {

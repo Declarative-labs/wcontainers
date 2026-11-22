@@ -420,7 +420,7 @@ fn network_header_start(saved: &[u8], local: SocketAddr, peer: SocketAddr) -> Op
     })
 }
 
-/// The room `IP_PKTOPTIONS` or `IPV6_2292PKTOPTIONS` gives the packet information in: one control message, padded.
+/// Room for the packet information of `IP_PKTOPTIONS` or `IPV6_2292PKTOPTIONS`, which Linux writes before other records.
 const PACKET_OPTIONS_ROOM: usize =
     size_of::<libc::cmsghdr>() + size_of::<uapi::in6_pktinfo>() + size_of::<usize>();
 

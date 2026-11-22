@@ -55,6 +55,11 @@ const UNKNOWN_STATE: &str =
 const UNKNOWN_CONGESTION_INFORMATION: &str =
     "the host reported congestion control information of a form the contract does not know";
 const NO_RECORDED_LENGTH: &str = "Linux records no length and no fixed header of the last packet a TCP socket received, only its options and extension headers";
+const NO_RECORDED_IPV4_OPTIONS: &str = "Linux records no IPv4 options of the last packet a TCP socket received, so its header bytes are given as none";
+const RECORDS_FILL_THE_ROOM: &str = "the records of the last packet a TCP socket received filled the room for them, so Linux may have left some out";
+const HEADERS_CUT: &str = "the buffer given for the last packet's extension headers was shorter than the headers Linux recorded";
+const SUBFLOWS_PAST_THE_ROOM: &str =
+    "a subflow past those the in-kernel path manager allows is read through arrays on the heap";
 
 /// The TCP states in the order Linux numbers them from `TCP_ESTABLISHED`, which is one.
 ///
@@ -199,6 +204,37 @@ const MPTCP_INFO: u32 = 1;
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
 const MPTCP_FULL_INFO: u32 = 4;
+
+/// How many subflows one `MPTCP_FULL_INFO` read on the stack holds: the first and the eight more the in-kernel path manager allows.
+///
+/// https://man7.org/linux/man-pages/man8/ip-mptcp.8.html
+const SUBFLOW_ROOM: usize = 9;
+
+/// The extension headers Linux records of one IPv6 packet, in RFC 8200's order: hop-by-hop, destination, routing, destination.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.1
+const RECORDED_EXTENSION_HEADERS: usize = 4;
+/// The integer records Linux gives a TCP socket of its last packet: hop limit or TTL, traffic class or TOS, flow label.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/net/ipv6/datagram.c
+const RECORDED_INTEGERS: usize = 3;
+
+const fn space(length: usize) -> usize {
+    // SAFETY: CMSG_SPACE only computes a length.
+    unsafe { libc::CMSG_SPACE(length as u32) as usize }
+}
+
+/// Room for every record of the last packet: its packet information, integer records and extension headers at their largest.
+const LAST_HEADER_ROOM: usize = space(size_of::<uapi::in6_pktinfo>())
+    + RECORDED_INTEGERS * space(size_of::<c_int>())
+    + RECORDED_EXTENSION_HEADERS * space(etherparse::Ipv6RawExtHeader::MAX_LEN);
+
+/// The room the last packet's records are read into, aligned as their control message headers are.
+#[repr(C)]
+struct LastHeaderRecords {
+    _aligned: [libc::cmsghdr; usize::MIN],
+    bytes: [u8; LAST_HEADER_ROOM],
+}
 
 /// The `mptcpi_flags` bit of a connection that fell back to TCP.
 ///
@@ -868,25 +904,37 @@ pub(super) fn multipath_subflow(
     position: MultipathSubflowPosition,
     shortfalls: &Shortfalls,
 ) -> Result<Option<MultipathSubflow>, HostError> {
-    let count = full_information(socket, &mut [], &mut [])?;
+    let empty = InformationBytes {
+        _aligned: [],
+        bytes: [u8::MIN; INFORMATION_LENGTH],
+    };
+    let mut subflows = [zeroed::<MptcpSubflowInfo>(); SUBFLOW_ROOM];
+    let mut information = [empty; SUBFLOW_ROOM];
+    let count = full_information(socket, &mut subflows, &mut information)?;
+    let index = usize::try_from(position.0).map_err(|_| overflow())?;
     if position.0 >= count {
         return Ok(None);
     }
+    if index < SUBFLOW_ROOM {
+        return subflow_of(subflows[index], &information[index], shortfalls).map(Some);
+    }
+    shortfalls.count(SUBFLOWS_PAST_THE_ROOM);
     let length = usize::try_from(count).map_err(|_| overflow())?;
     let mut subflows = vec![zeroed::<MptcpSubflowInfo>(); length];
-    let mut information = vec![
-        InformationBytes {
-            _aligned: [],
-            bytes: [u8::MIN; INFORMATION_LENGTH],
-        };
-        length
-    ];
+    let mut information = vec![empty; length];
     let filled = full_information(socket, &mut subflows, &mut information)?;
-    let index = usize::try_from(position.0).map_err(|_| overflow())?;
     if position.0 >= filled.min(count) {
         return Ok(None);
     }
-    let subflow = subflows[index];
+    subflow_of(subflows[index], &information[index], shortfalls).map(Some)
+}
+
+/// Gives one subflow of an `MPTCP_FULL_INFO` read with its `TCP_INFO`.
+fn subflow_of(
+    subflow: MptcpSubflowInfo,
+    information: &InformationBytes,
+    shortfalls: &Shortfalls,
+) -> Result<MultipathSubflow, HostError> {
     let address = |storage: SocketAddrStorage| {
         read_address(
             &MaybeUninit::new(storage),
@@ -894,34 +942,38 @@ pub(super) fn multipath_subflow(
         )
         .ok_or(HostError::Errno(libc::EAFNOSUPPORT))
     };
-    Ok(Some(MultipathSubflow {
+    Ok(MultipathSubflow {
         identifier: MultipathSubflowIdentifier(subflow.id),
         local: address(subflow.local)?,
         peer: address(subflow.remote)?,
-        information: information_of(&information[index], shortfalls)?,
-    }))
+        information: information_of(information, shortfalls)?,
+    })
 }
 
 /// Reads what the socket recorded of the last packet it received in order: its options' records and extension headers.
 ///
-/// IPv4's `IP_PKTOPTIONS` or IPv6's `IPV6_2292PKTOPTIONS` by the peer's family; Linux keeps no length and no fixed header.
+/// IPv4's `IP_PKTOPTIONS` or IPv6's `IPV6_2292PKTOPTIONS` by the peer's family; Linux keeps no length and no fixed header,
+/// and for IPv4 no options.
 pub(super) fn last_received_header<'a>(
     socket: BorrowedFd<'_>,
     peer: IpAddr,
     into: &'a mut [u8],
     shortfalls: &Shortfalls,
 ) -> Result<TcpReading<'a>, HostError> {
-    let mut control = super::PacketOptions {
+    let mut control = LastHeaderRecords {
         _aligned: [],
-        bytes: [u8::MIN; super::PACKET_OPTIONS_ROOM],
+        bytes: [u8::MIN; LAST_HEADER_ROOM],
     };
     let length = match peer.to_canonical() {
-        IpAddr::V4(_) => options::get_bytes(
-            socket,
-            uapi::SOL_IP,
-            uapi::IP_PKTOPTIONS,
-            &mut control.bytes,
-        ),
+        IpAddr::V4(_) => {
+            shortfalls.count(NO_RECORDED_IPV4_OPTIONS);
+            options::get_bytes(
+                socket,
+                uapi::SOL_IP,
+                uapi::IP_PKTOPTIONS,
+                &mut control.bytes,
+            )
+        }
         IpAddr::V6(_) => options::get_bytes(
             socket,
             uapi::SOL_IPV6,
@@ -930,24 +982,59 @@ pub(super) fn last_received_header<'a>(
         ),
     }?;
     shortfalls.count(NO_RECORDED_LENGTH);
-    let ancillary = Ancillary::parse(&control.bytes[..length]);
+    // Linux stops writing at the first record that does not fit, and says nothing of it.
+    if LAST_HEADER_ROOM - length < size_of::<libc::cmsghdr>() {
+        shortfalls.count(RECORDS_FILL_THE_ROOM);
+    }
+    let records = &control.bytes[..length];
     let mut written = usize::MIN;
-    let headers = std::iter::once(ancillary.ipv4_options).chain(
-        ancillary
-            .extension_headers
-            .iter()
-            .flatten()
-            .map(|(_, header)| *header),
-    );
-    for header in headers {
+    for header in extension_headers(records) {
         let room = into.len() - written;
+        if header.len() > room {
+            shortfalls.count(HEADERS_CUT);
+        }
         let taken = header.len().min(room);
         into[written..written + taken].copy_from_slice(&header[..taken]);
         written += taken;
     }
     Ok(TcpReading::LastReceivedHeader {
-        fields: ancillary.packet_fields(usize::MIN, u32::MIN),
+        fields: Ancillary::parse(records).packet_fields(usize::MIN, u32::MIN),
         header: &into[..written],
+    })
+}
+
+/// Gives the bytes of each IPv6 extension header among control messages, in the order Linux wrote them.
+fn extension_headers(control: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut header = zeroed::<libc::msghdr>();
+    header.msg_control = control.as_ptr().cast_mut().cast();
+    header.msg_controllen = control.len() as _;
+    // SAFETY: the walk stays within `control`, whose messages the kernel wrote.
+    let mut message = unsafe { libc::CMSG_FIRSTHDR(&header) };
+    std::iter::from_fn(move || {
+        while !message.is_null() {
+            // SAFETY: `message` points at a complete control message header inside `control`.
+            let (level, kind, data) = unsafe {
+                let start = libc::CMSG_DATA(message);
+                let length =
+                    (*message).cmsg_len as usize - start.offset_from(message.cast()) as usize;
+                (
+                    (*message).cmsg_level as u32,
+                    (*message).cmsg_type as u32,
+                    std::slice::from_raw_parts(start, length),
+                )
+            };
+            // SAFETY: as above.
+            message = unsafe { libc::CMSG_NXTHDR(&header, message) };
+            if level == uapi::SOL_IPV6
+                && matches!(
+                    kind,
+                    uapi::IPV6_HOPOPTS | uapi::IPV6_DSTOPTS | uapi::IPV6_RTHDR
+                )
+            {
+                return Some(data);
+            }
+        }
+        None
     })
 }
 

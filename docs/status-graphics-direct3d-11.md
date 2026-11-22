@@ -5,12 +5,37 @@ Branch: agents, in the agents' shared worktree /Users/thomaseaton/Documents/GitH
 This file keeps the current state only; each earlier run's record (what it did, its measurements,
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
-round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents run 1 (2026-11-21).
+round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 and 2
+(2026-11-21).
 
 ## Where things stand
 
 G4 is reported complete for its next independent check. What is left on the pass bar waits on
 other tracks (Gap list), or is the joint step with the Direct3D 12 track after both milestones.
+
+Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings:
+- Compute programs reading textures held as integer twins (blocking): a compute program's variant
+  now takes the decoded slots (`StageVariant::decoded`) as a draw's does, so a compute shader that
+  loads or samples, 2D or 3D, a normalised texture held as its integer twin (`NormAsInteger`)
+  reads it decoded instead of removing the device (`COMPUTE_VARIANT_OF_DRAWS`). The same applied
+  to stencil views and to a compute program asking an empty slot's size, which now take their
+  draws' routes (`SwizzleInShader`, `TextureInfoInHelpers`). So `SHADER_LOAD` and `SHADER_SAMPLE`
+  of these formats are served in every stage, as claimed. Tests: programs.rs
+  `normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does` (each of the nine
+  formats drawn into, then read by a compute program; a 2x2x2 texture of each read by one; native,
+  without texture-formats-tier1 and without 16-bit norm) and `stencil` (the stencil, depth and
+  empty-slot reads by a compute program), against the RTX 3080.
+- Minor: the 32-bit float 3D textures filtered in the program are compared with the RTX 3080 within
+  the error the specification's 8-bit filter weights allow (`float32_reads`' 3D part, clamp, wrap
+  and mirror). Linear samples of the normalised formats are compared the same way, as the RTX 3080
+  is not exact even at texel centres (0.44880 against 0.44882 for one `R8G8B8A8_SNORM` value).
+- Minor: the WebGL 2 build refuses a swap chain on another process's window with
+  `DXGI_ERROR_INVALID_CALL`, warned, as the WebGPU build does. Before, ANGLE failed to make one on the
+  desktop window and the device was removed (`DXGI_ERROR_DEVICE_REMOVED`). Wine's d3d10core tests
+  that crash after a refusal removed the device are named under the WebGL 2 item of the Gap list.
+- The others: the 11_0 shortfalls stay with the owner; the constant buffers' counts wait on the
+  WebGPU track; building ahead and B8G8R8X8's X byte are as listed; the literal check's findings
+  are none of this track's.
 
 Agents run 1 (2026-11-21 evening), the first run in the agents' worktree:
 - The task carried the fifth check's findings again. Each was closed earlier and is confirmed by
@@ -240,6 +265,10 @@ not give real Direct3D's verdict on (agents run 1: Wine's d3d10core 96 of 111; t
   test_unbound_multisample_texture.
 - A depth bias clamp on float depth, refused by name (Direct3D's float step follows each
   primitive's largest depth exponent, which a pixel program does not see): test_depth_bias.
+- Wine's test crashes (exit 0xc0000005) after a refusal removed the device, in test_depth_bias
+  (the clamp above), test_texture and test_render_a8 (`A8_UNORM`, below): a later creation answers
+  `DXGI_ERROR_DEVICE_REMOVED` and Wine's test uses the object it was not given. The crash is the
+  test's; the gap is the refusal.
 - Cull distances (`CullDistanceAsGeometry` needs compute): test_combined_clip_and_cull_distances.
 - Views in another format of the group (`Features::TEXTURE_VIEWS`, the WebGL 2 back end's):
   test_create_shader_resource_view, the rig's views scene.
@@ -337,8 +366,9 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
 - d3d11 test_clear_buffer_unordered_access_view passes through ours, where real Direct3D fails 223
   of its 934 checks: ours clears by the documented rule; NVIDIA's driver does not.
 - `IDXGISwapChain::GetContainingOutput` answers `E_NOTIMPL` (the infrastructure crate's).
-- `B8G8R8X8_UNORM` and its sRGB twin: the X byte reads 0xff after a clear, a draw and initial
-  data, where the RTX 3080 writes 0x00 for clears and draws and keeps the bytes it was given (the
+- `B8G8R8X8_UNORM` and its sRGB twin: the X byte reads 0xff after a clear, a draw, a blend, a
+  multisample resolve and initial data, where the RTX 3080 writes 0x00 for clears, draws, blends
+  and resolves and keeps the bytes it was given (the
   WebGPU back end's `bgra8unorm`, src/packed.rs; Asked).
 - Values just past a half between two codes drawn into a 16-bit normalised texture held as its
   integer twin: 6553.5006 is written 6553 by the RTX 3080 and 6554 by ours; both within the

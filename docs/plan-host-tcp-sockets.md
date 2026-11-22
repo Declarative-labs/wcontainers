@@ -87,10 +87,14 @@
   the saved SYN accept kept; Timestamp `TCP_TIMESTAMP`, its unit from `TCPI_OPT_USEC_TS`; Repair `TCP_REPAIR_WINDOW`,
   `TCP_QUEUE_SEQ` under each repair queue (the queue chosen put back) and `TCP_AO_REPAIR` (none when Linux says
   ENOENT); Authentication `TCP_AO_INFO`; AuthenticationKey `TCP_AO_GET_KEYS` for the one key; Multipath `MPTCP_INFO`
-  and MultipathSubflow `MPTCP_FULL_INFO` (structures of our own: neither libc nor linux-raw-sys has them), asked
-  first for the count and then with arrays as long as it; LastReceivedHeader `IP_PKTOPTIONS` or
-  `IPV6_2292PKTOPTIONS` by the peer's family, the IPv4 options and IPv6 extension headers recorded as the header
-  bytes; IncomingProcessor `SO_INCOMING_CPU`. Linux's own refusals pass through (repair reads out of repair mode
+  and MultipathSubflow `MPTCP_FULL_INFO` (structures of our own: neither libc nor linux-raw-sys has them), read once
+  with arrays on the stack for the first subflow and the eight more the in-kernel path manager allows, and again with
+  arrays on the heap as long as the count only for a subflow past those (counted); LastReceivedHeader `IP_PKTOPTIONS`
+  or `IPV6_2292PKTOPTIONS` by the peer's family into room for the packet information, three integer records and four
+  extension headers of the largest size (RFC 8200's hop-by-hop, destination, routing, destination), the IPv6
+  extension headers recorded given in order as the header bytes (a room filled to its end counted, since Linux stops
+  writing at the first record that does not fit and says nothing); Linux records no IPv4 options for TCP, so an IPv4
+  reading's header bytes are always none (counted); IncomingProcessor `SO_INCOMING_CPU`. Linux's own refusals pass through (repair reads out of repair mode
   EPERM or EINVAL, `TCP_AO_INFO` without authentication ENOENT, `MPTCP_INFO` on TCP or a fallen-back connection
   EOPNOTSUPP, `TCP_TIMESTAMP` on MPTCP EOPNOTSUPP).
 - Repair settings: `RepairOptions` `TCP_REPAIR_OPTIONS` (a few `tcp_repair_opt` at a time on the stack, Linux taking
@@ -113,7 +117,9 @@
   answer Linux's own EPERM when the host lacks it.
 - A fixed IPv6 flow label on a listener, an accepted connection or after connect (Linux fixes it only at connect).
 - What Linux does not record of the last packet a TCP socket received: its length and fixed IP header
-  (`LastReceivedHeader` gives the options and extension headers recorded, length 0, counted).
+  (`LastReceivedHeader` gives the IPv6 extension headers recorded, length 0, counted), and the IPv4 options of
+  that packet (`IP_PKTOPTIONS` writes only `IP_PKTINFO`, `IP_TTL` and `IP_TOS`: do_ip_getsockopt in
+  net/ipv4/ip_sockglue.c), so an IPv4 reading's header bytes are none, counted.
 - A multipath connection that fell back to TCP has no `MPTCP_INFO` (EOPNOTSUPP), so `fell_back_to_tcp` is never
   true in a reading on Linux 7.0.
 - A listener's timestamp clock: Linux never lets a listener into repair mode (EPERM).
@@ -131,7 +137,8 @@
   values and `set_authentication_counters` (whose effect only read_state shows), timestamps, multipath state; the
   privileged settings, run as root in a network namespace. Host needs, measured on Linux 7.0 (Ubuntu's
   7.0.0-1018-aws): `CONFIG_TCP_AO` (6.7 and later) for the authentication readings and repair values,
-  `CONFIG_MPTCP` with `MPTCP_FULL_INFO` (6.7 and later) for the subflows, 6.18 or later for the Accurate ECN fields
+  `CONFIG_MPTCP` with `MPTCP_FULL_INFO` (6.5 and later) for the subflows, later kernels for the newest
+  `mptcp_info` fields (`subflows_total`, `endp_laminar_max`, the `last_*` times; zero and counted before), 6.18 or later for the Accurate ECN fields
   of `TCP_INFO` (zero and counted before), `tcp_vegas` and `tcp_bbr` modules for their congestion information,
   CAP_NET_ADMIN for repair mode.
 
@@ -197,6 +204,10 @@ machine allows, and each stays clear of the value it is checked against.
   PACING_RATE 1 MiB/s over PACED_BYTES 1 MiB, at least PACED_AT_LEAST 400 ms (measured: 704 ms paced, 0.65 ms not).
   TRANSMIT_DELAY 50 ms. FAST_OPEN_QUEUE 8. BACKLOG 16. SEGMENT 1000 bytes, below loopback's segment size.
   BOUND_RATIO 4, how much less a bounded buffer lets through than the default one. WIDE_LOW_WATER 1 MiB.
+  LARGER_BUFFER 4, how many times SETTING_BYTES the tuned check asks of the receive buffer: more than the send
+  buffer doubled, so that each buffer reads its own. SMALL_RECEIVE_BUFFER 8 KiB, the repair check's client receive
+  buffer, well below the window a connection offers by default, so that the two ends' windows differ.
+  SET_PROCESSOR 3, a processor a listener is told to receive on that is not the first (Linux takes any number).
 - Sizes. TRANSFER 1 MiB for the order check. HEADER_ROOM 256 bytes for a SYN's headers, CUT_HEADER 3 to cut them.
   ENTRY_ROOM 64 and PACKET_ROOM 512 bytes for error queue entries and their packets. PEEK_OFFSET 2 and READ_PART 4
   bytes into MESSAGE. CAPTURE_BUFFER 16 MiB, enough for every check's traffic at once. STATISTICS_ROUNDS 10 and
