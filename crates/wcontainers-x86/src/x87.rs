@@ -1556,7 +1556,8 @@ pub fn neighbours(a: u128, b: u128) -> bool {
 /// Whether `result` lies above in magnitude the exact value of the transcendental instruction `m` of ST(0)
 /// `x` and ST(1) `y` (what C1 says of it; `fptan`'s tangent, `fsincos`'s cosine), by the full evaluation;
 /// `None` where the value is exact, the operands are outside its range or the reference follows a rule of its
-/// own (a tiny operand's sine, cosine or `f2xm1`, a tiny quotient's arc tangent, a power of two's logarithm).
+/// own (a tiny operand's sine, cosine or `f2xm1`, a tiny quotient's arc tangent, a power of two's logarithm
+/// whose product is exact).
 pub fn above_exact(
     m: iced_x86::Mnemonic,
     x: Extended,
@@ -1578,17 +1579,19 @@ pub fn above_exact(
         {
             return None;
         }
-        Fyl2x if power_of_two(x.float()).is_some() => return None,
-        Fyl2xp1 if one_more.status == Status::OK && power_of_two(one_more.value).is_some() => {
-            return None;
-        }
         Fsin => transcendental::sine(x),
         Fcos | Fsincos => transcendental::cosine(x),
         Fptan => transcendental::tangent(x),
         F2xm1 if below(x, 0) => transcendental::exponent_minus_one(x),
-        Fyl2x if finite(y) && !x.sign => transcendental::logarithm(y, x),
+        Fyl2x if finite(y) && !x.sign => match power_of_two(x.float()) {
+            Some(k) => inexact_power_product(y, k)?,
+            None => transcendental::logarithm(y, x),
+        },
         Fyl2xp1 if finite(y) && (!x.sign || below(x, 0)) => {
-            transcendental::logarithm_plus_one(y, x)
+            match power_of_two(one_more.value).filter(|_| one_more.status == Status::OK) {
+                Some(k) => inexact_power_product(y, k)?,
+                None => transcendental::logarithm_plus_one(y, x),
+            }
         }
         Fpatan if finite(y) => transcendental::arc_tangent(y, x),
         _ => return None,
@@ -1682,6 +1685,16 @@ fn power_logarithm(y: Extended, k: i32, fcw: u16) -> Rounded<Extended> {
         value = if value.is_negative() { -below } else { below };
     }
     flagged_inexact(rounded_wide(value, fcw))
+}
+
+/// `y * k`, the value of `fyl2x` of 2^k or `fyl2xp1` of 2^k - 1, rounded to odd (on the same side of every
+/// 64-bit value as the exact one), where it is not exact at 64 bits (the reference's own rule gives an exact
+/// one's result and C1).
+fn inexact_power_product(y: Extended, k: i32) -> Option<Wide> {
+    let product = odd(y
+        .wide()
+        .mul_r(Wide::from_i128(k.into()).value, Round::TowardZero));
+    (rounded_wide(product, CONTROL_AT_START).exceptions & PRECISION != 0).then_some(product)
 }
 
 /// The exponent of `v` where it is exactly a power of two.

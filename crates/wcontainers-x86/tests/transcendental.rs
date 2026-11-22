@@ -79,6 +79,51 @@ fn transcendental_results_are_correctly_rounded() {
     );
 }
 
+/// A power of two's logarithm whose product `y * k` is inexact has its side told, and it is the unit's C1; an
+/// exact product's is the reference's own rule (ST(0), ST(1), the result in the nearest mode, its side).
+#[test]
+fn a_power_of_two_logarithm_has_its_side_where_the_product_is_inexact() {
+    const CASES: &str = "\
+fyl2x 00018000000000000000 bffec256ef63c5e51f00 400cc250dcac4ac6efd7 below
+fyl2x 20008000000000000000 bffec256ef63c5e51f00 400bc250dcac4ac6efd7 below
+fyl2x 00028000000000000000 bffec256ef63c5e51f00 400cc24dd3508d37d843 above
+fyl2xp1 bffefff8000000000000 bfccd91ce50a1e25ab34 3fd0b0677a18387e9b1a below
+fyl2x 3ffe8000000000000000 bffec256ef63c5e51f01 3ffec256ef63c5e51f01 ruled";
+    for line in CASES.lines() {
+        let [name, x, y, want, side] = line.split(' ').collect::<Vec<_>>()[..] else {
+            panic!("a case: {line}");
+        };
+        let (mnemonic, operation) = match name {
+            "fyl2x" => (Mnemonic::Fyl2x, Operation::Logarithm),
+            _ => (Mnemonic::Fyl2xp1, Operation::LogarithmPlusOne),
+        };
+        let side = match side {
+            "above" => Some(true),
+            "below" => Some(false),
+            _ => None,
+        };
+        assert_eq!(
+            above_exact(mnemonic, hex(x), hex(y), hex(want)),
+            side,
+            "{line}"
+        );
+        let mut area = vec![0u8; size_of::<Fxsave>()];
+        let mut code = Code::new(operation);
+        code.pops = 1;
+        let mut unit = Unit::new(&mut area, code, 0);
+        unit.area.fcw = CONTROL_AT_START;
+        unit.area.fsw =
+            (wcontainers_x86::x87::REGISTERS as u16 - 1) << wcontainers_x86::x87::TOP_SHIFT;
+        unit.set(1, hex(y));
+        unit.set(0, hex(x));
+        unit.run(0, 0);
+        assert_eq!(unit.get(0), hex(want), "{line}");
+        if let Some(up) = side {
+            assert_eq!(unit.area.fsw & C1 != 0, up, "{line}");
+        }
+    }
+}
+
 /// Layer 1's test of the side of the exact value a result lies on agrees with every inexact correctly
 /// rounded value's C1 outside the reference's own rules.
 #[test]
