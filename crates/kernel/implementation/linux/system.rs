@@ -251,6 +251,34 @@ impl ProcessInfo<'_> {
         (self.process.parent != 0).then(|| task_id(self.process.parent))
     }
 
+    /// Whether another process holds this one's memory open through `/proc/<pid>/mem`, the one
+    /// way here to read a process's state that lasts beyond a call (`process_vm_readv` reads within
+    /// its call, and ptrace is not built).
+    pub fn inspected(&self) -> bool {
+        let (pid, memory) = (self.process.pid, self.process.memory);
+        let reads_this = |file: &crate::file::OpenFile| {
+            file.memory == Some(memory)
+                && matches!(
+                    file.node.borrow().content,
+                    crate::fs::Content::Proc(crate::fs::proc::Entry::ProcessFile(
+                        task,
+                        crate::fs::proc::ProcessFile::Mem,
+                    )) if task.pid == pid
+                )
+        };
+        self.kernel
+            .threads
+            .values()
+            .filter(|thread| thread.process != pid)
+            .any(|thread| {
+                thread
+                    .files
+                    .borrow()
+                    .iter()
+                    .any(|(_, descriptor)| reads_this(&descriptor.file.borrow()))
+            })
+    }
+
     /// CPU time the process's threads have used, ended ones included.
     pub fn compute_used(&self) -> Duration {
         let live: u64 = self

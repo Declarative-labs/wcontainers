@@ -3005,3 +3005,32 @@ fn a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer()
         }
     }
 }
+
+/// Records, at each `sched_yield` of the container's first process, whether another process
+/// reads its state.
+struct Inspections(Arc<Mutex<Vec<bool>>>);
+
+impl Hooks for Inspections {
+    fn intercept_system_call_request(
+        &mut self,
+        process: Process<'_>,
+        _: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if request.number.0 == u64::from(general::__NR_sched_yield)
+            && process.id() == driver::FIRST_PROCESS
+        {
+            self.0.lock().unwrap().push(process.info().inspected());
+        }
+        ControlFlow::Continue(request)
+    }
+}
+
+#[test]
+fn a_process_is_inspected_while_another_holds_its_memory_open() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let hooks = Box::new(Inspections(seen.clone()));
+    let run = try_guest("inspected", &[], Some(hooks), 1, None).expect("an outcome on our kernel");
+    assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+    assert_eq!(*seen.lock().unwrap(), [false, true, false, false]);
+}

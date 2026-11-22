@@ -246,9 +246,8 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static> interface::ProcessInfo
         self.info().parent()
     }
 
-    /// No reader of another process's state announces itself yet, so none is counted.
     fn is_inspected(&self) -> bool {
-        false
+        self.info().inspected()
     }
 }
 
