@@ -4606,6 +4606,7 @@ dependencies = [
  "siphasher",
  "smallbox",
  "smallvec",
+ "spin 0.10.1",
  "wcontainers-abi",
  "wcontainers-clock",
  "wcontainers-executor",
