@@ -349,6 +349,11 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KA, thirteenth run: nothing to conform to (no merge from main since a00ab267) and no new ruling,
+so no code changed and no suite was run again (its inputs are those of the twelfth run). Every
+open item still waits for the owner, for tools that may not run, or for the independent check.
+See "KA, thirteenth run".
+
 KA, twelfth run: the whole suite at the tip gives K6c bar's results once the reference's own file
 server stopped printing a reply Linux refused for an interrupted request (1fcc83c8; it had made
 one backend test fail now and then under load, on the reference's side). No interface changed
@@ -668,6 +673,21 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, thirteenth run
+
+Started about 11:00 UTC on 2026-11-22 at 116d0794. No merge from main since a00ab267, and the
+orchestrator's notes (brief-kernel.md, open-with-owner.md) hold no new ruling on `ProcessTracer`,
+the release profile or `FallbackObserver`. Commits since the twelfth run's suite touch only other
+tracks' crates, so the suite was not run again. Nothing was built on the Mac.
+- Literal baseline: all 249 lines that say "goes when kernel adopts it" lie in the interface's own
+  files (errno.rs 133, signal.rs 36, signal_information.rs 80), none in this track's crates (the
+  first For-the-owner item).
+- Read again for the independent check, every place a waiting call is dropped: a link let go
+  (outside.rs `let_go`) and a wait replaced (`watch`), a stream end's wait (ends.rs), and restore,
+  which drops name and readiness waits and asks the lookups again. A backend request is never
+  dropped: it stays until the system finishes it, and restore keeps it. A lookup whose socket
+  closed keeps its call until answered and then delivers nothing. No inconsistency found.
 
 ## KA, twelfth run
 
