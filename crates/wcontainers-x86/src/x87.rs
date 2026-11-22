@@ -1553,6 +1553,50 @@ pub fn neighbours(a: u128, b: u128) -> bool {
     up(a) == b.to_bits() || up(b) == a.to_bits()
 }
 
+/// Whether `result` lies above in magnitude the exact value of the transcendental instruction `m` of ST(0)
+/// `x` and ST(1) `y` (what C1 says of it; `fptan`'s tangent, `fsincos`'s cosine), by the full evaluation;
+/// `None` where the value is exact, the operands are outside its range or the reference follows a rule of its
+/// own (a tiny operand's sine, cosine or `f2xm1`, a tiny quotient's arc tangent, a power of two's logarithm).
+pub fn above_exact(
+    m: iced_x86::Mnemonic,
+    x: Extended,
+    y: Extended,
+    result: Extended,
+) -> Option<bool> {
+    use iced_x86::Mnemonic::*;
+    let finite = |v: Extended| matches!(v.class(), Class::Denormal | Class::Normal);
+    let below = |v: Extended, e: i32| i32::from(v.exponent) < BIAS + e;
+    let one_more = x.float().add_r(Extended::ONE.float(), Round::TowardZero);
+    let exact = match m {
+        _ if !finite(x) || !finite(result) => return None,
+        Fsin | Fcos | Fsincos | Fptan if !below(x, REDUCED_BELOW) => return None,
+        Fsin | Fcos | Fsincos | F2xm1 if tiny(x) => return None,
+        Fpatan
+            if finite(y)
+                && !x.sign
+                && transcendental::quotient_below(y, x, TINY_QUOTIENT_BELOW) =>
+        {
+            return None;
+        }
+        Fyl2x if power_of_two(x.float()).is_some() => return None,
+        Fyl2xp1 if one_more.status == Status::OK && power_of_two(one_more.value).is_some() => {
+            return None;
+        }
+        Fsin => transcendental::sine(x),
+        Fcos | Fsincos => transcendental::cosine(x),
+        Fptan => transcendental::tangent(x),
+        F2xm1 if below(x, 0) => transcendental::exponent_minus_one(x),
+        Fyl2x if finite(y) && !x.sign => transcendental::logarithm(y, x),
+        Fyl2xp1 if finite(y) && (!x.sign || below(x, 0)) => {
+            transcendental::logarithm_plus_one(y, x)
+        }
+        Fpatan if finite(y) => transcendental::arc_tangent(y, x),
+        _ => return None,
+    };
+    let result = result.wide();
+    (exact != result).then(|| result.abs() > exact.abs())
+}
+
 /// Below 2^-68 the reference gives a sine and a cosine rounded to the nearest whatever the rounding control
 /// (the operand, and one) with C1 clear, and an `f2xm1` by a product with ln 2 (seen on the reference).
 const TINY_BELOW: i32 = -68;

@@ -3,9 +3,11 @@
 //! control, ST(0), ST(1), the result, its C1 and precision flags, and for `fsincos` the sine, in hex), the
 //! trigonometric ones with the argument reduced by Intel's 66-bit π.
 
+use iced_x86::Mnemonic;
 use wcontainers_x86::Fxsave;
 use wcontainers_x86::x87::{
     C1, CONTROL_AT_START, Code, Extended, FIELD, Operation, PRECISION, ROUNDING_SHIFT, Unit,
+    above_exact,
 };
 
 const CASES: &str = include_str!("transcendental.txt");
@@ -69,6 +71,48 @@ fn transcendental_results_are_correctly_rounded() {
             ));
         }
     }
+    assert!(
+        failures.is_empty(),
+        "{} of {count} differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Layer 1's test of the side of the exact value a result lies on agrees with every inexact correctly
+/// rounded value's C1 outside the reference's own rules.
+#[test]
+fn the_exact_side_is_c1() {
+    let mut failures = Vec::new();
+    let (mut count, mut ruled) = (0, 0);
+    for line in CASES.lines() {
+        let fields = line.split(' ').collect::<Vec<_>>();
+        let [name, _, x, y, want, flags, ..] = fields[..] else {
+            panic!("a case: {line}");
+        };
+        let flags = u16::from_str_radix(flags, 16).expect("hex");
+        if flags & PRECISION == 0 {
+            continue;
+        }
+        let mnemonic = match name {
+            "fsin" => Mnemonic::Fsin,
+            "fsincos" => Mnemonic::Fsincos,
+            "fcos" => Mnemonic::Fcos,
+            "fptan" => Mnemonic::Fptan,
+            "f2xm1" => Mnemonic::F2xm1,
+            "fyl2x" => Mnemonic::Fyl2x,
+            "fyl2xp1" => Mnemonic::Fyl2xp1,
+            "fpatan" => Mnemonic::Fpatan,
+            _ => panic!("an instruction: {name}"),
+        };
+        count += 1;
+        match above_exact(mnemonic, hex(x), hex(y), hex(want)) {
+            None => ruled += 1,
+            Some(up) if up != (flags & C1 != 0) => failures.push(line),
+            Some(_) => {}
+        }
+    }
+    println!("{count} inexact values, {ruled} under the reference's own rules");
     assert!(
         failures.is_empty(),
         "{} of {count} differ:\n{}",
