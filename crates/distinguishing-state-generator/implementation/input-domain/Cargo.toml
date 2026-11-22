@@ -1,0 +1,27 @@
+[package]
+name = "wcontainers-distinguishing-state-generator-input-domain"
+description = "Every combination of the critical values of an instruction's operands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-distinguishing-state-generator = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[dev-dependencies]
+wcontainers-distinguishing-state-generator-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
