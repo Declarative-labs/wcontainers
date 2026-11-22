@@ -1104,7 +1104,7 @@ fn segment_permissions(flags: u32) -> Permissions {
 /// A word of the host's randomness.
 fn random_word<S: crate::System>(cx: &Context<'_, S>) -> u64 {
     let mut bytes = [0; size_of::<u64>()];
-    cx.host.random(&mut bytes);
+    cx.random(&mut bytes);
     u64::from_le_bytes(bytes)
 }
 
@@ -1142,7 +1142,7 @@ fn build_stack<S: crate::System>(
         ((strings_start - below_strings) & !(STACK_ALIGNMENT - 1)) - PLATFORM.len() as u64;
     let random = platform - 16;
     let mut random_bytes = [0u8; 16];
-    cx.host.random(&mut random_bytes);
+    cx.random(&mut random_bytes);
 
     let mut vector: Vec<(u32, u64)> = auxiliary.to_vec();
     vector.extend([

@@ -22,8 +22,8 @@ use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalV
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
     AccessKind, ContextOrigin, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
-    SignalInformation, SuspendedTask, System, SystemCallResponse, SystemVSegmentId, TaskId,
-    WatchesFor, reason, task_id_after,
+    SignalInformation, SuspendedTask, SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor,
+    reason, task_id_after,
 };
 
 fn out() -> PathBuf {
@@ -334,7 +334,7 @@ impl Hooks for Recorder {
 fn a_hook_called_while_one_runs_is_reported_as_nested() {
     let host = driver::TestHost::new(1).with_hooks(Box::new(Recorder::default()));
     let _running = host.hook();
-    host.allocate_task_id(TaskId(1));
+    wcontainers_system::TaskIdAllocator::allocate_task_id(&host, TaskId(1));
 }
 
 #[test]

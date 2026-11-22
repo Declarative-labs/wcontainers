@@ -429,14 +429,20 @@ pub fn locked_mtu_without_value_uses_the_device_mtu<R: RouteResolver>(resolver: 
     ///
     /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 6, 0, 1);
+    /// An address routed through an IPv6 gateway with a locked MTU.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
+    const THROUGH_IPV6_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 21, 0, 1);
     network();
     const ROUTES: &str = "route add 10.7.0.0/16 via 10.1.0.2 mtu lock 0
-route add 10.6.0.0/16 dev da mtu lock 0";
+route add 10.6.0.0/16 dev da mtu lock 0
+route add 10.21.0.0/16 via inet6 fd01::2 dev da mtu lock 0";
     ip(IPV4, ROUTES);
     let options = Ipv4Options::new();
     for (destination, path_mtu) in [
         (THROUGH_GATEWAY, MINIMUM_REASSEMBLY),
         (ON_LINK, MaximumTransmissionUnit(A_MTU)),
+        (THROUGH_IPV6_GATEWAY, MINIMUM_REASSEMBLY),
     ] {
         let route = resolve4(&resolver, v4(&options, destination)).expect("resolves");
         assert_eq!(route.path_mtu, path_mtu, "{destination}");
@@ -480,6 +486,73 @@ pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolve
     }
 }
 
+/// Checks that a rule on the DSCP takes lookups to an encapsulating route, whose path MTU a socket with that DSCP is told.
+pub fn dscp_rule_takes_an_encapsulating_route<R: RouteResolver>(resolver: R) {
+    /// A DSCP the rule selects, and the traffic class a socket sends it in.
+    const DSCP: IpDscp = IpDscp::CS1;
+    /// An address behind an encapsulating route in table 100 and a plain one in main.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
+    const DESTINATION: Ipv4Addr = Ipv4Addr::new(10, 5, 0, 1);
+    /// An IPv6 address behind an encapsulating route in table 100 and a plain one in main.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
+    const DESTINATION_V6: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 1);
+    let network = network();
+    const ROUTES: &str = "route add 10.5.0.0/16 dev da
+route add 10.5.0.0/16 encap seg6 mode encap segs fd02::7 dev db table 100
+rule add dscp 8 lookup 100";
+    const ROUTES_V6: &str = "route add fd05::/64 dev da
+route add fd05::/64 encap seg6 mode encap segs fd02::7 dev db table 100
+rule add dscp 8 lookup 100";
+    ip(IPV4, ROUTES);
+    ip(IPV6, ROUTES_V6);
+    let options = Ipv4Options::new();
+    let ecn = IpEcn::Ect0;
+    let traffic_class = (DSCP.value() << IpEcn::MAX_U8.count_ones()) | ecn.value();
+    for (marked, plain, destination) in [
+        (
+            resolve4(
+                &resolver,
+                Ipv4RouteSelectors {
+                    dscp: DSCP,
+                    ecn,
+                    ..v4(&options, DESTINATION)
+                },
+            ),
+            resolve4(&resolver, v4(&options, DESTINATION)),
+            IpAddr::V4(DESTINATION),
+        ),
+        (
+            resolve6(
+                &resolver,
+                Ipv6RouteSelectors {
+                    dscp: DSCP,
+                    ecn,
+                    ..v6(DESTINATION_V6)
+                },
+            ),
+            resolve6(&resolver, v6(DESTINATION_V6)),
+            IpAddr::V6(DESTINATION_V6),
+        ),
+    ] {
+        let told = told_source_and_path_mtu(destination, DISCARD, traffic_class).1;
+        assert!(told.0 < B_MTU, "{destination}: {told:?}");
+        let marked = marked.expect("resolves");
+        assert_eq!(
+            (marked.interface, marked.path_mtu),
+            (network.b, told),
+            "{destination}"
+        );
+        let plain = plain.expect("resolves");
+        assert_eq!(
+            (plain.interface, plain.path_mtu),
+            (network.a, MaximumTransmissionUnit(A_MTU)),
+            "{destination}"
+        );
+    }
+}
+
 /// The discard port ([RFC 863](https://www.rfc-editor.org/rfc/rfc863)); connecting sends nothing.
 const DISCARD: u16 = 9;
 
@@ -490,11 +563,28 @@ fn connected_path_mtu(address: IpAddr, port: u16) -> u32 {
 
 /// Returns the source Linux gives a datagram socket connected to the address, and the path MTU it tells it.
 fn connected_source_and_path_mtu(address: IpAddr, port: u16) -> (IpAddr, MaximumTransmissionUnit) {
+    told_source_and_path_mtu(address, port, u8::MIN)
+}
+
+/// Returns the source and path MTU Linux gives a datagram socket of that traffic class connected to the address.
+fn told_source_and_path_mtu(
+    address: IpAddr,
+    port: u16,
+    traffic_class: u8,
+) -> (IpAddr, MaximumTransmissionUnit) {
     let any = match address {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     };
     let socket = std::net::UdpSocket::bind((any, u16::MIN)).expect("a socket opens");
+    #[cfg(target_os = "linux")]
+    match address {
+        IpAddr::V4(_) => rustix::net::sockopt::set_ip_tos(&socket, traffic_class),
+        IpAddr::V6(_) => rustix::net::sockopt::set_ipv6_tclass(&socket, u32::from(traffic_class)),
+    }
+    .expect("a socket takes a traffic class");
+    #[cfg(not(target_os = "linux"))]
+    let _ = traffic_class;
     socket.connect((address, port)).expect("connects");
     let source = socket
         .local_addr()
@@ -1167,11 +1257,11 @@ pub fn routing_header_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
         }
         header
     };
-    // A type 2 header holds one segment left, its address; a type 4 one starts at its last entry.
+    // A type 2 header holds one segment left, its address; a type 4 one goes to the entry its segments left names, here its middle one.
     let home = [B_GATEWAY_V6];
-    let segments = [FAR_V6, B_GATEWAY_V6];
+    let segments = [FAR_V6, B_GATEWAY_V6, A_FOREIGN_V6];
     let home = header(IPV6_SRCRT_TYPE_2, home.len(), &home);
-    let segments = header(IPV6_SRCRT_TYPE_4, segments.len() - 1, &segments);
+    let segments = header(IPV6_SRCRT_TYPE_4, segments.len() - 2, &segments);
     for header in [home, segments] {
         let routing_header = Ipv6RawExtHeaderSlice::from_slice(&header).expect("a routing header");
         let route = Ipv6RouteSelectors {
@@ -1484,6 +1574,126 @@ pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
     check6(sctp(OTHER), network.a, false);
 }
 
+/// Checks that IPv4 options `IP_OPTIONS` refuses are refused with its error, and well-formed ones are taken.
+pub fn malformed_ipv4_options_are_refused_as_a_send_refuses_them<R: RouteResolver>(resolver: R) {
+    /// Where a source route's pointer is, after its type and length.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc791#section-3.1
+    const POINTER: usize = 2;
+    /// Where an option's length is, after its type.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc791#section-3.1
+    const LENGTH: usize = 1;
+    network();
+    let whole = source_route(IPOPT_LSRR, B_GATEWAY);
+    let route = whole.as_slice();
+    let mut pointer_past_its_end = route.to_vec();
+    pointer_past_its_end[POINTER] = SOURCE_ROUTE_LENGTH + 1;
+    let mut length_of_no_address = route.to_vec();
+    length_of_no_address[LENGTH] = SOURCE_ROUTE_LENGTH + 1;
+    let mut two_source_routes = route[..usize::from(SOURCE_ROUTE_LENGTH)].repeat(2);
+    two_source_routes.resize(route.len() * 2, u8::MIN);
+    for options in [
+        pointer_past_its_end,
+        length_of_no_address,
+        two_source_routes,
+    ] {
+        let options = Ipv4Options::try_from(options.as_slice()).expect("options");
+        let refused = ip_options_error(&options);
+        assert_ne!(refused, None, "{options:?}");
+        assert_eq!(
+            resolve4(&resolver, v4(&options, FAR)).err(),
+            refused,
+            "{options:?}"
+        );
+    }
+    assert_eq!(ip_options_error(&whole), None);
+    assert!(resolve4(&resolver, v4(&whole, FAR)).is_ok());
+}
+
+/// Returns the error a datagram socket's `IP_OPTIONS` gives for the options, if it refuses them.
+fn ip_options_error(options: &Ipv4Options) -> Option<HostError> {
+    #[cfg(target_os = "linux")]
+    {
+        let socket =
+            std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, u16::MIN)).expect("a socket opens");
+        let bytes = options.as_slice();
+        // SAFETY: the value is the options' bytes, which the call only reads for their length.
+        let result = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(&socket),
+                libc::IPPROTO_IP,
+                libc::IP_OPTIONS,
+                bytes.as_ptr().cast(),
+                libc::socklen_t::try_from(bytes.len()).expect("a length"),
+            )
+        };
+        (result != 0).then(|| {
+            HostError::Errno(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .expect("an errno"),
+            )
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    panic!("only Linux sets IP options as the checks know them: {options:?}");
+}
+
+/// Checks that a route in a namespace without an IPv4 address goes from the unspecified address, as a socket connected along it does.
+pub fn a_namespace_without_an_ipv4_address_routes_from_the_unspecified_address<R: RouteResolver>(
+    resolver: R,
+) {
+    /// The MTU of the link without addresses, more than the least IPv6 takes and unlike da's and db's.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc8200#section-5
+    const BARE_MTU: u32 = 1450;
+    /// An address routed out of the link without addresses.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
+    const DESTINATION: Ipv4Addr = Ipv4Addr::new(10, 30, 0, 1);
+    const BARE: &str = "dc";
+    // No link of the namespace has an IPv4 address of universe scope to lend.
+    enter_network_namespace();
+    const BARE_LINK: &str = "link set lo up
+link add dc type dummy
+link set dc addrgenmode none
+link set dc up mtu 1450
+route add 10.30.0.0/16 dev dc";
+    ip(IPV4, BARE_LINK);
+    let options = Ipv4Options::new();
+    let route = resolve4(&resolver, v4(&options, DESTINATION)).expect("resolves");
+    let told = connected_source_and_path_mtu(IpAddr::V4(DESTINATION), DISCARD);
+    assert_eq!(
+        told,
+        (
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            MaximumTransmissionUnit(BARE_MTU)
+        )
+    );
+    assert_eq!(
+        (route.interface, route.source, route.path_mtu),
+        (index(BARE), told.0, told.1)
+    );
+}
+
+/// Checks that an IPv4-mapped IPv6 destination routes as a dual-stack socket sends to it, over IPv4 from a mapped source.
+pub fn an_ipv4_mapped_destination_routes_over_ipv4<R: RouteResolver>(resolver: R) {
+    let network = network();
+    for (destination, interface) in [(FAR, network.a), (B_GATEWAY, network.b)] {
+        let mapped = destination.to_ipv6_mapped();
+        let route = resolve6(&resolver, v6(mapped)).expect("resolves");
+        assert_eq!(
+            (route.interface, route.source, route.path_mtu),
+            {
+                let (source, path_mtu) = connected_source_and_path_mtu(IpAddr::V6(mapped), DISCARD);
+                (interface, source, path_mtu)
+            },
+            "{mapped}"
+        );
+    }
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -1521,6 +1731,11 @@ macro_rules! tests {
         #[test]
         fn encapsulating_route_leaves_room_for_its_headers() {
             $crate::encapsulating_route_leaves_room_for_its_headers($value);
+        }
+
+        #[test]
+        fn dscp_rule_takes_an_encapsulating_route() {
+            $crate::dscp_rule_takes_an_encapsulating_route($value);
         }
 
         #[test]
@@ -1641,6 +1856,21 @@ macro_rules! tests {
         #[test]
         fn other_protocols_route() {
             $crate::other_protocols_route($value);
+        }
+
+        #[test]
+        fn malformed_ipv4_options_are_refused_as_a_send_refuses_them() {
+            $crate::malformed_ipv4_options_are_refused_as_a_send_refuses_them($value);
+        }
+
+        #[test]
+        fn a_namespace_without_an_ipv4_address_routes_from_the_unspecified_address() {
+            $crate::a_namespace_without_an_ipv4_address_routes_from_the_unspecified_address($value);
+        }
+
+        #[test]
+        fn an_ipv4_mapped_destination_routes_over_ipv4() {
+            $crate::an_ipv4_mapped_destination_routes_over_ipv4($value);
         }
     };
 }

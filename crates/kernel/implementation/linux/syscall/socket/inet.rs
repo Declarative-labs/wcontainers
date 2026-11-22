@@ -1051,7 +1051,7 @@ fn take_port<S: crate::System>(
         return Ok(port);
     }
     let mut seed = [0u8; 4];
-    cx.host.random(&mut seed);
+    cx.random(&mut seed);
     let (low, high) = (*EPHEMERAL.start() as u32, *EPHEMERAL.end() as u32);
     let span = high - low + 1;
     let start = u32::from_le_bytes(seed) % span;

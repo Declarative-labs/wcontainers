@@ -1321,45 +1321,31 @@ pub(crate) fn start_terminal<S: crate::System>(
 /// Where runc opens the container's terminal pairs.
 pub const PTMX_PATH: &str = "/dev/ptmx";
 
-/// The embedder's bytes into the master its end holds, within the space promised, as a master write
-/// takes them: the slave's line discipline takes them in at once. Returns how many were past the
-/// promise, which are dropped.
+/// The system's bytes into the master its end holds, no more than there is room for, as a master
+/// write takes them: the slave's line discipline takes them in at once.
 pub(crate) fn receive_from_end<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     file: &FileRef,
     bytes: &[u8],
-) -> usize {
+) {
     let (pty, side, _) = end(file).expect("a terminal");
-    let taken = {
+    {
         let mut pair = pty.borrow_mut();
-        let taken = bytes
-            .len()
-            .min(usize::try_from(pair.promised).unwrap_or(usize::MAX));
-        pair.promised -= taken as u64;
         pair.process_echoes(side);
-        let written = pair.write(side, &bytes[..taken]);
-        debug_assert_eq!(written, taken, "the space was promised");
-        taken
-    };
+        let written = pair.write(side, bytes);
+        debug_assert_eq!(written, bytes.len(), "there was room");
+    }
     after(kernel, cx, &pty);
-    if taken > 0 {
+    if !bytes.is_empty() {
         update_time(kernel, cx, &pty, side, true);
     }
-    bytes.len() - taken
 }
 
-/// Credit to give the embedder writing a master: the space toward the slave past what is promised,
-/// once that is worth a credit (a page, or any space with nothing promised), now promised.
-pub(crate) fn credit_for_end(file: &FileRef) -> u64 {
+/// The room toward the slave a master its end holds has for the system's bytes.
+pub(crate) fn room_for_end(file: &FileRef) -> usize {
     let (pty, side, _) = end(file).expect("a terminal");
-    let mut pair = pty.borrow_mut();
-    let space = (pair.write_room(side) as u64).saturating_sub(pair.promised);
-    if space < wcontainers_abi::PAGE_SIZE && (pair.promised > 0 || space == 0) {
-        return 0;
-    }
-    pair.promised += space;
-    space
+    pty.borrow().write_room(side)
 }
 
 /// Up to `most` bytes the master its end holds has for the embedder, taken as a master read takes

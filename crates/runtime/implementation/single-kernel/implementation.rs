@@ -219,7 +219,10 @@ pub trait System: wcontainers_kernel_linux::System {
     fn cpu_warning(&self, warning: Warning<'_>);
     /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
     /// a terminal of this size when the configuration asks for one, else pipes.
-    fn standard(&self, terminal: Option<TerminalSize>) -> Standard;
+    fn standard(
+        &self,
+        terminal: Option<TerminalSize>,
+    ) -> Standard<<Self as wcontainers_system::StreamTransport>::Endpoint>;
     /// The executor's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
     #[cfg(feature = "std")]

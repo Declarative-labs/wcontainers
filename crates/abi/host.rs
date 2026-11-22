@@ -6,11 +6,6 @@
 /// The host's clocks count nanoseconds: how many make a second.
 pub const NANOSECONDS_PER_SECOND: u64 = core::time::Duration::from_secs(1).as_nanos() as u64;
 
-/// One end of a byte stream between the kernel and the embedder: a handle local to one kernel,
-/// whose other side the embedder holds. Each direction carries data, credit and closing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct End(pub u32);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostError {
     /// This host cannot do this at all.
@@ -52,32 +47,11 @@ pub enum Event<'a> {
     Timer,
     /// The backend sent a FUSE notice that was not asked for, such as "this file changed".
     BackendNotice { notice: &'a [u8] },
-    /// Bytes for an end, never more than the credit the kernel gave on it.
-    StreamData { end: End, bytes: &'a [u8] },
-    /// The kernel may send this many more bytes on an end.
-    StreamCredit { end: End, bytes: u64 },
-    /// The embedder has let go of an end: it sends and takes nothing more on it.
-    StreamClosed { end: End },
-    /// A terminal end's terminal changed size.
-    TerminalResized { end: End, columns: u16, rows: u16 },
+    /// The terminal of the first process's standard streams changed size.
+    TerminalResized { columns: u16, rows: u16 },
 }
 
-/// What the kernel asks of the host. First bodies may be naive or answer [`HostError::NotSupported`]; the
-/// interface is not optional.
+/// What the kernel tells the host: its warnings.
 pub trait Host: Sync {
-    /// Nanoseconds on a clock that never goes backwards.
-    fn monotonic_nanoseconds(&self) -> u64;
-    /// Nanoseconds since 1970 by the wall clock.
-    fn realtime_nanoseconds(&self) -> u64;
-    /// Fill with random bytes fit for cryptography.
-    fn random(&self, into: &mut [u8]);
-
     fn warn(&self, warning: Warning<'_>);
-
-    /// Bytes out of an end, never more than the credit the embedder gave on it.
-    fn send_stream(&self, end: End, bytes: &[u8]);
-    /// The embedder may send this many more bytes on an end (added to what it may send already).
-    fn credit_stream(&self, end: End, bytes: u64);
-    /// The kernel sends nothing more on an end, data or credit; the embedder frees it by closing it.
-    fn close_stream(&self, end: End);
 }

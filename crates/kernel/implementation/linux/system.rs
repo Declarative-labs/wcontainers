@@ -68,26 +68,23 @@ impl ExecutionConfig {
 
 pub use wcontainers_kernel::signal_information::SignalInformation;
 
-/// What an embedder implements: the abi's services, the file backend, the name resolver, TCP
-/// and UDP sockets, the task ids, and the hooks. Every hook is synchronous, fires only when every operation on its process is legal, and
-/// never nests.
+/// What an embedder implements: the warnings, the clocks, randomness, the task ids, the file
+/// backend, the name resolver, TCP and UDP sockets, the stream endpoints, and the hooks. Every
+/// hook is synchronous, fires only when every operation on its process is legal, and never nests.
 pub trait System:
     Host
+    + wcontainers_clock::Clock
+    + wcontainers_random_source::RandomSource
+    + wcontainers_system::TaskIdAllocator
     + wcontainers_system::FuseServer
     + wcontainers_system::DomainNameResolver
     + wcontainers_tcp_sockets::TcpConnections<Connection: 'static>
     + wcontainers_tcp_sockets::TcpListeners<Listener: 'static>
     + wcontainers_udp_sockets::UdpSockets<Socket: 'static>
+    + wcontainers_system::StreamTransport<Endpoint: 'static>
     + Sync
     + 'static
 {
-    /// A free id for a new process or thread; `previous` is the id handed out last.
-    fn allocate_task_id(&self, previous: TaskId) -> TaskId {
-        task_id_after(previous)
-    }
-    /// No process, thread, process group or session carries `id` any more.
-    fn free_task_id(&self, id: TaskId);
-
     /// A system call a thread made, before anything of it happens: `Continue` runs the request
     /// returned, `Break` answers it without running it.
     fn intercept_system_call_request(

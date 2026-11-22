@@ -24,6 +24,8 @@ pub(crate) enum WaitFor {
     Name(u64),
     /// A TCP connection or listener to the outside becoming ready, by its number.
     Ready(u32),
+    /// A stream endpoint of an end becoming ready, by the end's number.
+    Stream(crate::ends::EndNumber),
 }
 
 /// What a finished waiting call gives the kernel.
@@ -32,7 +34,7 @@ pub(crate) enum Answer {
     Backend(Result<(i32, alloc::rc::Rc<[u8]>), wcontainers_abi::HostError>),
     /// The resolver's answer, as the message's bytes.
     Name(Result<Vec<u8>, wcontainers_abi::HostError>),
-    /// What a connection or listener is ready for.
+    /// What a connection, listener or stream endpoint is ready for.
     Ready(Result<wcontainers_readiness::ReadyFor, wcontainers_abi::HostError>),
 }
 
@@ -92,6 +94,9 @@ impl crate::Kernel {
             }
             (WaitFor::Ready(id), Answer::Ready(ready)) => {
                 crate::syscall::socket::outside_ready(self, cx, id, ready);
+            }
+            (WaitFor::Stream(end), Answer::Ready(ready)) => {
+                self.end_ready(cx, end, ready);
             }
             (about, _) => {
                 debug_assert!(false, "{about:?} answered as another call");

@@ -7,7 +7,9 @@
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hasher};
 
-use wcontainers_abi::{End, Event, HostError, MemoryId};
+use wcontainers_abi::{Event, HostError, MemoryId};
+
+use crate::streams::End;
 use wcontainers_runtime_single_kernel::Turn;
 
 /// One thing the host gave, in the order the kernel took it.
@@ -32,6 +34,11 @@ pub enum Entry {
     NameAnswered(u64, Vec<u8>),
     /// What a socket a wait of the kernel's is on became ready for, by its number.
     SocketReady(u32, wcontainers_readiness::ReadyFor),
+    /// What a stream endpoint a wait of the kernel's is on became ready for.
+    StreamReady(End, wcontainers_readiness::ReadyFor),
+    /// A send on a stream endpoint, and a receive with what it gave.
+    StreamSent(Result<usize, HostError>),
+    StreamReceived(Result<usize, HostError>, Vec<u8>),
     /// A TCP connect, listen or accept, and the number it gave.
     SocketMade(Result<u32, HostError>),
     /// A signal the outside sent to the first process.
@@ -49,10 +56,7 @@ pub enum Entry {
 pub enum OwnedEvent {
     Timer,
     BackendNotice(Vec<u8>),
-    StreamData { end: End, bytes: Vec<u8> },
-    StreamCredit { end: End, bytes: u64 },
-    StreamClosed(End),
-    TerminalResized { end: End, columns: u16, rows: u16 },
+    TerminalResized { columns: u16, rows: u16 },
 }
 
 impl OwnedEvent {
@@ -60,15 +64,7 @@ impl OwnedEvent {
         match *event {
             Event::Timer => Self::Timer,
             Event::BackendNotice { notice } => Self::BackendNotice(notice.to_vec()),
-            Event::StreamData { end, bytes } => Self::StreamData {
-                end,
-                bytes: bytes.to_vec(),
-            },
-            Event::StreamCredit { end, bytes } => Self::StreamCredit { end, bytes },
-            Event::StreamClosed { end } => Self::StreamClosed(end),
-            Event::TerminalResized { end, columns, rows } => {
-                Self::TerminalResized { end, columns, rows }
-            }
+            Event::TerminalResized { columns, rows } => Self::TerminalResized { columns, rows },
         }
     }
 
@@ -76,14 +72,7 @@ impl OwnedEvent {
         match self {
             Self::Timer => Event::Timer,
             Self::BackendNotice(notice) => Event::BackendNotice { notice },
-            Self::StreamData { end, bytes } => Event::StreamData { end: *end, bytes },
-            Self::StreamCredit { end, bytes } => Event::StreamCredit {
-                end: *end,
-                bytes: *bytes,
-            },
-            Self::StreamClosed(end) => Event::StreamClosed { end: *end },
-            Self::TerminalResized { end, columns, rows } => Event::TerminalResized {
-                end: *end,
+            Self::TerminalResized { columns, rows } => Event::TerminalResized {
                 columns: *columns,
                 rows: *rows,
             },

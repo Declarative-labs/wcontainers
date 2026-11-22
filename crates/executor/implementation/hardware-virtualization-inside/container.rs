@@ -162,7 +162,7 @@ pub fn start<R: Ring, S: System>(
         options: StartOptions::default(),
     };
     kernel
-        .start(cpu, system, &start)
+        .start(cpu, system, start)
         .expect("the kernel runs a default container's first process");
     system.started(kernel, cpu);
     Ok(())

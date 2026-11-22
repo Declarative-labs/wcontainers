@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use wcontainers_executor_unicorn::driver::Run;
 use wcontainers_executor_unicorn::reference::{ROOT_DIRECTORY, in_guest_directory};
-use wcontainers_executor_unicorn::streams::{INPUT, Step, StreamClient};
+use wcontainers_executor_unicorn::streams::{Step, StreamClient};
 use wcontainers_executor_unicorn::{assert_same_streams, guest_directory_entry, image_command};
 use wcontainers_kernel_linux::reason;
 
@@ -61,7 +61,7 @@ fn only_warnings(runs: &[Run], allowed: &[&str]) {
     }
 }
 
-/// The pipe size the program reported, which bounds the input credit.
+/// The pipe size the program reported, which bounds what the kernel asks for at once.
 fn pipe_size(run: &Run) -> u64 {
     let text = String::from_utf8_lossy(&run.outcome.stdout);
     let size = text
@@ -90,8 +90,8 @@ fn a_pipeline_reads_all_of_its_input() {
 
 #[test]
 fn input_reaches_a_container_still_starting_on_the_backend() {
-    // With the root on the backend the start waits for its answers; the client's credit and
-    // input come meanwhile.
+    // With the root on the backend the start waits for its answers; the client's input comes
+    // meanwhile.
     let client = input(send_all(text(8, 20_000)));
     wcontainers_executor_unicorn::assert_same_streams_on(
         &out(),
@@ -113,7 +113,7 @@ fn end_of_input_is_end_of_file() {
 }
 
 #[test]
-fn large_input_to_a_slow_reader_is_held_to_the_credit() {
+fn large_input_to_a_slow_reader_is_held_to_the_pipe() {
     let client = input(send_all(text(3, 1 << 20)));
     let runs = assert_same_streams(
         &out(),
@@ -124,11 +124,11 @@ fn large_input_to_a_slow_reader_is_held_to_the_credit() {
     for run in &runs {
         let size = pipe_size(run);
         assert!(
-            run.most_input_credit <= size,
-            "the kernel promised {} with a pipe of {size}",
-            run.most_input_credit
+            run.most_input_asked <= size,
+            "the kernel asked for {} with a pipe of {size}",
+            run.most_input_asked
         );
-        assert!(run.most_input_credit > 0);
+        assert!(run.most_input_asked > 0);
     }
 }
 
@@ -176,7 +176,7 @@ fn children_inherit_the_standard_descriptors() {
 
 #[test]
 fn a_program_writing_its_own_input_pipe() {
-    // The input pipe's space is the writer inside's too: credit given client does not hold it.
+    // The input pipe's space is the writer inside's too: the client's input does not hold it.
     let client = input(vec![expect("got"), Step::CloseInput]);
     assert_same_streams(
         &out(),
@@ -438,79 +438,6 @@ fn a_shell_on_the_terminal() {
         ],
     );
     assert_same_streams(&out(), None, &["sh"], &client);
-}
-
-#[test]
-fn a_client_sending_past_its_credit_is_cut_off() {
-    let sent = text(7, 1 << 20);
-    let client = StreamClient {
-        input: true,
-        script: send_all(sent.clone()),
-        excess: 100,
-        ..Default::default()
-    };
-    for run in run_guest(
-        "stdin",
-        &["all", &wcontainers_abi::PAGE_SIZE.to_string(), "0"],
-        client,
-    ) {
-        let past: u64 = run
-            .counters
-            .iter()
-            .filter(|counter| counter.reason == reason::STREAM_PAST_CREDIT)
-            .map(|counter| counter.count)
-            .sum();
-        assert!(run.sends_past_credit > 0, "the client went past its credit");
-        assert_eq!(
-            past, run.sends_past_credit,
-            "every send past the credit counted"
-        );
-        let text = String::from_utf8_lossy(&run.outcome.stdout);
-        let total: u64 = text
-            .split_whitespace()
-            .skip_while(|word| *word != "total")
-            .nth(1)
-            .and_then(|total| total.parse().ok())
-            .expect("a total");
-        assert_eq!(
-            total, run.sent_within_credit,
-            "exactly what the credit allowed came in"
-        );
-        assert!(total < sent.len() as u64);
-        assert!(
-            run.warnings
-                .iter()
-                .any(|warned| warned.reason == reason::STREAM_PAST_CREDIT)
-        );
-    }
-}
-
-#[test]
-fn credit_on_the_input_end_is_counted() {
-    let mut script = vec![Step::Credit {
-        end: INPUT,
-        bytes: 1 << 30,
-    }];
-    script.extend(send_all(b"in\n".to_vec()));
-    let client = StreamClient {
-        input: true,
-        script,
-        ..Default::default()
-    };
-    for run in run_guest(
-        "stdin",
-        &["all", &wcontainers_abi::PAGE_SIZE.to_string(), "0"],
-        client,
-    ) {
-        let counted: Vec<_> = run
-            .counters
-            .iter()
-            .filter(|counter| counter.reason == reason::EVENT_UNEXPECTED)
-            .map(|counter| (counter.detail, counter.count))
-            .collect();
-        assert_eq!(counted, [(u64::from(INPUT.0), 1)], "{:?}", run.counters);
-        assert!(run.broken.is_empty(), "{:?}", run.broken);
-    }
 }
 
 #[test]

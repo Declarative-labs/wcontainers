@@ -43,6 +43,18 @@ pub(super) struct Readied {
 }
 
 impl Readied {
+    /// What `number` became ready for, ending its wait.
+    pub(super) fn arrive(readied: &Mutex<Readied>, number: u32, ready: ReadyFor) {
+        let waiting = {
+            let mut readied = lock(readied);
+            *readied.arrived.entry(number).or_insert(ready) |= ready;
+            readied.waiting.remove(&number)
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
+    }
+
     /// Waits until the network says what `number` is ready for, forgetting it if let go.
     pub(super) async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadyFor {
         /// Forgets the readiness waited for, when the wait is let go.

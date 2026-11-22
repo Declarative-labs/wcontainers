@@ -18,13 +18,17 @@ use alloc::sync::Arc;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
-use wcontainers_abi::{Cpu, End, Event, Host, HostError, Warning};
+use wcontainers_abi::{Cpu, Event, Host, HostError, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
+use wcontainers_random_source::RandomSource;
+use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
+use wcontainers_system::StreamTransport;
 
-/// The ends this policy names for the first process's standard output and error; it gives no input.
-pub const OUTPUT: End = End(1);
-pub const ERROR: End = End(2);
+/// The services' stream endpoints this policy names for the first process's standard output and
+/// error; it gives no input.
+pub const OUTPUT: u32 = 1;
+pub const ERROR: u32 = 2;
 
 /// Mixed into the run's seed for the schedule's draws, so that they are not the host's random bytes.
 pub const SCHEDULE_STREAM: u64 = 0x5eed;
@@ -153,8 +157,6 @@ struct PolicyState {
     /// The CPU side's slow paths, and what the policy refused.
     warnings: Vec<Warned>,
     refused: u64,
-    /// Ends the kernel let go of, whose closing is handed back at the next arrival.
-    closing: Vec<End>,
 }
 
 impl<H: Host> TestPolicy<H> {
@@ -168,7 +170,6 @@ impl<H: Host> TestPolicy<H> {
                 turns: 0,
                 warnings: Vec::new(),
                 refused: 0,
-                closing: Vec::new(),
             }),
         }
     }
@@ -201,7 +202,8 @@ impl<H: Host> TestPolicy<H> {
     }
 }
 
-impl<H: Host> Host for TestPolicy<H> {
+/// The policy's own seeded clock.
+impl<H> wcontainers_clock::Clock for TestPolicy<H> {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.state.lock().clock.monotonic()
     }
@@ -209,26 +211,45 @@ impl<H: Host> Host for TestPolicy<H> {
     fn realtime_nanoseconds(&self) -> u64 {
         self.state.lock().clock.realtime()
     }
+}
 
-    fn random(&self, into: &mut [u8]) {
-        self.services.random(into);
+/// Randomness is the services' own.
+impl<H: RandomSource> RandomSource for TestPolicy<H> {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+        self.services.fill_random_bytes(into)
     }
+}
 
+impl<H: Host> Host for TestPolicy<H> {
     fn warn(&self, warning: Warning<'_>) {
         self.services.warn(warning);
     }
+}
 
-    fn send_stream(&self, end: End, bytes: &[u8]) {
-        self.services.send_stream(end, bytes);
+/// The standard streams are the services' own.
+impl<H: StreamTransport<Endpoint = u32>> StreamTransport for TestPolicy<H> {
+    type Endpoint = u32;
+
+    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+        self.services.send_stream(peer, bytes)
     }
 
-    fn credit_stream(&self, end: End, bytes: u64) {
-        self.services.credit_stream(end, bytes);
+    fn receive_stream(&self, peer: &u32, into: &mut [u8]) -> Result<usize, HostError> {
+        self.services.receive_stream(peer, into)
     }
 
-    fn close_stream(&self, end: End) {
-        self.services.close_stream(end);
-        self.state.lock().closing.push(end);
+    fn close_stream(&self, peer: &u32) {
+        self.services.close_stream(peer);
+    }
+}
+
+impl<H: StreamTransport<Endpoint = u32>> Readiness<u32> for TestPolicy<H> {
+    async fn wait_until_ready(
+        &self,
+        peer: &u32,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        self.services.wait_until_ready(peer, interest).await
     }
 }
 
@@ -255,26 +276,20 @@ impl<H: Host> wcontainers_system::DomainNameResolver for TestPolicy<H> {
     }
 }
 
-impl<H: Host + 'static> wcontainers_kernel_linux::System for TestPolicy<H> {
+/// Every task id is free.
+impl<H> wcontainers_system::TaskIdAllocator for TestPolicy<H> {
     fn free_task_id(&self, _id: TaskId) {}
 }
 
-impl<H: Host + 'static> System for TestPolicy<H> {
+impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static>
+    wcontainers_kernel_linux::System for TestPolicy<H>
+{
+}
+
+impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static> System for TestPolicy<H> {
     type End = Infallible;
 
-    /// The output ends take all the kernel sends, at once.
-    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
-        for end in [OUTPUT, ERROR] {
-            kernel.event(
-                cpu,
-                self,
-                Event::StreamCredit {
-                    end,
-                    bytes: u64::MAX,
-                },
-            );
-        }
-    }
+    fn started(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) {}
 
     fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
         Turn::Counted {
@@ -290,15 +305,8 @@ impl<H: Host + 'static> System for TestPolicy<H> {
         state.clock.advance(nanoseconds);
     }
 
-    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        let closing = {
-            let mut state = self.state.lock();
-            state.turns += 1;
-            core::mem::take(&mut state.closing)
-        };
-        for end in closing {
-            kernel.event(cpu, self, Event::StreamClosed { end });
-        }
+    fn arrived(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) -> bool {
+        self.state.lock().turns += 1;
         false
     }
 
@@ -331,7 +339,7 @@ impl<H: Host + 'static> System for TestPolicy<H> {
         });
     }
 
-    fn standard(&self, _terminal: Option<TerminalSize>) -> Standard {
+    fn standard(&self, _terminal: Option<TerminalSize>) -> Standard<u32> {
         Standard::Pipes {
             input: None,
             output: OUTPUT,

@@ -9,7 +9,7 @@
 //! delay), with `net.ipv4.tcp_fastopen` at 3 (fast open for clients and listeners), `net.ipv6.flowlabel_consistency`
 //! at 0 (which flow label reflection needs), `net.ipv4.tcp_fwmark_accept` at 1 (an accepted socket takes its SYN's
 //! mark), `net.ipv6.conf.lo.forwarding` at 1 (loopback may then join any anycast address, not only those its
-//! prefixes hold), the `dctcp` congestion control available and a local route for 127.0.0.7 with the `tcp_usec_ts`
+//! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available and a local route for 127.0.0.7 with the `tcp_usec_ts`
 //! feature (TCP timestamps in microseconds).
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -41,23 +41,26 @@ use wcontainers_internet_protocol::{
     IpPacketSetting, IpPrefix, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort,
     Membership, MobileAddressPreference, MulticastGroup, MulticastMembership, NonlocalAddresses,
     PacketMark, PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting,
-    PortSharing, PrefixLength, ReceivedPacketFields, Report, RouteScope, SocketFilter,
-    SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping,
-    TransmitEvent, TransmitReportKey, TransmitReportRequest, TransmitStage,
+    PortSharing, PrefixLength, ProcessorIndex, ReceivedPacketFields, Report, RouteScope,
+    SocketFilter, SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource,
+    Timestamping, TransmitEvent, TransmitReportKey, TransmitReportRequest, TransmitStage,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_readiness_conformance::Waiting;
 use wcontainers_tcp_sockets::authentication::{
-    TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
-    TcpAuthenticationKeyIdentifier, TcpAuthenticationKeyIdentity, TcpAuthenticationKeyRemoval,
-    TcpAuthenticationKeyUse, TcpAuthenticationMacLength, TcpAuthenticationOptionCoverage,
-    TcpAuthenticationOptions, TcpAuthenticationRemovalTiming, TcpAuthenticationRequirement,
+    SequenceNumberExtension, TcpAuthenticationCounters, TcpAuthenticationIcmpErrors,
+    TcpAuthenticationKeyAddition, TcpAuthenticationKeyIdentifier, TcpAuthenticationKeyIdentity,
+    TcpAuthenticationKeyRemoval, TcpAuthenticationKeyUse, TcpAuthenticationMacLength,
+    TcpAuthenticationOptionCoverage, TcpAuthenticationOptions, TcpAuthenticationRemovalTiming,
+    TcpAuthenticationRepair, TcpAuthenticationRequirement, TcpAuthenticationStatus,
     TcpMd5KeyChange, TcpMd5Peer,
 };
+use wcontainers_tcp_sockets::multipath::{MultipathInformation, MultipathSubflowPosition};
 use wcontainers_tcp_sockets::repair::{
-    TcpRepair, TcpRepairQueue, TcpTimestamp, TcpTimestampClock, TcpTimestampUnit,
+    TcpRepair, TcpRepairOption, TcpRepairQueue, TcpRepairState, TcpTimestamp, TcpTimestampClock,
+    TcpTimestampUnit,
 };
 use wcontainers_tcp_sockets::settings::{
     BufferLocks, BufferTuning, FAST_OPEN_KEY_LENGTH, FastOpenKey, FastOpenKeys, MaximumSegmentSize,
@@ -65,8 +68,9 @@ use wcontainers_tcp_sockets::settings::{
     TcpSavedSynchronize, TcpSetting, TransmitRehash, WindowSize,
 };
 use wcontainers_tcp_sockets::state::{
-    DeliveryRateLimit, TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpListenerQuery, TcpQuery,
-    TcpReading, TcpSavedSynchronizeHeader, TcpState,
+    ByteTotal, CongestionControlInformation, DATA_CENTER_FRACTION_WHOLE, DeliveryRateLimit,
+    TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpInformation, TcpListenerQuery, TcpQuery,
+    TcpQueues, TcpReading, TcpSavedSynchronizeHeader, TcpState, TcpTuned, UrgentMark,
 };
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpClose, TcpConnectStart, TcpContinuation, TcpFastOpen, TcpListening,
@@ -4321,6 +4325,25 @@ pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets
             .set_listener_timestamp_clock(&pair.listener, clock)
             .is_err()
     );
+    // A listener taken into repair mode takes the clock; one that refuses repair mode refuses the clock too.
+    let repairing = sockets.configure(
+        &pair.listener,
+        TcpListenerSetting::Socket(TcpSetting::Repair(TcpRepair::On)),
+    );
+    let set = sockets.set_listener_timestamp_clock(&pair.listener, clock);
+    match repairing {
+        Ok(()) => {
+            set.expect("set the listener's clock");
+            match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Timestamp) {
+                Ok(TcpReading::Timestamp(read)) => assert!(
+                    read.value.0.wrapping_sub(CLOCK_READING) < CLOCK_READING,
+                    "{read:?}"
+                ),
+                other => panic!("the listener's clock read {other:?}"),
+            }
+        }
+        Err(_) => assert!(set.is_err(), "{set:?}"),
+    }
     close(&sockets, pair);
     for (address, unit) in [
         (ipv4_loopback(), TcpTimestampUnit::Milliseconds),
@@ -4785,28 +4808,26 @@ const AUTHENTICATION_COUNTERS: TcpAuthenticationCounters = TcpAuthenticationCoun
     icmp_errors_ignored: SegmentCount(5),
 };
 
-/// Checks that a connection made without authentication has no authentication counters to set.
+/// Checks that a connection made without authentication has no authentication counters to set, nor a status to read.
 ///
-/// A listener's counters, once set, are what its state reads, or setting them is refused as not supported.
+/// A listener's counters, set, are what its state reads.
 pub fn authentication_counters_are_set_only_where_authentication_is<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let refused = sockets.set_authentication_counters(&pair.client, AUTHENTICATION_COUNTERS);
     assert!(refused.is_err(), "{refused:?}");
-    match sockets.set_listener_authentication_counters(&pair.listener, AUTHENTICATION_COUNTERS) {
-        Ok(()) => {
-            match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Authentication) {
-                Ok(TcpReading::Authentication(status)) => {
-                    assert_eq!(status.counters, AUTHENTICATION_COUNTERS)
-                }
-                other => panic!("the counters set read {other:?}"),
-            }
-        }
-        Err(error) => assert_eq!(error, HostError::NotSupported),
-    }
+    let status = authentication_status(&sockets, &pair.client);
+    assert!(status.is_err(), "{status:?}");
+    sockets
+        .set_listener_authentication_counters(&pair.listener, AUTHENTICATION_COUNTERS)
+        .expect("set the listener's counters");
+    assert_eq!(
+        listener_authentication_status(&sockets, &pair.listener).map(|status| status.counters),
+        Ok(AUTHENTICATION_COUNTERS)
+    );
     close(&sockets, pair);
 }
 
-/// Checks that a listener's state reads it listening with the congestion control it was given, or reading it is refused as not supported.
+/// Checks that a listener's state reads it listening with the congestion control it was given.
 pub fn listener_state_reads_a_listener<S: TcpSockets>(sockets: S) {
     let control = TcpSetting::CongestionControl(CONGESTION_CONTROL);
     let (listener, _) = listen(
@@ -4818,14 +4839,14 @@ pub fn listener_state_reads_a_listener<S: TcpSockets>(sockets: S) {
         Ok(TcpReading::Information(information)) => {
             assert_eq!(information.state, TcpState::Listen)
         }
-        Ok(other) => panic!("information read {other:?}"),
-        Err(error) => assert_eq!(error, HostError::NotSupported),
+        other => panic!("information read {other:?}"),
     }
     let mut name = [u8::MIN; HEADER_ROOM];
     match sockets.read_listener_state(&listener, TcpListenerQuery::CongestionControl(&mut name)) {
-        Ok(TcpReading::CongestionControl { name, .. }) => assert_eq!(name, CONGESTION_CONTROL),
-        Ok(other) => panic!("congestion control read {other:?}"),
-        Err(error) => assert_eq!(error, HostError::NotSupported),
+        Ok(TcpReading::CongestionControl { name, information }) => {
+            assert_eq!((name, information), (CONGESTION_CONTROL, None))
+        }
+        other => panic!("congestion control read {other:?}"),
     }
     sockets.stop_listening(listener);
 }
@@ -5090,6 +5111,11 @@ fn settings_set_twice_equal_set_once<S: TcpSockets>(
         let twice = pair_at(sockets, address, &[setting.clone(), setting.clone()], &[]);
         assert_carries_bytes(sockets, &once);
         assert_carries_bytes(sockets, &twice);
+        assert_eq!(
+            observed(sockets, &once.client),
+            observed(sockets, &twice.client),
+            "{setting:?} given to connect"
+        );
         let first = sockets.configure(&once.client, setting.clone());
         let outcomes = [
             first,
@@ -5099,6 +5125,11 @@ fn settings_set_twice_equal_set_once<S: TcpSockets>(
         assert!(
             outcomes.iter().all(|outcome| *outcome == first),
             "{setting:?}: {outcomes:?}"
+        );
+        assert_eq!(
+            observed(sockets, &once.client),
+            observed(sockets, &twice.client),
+            "{setting:?} set on the connection"
         );
         assert_carries_bytes(sockets, &once);
         assert_carries_bytes(sockets, &twice);
@@ -5364,6 +5395,11 @@ pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(soc
                 outcomes.iter().all(|outcome| *outcome == first),
                 "{setting:?}: {outcomes:?}"
             );
+            assert_eq!(
+                observed(&sockets, &once.client),
+                observed(&sockets, &twice.client),
+                "{setting:?}"
+            );
             if carries {
                 assert_carries_bytes(&sockets, &once);
                 assert_carries_bytes(&sockets, &twice);
@@ -5372,6 +5408,913 @@ pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(soc
             close(&sockets, twice);
         }
     }
+}
+
+/// Reads the connection's `TCP_INFO`, failing the check on any other answer.
+fn information<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> TcpInformation {
+    match sockets.read_state(connection, TcpQuery::Information) {
+        Ok(TcpReading::Information(information)) => information,
+        other => panic!("information read {other:?}"),
+    }
+}
+
+fn queues<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> TcpQueues {
+    match sockets.read_state(connection, TcpQuery::Queues) {
+        Ok(TcpReading::Queues(queues)) => queues,
+        other => panic!("queues read {other:?}"),
+    }
+}
+
+fn tuned<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> TcpTuned {
+    match sockets.read_state(connection, TcpQuery::Tuned) {
+        Ok(TcpReading::Tuned(tuned)) => tuned,
+        other => panic!("tuned values read {other:?}"),
+    }
+}
+
+fn timestamp<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> TcpTimestampClock {
+    match sockets.read_state(connection, TcpQuery::Timestamp) {
+        Ok(TcpReading::Timestamp(clock)) => clock,
+        other => panic!("timestamp read {other:?}"),
+    }
+}
+
+/// Reads the connection's repair state, the refusal included.
+fn repair_state<S: TcpSockets>(
+    sockets: &S,
+    connection: &S::Connection,
+) -> Result<TcpRepairState, HostError> {
+    sockets
+        .read_state(connection, TcpQuery::Repair)
+        .map(|reading| match reading {
+            TcpReading::Repair(state) => state,
+            other => panic!("repair state read {other:?}"),
+        })
+}
+
+fn authentication_status<S: TcpSockets>(
+    sockets: &S,
+    connection: &S::Connection,
+) -> Result<TcpAuthenticationStatus, HostError> {
+    sockets
+        .read_state(connection, TcpQuery::Authentication)
+        .map(|reading| match reading {
+            TcpReading::Authentication(status) => status,
+            other => panic!("authentication read {other:?}"),
+        })
+}
+
+fn listener_authentication_status<S: TcpSockets>(
+    sockets: &S,
+    listener: &S::Listener,
+) -> Result<TcpAuthenticationStatus, HostError> {
+    sockets
+        .read_listener_state(listener, TcpListenerQuery::Authentication)
+        .map(|reading| match reading {
+            TcpReading::Authentication(status) => status,
+            other => panic!("authentication read {other:?}"),
+        })
+}
+
+/// Reads what the connection recorded of the last packet it received: the fields and the header bytes.
+fn last_received_header<S: TcpSockets>(
+    sockets: &S,
+    connection: &S::Connection,
+) -> (ReceivedPacketFields, Vec<u8>) {
+    let mut room = [u8::MIN; HEADER_ROOM];
+    match sockets.read_state(connection, TcpQuery::LastReceivedHeader(&mut room)) {
+        Ok(TcpReading::LastReceivedHeader { fields, header }) => (fields, header.to_vec()),
+        other => panic!("last received header read {other:?}"),
+    }
+}
+
+fn multipath<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> MultipathInformation {
+    match sockets.read_state(connection, TcpQuery::Multipath) {
+        Ok(TcpReading::Multipath(information)) => information,
+        other => panic!("multipath read {other:?}"),
+    }
+}
+
+/// What the readings show of a connection's settings, compared between settings given once and twice.
+///
+/// Without what traffic alone changes: the authentication's verified count and the acknowledging mode.
+#[derive(Debug, PartialEq)]
+struct Observed {
+    tuned: TcpTuned,
+    authentication: Result<TcpAuthenticationStatus, HostError>,
+    last_received: (ReceivedPacketFields, Vec<u8>),
+}
+
+fn observed<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> Observed {
+    let mut tuned = tuned(sockets, connection);
+    tuned.quick_acknowledgement = false;
+    let mut authentication = authentication_status(sockets, connection);
+    if let Ok(status) = authentication.as_mut() {
+        status.counters.verified = SegmentCount(u64::MIN);
+    }
+    Observed {
+        tuned,
+        authentication,
+        last_received: last_received_header(sockets, connection),
+    }
+}
+
+/// Checks that a connection's information reads its state and what it carried, each end agreeing with the other.
+///
+/// The window scales and options each end negotiated, the bytes sent, acknowledged and received, and the states a
+/// shutdown leads to; a listener reads as listening.
+pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let (client, server) = (
+        information(&sockets, &pair.client),
+        information(&sockets, &pair.server),
+    );
+    assert_eq!(
+        (client.state, server.state),
+        (TcpState::Established, TcpState::Established)
+    );
+    assert_eq!(client.window_scales.send, server.window_scales.receive);
+    assert_eq!(client.window_scales.receive, server.window_scales.send);
+    assert_eq!(client.options.timestamps, server.options.timestamps);
+    assert_eq!(
+        client.options.selective_acknowledgements,
+        server.options.selective_acknowledgements
+    );
+    let bytes = pattern(TRANSFER);
+    assert_eq!(
+        transfer(&sockets, &pair.client, &pair.server, &bytes),
+        bytes
+    );
+    std::thread::sleep(SETTLE);
+    let (sent, received) = (
+        information(&sockets, &pair.client),
+        information(&sockets, &pair.server),
+    );
+    let transferred = TRANSFER as u64;
+    // RFC 4898's count of the bytes acknowledged may count the SYN's sequence number.
+    assert!(
+        (transferred..=transferred + u64::from(true)).contains(&sent.bytes_acknowledged.0),
+        "{sent:?}"
+    );
+    assert_eq!(received.bytes_received, ByteTotal(transferred));
+    assert!(sent.bytes_sent.0 >= transferred, "{sent:?}");
+    assert_eq!(sent.not_sent, NO_BYTES);
+    assert_eq!(sent.unacknowledged, SegmentCount(u64::MIN));
+    let segment = u64::from(sent.send_maximum_segment_size.0);
+    assert!(
+        sent.data_segments_out.0 >= transferred.div_ceil(segment),
+        "{sent:?}"
+    );
+    assert!(
+        (u64::from(true)..=sent.data_segments_out.0).contains(&received.data_segments_in.0),
+        "{received:?}"
+    );
+    assert!(sent.segments_out.0 >= sent.data_segments_out.0);
+    assert!(received.since_last_data_received < DEADLINE);
+    sockets
+        .shut_down(&pair.server, TcpShutdown::Write)
+        .expect("shut down");
+    for (end, state) in [
+        (&pair.client, TcpState::CloseWait),
+        (&pair.server, TcpState::FinWait2),
+    ] {
+        let start = Instant::now();
+        while information(&sockets, end).state != state {
+            assert!(start.elapsed() < DEADLINE, "never reached {state:?}");
+            std::thread::sleep(RETRY_INTERVAL);
+        }
+    }
+    close(&sockets, pair);
+}
+
+/// The congestion controls the suite reads besides Reno and DCTCP: Vegas's form of information and BBR's.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/inet_diag.h
+const VEGAS: &str = "vegas";
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/inet_diag.h
+const BOTTLENECK_BANDWIDTH: &str = "bbr";
+
+/// Checks that the congestion control state names the algorithm and gives the information of those that keep one.
+///
+/// Reno keeps none; DCTCP, Vegas and BBR give their own forms after a transfer, each describing a working connection.
+pub fn congestion_control_state_names_the_algorithm<S: TcpSockets>(sockets: S) {
+    for algorithm in [
+        CONGESTION_CONTROL,
+        NOTIFYING_CONGESTION_CONTROL,
+        VEGAS,
+        BOTTLENECK_BANDWIDTH,
+    ] {
+        // Both ends, since DCTCP falls back to Reno without the ECN a peer must agree to.
+        let control = TcpSetting::CongestionControl(algorithm);
+        let pair = pair_with(
+            &sockets,
+            std::slice::from_ref(&control),
+            &[TcpListenerSetting::Socket(control.clone())],
+        );
+        let bytes = pattern(TRANSFER);
+        assert_eq!(
+            transfer(&sockets, &pair.client, &pair.server, &bytes),
+            bytes
+        );
+        let mut room = [u8::MIN; HEADER_ROOM];
+        let information =
+            match sockets.read_state(&pair.client, TcpQuery::CongestionControl(&mut room)) {
+                Ok(TcpReading::CongestionControl { name, information }) => {
+                    assert_eq!(name, algorithm);
+                    information
+                }
+                other => panic!("{algorithm}: {other:?}"),
+            };
+        match (algorithm, information) {
+            (CONGESTION_CONTROL, None) => {}
+            (
+                NOTIFYING_CONGESTION_CONTROL,
+                Some(CongestionControlInformation::DataCenter { enabled, alpha, .. }),
+            ) => {
+                assert!(enabled, "{information:?}");
+                assert!(alpha.0 <= DATA_CENTER_FRACTION_WHOLE, "{information:?}");
+            }
+            (
+                VEGAS,
+                Some(CongestionControlInformation::Vegas {
+                    enabled,
+                    round_trip_time,
+                    ..
+                }),
+            ) => {
+                // A round trip over loopback was measured.
+                assert!(enabled, "{information:?}");
+                assert!(
+                    round_trip_time > Duration::ZERO && round_trip_time < SETTLE,
+                    "{information:?}"
+                );
+            }
+            (
+                BOTTLENECK_BANDWIDTH,
+                Some(CongestionControlInformation::BottleneckBandwidth {
+                    bandwidth,
+                    pacing_gain,
+                    congestion_window_gain,
+                    ..
+                }),
+            ) => {
+                assert!(bandwidth.0 > u64::MIN, "{information:?}");
+                assert!(pacing_gain.0 > u32::MIN, "{information:?}");
+                assert!(congestion_window_gain.0 > u32::MIN, "{information:?}");
+            }
+            other => panic!("{algorithm}: {other:?}"),
+        }
+        close(&sockets, pair);
+    }
+}
+
+/// Checks that the queues read the bytes unsent under a cork, unacknowledged by a peer that drops them, and unread by the peer.
+///
+/// The urgent mark is reached once the bytes before it are read.
+pub fn queues_count_unread_unacknowledged_and_unsent<S: TcpSockets>(sockets: S) {
+    let pair = pair_with(&sockets, &[TcpSetting::Cork(true)], &[]);
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    std::thread::sleep(SETTLE);
+    assert_eq!(
+        queues(&sockets, &pair.client),
+        TcpQueues {
+            unread: NO_BYTES,
+            unacknowledged: NO_BYTES,
+            unsent: ByteCount(MESSAGE.len()),
+            urgent_mark: UrgentMark::NotReached,
+        }
+    );
+    sockets
+        .configure(&pair.client, TcpSetting::Cork(false))
+        .expect("uncork");
+    wait_for_unread(&sockets, &pair.server, MESSAGE.len());
+    std::thread::sleep(SETTLE);
+    assert_eq!(
+        queues(&sockets, &pair.server).unread,
+        ByteCount(MESSAGE.len())
+    );
+    let sender = queues(&sockets, &pair.client);
+    assert_eq!((sender.unacknowledged, sender.unsent), (NO_BYTES, NO_BYTES));
+    drop_arrivals(&sockets, &pair.server, IpVersion::V4);
+    send_all(&sockets, &pair.client, plain(), REPLY);
+    std::thread::sleep(SETTLE);
+    let sender = queues(&sockets, &pair.client);
+    assert_eq!(
+        (sender.unacknowledged, sender.unsent),
+        (ByteCount(REPLY.len()), NO_BYTES)
+    );
+    sockets.close(pair.client, TcpClose::Abort);
+    sockets.close(pair.server, TcpClose::Abort);
+    sockets.stop_listening(pair.listener);
+    let pair = self::pair(&sockets);
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    send_all(&sockets, &pair.client, urgent(), URGENT);
+    wait_for_unread(&sockets, &pair.server, MESSAGE.len());
+    std::thread::sleep(SETTLE);
+    assert_eq!(
+        queues(&sockets, &pair.server).urgent_mark,
+        UrgentMark::NotReached
+    );
+    assert_eq!(
+        receive_up_to(&sockets, &pair.server, MESSAGE.len()),
+        MESSAGE
+    );
+    assert_eq!(
+        queues(&sockets, &pair.server).urgent_mark,
+        UrgentMark::Reached
+    );
+    close(&sockets, pair);
+}
+
+/// The smallest link MTU IPv6 allows, below any path MTU loopback can have.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-5
+const IPV6_MINIMUM_MTU: u32 = 1280;
+
+/// Checks that the tuned values follow the settings given: buffers at least as asked, the low water and clamp as asked.
+///
+/// The segment size within the one given before connect, quick acknowledgement as last set, a path MTU loopback
+/// carries; a listener reads its own.
+pub fn tuned_values_follow_the_settings<S: TcpSockets>(sockets: S) {
+    let pair = pair_with(
+        &sockets,
+        &[TcpSetting::MaximumSegmentSize(Some(SEGMENT))],
+        &[TcpListenerSetting::Socket(TcpSetting::Ip(
+            IpSocketSetting::SendBuffer(ByteCount(SETTING_BYTES)),
+        ))],
+    );
+    let clamp = WindowSize(SETTING_BYTES as u32);
+    for setting in [
+        TcpSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(SETTING_BYTES))),
+        TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(SETTING_BYTES))),
+        TcpSetting::ReceiveLowWater(ByteCount(READ_PART)),
+        TcpSetting::WindowClamp(Some(clamp)),
+        TcpSetting::QuickAcknowledgement(TcpQuickAcknowledgement::On),
+    ] {
+        sockets
+            .configure(&pair.client, setting.clone())
+            .unwrap_or_else(|error| panic!("{setting:?}: {error:?}"));
+    }
+    let read = tuned(&sockets, &pair.client);
+    assert!(read.send_buffer.0 >= SETTING_BYTES, "{read:?}");
+    assert!(read.receive_buffer.0 >= SETTING_BYTES, "{read:?}");
+    assert_eq!(read.receive_low_water, ByteCount(READ_PART));
+    assert_eq!(read.window_clamp, clamp);
+    assert!(read.quick_acknowledgement, "{read:?}");
+    assert!(read.maximum_segment_size.0 <= SEGMENT.0, "{read:?}");
+    assert!(read.path_mtu.0 >= IPV6_MINIMUM_MTU, "{read:?}");
+    sockets
+        .configure(
+            &pair.client,
+            TcpSetting::QuickAcknowledgement(TcpQuickAcknowledgement::Off),
+        )
+        .expect("quick acknowledgement off");
+    assert!(!tuned(&sockets, &pair.client).quick_acknowledgement);
+    match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Tuned) {
+        Ok(TcpReading::Tuned(listener)) => {
+            assert!(listener.send_buffer.0 >= SETTING_BYTES, "{listener:?}")
+        }
+        other => panic!("the listener's tuned values read {other:?}"),
+    }
+    close(&sockets, pair);
+}
+
+/// Checks that the timestamp clock reads in the unit of its route and advances as time does, between two readings.
+///
+/// A clock set in repair mode reads from the value set on; a listener's clock counts milliseconds.
+pub fn timestamp_reads_the_clock_in_its_unit<S: TcpSockets>(sockets: S) {
+    for (address, unit) in [
+        (ipv4_loopback(), TcpTimestampUnit::Milliseconds),
+        (
+            BindAddress::V4(MICROSECOND_CLOCK),
+            TcpTimestampUnit::Microseconds,
+        ),
+    ] {
+        let pair = pair_at(&sockets, address, &[], &[]);
+        let first = timestamp(&sockets, &pair.client);
+        let start = Instant::now();
+        std::thread::sleep(CLOCK_RUNS);
+        let second = timestamp(&sockets, &pair.client);
+        let ran = start.elapsed();
+        assert_eq!((first.unit, second.unit), (unit, unit));
+        assert_counts_in(unit, (second.value.0.wrapping_sub(first.value.0), ran));
+        sockets
+            .configure(&pair.client, TcpSetting::Repair(TcpRepair::On))
+            .expect("repair mode");
+        let set = Instant::now();
+        sockets
+            .set_timestamp_clock(
+                &pair.client,
+                TcpTimestampClock {
+                    value: TcpTimestamp(CLOCK_READING),
+                    unit,
+                },
+            )
+            .expect("set the clock");
+        std::thread::sleep(CLOCK_RUNS);
+        let after = timestamp(&sockets, &pair.client);
+        assert_counts_in(
+            unit,
+            (after.value.0.wrapping_sub(CLOCK_READING), set.elapsed()),
+        );
+        sockets
+            .configure(&pair.client, TcpSetting::Repair(TcpRepair::Off))
+            .expect("out of repair mode");
+        close(&sockets, pair);
+    }
+    let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
+    let read = |listener| match sockets.read_listener_state(listener, TcpListenerQuery::Timestamp) {
+        Ok(TcpReading::Timestamp(clock)) => clock,
+        other => panic!("the listener's timestamp read {other:?}"),
+    };
+    let first = read(&listener);
+    let start = Instant::now();
+    std::thread::sleep(CLOCK_RUNS);
+    let second = read(&listener);
+    assert_eq!(first.unit, TcpTimestampUnit::Milliseconds);
+    assert_counts_in(
+        TcpTimestampUnit::Milliseconds,
+        (second.value.0.wrapping_sub(first.value.0), start.elapsed()),
+    );
+    sockets.stop_listening(listener);
+}
+
+/// Checks that a connection read in repair mode and written back into a new socket goes on where the first left off.
+///
+/// The repair state reads each end's sequence numbers as the other's, and is refused out of repair mode; the new socket
+/// takes the sequence numbers, options, window and clock, reads them back, and then carries bytes both ways with the
+/// first one's peer and its segment size.
+pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let connected = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(ipv4_loopback()),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .expect("connect");
+    let server = accept(&sockets, &listener);
+    let pair = Pair {
+        listener,
+        local,
+        client: connected.connection,
+        server,
+    };
+    assert_carries_bytes(&sockets, &pair);
+    std::thread::sleep(SETTLE);
+    assert!(repair_state(&sockets, &pair.client).is_err());
+    for end in [&pair.client, &pair.server] {
+        sockets
+            .configure(end, TcpSetting::Repair(TcpRepair::On))
+            .expect("repair mode");
+    }
+    let original = repair_state(&sockets, &pair.client).expect("the client's repair state");
+    let peer = repair_state(&sockets, &pair.server).expect("the server's repair state");
+    assert_eq!(original.send_sequence, peer.receive_sequence);
+    assert_eq!(original.receive_sequence, peer.send_sequence);
+    assert_eq!(original.authentication, None);
+    sockets
+        .configure(&pair.server, TcpSetting::Repair(TcpRepair::Off))
+        .expect("the server out of repair mode");
+    let options = information(&sockets, &pair.client);
+    let segment = tuned(&sockets, &pair.client).maximum_segment_size;
+    let clock = timestamp(&sockets, &pair.client);
+    let read_at = Instant::now();
+    sockets.close(pair.client, TcpClose::Orderly);
+    let mut repair_options = vec![
+        TcpRepairOption::MaximumSegmentSize(segment),
+        TcpRepairOption::WindowScales(options.window_scales),
+    ];
+    if options.options.selective_acknowledgements {
+        repair_options.push(TcpRepairOption::SelectiveAcknowledgements);
+    }
+    if options.options.timestamps {
+        repair_options.push(TcpRepairOption::Timestamps);
+    }
+    let restored = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            LocalBinding {
+                address: ipv4_loopback(),
+                port: LocalPort::Requested(Port(connected.local.port())),
+            },
+            local,
+            &[
+                TcpSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
+                TcpSetting::Repair(TcpRepair::On),
+                TcpSetting::RepairQueue(TcpRepairQueue::Send),
+                TcpSetting::QueueSequence(original.send_sequence),
+                TcpSetting::RepairQueue(TcpRepairQueue::Receive),
+                TcpSetting::QueueSequence(original.receive_sequence),
+                TcpSetting::RepairQueue(TcpRepairQueue::NoQueue),
+            ],
+            TcpFastOpen::Off,
+        )
+        .expect("connect in repair mode");
+    assert_eq!(restored.start, TcpConnectStart::EstablishedForRepair);
+    let restored = restored.connection;
+    for setting in [
+        TcpSetting::RepairOptions(&repair_options),
+        TcpSetting::RepairWindow(original.window),
+    ] {
+        sockets
+            .configure(&restored, setting.clone())
+            .unwrap_or_else(|error| panic!("{setting:?}: {error:?}"));
+    }
+    // The peer drops segments stamped earlier than the last it saw, so the clock goes on from the reading.
+    let elapsed = read_at.elapsed().as_millis() as u32;
+    sockets
+        .set_timestamp_clock(
+            &restored,
+            TcpTimestampClock {
+                value: TcpTimestamp(clock.value.0.wrapping_add(elapsed)),
+                unit: clock.unit,
+            },
+        )
+        .expect("set the clock");
+    assert_eq!(
+        repair_state(&sockets, &restored),
+        Ok(TcpRepairState {
+            authentication: None,
+            ..original
+        })
+    );
+    let restored_options = information(&sockets, &restored);
+    assert_eq!(restored_options.window_scales, options.window_scales);
+    assert_eq!(
+        restored_options.options.timestamps,
+        options.options.timestamps
+    );
+    assert_eq!(
+        restored_options.options.selective_acknowledgements,
+        options.options.selective_acknowledgements
+    );
+    sockets
+        .configure(&restored, TcpSetting::Repair(TcpRepair::Off))
+        .expect("out of repair mode");
+    let restored_pair = Pair {
+        listener: pair.listener,
+        local,
+        client: restored,
+        server: pair.server,
+    };
+    assert_carries_bytes(&sockets, &restored_pair);
+    let bytes = pattern(TRANSFER);
+    assert_eq!(
+        transfer(
+            &sockets,
+            &restored_pair.client,
+            &restored_pair.server,
+            &bytes
+        ),
+        bytes
+    );
+    // Above the default a socket without the option keeps, within the one given.
+    let restored_segment = information(&sockets, &restored_pair.client).send_maximum_segment_size;
+    assert!(
+        (DEFAULT_SEND_SEGMENT + 1..=segment.0).contains(&restored_segment.0),
+        "{restored_segment:?} of at most {segment:?}"
+    );
+    close(&sockets, restored_pair);
+}
+
+/// The send segment size a TCP connection assumes when no maximum segment size option came.
+///
+/// https://www.rfc-editor.org/rfc/rfc9293#section-3.7.1
+const DEFAULT_SEND_SEGMENT: u16 = 536;
+
+/// Counters an authentication check sets after the first ones, each unlike every other.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const LATER_AUTHENTICATION_COUNTERS: TcpAuthenticationCounters = TcpAuthenticationCounters {
+    verified: SegmentCount(11),
+    failed: SegmentCount(12),
+    key_not_found: SegmentCount(13),
+    signature_missing: SegmentCount(14),
+    icmp_errors_ignored: SegmentCount(15),
+};
+
+/// Gives an authenticated pair whose ends hold the first key, current and requested next, and the initial counters.
+fn authenticated_pair<S: TcpSockets>(sockets: &S) -> Pair<S> {
+    let key = authentication_key(
+        FIRST_KEY,
+        AUTHENTICATION_SECRET,
+        TcpAuthenticationOptionCoverage::Included,
+        TcpAuthenticationKeyUse::CurrentAndRequestedNext,
+    );
+    let initial = TcpSetting::InitialAuthenticationCounters(AUTHENTICATION_COUNTERS);
+    let (pair, synchronize, _capture) =
+        authentication_round(sockets, &[key.clone(), initial.clone()], &[key, initial]);
+    assert_eq!(synchronize, signed_with(FIRST_KEY));
+    pair.expect("the keyed listener takes the keyed client")
+}
+
+/// Checks that the authentication state reads the keys in use and counters that go on from those given before connect.
+///
+/// A key held reads its counters and one not held none; counters set are what is read next, for a connection and its
+/// listener.
+pub fn authentication_state_reads_the_keys_and_counters<S: TcpSockets>(sockets: S) {
+    let pair = authenticated_pair(&sockets);
+    std::thread::sleep(SETTLE);
+    let status = authentication_status(&sockets, &pair.client).expect("the client's status");
+    assert_eq!(
+        (
+            status.current,
+            status.requested_next,
+            status.requirement,
+            status.icmp_errors
+        ),
+        (
+            Some(FIRST_KEY),
+            Some(FIRST_KEY),
+            TcpAuthenticationRequirement::Optional,
+            TcpAuthenticationIcmpErrors::Ignored
+        )
+    );
+    let counters = status.counters;
+    assert!(
+        counters.verified.0 > AUTHENTICATION_COUNTERS.verified.0,
+        "{counters:?}"
+    );
+    assert_eq!(
+        TcpAuthenticationCounters {
+            verified: AUTHENTICATION_COUNTERS.verified,
+            ..counters
+        },
+        AUTHENTICATION_COUNTERS
+    );
+    let key = |identifier| TcpQuery::AuthenticationKey(authentication_identity(identifier));
+    match sockets.read_state(&pair.client, key(FIRST_KEY)) {
+        Ok(TcpReading::AuthenticationKey(Some(held))) => {
+            assert!(held.verified.0 > u64::MIN, "{held:?}");
+            assert_eq!(held.failed, SegmentCount(u64::MIN));
+        }
+        other => panic!("the first key read {other:?}"),
+    }
+    assert_eq!(
+        sockets.read_state(&pair.client, key(SECOND_KEY)),
+        Ok(TcpReading::AuthenticationKey(None))
+    );
+    sockets
+        .set_authentication_counters(&pair.client, LATER_AUTHENTICATION_COUNTERS)
+        .expect("set the counters");
+    assert_eq!(
+        authentication_status(&sockets, &pair.client).map(|status| status.counters),
+        Ok(LATER_AUTHENTICATION_COUNTERS)
+    );
+    let listener = listener_authentication_status(&sockets, &pair.listener)
+        .expect("the listener's status")
+        .counters;
+    assert!(
+        listener.verified.0 >= AUTHENTICATION_COUNTERS.verified.0,
+        "{listener:?}"
+    );
+    assert!(matches!(
+        sockets.read_listener_state(
+            &pair.listener,
+            TcpListenerQuery::AuthenticationKey(authentication_identity(FIRST_KEY))
+        ),
+        Ok(TcpReading::AuthenticationKey(Some(_)))
+    ));
+    sockets
+        .set_listener_authentication_counters(&pair.listener, LATER_AUTHENTICATION_COUNTERS)
+        .expect("set the listener's counters");
+    assert_eq!(
+        listener_authentication_status(&sockets, &pair.listener).map(|status| status.counters),
+        Ok(LATER_AUTHENTICATION_COUNTERS)
+    );
+    close(&sockets, pair);
+}
+
+/// Sequence number extensions an authentication repair check writes, unlike a new connection's zero.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const SEND_EXTENSION: SequenceNumberExtension = SequenceNumberExtension(1);
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const RECEIVE_EXTENSION: SequenceNumberExtension = SequenceNumberExtension(2);
+
+/// Checks that in repair mode an authenticated connection's initial sequence numbers read as its peer's the other way round.
+///
+/// Its extensions start at zero, and repair values written are what is read back.
+pub fn authentication_repair_values_are_read_and_written<S: TcpSockets>(sockets: S) {
+    let pair = authenticated_pair(&sockets);
+    for end in [&pair.client, &pair.server] {
+        sockets
+            .configure(end, TcpSetting::Repair(TcpRepair::On))
+            .expect("repair mode");
+    }
+    let client = repair_state(&sockets, &pair.client)
+        .expect("the client's repair state")
+        .authentication
+        .expect("the client's authentication repair values");
+    let server = repair_state(&sockets, &pair.server)
+        .expect("the server's repair state")
+        .authentication
+        .expect("the server's authentication repair values");
+    assert_eq!(
+        client.sent_initial_sequence,
+        server.received_initial_sequence
+    );
+    assert_eq!(
+        client.received_initial_sequence,
+        server.sent_initial_sequence
+    );
+    let fresh = SequenceNumberExtension(u32::MIN);
+    assert_eq!(
+        (client.send_extension, client.receive_extension),
+        (fresh, fresh)
+    );
+    let written = TcpAuthenticationRepair {
+        send_extension: SEND_EXTENSION,
+        receive_extension: RECEIVE_EXTENSION,
+        ..client
+    };
+    sockets
+        .configure(&pair.client, TcpSetting::AuthenticationRepair(written))
+        .expect("write the repair values");
+    assert_eq!(
+        repair_state(&sockets, &pair.client).map(|state| state.authentication),
+        Ok(Some(written))
+    );
+    sockets.close(pair.client, TcpClose::Abort);
+    sockets.close(pair.server, TcpClose::Abort);
+    sockets.stop_listening(pair.listener);
+}
+
+/// Checks that a multipath connection's state reads what it carried, its data sequence numbers agreeing with its peer's.
+///
+/// Its first subflow reads the connection's addresses and none follows it; a TCP connection has no multipath state.
+pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
+    let listening = sockets
+        .listen(
+            TcpProtocol::Multipath,
+            OWNER,
+            bind_any_port(ipv4_loopback()),
+            BACKLOG,
+            &[],
+        )
+        .expect("listen");
+    let connected = sockets
+        .connect(
+            TcpProtocol::Multipath,
+            OWNER,
+            bind_any_port(ipv4_loopback()),
+            listening.local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .expect("connect");
+    let server = accept(&sockets, &listening.listener);
+    let pair = Pair {
+        listener: listening.listener,
+        local: listening.local,
+        client: connected.connection,
+        server,
+    };
+    assert_carries_bytes(&sockets, &pair);
+    std::thread::sleep(SETTLE);
+    let (client, server) = (
+        multipath(&sockets, &pair.client),
+        multipath(&sockets, &pair.server),
+    );
+    assert!(
+        !client.fell_back_to_tcp && !server.fell_back_to_tcp,
+        "{client:?}"
+    );
+    assert!(
+        client.remote_key_received && server.remote_key_received,
+        "{client:?}"
+    );
+    let (message, reply) = (MESSAGE.len() as u64, REPLY.len() as u64);
+    assert_eq!(
+        (
+            client.bytes_sent,
+            client.bytes_acknowledged,
+            client.bytes_received
+        ),
+        (ByteTotal(message), ByteTotal(message), ByteTotal(reply))
+    );
+    assert_eq!(server.bytes_received, ByteTotal(message));
+    assert_eq!(client.write_sequence, client.send_unacknowledged);
+    assert_eq!(client.receive_next, server.write_sequence);
+    assert_eq!(server.receive_next, client.write_sequence);
+    assert!(client.subflows_total.0 >= u8::from(true), "{client:?}");
+    match sockets.read_state(
+        &pair.client,
+        TcpQuery::MultipathSubflow(MultipathSubflowPosition(u32::MIN)),
+    ) {
+        Ok(TcpReading::MultipathSubflow(Some(subflow))) => {
+            assert_eq!(
+                (subflow.local, subflow.peer),
+                (connected.local, listening.local)
+            );
+            assert_eq!(subflow.information.state, TcpState::Established);
+        }
+        other => panic!("the first subflow read {other:?}"),
+    }
+    assert_eq!(
+        sockets.read_state(
+            &pair.client,
+            TcpQuery::MultipathSubflow(MultipathSubflowPosition(u32::from(
+                client.subflows_total.0
+            )))
+        ),
+        Ok(TcpReading::MultipathSubflow(None))
+    );
+    close(&sockets, pair);
+    let pair = self::pair(&sockets);
+    assert!(
+        sockets
+            .read_state(&pair.client, TcpQuery::Multipath)
+            .is_err()
+    );
+    assert!(
+        sockets
+            .read_state(
+                &pair.client,
+                TcpQuery::MultipathSubflow(MultipathSubflowPosition(u32::MIN))
+            )
+            .is_err()
+    );
+    close(&sockets, pair);
+}
+
+/// The interface index that names none.
+///
+/// https://man7.org/linux/man-pages/man3/if_nametoindex.3.html
+const NO_INTERFACE: InterfaceIndex = InterfaceIndex(u32::MIN);
+
+/// Checks that a connection asked to record the last header it received reads the interface and address it came to.
+///
+/// One not asked, or no longer asked, reads none, over IPv4 and IPv6.
+pub fn last_received_header_records_where_the_last_packet_came<S: TcpSockets>(sockets: S) {
+    let records = |report| TcpSetting::RecordsLastReceivedHeader(report);
+    for (address, destination) in [
+        (ipv4_loopback(), Some(Ipv4Addr::LOCALHOST)),
+        (ipv6_loopback(), None),
+    ] {
+        let recorded = pair_at(
+            &sockets,
+            address,
+            &[],
+            &[TcpListenerSetting::Socket(records(Report::Requested))],
+        );
+        let plain_pair = pair_at(&sockets, address, &[], &[]);
+        assert_carries_bytes(&sockets, &recorded);
+        assert_carries_bytes(&sockets, &plain_pair);
+        let (fields, _) = last_received_header(&sockets, &recorded.server);
+        assert_eq!(
+            (fields.interface, fields.specific_destination),
+            (loopback_interface(), destination),
+            "{address:?}"
+        );
+        let (fields, header) = last_received_header(&sockets, &plain_pair.server);
+        assert_eq!((fields.interface, header.len()), (NO_INTERFACE, usize::MIN));
+        sockets
+            .configure(&recorded.server, records(Report::NotRequested))
+            .expect("records off");
+        assert_eq!(
+            last_received_header(&sockets, &recorded.server).0.interface,
+            NO_INTERFACE
+        );
+        close(&sockets, recorded);
+        close(&sockets, plain_pair);
+    }
+}
+
+/// Checks that a connection that received reads a processor it was received on, and a listener the one set or none.
+pub fn incoming_processor_is_read_as_received_or_set<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    assert_carries_bytes(&sockets, &pair);
+    assert!(matches!(
+        sockets.read_state(&pair.server, TcpQuery::IncomingProcessor),
+        Ok(TcpReading::IncomingProcessor(Some(_)))
+    ));
+    let read =
+        |listener| sockets.read_listener_state(listener, TcpListenerQuery::IncomingProcessor);
+    let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
+    assert_eq!(read(&listener), Ok(TcpReading::IncomingProcessor(None)));
+    let first = ProcessorIndex(u32::MIN);
+    for processor in [Some(first), None] {
+        sockets
+            .configure(
+                &listener,
+                TcpListenerSetting::Socket(TcpSetting::Port(PortSetting::IncomingProcessor(
+                    processor,
+                ))),
+            )
+            .expect("set the incoming processor");
+        assert_eq!(
+            read(&listener),
+            Ok(TcpReading::IncomingProcessor(processor))
+        );
+    }
+    sockets.stop_listening(listener);
+    close(&sockets, pair);
 }
 
 /// Makes a connection and a setting it takes, for the suite of `Configurable`.
@@ -6274,6 +7217,61 @@ macro_rules! tests {
         #[test]
         fn listener_state_reads_a_listener() {
             $crate::listener_state_reads_a_listener($value);
+        }
+
+        #[test]
+        fn information_reads_what_the_connection_did() {
+            $crate::information_reads_what_the_connection_did($value);
+        }
+
+        #[test]
+        fn congestion_control_state_names_the_algorithm() {
+            $crate::congestion_control_state_names_the_algorithm($value);
+        }
+
+        #[test]
+        fn queues_count_unread_unacknowledged_and_unsent() {
+            $crate::queues_count_unread_unacknowledged_and_unsent($value);
+        }
+
+        #[test]
+        fn tuned_values_follow_the_settings() {
+            $crate::tuned_values_follow_the_settings($value);
+        }
+
+        #[test]
+        fn timestamp_reads_the_clock_in_its_unit() {
+            $crate::timestamp_reads_the_clock_in_its_unit($value);
+        }
+
+        #[test]
+        fn repaired_connection_continues_where_the_original_left_off() {
+            $crate::repaired_connection_continues_where_the_original_left_off($value);
+        }
+
+        #[test]
+        fn authentication_state_reads_the_keys_and_counters() {
+            $crate::authentication_state_reads_the_keys_and_counters($value);
+        }
+
+        #[test]
+        fn authentication_repair_values_are_read_and_written() {
+            $crate::authentication_repair_values_are_read_and_written($value);
+        }
+
+        #[test]
+        fn multipath_state_describes_the_connection() {
+            $crate::multipath_state_describes_the_connection($value);
+        }
+
+        #[test]
+        fn last_received_header_records_where_the_last_packet_came() {
+            $crate::last_received_header_records_where_the_last_packet_came($value);
+        }
+
+        #[test]
+        fn incoming_processor_is_read_as_received_or_set() {
+            $crate::incoming_processor_is_read_as_received_or_set($value);
         }
 
         #[test]

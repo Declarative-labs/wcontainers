@@ -83,7 +83,8 @@ pub enum Next {
         slice_nanoseconds: Option<u64>,
     },
     /// Nothing can run. Come back when an [`crate::Event`] arrives, or at this time on the monotonic clock
-    /// if one is given. The driver must not spin.
+    /// if one is given. The driver must not spin. A time of 0 asks it to come back at once: the
+    /// kernel has woken waits to settle, and its threads may run after that.
     Idle { until_nanoseconds: Option<u64> },
     /// The container's first process has ended with this wait status (as Linux's `wait` reports it).
     Finished { status: i32 },

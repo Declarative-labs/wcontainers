@@ -541,9 +541,6 @@ pub(crate) struct Pty {
     /// Sides whose input became readable, for the caller to send their I/O signals
     /// (`kill_fasync` with `POLL_IN`).
     pub input_signals: Vec<usize>,
-    /// Bytes of space toward the slave promised to an embedder writing the master (credit given on
-    /// its end) that have not come.
-    pub promised: u64,
 }
 
 impl Pty {
@@ -573,7 +570,6 @@ impl Pty {
             closed: [false, true],
             signals: Vec::new(),
             input_signals: Vec::new(),
-            promised: 0,
         }
     }
 

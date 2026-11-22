@@ -8,7 +8,7 @@ use alloc::rc::Weak;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use wcontainers_abi::{End, PAGE_SIZE};
+use wcontainers_abi::PAGE_SIZE;
 
 use crate::file::{FileRef, OpenFile};
 use crate::linux::general::*;
@@ -44,13 +44,8 @@ pub(crate) struct Pipe {
     /// The open files of its ends, for counting readers and writers, each with the count of writers
     /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
     ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
-    /// Bytes the embedder may still send (credit given on its end) that have not come.
-    pub promised: u64,
-    /// Bytes the embedder sent within its credit that found no space yet (a writer inside took
-    /// it), as a writer outside Linux holds what it has not written.
-    pub inbox: Vec<u8>,
     /// The end whose kernel side is this pipe's reader: a write goes straight to it.
-    pub reading_end: Option<End>,
+    pub reading_end: Option<crate::ends::EndNumber>,
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
     pub opened_readers: u32,
     pub opened_writers: u32,
@@ -81,8 +76,6 @@ impl Pipe {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
             ends: Vec::new(),
-            promised: 0,
-            inbox: Vec::new(),
             reading_end: None,
             opened_readers: 0,
             opened_writers: 0,
@@ -230,15 +223,6 @@ impl Pipe {
                 merge: true,
             });
         }
-        fits
-    }
-
-    /// Moves what fits of the inbox in. Returns how many bytes went in.
-    pub fn deliver_inbox(&mut self) -> usize {
-        let inbox = core::mem::take(&mut self.inbox);
-        let fits = self.deliver(&inbox);
-        self.inbox = inbox;
-        self.inbox.drain(..fits);
         fits
     }
 

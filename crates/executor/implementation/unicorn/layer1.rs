@@ -4647,7 +4647,7 @@ fn run_ours_on(
         options: wcontainers_kernel_linux::StartOptions::default(),
     };
     kernel
-        .start(cpu, &host, &start)
+        .start(cpu, &host, start)
         .expect("the kernel runs a process serially with exact replay");
     crate::streams::begin(&mut kernel, cpu, &host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
@@ -4661,7 +4661,7 @@ fn run_ours_on(
     // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
     // end later is killed here too.
     let deadline =
-        wcontainers_abi::Host::monotonic_nanoseconds(&*host) + DEADLINE_SECONDS * 1_000_000_000;
+        wcontainers_clock::Clock::monotonic_nanoseconds(&*host) + DEADLINE_SECONDS * 1_000_000_000;
     let call = |kernel: &mut Kernel,
                 cpu: &mut Layer1Cpu,
                 host: &std::sync::Arc<TestHost>,

@@ -40,6 +40,7 @@ const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IP
 const UPPER_LAYER_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take (it takes TCP, UDP, ICMP and ICMPv6)";
 const RULE_ON_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take, which a rule of the namespace selects on";
 const HASHED_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take, on a routing entry whose choice among next hops may hash the protocol";
+const MIXED_SOURCE: &str = "route lookup: an IPv4-mapped destination from an IPv6 source that maps no IPv4 address, which a dual-stack socket cannot send from";
 const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
 const PROBE: &str = "route lookup: a datagram socket connected out of the route's interface took another routing entry or none, so what it is told is not this route's";
 
@@ -103,7 +104,12 @@ pub(crate) fn resolve(
     };
     let (found, resolved) = match &route {
         RouteSelectors::V4(route) => lookup.resolve_v4(route, owner)?,
-        RouteSelectors::V6(route) => lookup.resolve_v6(route, owner)?,
+        RouteSelectors::V6(route) => match route.destination.to_ipv4_mapped() {
+            Some(destination) if route.routing_header.is_none() => {
+                lookup.resolve_mapped(route, destination, owner)?
+            }
+            _ => lookup.resolve_v6(route, owner)?,
+        },
     };
     if neighbour == NeighbourConfirmation::Confirmed && found.kind == RouteKind::Unicast {
         lookup.confirm_neighbour(found.next_hop, found.interface)?;
@@ -225,6 +231,15 @@ impl Lookup<'_> {
         if route.scope == RouteScope::Link {
             return Err(self.shortfalls.refuse(LINK_SCOPE));
         }
+        if !route.options.as_slice().is_empty() {
+            // The options are taken as a send takes them, or refused with the error `IP_OPTIONS` gives.
+            set_packet_setting(
+                datagram_socket(IpVersion::V4)?.as_fd(),
+                IpVersion::V4,
+                &IpPacketSetting::Ipv4Options(route.options),
+                self.shortfalls,
+            )?;
+        }
         let destination = match source_route_first_hop(route.options)? {
             None => route.destination,
             Some(SourceRoute::Loose(first_hop)) => first_hop,
@@ -300,9 +315,11 @@ impl Lookup<'_> {
         };
         let resolved = Route {
             kind: found.kind,
-            source: match route.source {
-                Some(source) => IpAddr::V4(source),
-                None => found.source.ok_or(HostError::Errno(libc::EPROTO))?,
+            // A link with no IPv4 address gives no preferred source; a socket connected along it gets the unspecified one.
+            source: match (route.source, found.source) {
+                (Some(source), _) => IpAddr::V4(source),
+                (None, Some(source)) => source,
+                (None, None) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             },
             interface: found.interface,
             path_mtu: MaximumTransmissionUnit(path_mtu),
@@ -409,6 +426,44 @@ impl Lookup<'_> {
                 }
             })?,
         };
+        Ok((found, resolved))
+    }
+
+    /// Resolves an IPv4-mapped destination over IPv4, as a dual-stack socket sends to one, with the source mapped back.
+    fn resolve_mapped(
+        &self,
+        route: &Ipv6RouteSelectors<'_>,
+        destination: Ipv4Addr,
+        owner: UserId,
+    ) -> Result<(FoundRoute, Route), HostError> {
+        let source = match route.source {
+            None => None,
+            Some(source) => Some(
+                source
+                    .to_ipv4_mapped()
+                    .ok_or_else(|| self.shortfalls.refuse(MIXED_SOURCE))?,
+            ),
+        };
+        let options = Ipv4Options::new();
+        let (found, mut resolved) = self.resolve_v4(
+            &Ipv4RouteSelectors {
+                destination,
+                source,
+                source_address_check: route.source_address_check,
+                interface: route.interface,
+                dscp: route.dscp,
+                ecn: route.ecn,
+                mark: route.mark,
+                scope: RouteScope::Universe,
+                broadcast: BroadcastPermission::Refused,
+                options: &options,
+                upper_layer: route.upper_layer,
+            },
+            owner,
+        )?;
+        if let IpAddr::V4(source) = resolved.source {
+            resolved.source = IpAddr::V6(source.to_ipv6_mapped());
+        }
         Ok((found, resolved))
     }
 

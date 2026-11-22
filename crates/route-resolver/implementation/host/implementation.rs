@@ -40,11 +40,26 @@ impl RouteResolver for HostRouteResolver {
         owner: UserId,
         neighbour: NeighbourConfirmation,
     ) -> Result<Route, HostError> {
-        let mut buffers = self
-            .buffers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        linux::resolve(&mut buffers, &self.shortfalls, route, owner, neighbour)
+        // A lookup that finds the kept buffers in use takes buffers of its own rather than wait for them.
+        match self.buffers.try_lock() {
+            Ok(mut buffers) => {
+                linux::resolve(&mut buffers, &self.shortfalls, route, owner, neighbour)
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => linux::resolve(
+                &mut poisoned.into_inner(),
+                &self.shortfalls,
+                route,
+                owner,
+                neighbour,
+            ),
+            Err(std::sync::TryLockError::WouldBlock) => linux::resolve(
+                &mut linux::Buffers::default(),
+                &self.shortfalls,
+                route,
+                owner,
+                neighbour,
+            ),
+        }
     }
 
     #[cfg(not(target_os = "linux"))]

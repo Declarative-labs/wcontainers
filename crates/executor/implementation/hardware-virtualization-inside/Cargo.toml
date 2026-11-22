@@ -19,6 +19,10 @@ wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu", default-featu
 # The kernel, which runs inside.
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
+wcontainers-readiness = { path = "../../../readiness" }
+wcontainers-system = { path = "../../../system" }
+wcontainers-clock = { path = "../../../clock" }
+wcontainers-random-source = { path = "../../../random-source" }
 # The loop, which runs inside beside the kernel.
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }
 # The kernel test crate's policy, for the test program `native-kernel` only.

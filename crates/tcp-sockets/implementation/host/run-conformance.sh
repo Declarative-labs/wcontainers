@@ -15,6 +15,8 @@ binaries=$(cargo test -p wcontainers-tcp-sockets-host --no-run --message-format=
     sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')
 [ -n "$binaries" ] || { echo "the test binaries did not build" >&2; exit 1; }
 setup="$ip"' link set lo up && '"$ip"' route add local '"$microsecond_clock"' dev lo table local features tcp_usec_ts && tc qdisc replace dev lo root fq && sysctl -qw net.ipv4.tcp_fastopen='"$fast_open_for_both"' net.ipv6.flowlabel_consistency=0 net.ipv4.tcp_fwmark_accept=1 net.ipv6.conf.lo.forwarding=1'
+# The congestion controls the suite reads besides the built-in ones, loaded for the whole host (namespaces share them).
+sudo modprobe -a tcp_dctcp tcp_vegas tcp_bbr
 status=0
 # The suite's binary and the implementation's own tests, each in a namespace of its own.
 for binary in $binaries; do

@@ -980,7 +980,7 @@ pub(super) fn proc_contents<S: crate::System>(
     }
     let uptime = boot_time(kernel, cx);
     let mut fresh = [0u8; 16];
-    cx.host.random(&mut fresh);
+    cx.random(&mut fresh);
     let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
     // A command line or environment is read only from anonymous memory, as `access_remote_vm`

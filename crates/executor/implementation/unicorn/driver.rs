@@ -10,8 +10,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE, SystemCallRequest, Warning,
+    CounterReading, Cpu, Event, Host, HostError, PAGE_SIZE, SystemCallRequest, Warning,
 };
+use wcontainers_clock::Clock as _;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel_linux::{
@@ -219,13 +220,9 @@ pub struct Run {
     pub saved: usize,
     /// How many turns on the CPU side it took.
     pub turns: u64,
-    /// The most input credit the kernel had given and not seen used.
-    pub most_input_credit: u64,
-    /// Input bytes the outside sent within the credit it held, and how many of its sends went past
-    /// that credit (only when it breaks the rule on purpose).
-    pub sent_within_credit: u64,
-    pub sends_past_credit: u64,
-    /// What the kernel did against the credit rules on its ends.
+    /// The most input the kernel asked for at once.
+    pub most_input_asked: u64,
+    /// What the kernel did against the rules on its ends.
     pub broken: Vec<String>,
     /// Whether the kernel closed every output end once the container ended.
     pub outputs_closed: bool,
@@ -270,6 +267,8 @@ pub struct TestHost<H = NoHooks> {
     last_name: AtomicU64,
     /// What the sockets became ready for, for the kernel's waits on them.
     ready: Mutex<Readied>,
+    /// What the stream endpoints became ready for, by number, for the kernel's waits on them.
+    stream_ready: Mutex<Readied>,
     /// The number of the last socket: a TCP connection or listener, or a UDP socket.
     last_socket: AtomicU32,
     /// Connections to the outside and lookups.
@@ -347,6 +346,7 @@ impl TestHost {
             names: Mutex::default(),
             last_name: AtomicU64::default(),
             ready: Mutex::default(),
+            stream_ready: Mutex::default(),
             last_socket: AtomicU32::default(),
             network: Default::default(),
             cpu_warnings: Mutex::default(),
@@ -387,6 +387,7 @@ impl TestHost {
             names: self.names,
             last_name: self.last_name,
             ready: self.ready,
+            stream_ready: self.stream_ready,
             last_socket: self.last_socket,
             network: self.network,
             cpu_warnings: self.cpu_warnings,
@@ -429,6 +430,7 @@ impl<H: Send> TestHost<H> {
             *network = moved;
         }
         *lock(&self.ready) = tcp::Readied::default();
+        *lock(&self.stream_ready) = tcp::Readied::default();
         self.wall_base.store(0, Ordering::Relaxed);
         let base = wall + wall_step - self.monotonic_nanoseconds();
         self.wall_base.store(base, Ordering::Relaxed);
@@ -462,17 +464,22 @@ pub(crate) fn held<T>(mutex: &mut Mutex<T>) -> &mut T {
     mutex.get_mut().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl System for TestHost {
+impl wcontainers_system::TaskIdAllocator for TestHost {
     fn free_task_id(&self, _: TaskId) {}
 }
 
-impl System for TestHost<Box<dyn Hooks>> {
+impl System for TestHost {}
+
+impl wcontainers_system::TaskIdAllocator for TestHost<Box<dyn Hooks>> {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         self.hook().allocate_task_id(previous)
     }
     fn free_task_id(&self, id: TaskId) {
         self.hook().free_task_id(id);
     }
+}
+
+impl System for TestHost<Box<dyn Hooks>> {
     fn intercept_system_call_request(
         &self,
         process: Process<'_>,
@@ -662,6 +669,7 @@ where
                     Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
                     Entry::NameAnswered(number, answer) => self.name_arrived(number, answer),
                     Entry::SocketReady(number, ready) => self.socket_ready(number, ready),
+                    Entry::StreamReady(end, ready) => self.stream_readied(end, ready),
                     other => match ended(&other) {
                         Some(value) => return value,
                         None if other == Entry::Delivered => {}
@@ -732,7 +740,7 @@ impl<H: Send> TestHost<H> {
     }
 }
 
-impl<H: Send> Host for TestHost<H> {
+impl<H: Send> wcontainers_clock::Clock for TestHost<H> {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.answer(
             Entry::Monotonic,
@@ -757,8 +765,10 @@ impl<H: Send> Host for TestHost<H> {
             },
         )
     }
+}
 
-    fn random(&self, into: &mut [u8]) {
+impl<H: Send> wcontainers_random_source::RandomSource for TestHost<H> {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
         let bytes = self.answer(
             Entry::Random,
             |entry| match entry {
@@ -772,8 +782,11 @@ impl<H: Send> Host for TestHost<H> {
             },
         );
         into.copy_from_slice(&bytes);
+        Ok(())
     }
+}
 
+impl<H: Send> Host for TestHost<H> {
     fn warn(&self, warning: Warning<'_>) {
         // Only a missing call's detail is a call number.
         let name = if warning.reason == wcontainers_kernel_linux::reason::NOT_IMPLEMENTED {
@@ -794,17 +807,69 @@ impl<H: Send> Host for TestHost<H> {
             detail: warning.detail,
         });
     }
+}
 
-    fn send_stream(&self, end: End, bytes: &[u8]) {
-        lock(&self.streams).send(end, bytes);
+/// The standard streams, each send and receive kept in the record.
+impl<H: Send> wcontainers_system::StreamTransport for TestHost<H> {
+    type Endpoint = crate::streams::End;
+
+    /// In a replay the client still shows what the record says was taken.
+    fn send_stream(&self, peer: &crate::streams::End, bytes: &[u8]) -> Result<usize, HostError> {
+        let result = self.answer(
+            Entry::StreamSent,
+            |entry| match entry {
+                Entry::StreamSent(result) => Ok(result),
+                other => Err(other),
+            },
+            || lock(&self.streams).send(*peer, bytes),
+        );
+        if let Ok(taken) = result
+            && self.replaying()
+        {
+            lock(&self.streams).show(*peer, &bytes[..taken]);
+        }
+        result
     }
 
-    fn credit_stream(&self, end: End, bytes: u64) {
-        lock(&self.streams).credit(end, bytes);
+    fn receive_stream(
+        &self,
+        peer: &crate::streams::End,
+        into: &mut [u8],
+    ) -> Result<usize, HostError> {
+        let (result, bytes) = self.answer(
+            |(result, bytes)| Entry::StreamReceived(result, bytes),
+            |entry| match entry {
+                Entry::StreamReceived(result, bytes) if bytes.len() <= into.len() => {
+                    Ok((result, bytes))
+                }
+                other => Err(other),
+            },
+            || {
+                let mut bytes = vec![u8::MIN; into.len()];
+                let result = lock(&self.streams).receive(*peer, &mut bytes);
+                bytes.truncate(*result.as_ref().unwrap_or(&usize::MIN));
+                (result, bytes)
+            },
+        );
+        into[..bytes.len()].copy_from_slice(&bytes);
+        result
     }
 
-    fn close_stream(&self, end: End) {
-        lock(&self.streams).close(end);
+    fn close_stream(&self, peer: &crate::streams::End) {
+        lock(&self.streams).close(*peer);
+    }
+}
+
+impl<H: Send> wcontainers_readiness::Readiness<crate::streams::End> for TestHost<H> {
+    async fn wait_until_ready(
+        &self,
+        peer: &crate::streams::End,
+        interest: wcontainers_readiness::ReadyFor,
+    ) -> Result<wcontainers_readiness::ReadyFor, HostError> {
+        if !self.replaying() {
+            lock(&self.streams).arm(*peer, interest);
+        }
+        Ok(Readied::wait(&self.stream_ready, peer.0).await)
     }
 }
 
@@ -920,16 +985,17 @@ impl<H> TestHost<H> {
     }
 
     /// Socket `number` became ready: the wait on it is woken.
+    /// Ends the kernel's wait on stream endpoint `end` with what it is ready for.
+    pub(crate) fn stream_readied(
+        &self,
+        end: crate::streams::End,
+        ready: wcontainers_readiness::ReadyFor,
+    ) {
+        Readied::arrive(&self.stream_ready, end.0, ready);
+    }
+
     pub(crate) fn socket_ready(&self, number: u32, ready: wcontainers_readiness::ReadyFor) {
-        let waiting = {
-            let mut readied = lock(&self.ready);
-            let arrived = readied.arrived.entry(number).or_insert(ready);
-            *arrived |= ready;
-            readied.waiting.remove(&number)
-        };
-        if let Some(waker) = waiting {
-            waker.wake();
-        }
+        Readied::arrive(&self.ready, number, ready);
     }
 }
 
@@ -954,6 +1020,21 @@ where
 
     fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
         TestHost::hand(self, kernel, cpu, event);
+    }
+
+    /// Kept in the record, then the kernel settles, as for a socket.
+    fn ready(
+        self: &Arc<Self>,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        end: crate::streams::End,
+        ready: wcontainers_readiness::ReadyFor,
+    ) {
+        if self.taped_run() {
+            self.kept_in_step(Entry::StreamReady(end, ready));
+        }
+        self.stream_readied(end, ready);
+        TestHost::hand(self, kernel, cpu, Event::Timer);
     }
 }
 
@@ -1214,7 +1295,7 @@ pub fn started_with_executor<State: Clone + 'static>(
         prepared.kernel,
         cpu,
         &host,
-        &start,
+        start,
         config,
         state,
     )
@@ -1263,7 +1344,7 @@ fn run_hosted<H: BetweenSteps + Send>(
     injections: Injections,
 ) -> Result<Run, Failure>
 where
-    TestHost<H>: System,
+    TestHost<H>: System + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>,
 {
     let Prepared {
         mut kernel,
@@ -1344,7 +1425,7 @@ where
     let started = Instant::now();
     let host = Arc::new(host);
     kernel
-        .start(&mut cpu, &host, &start)
+        .start(&mut cpu, &host, start)
         .expect("the kernel runs a process serially with exact replay");
     wcontainers_runtime_single_kernel::System::started(&host, &mut kernel, &mut cpu);
     let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &host);
@@ -1412,9 +1493,7 @@ where
         files,
         saved,
         turns,
-        most_input_credit: streams.most_input_credit,
-        sent_within_credit: streams.sent_within_credit,
-        sends_past_credit: streams.sends_past_credit,
+        most_input_asked: streams.most_input_asked,
         broken: streams.broken,
         outputs_closed,
         input_closed,
@@ -1592,7 +1671,10 @@ where
                 return;
             }
         }
-        if streams::act(kernel, cpu, self, true) {
+        // Coming back at once is the kernel settling what it was woken for, not a container that
+        // can go on no other way.
+        let settling = until_nanoseconds == Some(0);
+        if streams::act(kernel, cpu, self, !settling) {
             return;
         }
         let Some(until) = until_nanoseconds else {
@@ -1627,7 +1709,7 @@ where
     Self: System,
 {
     /// What descriptors 0 to 2 of the first process are: the ends this host holds the other sides of.
-    pub fn standard(&self) -> Standard {
+    pub fn standard(&self) -> Standard<crate::streams::End> {
         lock(&self.streams).client.standard()
     }
 }
@@ -1635,13 +1717,13 @@ where
 /// What the loop asks of the test host between turns.
 impl<H: BetweenSteps + Send + 'static> wcontainers_runtime_single_kernel::System for TestHost<H>
 where
-    Self: System,
+    Self: System + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>,
 {
     /// The run of a copy made at a save, as the process it was copied from gets it.
     type End = Run;
 
     /// What the test's client is; a test that asks for a terminal says so there too.
-    fn standard(&self, terminal: Option<TerminalSize>) -> Standard {
+    fn standard(&self, terminal: Option<TerminalSize>) -> Standard<crate::streams::End> {
         assert_eq!(
             terminal.map(|size| (size.columns, size.rows)),
             lock(&self.streams).client.terminal,
@@ -2037,9 +2119,7 @@ fn encode(run: &Run) -> Vec<u8> {
     number(&mut out, run.outcome.exit_code as u64);
     number(&mut out, run.saved as u64);
     number(&mut out, run.turns);
-    number(&mut out, run.most_input_credit);
-    number(&mut out, run.sent_within_credit);
-    number(&mut out, run.sends_past_credit);
+    number(&mut out, run.most_input_asked);
     number(&mut out, run.outputs_closed.into());
     number(&mut out, run.input_closed.into());
     number(&mut out, run.broken.len() as u64);
@@ -2098,9 +2178,7 @@ fn decode(input: &[u8]) -> Run {
     let exit_code = reader.number() as i32;
     let saved = reader.number() as usize;
     let turns = reader.number();
-    let most_input_credit = reader.number();
-    let sent_within_credit = reader.number();
-    let sends_past_credit = reader.number();
+    let most_input_asked = reader.number();
     let outputs_closed = reader.number() != 0;
     let input_closed = reader.number() != 0;
     let broken = (0..reader.number()).map(|_| reader.text()).collect();
@@ -2146,9 +2224,7 @@ fn decode(input: &[u8]) -> Run {
         files,
         saved,
         turns,
-        most_input_credit,
-        sent_within_credit,
-        sends_past_credit,
+        most_input_asked,
         broken,
         outputs_closed,
         input_closed,

@@ -110,15 +110,48 @@ impl Ir {
 
 /// Where an instruction's literal operands start (`Op::getFirstLiteralOperandIndex`).
 fn first_literal(code: u16, operands: usize) -> usize {
+    use code::*;
     match code {
-        8 | 160 | 416 | 417 | 544 | 545 => 0,
-        2..=4 | 16..=20 | 24..=27 | 32..=38 | 39..=41 | 47 | 48 | 512 | 513 | 687 | 384 | 136 => {
-            1.min(operands)
-        }
-        301 | 304 => 2.min(operands),
-        302 | 305 => 3.min(operands),
-        1 | 96 | 320..=324 => operands.saturating_sub(1),
-        358 => 6.min(operands),
+        CONSTANT
+        | BARRIER
+        | EMIT_VERTEX
+        | EMIT_PRIMITIVE
+        | ROV_SCOPED_LOCK_BEGIN
+        | ROV_SCOPED_LOCK_END => 0,
+        SEMANTIC
+        | DEBUG_NAME
+        | DEBUG_MEMBER_NAME
+        | SET_CS_WORKGROUP_SIZE
+        | SET_GS_INSTANCES
+        | SET_GS_INPUT_PRIMITIVE
+        | SET_GS_OUTPUT_VERTICES
+        | SET_GS_OUTPUT_PRIMITIVE
+        | SET_TESS_PRIMITIVE
+        | SET_TESS_DOMAIN
+        | SET_TESS_CONTROL_POINTS
+        | SET_FP_MODE
+        | DCL_INPUT
+        | DCL_INPUT_BUILT_IN
+        | DCL_OUTPUT
+        | DCL_OUTPUT_BUILT_IN
+        | DCL_SPEC_CONSTANT
+        | DCL_PUSH_DATA
+        | DCL_SAMPLER
+        | DCL_CBV
+        | DCL_SRV
+        | DCL_UAV
+        | DCL_XFB
+        | DCL_INPUT_TARGET
+        | DERIV_X
+        | DERIV_Y
+        | F_ROUND
+        | POINTER
+        | SCOPED_SWITCH_CASE => 1.min(operands),
+        BUFFER_LOAD | MEMORY_LOAD => 2.min(operands),
+        BUFFER_STORE | MEMORY_STORE => 3.min(operands),
+        ENTRY_POINT | LABEL | LDS_ATOMIC | BUFFER_ATOMIC | IMAGE_ATOMIC | COUNTER_ATOMIC
+        | MEMORY_ATOMIC => operands.saturating_sub(1),
+        IMAGE_GATHER => 6.min(operands),
         _ => operands,
     }
 }

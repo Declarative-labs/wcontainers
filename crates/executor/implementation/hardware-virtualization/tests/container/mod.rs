@@ -7,7 +7,7 @@
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use std::sync::{Mutex, PoisonError};
 
-use wcontainers_abi::{BackendRequestId, End, Host, HostError, Warning};
+use wcontainers_abi::{BackendRequestId, Host, HostError, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_executor_hardware_virtualization::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
@@ -97,7 +97,7 @@ impl Recording {
     }
 }
 
-impl Host for Recording {
+impl wcontainers_clock::Clock for Recording {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.call("monotonic".into());
         MONOTONIC_NANOSECONDS
@@ -106,36 +106,62 @@ impl Host for Recording {
         self.call("realtime".into());
         REALTIME_NANOSECONDS
     }
-    fn random(&self, into: &mut [u8]) {
+}
+
+impl wcontainers_random_source::RandomSource for Recording {
+    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
         self.random
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .fill(into);
         self.call(format!("random {into:02x?}"));
+        Ok(())
     }
+}
+
+impl Host for Recording {
     fn warn(&self, warning: Warning<'_>) {
         self.call(format!("warn {warning:?}"));
     }
     fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
         self.absent(format!("backend {request:?} {message:02x?}"))
     }
-    fn send_stream(&self, end: End, bytes: &[u8]) {
+}
+
+impl wcontainers_system::StreamTransport for Recording {
+    type Endpoint = u32;
+
+    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
         let mut record = self.record.lock().unwrap_or_else(PoisonError::into_inner);
         record.calls.push(format!(
-            "output {end:?} {:?}",
+            "output {peer:?} {:?}",
             String::from_utf8_lossy(bytes)
         ));
-        match end {
+        match *peer {
             ERROR => &mut record.stderr,
             _ => &mut record.stdout,
         }
         .extend_from_slice(bytes);
+        Ok(bytes.len())
     }
-    fn credit_stream(&self, end: End, bytes: u64) {
-        self.call(format!("credit {end:?} {bytes}"));
+    fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+        Err(HostError::NotSupported)
     }
-    fn close_stream(&self, end: End) {
-        self.call(format!("close stream {end:?}"));
+    fn close_stream(&self, peer: &u32) {
+        self.call(format!("close stream {peer:?}"));
+    }
+}
+
+impl wcontainers_readiness::Readiness<u32> for Recording {
+    async fn wait_until_ready(
+        &self,
+        _peer: &u32,
+        interest: wcontainers_readiness::ReadyFor,
+    ) -> Result<wcontainers_readiness::ReadyFor, HostError> {
+        if interest.contains(wcontainers_readiness::ReadyFor::WRITABLE) {
+            return Ok(wcontainers_readiness::ReadyFor::WRITABLE);
+        }
+        std::future::pending().await
     }
 }
 

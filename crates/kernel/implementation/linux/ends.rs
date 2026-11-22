@@ -1,75 +1,121 @@
-//! Ends: byte streams between the kernel and the embedder. The kernel holds its side of each as an
-//! ordinary open file (a pipe's writer or reader, or a pseudo-terminal's master) and moves bytes
-//! between that file and the embedder within the credit each side gives the other.
+//! Ends: byte streams between the kernel and the embedder, each one of the system's stream
+//! endpoints. The kernel holds its side of each as an ordinary open file (a pipe's writer or reader,
+//! or a pseudo-terminal's master) and moves bytes between that file and the system's endpoint as far
+//! as each side takes them, waiting on the endpoint's readiness when it takes no more.
 
 use alloc::collections::BTreeMap;
+use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::any::Any;
 
-use wcontainers_abi::End;
+use wcontainers_abi::HostError;
+use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_system::StreamTransport;
 
 use crate::file::FileRef;
 use crate::process::Channel;
 use crate::syscall::{pipe, tty};
-use crate::{Context, Kernel, reason};
+use crate::waiting::{Answer, WaitFor, Waiting, waiting_call};
+use crate::{Context, Kernel};
 
-/// What the first process's descriptors 0 to 2 are, as `docker run` gives them.
+/// What the first process's descriptors 0 to 2 are, as `docker run` gives them, each end one of
+/// the system's stream endpoints `E`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Standard {
+pub enum Standard<E> {
     /// `docker run`: 0 is `/dev/null` without an input end (`-i` gives one), else the reading side
     /// of a pipe the input end writes; 1 and 2 are the writing sides of pipes the output and error
     /// ends read.
     Pipes {
-        input: Option<End>,
-        output: End,
-        error: End,
+        input: Option<E>,
+        output: E,
+        error: E,
     },
     /// `docker run -t`: 0 to 2 are a pseudo-terminal's slave at this size, whose master the end
     /// holds.
-    Terminal { end: End, columns: u16, rows: u16 },
+    Terminal { end: E, columns: u16, rows: u16 },
 }
 
-impl Standard {
-    /// The ends it names, each with whether the kernel sends on it.
-    pub(crate) fn ends(&self) -> Vec<(End, bool)> {
+/// The kernel's number for one of its ends.
+pub(crate) type EndNumber = u32;
+
+impl<E> Standard<E> {
+    /// The same descriptors with each end numbered in the order `number` is called, each with
+    /// whether the kernel sends on it.
+    pub(crate) fn numbered(
+        self,
+        mut number: impl FnMut(E, bool) -> EndNumber,
+    ) -> Standard<EndNumber> {
+        match self {
+            Standard::Pipes {
+                input,
+                output,
+                error,
+            } => Standard::Pipes {
+                input: input.map(|end| number(end, false)),
+                output: number(output, true),
+                error: number(error, true),
+            },
+            Standard::Terminal { end, columns, rows } => Standard::Terminal {
+                end: number(end, true),
+                columns,
+                rows,
+            },
+        }
+    }
+}
+
+impl Standard<EndNumber> {
+    /// The ends it names.
+    fn ends(&self) -> Vec<EndNumber> {
         match *self {
             Standard::Pipes {
                 input,
                 output,
                 error,
-            } => input
-                .map(|end| (end, false))
-                .into_iter()
-                .chain([(output, true), (error, true)])
-                .collect(),
-            Standard::Terminal { end, .. } => alloc::vec![(end, true)],
+            } => input.into_iter().chain([output, error]).collect(),
+            Standard::Terminal { end, .. } => alloc::vec![end],
         }
     }
 }
 
 /// The kernel's side of one end.
 struct Held {
+    /// The system's endpoint, of its own type.
+    endpoint: Rc<dyn Any>,
     /// None until the start that named it has made the first process's descriptors (and for
     /// good if that start failed).
     file: Option<FileRef>,
-    /// Bytes the kernel may still send.
-    credit: u64,
     /// The kernel sends on it (an input pipe's end only receives).
     sends: bool,
-    /// The kernel has closed it: it sends nothing more on it.
-    closed: bool,
+    /// The system took less than it was given: nothing more is sent until it is ready to take.
+    blocked: bool,
+    /// The system had nothing to give: nothing more is asked until it is ready to give.
+    drained: bool,
+    /// The system said its side has let go: what it still gives is taken, then the end goes.
+    hung_up: bool,
+    /// What the wait kept on the endpoint asks for; empty for none.
+    asked: ReadyFor,
+    /// Bytes a terminal's master gave that the system has not taken yet, sent before any more is
+    /// taken from the master.
+    outbox: Vec<u8>,
 }
 
-/// Every end the embedder has not closed.
+/// Every end the kernel has not let go of.
 #[derive(Default)]
 pub(crate) struct Ends {
-    held: BTreeMap<End, Held>,
-    /// Pipes' writers whose end the embedder closed while bytes it sent waited for space: let go of
-    /// once those are in, as a writer outside Linux closes after writing what it holds.
-    draining: Vec<FileRef>,
+    held: BTreeMap<EndNumber, Held>,
     /// The channels of the pipes and terminals held, whose wakes mean something moved.
     watched: Vec<Channel>,
     /// Something may have moved since the ends were last served.
     pub moved: bool,
+}
+
+/// The system's endpoint kept for an end.
+fn endpoint_of<S: crate::System>(endpoint: &Rc<dyn Any>) -> &<S as StreamTransport>::Endpoint {
+    endpoint
+        .downcast_ref()
+        .expect("an end's endpoint is its system's")
 }
 
 impl Ends {
@@ -80,39 +126,66 @@ impl Ends {
         }
     }
 
-    /// Names an end whose file comes later; credit given on it before then is kept.
-    pub fn name(&mut self, end: End, sends: bool) {
+    /// Takes an endpoint whose file comes later, numbered after those held before.
+    fn name<S: crate::System>(
+        &mut self,
+        endpoint: <S as StreamTransport>::Endpoint,
+        sends: bool,
+    ) -> EndNumber {
+        let number = self
+            .held
+            .last_key_value()
+            .map_or(0, |(number, _)| number + 1);
         let held = Held {
+            endpoint: Rc::new(endpoint),
             file: None,
-            credit: 0,
             sends,
-            closed: false,
+            blocked: false,
+            drained: false,
+            hung_up: false,
+            asked: ReadyFor::empty(),
+            outbox: Vec::new(),
         };
-        assert!(
-            self.held.insert(end, held).is_none(),
-            "an end is named once"
-        );
+        self.held.insert(number, held);
+        number
     }
 
-    /// Bytes the kernel may still send on an end.
-    pub fn credit(&self, end: End) -> u64 {
+    /// Whether the kernel can send on an end now.
+    pub fn takes(&self, end: EndNumber) -> bool {
         self.held
             .get(&end)
-            .filter(|held| !held.closed)
-            .map_or(0, |held| held.credit)
+            .is_some_and(|held| held.sends && !held.blocked && !held.hung_up)
     }
 
-    /// Sends bytes out of an end, within its credit.
-    pub fn send<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: End, bytes: &[u8]) {
+    /// Sends bytes out of an end: how many the system took. If it took fewer, the end waits until
+    /// the system can take more; if its side has let go, the end goes when next served.
+    pub fn send<S: crate::System>(
+        &mut self,
+        cx: &Context<'_, S>,
+        end: EndNumber,
+        bytes: &[u8],
+    ) -> usize {
         let held = self.held.get_mut(&end).expect("an end held");
-        let count = bytes.len() as u64;
-        debug_assert!(count <= held.credit && !held.closed);
-        held.credit -= count;
-        cx.host.send_stream(end, bytes);
+        debug_assert!(held.sends && !held.blocked && !held.hung_up);
+        let taken = match cx.host.send_stream(endpoint_of::<S>(&held.endpoint), bytes) {
+            Ok(taken) => taken.min(bytes.len()),
+            Err(HostError::WouldBlock) => 0,
+            Err(_) => {
+                held.hung_up = true;
+                self.moved = true;
+                return 0;
+            }
+        };
+        if taken < bytes.len() {
+            held.blocked = true;
+            self.moved = true;
+        }
+        taken
     }
 }
 
 /// Which side of which object the kernel holds for an end.
+#[derive(Clone, Copy)]
 enum Side {
     /// A pipe's reader: the end takes what the guest writes.
     PipeOut,
@@ -120,6 +193,16 @@ enum Side {
     PipeIn,
     /// A pseudo-terminal's master: both.
     Terminal,
+}
+
+impl Side {
+    fn sends(self) -> bool {
+        matches!(self, Side::PipeOut | Side::Terminal)
+    }
+
+    fn receives(self) -> bool {
+        matches!(self, Side::PipeIn | Side::Terminal)
+    }
 }
 
 /// The channel whose wakes mean an end's pipe or terminal moved.
@@ -140,13 +223,37 @@ fn side(file: &FileRef) -> Side {
     }
 }
 
+/// The system's wait on an endpoint, owning what it waits on.
+async fn ready_of<S: crate::System>(
+    system: Arc<S>,
+    endpoint: Rc<dyn Any>,
+    interest: ReadyFor,
+) -> Answer {
+    let endpoint = endpoint_of::<S>(&endpoint);
+    Answer::Ready(
+        Readiness::<<S as StreamTransport>::Endpoint>::wait_until_ready(
+            &*system, endpoint, interest,
+        )
+        .await,
+    )
+}
+
 impl Kernel {
-    /// Gives a named end the kernel's side of it; if the embedder has closed the end already, the
-    /// file is let go of at once, as a close.
+    /// Takes the endpoints a start names, numbering them for the kernel.
+    pub(crate) fn name_ends<S: crate::System>(
+        &mut self,
+        standard: Standard<<S as StreamTransport>::Endpoint>,
+    ) -> Standard<EndNumber> {
+        let ends = &mut self.ends;
+        standard.numbered(|endpoint, sends| ends.name::<S>(endpoint, sends))
+    }
+
+    /// Gives a named end the kernel's side of it; if the end has gone already, the file is let go
+    /// of at once, as a close.
     pub(crate) fn attach_end<S: crate::System>(
         &mut self,
         cx: &mut Context<'_, S>,
-        end: End,
+        end: EndNumber,
         file: FileRef,
     ) {
         let Some(held) = self.ends.held.get_mut(&end) else {
@@ -162,8 +269,24 @@ impl Kernel {
         held.file = Some(file);
     }
 
-    /// Lets go of an end's file, as a close of it.
-    fn let_go_of_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, file: FileRef) {
+    /// Lets go of an end: its wait is dropped, the system hears that the kernel let go, and its
+    /// file is closed.
+    fn let_go_of_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: EndNumber) {
+        let Some(held) = self.ends.held.remove(&end) else {
+            return;
+        };
+        if !held.asked.is_empty() {
+            self.waiting
+                .drop_where(|about| *about == WaitFor::Stream(end));
+        }
+        cx.host.close_stream(endpoint_of::<S>(&held.endpoint));
+        let Some(file) = held.file else {
+            return;
+        };
+        match side(&file) {
+            Side::PipeOut => pipe::with_pipe(&file, |pipe| pipe.reading_end = None),
+            Side::PipeIn | Side::Terminal => {}
+        }
         let watched = &mut self.ends.watched;
         let mine = channel(&file);
         if let Some(at) = watched.iter().position(|seen| *seen == mine) {
@@ -173,172 +296,243 @@ impl Kernel {
         self.files_released(cx);
     }
 
-    /// `Event::StreamData`: bytes from the embedder, within the credit given; what is past it is
-    /// dropped and counted. Bytes after the kernel closed the end are dropped, as a write to a pipe
-    /// with no reader fails.
-    pub(crate) fn stream_data<S: crate::System>(
+    /// The system's wait on an end's endpoint ended: what it is ready for lets the end send or
+    /// receive again, or says its side let go.
+    pub(crate) fn end_ready<S: crate::System>(
         &mut self,
-        cx: &mut Context<'_, S>,
-        end: End,
-        bytes: &[u8],
+        _cx: &mut Context<'_, S>,
+        end: EndNumber,
+        ready: Result<ReadyFor, HostError>,
     ) {
-        self.ends.moved = true;
-        let Some(held) = self.ends.held.get(&end) else {
-            self.counters
-                .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into());
+        let ready = ready.unwrap_or(ReadyFor::ERROR);
+        let Some(held) = self.ends.held.get_mut(&end) else {
             return;
         };
-        let past = match held.file.clone() {
-            Some(file) => match side(&file) {
-                Side::PipeIn => pipe::receive_from_end(self, cx, &file, bytes),
-                Side::Terminal => tty::receive_from_end(self, cx, &file, bytes),
-                Side::PipeOut => bytes.len(),
-            },
-            None => bytes.len(),
-        };
-        if past > 0 {
-            self.counters
-                .count(cx.host, reason::STREAM_PAST_CREDIT, end.0.into());
+        held.asked = ReadyFor::empty();
+        let gone = ready.intersects(ReadyFor::ERROR | ReadyFor::HANG_UP);
+        if gone || ready.contains(ReadyFor::WRITABLE) {
+            held.blocked = false;
         }
-    }
-
-    /// `Event::StreamCredit`: the kernel may send this many more bytes. Credit on an end the kernel
-    /// never sends on is counted as an event nothing waits for.
-    pub(crate) fn credit_stream<S: crate::System>(
-        &mut self,
-        cx: &mut Context<'_, S>,
-        end: End,
-        bytes: u64,
-    ) {
+        if gone || ready.contains(ReadyFor::READABLE) {
+            held.drained = false;
+        }
+        held.hung_up |= gone;
         self.ends.moved = true;
-        match self.ends.held.get_mut(&end).filter(|held| held.sends) {
-            Some(held) => held.credit = held.credit.saturating_add(bytes),
-            None => self
-                .counters
-                .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into()),
-        }
     }
 
-    /// `Event::StreamClosed`: the embedder has let go; so does the kernel, as a close of its file.
-    pub(crate) fn stream_closed<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: End) {
-        self.ends.moved = true;
-        let Some(held) = self.ends.held.remove(&end) else {
-            self.counters
-                .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into());
-            return;
-        };
-        let Some(file) = held.file else {
-            return;
-        };
-        match side(&file) {
-            Side::PipeIn => {
-                pipe::with_pipe(&file, |pipe| pipe.promised = 0);
-                if !pipe::inbox_empty(&file) {
-                    self.ends.draining.push(file);
-                    return;
-                }
-            }
-            Side::Terminal => tty::end(&file).expect("a terminal").0.borrow_mut().promised = 0,
-            Side::PipeOut => pipe::with_pipe(&file, |pipe| pipe.reading_end = None),
-        }
-        self.let_go_of_end(cx, file);
-    }
-
-    /// `Event::TerminalResized`: a terminal end's new size.
+    /// `Event::TerminalResized`: the terminal end's new size; with no terminal end it is counted.
     pub(crate) fn terminal_resized<S: crate::System>(
         &mut self,
         cx: &mut Context<'_, S>,
-        end: End,
         columns: u16,
         rows: u16,
     ) {
         let file = self
             .ends
             .held
-            .get(&end)
-            .filter(|held| !held.closed)
-            .and_then(|held| held.file.clone());
-        match file.filter(|file| tty::end(file).is_some()) {
+            .values()
+            .filter_map(|held| held.file.clone())
+            .find(|file| tty::end(file).is_some());
+        match file {
             Some(file) => tty::resize_from_end(self, cx, &file, columns, rows),
             None => self
                 .counters
-                .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into()),
+                .count(cx.host, crate::reason::EVENT_UNEXPECTED, 0),
         }
     }
 
-    /// Moves what can move between the ends and the embedder, once something may have moved:
-    /// output within credit, new credit for space made, and closes for ends that are finished.
-    /// Returns whether anything moved.
+    /// Sends what an end's pipe or terminal holds, as far as the system takes it. Whether any went.
+    fn send_held<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        end: EndNumber,
+        file: &FileRef,
+        side: Side,
+    ) -> bool {
+        let mut moved = false;
+        while self.ends.takes(end) {
+            match side {
+                Side::Terminal => {
+                    let held = self.ends.held.get_mut(&end).expect("held");
+                    let mut outbox = core::mem::take(&mut held.outbox);
+                    if outbox.is_empty() {
+                        outbox = tty::send_to_end(self, cx, file, u64::MAX);
+                    }
+                    if outbox.is_empty() {
+                        break;
+                    }
+                    let taken = self.ends.send(cx, end, &outbox);
+                    moved |= taken > 0;
+                    self.ends.held.get_mut(&end).expect("held").outbox = outbox[taken..].to_vec();
+                }
+                _ => {
+                    let Some(bytes) = pipe::held_for_end(self, file) else {
+                        break;
+                    };
+                    let taken = self.ends.send(cx, end, &bytes);
+                    if taken > 0 {
+                        pipe::sent_to_end(self, cx, file, taken);
+                        moved = true;
+                    }
+                }
+            }
+        }
+        moved
+    }
+
+    /// Takes what the system gives an end into its pipe or terminal, as far as there is space.
+    /// Whether any came.
+    fn receive_held<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        end: EndNumber,
+        file: &FileRef,
+        side: Side,
+    ) -> bool {
+        let mut moved = false;
+        loop {
+            let held = &self.ends.held[&end];
+            if held.drained {
+                return moved;
+            }
+            let space = match side {
+                Side::Terminal => tty::room_for_end(file),
+                _ => pipe::room_for_end(file),
+            };
+            if space == 0 {
+                return moved;
+            }
+            let mut bytes = alloc::vec![0u8; space];
+            let held = self.ends.held.get_mut(&end).expect("held");
+            match cx
+                .host
+                .receive_stream(endpoint_of::<S>(&held.endpoint), &mut bytes)
+            {
+                Ok(count) if count > 0 => {
+                    bytes.truncate(count.min(space));
+                    match side {
+                        Side::Terminal => tty::receive_from_end(self, cx, file, &bytes),
+                        _ => pipe::receive_from_end(self, cx, file, &bytes),
+                    }
+                    moved = true;
+                }
+                Err(HostError::WouldBlock) if !held.hung_up => {
+                    held.drained = true;
+                    return moved;
+                }
+                // Nothing more will come: its side has let go.
+                _ => {
+                    held.hung_up = true;
+                    held.drained = true;
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Whether an end is finished: the guest's side is done with it, or the system's side let go
+    /// and gave everything it had.
+    fn finished(&self, end: EndNumber, file: &FileRef, side: Side) -> bool {
+        let held = &self.ends.held[&end];
+        let guest_done = match side {
+            Side::PipeOut => pipe::drained(file),
+            Side::PipeIn => pipe::no_reader(file),
+            Side::Terminal => tty::drained(file) && held.outbox.is_empty(),
+        };
+        let system_done = held.hung_up && (side.sends() && !side.receives() || held.drained);
+        guest_done || system_done
+    }
+
+    /// Keeps the wait on an end's endpoint asking for what the end needs now: for the system's
+    /// side letting go always, to send once it took less than it was given, and to receive once
+    /// it had nothing. A new wait's first poll comes when the kernel next settles.
+    fn watch_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: EndNumber, side: Side) {
+        let held = self.ends.held.get_mut(&end).expect("held");
+        let mut wanted = ReadyFor::HANG_UP;
+        if held.hung_up {
+            wanted = ReadyFor::empty();
+        } else {
+            if side.sends() && held.blocked {
+                wanted |= ReadyFor::WRITABLE;
+            }
+            if side.receives() && held.drained {
+                wanted |= ReadyFor::READABLE;
+            }
+        }
+        if wanted == held.asked {
+            return;
+        }
+        let had = !held.asked.is_empty();
+        held.asked = wanted;
+        let endpoint = held.endpoint.clone();
+        if had {
+            self.waiting
+                .drop_where(|about| *about == WaitFor::Stream(end));
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let call: crate::waiting::Call =
+            waiting_call!(ready_of(cx.system.clone(), endpoint, wanted));
+        if Waiting::on_heap(&call) {
+            self.counters
+                .count(cx.host, crate::reason::WAITING_CALL_ON_HEAP, u64::from(end));
+        }
+        self.waiting.start_woken(WaitFor::Stream(end), call);
+    }
+
+    /// Moves what can move between the ends and the system, once something may have moved:
+    /// output as far as the system takes it, input as far as there is space, and the ends that
+    /// are finished let go of. Returns whether anything moved.
     pub(crate) fn serve_ends<S: crate::System>(&mut self, cx: &mut Context<'_, S>) -> bool {
         if !core::mem::take(&mut self.ends.moved) {
             return false;
         }
         let mut moved = false;
-        for file in core::mem::take(&mut self.ends.draining) {
-            moved |= pipe::from_inbox(self, cx, &file);
-            match pipe::inbox_empty(&file) {
-                true => self.let_go_of_end(cx, file),
-                false => self.ends.draining.push(file),
-            }
-        }
-        let ends: Vec<End> = self.ends.held.keys().copied().collect();
+        let ends: Vec<EndNumber> = self.ends.held.keys().copied().collect();
         for end in ends {
-            let held = &self.ends.held[&end];
-            let Some(file) = held.file.clone().filter(|_| !held.closed) else {
+            let Some(file) = self.ends.held[&end].file.clone() else {
                 continue;
             };
-            let credit = held.credit;
             let side = side(&file);
-            if matches!(side, Side::PipeOut | Side::Terminal) && credit > 0 {
-                let bytes = match side {
-                    Side::Terminal => tty::send_to_end(self, cx, &file, credit),
-                    _ => pipe::send_to_end(self, cx, &file, credit),
-                };
-                if !bytes.is_empty() {
-                    self.ends.send(cx, end, &bytes);
-                    moved = true;
-                }
+            if side.sends() {
+                moved |= self.send_held(cx, end, &file, side);
             }
-            if let Side::PipeIn = side {
-                moved |= pipe::from_inbox(self, cx, &file);
+            if side.receives() {
+                moved |= self.receive_held(cx, end, &file, side);
             }
-            let finished = match side {
-                Side::PipeOut => pipe::drained(&file),
-                Side::PipeIn => pipe::no_reader(&file),
-                Side::Terminal => tty::drained(&file),
-            };
-            if finished {
-                self.ends.held.get_mut(&end).expect("held").closed = true;
-                cx.host.close_stream(end);
+            if self.finished(end, &file, side) {
+                self.let_go_of_end(cx, end);
                 moved = true;
                 continue;
             }
-            let credit = match side {
-                Side::PipeIn => pipe::credit_for_end(&file),
-                Side::Terminal => tty::credit_for_end(&file),
-                Side::PipeOut => 0,
-            };
-            if credit > 0 {
-                cx.host.credit_stream(end, credit);
-                moved = true;
-            }
+            self.watch_end(cx, end, side);
         }
         // What moved may let more move.
         self.ends.moved |= moved;
         moved
     }
 
-    /// The ends named at a start that failed: the kernel closes those the embedder has not.
+    /// The ends named at a start that failed: the kernel lets go of them.
     pub(crate) fn close_unmade<S: crate::System>(
         &mut self,
         cx: &mut Context<'_, S>,
-        standard: &Standard,
+        standard: &Standard<EndNumber>,
     ) {
-        for (end, _) in standard.ends() {
-            if let Some(held) = self.ends.held.get_mut(&end) {
-                held.closed = true;
-                cx.host.close_stream(end);
-            }
+        for end in standard.ends() {
+            self.let_go_of_end(cx, end);
         }
+    }
+
+    /// After a restore the old system's waits are gone: each end is asked about again.
+    pub(crate) fn ends_restored(&mut self) {
+        self.waiting
+            .drop_where(|about| matches!(about, WaitFor::Stream(_)));
+        for held in self.ends.held.values_mut() {
+            held.asked = ReadyFor::empty();
+            held.blocked = false;
+            held.drained = false;
+        }
+        self.ends.moved = true;
     }
 }

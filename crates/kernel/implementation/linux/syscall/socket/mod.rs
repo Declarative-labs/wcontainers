@@ -916,7 +916,7 @@ fn autobind<S: crate::System>(
         return Ok(0);
     }
     let mut seed = [0u8; 4];
-    cx.host.random(&mut seed);
+    cx.random(&mut seed);
     let start = u32::from_le_bytes(seed) & 0xfffff;
     let mut number = start;
     let kind = socket.borrow().kind;
