@@ -330,14 +330,15 @@ fn main() -> windows::core::Result<()> {
             );
         }
         // Gathers, point and linear samples and generated mips of the 32-bit float formats, whose
-        // values the reads give exactly.
+        // values the reads give exactly; and linear samples of 3D textures of them between texels,
+        // within the error the specification's 8-bit filter weights allow.
         "float32_reads" => {
-            let sampler = |filter| {
+            let addressed = |filter, address| {
                 let desc = D3D11_SAMPLER_DESC {
                     Filter: filter,
-                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressU: address,
+                    AddressV: address,
+                    AddressW: address,
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
@@ -345,10 +346,29 @@ fn main() -> windows::core::Result<()> {
                 unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
                 s
             };
+            let sampler = |filter| addressed(filter, D3D11_TEXTURE_ADDRESS_CLAMP);
             let (point, linear) = (
                 sampler(D3D11_FILTER_MIN_MAG_MIP_POINT),
                 sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR),
             );
+            let volume_samplers = [
+                D3D11_TEXTURE_ADDRESS_CLAMP,
+                D3D11_TEXTURE_ADDRESS_WRAP,
+                D3D11_TEXTURE_ADDRESS_MIRROR,
+            ]
+            .map(|a| addressed(D3D11_FILTER_MIN_MAG_MIP_LINEAR, a));
+            let read3 = cs("Texture3D<float4> t : register(t0);
+                SamplerState c : register(s0);
+                SamplerState w : register(s1);
+                SamplerState m : register(s2);
+                RWTexture2D<float4> o : register(u0);
+                [numthreads(1, 1, 1)]
+                void main() {
+                    o[uint2(0, 0)] = t.SampleLevel(c, float3(0.3, 0.9, 0.1), 0);
+                    o[uint2(1, 0)] = t.SampleLevel(w, float3(0.3, 0.9, 0.1), 0);
+                    o[uint2(2, 0)] = t.SampleLevel(m, float3(0.3, 0.9, 0.1), 0);
+                    o[uint2(3, 0)] = t.SampleLevel(w, float3(0.61, 0.37, 0.83), 0);
+                }");
             let read = cs("Texture2D<float4> t : register(t0);
                 SamplerState p : register(s0);
                 SamplerState l : register(s1);
@@ -406,6 +426,48 @@ fn main() -> windows::core::Result<()> {
                     context.CSSetShaderResources(0, Some(&[None]));
                 }
                 print(&format!("{name} gathers and samples"), &out, 16);
+                // Texel (x, y, z)'s channel c holds (x + 2y + 4z + c) / 4, so a channel's texels
+                // span 7/4; each of the three weights may be off by 1/256 of that span.
+                let volume: Vec<u8> = (0..8 * channels)
+                    .flat_map(|i| {
+                        let (c, texel) = (i % channels, i / channels);
+                        ((texel + c) as f32 * 0.25).to_le_bytes()
+                    })
+                    .collect();
+                let tolerance = 3.0 * 1.75 / 256.0;
+                let desc = D3D11_TEXTURE3D_DESC {
+                    Width: 2,
+                    Height: 2,
+                    Depth: 2,
+                    MipLevels: 1,
+                    Format: format,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                    ..Default::default()
+                };
+                let data = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: volume.as_ptr().cast(),
+                    SysMemPitch: 2 * texel,
+                    SysMemSlicePitch: 4 * texel,
+                };
+                let (mut made, mut view) = (None, None);
+                unsafe {
+                    device.CreateTexture3D(&desc, Some(&data), Some(&mut made))?;
+                    device.CreateShaderResourceView(
+                        made.as_ref().unwrap(),
+                        None,
+                        Some(&mut view),
+                    )?;
+                    context.CSSetShader(read3.as_ref(), None);
+                    context.CSSetShaderResources(0, Some(&[view]));
+                    context.CSSetSamplers(0, Some(&volume_samplers));
+                    let views = [uav(&out)];
+                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
+                    context.Dispatch(1, 1, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                    context.CSSetShaderResources(0, Some(&[None]));
+                }
+                print(&format!("weighted {tolerance} {name} 3D samples"), &out, 16);
                 let desc = D3D11_TEXTURE2D_DESC {
                     Width: 4,
                     Height: 4,
@@ -479,51 +541,60 @@ fn main() -> windows::core::Result<()> {
                 sampler(D3D11_FILTER_MIN_MAG_MIP_POINT),
                 sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR),
             ];
-            // Linear samples at texel centres, whose weights are exact.
+            // Loads and point samples, exact; and a linear sample, within the error the
+            // specification's 8-bit filter weights allow (three weights, each off by 1/256 of a
+            // span of 2 at most).
             let read = cs("Texture2D<float4> t : register(t0);
                 SamplerState p : register(s0);
                 SamplerState l : register(s1);
                 RWTexture2D<float4> o : register(u0);
+                RWTexture2D<float4> f : register(u1);
                 [numthreads(1, 1, 1)]
                 void main() {
                     o[uint2(0, 0)] = t.Load(int3(1, 2, 0));
                     o[uint2(1, 0)] = t.Load(int3(3, 3, 0));
                     o[uint2(2, 0)] = t.SampleLevel(p, float2(0.6, 0.1), 0);
-                    o[uint2(3, 0)] = t.SampleLevel(l, float2(0.375, 0.625), 0);
+                    f[uint2(0, 0)] = t.SampleLevel(l, float2(0.4, 0.6), 0);
                 }");
             let read3 = cs("Texture3D<float4> t : register(t0);
                 SamplerState p : register(s0);
                 SamplerState l : register(s1);
                 RWTexture2D<float4> o : register(u0);
+                RWTexture2D<float4> f : register(u1);
                 [numthreads(1, 1, 1)]
                 void main() {
                     o[uint2(0, 0)] = t.Load(int4(1, 0, 1, 0));
                     o[uint2(1, 0)] = t.Load(int4(0, 1, 0, 0));
                     o[uint2(2, 0)] = t.SampleLevel(p, float3(0.3, 0.9, 0.1), 0);
-                    o[uint2(3, 0)] = t.SampleLevel(l, float3(0.75, 0.25, 0.75), 0);
+                    f[uint2(0, 0)] = t.SampleLevel(l, float3(0.3, 0.9, 0.1), 0);
                 }");
-            let out = make(
-                &Tex {
-                    w: 4,
-                    h: 1,
-                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
-                    samples: 1,
-                    bind: D3D11_BIND_UNORDERED_ACCESS,
-                },
-                None,
-            )?;
+            let tolerance = 3.0 * 2.0 / 256.0;
+            let made = |w| {
+                make(
+                    &Tex {
+                        w,
+                        h: 1,
+                        format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        samples: 1,
+                        bind: D3D11_BIND_UNORDERED_ACCESS,
+                    },
+                    None,
+                )
+            };
+            let (exact, filtered) = (made(3)?, made(1)?);
             let compute = |what: &str, shader: &Option<ID3D11ComputeShader>, view| {
                 unsafe {
                     context.CSSetShader(shader.as_ref(), None);
                     context.CSSetShaderResources(0, Some(&[view]));
                     context.CSSetSamplers(0, Some(&samplers));
-                    let views = [uav(&out)];
-                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
+                    let views = [uav(&exact), uav(&filtered)];
+                    context.CSSetUnorderedAccessViews(0, 2, Some(views.as_ptr()), None);
                     context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                    context.CSSetUnorderedAccessViews(0, 2, Some([None, None].as_ptr()), None);
                     context.CSSetShaderResources(0, Some(&[None]));
                 }
-                print(what, &out, 16);
+                print(what, &exact, 16);
+                print(&format!("weighted {tolerance} {what}"), &filtered, 16);
             };
             for (name, format, texel) in [
                 ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM, 4),

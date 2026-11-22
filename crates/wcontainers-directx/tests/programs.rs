@@ -232,6 +232,11 @@ fn case_args(args: &[&str], label: &str, env: &[(&str, &str)]) -> String {
                 within_one(w, g),
                 "the first line that differs by more than one\n{w}\n{g}"
             );
+        } else if w.starts_with("weighted") {
+            assert!(
+                within_tolerance(w, g),
+                "the first line that differs by more than its tolerance\n{w}\n{g}"
+            );
         } else {
             assert_eq!(w, g, "the first line that differs");
         }
@@ -1036,6 +1041,36 @@ fn within_one(want: &str, got: &str) -> bool {
                 (Some(a), Some(b)) => (a - b).abs() <= 1,
                 _ => wh[i..i + 2] == gh[i..i + 2],
             })
+}
+
+/// Whether `got` names what `want` does and each little-endian f32 of its hex row is within the
+/// tolerance `want`'s second word gives; a line without such a row compares exactly.
+fn within_tolerance(want: &str, got: &str) -> bool {
+    let (Some((wn, wh)), Some((gn, gh))) = (want.rsplit_once(' '), got.rsplit_once(' ')) else {
+        return want == got;
+    };
+    let Some(tolerance) = wn.split(' ').nth(1).and_then(|t| t.parse::<f32>().ok()) else {
+        return false;
+    };
+    let word = 2 * size_of::<f32>();
+    let floats = |h: &str| -> Option<Vec<f32>> {
+        if h.len() % word != 0 {
+            return None;
+        }
+        (0..h.len())
+            .step_by(word)
+            .map(|i| u32::from_str_radix(&h[i..i + word], 16).ok())
+            .map(|v| v.map(|v| f32::from_bits(v.swap_bytes())))
+            .collect()
+    };
+    match (floats(wh), floats(gh)) {
+        (Some(w), Some(g)) => {
+            wn == gn
+                && w.len() == g.len()
+                && w.iter().zip(&g).all(|(a, b)| (a - b).abs() <= tolerance)
+        }
+        _ => want == got,
+    }
 }
 
 #[test]
