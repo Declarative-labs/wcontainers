@@ -4,6 +4,7 @@ use std::ffi::c_int;
 use std::io::IoSlice;
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -80,24 +81,27 @@ const WITH_STATISTICS: u32 = uapi::SOF_TIMESTAMPING_OPT_STATS as u32;
 /// One more than the largest `TCP_NLA_*` attribute of transmit statistics.
 const STATISTICS_ATTRIBUTES: usize = uapi::TCP_NLA_REHASH as usize + 1;
 
-/// The interface index Linux gives when a report names no interface.
-const NO_INTERFACE: InterfaceIndex = InterfaceIndex(0);
+/// The interface index that names no interface, as `if_nametoindex` answers for none: https://man7.org/linux/man-pages/man3/if_nametoindex.3.html
+const NO_INTERFACE_INDEX: c_int = 0;
+const NO_INTERFACE: InterfaceIndex = InterfaceIndex(NO_INTERFACE_INDEX.unsigned_abs());
 
 /// The room `TCP_SAVED_SYN` is first read with: the largest IPv4 and TCP headers after an Ethernet header.
 const SAVED_SYNCHRONIZE_ROOM: usize = etherparse::Ethernet2Header::LEN
     + etherparse::Ipv4Header::MAX_LEN
     + etherparse::TcpHeader::MAX_LEN;
 
-/// `TCP_SAVE_SYN`'s values, which Linux names none: off, from the network header, from the link header.
+/// `TCP_SAVE_SYN`'s value for saving no headers, which Linux does not name: https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const SAVE_NONE: c_int = 0;
+/// `TCP_SAVE_SYN`'s value for saving from the network header: https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const SAVE_FROM_NETWORK_HEADER: c_int = 1;
+/// `TCP_SAVE_SYN`'s value for saving from the link header: https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const SAVE_FROM_LINK_HEADER: c_int = 2;
 
 /// The options whose records `IP_PKTOPTIONS` gives a TCP socket: packet information, TTL and TOS.
-const IPV4_RECORDS: [u32; 3] = [uapi::IP_PKTINFO, uapi::IP_RECVTTL, uapi::IP_RECVTOS];
+const IPV4_RECORDS: &[u32] = &[uapi::IP_PKTINFO, uapi::IP_RECVTTL, uapi::IP_RECVTOS];
 
 /// The options whose records `IPV6_2292PKTOPTIONS` gives a TCP socket from the last packet that came in order.
-const IPV6_RECORDS: [u32; 6] = [
+const IPV6_RECORDS: &[u32] = &[
     uapi::IPV6_RECVPKTINFO,
     uapi::IPV6_RECVHOPLIMIT,
     uapi::IPV6_RECVTCLASS,
@@ -184,10 +188,10 @@ impl HostTcpSockets {
                 ))
             }
             libc::SO_EE_ORIGIN_TXSTATUS if wireless.is_some() => {
-                let acknowledged = if wireless == Some(0) {
-                    WirelessAcknowledgement::NotAcknowledged
-                } else {
+                let acknowledged = if wireless.is_some_and(|status| status != 0) {
                     WirelessAcknowledgement::Acknowledged
+                } else {
+                    WirelessAcknowledgement::NotAcknowledged
                 };
                 // Linux names no send in a wireless status report: its key is the zero it gives.
                 Ok((
@@ -222,7 +226,7 @@ impl HostTcpSockets {
                         self.shortfalls.count(UNASKED_REPORT);
                         ReportedSend {
                             key: TransmitReportKey(offset),
-                            remaining: 0,
+                            remaining: u32::MIN,
                             packet: false,
                             statistics: false,
                         }
@@ -333,7 +337,7 @@ fn address_changes() -> Option<OwnedFd> {
         linux_raw_sys::netlink::RTMGRP_IPV4_IFADDR | linux_raw_sys::netlink::RTMGRP_IPV6_IFADDR;
     rustix::net::bind(
         &socket,
-        &rustix::net::netlink::SocketAddrNetlink::new(0, groups),
+        &rustix::net::netlink::SocketAddrNetlink::new(KERNEL_CHOOSES_PORT_ID, groups),
     )
     .ok()?;
     Some(socket)
@@ -341,7 +345,7 @@ fn address_changes() -> Option<OwnedFd> {
 
 /// Tells whether the subscription heard of a change since it was last read, reading all it holds.
 fn changed(changes: BorrowedFd<'_>) -> bool {
-    let mut message = [0; NETLINK_MESSAGE_ROOM];
+    let mut message = [u8::MIN; NETLINK_MESSAGE_ROOM];
     let mut heard = false;
     loop {
         match rustix::net::recv(changes, &mut message, RecvFlags::DONTWAIT) {
@@ -353,8 +357,13 @@ fn changed(changes: BorrowedFd<'_>) -> bool {
     }
 }
 
-/// The room a change is read into; a longer one is cut, which loses nothing needed.
-const NETLINK_MESSAGE_ROOM: usize = 1 << 12;
+/// The room a change is read into, a page as netlink(7) advises; a longer one is cut, which loses nothing needed.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
+const NETLINK_MESSAGE_ROOM: usize = 4096;
+
+/// The port id a netlink socket binds to for the kernel to choose one: https://man7.org/linux/man-pages/man7/netlink.7.html
+const KERNEL_CHOOSES_PORT_ID: u32 = 0;
 
 fn interface_addresses() -> Vec<HeldAddress> {
     let ip = |address: &nix::sys::socket::SockaddrStorage| {
@@ -409,7 +418,7 @@ const PACKET_OPTIONS_ROOM: usize =
 /// Control message room aligned as the messages' headers are.
 #[repr(C)]
 struct PacketOptions {
-    _aligned: [libc::cmsghdr; 0],
+    _aligned: [libc::cmsghdr; usize::MIN],
     bytes: [u8; PACKET_OPTIONS_ROOM],
 }
 
@@ -445,11 +454,41 @@ fn whole(duration: Duration, unit: Duration) -> Result<c_int, HostError> {
 }
 
 /// The `TCP_QUICKACK` value (any even one but zero) that sends a scheduled acknowledgement, then delays if one was.
+///
+/// https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const QUICK_ACKNOWLEDGEMENT_THEN_DELAYING: c_int = 2;
 
+/// The units tcp(7) gives its times in: https://man7.org/linux/man-pages/man7/tcp.7.html
 const SECOND: Duration = Duration::from_secs(1);
+/// A millisecond, the unit of `TCP_USER_TIMEOUT` and `TCP_RTO_MAX_MS`: https://man7.org/linux/man-pages/man7/tcp.7.html
 const MILLISECOND: Duration = Duration::from_millis(1);
+/// A microsecond, the unit of `TCP_RTO_MIN_US`: https://docs.kernel.org/networking/ip-sysctl.html
 const MICROSECOND: Duration = Duration::from_micros(1);
+
+/// The zero tcp(7) and ip(7) take for none or the system's choice: no clamp, timeout, deferral, minimum hop limit or segment size.
+///
+/// https://man7.org/linux/man-pages/man7/tcp.7.html
+const UNSET: c_int = 0;
+
+/// The `TCP_LINGER2` value that resets in place of `FIN_WAIT2`: https://man7.org/linux/man-pages/man7/tcp.7.html
+const FIN_WAIT2_RESET: c_int = -1;
+
+/// The `SO_PEEK_OFF` value that turns peeking at an offset off: https://man7.org/linux/man-pages/man7/socket.7.html
+const NO_PEEK_OFFSET: c_int = -1;
+
+/// The low bit of `TCP_TIMESTAMP`'s value, which says that the clock counts microseconds.
+///
+/// https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
+const TIMESTAMP_IN_MICROSECONDS: u32 = 1;
+
+/// The `SO_TIMESTAMPING` flags of a socket that asked for no reports.
+const NO_REPORT_FLAGS: u32 = u32::MIN;
+
+/// How many keys `TCP_AO_GET_KEYS` is asked for to find one: https://docs.kernel.org/networking/tcp_ao.html
+const ONE_KEY: u32 = 1;
+
+/// The receive timestamping flags of a socket that asked for none.
+const NO_RECEIVE_TIMESTAMPING: u32 = u32::MIN;
 
 fn count(value: usize) -> Result<c_int, HostError> {
     c_int::try_from(value).map_err(|_| invalid())
@@ -546,7 +585,7 @@ fn authentication_key_name(
             uapi::TCP_AO_KEYF_IFINDEX as u8,
             i32::try_from(interface.0).map_err(|_| invalid())?,
         ),
-        None => (0, 0),
+        None => (u8::MIN, NO_INTERFACE_INDEX),
     };
     Ok(AuthenticationKeyName {
         address: storage(key_address(family, identity.peer.address)),
@@ -581,7 +620,7 @@ fn add_authentication_key(
     request.maclen = addition.mac_length.0;
     // The algorithm's name is a C string, so one with a NUL or no room for the terminating one is invalid.
     let algorithm = addition.algorithm.as_bytes();
-    if algorithm.contains(&0) || algorithm.len() >= request.alg_name.len() {
+    if algorithm.contains(&u8::MIN) || algorithm.len() >= request.alg_name.len() {
         return Err(invalid());
     }
     for (to, from) in request.alg_name.iter_mut().zip(algorithm) {
@@ -628,7 +667,7 @@ fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) 
     held.ifindex = request.ifindex;
     held.sndid = request.sndid;
     held.rcvid = request.rcvid;
-    held.nkeys = 1;
+    held.nkeys = ONE_KEY;
     // SAFETY: the structure is plain data, read and written as its bytes.
     let bytes = unsafe {
         std::slice::from_raw_parts_mut(
@@ -637,7 +676,7 @@ fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) 
         )
     };
     options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_AO_GET_KEYS, bytes).is_ok()
-        && held.nkeys == 1
+        && held.nkeys == ONE_KEY
         && held.alg_name == request.alg_name
         && held.maclen == request.maclen
         && held.keyflags == request.keyflags
@@ -662,11 +701,11 @@ fn remove_authentication_key(
     request.sndid = name.send;
     request.rcvid = name.receive;
     if let Some(key) = removal.current {
-        request.set_set_current(1);
+        request.set_set_current(u32::from(true));
         request.current_key = key.0;
     }
     if let Some(key) = removal.requested_next {
-        request.set_set_rnext(1);
+        request.set_set_rnext(u32::from(true));
         request.rnext = key.0;
     }
     request.set_del_async(u32::from(
@@ -705,9 +744,9 @@ fn change_authentication_options(
         Err(HostError::Errno(libc::ENOENT)) => unsafe { std::mem::zeroed() },
         Err(error) => return Err(error),
     };
-    options.set_set_current(0);
-    options.set_set_rnext(0);
-    options.set_set_counters(0);
+    options.set_set_current(u32::from(false));
+    options.set_set_rnext(u32::from(false));
+    options.set_set_counters(u32::from(false));
     change(&mut options);
     set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO, &options)
 }
@@ -718,11 +757,11 @@ fn set_authentication_options(
 ) -> Result<(), HostError> {
     change_authentication_options(socket, |options| {
         if let Some(key) = choice.current {
-            options.set_set_current(1);
+            options.set_set_current(u32::from(true));
             options.current_key = key.0;
         }
         if let Some(key) = choice.requested_next {
-            options.set_set_rnext(1);
+            options.set_set_rnext(u32::from(true));
             options.rnext = key.0;
         }
         options.set_ao_required(u32::from(
@@ -739,7 +778,7 @@ fn set_authentication_counters(
     counters: &TcpAuthenticationCounters,
 ) -> Result<(), HostError> {
     change_authentication_options(socket, |options| {
-        options.set_set_counters(1);
+        options.set_set_counters(u32::from(true));
         options.pkt_good = counters.verified.0;
         options.pkt_bad = counters.failed.0;
         options.pkt_key_not_found = counters.key_not_found.0;
@@ -749,8 +788,8 @@ fn set_authentication_counters(
 }
 
 fn record_flags(request: &TransmitReportRequest) -> (u32, u32) {
-    let mut flags = 0;
-    let mut reports = 0;
+    let mut flags = u32::MIN;
+    let mut reports = u32::MIN;
     for (report, flag) in [
         (request.scheduled, uapi::SOF_TIMESTAMPING_TX_SCHED as u32),
         (request.software, uapi::SOF_TIMESTAMPING_TX_SOFTWARE as u32),
@@ -928,7 +967,7 @@ impl HostTcpSockets {
             }
             TcpSetting::Port(ref port) => options::set_port_setting(socket, family, port),
             TcpSetting::BufferLocks(locks) => {
-                let mut value = 0;
+                let mut value = u32::MIN;
                 if locks.send == BufferTuning::Locked {
                     value |= uapi::SOCK_SNDBUF_LOCK;
                 }
@@ -958,7 +997,7 @@ impl HostTcpSockets {
                 set_int(socket, uapi::SOL_SOCKET, uapi::SO_TXREHASH, value)
             }
             TcpSetting::MinimumHopLimit { version, minimum } => {
-                let minimum = minimum.map_or(0, |limit| c_int::from(limit.0));
+                let minimum = minimum.map_or(UNSET, |limit| c_int::from(limit.0));
                 match version {
                     IpVersion::V4 => set_int(socket, uapi::SOL_IP, uapi::IP_MINTTL, minimum),
                     IpVersion::V6 => {
@@ -968,11 +1007,11 @@ impl HostTcpSockets {
             }
             TcpSetting::RecordsLastReceivedHeader(report) => {
                 let on = report == Report::Requested;
-                for option in IPV4_RECORDS {
+                for &option in IPV4_RECORDS {
                     set_flag(socket, uapi::SOL_IP, option, on)?;
                 }
                 if family == IpVersion::V6 {
-                    for option in IPV6_RECORDS {
+                    for &option in IPV6_RECORDS {
                         set_flag(socket, uapi::SOL_IPV6, option, on)?;
                     }
                 }
@@ -1006,13 +1045,13 @@ impl HostTcpSockets {
                 .set_tcp_quickack(mode == TcpQuickAcknowledgement::On)
                 .map_err(io_host_error),
             TcpSetting::MaximumSegmentSize(size) => SockRef::from(&socket)
-                .set_tcp_mss(size.map_or(0, |size| u32::from(size.0)))
+                .set_tcp_mss(size.map_or(UNSET.unsigned_abs(), |size| u32::from(size.0)))
                 .map_err(io_host_error),
             TcpSetting::WindowClamp(clamp) => tcp(
                 uapi::TCP_WINDOW_CLAMP,
                 match clamp {
                     Some(window) => c_int::try_from(window.0).map_err(|_| invalid())?,
-                    None => 0,
+                    None => UNSET,
                 },
             ),
             TcpSetting::SynchronizeRetries(retries) => {
@@ -1022,22 +1061,22 @@ impl HostTcpSockets {
                 uapi::TCP_USER_TIMEOUT,
                 match timeout {
                     Some(timeout) => whole(timeout, MILLISECOND)?,
-                    None => 0,
+                    None => UNSET,
                 },
             ),
             TcpSetting::DeferAccept(wait) => tcp(
                 uapi::TCP_DEFER_ACCEPT,
                 match wait {
                     Some(wait) => whole(wait, SECOND)?,
-                    None => 0,
+                    None => UNSET,
                 },
             ),
             TcpSetting::FinWait2(fin_wait) => tcp(
                 uapi::TCP_LINGER2,
                 match fin_wait {
-                    TcpFinWait2::SystemDefault => 0,
+                    TcpFinWait2::SystemDefault => UNSET,
                     TcpFinWait2::Lasts(time) => whole(time, SECOND)?,
-                    TcpFinWait2::Reset => -1,
+                    TcpFinWait2::Reset => FIN_WAIT2_RESET,
                 },
             ),
             TcpSetting::RetransmissionTimeoutMinimum(time) => {
@@ -1119,7 +1158,7 @@ impl HostTcpSockets {
             // Too small a buffer: the headers stay saved and can be read with room for any.
             Err(HostError::Errno(libc::EINVAL)) => {
                 self.shortfalls.count(LONG_SAVED_SYNCHRONIZE);
-                *large = vec![0; usize::from(u16::MAX)];
+                *large = vec![u8::MIN; usize::from(u16::MAX)];
                 let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, large)?;
                 Ok(&large[..length])
             }
@@ -1139,7 +1178,7 @@ impl HostTcpSockets {
     ) -> Option<InterfaceIndex> {
         let mut control = PacketOptions {
             _aligned: [],
-            bytes: [0; PACKET_OPTIONS_ROOM],
+            bytes: [u8::MIN; PACKET_OPTIONS_ROOM],
         };
         let length = match local {
             IpAddr::V4(_) => {
@@ -1184,7 +1223,7 @@ impl HostTcpSockets {
             usize::from(ipv6.payload_length()) + etherparse::Ipv6Header::LEN
         } else {
             self.shortfalls.count(NO_SAVED_SYNCHRONIZE);
-            0
+            usize::MIN
         };
         let local = local.ip().to_canonical();
         let specific_destination = match local {
@@ -1219,7 +1258,7 @@ impl HostTcpSockets {
                 uapi::SOL_SOCKET,
                 uapi::SO_PRIORITY,
             )?),
-            drops_since_previous: DropCount(0),
+            drops_since_previous: DropCount(u32::MIN),
         })
     }
 
@@ -1251,7 +1290,7 @@ impl HostTcpSockets {
                 reports.bound_clock,
             )?;
             if !armed {
-                reports.sent = 0;
+                reports.sent = u32::MIN;
             }
             reports.flags = flags;
             connection.reports_armed.store(true, Ordering::Relaxed);
@@ -1283,7 +1322,13 @@ impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets {
                 Ok(())
             }
             TcpSetting::UnreadByteReports(report) => {
-                self.configure_socket(socket, connection.family, &setting, 0, &connection.anycast)?;
+                self.configure_socket(
+                    socket,
+                    connection.family,
+                    &setting,
+                    NO_REPORT_FLAGS,
+                    &connection.anycast,
+                )?;
                 connection
                     .unread_reports
                     .store(report == Report::Requested, Ordering::Relaxed);
@@ -1305,7 +1350,13 @@ impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets {
                     Err(self.shortfalls.refuse(FLOW_LABEL_FIXED_AT_CONNECT))
                 }
             }
-            _ => self.configure_socket(socket, connection.family, &setting, 0, &connection.anycast),
+            _ => self.configure_socket(
+                socket,
+                connection.family,
+                &setting,
+                NO_REPORT_FLAGS,
+                &connection.anycast,
+            ),
         }
     }
 }
@@ -1337,7 +1388,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     socket,
                     listener.family,
                     &TcpSetting::RecordsLastReceivedHeader(report),
-                    0,
+                    NO_REPORT_FLAGS,
                     &listener.anycast,
                 )?;
                 if listener.protocol == TcpProtocol::Tcp {
@@ -1353,7 +1404,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     socket,
                     listener.family,
                     &TcpSetting::UnreadByteReports(report),
-                    0,
+                    NO_REPORT_FLAGS,
                     &listener.anycast,
                 )?;
                 listener
@@ -1361,9 +1412,13 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     .store(report == Report::Requested, Ordering::Relaxed);
                 Ok(())
             }
-            TcpListenerSetting::Socket(setting) => {
-                self.configure_socket(socket, listener.family, &setting, 0, &listener.anycast)
-            }
+            TcpListenerSetting::Socket(setting) => self.configure_socket(
+                socket,
+                listener.family,
+                &setting,
+                NO_REPORT_FLAGS,
+                &listener.anycast,
+            ),
             TcpListenerSetting::Backlog(backlog) => SockRef::from(&socket)
                 .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
                 .map_err(io_host_error),
@@ -1371,7 +1426,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 socket,
                 uapi::SOL_TCP,
                 uapi::TCP_FASTOPEN,
-                &queue.map_or(0, |queue| queue.get()),
+                &queue.map_or(u32::MIN, NonZeroU32::get),
             ),
             TcpListenerSetting::FastOpenKeys(keys) => {
                 let mut bytes = keys.primary.0.to_vec();
@@ -1473,7 +1528,7 @@ impl TcpConnections for HostTcpSockets {
                 ReadyFor::all(),
             )?,
             family,
-            0,
+            NO_RECEIVE_TIMESTAMPING,
         );
         let fixed_flow_label = settings
             .iter()
@@ -1519,12 +1574,12 @@ impl TcpConnections for HostTcpSockets {
                 let outcome = in_progress(
                     SockRef::from(&socket)
                         .connect(&SockAddr::from(destination))
-                        .map(|()| 0)
+                        .map(|()| usize::MIN)
                         .map_err(io_host_error),
                 )?;
                 match outcome {
                     None => TcpConnectStart::SynchronizeSent {
-                        fast_open_data_taken: ByteCount(0),
+                        fast_open_data_taken: ByteCount(usize::MIN),
                     },
                     Some(_) if fast_open == TcpFastOpen::UntilFirstSend => {
                         TcpConnectStart::DeferredUntilFirstSend
@@ -1540,7 +1595,7 @@ impl TcpConnections for HostTcpSockets {
                         .map_err(io_host_error),
                 )?;
                 TcpConnectStart::SynchronizeSent {
-                    fast_open_data_taken: ByteCount(taken.unwrap_or(0)),
+                    fast_open_data_taken: ByteCount(taken.unwrap_or(usize::MIN)),
                 }
             }
         };
@@ -1624,7 +1679,7 @@ impl TcpConnections for HostTcpSockets {
         let _receiving = locked(&connection.receiving);
         let socket = connection.socket.fd();
         let mut flags = libc::MSG_DONTWAIT;
-        let mut offset = 0;
+        let mut offset = UNSET;
         match request {
             TcpReceiveRequest::Read => {}
             TcpReceiveRequest::Peek { offset: from } => {
@@ -1687,7 +1742,7 @@ impl TcpConnections for HostTcpSockets {
             })
         };
         if offset != 0 {
-            set_int(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, -1)?;
+            set_int(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, NO_PEEK_OFFSET)?;
         }
         outcome
     }
@@ -1821,9 +1876,8 @@ impl TcpConnections for HostTcpSockets {
     }
 
     fn discard_error_queue_entries(&self, connection: &Self::Connection) -> Result<(), HostError> {
-        let mut scratch = [0; 0];
         loop {
-            match self.next_error_queue_entry(connection, &mut scratch) {
+            match self.next_error_queue_entry(connection, &mut []) {
                 Ok(_) | Err(HostError::NotSupported) => {}
                 Err(HostError::WouldBlock) => return Ok(()),
                 Err(error) => return Err(error),
@@ -1888,7 +1942,12 @@ impl HostTcpSockets {
         if microseconds != (reading.unit == TcpTimestampUnit::Microseconds) {
             return Err(self.shortfalls.refuse(CLOCK_UNIT_OF_THE_ROUTE));
         }
-        let value = reading.value.0 & !1 | u32::from(microseconds);
+        let unit = if microseconds {
+            TIMESTAMP_IN_MICROSECONDS
+        } else {
+            u32::MIN
+        };
+        let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit;
         set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)
     }
 }
@@ -1912,7 +1971,7 @@ impl TcpListeners for HostTcpSockets {
             )?,
             family,
             protocol,
-            receive_timestamping: AtomicU32::new(0),
+            receive_timestamping: AtomicU32::new(NO_RECEIVE_TIMESTAMPING),
             bound_clock: Mutex::new(None),
             saves_synchronize: AtomicI32::new(SAVE_NONE),
             records_last_received: AtomicBool::new(false),
@@ -1969,7 +2028,7 @@ impl TcpListeners for HostTcpSockets {
         let socket = connection.socket.fd();
         let local = internet_address(SockRef::from(&socket).local_addr())?;
         let _ = connection.addresses.set((local, peer));
-        let mut room = [0; SAVED_SYNCHRONIZE_ROOM];
+        let mut room = [u8::MIN; SAVED_SYNCHRONIZE_ROOM];
         let mut large = Vec::new();
         let saved = match listener.protocol {
             TcpProtocol::Tcp => self.take_saved_synchronize(socket, &mut room, &mut large)?,

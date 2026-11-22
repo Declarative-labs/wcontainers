@@ -144,3 +144,37 @@
   `configured_listener`), `NegativeRouteAdvice` (`advised_connection`) and `Readiness` (its bundles; see the status
   file for why they are not yet the layout's one line). The implementation runs it from its own conformance.rs.
 - The suite builds on every unix system and runs on Linux: only Linux has the packet socket the wire checks read.
+
+## The suite's own choices
+
+Numbers no standard fixes, which the suite chose; each constant of conformance.rs that has one links here (the
+owner's linter wants a link for every named number). They are kept as small and as short as loopback on a loaded
+machine allows, and each stays clear of the value it is checked against.
+- Times. DEADLINE 10 s, the longest any wait for the network may take. SETTLE 50 ms, the most loopback takes to
+  deliver. RETRY_INTERVAL 1 ms between tries of a call that would block. FILLED_AFTER 100 ms with nothing taken
+  before a connection counts as full. HELD_FOR 30 ms and PUSHED_WITHIN 150 ms, both under the cork's 200 ms ceiling
+  (tcp(7)), so that a push and not the ceiling sends. TIMER_SLACK 400 ms, how late a timer of about a second may fire
+  under load. QUICK_WITHIN 20 ms, below the shortest delayed acknowledgement. COPY_GAP 5 ms between loopback's two
+  copies of a packet. CLOCK_RUNS 50 ms of timestamp clock between setting and the segment that shows it.
+  TIMESTAMP_SLACK 2 ticks (one of rounding, one the unit bit takes).
+- Settings. SETTING_TIME 10 s, SHORT_SETTING_TIME 40 ms, SETTING_COUNT 4, SETTING_BYTES 64 KiB: values every
+  setting of their kind takes. KEEP_ALIVE_IDLE 2 s and KEEP_ALIVE_INTERVAL 1 s, KEEP_ALIVE_PROBE_COUNTS 1 and 2 (the
+  least, and one that shows each probe counted). DELAYED_ACKNOWLEDGEMENT_MAXIMUM 5 ms. RETRANSMISSION_CEILING 1 s,
+  watched for RETRANSMISSIONS_WATCHED 3.2 s; LINEAR_TRANSMISSIONS 6 within 1.2 s (more than doubling timeouts send).
+  USER_TIMEOUT 500 ms. FIN_WAIT_2_LASTS 1 s. ONE_SYNCHRONIZE_RETRY, the fewest SYN retries that retry at all.
+  PACING_RATE 1 MiB/s over PACED_BYTES 1 MiB, at least PACED_AT_LEAST 400 ms (measured: 704 ms paced, 0.65 ms not).
+  TRANSMIT_DELAY 50 ms. FAST_OPEN_QUEUE 8. BACKLOG 16. SEGMENT 1000 bytes, below loopback's segment size.
+  BOUND_RATIO 4, how much less a bounded buffer lets through than the default one. WIDE_LOW_WATER 1 MiB.
+- Sizes. TRANSFER 1 MiB for the order check. HEADER_ROOM 256 bytes for a SYN's headers, CUT_HEADER 3 to cut them.
+  ENTRY_ROOM 64 and PACKET_ROOM 512 bytes for error queue entries and their packets. PEEK_OFFSET 2 and READ_PART 4
+  bytes into MESSAGE. CAPTURE_BUFFER 16 MiB, enough for every check's traffic at once. STATISTICS_ROUNDS 10 and
+  STATISTICS_HOP_LIMIT 33 (unlike any default) for the statistics check. WATCHED_CONNECTIONS 16.
+- Names and values that only need to differ. Ports 41000 to 41020 (reserved to 41010) and 61000 to 61020 (above
+  Linux's default local range, which ends at 60999) for the exit node's port choice. Fast open key bytes 1, 2 and 3;
+  authentication key identifiers 1, 2 and 3, AUTHENTICATION_MAC_LENGTH 16 (Linux's default is 12, so the length
+  given shows on the wire) and AUTHENTICATION_COUNTERS each unlike the others. TransmitReportKey 7. CLOCK_READING
+  2^30 ms. MICROSECOND_CLOCK 127.0.0.7, the loopback address run-conformance.sh gives the `tcp_usec_ts` route. Flow labels
+  0x2468A and 0x13579, below 0x80000, which Linux keeps for its own, and 0xABCDE for the setting checks. Mark 7.
+  Owners 1001 and 1002 beside root. Peers: SHARING_PEERS 3 (two share, one does not), BACKLOG_OVERFLOW 3 (more than
+  the smallest backlog holds). ONE_MEMBER: one socket joined, however often, is one user in the host's tables;
+  ONE_WAKE: a waker woken once.

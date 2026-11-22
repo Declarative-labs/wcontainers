@@ -35,8 +35,8 @@ mutant window-probe-clears-sharing "$implementation" '} else if sharing {' '} el
 mutant clock-always-refused "$implementation" 'let information: uapi::tcp_info =' \
     'let _ = (socket, reading); return Err(HostError::Errno(libc::EPERM)); #[allow(unreachable_code)] let information: uapi::tcp_info ='
 mutant clock-unit-ignored "$implementation" 'if microseconds != (reading.unit == TcpTimestampUnit::Microseconds) {' 'if false {'
-mutant clock-microseconds-as-milliseconds "$implementation" 'let value = reading.value.0 & !1 | u32::from(microseconds);' \
-    'let value = reading.value.0 & !1 | u32::from(microseconds); if microseconds { return Ok(()); }'
+mutant clock-microseconds-as-milliseconds "$implementation" 'let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit;' \
+    'let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit; if microseconds { return Ok(()); }'
 mutant multipath-is-tcp "$implementation" 'TcpProtocol::Multipath => ipproto::MPTCP,' 'TcpProtocol::Multipath => ipproto::TCP,'
 mutant tcp-is-multipath "$implementation" 'TcpProtocol::Tcp => ipproto::TCP,' 'TcpProtocol::Tcp => ipproto::MPTCP,'
 mutant shutdown-both-is-write "$implementation" 'TcpShutdown::ReadAndWrite => std::net::Shutdown::Both,' \
@@ -49,8 +49,8 @@ mutant link-header-not-saved "$implementation" 'TcpSavedSynchronize::FromLinkHea
     'TcpSavedSynchronize::FromLinkHeader => SAVE_FROM_NETWORK_HEADER,'
 mutant link-header-given-by-accept "$implementation" '            &saved[start..]' '            { let _ = start; saved }'
 mutant records-refused "$implementation" 'let on = report == Report::Requested;
-                for option in IPV4_RECORDS {' 'let on = report == Report::Requested; if on { return Err(HostError::NotSupported); }
-                for option in IPV4_RECORDS {'
+                for &option in IPV4_RECORDS {' 'let on = report == Report::Requested; if on { return Err(HostError::NotSupported); }
+                for &option in IPV4_RECORDS {'
 mutant receive-unlocked "$implementation" 'let _receiving = locked(&connection.receiving);' 'let _receiving = ();'
 mutant window-probe-repair-queue-lost "$implementation" 'set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, queue)?;' 'let _ = queue;'
 mutant push-leaves-no-delay-on "$implementation" 'if !no_delay {' 'if false {'
@@ -62,8 +62,8 @@ mutant multicast-refused "$implementation" 'TcpSetting::Ip(IpSocketSetting::Mult
     'TcpSetting::Ip(IpSocketSetting::MulticastV4(_)) => Err(HostError::NotSupported), TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group('
 mutant urgent-wait-unregistered "$readiness" 'event.set_priority(interest.contains(ReadyFor::URGENT_DATA));' 'event.set_priority(false);'
 mutant peer-shutdown-unregistered "$readiness" '(ReadyFor::PEER_FINISHED_SENDING, PollFlags::RDHUP),' '(ReadyFor::empty(), PollFlags::RDHUP),'
-mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut scratch) {' \
-    'match self.take_error_queue_entry(connection, &mut scratch).map(|entry| (entry, false)) {'
+mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut []) {' \
+    'match self.take_error_queue_entry(connection, &mut []).map(|entry| (entry, false)) {'
 mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n}' \
     $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS); Ok(())\n    }\n}'
 mutant listener-authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION_COUNTERS))\n    }\n\n    fn set_listener_timestamp_clock' \
@@ -123,12 +123,12 @@ mutant authentication-key-use-ignored "$implementation" 'request.set_set_current
 mutant authentication-held-key-use-ignored "$implementation" 'if current || next {' 'if false {'
 mutant authentication-held-key-refused "$implementation" 'Err(HostError::Errno(libc::EEXIST)) if holds_authentication_key(socket, &request) => {' \
     'Err(HostError::Errno(libc::EEXIST)) if false && holds_authentication_key(socket, &request) => {'
-mutant authentication-removal-current-ignored "$implementation" $'        request.set_set_current(1);\n        request.current_key = key.0;\n    }\n    if let Some(key) = removal.requested_next {' \
+mutant authentication-removal-current-ignored "$implementation" $'        request.set_set_current(u32::from(true));\n        request.current_key = key.0;\n    }\n    if let Some(key) = removal.requested_next {' \
     $'        let _ = key;\n    }\n    if let Some(key) = removal.requested_next {'
 mutant authentication-absent-removal-refused "$implementation" 'if removal.current.is_none() && removal.requested_next.is_none() {' \
     'if removal.current.is_none() && removal.requested_next.is_none() { return Err(HostError::Errno(libc::ENOENT)); }  if false {'
-mutant authentication-options-current-ignored "$implementation" $'        if let Some(key) = choice.current {\n            options.set_set_current(1);' \
-    $'        if let Some(key) = choice.current.filter(|_| false) {\n            options.set_set_current(1);'
+mutant authentication-options-current-ignored "$implementation" $'        if let Some(key) = choice.current {\n            options.set_set_current(u32::from(true));' \
+    $'        if let Some(key) = choice.current.filter(|_| false) {\n            options.set_set_current(u32::from(true));'
 mutant authentication-requirement-ignored "$implementation" 'choice.requirement == TcpAuthenticationRequirement::Required,' 'false,'
 for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::ReceiveBuffer(..))' \
     'Ip(IpSocketSetting::MaximumPacingRate(..))' \
@@ -156,8 +156,8 @@ for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::Receiv
         "if matches!(*setting, TcpSetting::$pattern) { return Ok(()); } let refuse = |reason| Err(self.shortfalls.refuse(reason));"
 done
 for pattern in 'Backlog(..)' 'FastOpenQueue(..)' 'FastOpenKeys(..)' 'FlowLabelReflection(..)'; do
-    mutant "listener-setting-${pattern%%(*}-noop" "$implementation" '            TcpListenerSetting::Socket(setting) => {' \
-        "TcpListenerSetting::$pattern => Ok(()), TcpListenerSetting::Socket(setting) => {"
+    mutant "listener-setting-${pattern%%(*}-noop" "$implementation" '            TcpListenerSetting::Socket(setting) => self.configure_socket(' \
+        "TcpListenerSetting::$pattern => Ok(()), TcpListenerSetting::Socket(setting) => self.configure_socket("
 done
 status=0
 for index in "${!names[@]}"; do

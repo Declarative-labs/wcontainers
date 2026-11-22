@@ -78,13 +78,29 @@ pub use wcontainers_configurable_conformance;
 pub use wcontainers_negative_route_advice_conformance;
 pub use wcontainers_readiness_conformance;
 
+/// The byte the first fast open key is made of.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const FIRST_FAST_OPEN_KEY: u8 = 1;
+
+/// The byte the second fast open key is made of, unlike the first.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const SECOND_FAST_OPEN_KEY: u8 = 2;
+
 /// The byte the third fast open key is made of, unlike the two before it.
-const THIRD_KEY: u8 = 3;
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const THIRD_FAST_OPEN_KEY: u8 = 3;
 
 /// Peers of the address sharing check: two for the sharing connections, one for the connection that does not share.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SHARING_PEERS: usize = 3;
 
 /// Connections the backlog check makes, more than the smallest backlog holds.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const BACKLOG_OVERFLOW: usize = 3;
 
 /// The names of the keep-alive check's two intervals, for its messages.
@@ -92,17 +108,28 @@ const PROBE: &str = "the probe";
 const RESET: &str = "the reset";
 
 /// How long a check waits for something the network does.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long data held back must stay unseen by the peer, well inside the 200 ms ceiling of a cork.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HELD_FOR: Duration = Duration::from_millis(30);
 
 /// How soon pushed data must arrive, under the cork's 200 ms ceiling so that the push and not the ceiling sent it.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PUSHED_WITHIN: Duration = Duration::from_millis(150);
 
 /// The owner of a container's first process, root.
+///
+/// https://man7.org/linux/man-pages/man7/capabilities.7.html
 const OWNER: UserId = UserId(0);
 
+/// The backlog of the listeners of most checks.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const BACKLOG: ListenBacklog = ListenBacklog(16);
 
 /// The bytes most checks send.
@@ -115,55 +142,111 @@ const REPLY: &[u8] = b"reply";
 const URGENT: &[u8] = b"!";
 
 /// How far into the unread bytes a peek at an offset starts.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PEEK_OFFSET: usize = 2;
 
 /// How many bytes a read takes when the rest must stay unread.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const READ_PART: usize = 4;
 
 /// Room for the IP and TCP headers of a SYN.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HEADER_ROOM: usize = 256;
 
 /// The room a SYN's header is cut to.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CUT_HEADER: usize = 3;
 
 /// Room for the packet of an error queue entry.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const ENTRY_ROOM: usize = 64;
 
 /// Room for an ICMP error whole from its IP header, or a transmit report's packet from its link header.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACKET_ROOM: usize = 512;
 
 /// How long loopback takes at most to deliver what was sent.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTLE: Duration = Duration::from_millis(50);
 
 /// A loopback address that connections to it do not leave from, so that their two ends differ.
+///
+/// https://www.rfc-editor.org/rfc/rfc6890
 const OTHER_LOOPBACK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 
-/// The hop limit of the IPv6 header an ICMPv6 error quotes.
+/// The hop limit of the IPv6 header an ICMPv6 error quotes, Linux's default.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
 const QUOTED_HOP_LIMIT: u8 = 64;
 
 /// The bytes the order check sends one way.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TRANSFER: usize = 1 << 20;
 
+/// The key the transmit report checks name their sends by.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEY: TransmitReportKey = TransmitReportKey(7);
 
+/// A maximum segment size well below loopback's.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SEGMENT: MaximumSegmentSize = MaximumSegmentSize(1000);
 
-/// The range the exit node chooses ports from, and the reserved part at its start.
+/// The first port of the range the exit node chooses ports from.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CHOICE_FIRST: Port = Port(41000);
+/// The last port of the reserved part at the range's start.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RESERVED_LAST: Port = Port(41010);
+/// The last port of the range the exit node chooses ports from.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CHOICE_LAST: Port = Port(41020);
 
-/// The same above Linux's default local port range, which ends at 60999.
+/// The first port of a range above Linux's default local port range, which ends at 60999.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
 const HIGH_CHOICE_FIRST: Port = Port(61000);
+/// The last port of the reserved part at the high range's start.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HIGH_RESERVED_LAST: Port = Port(61010);
+/// The last port of the high range.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HIGH_CHOICE_LAST: Port = Port(61020);
 
+/// The fast open queue a listener takes.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FAST_OPEN_QUEUE: Option<NonZeroU32> = NonZeroU32::new(8);
 
-/// A time, a count and a size every setting of their kind accepts.
+/// A time every setting of a time accepts.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTING_TIME: Duration = Duration::from_secs(10);
+/// A time under a second that the settings of a time in milliseconds accept.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SHORT_SETTING_TIME: Duration = Duration::from_millis(40);
+/// A count every setting of a count accepts.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTING_COUNT: u8 = 4;
+/// A size every setting of a size accepts.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTING_BYTES: usize = 1 << 16;
 
 /// A congestion control algorithm every Linux has.
@@ -189,64 +272,180 @@ static DROP_ALL: [FilterInstruction; 1] = [FilterInstruction {
 }];
 
 /// How long a fill waits for a send to take anything before it counts the connection full.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FILLED_AFTER: Duration = Duration::from_millis(100);
 
 /// How many times less a setting that bounds a buffer lets through than the default buffers.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const BOUND_RATIO: usize = 4;
 
 /// A receive low water mark that widens the receive buffer to hold it.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const WIDE_LOW_WATER: usize = 1 << 20;
 
 /// How far from its time a timer of a second or so may fire on a loaded machine.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TIMER_SLACK: Duration = Duration::from_millis(400);
 
+/// How long the keep-alive checks' connections stay idle before the first probe.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEEP_ALIVE_IDLE: Duration = Duration::from_secs(2);
+/// The probe counts the keep-alive check tries: the least, and one that shows each probe counted.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const KEEP_ALIVE_PROBE_COUNTS: &[u8] = &[1, 2];
+
+/// How long apart the keep-alive checks' probes go.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The longest a quick acknowledgement takes on loopback, below the shortest delay of a delayed one.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const QUICK_WITHIN: Duration = Duration::from_millis(20);
 
+/// The longest an acknowledgement may wait in the delayed acknowledgement check.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const DELAYED_ACKNOWLEDGEMENT_MAXIMUM: Duration = Duration::from_millis(5);
 
-/// The longest retransmission timeout of the check of the maximum, and how long the checks watch retransmissions.
+/// The longest retransmission timeout of the check of the maximum.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RETRANSMISSION_CEILING: Duration = Duration::from_secs(1);
+/// How long the checks of retransmission timeouts watch retransmissions.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RETRANSMISSIONS_WATCHED: Duration = Duration::from_millis(3200);
 
 /// How many times a segment leaves within the given time when its timeouts do not grow, more than when they double.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LINEAR_TRANSMISSIONS: usize = 6;
+/// The time the linear transmissions are counted in.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LINEAR_TRANSMISSIONS_WITHIN: Duration = Duration::from_millis(1200);
 
+/// How long sent data may stay unacknowledged before the user timeout check's connection ends.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const USER_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// How long the FIN_WAIT2 check's connection stays in that state.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIN_WAIT_2_LASTS: Duration = Duration::from_secs(1);
 
 /// A congestion control that marks what it sends as capable of explicit congestion notification.
 const NOTIFYING_CONGESTION_CONTROL: &str = "dctcp";
 
-/// A pacing rate and a transfer it spreads over more than the given time.
+/// A pacing rate that spreads the paced bytes over more than the given time.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACING_RATE: BytesPerSecond = BytesPerSecond(1 << 20);
+/// The bytes the pacing check sends.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACED_BYTES: usize = 1 << 20;
+/// The least time the paced bytes take.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACED_AT_LEAST: Duration = Duration::from_millis(400);
 
+/// The delay the transmit delay check gives each segment.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TRANSMIT_DELAY: Duration = Duration::from_millis(50);
 
 /// An address of the documentation range, which no interface holds.
+///
+/// https://www.rfc-editor.org/rfc/rfc5737
 const NONLOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
-/// Loopback addresses of the fast open checks, one each.
+/// The loopback address of the check of fast open with data.
+///
+/// https://www.rfc-editor.org/rfc/rfc6890
 const FAST_OPEN_WITH_DATA: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 3);
+/// The loopback address of the check of fast open until the first send.
+///
+/// https://www.rfc-editor.org/rfc/rfc6890
 const FAST_OPEN_UNTIL_FIRST_SEND: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 4);
+/// The loopback address of the check of fast open without a cookie.
+///
+/// https://www.rfc-editor.org/rfc/rfc6890
 const FAST_OPEN_WITHOUT_COOKIE: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 5);
+/// The loopback address of the check of fast open keys.
+///
+/// https://www.rfc-editor.org/rfc/rfc6890
 const FAST_OPEN_KEYS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 6);
 
 /// A TCP timestamp clock reading, in milliseconds.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CLOCK_READING: u32 = 1 << 30;
 
 /// How long a timestamp clock runs between being set and the segment that shows it.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CLOCK_RUNS: Duration = Duration::from_millis(50);
 
 /// A loopback address whose local route has the `tcp_usec_ts` feature: its connections' segments carry microseconds.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const MICROSECOND_CLOCK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 7);
+
+/// How long a check sleeps before it tries again a call that would block.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const RETRY_INTERVAL: Duration = Duration::from_millis(1);
+
+/// The count of a waker woken once.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const ONE_WAKE: usize = 1;
+
+/// The port that asks the host to choose one.
+const ANY_PORT: Port = Port(u16::MIN);
+
+/// A length or offset of no bytes.
+const NO_BYTES: ByteCount = ByteCount(usize::MIN);
+
+/// The room of an accept that keeps no SYN header.
+const NO_HEADER_ROOM: usize = usize::MIN;
+
+/// The backlog Linux raises to its smallest.
+const SMALLEST_BACKLOG: ListenBacklog = ListenBacklog(u32::MIN);
+
+/// The flow label of a segment that carries none.
+const NO_FLOW_LABEL: u32 = u32::MIN;
+
+/// The users of a group or address one socket joined, however often.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const ONE_MEMBER: usize = 1;
+
+/// The SYN retries of the check that a connect ends unanswered, the fewest that retry at all.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const ONE_SYNCHRONIZE_RETRY: RetryCount = RetryCount(1);
+
+/// How far a timestamp may stray: one tick of rounding, and the low bit the unit takes.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const TIMESTAMP_SLACK: u128 = 2;
+
+/// The smallest receive low water mark, Linux's default: https://man7.org/linux/man-pages/man7/socket.7.html
+const SMALLEST_LOW_WATER: ByteCount = ByteCount(1);
+
+/// The smallest minimum hop limit that turns the check on: https://man7.org/linux/man-pages/man7/ip.7.html
+const SMALLEST_HOP_LIMIT: HopLimit = HopLimit(1);
 
 fn errno(errno: Errno) -> HostError {
     HostError::Errno(errno as i32)
@@ -258,7 +457,7 @@ fn retry<T>(mut operation: impl FnMut() -> Result<T, HostError>) -> Result<T, Ho
     loop {
         match operation() {
             Err(HostError::WouldBlock) if start.elapsed() < DEADLINE => {
-                std::thread::sleep(Duration::from_millis(1))
+                std::thread::sleep(RETRY_INTERVAL)
             }
             outcome => return outcome,
         }
@@ -268,7 +467,7 @@ fn retry<T>(mut operation: impl FnMut() -> Result<T, HostError>) -> Result<T, Ho
 fn bind_any_port(address: BindAddress) -> LocalBinding<'static> {
     LocalBinding {
         address,
-        port: LocalPort::Requested(Port(0)),
+        port: LocalPort::Requested(ANY_PORT),
     }
 }
 
@@ -282,7 +481,7 @@ fn ipv4_any() -> BindAddress {
 
 fn no_reports() -> TransmitReportRequest {
     TransmitReportRequest {
-        key: TransmitReportKey(0),
+        key: TransmitReportKey(u32::MIN),
         scheduled: Report::NotRequested,
         software: Report::NotRequested,
         hardware: Report::NotRequested,
@@ -329,7 +528,7 @@ fn listen<S: TcpSockets>(
 }
 
 fn accept<S: TcpSockets>(sockets: &S, listener: &S::Listener) -> S::Connection {
-    let mut header = [0; 0];
+    let mut header = [u8::MIN; 0];
     retry(|| {
         sockets
             .accept(listener, &mut header)
@@ -352,7 +551,7 @@ fn accept_with_header<S: TcpSockets>(
     listener: &S::Listener,
     room: usize,
 ) -> Accepted<S::Connection> {
-    let mut header = vec![0; room];
+    let mut header = vec![u8::MIN; room];
     retry(|| {
         sockets
             .accept(listener, &mut header)
@@ -374,9 +573,9 @@ fn transfer<S: TcpSockets>(
     to: &S::Connection,
     bytes: &[u8],
 ) -> Vec<u8> {
-    let mut sent = 0;
-    let mut received = vec![0; bytes.len()];
-    let mut length = 0;
+    let mut sent = usize::MIN;
+    let mut received = vec![u8::MIN; bytes.len()];
+    let mut length = usize::MIN;
     let start = Instant::now();
     while length < bytes.len() && start.elapsed() < DEADLINE {
         if sent < bytes.len() {
@@ -448,7 +647,7 @@ fn send_all<S: TcpSockets>(
     request: TcpSendRequest,
     bytes: &[u8],
 ) {
-    let mut sent = 0;
+    let mut sent = usize::MIN;
     while sent < bytes.len() {
         let taken = retry(|| sockets.send(connection, request, &bytes[sent..])).expect("send");
         sent += taken.0;
@@ -457,8 +656,8 @@ fn send_all<S: TcpSockets>(
 
 /// Reads until the given number of bytes or the end of the stream.
 fn receive_up_to<S: TcpSockets>(sockets: &S, connection: &S::Connection, wanted: usize) -> Vec<u8> {
-    let mut received = vec![0; wanted];
-    let mut length = 0;
+    let mut received = vec![u8::MIN; wanted];
+    let mut length = usize::MIN;
     while length < wanted {
         let got =
             retry(|| sockets.receive(connection, TcpReceiveRequest::Read, &mut received[length..]))
@@ -474,19 +673,17 @@ fn receive_up_to<S: TcpSockets>(sockets: &S, connection: &S::Connection, wanted:
 
 /// Peeks until the given number of bytes wait to be read.
 fn wait_for_unread<S: TcpSockets>(sockets: &S, connection: &S::Connection, wanted: usize) {
-    let mut buffer = vec![0; wanted];
+    let mut buffer = vec![u8::MIN; wanted];
     let start = Instant::now();
     loop {
         match sockets.receive(
             connection,
-            TcpReceiveRequest::Peek {
-                offset: ByteCount(0),
-            },
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
             &mut buffer,
         ) {
             Ok(got) if got.length.0 >= wanted => return,
             Ok(_) | Err(HostError::WouldBlock) if start.elapsed() < DEADLINE => {
-                std::thread::sleep(Duration::from_millis(1))
+                std::thread::sleep(RETRY_INTERVAL)
             }
             outcome => panic!("waiting for {wanted} unread bytes: {outcome:?}"),
         }
@@ -496,13 +693,11 @@ fn wait_for_unread<S: TcpSockets>(sockets: &S, connection: &S::Connection, wante
 /// Asserts that nothing arrives on the connection for the given time.
 fn assert_silent<S: TcpSockets>(sockets: &S, connection: &S::Connection, period: Duration) {
     let start = Instant::now();
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     while start.elapsed() < period {
         let outcome = sockets.receive(
             connection,
-            TcpReceiveRequest::Peek {
-                offset: ByteCount(0),
-            },
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
             &mut buffer,
         );
         assert_eq!(
@@ -510,7 +705,7 @@ fn assert_silent<S: TcpSockets>(sockets: &S, connection: &S::Connection, period:
             Err(HostError::WouldBlock),
             "data arrived while held back"
         );
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(RETRY_INTERVAL);
     }
 }
 
@@ -522,7 +717,7 @@ fn assert_arrives_within<S: TcpSockets>(
     within: Duration,
 ) {
     let start = Instant::now();
-    let mut buffer = vec![0; bytes.len()];
+    let mut buffer = vec![u8::MIN; bytes.len()];
     let got = retry(|| sockets.receive(connection, TcpReceiveRequest::Read, &mut buffer))
         .expect("receive");
     assert!(start.elapsed() < within, "took {:?}", start.elapsed());
@@ -544,18 +739,28 @@ fn assert_carries_bytes<S: TcpSockets>(sockets: &S, pair: &Pair<S>) {
 }
 
 /// The TCP option kind of Multipath TCP (RFC 8684, section 3), which neither libc nor linux-raw-sys carries.
+///
+/// https://www.rfc-editor.org/rfc/rfc8684#section-3
 const MULTIPATH_OPTION: u8 = 30;
 
 /// The TCP option kind of an MD5 signature, which etherparse does not parse.
+///
+/// https://www.rfc-editor.org/rfc/rfc2385
 const MD5_OPTION: u8 = 19;
 
 /// The TCP option kind of the TCP Authentication Option (RFC 5925, section 2.2), which etherparse does not parse.
+///
+/// https://www.rfc-editor.org/rfc/rfc5925#section-2.2
 const AUTHENTICATION_OPTION: u8 = 29;
 
 /// The bytes of a TCP Authentication Option before its MAC: kind, length, key identifier and next key identifier.
+///
+/// https://www.rfc-editor.org/rfc/rfc5925#section-2.2
 const AUTHENTICATION_OPTION_HEADER: u8 = 4;
 
 /// The kind and length bytes every TCP option but the end and no-operation starts with.
+///
+/// https://www.rfc-editor.org/rfc/rfc9293#section-3.1
 const OPTION_HEAD: u8 = 2;
 
 /// A segment's TCP Authentication Option.
@@ -720,9 +925,13 @@ fn packet_socket() -> OwnedFd {
 }
 
 /// How long apart the two copies of one loopback packet may arrive at the packet socket.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const COPY_GAP: Duration = Duration::from_millis(5);
 
 /// The buffer of a capture's packet socket, large enough for every check's traffic at once.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CAPTURE_BUFFER: usize = 1 << 24;
 
 impl Capture {
@@ -736,7 +945,7 @@ impl Capture {
             let segments = segments.clone();
             let stop = stop.clone();
             move || {
-                let mut buffer = vec![0; usize::from(u16::MAX)];
+                let mut buffer = vec![u8::MIN; usize::from(u16::MAX)];
                 let mut recent: Vec<(Instant, Vec<u8>)> = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((length, _)) =
@@ -790,7 +999,7 @@ impl Capture {
             if start.elapsed() > within {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(RETRY_INTERVAL);
         }
     }
 
@@ -802,7 +1011,7 @@ impl Capture {
                 return found;
             }
             assert!(start.elapsed() < DEADLINE, "no such segment was captured");
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(RETRY_INTERVAL);
         }
     }
 
@@ -890,7 +1099,7 @@ fn drop_arrivals<S: TcpSockets>(sockets: &S, connection: &S::Connection, version
 /// Sends until the connection takes nothing more for a while, the peer not reading, giving the bytes taken.
 fn fill<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
     let chunk = pattern(SETTING_BYTES);
-    let mut taken = 0;
+    let mut taken = usize::MIN;
     let mut last = Instant::now();
     while last.elapsed() < FILLED_AFTER {
         match sockets.send(connection, plain(), &chunk) {
@@ -898,7 +1107,7 @@ fn fill<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
                 taken += count.0;
                 last = Instant::now();
             }
-            Err(HostError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+            Err(HostError::WouldBlock) => std::thread::sleep(RETRY_INTERVAL),
             Err(error) => panic!("send: {error:?}"),
         }
     }
@@ -907,16 +1116,14 @@ fn fill<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
 
 /// Gives the bytes waiting to be read on the connection.
 fn unread<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
-    let mut buffer = vec![0; CAPTURE_BUFFER];
+    let mut buffer = vec![u8::MIN; CAPTURE_BUFFER];
     sockets
         .receive(
             connection,
-            TcpReceiveRequest::Peek {
-                offset: ByteCount(0),
-            },
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
             &mut buffer,
         )
-        .map_or(0, |got| got.length.0)
+        .map_or(usize::MIN, |got| got.length.0)
 }
 
 /// Gives how long after the send that started it a connection's first acknowledgement of data came.
@@ -945,11 +1152,11 @@ fn receive_outcome<S: TcpSockets>(
     within: Duration,
 ) -> Result<TcpReceived, HostError> {
     let start = Instant::now();
-    let mut buffer = [0; ENTRY_ROOM];
+    let mut buffer = [u8::MIN; ENTRY_ROOM];
     loop {
         match sockets.receive(connection, TcpReceiveRequest::Read, &mut buffer) {
             Err(HostError::WouldBlock) if start.elapsed() < within => {
-                std::thread::sleep(Duration::from_millis(1))
+                std::thread::sleep(RETRY_INTERVAL)
             }
             outcome => return outcome,
         }
@@ -971,7 +1178,7 @@ pub fn connect_and_accept_name_both_ends<S: TcpSockets>(sockets: S) {
     assert_eq!(
         connected.start,
         TcpConnectStart::SynchronizeSent {
-            fast_open_data_taken: ByteCount(0)
+            fast_open_data_taken: NO_BYTES
         }
     );
     let accepted = accept_with_header(&sockets, &listener, HEADER_ROOM);
@@ -1094,7 +1301,7 @@ pub fn dual_stack_listener_accepts_ipv4<S: TcpSockets>(sockets: S) {
             TcpFastOpen::Off,
         )
         .expect("connect");
-    let accepted = accept_with_header(&sockets, &listener, 0);
+    let accepted = accept_with_header(&sockets, &listener, NO_HEADER_ROOM);
     assert_eq!(
         accepted.peer.ip(),
         IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped())
@@ -1252,7 +1459,7 @@ pub fn stopped_listener_refuses_connections<S: TcpSockets>(sockets: S) {
             TcpFastOpen::Off,
         )
         .expect("start connecting");
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     let outcome =
         retry(|| sockets.receive(&connected.connection, TcpReceiveRequest::Read, &mut buffer));
     assert_eq!(
@@ -1264,7 +1471,7 @@ pub fn stopped_listener_refuses_connections<S: TcpSockets>(sockets: S) {
 
 pub fn accept_without_a_connection_would_block<S: TcpSockets>(sockets: S) {
     let (listener, _) = listen(&sockets, ipv4_loopback(), &[]);
-    let mut header = [0; 0];
+    let mut header = [u8::MIN; 0];
     let outcome = sockets
         .accept(&listener, &mut header)
         .map(|accepted| accepted.peer);
@@ -1297,11 +1504,11 @@ pub fn read_shutdown_ends_the_own_stream<S: TcpSockets>(sockets: S) {
     sockets
         .shut_down(&pair.server, TcpShutdown::Read)
         .expect("shut down");
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     let got = sockets
         .receive(&pair.server, TcpReceiveRequest::Read, &mut buffer)
         .expect("receive");
-    assert_eq!(got.length, ByteCount(0));
+    assert_eq!(got.length, NO_BYTES);
     send_all(&sockets, &pair.server, plain(), REPLY);
     assert_eq!(receive_up_to(&sockets, &pair.client, REPLY.len()), REPLY);
     close(&sockets, pair);
@@ -1320,11 +1527,11 @@ pub fn shutdown_of_both_directions_ends_both<S: TcpSockets>(sockets: S) {
         sockets.send(&pair.client, plain(), MESSAGE),
         Err(errno(Errno::EPIPE))
     );
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     let got = sockets
         .receive(&pair.client, TcpReceiveRequest::Read, &mut buffer)
         .expect("the own stream has ended");
-    assert_eq!(got.length, ByteCount(0));
+    assert_eq!(got.length, NO_BYTES);
     close(&sockets, pair);
 }
 
@@ -1343,7 +1550,7 @@ pub fn orderly_close_ends_the_peers_stream<S: TcpSockets>(sockets: S) {
 pub fn abort_resets_the_peer<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     sockets.close(pair.client, TcpClose::Abort);
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     let outcome = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer));
     assert_eq!(outcome.map(|got| got.length), Err(errno(Errno::ECONNRESET)));
     sockets.close(pair.server, TcpClose::Orderly);
@@ -1354,13 +1561,11 @@ pub fn peek_leaves_the_bytes<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     wait_for_unread(&sockets, &pair.server, MESSAGE.len());
-    let mut buffer = vec![0; MESSAGE.len()];
+    let mut buffer = vec![u8::MIN; MESSAGE.len()];
     let got = sockets
         .receive(
             &pair.server,
-            TcpReceiveRequest::Peek {
-                offset: ByteCount(0),
-            },
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
             &mut buffer,
         )
         .expect("peek");
@@ -1376,7 +1581,7 @@ pub fn peek_at_an_offset_skips_bytes<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     wait_for_unread(&sockets, &pair.server, MESSAGE.len());
-    let mut buffer = vec![0; MESSAGE.len()];
+    let mut buffer = vec![u8::MIN; MESSAGE.len()];
     let got = sockets
         .receive(
             &pair.server,
@@ -1390,9 +1595,7 @@ pub fn peek_at_an_offset_skips_bytes<S: TcpSockets>(sockets: S) {
     let got = sockets
         .receive(
             &pair.server,
-            TcpReceiveRequest::Peek {
-                offset: ByteCount(0),
-            },
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
             &mut buffer,
         )
         .expect("peek");
@@ -1419,7 +1622,7 @@ pub fn urgent_byte_is_read_apart<S: TcpSockets>(sockets: S) {
         receive_up_to(&sockets, &pair.server, MESSAGE.len()),
         MESSAGE
     );
-    let mut byte = vec![0; URGENT.len()];
+    let mut byte = vec![u8::MIN; URGENT.len()];
     let peeked = retry(|| {
         match sockets.receive(&pair.server, TcpReceiveRequest::PeekUrgentByte, &mut byte) {
             // Linux answers EINVAL until the urgent byte has arrived.
@@ -1552,7 +1755,7 @@ pub fn record_end_starts_a_new_segment<S: TcpSockets>(sockets: S) {
 
 pub fn unread_byte_reports_count_what_is_left<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    let mut buffer = [0; READ_PART];
+    let mut buffer = [u8::MIN; READ_PART];
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     wait_for_unread(&sockets, &pair.server, MESSAGE.len());
     let got = sockets
@@ -1587,7 +1790,7 @@ pub fn listener_unread_byte_reports_reach_the_connections_it_accepts<S: TcpSocke
             Report::Requested,
         ))],
     );
-    let mut buffer = [0; READ_PART];
+    let mut buffer = [u8::MIN; READ_PART];
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     wait_for_unread(&sockets, &pair.server, MESSAGE.len());
     let got = sockets
@@ -1605,7 +1808,7 @@ pub fn listener_unread_byte_reports_reach_the_connections_it_accepts<S: TcpSocke
 
 pub fn receive_software_timestamps_when_asked<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer))
         .expect("receive");
@@ -1637,7 +1840,7 @@ pub fn receive_software_timestamps_when_asked<S: TcpSockets>(sockets: S) {
 }
 
 fn take_entry<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> TcpErrorQueueEntry {
-    let mut buffer = [0; ENTRY_ROOM];
+    let mut buffer = [u8::MIN; ENTRY_ROOM];
     retry(|| sockets.take_error_queue_entry(connection, &mut buffer)).expect("an error queue entry")
 }
 
@@ -1675,7 +1878,7 @@ pub fn software_transmit_report_names_the_send<S: TcpSockets>(sockets: S) {
         (TransmitStage::Sent, TimestampSource::Software)
     );
     assert!(time >= before && time - before < DEADLINE);
-    let mut buffer = [0; ENTRY_ROOM];
+    let mut buffer = [u8::MIN; ENTRY_ROOM];
     assert_eq!(
         sockets.take_error_queue_entry(&pair.client, &mut buffer),
         Err(HostError::WouldBlock)
@@ -1759,7 +1962,7 @@ pub fn discarding_empties_the_error_queue<S: TcpSockets>(sockets: S) {
     sockets
         .discard_error_queue_entries(&pair.client)
         .expect("discard");
-    let mut buffer = [0; ENTRY_ROOM];
+    let mut buffer = [u8::MIN; ENTRY_ROOM];
     assert_eq!(
         sockets.take_error_queue_entry(&pair.client, &mut buffer),
         Err(HostError::WouldBlock)
@@ -1772,7 +1975,7 @@ pub fn discarding_empties_the_error_queue<S: TcpSockets>(sockets: S) {
 
 pub fn empty_error_queue_would_block<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    let mut buffer = [0; ENTRY_ROOM];
+    let mut buffer = [u8::MIN; ENTRY_ROOM];
     assert_eq!(
         sockets.take_error_queue_entry(&pair.client, &mut buffer),
         Err(HostError::WouldBlock)
@@ -1809,7 +2012,7 @@ fn capture_synchronize(
     peer: SocketAddr,
 ) -> Vec<u8> {
     let start = Instant::now();
-    let mut buffer = [0; PACKET_ROOM];
+    let mut buffer = [u8::MIN; PACKET_ROOM];
     while start.elapsed() < DEADLINE {
         let Ok((length, _)) = rustix::net::recv(capture, &mut buffer, RecvFlags::empty()) else {
             continue;
@@ -1856,7 +2059,7 @@ fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, vers
             TcpProtocol::Tcp,
             OWNER,
             bind_any_port(listener_address),
-            ListenBacklog(0),
+            SMALLEST_BACKLOG,
             &[],
         )
         .expect("listen on loopback");
@@ -1902,7 +2105,7 @@ fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, vers
         IpVersion::V6 => {
             let tcp = TcpHeaderSlice::from_slice(&synchronize).expect("a TCP header");
             let header = Ipv6Header {
-                traffic_class: 0,
+                traffic_class: u8::MIN,
                 flow_label: Ipv6FlowLabel::ZERO,
                 payload_length: u16::try_from(synchronize.len()).expect("a short SYN"),
                 next_header: IpNumber::TCP,
@@ -1932,10 +2135,10 @@ fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, vers
         &sender,
         &[icmp, quoted].concat(),
         SendFlags::empty(),
-        &SocketAddr::new(local.ip(), 0),
+        &SocketAddr::new(local.ip(), ANY_PORT.0),
     )
     .expect("send the ICMP error");
-    let mut buffer = [0; PACKET_ROOM];
+    let mut buffer = [u8::MIN; PACKET_ROOM];
     let TcpErrorQueueEntry::IcmpError(fields) =
         take_entry_into(&sockets, &waiting.connection, &mut buffer)
     else {
@@ -2041,7 +2244,7 @@ pub fn transmit_report_carries_the_packet_when_asked<S: TcpSockets>(sockets: S) 
         ..plain()
     };
     send_all(&sockets, &pair.client, reported, MESSAGE);
-    let mut buffer = [0; PACKET_ROOM];
+    let mut buffer = [u8::MIN; PACKET_ROOM];
     let TcpErrorQueueEntry::TransmitReport { report, statistics } =
         take_entry_into(&sockets, &pair.client, &mut buffer)
     else {
@@ -2111,7 +2314,7 @@ pub fn wireless_status_request_still_sends<S: TcpSockets>(sockets: S) {
         MESSAGE
     );
     // Loopback is no wireless link, so no status comes.
-    let mut buffer = [0; ENTRY_ROOM];
+    let mut buffer = [u8::MIN; ENTRY_ROOM];
     assert_eq!(
         sockets.take_error_queue_entry(&pair.client, &mut buffer),
         Err(HostError::WouldBlock)
@@ -2150,7 +2353,7 @@ fn fast_open_round<S: TcpSockets>(
         TcpConnectStart::SynchronizeSent {
             fast_open_data_taken,
         } => fast_open_data_taken.0,
-        _ => 0,
+        _ => usize::MIN,
     };
     if connected.start == TcpConnectStart::DeferredUntilFirstSend {
         let early = capture.wait_for(start, SETTLE, |segment| {
@@ -2251,19 +2454,23 @@ pub fn fast_open_keys_and_queue_decide_what_the_listener_takes<S: TcpSockets>(so
             backup: backup.map(|key| FastOpenKey([key; FAST_OPEN_KEY_LENGTH])),
         })
     };
-    let (listener, local, capture) = fast_open_listener(&sockets, FAST_OPEN_KEYS, &[keys(1, None)]);
+    let (listener, local, capture) =
+        fast_open_listener(&sockets, FAST_OPEN_KEYS, &[keys(FIRST_FAST_OPEN_KEY, None)]);
     let fast_open = TcpFastOpen::WithData(MESSAGE);
     let round = || fast_open_round(&sockets, &listener, local, &capture, &[], fast_open);
     round();
     assert!(round().data_acknowledged, "a cookie of the key");
     sockets
-        .configure(&listener, keys(2, None))
+        .configure(&listener, keys(SECOND_FAST_OPEN_KEY, None))
         .expect("a new key");
     let stale = round();
     assert_eq!(stale.synchronize_data, MESSAGE.len());
     assert!(!stale.data_acknowledged, "a cookie of a key no longer held");
     sockets
-        .configure(&listener, keys(THIRD_KEY, Some(2)))
+        .configure(
+            &listener,
+            keys(THIRD_FAST_OPEN_KEY, Some(SECOND_FAST_OPEN_KEY)),
+        )
         .expect("a new key, the last one kept as backup");
     assert!(round().data_acknowledged, "a cookie of the backup key");
     sockets
@@ -2296,7 +2503,7 @@ fn assert_near(what: &str, measured: Duration, expected: Duration) {
 ///
 /// The peer answers nothing; the connection probes as many times as asked and resets an interval after its last probe.
 pub fn keep_alive_probes_end_an_unanswered_connection<S: TcpSockets>(sockets: S) {
-    for count in [1, 2] {
+    for &count in KEEP_ALIVE_PROBE_COUNTS {
         let (pair, capture) = watched_pair(
             &sockets,
             ipv4_loopback(),
@@ -2374,16 +2581,16 @@ pub fn rearming_the_keep_alive_timer_sends_a_due_probe<S: TcpSockets>(sockets: S
 
 /// Checks that the peer answering nothing, a second small send waits for the first to be acknowledged, unless without delay.
 pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSockets>(sockets: S) {
-    for (settings, pushed_first, segments) in [
-        (vec![], false, 1),
-        (vec![TcpSetting::NoDelay(true)], false, 2),
+    for (settings, pushed_first, all_sent) in [
+        (vec![], false, false),
+        (vec![TcpSetting::NoDelay(true)], false, true),
         (
             vec![TcpSetting::NoDelay(true), TcpSetting::NoDelay(false)],
             false,
-            1,
+            false,
         ),
         // A push past cork and Nagle's algorithm leaves the algorithm on for what follows.
-        (vec![], true, 1),
+        (vec![], true, false),
     ] {
         let (pair, capture) = watched_pair(&sockets, ipv4_loopback(), &settings, &[]);
         drop_arrivals(&sockets, &pair.server, IpVersion::V4);
@@ -2393,8 +2600,10 @@ pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSocke
                 .expect("push");
         }
         let start = Instant::now();
-        send_all(&sockets, &pair.client, plain(), MESSAGE);
-        send_all(&sockets, &pair.client, plain(), REPLY);
+        let sends = [MESSAGE, REPLY];
+        for bytes in sends {
+            send_all(&sockets, &pair.client, plain(), bytes);
+        }
         std::thread::sleep(HELD_FOR);
         let mut sequences: Vec<u32> = capture
             .since(start)
@@ -2403,6 +2612,12 @@ pub fn no_delay_sends_small_segments_while_others_are_unacknowledged<S: TcpSocke
             .map(|segment| segment.sequence)
             .collect();
         sequences.dedup();
+        // Held back, the second send waits for the first to be acknowledged, which never comes.
+        let segments = if all_sent {
+            sends.len()
+        } else {
+            sends.len() - 1
+        };
         assert_eq!(
             sequences.len(),
             segments,
@@ -2609,8 +2824,9 @@ pub fn retransmission_settings_time_the_retransmissions<S: TcpSockets>(sockets: 
     for (setting, pair, capture, start) in watched {
         let times = transmissions(&capture, start);
         let longest = times
-            .windows(2)
-            .map(|pair| pair[1] - pair[0])
+            .iter()
+            .zip(times.iter().skip(1))
+            .map(|(earlier, later)| *later - *earlier)
             .max()
             .unwrap_or_default();
         match setting {
@@ -2655,7 +2871,7 @@ pub fn user_timeout_ends_an_unacknowledged_connection<S: TcpSockets>(sockets: S)
         elapsed >= USER_TIMEOUT && elapsed < USER_TIMEOUT * BOUND_RATIO as u32,
         "{elapsed:?}"
     );
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     assert_eq!(
         sockets
             .receive(&lifted.client, TcpReceiveRequest::Read, &mut buffer)
@@ -2683,7 +2899,7 @@ pub fn synchronize_retries_end_an_unanswered_connect<S: TcpSockets>(sockets: S) 
             OWNER,
             bind_any_port(ipv4_any()),
             local,
-            &[TcpSetting::SynchronizeRetries(RetryCount(1))],
+            &[TcpSetting::SynchronizeRetries(ONE_SYNCHRONIZE_RETRY)],
             TcpFastOpen::Off,
         )
         .expect("connect")
@@ -2730,7 +2946,7 @@ pub fn defer_accept_holds_a_connection_until_data<S: TcpSockets>(sockets: S) {
             .connection;
         if deferred {
             std::thread::sleep(SETTLE);
-            let mut header = [0; 0];
+            let mut header = [u8::MIN; 0];
             assert_eq!(
                 sockets.accept(&listener, &mut header).map(|_| ()),
                 Err(HostError::WouldBlock)
@@ -2763,7 +2979,7 @@ pub fn fin_wait_2_settings_decide_how_a_closed_connection_ends<S: TcpSockets>(so
         sockets.close(pair.client, TcpClose::Orderly);
         assert_eq!(
             receive_outcome(&sockets, &pair.server, DEADLINE).map(|got| got.length),
-            Ok(ByteCount(0))
+            Ok(NO_BYTES)
         );
         (pair.listener, pair.server, capture, start)
     });
@@ -2925,19 +3141,27 @@ pub fn header_settings_mark_each_segment<S: TcpSockets>(sockets: S) {
         &[],
     );
     let marked = data_after(&pair, &capture);
-    assert_eq!((marked.hop_limit, marked.flow_label), (limit.0, Some(0)));
+    assert_eq!(
+        (marked.hop_limit, marked.flow_label),
+        (limit.0, Some(NO_FLOW_LABEL))
+    );
     sockets
         .configure(
             &pair.client,
             TcpSetting::Packet(IpPacketSetting::FlowLabel(FlowLabelChoice::Automatic)),
         )
         .expect("automatic flow labels");
-    assert_ne!(data_after(&pair, &capture).flow_label, Some(0));
+    assert_ne!(data_after(&pair, &capture).flow_label, Some(NO_FLOW_LABEL));
     close(&sockets, pair);
 }
 
-/// Flow labels a connection may carry for good: below 0x80000, which Linux keeps for the labels it makes itself.
+/// A flow label a connection may carry for good: below 0x80000, which Linux keeps for the labels it makes itself.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIXED_FLOW_LABEL: u32 = 0x2468A;
+/// A second flow label a connection may carry for good, unlike the first.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const OTHER_FIXED_FLOW_LABEL: u32 = 0x13579;
 
 fn fixed_flow_label(label: u32) -> TcpSetting<'static> {
@@ -3000,8 +3224,13 @@ pub fn fixed_flow_label_marks_every_segment<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// Groups no other check joins, so that the host's tables show this check's memberships alone.
+/// An IPv4 group no other check joins, so that the host's tables show this check's membership alone.
+///
+/// https://www.rfc-editor.org/rfc/rfc5771
 const MEMBERSHIP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 123);
+/// An IPv6 group no other check joins.
+///
+/// https://www.rfc-editor.org/rfc/rfc4291
 const MEMBERSHIP_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x123);
 
 /// The host's tables of the multicast groups and anycast addresses each interface has joined.
@@ -3055,6 +3284,8 @@ fn ipv6_address_users(table: &str, address: Ipv6Addr, interface: InterfaceIndex)
 }
 
 /// An anycast address no other check joins.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193
 const ANYCAST_MEMBERSHIP: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x123);
 
 /// Checks that a connection joins and leaves an anycast address, as the host's anycast table shows, twice as once.
@@ -3064,8 +3295,8 @@ pub fn anycast_addresses_are_joined_and_left<S: TcpSockets>(sockets: S) {
     let users = || ipv6_address_users(IPV6_ANYCAST, ANYCAST_MEMBERSHIP, interface);
     assert_eq!(users(), None, "before");
     for (membership, expected) in [
-        (Membership::Joined, Some(1)),
-        (Membership::Joined, Some(1)),
+        (Membership::Joined, Some(ONE_MEMBER)),
+        (Membership::Joined, Some(ONE_MEMBER)),
         (Membership::Left, None),
         (Membership::Left, None),
     ] {
@@ -3123,8 +3354,8 @@ pub fn multicast_groups_are_joined_and_left<S: TcpSockets>(sockets: S) {
         let pair = pair_at(&sockets, address, &[], &[]);
         assert_eq!(group_users(group, interface), None, "{group} before");
         for (setting, users) in [
-            (&joined, Some(1)),
-            (&joined, Some(1)),
+            (&joined, Some(ONE_MEMBER)),
+            (&joined, Some(ONE_MEMBER)),
             (&left, None),
             (&left, None),
         ] {
@@ -3207,7 +3438,7 @@ pub fn md5_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: 
             .expect("connect")
             .connection;
         let signed = client_keys.last().copied().flatten().is_some();
-        let mut header = [0; 0];
+        let mut header = [u8::MIN; 0];
         if admitted {
             let server = retry(|| {
                 sockets
@@ -3258,9 +3489,20 @@ const AUTHENTICATION_ALGORITHM: &str = "hmac(sha1)";
 const AUTHENTICATION_SECRET: &[u8] = b"conformance secret";
 const OTHER_AUTHENTICATION_SECRET: &[u8] = b"another secret";
 /// A MAC length unlike Linux's default for the algorithm (12 bytes), so that the length given shows on the wire.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const AUTHENTICATION_MAC_LENGTH: TcpAuthenticationMacLength = TcpAuthenticationMacLength(16);
+/// The first key identifier of the authentication checks.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIRST_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(1);
+/// The second key identifier of the authentication checks.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SECOND_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(2);
+/// The third key identifier of the authentication checks.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const THIRD_AUTHENTICATION_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(3);
 
 /// Gives a key for the peers at 127.0.0.1 that sends and receives with the one identifier.
@@ -3361,7 +3603,7 @@ fn authentication_round<S: TcpSockets>(
         .expect("connect")
         .connection;
     std::thread::sleep(SETTLE);
-    let mut header = [0; 0];
+    let mut header = [u8::MIN; 0];
     let synchronize = capture
         .segments()
         .iter()
@@ -3666,7 +3908,7 @@ pub fn address_sharing_lets_connections_leave_from_one_port<S: TcpSockets>(socke
             TcpFastOpen::Off,
         )
     };
-    let first = connect(Port(0), listeners[0].1, &shared).expect("the first connection");
+    let first = connect(ANY_PORT, listeners[0].1, &shared).expect("the first connection");
     let port = Port(first.local.port());
     let second = connect(port, listeners[1].1, &shared).expect("a second from the port");
     assert_eq!(second.local, first.local);
@@ -3704,7 +3946,7 @@ pub fn port_sharing_lets_listeners_share_a_port<S: TcpSockets>(sockets: S) {
     let shared = [TcpListenerSetting::Socket(TcpSetting::Port(
         PortSetting::PortSharing(PortSharing::Shared),
     ))];
-    let first = listen_at(&sockets, ipv4_loopback(), Port(0), &shared).expect("listen");
+    let first = listen_at(&sockets, ipv4_loopback(), ANY_PORT, &shared).expect("listen");
     let port = Port(first.local.port());
     let second = listen_at(&sockets, ipv4_loopback(), port, &shared).expect("listen on the port");
     assert_eq!(
@@ -3724,7 +3966,7 @@ pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S
     let bound = listen_at(
         &sockets,
         address,
-        Port(0),
+        ANY_PORT,
         &[setting(NonlocalAddresses::Bindable)],
     )
     .expect("listen on a nonlocal address");
@@ -3737,7 +3979,7 @@ pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S
         ],
     ] {
         assert_eq!(
-            listen_at(&sockets, address, Port(0), &settings).map(|listening| listening.local),
+            listen_at(&sockets, address, ANY_PORT, &settings).map(|listening| listening.local),
             Err(errno(Errno::EADDRNOTAVAIL))
         );
     }
@@ -3745,7 +3987,7 @@ pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S
 
 /// Checks that a listener of backlog 0, from the listen or set later, holds one connection to accept, not the three waiting.
 pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
-    let smallest = TcpListenerSetting::Backlog(ListenBacklog(0));
+    let smallest = TcpListenerSetting::Backlog(SMALLEST_BACKLOG);
     for later in [false, true] {
         let settings = if later {
             vec![]
@@ -3783,14 +4025,14 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
                     start.elapsed() < DEADLINE,
                     "the first connection was never queued"
                 );
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(RETRY_INTERVAL);
             }
         }
         let clients: Vec<_> = std::iter::once(first)
             .chain((1..BACKLOG_OVERFLOW).map(|_| connect()))
             .collect();
         std::thread::sleep(SETTLE);
-        let mut header = [0; 0];
+        let mut header = [u8::MIN; 0];
         let mut accepted = vec![
             retry(|| {
                 sockets
@@ -3902,7 +4144,7 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
         .connect(
             TcpProtocol::Tcp,
             OWNER,
-            from_port(0),
+            from_port(ANY_PORT.0),
             local,
             &shared,
             TcpFastOpen::Off,
@@ -3961,13 +4203,11 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
         .expect("window probe in repair mode");
     // In repair mode a send fills the queue chosen and a peek reads it; with no queue chosen, both are refused.
     send_all(&sockets, &pair.client, plain(), MESSAGE);
-    let mut queued = vec![0; MESSAGE.len()];
+    let mut queued = vec![u8::MIN; MESSAGE.len()];
     let peeked = sockets
         .receive(
             &pair.client,
-            TcpReceiveRequest::Peek {
-                offset: ByteCount(0),
-            },
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
             &mut queued,
         )
         .expect("a peek at the receive queue still chosen");
@@ -4022,8 +4262,7 @@ fn assert_counts_in(unit: TcpTimestampUnit, (since, ran): (u32, Duration)) {
         TcpTimestampUnit::Milliseconds => (CLOCK_RUNS.as_millis(), ran.as_millis()),
         TcpTimestampUnit::Microseconds => (CLOCK_RUNS.as_micros(), ran.as_micros()),
     };
-    // One tick of rounding, and the low bit the unit takes.
-    let slack = 2;
+    let slack = TIMESTAMP_SLACK;
     assert!(
         (at_least - slack..=at_most + slack).contains(&u128::from(since)),
         "{since} {unit:?} after the reading, over {ran:?}"
@@ -4077,9 +4316,13 @@ pub fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused<S: TcpSocket
 }
 
 /// Rounds of one segment each that the statistics check sends.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const STATISTICS_ROUNDS: usize = 10;
 
 /// The hop limit of the peer's acknowledgements in the statistics check.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const STATISTICS_HOP_LIMIT: HopLimit = HopLimit(33);
 
 /// Checks that the statistics of each round's acknowledgement report agree with what the connection did.
@@ -4169,12 +4412,12 @@ pub fn transmit_statistics_describe_the_connection<S: TcpSockets>(sockets: S) {
         TcpCongestionAvoidanceState::Open
     );
     assert_eq!(statistics.received_hop_limit, STATISTICS_HOP_LIMIT);
-    assert_eq!(statistics.not_sent, ByteCount(0));
+    assert_eq!(statistics.not_sent, NO_BYTES);
     assert!(
         statistics.earliest_departure > Duration::ZERO,
         "{statistics:?}"
     );
-    assert_eq!(statistics.recurring_retransmissions, RetryCount(0));
+    assert_eq!(statistics.recurring_retransmissions, RetryCount(u8::MIN));
     assert_eq!(statistics.duplicate_selective_acknowledgements.0, 0);
     assert_eq!(statistics.reordering_seen.0, 0);
     assert_eq!(statistics.timeout_rehashes.0, 0);
@@ -4224,7 +4467,7 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
                     TcpFastOpen::Off,
                 )
                 .expect("connect");
-            let accepted = accept_with_header(&sockets, &listening.listener, 0);
+            let accepted = accept_with_header(&sockets, &listening.listener, NO_HEADER_ROOM);
             let fields = accepted.synchronize;
             assert_eq!(fields.interface, interface, "{case}: {fields:?}");
             assert_eq!(
@@ -4242,8 +4485,13 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
     }
 }
 
-/// Owners other than [`OWNER`] for a connection and a listener.
+/// The owner of the connection of the owner check, other than [`OWNER`].
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CONNECTION_OWNER: UserId = UserId(1001);
+/// The owner of the listener of the owner check, other than [`OWNER`].
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LISTENER_OWNER: UserId = UserId(1002);
 
 /// The host's tables of TCP sockets, a line for each.
@@ -4252,7 +4500,13 @@ const LISTENER_OWNER: UserId = UserId(1002);
 const IPV4_TCP_SOCKETS: &str = "/proc/net/tcp";
 const IPV6_TCP_SOCKETS: &str = "/proc/net/tcp6";
 const ADDRESS_PORT_SEPARATOR: char = ':';
+/// The tables write addresses and ports in hexadecimal.
+///
+/// https://docs.kernel.org/networking/proc_net_tcp.html
 const TABLE_NUMBER_RADIX: u32 = 16;
+/// The column of the tables that holds a socket's user.
+///
+/// https://docs.kernel.org/networking/proc_net_tcp.html
 const USER_COLUMN: usize = 7;
 
 /// Gives the user the host's table of TCP sockets names for the socket between the ports, a listener's peer port being 0.
@@ -4309,7 +4563,7 @@ pub fn connect_and_listen_make_sockets_of_their_owner<S: TcpSockets>(sockets: S)
         let server = accept(&sockets, &listening.listener);
         let listener_port = Port(listening.local.port());
         assert_eq!(
-            socket_owner(version, listener_port, Port(0)),
+            socket_owner(version, listener_port, ANY_PORT),
             Some(LISTENER_OWNER.0),
             "the listener over {version:?}"
         );
@@ -4345,7 +4599,7 @@ pub fn connect_in_repair_mode_is_established_at_once<S: TcpSockets>(sockets: S) 
         .expect("connect in repair mode");
     assert_eq!(connected.start, TcpConnectStart::EstablishedForRepair);
     std::thread::sleep(SETTLE);
-    let mut header = [0; 0];
+    let mut header = [u8::MIN; 0];
     assert_eq!(
         sockets.accept(&listener, &mut header).map(drop),
         Err(HostError::WouldBlock)
@@ -4369,7 +4623,7 @@ pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(s
         ))],
     );
     send_all(&sockets, &pair.client, plain(), MESSAGE);
-    let mut buffer = [0; 1];
+    let mut buffer = [u8::MIN; 1];
     let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer))
         .expect("receive");
     assert!(got.timestamps.software.is_some(), "{got:?}");
@@ -4437,8 +4691,8 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
                     "{settings:?}"
                 );
             }
-            let mut small = [0; CUT_HEADER];
-            let mut room = [0; HEADER_ROOM];
+            let mut small = [u8::MIN; CUT_HEADER];
+            let mut room = [u8::MIN; HEADER_ROOM];
             if saving != TcpSavedSynchronize::Off {
                 let length = match sockets.read_state(
                     &accepted.connection,
@@ -4486,6 +4740,8 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
 }
 
 /// Counters an authentication check sets, each unlike the others.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const AUTHENTICATION_COUNTERS: TcpAuthenticationCounters = TcpAuthenticationCounters {
     verified: SegmentCount(1),
     failed: SegmentCount(2),
@@ -4530,7 +4786,7 @@ pub fn listener_state_reads_a_listener<S: TcpSockets>(sockets: S) {
         Ok(other) => panic!("information read {other:?}"),
         Err(error) => assert_eq!(error, HostError::NotSupported),
     }
-    let mut name = [0; HEADER_ROOM];
+    let mut name = [u8::MIN; HEADER_ROOM];
     match sockets.read_listener_state(&listener, TcpListenerQuery::CongestionControl(&mut name)) {
         Ok(TcpReading::CongestionControl { name, .. }) => assert_eq!(name, CONGESTION_CONTROL),
         Ok(other) => panic!("congestion control read {other:?}"),
@@ -4591,10 +4847,25 @@ const IPV4_OPTIONS: [u8; size_of::<u32>()] =
 /// The smallest IPv6 extension header, its options all one-byte padding (Pad1 is option type 0).
 const PADDING_HEADER: [u8; Ipv6RawExtHeader::MIN_LEN] = [0; Ipv6RawExtHeader::MIN_LEN];
 
+/// A link-local IPv4 multicast group.
+///
+/// https://www.rfc-editor.org/rfc/rfc5771
 const MULTICAST_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+/// A link-local IPv6 multicast group.
+///
+/// https://www.rfc-editor.org/rfc/rfc4291
 const MULTICAST_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
+/// A unique local IPv6 address.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193
 const ANYCAST_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
+/// A flow label of the setting checks.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FLOW_LABEL: u32 = 0xABCDE;
+/// A packet mark of the setting checks.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const MARK: PacketMark = PacketMark(7);
 
 /// Gives the index of the host's loopback interface, the one that says it is loopback.
@@ -4667,14 +4938,14 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
             send: BufferTuning::Locked,
             receive: BufferTuning::Automatic,
         }),
-        TcpSetting::ReceiveLowWater(ByteCount(1)),
+        TcpSetting::ReceiveLowWater(SMALLEST_LOW_WATER),
         TcpSetting::Filter(Some(SocketFilter(&ACCEPT_ALL))),
         TcpSetting::Filter(None),
         TcpSetting::TransmitRehash(TransmitRehash::Enabled),
         TcpSetting::TransmitRehash(TransmitRehash::SystemDefault),
         TcpSetting::MinimumHopLimit {
             version: IpVersion::V4,
-            minimum: Some(HopLimit(1)),
+            minimum: Some(SMALLEST_HOP_LIMIT),
         },
         TcpSetting::MinimumHopLimit {
             version: IpVersion::V4,
@@ -4756,7 +5027,7 @@ fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static
         })),
         TcpSetting::MinimumHopLimit {
             version: IpVersion::V6,
-            minimum: Some(HopLimit(1)),
+            minimum: Some(SMALLEST_HOP_LIMIT),
         },
         TcpSetting::MinimumHopLimit {
             version: IpVersion::V6,
@@ -5107,7 +5378,7 @@ impl Wake for CountingWaker {
 
 fn counting_waker() -> (Arc<CountingWaker>, Waker) {
     let counter = Arc::new(CountingWaker {
-        wakes: AtomicUsize::new(0),
+        wakes: AtomicUsize::new(usize::MIN),
         thread: std::thread::current(),
     });
     (Arc::clone(&counter), Waker::from(counter))
@@ -5150,6 +5421,8 @@ fn finish<F: Future>(mut future: Pin<&mut F>, counter: &CountingWaker, waker: &W
 }
 
 /// How many connections the check of waits on many connections watches at once.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const WATCHED_CONNECTIONS: usize = 16;
 
 /// Gives a connection waited on for data, made ready by data its peer sends, for the readiness suite.
@@ -5283,12 +5556,16 @@ pub fn waits_on_many_connections_each_wake_once<S: TcpSockets>(sockets: S) {
         assert!(poll_once(wait.as_mut(), waker).is_pending());
     }
     // Every other connection gets data; the rest stay silent.
-    for pair in pairs.iter().step_by(2) {
+    for (_, pair) in pairs.iter().enumerate().filter(|(index, _)| index % 2 == 0) {
         send_all(&sockets, &pair.client, plain(), MESSAGE);
     }
-    for (index, (wait, counter, waker)) in waits.iter_mut().enumerate().step_by(2) {
+    for (index, (wait, counter, waker)) in waits
+        .iter_mut()
+        .enumerate()
+        .filter(|(index, _)| index % 2 == 0)
+    {
         assert!(
-            woken_within(counter, 1, DEADLINE),
+            woken_within(counter, ONE_WAKE, DEADLINE),
             "wait {index} was not woken"
         );
         let facts = poll_once(wait.as_mut(), waker);
@@ -5308,7 +5585,7 @@ pub fn waits_on_many_connections_each_wake_once<S: TcpSockets>(sockets: S) {
 /// Checks that a wait for room to send finishes when the peer has read enough of what fills the connection.
 pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    let chunk = vec![0; SETTING_BYTES];
+    let chunk = vec![u8::MIN; SETTING_BYTES];
     let start = Instant::now();
     loop {
         match sockets.send(&pair.client, plain(), &chunk) {
@@ -5322,10 +5599,10 @@ pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
         let mut wait = pin!(sockets.wait_until_ready(&pair.client, ReadyFor::WRITABLE));
         assert!(poll_once(wait.as_mut(), &waker).is_pending());
         assert!(
-            !woken_within(&counter, 1, SETTLE),
+            !woken_within(&counter, ONE_WAKE, SETTLE),
             "woken while the connection was full"
         );
-        let mut sink = vec![0; SETTING_BYTES];
+        let mut sink = vec![u8::MIN; SETTING_BYTES];
         while wakes(&counter) == 0 {
             assert!(
                 start.elapsed() < DEADLINE,
@@ -5357,13 +5634,13 @@ fn wait_finishes_when_the_peer_acts<S: TcpSockets>(
         let mut wait = pin!(sockets.wait_until_ready(&pair.server, interest));
         assert!(poll_once(wait.as_mut(), &waker).is_pending());
         assert!(
-            !woken_within(&counter, 1, SETTLE),
+            !woken_within(&counter, ONE_WAKE, SETTLE),
             "woken before the peer acted"
         );
         assert!(poll_once(wait.as_mut(), &waker).is_pending());
         act(sockets, &pair.client);
         assert!(
-            woken_within(&counter, 1, DEADLINE),
+            woken_within(&counter, ONE_WAKE, DEADLINE),
             "not woken when the peer acted"
         );
         let facts = finish(wait, &counter, &waker).expect("wait");
@@ -5492,7 +5769,10 @@ pub fn a_wait_gives_the_facts_the_listener_has_and_no_others<S: TcpSockets>(sock
             poll_once(wait.as_mut(), &waker).is_pending(),
             "nothing to accept"
         );
-        assert!(!woken_within(&counter, 1, SETTLE), "nothing to accept");
+        assert!(
+            !woken_within(&counter, ONE_WAKE, SETTLE),
+            "nothing to accept"
+        );
     }
     let client = sockets
         .connect(
@@ -5522,7 +5802,10 @@ pub fn wait_for_an_error_finishes_when_the_peer_resets<S: TcpSockets>(sockets: S
     {
         let mut wait = pin!(sockets.wait_until_ready(&pair.client, ReadyFor::ERROR));
         assert!(poll_once(wait.as_mut(), &waker).is_pending());
-        assert!(!woken_within(&counter, 1, SETTLE), "woken before the reset");
+        assert!(
+            !woken_within(&counter, ONE_WAKE, SETTLE),
+            "woken before the reset"
+        );
         sockets.close(pair.server, TcpClose::Abort);
         let facts = finish(wait, &counter, &waker).expect("wait across the reset");
         assert!(
