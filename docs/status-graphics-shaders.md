@@ -1,12 +1,15 @@
 # Status: graphics, shaders track (G6)
 
-On `main`, in the one checkout, since the reorganization of 2026-11-21 (this crate stays at
-`crates/wcontainers-shaders`; no track branches). Plan: `docs/phase-2-graphics.md`, sections 6, 7,
-8 and G6 in 12. The run-by-run record of runs 1 to 72 is in `docs/status-graphics-shaders-history.md`
-(history; where it disagrees with this file, this file holds).
+On branch `agents` in the agents' shared worktree (`wcontainers-agents`) since the evening of
+2026-11-21 (this crate stays at `crates/wcontainers-shaders`; no track branches). Plan:
+`docs/phase-2-graphics.md`, sections 6, 7, 8 and G6 in 12. The run-by-run record of runs 1 to 74
+is in `docs/status-graphics-shaders-history.md` (history; where it disagrees with this file, this
+file holds).
 
-Milestone G6a, given again after the reorganization: its third check's findings were settled in
-run 72 (history, "G6a again, run 3"); its fourth check's in run 73 (the section below).
+Milestone G6a, given again on 2026-11-21 evening with the FIRST check's findings carried (at
+eb202617, 2026-11-19): run 75 (the section below) compared each with the tip and found every one
+settled by earlier runs; the 15.4 entry point the NIR track asked for is `rewrite` (since run 57).
+Its third check's findings were settled in run 72 and its fourth check's in run 73 (history).
 G6b (gap A6: DXIL geometry, hull and domain shaders), run 7: DXIL geometry, hull and domain
 shaders convert through the passes the DXBC route uses and draw equal to real Direct3D with dxc's
 builds. Of the four Direct3D 12 rig scenes that failed for A6, two draw equal to real Direct3D 12
@@ -18,57 +21,98 @@ the device. Raster-fill runs no stage of A6. Both meet the Vulkan path's line ru
 (plan 15.1). Not met as G6b writes it ("equal on the RTX 3080"), and not reachable by the
 converter: the owner's ruling is asked ("New for the owner").
 
-## G6b run 7 (run 74): the tessellation scene's order, measured
+## G6a run 7 (run 75): the first check's carried findings at the tip
 
-Run 73's section is in the history file. Logs, probes and the mutants in scratch
-`graphics-shaders/g6b7`. GPU figures from the RTX 3080 and WARP through the queue, one job at a
-time.
+Every figure here is from runs at 05a2cff4 (the tip of `agents` when the run started; this crate
+unchanged since run 74's 7f291fa6, and the commits after 05a2cff4 touch only this file and the
+history). Logs in scratch `graphics-shaders/g6a-r75`. No code changed in this run.
 
-- The RTX 3080's order (probe1.log, a probe test not committed): streamed by Direct3D 11 for one
-  patch of fixed factors, the GPU's primitives are ours but in its own order and rotation, and not
-  a simple rule of ours (tri integer 4: the inner ring first, from inside out and not in the
-  reference's order, then the outer ring backwards; points, isolines and quads alike). Direct3D
-  leaves that order to the device; matching it would shape the tessellator around one GPU, so it
-  is not done.
-- WARP's order is ours (probe2.log): every point and index of 32 topologies (every domain,
-  partitioning and output) equal to WARP's streamed output word for word and in order.
-  `tessellator_matches_direct3d` now holds the tessellator to both: each patch's primitives equal
-  to the GPU's as a set, and equal to WARP's in order (default seed 1, 4 seeds: 256 comparisons,
-  0 failed, new1.log).
-- New test `rig_tessellation_scene_draws_as_direct3d_11_on_warp_does`: the rig's tessellation
-  scene as it is (lines but the last patch), through the stage helper on wgpu's Direct3D 12 path
-  on WARP (`common::webgpu_on_warp`), against real Direct3D 11 on WARP running the scene itself:
-  every texel of every cell equal, both builds (new1.log). So with the same rasteriser and the
-  same order, the scene is equal; on the RTX 3080 the difference is the device's order.
-- Mutated copy (mutant-quad-order.patch: each quad of `stitch_regular` emits its two triangles in
-  the other order): the scene on WARP 7 texels apart (cells 1, 3, 4) and the order test 64 of 256
-  comparisons failed, all of them WARP's (mutant4.log). A first mutant reversing each patch's
-  triangles made WARP fault (access violation), so it proves nothing and was dropped.
-- For comparison (probe2.log): WARP's own Direct3D 11 scene against the RTX 3080's differs in 768
-  texels (65 more than 2 apart), as the rig records; ours on the RTX 3080 against the RTX 3080 in
-  191, and ours on the GPU against WARP in 617 (10 more than 2 apart).
-- The Direct3D 12 scenes: the Direct3D 12 front draws through wgpu's Vulkan path (plan 15.1, "A
-  test process must never draw through the API it stands in for"), whose line rule differs from
-  Direct3D's on the RTX 3080, a listed loss there; both remaining scenes' differences are in cells
-  drawn as lines, so both meet that loss besides the device's order. Neither is the converter's
-  to change.
+The carried findings, each against the tip:
+- Four corpus record tests failing (eb202617 wrote GLSL under the WebGL 2 key without new
+  records): settled. Every corpus test passes (laptop-suite.log, `corpus`: 13 passed, 0 failed,
+  every corpus and glslang 8.13; `game_shaders_give_their_recorded_verdicts` checks games and games
+  DXIL, tests/corpus.rs:739-744). The records the check named now read: `020_ps_ld_code.dxbc` and
+  `ps_levels`, `ps_levels_past` (both routes) `ok ; glsl compiles`; `hlsl+getdimensions-3-ps`
+  (both routes) and the games' `5c32b4c746957b52.dxbc` `ok ; glsl needs MULTISAMPLE_READ compile
+  'sampler2DMS' : Reserved word.`
+- Run 46's figures taken before its code: settled; run 46's section is history, and this section's
+  figures come from runs at the tip named above.
+- Gap A3's cause stale: settled; A3 is closed (gap list), and the corpus test writes GLSL with the
+  WebGL 2 back end's own `wcontainers_gpu_webgl::glsl::write` (tests/corpus.rs:301), on a module
+  converted under the WebGL 2 key. Chrome on the files written at the tip: below.
+- GLSL refusals recorded only by their first two words: settled. Each record is the whole verdict:
+  the needs the back end reads, glslang's first error, and for a write refusal naga's own reason
+  (`; naga alone: ...`); a glslang refusal is a named outcome only where its error cites a form of
+  a need its record names (`CITED_FORMS`), and a file lacking the directive of a need it declares
+  through an extension fails before glslang (`a_written_file_without_its_needs_directive_is_not_a_named_outcome`).
+  The check's examples at the tip: `ps_shadow`, `ps_shadow_wide` (both routes) and `ps_shade.dxbc`
+  compile; `106_ps_code_ddy_fine.dxbc`, `ps_deriv`, `ps_helper` and `hlsl+ddxddy-4-ps` (both
+  routes) record the need `FINE_DERIVATIVES` (GLSL ES 3.00 has no fine derivatives; pass bar item
+  2 lists it among the needs absent on WebGL 2) with naga's reason `DERIVATIVE_CONTROL`.
+- The pass bar's unbuilt parts: listed by name in the gap list with cause, waiting front and what
+  each takes: A1 (distance-4), A4 (`ProvokingRewrite`, `StoragePacked`, `RootSignatureLayout`,
+  `combine`, `SwizzledDepth`; `decoded` is built and drawn since run 54, and `NormAsInteger`, which
+  the check named, now refuses only a target of a normalised format no integer format holds,
+  src/variant/targets.rs:25-35), A5 (the stage helper on WebGL 2), A6 (DXIL geometry, hull and domain
+  shaders, built since G6b; the converter's part closed), A7 (streams and other stage helper
+  routes), A8 (native and WebAssembly bytes).
+- The vertex-stage storage write route: listed as gap A9 (`VertexStorageWrite`, plan section 7's
+  `VertexStorageAsCompute`).
+- `geometry_shaders_draw_as_direct3d_does` at seed 4747, 12 cases: the check's figures replay at
+  the tip (gpu-suite.log): 576 comparisons, 6 failed, its four cases and the DXIL builds of the two
+  `gs_clip` ones: 4749 `vs_cull` TriangleList indexed (1 of 1,011 texels, largest 159), 4753
+  `gs_clip` TriangleStrip (4 of 811, largest 88, both routes), 4756 `gs_clip` TriangleStrip (20 of
+  924, largest 100, both routes), 4756 `vs_cull` TriangleList indexed (6 of 891, largest 75). Gap
+  A10 holds them; pass bar item 3 calls `CLIP_DISTANCE` behind a geometry stage met at the default
+  seeds only.
+- The tessellator's MIT notice: settled; src/stage/tessellator.wgsl lines 1 to 16 carry
+  Microsoft's copyright line and the whole permission notice.
+- A cache file cut inside its header: settled; `Cache::load` loads it as an empty cache with the
+  cut bytes dropped, and `a_cut_file_keeps_every_whole_entry_before_the_cut` cuts at every length
+  inside the header (tests/cache.rs:154-160; passes, laptop-suite.log).
+- Refusal names and offsets written twice: settled; every refusal name the check listed is defined
+  once in src/refusal.rs (`StorageImageAtomics`, `ProvokingRewrite`, `StoragePacked`,
+  `RootSignatureLayout`: no other file of the crate spells them), and the cache's field offsets come
+  from `offset_of!` on the `#[repr(C)]` `Header` and `EntryHead` (src/cache.rs:30-59). One refusal
+  name lives outside refusal.rs, defined once: `SWIZZLED_DEPTH` in src/lib.rs. The literal check
+  prints no line of this crate.
+- `filter_draw` counting any failure of an anisotropic case as known: settled; only a mode whose
+  footprint comes from derivatives with anisotropy above 1 is known (`anisotropic_footprint`,
+  tests/filter_draw.rs:104); an explicit level, a gather and a load must match.
+- The 15.4 entry point for the NIR track: `wcontainers_shaders::rewrite` (src/lib.rs:199, since run
+  57), which that track calls on route B's output ("New for the owner").
 
-Runs at 7f291fa6 (only tests changed since run 73's suites; no converter source):
-- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy with warnings denied clean
-  (new1.log, suite.log). Every test binary at its default seeds (suite.log): 149 passed, 0 failed,
-  6 ignored, but three binaries crashed in ANGLE while their tests ran in parallel threads
-  (`draw`, `geometry_draw`, `variant_draw`: ANGLE's assert `mVertexArray11 == ...` in
-  StateManager11.cpp:1201, an access violation, or exit code 2173), twice (rerun.log). Run 73's
-  suite ran the same binaries in parallel without it, and nothing they build changed since. With
-  `--test-threads 1` all three pass, 22 tests (rerun2.log): 171 passed in all. Not looked into
-  further; the next run should see whether it stays (How to run).
-- `tessellator_matches_direct3d` at seed 8642, 8 seeds: 512 comparisons, 0 failed (seeded.log).
-- x86 machine (load 2 to 5): rustfmt of every file of this crate clean, clippy of this crate and
+Runs at 05a2cff4:
+- Laptop (i7-8750H, load 0.1 at the start, 2.0 at the end; 4 build jobs, under `choom`): the
+  whole suite with every corpus and glslang 8.13, `--include-ignored --skip mutated`
+  (laptop-suite.log): 24 test binaries and doc tests, 124 passed, 1 failed: the known failure
+  `damaged_records_decode_without_a_panic` (ignored by default, gap A16: naga's validator panics on
+  a damaged record whose checksum matches, here `ps_levels_past.dxil` case 17). Written files
+  (out/): WGSL corpus 185, games 527, games DXIL 441, own 145, own DXIL 136, rig 79, rig DXIL 72,
+  runner 1438, runner DXIL 1418; GLSL 126, 463, 300, 69, 57, 55, 53, 1275, 1229.
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy of this crate with warnings denied
+  clean; every test binary with `--test-threads 1` (gpu-suite.log): 171 passed, 0 failed, 6 ignored.
+  The same job ran `draw`, `geometry_draw` and `variant_draw` with parallel test threads: all three
+  crashed in ANGLE again (`StateManager11.cpp:1201` and `:2968` asserts, access violation, exit
+  code 2173), as in run 74; gap A29.
+- Chrome on the RTX 3080 (`web/check` on the laptop run's written files, one GPU job;
+  chrome.log): every WGSL file compiles (corpus 185, games 527, games DXIL 441, own 145, own DXIL
+  136, rig 79, rig DXIL 72, runner 1438, runner DXIL 1418, and the 3 of `rewrite`). WebGL 2
+  compiles 3,587 GLSL files and refuses 40 (corpus 1, games 6, games DXIL 1, own 5, own DXIL 3, rig
+  2, rig DXIL 2, runner 11, runner DXIL 9), each a shader whose record names the need its error is
+  about: multisampled reads 23 (`sampler2DMS`, `MULTISAMPLE_READ`), the primitive index 8
+  (`gl_PrimitiveID`, `PRIMITIVE_INDEX`), cull distances 9 (vertex programs, `CULL_DISTANCE`; the
+  writer's array size, Known gaps), all three declared absent by the WebGL 2 back end; the same 40
+  as run 70's.
+- x86 machine (load 3 to 9): rustfmt of every file of this crate clean, clippy of this crate and
   the interface with warnings denied clean, the literal check prints no line of this crate (it
-  fails on others' lines); this crate's baseline lines unchanged (4,820, 389 under src)
-  (x86-checks.log).
-- Not run: the laptop's corpus suite and Chrome (no converter change), the Direct3D 12 scenes
-  (nothing they draw changed).
+  fails on other tracks' lines: the OpenGL, NIR, kernel and socket crates); this crate's baseline
+  lines unchanged (4,820, 389 under src) (x86-checks.log, literals.txt).
+- Not run: WebAssembly (A8's figures are from G6a run 4), the fuzz test (A11's from the checks),
+  the Direct3D 12 scenes (A6's from run 74 and the fifth check).
+- By mistake this run started the rig's `queue-check` once while its first GPU job waited (sleeping
+  test jobs, stopped after a minute); that job then stopped ("another remote ran after this job's
+  build", gpu-suite-stopped.log) and was run again whole.
 
 ## The unfinished combine work (paused 2026-11-20)
 
@@ -86,6 +130,11 @@ target copy, a clear value and a blend constant, with no draw test using them ye
 45 literals it brought (the literal check failed at the tip on them) and changed nothing else of it.
 
 ## New for the owner
+
+- Run 75: nothing new in behaviour, no code changed. The first check's carried findings are all
+  settled at the tip (section above). New gap A29: three drawn test binaries crash in ANGLE when
+  their tests run in parallel threads and pass with `--test-threads 1`. The 15.4 entry point is
+  `rewrite` (below). No interface change.
 
 - Run 74: G6b's last item cannot be met by the converter as written. The tessellation scene's
   remaining texels on the RTX 3080 are the GPU's own order of a patch's triangles (Direct3D leaves it
@@ -208,9 +257,10 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (154 and 143 records, 144 and 135
-     converting, at G6b run 5; the vertex shaders writing storage are `VertexStorageWrite`) and vkd3d's shader runner
-     files (1503 DXBC, 1517 DXIL). Every record holds at run 70's tip (its section above).
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (155 and 144 records, 145 and 136
+     converting, counted in run 75; the vertex shaders writing storage are `VertexStorageWrite`)
+     and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1438 and 1418 converting). Every
+     record holds at run 75's tip (its section above).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
    since run 47 the corpus test writes it with the WebGL 2 back end's own writing
@@ -924,6 +974,19 @@ The gap list (every item of the pass bar not met):
     `StageIndirect` (an indirect draw through the stages, A7), `CullDistanceAdjacency` (the cull
     route drawn with adjacency), `VertexInputNotPulled` (a vertex program's compute form given an
     input that is not pulled).
+- A29. Three drawn test binaries, `draw`, `geometry_draw` and `variant_draw`, crash on the desktop
+  when their tests run in parallel threads (cargo's default): ANGLE asserts in its Direct3D 11
+  state manager (`StateManager11.cpp:1201`, `mVertexArray11 == ...`, and `:2968`,
+  `hasPixelExecutableForCachedOutputLayout`), then an access violation or exit code 2173 (run 74
+  twice, run 75 once; run 73 ran them in parallel without it). With `--test-threads 1` every test of
+  the three passes (run 75: the whole suite so, 171 passed). Cause: not found; each of these
+  binaries' tests makes its own WebGL 2 back end on ANGLE (`common::webgl`), so several ANGLE
+  contexts draw at once from several threads, which the mozangle build used here may not take
+  (inferred, not measured; whether the WebGL 2 back end or ANGLE is at fault is not known). Waits:
+  nobody (the tests, not the converter). Takes: the cause found (one context per thread kept
+  current, or ANGLE's own lock), or the tests' WebGL 2 use serialised in `common` by a lock that a
+  test making two contexts in turn can take twice; until then run the three with
+  `--test-threads 1` (How to run).
 - Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
   for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
   holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
@@ -981,8 +1044,9 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6b's check of run 74's state, after the owner's ruling on A6's two scenes (New for the owner):
-   nothing of the converter is left on them.
+1. G6a's check of run 75's state (the first check's findings, all settled at the tip), and G6b's
+   check of run 74's, after the owner's ruling on A6's two scenes (New for the owner): nothing of
+   the converter is left on them.
 2. After it, as the fronts need them: A28 (the Direct3D 11 front's `A8Unorm` storage form and,
    with the interface track, a view's width for YUY2), A4's `combine` drawn against Direct3D 11 (the Direct3D 11
    front), the NIR track's asks under "New for the owner" (the geometry and tessellation entry
@@ -2354,6 +2418,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 75's scripts in scratch `graphics-shaders/g6a-r75`, from its clone `tip` made as below:
+  `gpu.sh <log> "<command>"` (as run 73's), `tree-tar.sh > tree.tar` (submodules taken from the
+  agents' worktree, never from the owner's checkout), `suite-laptop.sh` (copied to
+  `~/wcontainers-graphics/suite-r75.sh`, writing `out-r75`), `x86-checks.sh` (sent with `x86-run
+  --ssh 'bash -s' < x86-checks.sh` after the bundle). The whole GPU suite is one job:
+  `./gpu.sh gpu-suite.log "cargo test -j 3 -p wcontainers-shaders --no-fail-fast -- --test-threads 1"`
+  (about 11 minutes; gap A29 for why one thread). Never run `tools/graphics-rig/queue-check`: it
+  submits test jobs and sends a tree, which stops a waiting job.
 - Run 74's scripts are run 73's `gpu.sh` and `gpu-noclippy.sh` in scratch `graphics-shaders/g6b7`,
   from its clone `tip` made as below. The WARP tests need nothing more: `common::webgpu_on_warp`
   asks wgpu for its software adapter on Direct3D 12, and the rig's `Driver::Warp` gives Direct3D

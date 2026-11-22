@@ -1,4 +1,4 @@
-# Shaders track (G6): the record of runs 1 to 71
+# Shaders track (G6): the record of runs 1 to 74
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
@@ -4228,3 +4228,55 @@ The NIR track's ask (brief, 2026-11-19 night): the public entry point for the 15
 `wcontainers_shaders::rewrite` (since run 57; "New for the owner"), which that track calls
 (crates/wcontainers-nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point, its
 G9 run 12) is new work, after this milestone's check.
+
+## G6b run 7 (run 74): the tessellation scene's order, measured
+
+Logs, probes and the mutants in scratch
+`graphics-shaders/g6b7`. GPU figures from the RTX 3080 and WARP through the queue, one job at a
+time.
+
+- The RTX 3080's order (probe1.log, a probe test not committed): streamed by Direct3D 11 for one
+  patch of fixed factors, the GPU's primitives are ours but in its own order and rotation, and not
+  a simple rule of ours (tri integer 4: the inner ring first, from inside out and not in the
+  reference's order, then the outer ring backwards; points, isolines and quads alike). Direct3D
+  leaves that order to the device; matching it would shape the tessellator around one GPU, so it
+  is not done.
+- WARP's order is ours (probe2.log): every point and index of 32 topologies (every domain,
+  partitioning and output) equal to WARP's streamed output word for word and in order.
+  `tessellator_matches_direct3d` now holds the tessellator to both: each patch's primitives equal
+  to the GPU's as a set, and equal to WARP's in order (default seed 1, 4 seeds: 256 comparisons,
+  0 failed, new1.log).
+- New test `rig_tessellation_scene_draws_as_direct3d_11_on_warp_does`: the rig's tessellation
+  scene as it is (lines but the last patch), through the stage helper on wgpu's Direct3D 12 path
+  on WARP (`common::webgpu_on_warp`), against real Direct3D 11 on WARP running the scene itself:
+  every texel of every cell equal, both builds (new1.log). So with the same rasteriser and the
+  same order, the scene is equal; on the RTX 3080 the difference is the device's order.
+- Mutated copy (mutant-quad-order.patch: each quad of `stitch_regular` emits its two triangles in
+  the other order): the scene on WARP 7 texels apart (cells 1, 3, 4) and the order test 64 of 256
+  comparisons failed, all of them WARP's (mutant4.log). A first mutant reversing each patch's
+  triangles made WARP fault (access violation), so it proves nothing and was dropped.
+- For comparison (probe2.log): WARP's own Direct3D 11 scene against the RTX 3080's differs in 768
+  texels (65 more than 2 apart), as the rig records; ours on the RTX 3080 against the RTX 3080 in
+  191, and ours on the GPU against WARP in 617 (10 more than 2 apart).
+- The Direct3D 12 scenes: the Direct3D 12 front draws through wgpu's Vulkan path (plan 15.1, "A
+  test process must never draw through the API it stands in for"), whose line rule differs from
+  Direct3D's on the RTX 3080, a listed loss there; both remaining scenes' differences are in cells
+  drawn as lines, so both meet that loss besides the device's order. Neither is the converter's
+  to change.
+
+Runs at 7f291fa6 (only tests changed since run 73's suites; no converter source):
+- Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy with warnings denied clean
+  (new1.log, suite.log). Every test binary at its default seeds (suite.log): 149 passed, 0 failed,
+  6 ignored, but three binaries crashed in ANGLE while their tests ran in parallel threads
+  (`draw`, `geometry_draw`, `variant_draw`: ANGLE's assert `mVertexArray11 == ...` in
+  StateManager11.cpp:1201, an access violation, or exit code 2173), twice (rerun.log). Run 73's
+  suite ran the same binaries in parallel without it, and nothing they build changed since. With
+  `--test-threads 1` all three pass, 22 tests (rerun2.log): 171 passed in all. Not looked into
+  further; the next run should see whether it stays (How to run).
+- `tessellator_matches_direct3d` at seed 8642, 8 seeds: 512 comparisons, 0 failed (seeded.log).
+- x86 machine (load 2 to 5): rustfmt of every file of this crate clean, clippy of this crate and
+  the interface with warnings denied clean, the literal check prints no line of this crate (it
+  fails on others' lines); this crate's baseline lines unchanged (4,820, 389 under src)
+  (x86-checks.log).
+- Not run: the laptop's corpus suite and Chrome (no converter change), the Direct3D 12 scenes
+  (nothing they draw changed).
