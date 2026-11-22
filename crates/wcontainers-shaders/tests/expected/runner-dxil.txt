@@ -883,7 +883,7 @@ hlsl+pow-2-ps.dxil	ok ; glsl compiles
 hlsl+precise-modifier-1-ps.dxil	ok ; glsl compiles
 hlsl+precise-modifier-3-ps.dxil	ok ; glsl compiles
 hlsl+primitive-id-1-vs.dxil	ok ; glsl compiles
-hlsl+primitive-id-2-gs.dxil	unsupported PrimitiveId
+hlsl+primitive-id-2-gs.dxil	ok ; glsl absent compute
 hlsl+primitive-id-3-ps.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 hlsl+rasteriser-ordered-views-1-vs.dxil	ok ; glsl compiles
 hlsl+rasteriser-ordered-views-2-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)

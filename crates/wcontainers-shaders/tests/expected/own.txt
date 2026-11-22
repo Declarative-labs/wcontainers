@@ -30,6 +30,8 @@ gs_instances.dxbc	ok ; glsl absent compute
 gs_layers.dxbc	ok ; glsl absent compute
 gs_line_adjacent.dxbc	ok ; glsl absent compute
 gs_lines.dxbc	ok ; glsl absent compute
+gs_numbered.dxbc	ok ; glsl absent compute
+gs_numbered_layer.dxbc	ok ; glsl absent compute
 gs_patch.dxbc	ok ; glsl absent compute
 gs_points.dxbc	ok ; glsl absent compute
 gs_quads.dxbc	ok ; glsl absent compute
@@ -118,6 +120,7 @@ ps_msloop.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved
 ps_msswap.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 ps_narrow.dxbc	ok ; glsl compiles
 ps_negate.dxbc	ok ; glsl compiles
+ps_numbered.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_offset.dxbc	ok ; glsl compiles
 ps_pack.dxbc	ok ; glsl compiles
 ps_primid.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier

@@ -610,6 +610,76 @@ fn primitive_numbers_take_the_stage_helpers_route() {
     }
 }
 
+/// A geometry shader writing its primitives' numbers (`gs_numbered`, and `gs_numbered_layer` writing a
+/// layer too) by both routes: its reflection lists the output, its records hold it after the layer's
+/// slot, and under `PRIMITIVE_ID_FROM_STAGE` (and that with `CLIP_DISTANCE`'s linking) the pass-through
+/// passes it as a flat value where `ps_numbered` made so reads it. Drawn in `tests/geometry_draw.rs`.
+#[test]
+fn geometry_shaders_pass_their_primitive_numbers_on() {
+    for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+        let read = |code| match dxil {
+            false => Source::Dxbc(code),
+            true => Source::Dxil(code),
+        };
+        let gs_code = own(&format!("gs_numbered.{route}"));
+        let ps_code = own(&format!("ps_numbered.{route}"));
+        let plain = convert(read(&gs_code), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert!(stage::writes_primitive_id(&plain.reflection), "{route}");
+        assert!(!wgsl(&plain.modules[1]).contains("primitive_id"), "{route}");
+        let location = stage::locations(&plain.reflection.outputs)
+            .last()
+            .map_or(0, |l| l + 1);
+        let key = VariantKey {
+            flags: VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+            linked: LinkedValues {
+                location,
+                clip_distances: 0,
+            },
+            ..Default::default()
+        };
+        let at = stage::primitive_id_location(&key);
+        let flat = format!("@location({at}) @interpolate(flat");
+        // The record: the position, each output location, then the number.
+        let slot = 1 + stage::locations(&plain.reflection.outputs).len();
+        let read_at = format!("@location({slot}) primitive_id: vec4<u32>");
+        let gs = convert(read(&gs_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let passthrough = wgsl(&gs.modules[1]);
+        assert!(passthrough.contains(&flat), "{route}: {passthrough}");
+        assert!(passthrough.contains(&read_at), "{route}: {passthrough}");
+        assert_ne!(gs.modules[1].key, plain.modules[1].key, "{route}");
+        let ps = convert(read(&ps_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let fragment = wgsl(&ps.modules[0]);
+        assert!(fragment.contains(&flat), "{route}: {fragment}");
+        assert!(!fragment.contains("primitive_index"), "{route}: {fragment}");
+        // Passed on after the unclamped depth, as the last vertex stage passes them.
+        let clamped = VariantKey {
+            flags: VariantFlags::PRIMITIVE_ID_FROM_STAGE | VariantFlags::DEPTH_CLAMP,
+            ..key.clone()
+        };
+        let gs = convert(read(&gs_code), &clamped, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let at = stage::primitive_id_location(&clamped);
+        assert_eq!(at, location + 1, "{route}");
+        let passthrough = wgsl(&gs.modules[1]);
+        assert!(
+            passthrough.contains(&format!("@location({at}) @interpolate(flat")),
+            "{route}: {passthrough}"
+        );
+        // After a layer: the position, a location, the layer and viewport slot, then the number.
+        let layered = own(&format!("gs_numbered_layer.{route}"));
+        let gs = convert(read(&layered), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert!(stage::selects(&gs.reflection), "{route}");
+        let selection = 1 + stage::locations(&gs.reflection.outputs).len();
+        let passthrough = wgsl(&gs.modules[1]);
+        assert!(
+            passthrough.contains(&format!("@location({selection}) selection: vec4<u32>")),
+            "{route}: {passthrough}"
+        );
+        let read_at = format!("@location({}) primitive_id: vec4<u32>", selection + 1);
+        assert!(passthrough.contains(&read_at), "{route}: {passthrough}");
+    }
+}
+
 #[test]
 fn the_primitive_program_validates() {
     let program = stage::primitive_program().unwrap();

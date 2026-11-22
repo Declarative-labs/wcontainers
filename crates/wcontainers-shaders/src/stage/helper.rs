@@ -1973,10 +1973,7 @@ fn geometry_parts<B: Backend>(
         )));
     };
     let selects = super::selects(&geometry.reflection);
-    let distances = super::clip_distances(&geometry.reflection);
-    let slots = super::locations(&geometry.reflection.outputs).len()
-        + usize::from(selects)
-        + super::distance_slots(distances) as usize;
+    let slots = super::drawn_slots(&geometry.reflection) as usize;
     let culled = super::cull_distances(&geometry.reflection);
     let cull = match culled {
         0 => None,

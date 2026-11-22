@@ -186,13 +186,18 @@ fn finished(
             .flags
             .contains(VariantFlags::LAYER_FROM_STAGE)
             .then(|| stage::named_layer_location(variant));
-        let mut module = stage::passthrough(&reflection, named_layer)?;
+        let numbered = variant
+            .flags
+            .contains(VariantFlags::PRIMITIVE_ID_FROM_STAGE)
+            .then(|| stage::primitive_id_location(variant));
+        let mut module = stage::passthrough(&reflection, named_layer, numbered)?;
         let last_vertex_stage = VariantFlags::CLIP_DISTANCE | VariantFlags::DEPTH_CLAMP;
         if variant.flags.intersects(last_vertex_stage) {
             // The pass-through is the last vertex stage: it passes the distances and the unclamped
             // depth to the pixel program.
+            let passed_on = VariantFlags::LAYER_FROM_STAGE | VariantFlags::PRIMITIVE_ID_FROM_STAGE;
             let key = VariantKey {
-                flags: variant.flags & (last_vertex_stage | VariantFlags::LAYER_FROM_STAGE),
+                flags: variant.flags & (last_vertex_stage | passed_on),
                 linked: variant.linked,
                 ..VariantKey::default()
             };

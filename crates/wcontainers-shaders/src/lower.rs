@@ -1220,7 +1220,11 @@ impl<'a> Lowering<'a> {
                 false,
                 builtin::CLIP_DISTANCE,
             ) => true,
-            (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
+            (
+                SourceStage::Geometry,
+                false,
+                builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX | builtin::PRIMITIVE_ID,
+            ) => true,
             // Drawn through the stage helper ([`crate::stage::Stages::culled`], and its geometry
             // stage's cull program).
             (SourceStage::Vertex | SourceStage::Geometry, false, builtin::CULL_DISTANCE) => true,

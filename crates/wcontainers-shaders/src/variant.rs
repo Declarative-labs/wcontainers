@@ -835,14 +835,26 @@ fn linked_out(
             crate::refusal::LINKED_CLIP_DISTANCE_COUNT,
         ));
     }
-    // The named layer a pass-through made with `LAYER_FROM_STAGE` writes follows these values.
-    let named_layer = variant
-        .flags
-        .contains(VariantFlags::LAYER_FROM_STAGE)
-        .then(|| crate::stage::named_layer_location(variant));
+    // The named layer and the primitive's number a pass-through made with `LAYER_FROM_STAGE` and
+    // `PRIMITIVE_ID_FROM_STAGE` writes follow these values.
+    let passed_on = [
+        (
+            VariantFlags::LAYER_FROM_STAGE,
+            crate::stage::named_layer_location(variant),
+        ),
+        (
+            VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+            crate::stage::primitive_id_location(variant),
+        ),
+    ];
+    let passed_on = |location| {
+        passed_on
+            .iter()
+            .any(|&(flag, at)| variant.flags.contains(flag) && at == location)
+    };
     let taken = w.outputs.iter().any(|o| {
         matches!(o.binding, Binding::Location { location, .. }
-            if location >= linked.location && Some(location) != named_layer)
+            if location >= linked.location && !passed_on(location))
     });
     if taken {
         return Err(ConvertError::Unsupported(

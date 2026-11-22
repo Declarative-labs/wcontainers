@@ -300,11 +300,7 @@ impl<B: Backend> GeometryReplay<B> {
         }
         let in_slots = 1 + super::locations(&geometry.reflection.inputs).len() as u32;
         let selects = super::selects(&geometry.reflection);
-        let distances = super::clip_distances(&geometry.reflection);
-        let out_slots = 1
-            + super::locations(&geometry.reflection.outputs).len() as u32
-            + u32::from(selects)
-            + super::distance_slots(distances);
+        let out_slots = 1 + super::drawn_slots(&geometry.reflection);
         let out_words = out_slots * VEC4 + 1;
         if (in_slots * VEC4).max(out_words) > backend.caps().limits.capture_components {
             return Err(StageError::Unsupported(RECORD_COMPONENTS));

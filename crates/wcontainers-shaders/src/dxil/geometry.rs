@@ -176,7 +176,7 @@ fn builtin_of(b: u32, side: Side) -> Result<u64, ConvertError> {
     let unsupported = |name| Err(ConvertError::Unsupported(name));
     match (BuiltIn::from_u32(b), side) {
         (Some(BuiltIn::Position), _) => Ok(builtin::POSITION),
-        (Some(BuiltIn::PrimitiveId), Side::Input) => Ok(builtin::PRIMITIVE_ID),
+        (Some(BuiltIn::PrimitiveId), _) => Ok(builtin::PRIMITIVE_ID),
         (Some(BuiltIn::InvocationId), Side::Input) => Ok(builtin::GS_INSTANCE_ID),
         (Some(BuiltIn::Layer), Side::Output) => Ok(builtin::LAYER_INDEX),
         (Some(BuiltIn::ViewportIndex), Side::Output) => Ok(builtin::VIEWPORT_INDEX),
@@ -184,7 +184,6 @@ fn builtin_of(b: u32, side: Side) -> Result<u64, ConvertError> {
         (Some(BuiltIn::ClipDistance), Side::Input) => unsupported(crate::refusal::CLIP_DISTANCE),
         (Some(BuiltIn::CullDistance), Side::Output) => Ok(builtin::CULL_DISTANCE),
         (Some(BuiltIn::CullDistance), Side::Input) => unsupported(crate::refusal::CULL_DISTANCE),
-        (Some(BuiltIn::PrimitiveId), Side::Output) => unsupported(crate::refusal::PRIMITIVE_ID),
         (_, Side::Input) => unsupported(crate::refusal::GEOMETRY_INPUT),
         (_, Side::Output) => unsupported(crate::refusal::GEOMETRY_OUTPUT),
     }

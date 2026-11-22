@@ -21,7 +21,7 @@ use wcontainers_gpu::{
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_graphics_test::d3d12;
 use wcontainers_shaders::stage::{
-    FinalDraw, GeometryReplay, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
+    self, FinalDraw, GeometryReplay, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
     ReplayDraw, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw, StageError, StageIndex,
     Stages, StreamOutput, StreamOutputEntry, StreamTargets,
 };
@@ -48,7 +48,7 @@ struct Case {
     route: Route,
 }
 
-const CASES: [Case; 20] = [
+const CASES: [Case; 22] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_quads",
@@ -267,6 +267,28 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(2),
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_numbered",
+        topology: InputTopology::TriangleList,
+        count: 15,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_numbered",
+        topology: InputTopology::TriangleStrip,
+        count: 10,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(3),
         route: Route::Dxbc,
     },
 ];
@@ -623,7 +645,7 @@ type Clamped = Option<[f32; 2]>;
 fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8], clamped: Clamped) -> Vec<u8> {
     let (vs, ps) = (
         bytecode(&format!("{}.dxbc", case.vs)),
-        bytecode("ps_geometry.dxbc"),
+        bytecode(&format!("{}.dxbc", ps_of(case))),
     );
     let elements = [
         d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
@@ -748,6 +770,14 @@ fn declaration(gs: &str) -> StreamOutput {
     }
 }
 
+/// The pixel shader of a case: `ps_numbered` behind a geometry shader writing its primitives' numbers.
+fn ps_of(case: &Case) -> &'static str {
+    match case.gs {
+        "gs_numbered" => "ps_numbered",
+        _ => "ps_geometry",
+    }
+}
+
 /// The case's geometry shader's container, if it has one.
 fn gs_bytecode(case: &Case) -> Vec<u8> {
     match (case.gs, case.route) {
@@ -780,7 +810,7 @@ fn linked(
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
     let ext = case.route.extension();
-    let ps_code = bytecode(&format!("ps_geometry.{ext}"));
+    let ps_code = bytecode(&format!("{}.{ext}", ps_of(case)));
     let ps = convert(case.route.source(&ps_code), &VariantKey::default(), None).unwrap();
     let gs_key = VariantKey {
         output_interpolation: ps
@@ -821,7 +851,15 @@ fn linked(
         0 => VariantFlags::empty(),
         _ => VariantFlags::CLIP_DISTANCE,
     };
-    let (vs, gs, ps) = if (clip | clamp).is_empty() {
+    // A geometry stage's primitive numbers passed to the pixel program, linked the same way.
+    let numbered = match gs
+        .as_ref()
+        .is_some_and(|gs| stage::writes_primitive_id(&gs.reflection))
+    {
+        true => VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+        false => VariantFlags::empty(),
+    };
+    let (vs, gs, ps) = if (clip | clamp | numbered).is_empty() {
         (vs, gs, ps)
     } else {
         let location = last_stage
@@ -838,7 +876,7 @@ fn linked(
             clip_distances: clips as u8,
         };
         let key = |base: &VariantKey, samples| VariantKey {
-            flags: base.flags | clip | clamp,
+            flags: base.flags | clip | clamp | numbered,
             linked,
             samples,
             ..base.clone()

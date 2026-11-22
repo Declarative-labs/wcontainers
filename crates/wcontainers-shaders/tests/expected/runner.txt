@@ -909,7 +909,7 @@ hlsl+precise-modifier-1-ps.dxbc	ok ; glsl compiles
 hlsl+precise-modifier-2-ps.dxbc	ok ; glsl compiles
 hlsl+precise-modifier-3-ps.dxbc	ok ; glsl compiles
 hlsl+primitive-id-1-vs.dxbc	ok ; glsl compiles
-hlsl+primitive-id-2-gs.dxbc	unsupported PrimitiveId
+hlsl+primitive-id-2-gs.dxbc	ok ; glsl absent compute
 hlsl+primitive-id-3-ps.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 hlsl+ps1-projection-1-vs.dxbc	ok ; glsl compiles
 hlsl+ps1-sampler-1-vs.dxbc	ok ; glsl compiles

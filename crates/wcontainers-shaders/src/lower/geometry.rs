@@ -441,15 +441,23 @@ impl GeometryPass<'_> {
         Ok(found)
     }
 
+    /// The primitive number output's variable, if declared: each vertex record then holds it in the
+    /// first word of a slot after the clip distances'.
+    fn numbered(&self) -> Option<Handle<naga::GlobalVariable>> {
+        self.built_ins(Side::Output)
+            .find(|io| io.stream == 0 && io.builtin == Some(builtin::PRIMITIVE_ID))
+            .map(|io| io.var)
+    }
+
     /// The slots after the output locations: the layer and viewport slot, then the clip distances',
-    /// then the cull distances'.
+    /// then the primitive number's, then the cull distances'.
     fn extra_slots(&self) -> Result<usize> {
         let mut slots = usize::from(self.selection()?.is_some());
         for which in [builtin::CLIP_DISTANCE, builtin::CULL_DISTANCE] {
             let distances: u32 = self.distance_outputs(which)?.iter().map(|c| c.1).sum();
             slots += stage::distance_slots(distances) as usize;
         }
-        Ok(slots)
+        Ok(slots + usize::from(self.numbered().is_some()))
     }
 
     /// Vertices per output primitive.
@@ -623,6 +631,7 @@ impl GeometryPass<'_> {
         let selection = self.selection()?;
         let clips = self.distance_outputs(builtin::CLIP_DISTANCE)?;
         let culls = self.distance_outputs(builtin::CULL_DISTANCE)?;
+        let numbered_output = self.numbered();
         // The replay form's slots hold what the pass-through draws, which has no cull distances.
         if replay && !culls.is_empty() {
             return Err(unsupported(crate::refusal::GEOMETRY_CULL_DISTANCE_REPLAY));
@@ -721,7 +730,29 @@ impl GeometryPass<'_> {
                 slots.push((b.compose(uvec4, comps), ScalarKind::Uint));
             }
             let vec4 = build::vec4(&mut *self.module, Scalar::F32);
-            for outputs in [&clips, &culls] {
+            for (k, outputs) in [&clips, &culls].into_iter().enumerate() {
+                if let (1, Some(var)) = (k, numbered_output) {
+                    // The primitive's number, the drawn stream's alone, before the cull distances.
+                    let v = match stream {
+                        0 => {
+                            let p = b.global(var);
+                            let v = b.load(p);
+                            match self.module.global_variables[var].ty {
+                                ty if self.module.types[ty].inner.scalar() == Some(Scalar::U32) => {
+                                    v
+                                }
+                                _ => b.bitcast(v, ScalarKind::Uint),
+                            }
+                        }
+                        _ => b.u32(0),
+                    };
+                    let uvec4 = build::vec4(&mut *self.module, Scalar::U32);
+                    let zero = b.u32(0);
+                    slots.push((
+                        b.compose(uvec4, alloc::vec![v, zero, zero, zero]),
+                        ScalarKind::Uint,
+                    ));
+                }
                 let mut distances = Vec::new();
                 for &(var, count) in outputs {
                     if stream != 0 {
@@ -983,6 +1014,10 @@ impl GeometryPass<'_> {
                         _ => SystemValue::ViewportArrayIndex,
                     };
                     self.reflect(i, Side::Output, None, 0, member, 0, Some(system))
+                }
+                (None, Some(builtin::PRIMITIVE_ID)) => {
+                    let system = Some(SystemValue::PrimitiveId);
+                    self.reflect(i, Side::Output, None, 0, member, 0, system)
                 }
                 _ => return Err(unsupported(crate::refusal::GEOMETRY_OUTPUT)),
             }

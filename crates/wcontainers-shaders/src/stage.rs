@@ -1727,6 +1727,25 @@ pub fn selects(reflection: &Reflection) -> bool {
     })
 }
 
+/// Whether a geometry stage writes its primitives' numbers (`SV_PrimitiveID`), which its records then
+/// hold after the clip distances: its pass-through made with `VariantFlags::PRIMITIVE_ID_FROM_STAGE`
+/// passes them to a pixel program made so.
+pub fn writes_primitive_id(reflection: &Reflection) -> bool {
+    reflection
+        .outputs
+        .iter()
+        .any(|v| v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId))
+}
+
+/// The slots of a geometry stage's records that its pass-through draws, after the position: its output
+/// locations, the layer and viewport slot, the clip distances' and the primitive number's.
+pub(crate) fn drawn_slots(reflection: &Reflection) -> u32 {
+    locations(&reflection.outputs).len() as u32
+        + u32::from(selects(reflection))
+        + distance_slots(clip_distances(reflection))
+        + u32::from(writes_primitive_id(reflection))
+}
+
 /// The clip distances a stage's outputs hold, counted from their components.
 pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
     distances(reflection, wcontainers_gpu::SystemValue::ClipDistance)
@@ -1789,8 +1808,13 @@ pub(crate) fn named_layer_location(variant: &VariantKey) -> u32 {
 /// vertices of the run its helper constants name ([`PASSTHROUGH_HELPERS`], at the vertex stage's
 /// helper binding), placing the others outside every clip volume. With `named_layer`, the location
 /// it passes the named layer at, a vertex naming a layer at or past [`PASSTHROUGH_LAYER_COUNT`] is
-/// kept in layer 0's run.
-pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> Result<Module> {
+/// kept in layer 0's run. With `numbered`, the location a stage writing its primitives' numbers
+/// ([`writes_primitive_id`]) passes them at.
+pub(crate) fn passthrough(
+    reflection: &Reflection,
+    named_layer: Option<u32>,
+    numbered: Option<u32>,
+) -> Result<Module> {
     let passed: Vec<(ScalarKind, Option<VectorSize>, Binding)> = locations(&reflection.outputs)
         .into_iter()
         .map(|loc| {
@@ -1823,7 +1847,9 @@ pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> 
         selects,
         clip_distances(reflection),
         named_layer.filter(|_| selects),
-        None,
+        numbered
+            .filter(|_| writes_primitive_id(reflection))
+            .map(ExtraSlot::PrimitiveId),
     )
 }
 
@@ -2011,7 +2037,7 @@ fn passthrough_of(
         span += distance_slots(distances) * RECORD_SLOT_BYTES;
     }
     if let Some(extra) = extra {
-        let slot = 1 + passed.len() as u32 + distance_slots(distances);
+        let slot = 1 + passed.len() as u32 + u32::from(selects) + distance_slots(distances);
         let name = match extra {
             ExtraSlot::LineCoverage(_) => COVERAGE_ARGUMENT,
             ExtraSlot::PrimitiveId(_) => PRIMITIVE_ARGUMENT,

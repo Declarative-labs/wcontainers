@@ -274,6 +274,57 @@ float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
 }
 
+struct NumberedOut {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+    nointerpolation uint4 ids : TEXCOORD0;
+    uint primitive : SV_PrimitiveID;
+};
+
+// Each triangle drawn twice, each vertex of each copy naming its own primitive number (Direct3D's
+// pixel shader reads the leading vertex's).
+[maxvertexcount(6)]
+void gs_numbered(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                 inout TriangleStream<NumberedOut> stream) {
+    for (uint c = 0; c < 2; c++) {
+        for (uint i = 0; i < 3; i++) {
+            NumberedOut o;
+            o.position = t[i].position + float4(c * 0.25, c * -0.2, 0.0, 0.0);
+            o.colour = t[i].colour;
+            o.ids = uint4(t[i].ids, primitive, c);
+            o.primitive = primitive * 11 + c * 5 + i;
+            stream.Append(o);
+        }
+        stream.RestartStrip();
+    }
+}
+
+struct NumberedLayerOut {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+    uint layer : SV_RenderTargetArrayIndex;
+    uint primitive : SV_PrimitiveID;
+};
+
+// A primitive number after a layer: its record slot follows the layer's.
+[maxvertexcount(3)]
+void gs_numbered_layer(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                       inout TriangleStream<NumberedLayerOut> stream) {
+    for (uint i = 0; i < 3; i++) {
+        NumberedLayerOut o;
+        o.position = t[i].position;
+        o.colour = t[i].colour;
+        o.layer = primitive % 2;
+        o.primitive = primitive + 3;
+        stream.Append(o);
+    }
+}
+
+float4 ps_numbered(NumberedOut i) : SV_Target0 {
+    return float4(i.colour.rgb, 1.0) * 0.5
+        + float4(i.primitive % 8, i.primitive / 8 % 8, i.ids.w * 4 + i.ids.z % 4, 0.0) / 16.0;
+}
+
 struct StreamPlaced {
     float4 position : SV_Position;
     float4 colour : COLOR0;
