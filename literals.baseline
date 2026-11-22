@@ -6104,7 +6104,6 @@ code	crates/wcontainers-direct3d-11/src/shader.rs	str	SignatureElement::generate
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders converted into several program stages"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders that read helper constants the front does not write"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"SampleCount"
-code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"StorageImageAtomics"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_any	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_stage	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::pipeline_root	b"RTS0"
