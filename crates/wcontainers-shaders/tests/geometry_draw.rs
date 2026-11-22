@@ -363,6 +363,15 @@ const CULLED: [Case; 8] = [
     },
 ];
 
+/// The cull cases as fxc and as dxc build `vs_cull`.
+fn culled_by_both_builds() -> Vec<Case> {
+    let dxil = CULLED.map(|c| Case {
+        route: Route::Dxil,
+        ..c
+    });
+    CULLED.into_iter().chain(dxil).collect()
+}
+
 /// The primitives of a `vs_cull` draw that its first two cull distances drop (all vertices left of
 /// x = -0.3, or all above y = 0.2), counted on the CPU so that a case dropping none is seen.
 fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
@@ -2792,7 +2801,8 @@ fn geometry_shaders_draw_as_direct3d_does() {
         .map(|s| s.parse().unwrap())
         .unwrap_or(4);
     // Primitives each cull case's planes drop over the seeds: none would leave culling unshown.
-    let mut dropped = [0u32; CULLED.len()];
+    let culled = culled_by_both_builds();
+    let mut dropped = vec![0u32; culled.len()];
     let mut failures = Vec::new();
     let mut compared = 0;
     // Each case also as dxc builds its vertex, geometry and pixel programs.
@@ -2802,7 +2812,7 @@ fn geometry_shaders_draw_as_direct3d_does() {
     });
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for (i, case) in CASES.iter().chain(&CULLED).chain(&dxil).enumerate() {
+        for (i, case) in CASES.iter().chain(&culled).chain(&dxil).enumerate() {
             let shader = if case.gs.is_empty() { case.vs } else { case.gs };
             let name = format!(
                 "seed {seed} {shader} {:?} {:?} {} from {} x{}{}",
@@ -2876,11 +2886,11 @@ fn geometry_shaders_draw_as_direct3d_does() {
             }
         }
     }
-    for (case, total) in CULLED.iter().zip(dropped) {
+    for (case, total) in culled.iter().zip(dropped) {
         if total == 0 {
             failures.push(format!(
-                "{} {:?}: no primitive dropped",
-                case.vs, case.topology
+                "{} {:?} {:?}: no primitive dropped",
+                case.vs, case.route, case.topology
             ));
         }
     }
@@ -3009,7 +3019,8 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
         ..c
     });
     // Primitives each cull case's planes drop over the seeds: none would leave culling unshown.
-    let mut dropped = [0u32; CULLED.len()];
+    let culled = culled_by_both_builds();
+    let mut dropped = vec![0u32; culled.len()];
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
         // Every geometry case, the vertex shader alone drawn from its capture, and the vertex
@@ -3017,7 +3028,7 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
         let vertex_alone = STREAMED.iter().filter(|c| c.gs.is_empty());
         let cases: Vec<&Case> = CASES.iter().chain(vertex_alone).chain(&dxil).collect();
         let culled_from = cases.len();
-        for (i, case) in cases.into_iter().chain(&CULLED).enumerate() {
+        for (i, case) in cases.into_iter().chain(&culled).enumerate() {
             let name = format!(
                 "seed {seed} {} {:?} {:?} {} from {} x{}{}",
                 match (case.gs, case.vs) {
@@ -3106,11 +3117,11 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
             }
         }
     }
-    for (case, total) in CULLED.iter().zip(dropped) {
+    for (case, total) in culled.iter().zip(dropped) {
         if total == 0 {
             failures.push(format!(
-                "{} {:?}: no primitive dropped",
-                case.vs, case.topology
+                "{} {:?} {:?}: no primitive dropped",
+                case.vs, case.route, case.topology
             ));
         }
     }
