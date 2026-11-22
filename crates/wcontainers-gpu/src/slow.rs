@@ -25,6 +25,14 @@ const QUERY_SET_SPLIT_PASS: &str = "query set out of indices split a pass";
 /// The reason [`SlowPath::PackedTargetQuantised`] shows.
 const PACKED_TARGET_QUANTISED: &str = "packed target drawn wider and rounded to its bits by a draw";
 
+/// The reason [`SlowPath::PackedTargetReadByBlend`] shows.
+const PACKED_TARGET_READ_BY_BLEND: &str =
+    "packed target read by a blend split a pass to round it first";
+
+/// The reason [`SlowPath::StorageReadWriteThroughBuffer`] shows.
+const STORAGE_READ_WRITE_THROUGH_BUFFER: &str =
+    "storage texture loaded and stored by one program through a buffer of its texels";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -321,11 +329,18 @@ pub enum SlowPath {
     /// drawn, blended and resolved at the wider precision, and each channel rounded to its own bits
     /// by a draw when the pass ends.
     PackedTargetQuantised,
+    /// A blend reading a packed target ([`SlowPath::PackedTargetQuantised`]) that earlier draws
+    /// in the pass wrote: the pass ended there so the blend reads values the format holds.
+    PackedTargetReadByBlend,
+    /// A storage texture a program loads from and stores into, of a format the back end does not
+    /// load and store in one program (WebGPU: all but `r32float`, `r32uint` and `r32sint`), read
+    /// and written through a buffer of its texels copied around each use.
+    StorageReadWriteThroughBuffer,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 113] = [
+    pub const ALL: [SlowPath; 115] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -439,6 +454,8 @@ impl SlowPath {
         SlowPath::SharedThroughHost,
         SlowPath::QuerySetSplitPass,
         SlowPath::PackedTargetQuantised,
+        SlowPath::PackedTargetReadByBlend,
+        SlowPath::StorageReadWriteThroughBuffer,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -577,6 +594,8 @@ impl SlowPath {
             SlowPath::SharedThroughHost => SHARED_THROUGH_HOST,
             SlowPath::QuerySetSplitPass => QUERY_SET_SPLIT_PASS,
             SlowPath::PackedTargetQuantised => PACKED_TARGET_QUANTISED,
+            SlowPath::PackedTargetReadByBlend => PACKED_TARGET_READ_BY_BLEND,
+            SlowPath::StorageReadWriteThroughBuffer => STORAGE_READ_WRITE_THROUGH_BUFFER,
         }
     }
 }
@@ -663,7 +682,8 @@ mod tests {
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
             StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched \
-            SharedThroughHost QuerySetSplitPass PackedTargetQuantised";
+            SharedThroughHost QuerySetSplitPass PackedTargetQuantised PackedTargetReadByBlend \
+            StorageReadWriteThroughBuffer";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {
