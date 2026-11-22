@@ -2,6 +2,31 @@
 
 Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/Documents/GitHub/wcontainers.
 
+## 2026-11-21: waiting is the Readiness trait
+- `wait_for_events` and `PollEvents` are gone. `HostUdpSockets` implements `wcontainers_readiness::Readiness<HostUdpSocket>`
+  (`wait_until_ready`, on the six facts of `ReadyFor`). A wait now gives every fact the socket has, not only those asked
+  for. A UDP socket never reports URGENT_DATA or PEER_FINISHED_SENDING; a wait for only those waits for an error.
+- Shared `readiness` (all four socket implementations): `Watcher::watch(fd, possible: ReadyFor)` takes the facts a
+  kind of socket can have (`DATAGRAM_FACTS` for UDP, ICMP and raw; `ReadyFor::all()` for TCP);
+  `Watched::wait_until_ready(ReadyFor)` (was `wait_for_events`); `Watched::hold(ReadyFor)`; `Watched::events_now`,
+  `NO_EVENTS`, `poll_flags` and `poll_events` are gone; the thread name is `WATCHER_THREAD`.
+- The edge-triggered registration stays: UDP no longer needs it (a wait asks only for facts the poller registers),
+  but TCP's PEER_FINISHED_SENDING has no registration of its own and is registered as readable.
+- Suite: it runs the readiness suite (`crates/readiness/conformance`) as module `readiness_contract`, on
+  `waiting_for_a_datagram` and `waiting_for_data_until_an_icmp_error`. Its own copies are deleted
+  (a_wait_for_data_finishes_when_a_datagram_arrives, a_wait_for_writing_finishes_at_once, a_dropped_wait_is_withdrawn,
+  an_icmp_error_ends_a_wait_for_data, a_wait_for_no_event_ends_on_an_error), with a_wait_for_one_event_gives_that_event_alone
+  (normal and band bits) and `only_asked_for`. many_waits_each_wake_once is now waits_on_many_sockets_each_wake_once
+  (one wait on each of `MANY_WAITS` sockets). `WAITED_SOCKETS` and `WAITS_ON_ONE` are gone: raw and ICMP, take
+  `MANY_WAITS` from the readiness suite. New check a_send_after_a_disconnect_carries_the_former_peers_address.
+- Waiting checks now: the readiness suite's 6 plus 10 of this suite's own, and the implementation's 5 readiness
+  tests (the old "seventeen" was wrong: there were 16). Run on the ARM machine: 76 + 5 pass, ten runs in a row.
+- Next agent: the send without an address that the task asked a check of cannot be made through `send_to`, which always
+  names a destination; the new check catches a disconnect that keeps the peer instead, since the implementation leaves out
+  the address only when sending to its peer. The literal check still reports `ROUTE_MTU` (1500), which predates this.
+- For the owner: the trait's comment does not say that ERROR and HANG_UP end a wait whether or not they were asked for,
+  which the implementations do and the readiness suite checks.
+
 ## For the other socket tracks (TCP, ICMP and raw)
 - New, run 7: the shared `readiness` registers a waited socket edge-triggered (it was one-shot, level-triggered)
   and deletes the registration once no call waits unwoken. Reason: polling can register only readable,
@@ -264,8 +289,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   caught; one halved only by the implementation's own a_full_send_buffer_counts_the_memory_linux_counts). read_incoming_processor: the_incoming_processor_is_read_back (two processors set, and a
   connected socket's from its sender's processor). close:
   close_frees_the_port. configure: each setting's check, and the two Configurable contract checks.
-  wait_for_events: the seventeen waiting checks and the implementation's five readiness tests; a wait giving events it lacks is caught by
-  a_wait_gives_the_events_the_socket_has_and_no_others, one not widened for an overlapping interest by
+  wait_until_ready (2026-11-21): sixteen waiting checks (the readiness suite's six and this suite's ten) and the
+  implementation's five readiness tests; a wait giving facts it lacks is caught by
+  a_wait_gives_the_facts_the_socket_has_and_no_others, one not widened for an overlapping interest by
   a_wait_for_data_or_writing_finishes_when_room_is_made, a watcher kept running by the implementation's own
   a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still; a wait that keeps its first waker is caught by
   a_wait_polled_again_wakes_its_newest_waker, a registration not armed again for calls still waiting by
