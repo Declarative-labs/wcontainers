@@ -164,6 +164,130 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   fixed the X7 check's three findings and ran X8's bar from the tree as it is (see "X8, run 6"). Run 7
   (2026-11-22, X8 dispatched again with the fourth X7 check's three findings) fixed them (`fyl2x` of a power of
   two with an inexact product) and verified X8's whole bar from a clean build: every part holds (see "X8, run 7").
+- X9 (real x86 code at scale): run 1 (2026-11-22) fixed the five findings of the X8 check, measured the nine real
+  binaries for x86-64 in both settings, told the default list and told v3, in wasmtime and Chrome, and fixed two
+  translator bugs Java's runtime found (a panic, then a stack overflow); Java's runtime for speed still does not
+  finish translating, so X9 is not complete (see "X9, run 1").
+
+## X9, run 1 (2026-11-22): partly done
+
+Every build and test ran on the rented machines (x86-64: 96 processors, kernel 7.0.0-1018-aws; ARM64: 96 cores);
+the Mac only edited, formatted single files and committed. Logs and scripts in scratch `x9r1/`.
+
+The X8 check's findings, all fixed:
+- [minor] XSTATE_BV (9dec4d42). `xsave` now reports a component in use where it is out of its initial
+  configuration, by value (x87: header as `fninit` leaves it, pointers zero, every register zero; SSE: every xmm
+  zero; AVX: every upper half zero; `fpu::components_in_use`), not every component it saves. Intel allows it
+  (SDM Vol. 1 13.6), and it gives the reference's answer after `xrstor`, `vzeroupper`, `vzeroall` and any
+  write of a non-zero value. `xstate.c` now also prints XSTATE_BV after an `xrstor` of nothing, a 256-bit move,
+  `vzeroupper`, `vzeroall`, `fld1`/`fstp` and `fninit`, all in one asm statement, and matches Linux at every
+  look-ahead in wasmtime and in Chrome. Where they can still differ: a 256-bit instruction writing zero upper
+  halves (the reference keeps AVX in use). Plan 5.10 states the rule, plan 7.4 lists the four `xsave` and
+  `xrstor` memory forms among layer 1's exclusions, the code no longer cites a plan section that did not say it.
+- [minor] `Offer::new` refuses a list no processor could have (a223c4a5): AVX without XSAVE, AVX2, FMA or F16C
+  without AVX, as `Refused::MissingPrerequisite { feature, prerequisite }` (the error type is now `Refused`, with
+  `NotBuilt` a variant). Test `a_list_without_a_prerequisite_is_refused`.
+- [minor] Layer 1's left-out list (d2e94169): a drawn code is a form whether or not its meaning is written; the
+  "milestone X7's" and "milestone X8's" reasons are gone, so a code that loses its meaning fails
+  `unwritten_forms` and one that loses its draw is NOT_DRAWN, both failing
+  `every_default_code_is_drawn_and_written_x86_64` (4 passed with the other told-feature tests).
+- [minor] Plan 5.10's "AVX setting" and "two counters" paragraphs now describe the per-process list and the one
+  counter for every told family (8e0b0547).
+- [minor] `programs/x86_64/fma_fast.c` (11ca3f77): FMA and F16C in MXCSR's default mode, never touching MXCSR.
+  `fma_and_f16c_in_the_default_mode_match_linux_x86_64` compares it with Linux at every level and look-ahead and
+  checks that "exact floating point requested" is never counted, "half precision rounding in software" always
+  is, and "software fused multiply-add" is exactly where the host's multiply-add does not fuse: passed on the
+  rented x86-64 machine (fusing) and with `WC_PROBE_ANSWER=1` (not fusing). It runs in Chrome with the other v3
+  programs (`x86_64_v3_programs_match_linux_in_chrome_x86_64`, passed).
+
+X9's work:
+- `tests/binaries.rs` is run for x86-64: `small_binaries_translate_and_load_x86_64` (busybox and the C library in
+  both settings: valid, every piece counted once, loaded in Chrome and wasmtime), the bad unwind entry test (its
+  binary is now the first of the list whose unwind tables describe more than 10 functions: x86-64's musl has 4,
+  from its assembly; Alpine builds it without them), and `measure_binaries_x86_64` (ignored; one command below),
+  which translates each binary told the default list and told v3, for speed and for size, and also prints the
+  lookup array's bytes over the code and the bytes in its pages that hold a piece's slot, and x86's switch tables
+  found decoding from the first byte (jumps through a register, tables `X86_64::jump_table` recognises, those over
+  the engines' 65,520 `br_table` targets, and jumps through a table of 8-byte absolute entries). The translator
+  now exports `BR_TABLE_TARGETS` for it.
+- Two binaries taken from one image at once by two tests no longer lose one of them the file (a race that failed
+  ARM64's small binaries test once).
+- Translator bug 1 (Java's runtime, speed, panic "no entry found for key" in `Plan::new`): a loop piece was
+  explored with no bound at full look-ahead; walking back from a jump through a register without the function's
+  other entries, x86's `jump_table` recognised a switch the function had not, and the piece reached targets the
+  function never decoded. A loop piece now stays within its function's instructions, as it already did within a
+  stretch (`full.rs`). ARM64's output is byte for byte the same (bench and busybox, musl, rg, git, python, java,
+  go at every look-ahead, `x9r1/arm-output*.log`; Node and Bun not compared).
+- Translator bug 2 (the same, next): a stack overflow emitting one of its functions, which nests about 800
+  levels at about 2.6 KB a level (frames measured with gdb: `node` 704 B, `goto` 544, `within` 704, x86's
+  `legacy_meaning` 464, `emit` 368, a conditional `jump_if` and `jump` 944 more), past the 2 MB of rayon's threads.
+  `FUNCTION_BLOCKS` (2,048) was meant to bound this and does not. The translator now runs on its own rayon pool
+  whose threads have 16 MB (`THREAD_STACK_BYTES`, `on_translator_threads`); where no thread can be made (a
+  browser's WebAssembly) it runs where it is called, as before. Output unchanged (ARM64 lists above). Tried and
+  dropped: cutting functions whose emission would nest past a bound changed ARM64's output for python, java and go
+  and made Java's translation take 284 s.
+- Still open: Java's runtime (`libjvm.so`) translates far too slowly. For size it finishes: 413.32 s (0.04 MB of
+  code a second) with 761 cuts, 303,573,964 bytes of WebAssembly (19.8 a byte), wasmtime 13.38 s to 763.7 MB,
+  Chrome 0.18 s at first call (+458 MB) and 3.88 s at once (+1,783 MB); told v3 the same within noise. The cuts
+  say why: translate's loop "a function too large for an engine is cut in two by more starts, until none is"
+  plans the whole binary again for each round, and some function here keeps emitting more than an engine
+  takes. For speed it did not end in 10 minutes (one thread emitting, the rest idle) and was stopped. The
+  function and why its code is so large (loop copies nested in loop copies is the first suspect) are not found.
+  ARM64's Java took 3.52 s for speed.
+
+Verdicts at 69639b37 plus this file:
+- Rented x86-64 machine, a new build folder (`--name x9v1`, `x9r1/verify.log`, 3,386 s, load 13 to 67 with the
+  measurements beside it): fmt; clippy with warnings denied of the five crates and the wasmtime executor, all
+  targets; the browser crate's wasm32 clippy for both guests: pass. Unit tests of the translator, guest-cpu, x86
+  and arm64 crates, the executor's (7 + 4), the test crate's library: pass. Told-feature tests: 5 passed.
+  `--test programs --test checks --test smoke -- x86_64`: 2 + 29 + 6 passed (`fma_fast` among them); the v3
+  programs with `WC_PROBE_ANSWER=1`: 4 passed. Browser, every x86 test: 4 passed. Valid, lookaheads, changes:
+  pass. Layer 2, 10,000, seed 13904: 0 failing (3,368 faulted, 1,059 left to an address, 23,662 stacks lost,
+  23,885 pieces forgotten). Layer 3 Csmith, 1,000, seed 13905: 857 compared, 143 did not end in time on Linux, 0
+  failing. Binaries, x86: 2 passed. The literal check: marks 0, no change that could add a line, nothing of this
+  track's crates among the lines it says may go.
+- Rented ARM64 machine (`x9r1/arm.log`, 488 s, load 6 to 13; before the translator's two changes): ARM64's
+  programs, output, browser, layer 2, valid, checks and binaries tests: 30 passed, 0 failed. After the changes,
+  ARM64's output lists are byte for byte the earlier translator's (`x9r1/arm-output3.log`).
+
+Measured, `measure_binaries_x86_64` on the rented x86-64 machine from this run's final tree (`x9r1/measure3.log`,
+summary `x9r1/summary.txt`; RAYON threads 96; load at each binary's start: busybox 0.8, musl 0.9, rg 8.7, git
+14, python 16, go 26, node 59, bun 54, the clean-build verify running beside from git on). Per binary: code, then
+for speed / for size: WebAssembly bytes (a byte of code), translation time, wasmtime's compile time and machine
+code, Chrome compiled at first call / at once (time, growth of its processes). Told v3 gives the same within 1%
+everywhere (v3 code is reached only where a program asks cpuid; rg's 6,640 "unsupported instruction reached"
+places for speed, told the default list, are its AVX2 routines, none told v3).
+- busybox (627,148 bytes, 175,395 instructions, 417 starts: stripped, so few): 48,160,343 (76.8) / 18,604,478
+  (29.7); 0.20 / 0.12 s; wasmtime 1.28 s to 92.9 MB / 0.78 s to 46.4 MB; Chrome 0.02 s +79 MB, 0.34 s +287 MB /
+  0.01 s +46 MB, 0.21 s +148 MB.
+- musl (355,835 bytes): 18,803,812 (52.8) / 9,164,593 (25.8); 0.11 / 0.05 s; 0.49 s to 35.4 MB / 0.38 s to 22.0
+  MB; 0.01 s +44 MB, 0.11 s +140 MB / 0.01 s +36 MB, 0.07 s +96 MB.
+- rg (2,241,653): 142,773,120 (63.7) / 46,665,471 (20.8); 1.16 / 0.40 s; 5.45 s to 280.2 MB / 12.65 s to 118.6
+  MB; 0.07 s +185 MB, 0.95 s +730 MB / 0.04 s +90 MB, 0.86 s +322 MB.
+- git (2,116,349): 217,523,353 (102.8) / 108,222,840 (51.1); 1.95 / 1.27 s; 9.92 s to 396.7 MB / 15.02 s to 244.9
+  MB; 0.11 s +260 MB, 2.51 s +1,056 MB / 0.07 s +150 MB, 2.57 s +610 MB.
+- python (3,157,581): 179,533,803 (56.9) / 66,364,468 (21.0); 0.73 / 0.53 s; 4.63 s to 333.1 MB / 2.43 s to 169.7
+  MB; 0.09 s +238 MB, 0.92 s +906 MB / 0.04 s +124 MB, 0.55 s +444 MB.
+- go (6,843,537, fixed address): 332,339,604 (48.6) / 139,627,753 (20.4); 1.34 / 1.22 s; 8.34 s to 589.5 MB / 4.81
+  s to 344.3 MB; 0.22 s +429 MB, 2.17 s +1,616 MB / 0.09 s +234 MB, 1.58 s +878 MB.
+- node (46,655,208, 11,473,462 instructions): 3,041,781,638 in 4 modules (65.2) / 1,080,894,105 in 2 (23.2);
+  31.29 / 20.92 s; 81.34 s to 5,531 MB / 40.72 s to 2,701 MB; Chrome at first call 1.60 s +3,574 MB / 0.61 s
+  +1,604 MB; compiled at once the page crashed in both settings (ARM64's crashed for speed only).
+- bun (52,072,272): 7,298,605,449 in 8 modules (140.2) / 1,831,013,651 in 2 (35.2); 28.75 / 13.43 s; 194.11 s to
+  13,015 MB / 59.33 s to 4,454 MB; Chrome at first call 3.96 s +7,778 MB / 1.02 s +1,943 MB; at once crashed in
+  both (ARM64's for speed only; ARM64's bun for speed was 75.3 a byte).
+- java: above.
+- The lookup array (one 4-byte slot a byte of code), whole / in pages holding a piece's slot: busybox 2.5 / 2.1
+  MB, musl 1.4 / 1.2, rg 9.0 / 5.1, git 8.5 / 6.6, python 12.6 / 8.6, go 27.4 / 20.7, java 61.3 / 45.5, node
+  186.6 / 131.9, bun 208.3 / 130.9 MB: within the 4 GiB state memory, so no two-level table (plan 3.4).
+- Switch tables, decoding each binary from its first byte (jumps through a register; tables recognised; over
+  65,520 targets; jumps through 8-byte absolute entries): busybox 94, 38, 0, 1; musl 46, 14, 0, 0; rg 770, 200,
+  0, 0; git 99, 34, 0, 0; python 559, 114, 3, 236; go 33, 0, 0, 102; java 3,337, 859, 1, 13; node 6,934, 1,148,
+  14, 133; bun 1,990, 72, 0, 9,319. Over the limit is rare; absolute entries are common in bun (Zig) and Go
+  (fixed address) and in python (its computed gotos, relocated), all of which go through the lookup today. Put
+  to the orchestrator below.
+- The wasmtime runs used 64 GB of memory for node and more for bun (resident size seen 64 GB during node); the
+  machine has 377 GB.
 
 ## X8, run 7 (2026-11-22)
 
@@ -2136,6 +2260,20 @@ Baseline lines: wcontainers-translator-test 2111 (3 fewer), wcontainers-translat
 wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the milestone is not complete.
 
 ## For the orchestrator
+
+- X9 run 1, a decision plan 3.4 asks for: switch tables whose entries are 8-byte absolute addresses are common
+  where the plan expected them rare: bun 9,319 jumps through such tables against 72 tables recognised, Go 102
+  against 0, python 236 (its computed gotos, relocated) against 114. Today each goes through the lookup,
+  counted "jump through a register not recognised". The translator has the link address for a fixed-address
+  file (bun, Go) and the relocations give python's, so reading them as targets is possible without indexing by
+  case number; it would need the owner's go (plan 3.4 says "brought back for a decision"). Tables over the
+  65,520-target limit are rare (python 3, node 14, java 1).
+- X9 run 1, for the translator track: two changes in `full.rs` and `code.rs` (69639b37): a loop piece stays
+  within its function's instructions (it panicked on x86 Java), and translation runs on the translator's own
+  rayon threads with 16 MB stacks (one of x86 Java's functions nests about 800 levels, past 2 MB). ARM64's output
+  is byte for byte the same for the benchmark set and seven binaries. Also open: translate's "cut in two until
+  no function is too large for an engine" loop plans the whole binary again each round (x86 Java: 761 cuts, 413
+  s for size).
 
 - X8 run 1, for the executor's track: `crates/executor/implementation/wasmtime/implementation.rs`'s `Key.offer`
   is now a u64 (it was a u32), because `Guest::offer_key` now carries the program's whole feature list and
@@ -4142,6 +4280,13 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X9: the nine real binaries for x86-64, each told the default list and v3, for speed and size, in both engines,
+  with the lookup array and switch tables: `x86-run <checkout> --name <name> -- "$(cat <scratch>/x9r1/measure.sh)"`
+  (`WC_X9_BINARIES='busybox musl ...'` before it for some; each binary is taken from its Docker image once into
+  the build folder's `binaries/x86_64`); summarise with `python3 <scratch>/x9r1/summary.py <log>`. The clean-build
+  bar: `x86-run <checkout> --name <new name> -- "$(cat <scratch>/x9r1/verify.sh)"`. ARM64's output against the
+  translator before a change: `x9r1/arm-output2.sh` from an arm-run copy (lists of the earlier translator in
+  `/work/target/x9-original` there).
 - X8 run 7's whole bar from a clean build: `x86-run <checkout> --name <new name> -- "$(cat <scratch>/x8r7/verify.sh)"`;
   the laptop's layer 1 verdicts: copy `x8r7/verdict.sh` to `~/wcontainers-x86/x8r7-verdict.sh` there (and
   `x8r7/forms.csv` to `~/wcontainers-x86/x8r6-forms.csv`), then `<scratch>/x8w1/laptop-bg.sh <name> 'bash
@@ -4440,6 +4585,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X9 run 1 (the clean-build bar, `x9r1/verify.log`): valid at PROPTEST_CASES=40000 seed 13901 and every form
+  seed 13906; lookaheads 500 seed 13902; changes 400 cases, 6 program seeds, seed 13903; layer 2 10,000 seed
+  13904; layer 3 Csmith 1,000 seed 13905. No layer 1 run on the i7-8750H this run (the only meaning changed,
+  `xsave`'s XSTATE_BV, is outside layer 1, and is compared by `xstate.c`).
 - X8 run 7: layer 1 on the i7-8750H, Fyl2x and Fyl2xp1 at 5,000 a form (seeds 40975, 41001), the 687 v3 and
   transcendental forms at 1,000 a form (seed 13711), every form at 100 a form (seed 13714), the unoffered forms at
   20 a form (seed 13713), 64 cases in no form, the hand cases and the Chrome sample at 1 a form (seed 13712); on
@@ -4685,8 +4834,10 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 - X8 run 3: `xsave` and `xrstor` check an area of 832 bytes (x87, SSE and AVX state) for every list that has
   XSAVE, also one without AVX, whose CPU would touch 576; no list built today has XSAVE without AVX. iced gives
   their memory operand no size, so the size is the crate's (`fpu::xsave_area_bytes`), in their accesses too.
-  `xsave` reports every component it saves as in use in XSTATE_BV (allowed by Intel; the reference reports
-  what it saw), so layer 1 leaves the four out and a program compares the state they move.
+  Since X9 run 1 `xsave` reports in XSTATE_BV the components out of their initial configuration (by value), not
+  every one it saves; the reference tracks what ran and may report a component in use that is back in its
+  initial configuration (Intel allows both; plan 5.10). Layer 1 leaves the four out, and `xstate.c` compares
+  the state they move and XSTATE_BV after each kind of instruction with Linux.
 - X8 run 3: `Guest::offer_from_key` has a default body in the guest interface (the default offer's key only),
   so that the ARM64 crate, which another track is editing, needs no change.
 

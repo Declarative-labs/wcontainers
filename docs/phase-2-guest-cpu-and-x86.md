@@ -1173,7 +1173,9 @@ span its targets cover, so spans reach the 65,520-entry limit sooner; a table ov
 lookup with the existing counter "jump through a register not recognised". Tables whose entries are absolute
 addresses (non-PIE x86 code: `jmp [T + rax*8]`) would need the link address, which the translator has had
 since X6f but does not use for tables, so they also go through the lookup, counted the same way. How often either happens is measured on the x86 real binaries at
-X9; only if it is common is indexing by case number brought back for a decision.
+X9; only if it is common is indexing by case number brought back for a decision. Measured at X9 (status, X9
+run 1): over the limit is rare (node 14, python 3, java 1); absolute entries are common in bun, Go and python's
+computed gotos, and are put to the owner.
 
 The lookup array (T11). One i32 slot per `ALIGN` bytes of guest code: ARM64 one per 4 bytes (as today), x86
 one per byte, RISC-V one per 2 bytes. The slot's byte index is `(pc - table_base) << (2 - log2(ALIGN))`, which
@@ -3334,7 +3336,8 @@ one's own numbers, which apply unchanged.
   bytes, 203,533 brotli (`-q 11`); iced-x86's own functions and statics in it are 156,416 bytes (115,635 of
   code, 40,781 of data), 27,565 brotli compressed alone (a scratch cdylib of the decoder alone gave 46,880,
   section 2). A lower bound: iced code inlined into the x86 crate's own functions is not counted.
-- The lookup array's memory on real x86 programs (four bytes per byte of code, expected).
+- The lookup array's memory on real x86 programs: measured at X9 (status, X9 run 1): 208 MB for bun's 52 MB of
+  code, 131 MB of it in pages that hold a piece's slot; no two-level table needed.
 - What a CPU without MPX hardware does with `0F 1A` and `0F 1B`: a NOP, expected from the manual's
   reserved-NOP space; the reference has MPX, which Linux leaves off, and runs them as NOPs (section 2,
   run 9).
