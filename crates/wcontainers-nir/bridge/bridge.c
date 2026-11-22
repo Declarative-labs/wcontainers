@@ -458,6 +458,12 @@ wc_nir_number_vertex_elements(struct nir_shader *nir)
    return read;
 }
 
+uint32_t
+wc_nir_geometry_vertices_out(const struct nir_shader *nir)
+{
+   return nir->info.stage == MESA_SHADER_GEOMETRY ? nir->info.gs.vertices_out : 0;
+}
+
 static bool
 fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *buffers)
 {

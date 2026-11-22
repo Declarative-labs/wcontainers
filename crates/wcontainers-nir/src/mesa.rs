@@ -200,6 +200,7 @@ unsafe extern "C" {
     fn wc_bytes_free(bytes: *mut Bytes);
     fn wc_nir_clone(nir: *const NirShader) -> *mut NirShader;
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
+    fn wc_nir_geometry_vertices_out(nir: *const NirShader) -> u32;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
@@ -359,6 +360,12 @@ impl Nir {
     pub fn number_vertex_elements(&mut self) -> u64 {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_number_vertex_elements(self.0) }
+    }
+
+    /// The most vertices a geometry program emits an invocation; zero for another stage.
+    pub fn geometry_vertices_out(&self) -> u32 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_geometry_vertices_out(self.0) }
     }
 
     /// gl_FragColor written to each of the first `buffers` draw buffers. Nothing for a program
