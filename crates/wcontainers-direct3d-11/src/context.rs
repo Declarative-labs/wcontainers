@@ -3761,13 +3761,13 @@ impl<B: Backend> Device<B> {
         // Storage views the program reads through buffers of their texels.
         let mut through = Vec::new();
         for b in wanted().filter(|b| b.kind == SlotKind::Storage) {
-            if let (true, Some(Some(view))) = (
+            if let (Some(why), Some(Some(view))) = (
                 self.reads_through(stage, b.register),
                 self.ctx.uavs[stage].get(b.register as usize),
             ) && let ShaderView::Texture(v) = &**view
             {
                 let v = v.clone();
-                through.push(self.through_view(b.register, &v)?);
+                through.push(self.through_view(b.register, &v, why)?);
             }
         }
         self.ctx.through[stage] = through;

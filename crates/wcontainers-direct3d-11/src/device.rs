@@ -363,6 +363,15 @@ impl<B: Backend> Device<B> {
                 .into_iter()
                 .filter(|&n| self.multisample_quality_levels(dxgi, n) > 0)
                 .fold(0, |c, n| c | 1 << n);
+            let other = (2..=crate::required::MOST_SAMPLES)
+                .filter(|n| !crate::required::SAMPLE_COUNTS.contains(n))
+                .any(|n| self.multisample_quality_levels(dxgi, n) > 0);
+            let counts = counts
+                | if other {
+                    crate::required::SAMPLES_OTHER
+                } else {
+                    0
+                };
             let lacks = crate::required::Required(
                 need.0 & !has.support1,
                 need.1 & !has.support2,
@@ -572,6 +581,13 @@ impl<B: Backend> Device<B> {
         {
             s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
+        }
+        // Loads from storage views are served where the format is loaded and stored in one
+        // program, or through a buffer of its texels.
+        if format::texture_format(dxgi)
+            .is_some_and(|f| !format::loaded_and_stored(f) && !self.read_written_through(f))
+        {
+            s.support2 &= !UAV_TYPED_LOAD;
         }
         let level = self.level;
         let texture = format::texture_format(dxgi);
@@ -1031,6 +1047,14 @@ impl<B: Backend> Device<B> {
             .formats
             .get(format)
             .contains(FormatUse::STORAGE_WRITE)
+            && self.through_takes(format)
+    }
+
+    /// Whether a program loading from storage views of `format` reads and writes them through a
+    /// buffer of its texels (`StorageReadWriteThroughBuffer`).
+    pub(crate) fn read_written_through(&self, format: Format) -> bool {
+        !format::loaded_and_stored(format)
+            && !format::not_through_buffer(format)
             && self.through_takes(format)
     }
 

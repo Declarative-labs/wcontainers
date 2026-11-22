@@ -4,7 +4,7 @@
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
     HelperSlot, HelperValue, LinkedValues, Reflection, ShaderModule, ShaderStage, SlotKind,
-    SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
+    SlowPath, SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
     ViewComponent, helper_binding,
 };
 use wcontainers_shaders::container::{
@@ -100,9 +100,13 @@ pub struct TypedView {
     pub buffer: bool,
     /// The kind of value the declaration reads and writes.
     pub kind: FormatKind,
-    /// A storage texture read and written through a buffer of its texels, where the back end
-    /// has no atomics on storage textures (`AtomicsThroughBuffer`).
-    pub through: bool,
+    /// A storage texture read and written through a buffer of its texels, whatever the bound
+    /// view's format, and why: the back end has no atomics on storage textures
+    /// (`AtomicsThroughBuffer`).
+    pub through: Option<SlowPath>,
+    /// A storage texture of a program that loads typed values from storage textures; every
+    /// storage texture of such a program counts, its loads' operands are not read.
+    pub loaded: bool,
     /// A typed buffer read through a texture copy of its buffer, where the back end has no
     /// storage buffers (`TexelBufferAsTexture`).
     pub textured: bool,
@@ -142,15 +146,8 @@ struct Declared {
 /// program, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
     let bad = Error::InvalidArg("malformed DXBC program");
-    let (_, chunk) = chunks(bytecode)?
-        .into_iter()
-        .find(|(tag, _)| container::is_program(*tag))
-        .ok_or(bad)?;
-    let program = chunk
-        .contents()
-        .ok_or(Error::InvalidArg("not DXBC bytecode"))?;
     let mut found = Vec::new();
-    for instruction in container::instructions(program) {
+    for instruction in container::instructions(program(bytecode)?) {
         let instruction = instruction.map_err(|_| bad)?;
         let opcode = token::opcode(instruction.opcode_token());
         if matches!(opcode, DCL_RESOURCE | DCL_UAV_TYPED | DCL_CONSTANT_BUFFER) {
@@ -179,9 +176,32 @@ fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
     Ok(found)
 }
 
+/// Whether a DXBC container's program loads typed values from a storage view (`ld_uav_typed`).
+fn loads_typed_storage(bytecode: &[u8]) -> Result<bool> {
+    for instruction in container::instructions(program(bytecode)?) {
+        let instruction = instruction.map_err(|_| Error::InvalidArg("malformed DXBC program"))?;
+        if token::opcode(instruction.opcode_token()) == dxbc_op::LD_UAV_TYPED {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The program chunk of a DXBC container.
+fn program(bytecode: &[u8]) -> Result<&[u8]> {
+    let (_, chunk) = chunks(bytecode)?
+        .into_iter()
+        .find(|(tag, _)| container::is_program(*tag))
+        .ok_or(Error::InvalidArg("malformed DXBC program"))?;
+    chunk
+        .contents()
+        .ok_or(Error::InvalidArg("not DXBC bytecode"))
+}
+
 /// The typed views a DXBC container's program declares.
 pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
     let mut views = Vec::new();
+    let loads = loads_typed_storage(bytecode)?;
     for d in declarations(bytecode)? {
         let storage = match d.opcode {
             DCL_RESOURCE if d.dimension == dxbc_dimension::BUFFER => false,
@@ -199,7 +219,8 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
             register: d.register,
             buffer: d.dimension == dxbc_dimension::BUFFER,
             kind,
-            through: false,
+            through: None,
+            loaded: storage && loads,
             textured: false,
         });
     }
@@ -666,11 +687,14 @@ pub fn convert(
             &variant.key(expected, typed, layered, &[]),
         )? {
             Err(ConvertError::Unsupported("SampleCount")) if !samples => samples = true,
-            Err(ConvertError::Unsupported("StorageImageAtomics"))
-                if typed.iter().any(|t| t.storage && !t.buffer && !t.through) =>
+            Err(ConvertError::Unsupported(why))
+                if why == wcontainers_shaders::refusal::STORAGE_IMAGE_ATOMICS
+                    && typed
+                        .iter()
+                        .any(|t| t.storage && !t.buffer && t.through.is_none()) =>
             {
                 for t in typed.iter_mut().filter(|t| t.storage && !t.buffer) {
-                    t.through = true;
+                    t.through = Some(SlowPath::AtomicsThroughBuffer);
                 }
             }
             r => return Ok((answer(r, 1)?, samples)),
@@ -730,7 +754,7 @@ pub fn base_key(stage: SourceStage, typed: &[TypedView], layered: u128) -> Varia
         },
         texels_through_buffer: typed
             .iter()
-            .filter(|t| t.through && t.register < 64)
+            .filter(|t| t.through.is_some() && t.register < 64)
             .fold(0, |m, t| m | 1 << t.register),
         texture_layers: (0..128)
             .filter(|i| layered & (1 << i) != 0)
@@ -1012,7 +1036,8 @@ mod tests {
                     register: 2,
                     buffer: false,
                     kind: FormatKind::Uint,
-                    through: false,
+                    through: None,
+                    loaded: false,
                     textured: false,
                 },
                 TypedView {
@@ -1020,7 +1045,8 @@ mod tests {
                     register: 1,
                     buffer: true,
                     kind: FormatKind::Float,
-                    through: false,
+                    through: None,
+                    loaded: false,
                     textured: false,
                 },
             ]

@@ -3,7 +3,9 @@
 //! `CheckMultisampleQualityLevels` answers: a device reports no level whose every requirement it
 //! does not meet (plan section 9). Generated from the pages' tables
 //! (learn.microsoft.com/windows/win32/direct3ddxgi/format-support-for-direct3d-feature-level-10-0-hardware
-//! and its 10_1 and 11_0 pages), every row the pages give a required ability.
+//! and its 10_1 and 11_0 pages), every row the pages give a required ability. Their video columns
+//! are not rows here: a device reports video through `ID3D11VideoDevice`, which
+//! `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` requires and the level does not.
 
 use wcontainers_directx_graphics_infrastructure::dxgi;
 
@@ -17,6 +19,11 @@ pub const SAMPLE_COUNTS: [u32; 2] = [4, 8];
 /// Each required count as the bit `1 << count`.
 pub const SAMPLES_4: u32 = 1 << SAMPLE_COUNTS[0];
 pub const SAMPLES_8: u32 = 1 << SAMPLE_COUNTS[1];
+/// Some count of targets other than one and those of [`SAMPLE_COUNTS`], up to Direct3D's most
+/// ([`MOST_SAMPLES`]): the tables' "Other Multisample Count RT".
+pub const SAMPLES_OTHER: u32 = 1;
+/// `D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT`.
+pub const MOST_SAMPLES: u32 = 32;
 
 /// What a format must have at one level: the bits of both words, the sample counts, and whether
 /// the tables leave the format itself optional there (the video formats, and the extended-range
@@ -463,7 +470,7 @@ pub const LEVEL_REQUIRED: [(u32, [Required; 3]); 115] = [
     (dxgi::B5G6R5_UNORM, [
         Required(BLENDABLE | CPU_LOCKABLE | MIP | MIP_AUTOGEN | MULTISAMPLE_RESOLVE | RENDER_TARGET | SHADER_LOAD | SHADER_SAMPLE | TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE, 0, 0, false),
         Required(BLENDABLE | CPU_LOCKABLE | MIP | MIP_AUTOGEN | MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE | RENDER_TARGET | SHADER_LOAD | SHADER_SAMPLE | TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MULTISAMPLE_RENDERTARGET, 0, SAMPLES_4 | SAMPLES_8, false),
-        Required(BLENDABLE | CPU_LOCKABLE | MIP | MIP_AUTOGEN | MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE | RENDER_TARGET | SHADER_GATHER | SHADER_LOAD | SHADER_SAMPLE | TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MULTISAMPLE_RENDERTARGET, 0, SAMPLES_4 | SAMPLES_8, false),
+        Required(BLENDABLE | CPU_LOCKABLE | MIP | MIP_AUTOGEN | MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE | RENDER_TARGET | SHADER_GATHER | SHADER_LOAD | SHADER_SAMPLE | TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MULTISAMPLE_RENDERTARGET, 0, SAMPLES_4 | SAMPLES_8 | SAMPLES_OTHER, false),
     ]),
     (dxgi::B5G5R5A1_UNORM, [
         Required(CPU_LOCKABLE | MIP | MULTISAMPLE_RESOLVE | SHADER_LOAD | SHADER_SAMPLE | TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE, 0, 0, false),

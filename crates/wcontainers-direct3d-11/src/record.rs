@@ -58,7 +58,7 @@ impl Recorder {
     }
 
     /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
-    /// 4.11), with every format able to do everything at 1, 4 and 8 samples; `echo` also receives
+    /// 4.11), with every format able to do everything at 1, 2, 4 and 8 samples; `echo` also receives
     /// each line.
     pub fn new(echo: Option<fn(&str)>) -> Self {
         let limits = Limits {
@@ -108,10 +108,11 @@ impl Recorder {
                 limits,
                 formats: FormatCaps {
                     uses: [FormatUse::all(); Format::COUNT],
-                    // A bit per count: one sample and the counts the tables require.
+                    // A bit per count: one sample, two (one of the tables' other counts) and the
+                    // counts the tables require.
                     samples: [crate::required::SAMPLE_COUNTS
                         .into_iter()
-                        .fold(1, |bits, count| bits | count as u8);
+                        .fold(1 | 2, |bits, count| bits | count as u8);
                         Format::COUNT],
                 },
                 adapter: AdapterInfo {

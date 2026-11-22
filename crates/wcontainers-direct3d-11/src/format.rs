@@ -277,6 +277,12 @@ pub fn not_through_buffer(format: Format) -> bool {
     format == Format::A8Unorm
 }
 
+/// Whether programs load and store storage textures of `format` in one program: WebGPU's
+/// read-write storage textures are of its one-channel 32-bit formats.
+pub fn loaded_and_stored(format: Format) -> bool {
+    matches!(format, Format::R32Float | Format::R32Uint | Format::R32Sint)
+}
+
 /// The formats Microsoft's typed storage loads page lists as supported as a set, which
 /// `D3D11_OPTIONS2.TypedUAVLoadAdditionalFormats` answers for.
 pub const TYPED_LOADS_AS_A_SET: [u32; 15] = [
