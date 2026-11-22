@@ -12585,8 +12585,6 @@ code	crates/wcontainers-shaders/src/ir.rs	int	Reader<'_>::vle	7
 code	crates/wcontainers-shaders/src/ir.rs	int	Reader<'_>::vle	7
 code	crates/wcontainers-shaders/src/ir.rs	int	Reader<'_>::vle	7
 code	crates/wcontainers-shaders/src/ir.rs	int	Reader<'_>::vle	8
-code	crates/wcontainers-shaders/src/ir.rs	int	first_literal	3
-code	crates/wcontainers-shaders/src/ir.rs	int	first_literal	6
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	str	(file)	"/ir_codes.rs"
@@ -23329,7 +23327,6 @@ role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	1
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	2
 role	crates/wcontainers-shaders/src/dxbc.rs	int	to_ir	0
 role	crates/wcontainers-shaders/src/dxil.rs	int	to_spirv	0
-role	crates/wcontainers-shaders/src/ir.rs	int	first_literal	1
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	0
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	1
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	2

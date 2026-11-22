@@ -555,16 +555,20 @@ fn float32_textures_gathered_sampled_and_their_mips_generated_as_direct3d_does()
     assert!(errors.contains(route), "{errors}");
 }
 
-/// The 8- and 16-bit normalised formats drawn into, read back and their mips generated as real
-/// Direct3D does, natively and, without `texture-formats-tier1`, through their integer twins.
+/// The 8- and 16-bit normalised formats drawn into, read back, their mips generated and read by
+/// compute programs (2D and 3D) as real Direct3D does: natively, without
+/// `texture-formats-tier1` and without the 16-bit normalised formats, the last two through their
+/// integer twins.
 #[cfg(not(feature = "webgl"))]
 #[test]
-fn normalised_targets_drawn_and_their_mips_generated_as_direct3d_does() {
+fn normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does() {
     case("norm_targets");
-    let off = untiered(&[]);
-    let errors = case_env("norm_targets", "untiered", &[(FEATURES_OFF, &off)]);
     let route = wcontainers_gpu::SlowPath::NormAsInteger.reason();
-    assert!(errors.contains(route), "{errors}");
+    let no16 = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
+    for (label, off) in [("untiered", untiered(&[])), ("no16", no16.to_string())] {
+        let errors = case_env("norm_targets", label, &[(FEATURES_OFF, &off)]);
+        assert!(errors.contains(route), "{label}: {errors}");
+    }
 }
 
 /// Without a route for a partial sample mask (WebGL 2 without the back end's mask; plan section

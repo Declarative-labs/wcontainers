@@ -108,6 +108,18 @@ impl Ir {
     }
 }
 
+/// The reference operands before the literals of instructions that take a fixed number of them.
+mod references {
+    /// A declaration, name, mode, derivative, rounding or pointer: the instruction it is of.
+    pub const SUBJECT: usize = 1;
+    /// A load: the buffer or pointer, and the address.
+    pub const LOAD: usize = 2;
+    /// A store: the buffer or pointer, the address and the value.
+    pub const STORE: usize = 3;
+    /// A gather: the descriptor, sampler, layer, coordinate, offset and depth value.
+    pub const GATHER: usize = 6;
+}
+
 /// Where an instruction's literal operands start (`Op::getFirstLiteralOperandIndex`).
 fn first_literal(code: u16, operands: usize) -> usize {
     use code::*;
@@ -146,12 +158,12 @@ fn first_literal(code: u16, operands: usize) -> usize {
         | DERIV_Y
         | F_ROUND
         | POINTER
-        | SCOPED_SWITCH_CASE => 1.min(operands),
-        BUFFER_LOAD | MEMORY_LOAD => 2.min(operands),
-        BUFFER_STORE | MEMORY_STORE => 3.min(operands),
+        | SCOPED_SWITCH_CASE => references::SUBJECT.min(operands),
+        BUFFER_LOAD | MEMORY_LOAD => references::LOAD.min(operands),
+        BUFFER_STORE | MEMORY_STORE => references::STORE.min(operands),
         ENTRY_POINT | LABEL | LDS_ATOMIC | BUFFER_ATOMIC | IMAGE_ATOMIC | COUNTER_ATOMIC
         | MEMORY_ATOMIC => operands.saturating_sub(1),
-        IMAGE_GATHER => 6.min(operands),
+        IMAGE_GATHER => references::GATHER.min(operands),
         _ => operands,
     }
 }
