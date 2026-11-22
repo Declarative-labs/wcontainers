@@ -63,6 +63,10 @@ pub(crate) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
             let c = BGRA_BYTES.iter().map(|&b| (b, 0, u8::BITS)).collect();
             return (Unorm, c, build::WORD);
         }
+        V::Bgrx8Unorm => {
+            let c = BGRA_BYTES[..3].iter().map(|&b| (b, 0, u8::BITS)).collect();
+            return (Unorm, c, build::WORD);
+        }
         V::Unorm10_10_10_2 => {
             return packed(Unorm, &[RGB10_BITS, RGB10_BITS, RGB10_BITS, A2_BITS]);
         }

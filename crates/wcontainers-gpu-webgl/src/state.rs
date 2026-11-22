@@ -644,7 +644,7 @@ pub fn factor(f: BlendFactor) -> u32 {
 /// 10-10-10-2 integers, 3 for a word of 11-11-10 floats.
 pub fn conversion(f: VertexFormat) -> u32 {
     match f {
-        VertexFormat::Bgra8Unorm => 1,
+        VertexFormat::Bgra8Unorm | VertexFormat::Bgrx8Unorm => 1,
         VertexFormat::Uint10_10_10_2 => 2,
         VertexFormat::Float11_11_10 => 3,
         _ => 0,
@@ -680,6 +680,8 @@ fn attribute(f: VertexFormat) -> (i32, u32, bool, bool) {
         V::Unorm10_10_10_2 => (4, glow::UNSIGNED_INT_2_10_10_10_REV, true, false),
         // Read as bytes or one word and turned into their values in the program (`conversion`).
         V::Bgra8Unorm => (4, glow::UNSIGNED_BYTE, true, false),
+        // Three bytes, so the fourth component reads one.
+        V::Bgrx8Unorm => (3, glow::UNSIGNED_BYTE, true, false),
         V::Uint10_10_10_2 | V::Float11_11_10 => (1, glow::UNSIGNED_INT, false, true),
     };
     let components = if n != 0 {

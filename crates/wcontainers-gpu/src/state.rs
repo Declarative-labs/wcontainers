@@ -268,6 +268,8 @@ pub enum VertexFormat {
     Unorm10_10_10_2,
     Uint10_10_10_2,
     Float11_11_10,
+    /// Direct3D's B8G8R8X8: bytes in B, G, R order and one unread, read as RGB with alpha one.
+    Bgrx8Unorm,
 }
 
 /// Whether a stream advances per vertex or per instance.

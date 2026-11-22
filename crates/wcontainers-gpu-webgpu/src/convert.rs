@@ -176,7 +176,7 @@ pub fn vertex_format(f: VertexFormat) -> Option<wgpu::VertexFormat> {
         Bgra8Unorm => W::Unorm8x4Bgra,
         Unorm10_10_10_2 => W::Unorm10_10_10_2,
         Uint8x3 | Sint8x3 | Unorm8x3 | Snorm8x3 | Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3
-        | Float16x3 | Uint10_10_10_2 | Float11_11_10 => return None,
+        | Float16x3 | Uint10_10_10_2 | Float11_11_10 | Bgrx8Unorm => return None,
     })
 }
 

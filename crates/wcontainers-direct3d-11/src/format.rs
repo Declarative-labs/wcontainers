@@ -782,7 +782,7 @@ pub fn vertex_size(format: VertexFormat) -> u32 {
         Uint8x3 | Sint8x3 | Unorm8x3 | Snorm8x3 => 3,
         Uint8x4 | Sint8x4 | Unorm8x4 | Snorm8x4 | Uint16x2 | Sint16x2 | Unorm16x2 | Snorm16x2
         | Float16x2 | Float32x1 | Uint32x1 | Sint32x1 | Bgra8Unorm | Unorm10_10_10_2
-        | Uint10_10_10_2 | Float11_11_10 => 4,
+        | Uint10_10_10_2 | Float11_11_10 | Bgrx8Unorm => 4,
         Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3 | Float16x3 => 6,
         Uint16x4 | Sint16x4 | Unorm16x4 | Snorm16x4 | Float16x4 | Float32x2 | Uint32x2
         | Sint32x2 => 8,

@@ -215,6 +215,8 @@ fn widened(f: VertexFormat) -> Option<Widened> {
         ),
         Uint10_10_10_2 => packed(W::Uint16x4, Code::Uint10_10_10_2),
         Float11_11_10 => packed(W::Float16x4, Code::Float11_11_10),
+        // Its three bytes and a fourth of one, read as BGRA.
+        Bgrx8Unorm => three_of(W::Unorm8x4Bgra, W::Unorm8, ThreeBytes, u8::MAX.into()),
         _ => return None,
     })
 }
@@ -552,6 +554,7 @@ mod tests {
             (Float16x3, 3, size_of::<half::f16>()),
             (Uint10_10_10_2, 1, size_of::<u32>()),
             (Float11_11_10, 1, size_of::<u32>()),
+            (Bgrx8Unorm, 3, size_of::<u8>()),
         ] {
             let w = widened(format).unwrap_or_else(|| panic!("{format:?} is not widened"));
             assert_eq!(

@@ -1227,7 +1227,7 @@ pub fn typed_buffers_through_a_texture_lie_2048_elements_to_a_row<H: Host>() {
 /// the packed floats' infinities and NaNs read as such.
 pub fn every_vertex_format_reads_its_element<H: Host>() {
     use VertexFormat::*;
-    const FORMATS: [VertexFormat; 52] = [
+    const FORMATS: [VertexFormat; 53] = [
         Uint8x1,
         Uint8x2,
         Uint8x3,
@@ -1280,6 +1280,7 @@ pub fn every_vertex_format_reads_its_element<H: Host>() {
         Unorm10_10_10_2,
         Uint10_10_10_2,
         Float11_11_10,
+        Bgrx8Unorm,
     ];
     let mut b = H::make();
     let mut routes = Vec::new();
@@ -1418,6 +1419,13 @@ fn vertex_elements(format: VertexFormat) -> Vec<([u8; 16], Read)> {
             let mut e = [0.0, 0.0, 0.0, 1.0];
             e[..n].copy_from_slice(&values[..n]);
             Read::Float(e, 0.0)
+        }
+        Bgrx8Unorm => {
+            element[..4].copy_from_slice(&[10, 20, 30, 77]);
+            Read::Float(
+                [30.0 / 255.0, 20.0 / 255.0, 10.0 / 255.0, 1.0],
+                1.0 / 1048576.0,
+            )
         }
         Bgra8Unorm => {
             element[..4].copy_from_slice(&[10, 20, 30, 255]);
