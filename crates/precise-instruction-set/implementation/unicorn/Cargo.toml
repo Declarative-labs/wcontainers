@@ -1,0 +1,19 @@
+[package]
+name = "wcontainers-precise-instruction-set-unicorn"
+description = "The behaviors the unicorn-engine emulator gives every ARM64 instruction, under the stand-in executor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-precise-instruction-set = { path = "../.." }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[lints]
+workspace = true
