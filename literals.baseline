@@ -12339,7 +12339,6 @@ code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"stopped by 
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"system call not implemented"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"translated at run time"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"unsupported instruction reached"
-code	crates/wcontainers-shaders/build.rs	byte	hash_files	b'\r'
 code	crates/wcontainers-shaders/build.rs	char	evaluate	'('
 code	crates/wcontainers-shaders/build.rs	char	evaluate	')'
 code	crates/wcontainers-shaders/build.rs	char	evaluate	'U'
