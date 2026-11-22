@@ -24,8 +24,6 @@ wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
 wcontainers-executor = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
-wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
-wcontainers-precise-instruction-set-translator = { path = "../../../precise-instruction-set/implementation/translator" }
 # The fields and exception classes of ESR_EL1 (MIT OR Apache-2.0), as the ARM64 architecture uses them.
 aarch64-cpu = "12.0.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
@@ -63,8 +61,7 @@ cargo-lock = "11.1.0"
 wcontainers-executor-conformance = { path = "../../conformance" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
-wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
-wcontainers-precise-instruction-set-neoverse-v2 = { path = "../../../precise-instruction-set/implementation/neoverse-v2" }
+wcontainers-precise-instruction-set-translator = { path = "../../../precise-instruction-set/implementation/translator" }
 # Copies the test process with fork, as the kernel tests' saves do.
 libc = "0.2.191"
 # Unpacks the OCI image `docker save` writes, and makes roots for tests.

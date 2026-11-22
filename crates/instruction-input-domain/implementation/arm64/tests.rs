@@ -42,11 +42,11 @@ fn read_operand(
 ) -> Option<OperandValue> {
     let registers = &state.processor.general_purpose_registers;
     match operand_type {
-        OperandType::Register(field) => Some(OperandValue::RegisterNumber(field.read(word))),
+        OperandType::RegisterNumber(field) => Some(OperandValue::RegisterNumber(field.read(word))),
         OperandType::UnsignedImmediate(field) | OperandType::SignedImmediate(field) => {
-            Some(OperandValue::Integer(u64::from(field.read(word))))
+            Some(OperandValue::Bits(u64::from(field.read(word))))
         }
-        OperandType::RegisterValue(field) => Some(OperandValue::Integer(
+        OperandType::RegisterValue(field) => Some(OperandValue::Bits(
             registers
                 .get(field.read(word) as usize)
                 .copied()

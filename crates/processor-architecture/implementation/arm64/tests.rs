@@ -27,6 +27,31 @@ const WRITE_TRANSLATION_FAULT: u64 = 0x9200_0047;
 /// The value measured on both chips for a store to a read-only page.
 const WRITE_PERMISSION_FAULT: u64 = 0x9200_004F;
 const STACK_POINTER_ALIGNMENT_FAULT: u64 = 0x9A00_0000;
+/// Measured on the Apple M5 under Hypervisor.framework, whose EL1 sees no SME.
+const SME_DISABLED_BY_CPACR: u64 = 0x7600_0000;
+const FETCH_PERMISSION_FAULT: u64 = 0x8200_000F;
+
+const LOAD: PreciseInstruction = PreciseInstruction::LdrImmediateUnsignedOffset64 {
+    misaligned_stack_pointer: MisalignedStackPointer::Faults,
+};
+const STORE: PreciseInstruction = PreciseInstruction::StrImmediateUnsignedOffset64 {
+    misaligned_stack_pointer: MisalignedStackPointer::Faults,
+    across_fault: StoreAcrossFault::WritesNothing,
+};
+
+const fn to_store_pair(across_fault: StoreAcrossFault) -> PreciseInstruction {
+    PreciseInstruction::StpSignedOffset64 {
+        misaligned_stack_pointer: MisalignedStackPointer::Faults,
+        across_fault,
+    }
+}
+
+const fn to_post_index_load(into_base: LoadIntoBaseWithWriteback) -> PreciseInstruction {
+    PreciseInstruction::LdrImmediatePostIndex64 {
+        misaligned_stack_pointer: MisalignedStackPointer::Faults,
+        into_base,
+    }
+}
 
 const READ_WRITE: PagePermission = PagePermission::Mapped {
     data_access: DataAccess::ReadWrite,
@@ -62,15 +87,8 @@ fn to_state(
     let data: Vec<u8> = (0..2 * PAGE).map(|offset| offset as u8).collect();
     ExecutionState {
         processor: Processor {
-            general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
-            stack_pointer: 0,
             program_counter: CODE,
-            condition_flags: ConditionFlags::empty(),
-            vector_registers: [0; VECTOR_REGISTERS],
-            floating_point_control: 0,
-            floating_point_status: 0,
-            software_thread_id: 0,
-            exception: None,
+            ..ZERO_PROCESSOR
         },
         memory_mutations: vec![
             MemoryDelta::PermissionAssignment {
@@ -307,7 +325,7 @@ fn ldr_loads_at_its_scaled_offset() {
     let mut before = to_state(word, READ_ONLY, READ_ONLY);
     before.processor.general_purpose_registers[1] = DATA;
     let processor = before.processor.clone();
-    let (after, written) = run(PreciseInstruction::LdrImmediateUnsignedOffset64, before);
+    let (after, written) = run(LOAD, before);
     assert_completed(&processor, &after);
     assert_eq!(after.general_purpose_registers[0], to_loaded(DATA + 16));
     assert!(written.is_empty());
@@ -326,7 +344,7 @@ fn ldr_faults_on_an_unmapped_or_unreadable_page() {
         let mut before = to_state(word, permission, READ_WRITE);
         before.processor.general_purpose_registers[1] = DATA;
         before.processor.general_purpose_registers[0] = 5;
-        let (after, _) = run(PreciseInstruction::LdrImmediateUnsignedOffset64, before);
+        let (after, _) = run(LOAD, before);
         assert_raised(&after, syndrome, Some(DATA + 8));
         assert_eq!(after.general_purpose_registers[0], 5);
     }
@@ -340,8 +358,55 @@ fn ldr_from_a_misaligned_stack_pointer_faults() {
     );
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.stack_pointer = DATA + 8;
-    let (after, _) = run(PreciseInstruction::LdrImmediateUnsignedOffset64, before);
+    let (after, _) = run(LOAD, before);
     assert_raised(&after, STACK_POINTER_ALIGNMENT_FAULT, None);
+}
+
+#[test]
+fn ldr_from_a_misaligned_stack_pointer_accesses_where_its_behavior_says() {
+    let word = encode(
+        Instruction::LdrImmediateUnsignedOffset64,
+        &[(RT, 0), (RN, 31)],
+    );
+    let mut before = to_state(word, READ_WRITE, READ_WRITE);
+    before.processor.stack_pointer = DATA + 8;
+    let (after, _) = run(
+        PreciseInstruction::LdrImmediateUnsignedOffset64 {
+            misaligned_stack_pointer: MisalignedStackPointer::Accesses,
+        },
+        before,
+    );
+    assert_eq!(after.exception, None);
+    assert_eq!(after.general_purpose_registers[0], to_loaded(DATA + 8));
+}
+
+#[test]
+fn str_across_a_fault_writes_what_its_behavior_says() {
+    let word = encode(
+        Instruction::StrImmediateUnsignedOffset64,
+        &[(RT, 2), (RN, 1)],
+    );
+    let mut before = to_state(word, READ_WRITE, READ_ONLY);
+    before.processor.general_purpose_registers[1] = UPPER_DATA - 4;
+    before.processor.general_purpose_registers[2] = u64::MAX;
+    let (after, written) = run(STORE, before.clone());
+    assert_raised(&after, WRITE_PERMISSION_FAULT, Some(UPPER_DATA));
+    assert!(written.is_empty());
+    let (after, written) = run(
+        PreciseInstruction::StrImmediateUnsignedOffset64 {
+            misaligned_stack_pointer: MisalignedStackPointer::Faults,
+            across_fault: StoreAcrossFault::WritesBytesBelowFault,
+        },
+        before,
+    );
+    assert_raised(&after, WRITE_PERMISSION_FAULT, Some(UPPER_DATA));
+    assert!(
+        written
+            == [MemoryDelta::ValueAssignment {
+                start: UPPER_DATA - 4,
+                bytes: Cow::Owned([u8::MAX; 4].to_vec())
+            }]
+    );
 }
 
 #[test]
@@ -353,10 +418,7 @@ fn str_stores_and_faults_on_a_read_only_page() {
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.general_purpose_registers[1] = DATA;
     before.processor.general_purpose_registers[2] = u64::MAX;
-    let (_, written) = run(
-        PreciseInstruction::StrImmediateUnsignedOffset64,
-        before.clone(),
-    );
+    let (_, written) = run(STORE, before.clone());
     assert!(
         written
             == [MemoryDelta::ValueAssignment {
@@ -370,7 +432,7 @@ fn str_stores_and_faults_on_a_read_only_page() {
             addresses: DATA..UPPER_DATA,
             permission: READ_ONLY,
         });
-    let (after, written) = run(PreciseInstruction::StrImmediateUnsignedOffset64, before);
+    let (after, written) = run(STORE, before);
     assert_raised(&after, WRITE_PERMISSION_FAULT, Some(DATA + 8));
     assert!(written.is_empty());
 }
@@ -387,13 +449,13 @@ fn stp_across_a_fault_writes_what_its_behavior_says() {
     // An offset of -8 puts the second register at the first byte of the unmapped page.
     before.processor.general_purpose_registers[3] = UPPER_DATA;
     let (after, written) = run(
-        PreciseInstruction::StpSignedOffset64(StorePairAcrossFault::WritesNothing),
+        to_store_pair(StoreAcrossFault::WritesNothing),
         before.clone(),
     );
     assert_raised(&after, WRITE_TRANSLATION_FAULT, Some(UPPER_DATA));
     assert!(written.is_empty());
     let (after, written) = run(
-        PreciseInstruction::StpSignedOffset64(StorePairAcrossFault::WritesBytesBelowFault),
+        to_store_pair(StoreAcrossFault::WritesBytesBelowFault),
         before,
     );
     assert_raised(&after, WRITE_TRANSLATION_FAULT, Some(UPPER_DATA));
@@ -415,10 +477,7 @@ fn stp_stores_both_registers_in_order() {
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.general_purpose_registers[1] = 11;
     before.processor.general_purpose_registers[3] = DATA;
-    let (_, written) = run(
-        PreciseInstruction::StpSignedOffset64(StorePairAcrossFault::WritesNothing),
-        before,
-    );
+    let (_, written) = run(to_store_pair(StoreAcrossFault::WritesNothing), before);
     let mut expected = 11_u64.to_le_bytes().to_vec();
     expected.extend_from_slice(&0_u64.to_le_bytes());
     assert!(
@@ -439,7 +498,7 @@ fn ldr_post_index_loads_then_writes_back() {
     let mut before = to_state(word, READ_ONLY, READ_ONLY);
     before.processor.general_purpose_registers[1] = DATA + 8;
     let (after, _) = run(
-        PreciseInstruction::LdrImmediatePostIndex64(LoadIntoBaseWithWriteback::Undefined),
+        to_post_index_load(LoadIntoBaseWithWriteback::Undefined),
         before,
     );
     assert_eq!(after.general_purpose_registers[0], to_loaded(DATA + 8));
@@ -454,13 +513,7 @@ fn ldr_post_index_into_its_base_takes_each_choice() {
     );
     let mut before = to_state(word, READ_ONLY, READ_ONLY);
     before.processor.general_purpose_registers[1] = DATA;
-    let base = |choice| {
-        run(
-            PreciseInstruction::LdrImmediatePostIndex64(choice),
-            before.clone(),
-        )
-        .0
-    };
+    let base = |choice| run(to_post_index_load(choice), before.clone()).0;
     assert_eq!(
         base(LoadIntoBaseWithWriteback::WritebackSuppressed).general_purpose_registers[1],
         to_loaded(DATA)
@@ -490,7 +543,7 @@ fn brk_raises_a_breakpoint_with_its_comment() {
 }
 
 #[test]
-fn rdvl_reads_a_multiple_of_the_vector_length_or_is_undefined() {
+fn rdvl_reads_a_multiple_of_the_vector_length_or_raises_its_exception() {
     let word = encode(Instruction::Rdvl, &[(RD, 4), (RDVL_IMM6, 0x3E)]);
     let reading = VectorLengthReading::Reads(VectorLength::Bits128);
     let (after, _) = run(
@@ -503,6 +556,27 @@ fn rdvl_reads_a_multiple_of_the_vector_length_or_is_undefined() {
         to_state(word, READ_WRITE, READ_WRITE),
     );
     assert_raised(&after, UNDEFINED_INSTRUCTION, None);
+    let (after, _) = run(
+        PreciseInstruction::Rdvl(VectorLengthReading::SmeTrapped(
+            SmeTrapCode::DisabledByCpacr,
+        )),
+        to_state(word, READ_WRITE, READ_WRITE),
+    );
+    assert_raised(&after, SME_DISABLED_BY_CPACR, None);
+}
+
+#[test]
+fn an_instruction_on_a_page_without_instruction_fetch_faults_before_it_runs() {
+    let word = encode(Instruction::Brk, &[]);
+    let mut before = to_state(word, READ_WRITE, READ_WRITE);
+    before
+        .memory_mutations
+        .push(MemoryDelta::PermissionAssignment {
+            addresses: CODE..CODE + PAGE,
+            permission: READ_ONLY,
+        });
+    let (after, _) = run(PreciseInstruction::Brk, before);
+    assert_raised(&after, FETCH_PERMISSION_FAULT, Some(CODE));
 }
 
 #[test]

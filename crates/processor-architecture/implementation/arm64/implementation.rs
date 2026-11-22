@@ -9,7 +9,9 @@ use core::ops::Range;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 pub mod encoding;
+pub mod memory;
 mod simulation;
+pub mod syndrome;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +21,20 @@ pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
 pub const GENERAL_PURPOSE_REGISTERS: usize = 31;
 /// V0 to V31.
 pub const VECTOR_REGISTERS: usize = 32;
+pub const INSTRUCTION_BYTES: u64 = size_of::<u32>() as u64;
+
+/// Every register zero, the condition flags clear and no exception.
+pub const ZERO_PROCESSOR: Processor = Processor {
+    general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
+    stack_pointer: 0,
+    program_counter: 0,
+    condition_flags: ConditionFlags::empty(),
+    vector_registers: [0; VECTOR_REGISTERS],
+    floating_point_control: 0,
+    floating_point_status: 0,
+    software_thread_id: 0,
+    exception: None,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64;
@@ -50,8 +66,9 @@ impl ProcessorArchitecture for Arm64 {
 
 /// The registers a program at EL0 can see or change, and the exception its last instruction raised.
 ///
-/// TODO: temporary placeholder until the rest of the EL0 state is designed: PSTATE's DIT, SSBS, TCO and
-/// BTYPE, TPIDRRO_EL0, and the SVE and SME state (Z beyond 128 bits, P, FFR, streaming mode, ZA, ZT0).
+/// TODO: temporary placeholder until the rest of the EL0 state is designed: TPIDRRO_EL0 and TPIDR2_EL0; PSTATE's
+/// DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z beyond 128 bits, P and FFR; ZA and ZT0; FPMR;
+/// GCSPR_EL0; the exclusive monitor.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
@@ -112,7 +129,7 @@ pub enum InstructionFetch {
     Allowed,
 }
 
-/// An [A64 instruction variant](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions).
+/// An A64 [instruction variant](https://developer.arm.com/documentation/ddi0487/mc/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-1-About-the-A64-instruction-set#:~:text=each%20syntax%20is%20an%20instruction%20variant).
 ///
 /// TODO: temporary placeholder until every variant is listed: these are the ten of the first slice.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,19 +146,32 @@ pub enum Instruction {
     MrsCtrEl0,
 }
 
-/// An instruction with one behavior for every case the manual leaves open.
+/// An instruction with one behavior for every case the manual leaves open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PreciseInstruction {
     AddShiftedRegister64,
     AddsShiftedRegister64,
     Csel64,
-    LdrImmediateUnsignedOffset64,
-    StrImmediateUnsignedOffset64,
-    StpSignedOffset64(StorePairAcrossFault),
-    LdrImmediatePostIndex64(LoadIntoBaseWithWriteback),
+    LdrImmediateUnsignedOffset64 {
+        misaligned_stack_pointer: MisalignedStackPointer,
+    },
+    StrImmediateUnsignedOffset64 {
+        misaligned_stack_pointer: MisalignedStackPointer,
+        across_fault: StoreAcrossFault,
+    },
+    StpSignedOffset64 {
+        misaligned_stack_pointer: MisalignedStackPointer,
+        across_fault: StoreAcrossFault,
+    },
+    LdrImmediatePostIndex64 {
+        misaligned_stack_pointer: MisalignedStackPointer,
+        into_base: LoadIntoBaseWithWriteback,
+    },
     Brk,
     Rdvl(VectorLengthReading),
-    MrsCtrEl0 { cache_type: u64 },
+    MrsCtrEl0 {
+        cache_type: u64,
+    },
 }
 
 impl PreciseInstruction {
@@ -150,10 +180,10 @@ impl PreciseInstruction {
             Self::AddShiftedRegister64 => Instruction::AddShiftedRegister64,
             Self::AddsShiftedRegister64 => Instruction::AddsShiftedRegister64,
             Self::Csel64 => Instruction::Csel64,
-            Self::LdrImmediateUnsignedOffset64 => Instruction::LdrImmediateUnsignedOffset64,
-            Self::StrImmediateUnsignedOffset64 => Instruction::StrImmediateUnsignedOffset64,
-            Self::StpSignedOffset64(_) => Instruction::StpSignedOffset64,
-            Self::LdrImmediatePostIndex64(_) => Instruction::LdrImmediatePostIndex64,
+            Self::LdrImmediateUnsignedOffset64 { .. } => Instruction::LdrImmediateUnsignedOffset64,
+            Self::StrImmediateUnsignedOffset64 { .. } => Instruction::StrImmediateUnsignedOffset64,
+            Self::StpSignedOffset64 { .. } => Instruction::StpSignedOffset64,
+            Self::LdrImmediatePostIndex64 { .. } => Instruction::LdrImmediatePostIndex64,
             Self::Brk => Instruction::Brk,
             Self::Rdvl(_) => Instruction::Rdvl,
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
@@ -161,9 +191,18 @@ impl PreciseInstruction {
     }
 }
 
-/// What a store pair writes when part of it faults.
+/// What a load or store does when its base is the stack pointer and that is not a multiple of 16.
+///
+/// A chip raises the [alignment fault](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) SCTLR_EL1.SA0 asks for, as Linux sets it; QEMU leaves the check out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StorePairAcrossFault {
+pub enum MisalignedStackPointer {
+    Faults,
+    Accesses,
+}
+
+/// What a store writes when part of it faults.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StoreAcrossFault {
     WritesNothing,
     WritesBytesBelowFault,
 }
@@ -180,10 +219,22 @@ pub enum LoadIntoBaseWithWriteback {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VectorLengthReading {
     Undefined,
+    /// Raises the [SME exception](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D), as a chip with SME and no SVE does outside streaming mode.
+    SmeTrapped(SmeTrapCode),
     Reads(VectorLength),
 }
 
-/// An [SVE vector length](https://developer.arm.com/documentation/ddi0487/latest/#:~:text=permitted%20vector%20lengths).
+/// The SMTC field of the syndrome of a trapped SME access.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u64)]
+pub enum SmeTrapCode {
+    /// CPACR_EL1.SMEN traps it, as it stays where EL1 sees no SME.
+    DisabledByCpacr = 0b000,
+    /// The instruction is legal only in streaming mode.
+    NotInStreamingMode = 0b010,
+}
+
+/// An SVE vector length, as [ZCR_EL1.LEN](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ZCR-EL1--SVE-Control-Register-EL1-#:~:text=LEN%2C%20bits%20%5B3%3A0%5D) permits it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VectorLength {
     Bits128,
@@ -191,4 +242,89 @@ pub enum VectorLength {
     Bits512,
     Bits1024,
     Bits2048,
+}
+
+/// Every behavior this crate defines for the instruction, with three cache types that differ in their lowest and
+/// highest bits.
+///
+/// TODO: temporary placeholder until the interface lists an instruction's behaviors.
+pub fn list_behaviors(instruction: Instruction) -> impl Iterator<Item = PreciseInstruction> {
+    use alloc::vec::Vec;
+
+    const MISALIGNED: [MisalignedStackPointer; 2] = [
+        MisalignedStackPointer::Faults,
+        MisalignedStackPointer::Accesses,
+    ];
+    const ACROSS_FAULT: [StoreAcrossFault; 2] = [
+        StoreAcrossFault::WritesNothing,
+        StoreAcrossFault::WritesBytesBelowFault,
+    ];
+    const INTO_BASE: [LoadIntoBaseWithWriteback; 4] = [
+        LoadIntoBaseWithWriteback::WritebackSuppressed,
+        LoadIntoBaseWithWriteback::WritebackOverwritesLoad,
+        LoadIntoBaseWithWriteback::Undefined,
+        LoadIntoBaseWithWriteback::NoOperation,
+    ];
+    const LENGTHS: [VectorLength; 5] = [
+        VectorLength::Bits128,
+        VectorLength::Bits256,
+        VectorLength::Bits512,
+        VectorLength::Bits1024,
+        VectorLength::Bits2048,
+    ];
+    let behaviors: Vec<PreciseInstruction> = match instruction {
+        Instruction::AddShiftedRegister64 => [PreciseInstruction::AddShiftedRegister64].to_vec(),
+        Instruction::AddsShiftedRegister64 => [PreciseInstruction::AddsShiftedRegister64].to_vec(),
+        Instruction::Csel64 => [PreciseInstruction::Csel64].to_vec(),
+        Instruction::LdrImmediateUnsignedOffset64 => MISALIGNED
+            .map(
+                |misaligned_stack_pointer| PreciseInstruction::LdrImmediateUnsignedOffset64 {
+                    misaligned_stack_pointer,
+                },
+            )
+            .to_vec(),
+        Instruction::StrImmediateUnsignedOffset64 => MISALIGNED
+            .iter()
+            .flat_map(|&misaligned_stack_pointer| {
+                ACROSS_FAULT.map(
+                    |across_fault| PreciseInstruction::StrImmediateUnsignedOffset64 {
+                        misaligned_stack_pointer,
+                        across_fault,
+                    },
+                )
+            })
+            .collect(),
+        Instruction::StpSignedOffset64 => MISALIGNED
+            .iter()
+            .flat_map(|&misaligned_stack_pointer| {
+                ACROSS_FAULT.map(|across_fault| PreciseInstruction::StpSignedOffset64 {
+                    misaligned_stack_pointer,
+                    across_fault,
+                })
+            })
+            .collect(),
+        Instruction::LdrImmediatePostIndex64 => MISALIGNED
+            .iter()
+            .flat_map(|&misaligned_stack_pointer| {
+                INTO_BASE.map(|into_base| PreciseInstruction::LdrImmediatePostIndex64 {
+                    misaligned_stack_pointer,
+                    into_base,
+                })
+            })
+            .collect(),
+        Instruction::Brk => [PreciseInstruction::Brk].to_vec(),
+        Instruction::Rdvl => [
+            VectorLengthReading::Undefined,
+            VectorLengthReading::SmeTrapped(SmeTrapCode::DisabledByCpacr),
+            VectorLengthReading::SmeTrapped(SmeTrapCode::NotInStreamingMode),
+        ]
+        .into_iter()
+        .chain(LENGTHS.map(VectorLengthReading::Reads))
+        .map(PreciseInstruction::Rdvl)
+        .collect(),
+        Instruction::MrsCtrEl0 => [0, 1, u64::MAX]
+            .map(|cache_type| PreciseInstruction::MrsCtrEl0 { cache_type })
+            .to_vec(),
+    };
+    behaviors.into_iter()
 }

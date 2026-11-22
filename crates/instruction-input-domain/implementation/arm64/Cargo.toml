@@ -19,10 +19,11 @@ path = "conformance.rs"
 wcontainers-instruction-input-domain = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The subsets of the condition flags.
+itertools.workspace = true
 
 [dev-dependencies]
 wcontainers-instruction-input-domain-conformance = { path = "../../conformance" }
-itertools.workspace = true
 
 [lints]
 workspace = true

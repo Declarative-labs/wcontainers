@@ -4,7 +4,6 @@
 //! Each state is a slot in guest memory: its registers before and after, and translation tables and pages of its
 //! own. The handler goes from one slot to the next without leaving the guest, so a batch of states costs one exit.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::mem::offset_of;
 use std::ops::Range;
@@ -28,6 +27,7 @@ use wcontainers_executor_hardware_virtualization_inside::layout::{
 };
 use wcontainers_executor_hardware_virtualization_inside::link::DOORBELL_FUNCTION;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
+use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS, InstructionFetch,
     PagePermission, Processor, VECTOR_REGISTERS,
@@ -48,7 +48,7 @@ const UNMAPPED_TABLES: u64 = HANDLER_STACK + PAGE_SIZE;
 const ARENA: Range<u64> =
     UNMAPPED_TABLES + LEAF_LEVEL as u64 * PAGE_SIZE..MEMORY_BASE + MEMORY_BYTES;
 
-/// Bytes of one register of each kind.
+// Bytes of one register of each kind.
 const REGISTER_BYTES: usize = size_of::<u64>();
 const VECTOR_REGISTER_BYTES: usize = size_of::<u128>();
 
@@ -324,7 +324,7 @@ const _: () = {
 };
 
 /// A slot loaded for the next run, and the pages of it that EL0 may write.
-struct Loaded {
+struct LoadedSlot {
     slot: u64,
     writable: Range<usize>,
 }
@@ -348,13 +348,12 @@ pub struct SingleStepMachine {
     /// The handler's entry, at its linear address.
     entry: u64,
     /// PSTATE as the host enters the handler.
-    entry_state: u64,
-    /// The next free page of the arena.
-    free: u64,
+    entry_pstate: u64,
+    next_free_page: u64,
     /// How many ASIDs the chip has, and so how many slots a batch holds at most.
-    asids: u64,
-    /// The slots of the batch so far; the next one's ASID.
-    slots: u64,
+    asid_count: u64,
+    /// The slots of the batch so far, which is also the next one's ASID.
+    slot_count: u64,
     first_slot: Option<u64>,
     last_slot: Option<u64>,
     writable_runs: Vec<WritableRun>,
@@ -380,10 +379,10 @@ impl SingleStepMachine {
             _machine: machine,
             memory,
             entry: 0,
-            entry_state: 0,
-            free: ARENA.start,
-            asids: 0,
-            slots: 0,
+            entry_pstate: 0,
+            next_free_page: ARENA.start,
+            asid_count: 0,
+            slot_count: 0,
             first_slot: None,
             last_slot: None,
             writable_runs: Vec::new(),
@@ -447,9 +446,13 @@ impl SingleStepMachine {
             cpacr,
             ttbr1,
             pstate,
-        } = boot_registers(BOOT_MAP, memory_model_features, true);
-        self.entry_state = pstate;
-        self.asids = match ID_AA64MMFR0_EL1::ASIDBits.read_as_enum(memory_model_features) {
+        } = boot_registers(
+            BOOT_MAP,
+            memory_model_features,
+            <wcontainers_arm64::Arm64 as wcontainers_guest_cpu::Guest>::SP_ALIGNMENT_CHECKED,
+        );
+        self.entry_pstate = pstate;
+        self.asid_count = match ID_AA64MMFR0_EL1::ASIDBits.read_as_enum(memory_model_features) {
             Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_16) => 1 << u16::BITS,
             Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_8) | None => 1 << u8::BITS,
         };
@@ -484,8 +487,8 @@ impl SingleStepMachine {
     }
 
     fn start_batch(&mut self) {
-        self.free = ARENA.start;
-        self.slots = 0;
+        self.next_free_page = ARENA.start;
+        self.slot_count = 0;
         self.first_slot = None;
         self.last_slot = None;
         self.writable_runs.clear();
@@ -493,8 +496,12 @@ impl SingleStepMachine {
     }
 
     /// Writes a state into a slot after the batch's others, or gives `None` when the batch has no room for it.
-    fn load(&mut self, processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Option<Loaded> {
-        if self.slots == self.asids {
+    fn load(
+        &mut self,
+        processor: &Processor,
+        memory: &[MemoryDelta<'_, Arm64>],
+    ) -> Option<LoadedSlot> {
+        if self.slot_count == self.asid_count {
             return None;
         }
         let pages = to_page_permissions(memory);
@@ -510,7 +517,7 @@ impl SingleStepMachine {
             .collect();
         // The slot, its top-level table, a frame and at most one table of each lower level per page.
         let most_pages = 2 + mapped.len() as u64 * (1 + u64::from(LEAF_LEVEL));
-        if self.free + most_pages * PAGE_SIZE > ARENA.end {
+        if self.next_free_page + most_pages * PAGE_SIZE > ARENA.end {
             return None;
         }
         let slot = self.allocate();
@@ -544,23 +551,23 @@ impl SingleStepMachine {
             let leaf = self.find_leaf_entry(top, page);
             self.write_entry(leaf, to_page_entry(frame, data_access, instruction_fetch));
         }
-        let record = Slot {
-            translation_table: top | TTBR0_EL1::ASID.val(self.slots).value,
+        let slot_contents = Slot {
+            translation_table: top | TTBR0_EL1::ASID.val(self.slot_count).value,
             next: 0,
             ending: Ending::NotRun as u64,
             before: to_registers(processor),
             after: to_registers(processor),
         };
         // SAFETY: the slot's page lies in the arena, in guest memory, and the guest is not running.
-        unsafe { std::ptr::write(self.memory.host(slot).cast::<Slot>(), record) };
+        unsafe { std::ptr::write(self.memory.host(slot).cast::<Slot>(), slot_contents) };
         if let Some(last) = self.last_slot {
             // SAFETY: as above, for the batch's previous slot.
             unsafe { (*self.memory.host(last).cast::<Slot>()).next = linear(slot) };
         }
-        self.slots += 1;
+        self.slot_count += 1;
         self.first_slot.get_or_insert(slot);
         self.last_slot = Some(slot);
-        Some(Loaded {
+        Some(LoadedSlot {
             slot,
             writable: writable_start..self.writable_runs.len(),
         })
@@ -569,7 +576,7 @@ impl SingleStepMachine {
     /// Runs every slot of the batch, then gives each state its after.
     fn finish_batch<'memory>(
         &mut self,
-        waiting: &mut Vec<(ExecutionState<'memory, Arm64>, Loaded)>,
+        waiting: &mut Vec<(ExecutionState<'memory, Arm64>, LoadedSlot)>,
         afters: &mut Vec<ExecutionState<'memory, Arm64>>,
     ) {
         self.run();
@@ -591,7 +598,7 @@ impl SingleStepMachine {
         for (register, value) in [
             (Register::InsideThread, linear(first)),
             (Register::Pc, self.entry),
-            (Register::Pstate, self.entry_state),
+            (Register::Pstate, self.entry_pstate),
         ] {
             self.cpu
                 .set(register, value)
@@ -623,7 +630,7 @@ impl SingleStepMachine {
     /// Gives the processor after a slot's run, and each run of bytes it changed as a slice of guest memory.
     fn read_back(
         &self,
-        loaded: &Loaded,
+        loaded: &LoadedSlot,
         processor: &mut Processor,
         mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
     ) {
@@ -643,18 +650,13 @@ impl SingleStepMachine {
         for run in &self.writable_runs[loaded.writable.clone()] {
             let before = &self.bytes_before[run.before.clone()];
             let after = self.read_bytes(run.frame, before.len() as u64);
-            for changed in to_changed_ranges(before, after) {
-                on_memory_mutated(MemoryDelta::ValueAssignment {
-                    start: run.start + changed.start as u64,
-                    bytes: Cow::Borrowed(&after[changed]),
-                });
-            }
+            report_changed_bytes(run.start, before, after, &mut on_memory_mutated);
         }
     }
 
     fn allocate(&mut self) -> u64 {
-        let page = self.free;
-        self.free += PAGE_SIZE;
+        let page = self.next_free_page;
+        self.next_free_page += PAGE_SIZE;
         page
     }
 
@@ -809,33 +811,6 @@ fn compose_page(page: u64, memory: &[MemoryDelta<'_, Arm64>], bytes: &mut [u8]) 
             }
         }
     }
-}
-
-/// The maximal ranges of bytes that differ between before and after.
-fn to_changed_ranges(before: &[u8], after: &[u8]) -> Vec<Range<usize>> {
-    /// Bytes compared at once before looking at single ones.
-    const CHUNK_BYTES: usize = 64;
-    let mut ranges = Vec::new();
-    let mut at = 0;
-    while at < before.len() {
-        let end = (at + CHUNK_BYTES).min(before.len());
-        if before[at..end] == after[at..end] {
-            at = end;
-            continue;
-        }
-        while at < end {
-            if before[at] == after[at] {
-                at += 1;
-                continue;
-            }
-            let start = at;
-            while at < before.len() && before[at] != after[at] {
-                at += 1;
-            }
-            ranges.push(start..at);
-        }
-    }
-    ranges
 }
 
 fn to_registers(processor: &Processor) -> Registers {

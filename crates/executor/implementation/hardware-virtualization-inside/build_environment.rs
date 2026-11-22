@@ -32,3 +32,22 @@ pub const RUSTC_CFG: &str = "cargo::rustc-cfg=";
 /// Declares the configuration option between it and [`CHECK_CFG_END`], so the compiler knows the name.
 pub const RUSTC_CHECK_CFG: &str = "cargo::rustc-check-cfg=cfg(";
 pub const CHECK_CFG_END: &str = ")";
+
+/// The system whose SDK may lack [`LATER_HYPERVISOR_CALLS`].
+pub const MACOS: &str = "macos";
+
+/// The linker option that leaves a symbol, named after it, to be found when the program loads.
+pub const LEAVE_UNDEFINED: &str = "-Wl,-U,_";
+
+/// Hypervisor.framework calls of macOS 15 and later that the build's SDK may not declare: the linker leaves
+/// them to be found when the program loads, on a system that has them. Every package that links a program with
+/// the hardware executor in it names them, since a linker option reaches only its own package's programs.
+pub const LATER_HYPERVISOR_CALLS: &[&str] = &[
+    "hv_gic_config_create",
+    "hv_gic_config_set_distributor_base",
+    "hv_gic_config_set_redistributor_base",
+    "hv_gic_create",
+    "hv_gic_get_intid",
+    "hv_gic_get_spi_interrupt_range",
+    "hv_gic_set_spi",
+];

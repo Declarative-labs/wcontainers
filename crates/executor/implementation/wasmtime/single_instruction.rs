@@ -5,70 +5,28 @@
 //! less than the architecture (a memory fault does not say whether the page was mapped), so what it leaves
 //! out is read from the state before, as the page tables an EL1 would have made from it say.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_abi::{Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, ThreadId};
-use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
+use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_processor_architecture_arm64::syndrome::{
+    FaultStatus, WRITE_NOT_READ, encode_syndrome,
+};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, Exception, InstructionFetch, PagePermission,
-    PreciseInstruction, Processor,
+    Arm64, ConditionFlags, DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch,
+    PagePermission, Processor,
 };
 
-const INSTRUCTION_BYTES: u64 = size_of::<u32>() as u64;
-/// The [WnR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=WnR%2C%20bit%20%5B6%5D) bit of a data abort's syndrome.
-const WRITE_NOT_READ: u64 = 1 << 6;
-/// The [DFSC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=DFSC%2C%20bits%20%5B5%3A0%5D) and IFSC of a translation fault at level 3, where every page of an executor's tables is.
-const TRANSLATION_FAULT_LEVEL_3: u64 = 0b00_0111;
-/// The DFSC and IFSC of a permission fault at level 3.
-const PERMISSION_FAULT_LEVEL_3: u64 = 0b00_1111;
-
-/// A precise instruction an executor was asked to honor and cannot, because its back end runs another.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Refusal {
-    pub requested: PreciseInstruction,
-    pub executed: PreciseInstruction,
-}
-
-/// Fails with every instruction `requested` gives another behavior than the back end's set, `executed`.
-pub fn check_honored(
-    requested: &impl PreciseInstructionSet<Arm64>,
-    executed: &impl PreciseInstructionSet<Arm64>,
-) -> Result<(), Vec<Refusal>> {
-    let refusals: Vec<Refusal> = Arm64::list_instructions()
-        .map(|instruction| Refusal {
-            requested: requested.to_precise(instruction),
-            executed: executed.to_precise(instruction),
-        })
-        .filter(|refusal| refusal.requested != refusal.executed)
-        .collect();
-    if refusals.is_empty() {
-        Ok(())
-    } else {
-        Err(refusals)
-    }
-}
-
-/// What becomes of the bytes an instruction wrote before a write of it faulted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FaultingWrite {
-    /// They stay as the CPU side left them.
-    Kept,
-    /// They are put back as they were, so the instruction writes nothing.
-    Undone,
-}
-
-/// Runs the instruction at the program counter on the CPU side, with `run_one`, which runs exactly one
-/// instruction of the thread it is given and returns how it ended.
-pub fn execute_on_cpu<C: Cpu>(
-    cpu: &mut C,
-    faulting_write: FaultingWrite,
+/// Runs the state's instruction on a CPU side, where `run_one` must stop a thread after exactly one instruction.
+pub fn execute_on_cpu<Side: Cpu>(
+    cpu: &mut Side,
     processor: &mut Processor,
     memory: &[MemoryDelta<'_, Arm64>],
     mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    run_one: impl FnOnce(&mut C, ThreadId) -> Exit,
+    run_one: impl FnOnce(&mut Side, ThreadId) -> Exit,
 ) {
     let space = cpu
         .memory_new()
@@ -119,7 +77,7 @@ pub fn execute_on_cpu<C: Cpu>(
         })
         .map(|(page, _)| *page)
         .collect();
-    let read_page = |cpu: &mut C, page: u64| {
+    let read_page = |cpu: &mut Side, page: u64| {
         let mut bytes = vec![0; PAGE_SIZE as usize];
         cpu.read(space, page, &mut bytes)
             .expect("a page the state gave a permission");
@@ -132,19 +90,12 @@ pub fn execute_on_cpu<C: Cpu>(
     let mut registers = to_register_block(processor);
     cpu.set_registers(thread, &registers);
     let exit = run_one(cpu, thread);
-    if let Exit::MemoryFault {
-        access: Access::Write,
-        ..
-    } = exit
-        && faulting_write == FaultingWrite::Undone
-    {
-        for (page, bytes) in writable.iter().zip(&before) {
-            cpu.write(space, *page, bytes)
-                .expect("a page the state gave a permission");
-        }
-    }
     cpu.registers(thread, &mut registers);
-    let exception = to_exception(exit, word, pc, &mut registers, |address| {
+    // The abi leaves the program counter after a system call; an exception leaves it on the instruction.
+    if let Exit::Syscall(_) = exit {
+        registers.pc = pc;
+    }
+    let exception = to_exception(exit, word, pc, |address| {
         pages
             .get(&(address - address % PAGE_SIZE))
             .copied()
@@ -153,21 +104,7 @@ pub fn execute_on_cpu<C: Cpu>(
     *processor = to_processor(&registers, exception);
     for (page, before) in writable.iter().zip(before) {
         let after = read_page(cpu, *page);
-        let mut offset = 0;
-        while offset < after.len() {
-            if after[offset] == before[offset] {
-                offset += 1;
-                continue;
-            }
-            let start = offset;
-            while offset < after.len() && after[offset] != before[offset] {
-                offset += 1;
-            }
-            on_memory_mutated(MemoryDelta::ValueAssignment {
-                start: page + start as u64,
-                bytes: Cow::Borrowed(&after[start..offset]),
-            });
-        }
+        report_changed_bytes(*page, &before, &after, &mut on_memory_mutated);
     }
     cpu.thread_drop(thread);
     cpu.memory_drop(space);
@@ -227,26 +164,20 @@ fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Proc
     }
 }
 
-/// The exception an exit is, with the program counter put back on the instruction that raised it.
+/// The exception an exit is, or none when the instruction completed.
 fn to_exception(
     exit: Exit,
     word: u32,
     pc: u64,
-    registers: &mut RegisterBlock,
     permission_at: impl Fn(u64) -> PagePermission,
 ) -> Option<Exception> {
     let fault_status = |address| match permission_at(address) {
-        PagePermission::Unmapped => TRANSLATION_FAULT_LEVEL_3,
-        PagePermission::Mapped { .. } => PERMISSION_FAULT_LEVEL_3,
+        PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3 as u64,
+        PagePermission::Mapped { .. } => FaultStatus::PermissionFaultLevel3 as u64,
     };
     let (class, specific, fault_address) = match exit {
         Exit::Stop => return None,
-        // The abi leaves the program counter after a system call.
-        Exit::Syscall(_) => {
-            registers.pc = pc;
-            let comment = u64::from(word >> 5 & u32::from(u16::MAX));
-            (ESR_EL1::EC::Value::SVC64, comment, None)
-        }
+        Exit::Syscall(_) => (ESR_EL1::EC::Value::SVC64, u64::from(IMM16.read(word)), None),
         Exit::MemoryFault {
             address,
             access: Access::Execute,
@@ -282,9 +213,7 @@ fn to_exception(
         }
     };
     Some(Exception {
-        syndrome: ESR_EL1::EC.val(class as u64).value
-            | ESR_EL1::IL::SET.value
-            | ESR_EL1::ISS.val(specific).value,
+        syndrome: encode_syndrome(class, specific),
         fault_address,
     })
 }

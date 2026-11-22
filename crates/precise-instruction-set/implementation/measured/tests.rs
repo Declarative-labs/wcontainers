@@ -12,9 +12,7 @@ use wcontainers_precise_instruction_set_neoverse_v2::NeoverseV2;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
-use wcontainers_processor_architecture_arm64::{
-    Arm64, Instruction, PreciseInstruction, Processor, VectorLength, VectorLengthReading,
-};
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, Processor};
 
 use crate::{MeasuredInstructionSet, MeasurementFailure};
 
@@ -100,7 +98,7 @@ fn stand_in_playing_the_v2_measures_as_the_v2() {
 }
 
 #[test]
-fn instruction_the_known_sets_agree_on_is_not_run() {
+fn only_states_that_tell_the_behaviors_in_play_apart_are_run() {
     let mut chip = Counted {
         chip: Simulation::new(AppleM5),
         runs: 0,
@@ -108,10 +106,11 @@ fn instruction_the_known_sets_agree_on_is_not_run() {
     assert!(MeasuredInstructionSet::measure(&mut chip, &[&AppleM5, &AppleM5], &GENERATOR).is_ok());
     assert_eq!(chip.runs, 0);
     assert!(MeasuredInstructionSet::measure(&mut chip, &KNOWN, &GENERATOR).is_ok());
-    let differing = [Instruction::Rdvl, Instruction::MrsCtrEl0].map(|instruction| {
-        DistinguishingStateGenerator::<Arm64>::generate_states(&GENERATOR, instruction).count()
+    // The two sets differ on three instructions, each between two behaviors: one run decides each.
+    let differing = Arm64::list_instructions().filter(|instruction| {
+        AppleM5.to_precise(*instruction) != NeoverseV2.to_precise(*instruction)
     });
-    assert_eq!(chip.runs, differing.iter().sum::<usize>());
+    assert_eq!(chip.runs, differing.count());
 }
 
 #[test]
@@ -154,14 +153,8 @@ fn behaviors_no_state_tells_apart_are_named() {
     else {
         panic!("with no states, the first instruction the sets differ on cannot be told");
     };
-    assert_eq!(instruction, Instruction::Rdvl);
-    assert_eq!(
-        behaviors,
-        [
-            PreciseInstruction::Rdvl(VectorLengthReading::Undefined),
-            PreciseInstruction::Rdvl(VectorLengthReading::Reads(VectorLength::Bits128)),
-        ]
-    );
+    assert_eq!(instruction, Instruction::LdrImmediatePostIndex64);
+    assert_eq!(behaviors, KNOWN.map(|set| set.to_precise(instruction)));
 }
 
 #[test]

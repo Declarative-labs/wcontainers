@@ -5,6 +5,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::fmt::{self, Debug, Formatter};
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_executor::Executor;
@@ -12,7 +13,7 @@ use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
-use wcontainers_processor_architecture_recording::leave_same_memory;
+use wcontainers_processor_architecture_conformance::leave_same_memory;
 
 #[cfg(test)]
 mod tests;
@@ -27,7 +28,7 @@ pub enum MeasurementFailure<Architecture: ProcessorArchitecture> {
     NoKnownBehavior {
         instruction: Architecture::Instruction,
     },
-    /// On this state the chip did what none of the behaviors still agreeing with it does.
+    /// On this state the chip did what none of the behaviors still in play does.
     NoBehaviorAgrees {
         instruction: Architecture::Instruction,
         before: ExecutionState<'static, Architecture>,
@@ -38,7 +39,7 @@ pub enum MeasurementFailure<Architecture: ProcessorArchitecture> {
         )>,
         chip: ExecutionState<'static, Architecture>,
     },
-    /// The chip agrees with each of these behaviors on every generated state.
+    /// No generated state tells these behaviors apart.
     IndistinguishableBehaviors {
         instruction: Architecture::Instruction,
         behaviors: Vec<Architecture::PreciseInstruction>,
@@ -46,9 +47,12 @@ pub enum MeasurementFailure<Architecture: ProcessorArchitecture> {
 }
 
 impl<Architecture: ProcessorArchitecture + Clone + Eq> MeasuredInstructionSet<Architecture> {
-    /// Keeps, for each instruction, the one known behavior the chip agrees with on every generated state.
+    /// Keeps, for each instruction, the one known behavior the chip agrees with.
     ///
-    /// An instruction that every known set gives the same behavior is not run.
+    /// The chip runs only the generated states on which the behaviors still in play differ, so an instruction every
+    /// known set gives the same behavior is not run. That the kept behavior agrees with the chip on every state is
+    /// what the chip's recordings check, once.
+    ///
     /// TODO: temporary placeholder until the interface says how a precise instruction set is built.
     pub fn measure<Chip, Generator>(
         chip: &mut Chip,
@@ -95,39 +99,92 @@ impl<Architecture: ProcessorArchitecture> PreciseInstructionSet<Architecture>
     }
 }
 
-/// What one instruction did to the processor, and the memory changes it made.
-struct Effect<Architecture: ProcessorArchitecture> {
-    processor: Architecture::Processor,
-    made: Vec<MemoryDelta<'static, Architecture>>,
-}
-
-impl<Architecture: ProcessorArchitecture + Clone + Eq> Effect<Architecture> {
-    fn observe(
-        before: &ExecutionState<'static, Architecture>,
-        run: impl FnOnce(&mut Architecture::Processor, &mut Vec<MemoryDelta<'static, Architecture>>),
-    ) -> Self {
-        let mut processor = before.processor.clone();
-        let mut made = Vec::new();
-        run(&mut processor, &mut made);
-        Self { processor, made }
-    }
-
-    fn agrees_with(&self, other: &Self, before: &ExecutionState<'static, Architecture>) -> bool {
-        self.processor == other.processor
-            && leave_same_memory(&before.memory_mutations, &self.made, &other.made)
-    }
-
-    fn to_state(
-        &self,
-        before: &ExecutionState<'static, Architecture>,
-    ) -> ExecutionState<'static, Architecture> {
-        let mut memory_mutations = before.memory_mutations.clone();
-        memory_mutations.extend(self.made.iter().cloned());
-        ExecutionState {
-            processor: self.processor.clone(),
-            memory_mutations,
+impl<Architecture> Debug for MeasurementFailure<Architecture>
+where
+    Architecture: ProcessorArchitecture,
+    Architecture::Instruction: Debug,
+    Architecture::PreciseInstruction: Debug,
+    Architecture::Processor: Debug,
+    Architecture::PagePermission: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoKnownBehavior { instruction } => {
+                write!(formatter, "no known set gives {instruction:?} a behavior")
+            }
+            Self::NoBehaviorAgrees {
+                instruction,
+                before,
+                behaviors,
+                chip,
+            } => {
+                let start = before.memory_mutations.len();
+                writeln!(
+                    formatter,
+                    "no known behavior of {instruction:?} agrees with the chip"
+                )?;
+                writeln!(formatter, "  before: ")?;
+                write_state(formatter, &before.processor, &before.memory_mutations)?;
+                for (precise, after) in behaviors {
+                    writeln!(formatter, "  {precise:?} gives: ")?;
+                    write_state(
+                        formatter,
+                        &after.processor,
+                        &after.memory_mutations[start..],
+                    )?;
+                }
+                writeln!(formatter, "  the chip gave: ")?;
+                write_state(formatter, &chip.processor, &chip.memory_mutations[start..])
+            }
+            Self::IndistinguishableBehaviors {
+                instruction,
+                behaviors,
+            } => write!(
+                formatter,
+                "no generated state of {instruction:?} tells these behaviors apart: {behaviors:?}"
+            ),
         }
     }
+}
+
+fn write_state<Architecture>(
+    formatter: &mut Formatter<'_>,
+    processor: &Architecture::Processor,
+    memory: &[MemoryDelta<'_, Architecture>],
+) -> fmt::Result
+where
+    Architecture: ProcessorArchitecture,
+    Architecture::Processor: Debug,
+    Architecture::PagePermission: Debug,
+{
+    writeln!(formatter, "    {processor:?}")?;
+    for delta in memory {
+        match delta {
+            MemoryDelta::PermissionAssignment {
+                addresses,
+                permission,
+            } => writeln!(formatter, "    {addresses:#x?} becomes {permission:?}")?,
+            MemoryDelta::ValueAssignment { start, bytes } => {
+                writeln!(formatter, "    {start:#x} gets {bytes:02x?}")?
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether two states after the same state before hold the same processor and memory.
+fn agree<Architecture: ProcessorArchitecture>(
+    before: &ExecutionState<'_, Architecture>,
+    first: &ExecutionState<'_, Architecture>,
+    second: &ExecutionState<'_, Architecture>,
+) -> bool {
+    let start = before.memory_mutations.len();
+    first.processor == second.processor
+        && leave_same_memory(
+            &before.memory_mutations,
+            &first.memory_mutations[start..],
+            &second.memory_mutations[start..],
+        )
 }
 
 fn measure_instruction<Architecture, Chip, Generator>(
@@ -141,46 +198,39 @@ where
     Chip: Executor<Architecture = Architecture>,
     Generator: DistinguishingStateGenerator<Architecture>,
 {
-    if candidates.len() > 1 {
-        for before in generator.generate_states(instruction) {
-            let observed = Effect::observe(&before, |processor, made| {
-                chip.execute_single_instruction_in_place(
-                    processor,
-                    &before.memory_mutations,
-                    |mutation| made.push(mutation.into_owned()),
-                );
-            });
-            let simulated: Vec<_> = candidates
-                .iter()
-                .map(|precise| {
-                    let effect = Effect::observe(&before, |processor, made| {
-                        let Ok(()) = precise.simulate_in_place(
-                            processor,
-                            &before.memory_mutations,
-                            |mutation| made.push(mutation.into_owned()),
-                        );
-                    });
-                    (*precise, effect)
-                })
-                .collect();
-            let agreeing: Vec<_> = simulated
-                .iter()
-                .filter(|(_, effect)| effect.agrees_with(&observed, &before))
-                .map(|(precise, _)| *precise)
-                .collect();
-            if agreeing.is_empty() {
-                return Err(MeasurementFailure::NoBehaviorAgrees {
-                    instruction,
-                    behaviors: simulated
-                        .iter()
-                        .map(|(precise, effect)| (*precise, effect.to_state(&before)))
-                        .collect(),
-                    chip: observed.to_state(&before),
-                    before,
-                });
-            }
-            candidates = agreeing;
+    let mut states = generator.generate_states(instruction);
+    while candidates.len() > 1
+        && let Some(before) = states.next()
+    {
+        let simulated: Vec<_> = candidates
+            .iter()
+            .map(|precise| {
+                let Ok(after) = precise.simulate(before.clone());
+                (*precise, after)
+            })
+            .collect();
+        let (_, first) = &simulated[0];
+        if simulated
+            .iter()
+            .all(|(_, after)| agree(&before, after, first))
+        {
+            continue;
         }
+        let executed = chip.execute_single_instruction(before.clone());
+        let agreeing: Vec<_> = simulated
+            .iter()
+            .filter(|(_, after)| agree(&before, after, &executed))
+            .map(|(precise, _)| *precise)
+            .collect();
+        if agreeing.is_empty() {
+            return Err(MeasurementFailure::NoBehaviorAgrees {
+                instruction,
+                before,
+                behaviors: simulated,
+                chip: executed,
+            });
+        }
+        candidates = agreeing;
     }
     match candidates.as_slice() {
         [] => Err(MeasurementFailure::NoKnownBehavior { instruction }),

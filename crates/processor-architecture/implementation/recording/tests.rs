@@ -9,7 +9,9 @@ use wcontainers_processor_architecture_arm64::{
     Arm64, DataAccess, Instruction, InstructionFetch, PagePermission,
 };
 
-use crate::{MalformedRecording, from_text, leave_same_memory, record, to_text};
+use wcontainers_processor_architecture_conformance::leave_same_memory;
+
+use crate::{MalformedRecording, from_text, record, to_text};
 
 /// Every combination of the critical values of each instruction's operands.
 const GENERATOR: CriticalValueProduct<Arm64InputDomain> =
@@ -73,7 +75,10 @@ after pc=0x1004 | value 0x2000 8877665544332211
 #[test]
 fn malformed_line_is_named() {
     let text = "instruction Brk\nprocessor x0=0x0\nbefore x0=zero |\n";
-    assert_eq!(from_text(text).err(), Some(MalformedRecording::Line(3)));
+    assert_eq!(
+        from_text(text).err(),
+        Some(MalformedRecording::UnreadableLine(3))
+    );
     assert_eq!(
         from_text("instruction Brk\nprocessor pc=0x0\nbefore |\n").err(),
         Some(MalformedRecording::UnfinishedCase)

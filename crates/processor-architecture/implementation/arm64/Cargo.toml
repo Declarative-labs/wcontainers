@@ -25,6 +25,7 @@ aarch64-cpu = "12.0.0"
 wcontainers-processor-architecture-conformance = { path = "../../conformance" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 
 [lints]
 workspace = true

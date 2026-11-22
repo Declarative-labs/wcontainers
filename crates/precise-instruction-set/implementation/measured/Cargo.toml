@@ -20,10 +20,15 @@ name = "chip"
 path = "chip.rs"
 harness = false
 
+[[example]]
+name = "record"
+path = "record.rs"
+
 [dependencies]
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
-wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
+# The one rule for whether two lists of memory changes leave the same memory.
+wcontainers-processor-architecture-conformance = { path = "../../../processor-architecture/conformance" }
 wcontainers-executor = { path = "../../../executor" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 
@@ -35,10 +40,16 @@ wcontainers-processor-architecture-arm64 = { path = "../../../processor-architec
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 wcontainers-executor-simulation = { path = "../../../executor/implementation/simulation" }
+wcontainers-executor-conformance = { path = "../../../executor/conformance" }
+wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
 
-# The chip the chip test measures.
-[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
+# The chip the chip test and the record tool run.
+[target.'cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))'.dev-dependencies]
 wcontainers-executor-hardware-virtualization = { path = "../../../executor/implementation/hardware-virtualization" }
+
+[build-dependencies]
+# The Hypervisor.framework calls the linker must leave undefined, as the hardware executor's build names them.
+wcontainers-executor-hardware-virtualization-inside = { path = "../../../executor/implementation/hardware-virtualization-inside" }
 
 [lints]
 workspace = true

@@ -13,6 +13,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::array;
 
+use itertools::Itertools;
+
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::encoding::{
@@ -20,7 +22,7 @@ use wcontainers_processor_architecture_arm64::encoding::{
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, GENERAL_PURPOSE_REGISTERS, Instruction, InstructionFetch,
-    PagePermission, Processor, VECTOR_REGISTERS,
+    PagePermission, Processor, ZERO_PROCESSOR,
 };
 
 #[cfg(test)]
@@ -42,7 +44,7 @@ pub struct Arm64InputDomain;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperandType {
     /// The register an encoding field names.
-    Register(Field),
+    RegisterNumber(Field),
     /// The value of the register an encoding field names.
     RegisterValue(Field),
     UnsignedImmediate(Field),
@@ -71,7 +73,7 @@ pub enum AccessPlacement {
 pub enum OperandValue {
     RegisterNumber(u32),
     /// A register's value, or an immediate's bits.
-    Integer(u64),
+    Bits(u64),
     ConditionFlags(ConditionFlags),
     AccessPlacement(AccessPlacement),
     PagePermission(PagePermission),
@@ -84,7 +86,7 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
     /// The operands of the assembly syntax in its order, then the state the instruction reads besides them.
     fn list_operand_types(&self, instruction: Instruction) -> impl Iterator<Item = OperandType> {
         use OperandType::{
-            AccessPlacement, ConditionFlags, DataPagePermission, Register, RegisterValue,
+            AccessPlacement, ConditionFlags, DataPagePermission, RegisterNumber, RegisterValue,
             SignedImmediate, UnsignedImmediate,
         };
         const PAGES: [OperandType; 2] = [
@@ -93,50 +95,50 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
         ];
         let operand_types: &[OperandType] = match instruction {
             Instruction::AddShiftedRegister64 | Instruction::AddsShiftedRegister64 => &[
-                Register(RD),
-                Register(RN),
-                Register(RM),
+                RegisterNumber(RD),
+                RegisterNumber(RN),
+                RegisterNumber(RM),
                 UnsignedImmediate(SHIFT),
                 UnsignedImmediate(SHIFT_IMM6),
                 RegisterValue(RN),
                 RegisterValue(RM),
             ],
             Instruction::Csel64 => &[
-                Register(RD),
-                Register(RN),
-                Register(RM),
+                RegisterNumber(RD),
+                RegisterNumber(RN),
+                RegisterNumber(RM),
                 UnsignedImmediate(COND),
                 ConditionFlags,
             ],
             Instruction::LdrImmediateUnsignedOffset64
             | Instruction::StrImmediateUnsignedOffset64 => &[
-                Register(RT),
-                Register(RN),
+                RegisterNumber(RT),
+                RegisterNumber(RN),
                 UnsignedImmediate(IMM12),
                 AccessPlacement,
                 PAGES[0],
                 PAGES[1],
             ],
             Instruction::StpSignedOffset64 => &[
-                Register(RT),
-                Register(RT2),
-                Register(RN),
+                RegisterNumber(RT),
+                RegisterNumber(RT2),
+                RegisterNumber(RN),
                 SignedImmediate(IMM7),
                 AccessPlacement,
                 PAGES[0],
                 PAGES[1],
             ],
             Instruction::LdrImmediatePostIndex64 => &[
-                Register(RT),
-                Register(RN),
+                RegisterNumber(RT),
+                RegisterNumber(RN),
                 SignedImmediate(IMM9),
                 AccessPlacement,
                 PAGES[0],
                 PAGES[1],
             ],
             Instruction::Brk => &[UnsignedImmediate(IMM16)],
-            Instruction::Rdvl => &[Register(RD), SignedImmediate(RDVL_IMM6)],
-            Instruction::MrsCtrEl0 => &[Register(RT)],
+            Instruction::Rdvl => &[RegisterNumber(RD), SignedImmediate(RDVL_IMM6)],
+            Instruction::MrsCtrEl0 => &[RegisterNumber(RT)],
         };
         operand_types.iter().copied()
     }
@@ -147,42 +149,34 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
     ) -> impl Iterator<Item = OperandValue> {
         let values: Vec<OperandValue> = match operand_type {
             // Two ordinary registers, so that one can appear twice, and the zero register or stack pointer.
-            OperandType::Register(_) => [0, 1, GENERAL_PURPOSE_REGISTERS as u32]
+            OperandType::RegisterNumber(_) => [0, 1, GENERAL_PURPOSE_REGISTERS as u32]
                 .map(OperandValue::RegisterNumber)
                 .to_vec(),
             OperandType::RegisterValue(_) => [0, 1, i64::MIN as u64, u64::MAX]
-                .map(OperandValue::Integer)
+                .map(OperandValue::Bits)
                 .to_vec(),
             OperandType::UnsignedImmediate(field) | OperandType::SignedImmediate(field)
                 if field.width <= EXHAUSTIVE_FIELD_BITS =>
             {
-                (0..1 << field.width).map(OperandValue::Integer).collect()
+                (0..1 << field.width).map(OperandValue::Bits).collect()
             }
             OperandType::UnsignedImmediate(field) => {
                 [0, 1, u64::from(field.to_mask() >> field.lowest_bit)]
-                    .map(OperandValue::Integer)
+                    .map(OperandValue::Bits)
                     .to_vec()
             }
             OperandType::SignedImmediate(field) => {
                 let all_ones = u64::from(field.to_mask() >> field.lowest_bit);
                 let sign_bit = 1 << (field.width - 1);
                 [0, 1, all_ones, sign_bit - 1, sign_bit]
-                    .map(OperandValue::Integer)
+                    .map(OperandValue::Bits)
                     .to_vec()
             }
-            OperandType::ConditionFlags => {
-                let flags: Vec<ConditionFlags> = ConditionFlags::all().iter().collect();
-                (0..1_u32 << flags.len())
-                    .map(|subset| {
-                        let chosen = flags
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| subset >> index & 1 == 1);
-                        chosen.fold(ConditionFlags::empty(), |union, (_, flag)| union | *flag)
-                    })
-                    .map(OperandValue::ConditionFlags)
-                    .collect()
-            }
+            OperandType::ConditionFlags => ConditionFlags::all()
+                .iter()
+                .powerset()
+                .map(|subset| OperandValue::ConditionFlags(subset.into_iter().collect()))
+                .collect(),
             OperandType::AccessPlacement => [
                 AccessPlacement::LowerPageStart,
                 AccessPlacement::EndsAtBoundary,
@@ -233,14 +227,8 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
         let mut word = instruction.to_fixed_bits().value;
         let mut processor = Processor {
             general_purpose_registers: array::from_fn(|number| !(number as u64)),
-            stack_pointer: 0,
             program_counter: CODE_ADDRESS,
-            condition_flags: ConditionFlags::empty(),
-            vector_registers: [0; VECTOR_REGISTERS],
-            floating_point_control: 0,
-            floating_point_status: 0,
-            software_thread_id: 0,
-            exception: None,
+            ..ZERO_PROCESSOR
         };
         let mut placement = None;
         let mut lower = PagePermission::Unmapped;
@@ -248,20 +236,20 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
         let mut register_values = Vec::new();
         for (operand_type, operand) in typed {
             match operand_type {
-                OperandType::Register(field) => {
+                OperandType::RegisterNumber(field) => {
                     let OperandValue::RegisterNumber(number) = operand else {
                         reject_mismatch(operand_type, operand)
                     };
                     word |= field.to_bits(number);
                 }
                 OperandType::UnsignedImmediate(field) | OperandType::SignedImmediate(field) => {
-                    let OperandValue::Integer(bits) = operand else {
+                    let OperandValue::Bits(bits) = operand else {
                         reject_mismatch(operand_type, operand)
                     };
                     word |= field.to_bits(bits as u32);
                 }
                 OperandType::RegisterValue(field) => {
-                    let OperandValue::Integer(value) = operand else {
+                    let OperandValue::Bits(value) = operand else {
                         reject_mismatch(operand_type, operand)
                     };
                     register_values.push((field, value));

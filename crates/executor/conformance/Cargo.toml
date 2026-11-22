@@ -13,4 +13,4 @@ wcontainers-processor-architecture = { path = "../../processor-architecture" }
 wcontainers-precise-instruction-set = { path = "../../precise-instruction-set" }
 wcontainers-distinguishing-state-generator = { path = "../../distinguishing-state-generator" }
 # The one rule for whether two lists of memory changes leave the same memory.
-wcontainers-processor-architecture-recording = { path = "../../processor-architecture/implementation/recording" }
+wcontainers-processor-architecture-conformance = { path = "../../processor-architecture/conformance" }

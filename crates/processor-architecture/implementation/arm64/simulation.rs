@@ -9,26 +9,17 @@ use wcontainers_processor_architecture::{MemoryDelta, Simulator};
 use crate::encoding::{
     COND, IMM7, IMM9, IMM12, IMM16, RD, RDVL_IMM6, RM, RN, RT, RT2, SHIFT, SHIFT_IMM6,
 };
+use crate::memory::{read_bytes, read_permission};
+use crate::syndrome::{FaultStatus, UNDEFINED_INSTRUCTION, WRITE_NOT_READ, encode_syndrome};
 use crate::{
-    Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS,
-    LoadIntoBaseWithWriteback, PagePermission, PreciseInstruction, Processor, StorePairAcrossFault,
-    VectorLength, VectorLengthReading,
+    Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS, INSTRUCTION_BYTES,
+    InstructionFetch, LoadIntoBaseWithWriteback, MisalignedStackPointer, PagePermission,
+    PreciseInstruction, Processor, StoreAcrossFault, VectorLength, VectorLengthReading,
 };
 
-const INSTRUCTION_BYTES: u64 = size_of::<u32>() as u64;
 const REGISTER_BYTES: u64 = size_of::<u64>() as u64;
 /// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires while SCTLR_EL1.SA0 is set, as Linux sets it.
 const STACK_POINTER_ALIGNMENT: u64 = 16;
-/// The [WnR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=WnR%2C%20bit%20%5B6%5D) bit of a data abort's syndrome.
-const WRITE_NOT_READ: u64 = 1 << 6;
-
-/// A data abort's [DFSC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=DFSC%2C%20bits%20%5B5%3A0%5D).
-#[derive(Clone, Copy)]
-#[repr(u64)]
-enum FaultStatus {
-    TranslationFaultLevel3 = 0b00_0111,
-    PermissionFaultLevel3 = 0b00_1111,
-}
 
 #[derive(Clone, Copy)]
 enum AccessDirection {
@@ -134,35 +125,67 @@ enum FlagSetting {
 impl Simulator<Arm64> for PreciseInstruction {
     type Error = Infallible;
 
-    /// Simulates the instruction whose encoding is at the program counter, which must be this one.
+    /// Fetches the word at the program counter and applies this behavior to it, reading its operands from it.
     fn simulate_in_place(
         &self,
         processor: &mut Processor,
         memory: &[MemoryDelta<'_, Arm64>],
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
     ) -> Result<(), Infallible> {
-        let word = u32::from_le_bytes(read_bytes(memory, processor.program_counter));
-        let outcome = match *self {
+        let outcome = fetch(processor, memory).and_then(|word| match *self {
             Self::AddShiftedRegister64 => {
                 add_shifted_register(processor, word, FlagSetting::Preserves)
             }
             Self::AddsShiftedRegister64 => add_shifted_register(processor, word, FlagSetting::Sets),
             Self::Csel64 => select_conditionally(processor, word),
-            Self::LdrImmediateUnsignedOffset64 => load_unsigned_offset(processor, memory, word),
-            Self::StrImmediateUnsignedOffset64 => {
-                store_unsigned_offset(processor, memory, word, on_memory_mutated)
+            Self::LdrImmediateUnsignedOffset64 {
+                misaligned_stack_pointer,
+            } => load_unsigned_offset(processor, memory, word, misaligned_stack_pointer),
+            Self::StrImmediateUnsignedOffset64 {
+                misaligned_stack_pointer,
+                across_fault,
+            } => {
+                let base = read_base(processor, word, misaligned_stack_pointer)?;
+                let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
+                let value =
+                    read_register(processor, RT.read(word), RegisterThirtyOne::ZeroRegister);
+                store(
+                    memory,
+                    address,
+                    &value.to_le_bytes(),
+                    across_fault,
+                    on_memory_mutated,
+                )
             }
-            Self::StpSignedOffset64(across_fault) => {
-                store_pair(processor, memory, word, across_fault, on_memory_mutated)
+            Self::StpSignedOffset64 {
+                misaligned_stack_pointer,
+                across_fault,
+            } => {
+                let base = read_base(processor, word, misaligned_stack_pointer)?;
+                let offset = IMM7.read_signed(word).wrapping_mul(REGISTER_BYTES as i64);
+                let address = base.wrapping_add(offset as u64);
+                let mut bytes = [0; 2 * REGISTER_BYTES as usize];
+                let (low, high) = bytes.split_at_mut(REGISTER_BYTES as usize);
+                for (half, field) in [(low, RT), (high, RT2)] {
+                    let value =
+                        read_register(processor, field.read(word), RegisterThirtyOne::ZeroRegister);
+                    half.copy_from_slice(&value.to_le_bytes());
+                }
+                store(memory, address, &bytes, across_fault, on_memory_mutated)
             }
-            Self::LdrImmediatePostIndex64(into_base) => {
-                load_post_index(processor, memory, word, into_base)
-            }
+            Self::LdrImmediatePostIndex64 {
+                misaligned_stack_pointer,
+                into_base,
+            } => load_post_index(processor, memory, word, misaligned_stack_pointer, into_base),
             Self::Brk => Err(Exception {
-                syndrome: to_syndrome(ESR_EL1::EC::Value::Brk64, u64::from(IMM16.read(word))),
+                syndrome: encode_syndrome(ESR_EL1::EC::Value::Brk64, u64::from(IMM16.read(word))),
                 fault_address: None,
             }),
-            Self::Rdvl(VectorLengthReading::Undefined) => Err(to_undefined_instruction()),
+            Self::Rdvl(VectorLengthReading::Undefined) => Err(UNDEFINED_INSTRUCTION),
+            Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception {
+                syndrome: encode_syndrome(ESR_EL1::EC::Value::TrappedSME, code as u64),
+                fault_address: None,
+            }),
             Self::Rdvl(VectorLengthReading::Reads(length)) => {
                 let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
                 write_register(
@@ -182,7 +205,7 @@ impl Simulator<Arm64> for PreciseInstruction {
                 );
                 Ok(())
             }
-        };
+        });
         match outcome {
             Ok(()) => {
                 processor.program_counter =
@@ -210,6 +233,33 @@ impl VectorLength {
 
 // Each formula below changes the processor's registers only when it returns Ok.
 
+/// Reads the instruction's word, which faults where the program counter is misaligned or its page does not allow
+/// instruction fetches.
+fn fetch(processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Result<u32, Exception> {
+    let address = processor.program_counter;
+    if !address.is_multiple_of(INSTRUCTION_BYTES) {
+        return Err(Exception {
+            syndrome: encode_syndrome(ESR_EL1::EC::Value::PCAlignmentFault, 0),
+            fault_address: Some(address),
+        });
+    }
+    let status = match read_permission(memory, address) {
+        PagePermission::Mapped {
+            instruction_fetch: InstructionFetch::Allowed,
+            ..
+        } => return Ok(u32::from_le_bytes(read_bytes(memory, address))),
+        PagePermission::Mapped {
+            instruction_fetch: InstructionFetch::Forbidden,
+            ..
+        } => FaultStatus::PermissionFaultLevel3,
+        PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
+    };
+    Err(Exception {
+        syndrome: encode_syndrome(ESR_EL1::EC::Value::InstrAbortLowerEL, status as u64),
+        fault_address: Some(address),
+    })
+}
+
 fn add_shifted_register(
     processor: &mut Processor,
     word: u32,
@@ -221,7 +271,7 @@ fn add_shifted_register(
         ShiftType::Lsl => operand << amount,
         ShiftType::Lsr => operand >> amount,
         ShiftType::Asr => ((operand as i64) >> amount) as u64,
-        ShiftType::Ror => return Err(to_undefined_instruction()),
+        ShiftType::Ror => return Err(UNDEFINED_INSTRUCTION),
     };
     let first = read_register(processor, RN.read(word), RegisterThirtyOne::ZeroRegister);
     let (sum, carry) = first.overflowing_add(shifted);
@@ -268,8 +318,9 @@ fn load_unsigned_offset(
     processor: &mut Processor,
     memory: &[MemoryDelta<'_, Arm64>],
     word: u32,
+    misaligned_stack_pointer: MisalignedStackPointer,
 ) -> Result<(), Exception> {
-    let base = read_base(processor, word)?;
+    let base = read_base(processor, word, misaligned_stack_pointer)?;
     let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
     let value = load(memory, address)?;
     write_register(
@@ -281,54 +332,26 @@ fn load_unsigned_offset(
     Ok(())
 }
 
-fn store_unsigned_offset(
-    processor: &mut Processor,
+/// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
+fn store(
     memory: &[MemoryDelta<'_, Arm64>],
-    word: u32,
+    address: u64,
+    bytes: &[u8],
+    across_fault: StoreAcrossFault,
     mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
 ) -> Result<(), Exception> {
-    let base = read_base(processor, word)?;
-    let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
-    let value = read_register(processor, RT.read(word), RegisterThirtyOne::ZeroRegister);
-    check_access(memory, address, REGISTER_BYTES, AccessDirection::Write)?;
-    on_memory_mutated(MemoryDelta::ValueAssignment {
-        start: address,
-        bytes: Cow::Borrowed(&value.to_le_bytes()),
-    });
-    Ok(())
-}
-
-fn store_pair(
-    processor: &mut Processor,
-    memory: &[MemoryDelta<'_, Arm64>],
-    word: u32,
-    across_fault: StorePairAcrossFault,
-    mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-) -> Result<(), Exception> {
-    let base = read_base(processor, word)?;
-    let offset = IMM7.read_signed(word).wrapping_mul(REGISTER_BYTES as i64);
-    let address = base.wrapping_add(offset as u64);
-    let first = read_register(processor, RT.read(word), RegisterThirtyOne::ZeroRegister);
-    let second = read_register(processor, RT2.read(word), RegisterThirtyOne::ZeroRegister);
-    let mut bytes = [0; 2 * REGISTER_BYTES as usize];
-    let (low, high) = bytes.split_at_mut(REGISTER_BYTES as usize);
-    low.copy_from_slice(&first.to_le_bytes());
-    high.copy_from_slice(&second.to_le_bytes());
-    let written = match check_access(memory, address, 2 * REGISTER_BYTES, AccessDirection::Write) {
-        Ok(()) => &bytes[..],
-        Err(abort) => match across_fault {
-            StorePairAcrossFault::WritesNothing => return Err(Exception::from(abort)),
-            StorePairAcrossFault::WritesBytesBelowFault => {
-                let below_fault = &bytes[..abort.address.wrapping_sub(address) as usize];
-                if !below_fault.is_empty() {
-                    on_memory_mutated(MemoryDelta::ValueAssignment {
-                        start: address,
-                        bytes: Cow::Borrowed(below_fault),
-                    });
-                }
-                return Err(Exception::from(abort));
+    let written = match check_access(memory, address, bytes.len() as u64, AccessDirection::Write) {
+        Ok(()) => bytes,
+        Err(abort) => {
+            let below_fault = &bytes[..abort.address.wrapping_sub(address) as usize];
+            if across_fault == StoreAcrossFault::WritesBytesBelowFault && !below_fault.is_empty() {
+                on_memory_mutated(MemoryDelta::ValueAssignment {
+                    start: address,
+                    bytes: Cow::Borrowed(below_fault),
+                });
             }
-        },
+            return Err(abort.into());
+        }
     };
     on_memory_mutated(MemoryDelta::ValueAssignment {
         start: address,
@@ -341,13 +364,14 @@ fn load_post_index(
     processor: &mut Processor,
     memory: &[MemoryDelta<'_, Arm64>],
     word: u32,
+    misaligned_stack_pointer: MisalignedStackPointer,
     into_base: LoadIntoBaseWithWriteback,
 ) -> Result<(), Exception> {
     let target = RT.read(word);
     let base_register = RN.read(word);
     let writes_back = if target == base_register && is_general_purpose(target) {
         match into_base {
-            LoadIntoBaseWithWriteback::Undefined => return Err(to_undefined_instruction()),
+            LoadIntoBaseWithWriteback::Undefined => return Err(UNDEFINED_INSTRUCTION),
             LoadIntoBaseWithWriteback::NoOperation => return Ok(()),
             LoadIntoBaseWithWriteback::WritebackSuppressed => false,
             LoadIntoBaseWithWriteback::WritebackOverwritesLoad => true,
@@ -355,7 +379,7 @@ fn load_post_index(
     } else {
         true
     };
-    let address = read_base(processor, word)?;
+    let address = read_base(processor, word, misaligned_stack_pointer)?;
     let value = load(memory, address)?;
     write_register(processor, target, value, RegisterThirtyOne::ZeroRegister);
     if writes_back {
@@ -370,13 +394,18 @@ fn load_post_index(
     Ok(())
 }
 
-/// Reads the base register of a load or store, which faults when it is a misaligned stack pointer.
-fn read_base(processor: &Processor, word: u32) -> Result<u64, Exception> {
+/// Reads the base register of a load or store, which may fault when it is a misaligned stack pointer.
+fn read_base(
+    processor: &Processor,
+    word: u32,
+    misaligned_stack_pointer: MisalignedStackPointer,
+) -> Result<u64, Exception> {
     let number = RN.read(word);
     let base = read_register(processor, number, RegisterThirtyOne::StackPointer);
-    if !is_general_purpose(number) && !base.is_multiple_of(STACK_POINTER_ALIGNMENT) {
+    let misaligned = !is_general_purpose(number) && !base.is_multiple_of(STACK_POINTER_ALIGNMENT);
+    if misaligned && misaligned_stack_pointer == MisalignedStackPointer::Faults {
         return Err(Exception {
-            syndrome: to_syndrome(ESR_EL1::EC::Value::SPAlignmentFault, 0),
+            syndrome: encode_syndrome(ESR_EL1::EC::Value::SPAlignmentFault, 0),
             fault_address: None,
         });
     }
@@ -402,7 +431,7 @@ impl From<DataAbort> for Exception {
             AccessDirection::Write => WRITE_NOT_READ,
         };
         Exception {
-            syndrome: to_syndrome(
+            syndrome: encode_syndrome(
                 ESR_EL1::EC::Value::DataAbortLowerEL,
                 write_not_read | abort.status as u64,
             ),
@@ -439,41 +468,6 @@ fn check_access(
         })
 }
 
-fn read_permission(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> PagePermission {
-    memory
-        .iter()
-        .rev()
-        .find_map(|delta| match delta {
-            MemoryDelta::PermissionAssignment {
-                addresses,
-                permission,
-            } => addresses.contains(&address).then_some(*permission),
-            MemoryDelta::ValueAssignment { .. } => None,
-        })
-        .unwrap_or(PagePermission::Unmapped)
-}
-
-/// Reads bytes as the memory holds them, whatever its permissions.
-fn read_bytes<const LENGTH: usize>(memory: &[MemoryDelta<'_, Arm64>], start: u64) -> [u8; LENGTH] {
-    core::array::from_fn(|offset| read_byte(memory, start.wrapping_add(offset as u64)))
-}
-
-fn read_byte(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> u8 {
-    memory
-        .iter()
-        .rev()
-        .find_map(|delta| match delta {
-            MemoryDelta::ValueAssignment { start, bytes } => {
-                usize::try_from(address.wrapping_sub(*start))
-                    .ok()
-                    .and_then(|offset| bytes.get(offset))
-                    .copied()
-            }
-            MemoryDelta::PermissionAssignment { .. } => None,
-        })
-        .unwrap_or_default()
-}
-
 fn is_general_purpose(number: u32) -> bool {
     (number as usize) < GENERAL_PURPOSE_REGISTERS
 }
@@ -501,16 +495,4 @@ fn write_register(
             RegisterThirtyOne::StackPointer => processor.stack_pointer = value,
         },
     }
-}
-
-fn to_undefined_instruction() -> Exception {
-    Exception {
-        syndrome: to_syndrome(ESR_EL1::EC::Value::Unknown, 0),
-        fault_address: None,
-    }
-}
-
-/// The syndrome of an exception a 32-bit instruction raised.
-fn to_syndrome(class: ESR_EL1::EC::Value, specific: u64) -> u64 {
-    ESR_EL1::EC.val(class as u64).value | ESR_EL1::IL::SET.value | ESR_EL1::ISS.val(specific).value
 }

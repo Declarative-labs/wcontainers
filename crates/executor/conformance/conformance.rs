@@ -8,28 +8,28 @@ use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
-use wcontainers_processor_architecture_recording::leave_same_memory;
+use wcontainers_processor_architecture_conformance::leave_same_memory;
 
 /// On every state the generator makes for every instruction, the executor ends where the precise instruction set
 /// says.
 ///
 /// Memory is compared by the bytes and permissions it ends with, not by the list of changes: an executor reports
 /// a store of the bytes already there as no change, where a simulation may report it.
-pub fn agrees_with_precise_instruction_set<E, Set, Generator>(
-    mut executor: E,
+pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
+    mut executor: Chip,
     set: Set,
     generator: Generator,
 ) where
-    E: Executor,
-    E::Architecture: Clone + Eq,
-    <E::Architecture as ProcessorArchitecture>::Processor: Debug,
-    <E::Architecture as ProcessorArchitecture>::Instruction: Debug,
-    <E::Architecture as ProcessorArchitecture>::PagePermission: Debug,
-    Set: PreciseInstructionSet<E::Architecture>,
-    Generator: DistinguishingStateGenerator<E::Architecture>,
+    Chip: Executor,
+    Chip::Architecture: Clone + Eq,
+    <Chip::Architecture as ProcessorArchitecture>::Processor: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
+    Set: PreciseInstructionSet<Chip::Architecture>,
+    Generator: DistinguishingStateGenerator<Chip::Architecture>,
 {
     let mut report = String::new();
-    for instruction in E::Architecture::list_instructions() {
+    for instruction in Chip::Architecture::list_instructions() {
         let precise = set.to_precise(instruction);
         let mut states = 0;
         let mut disagreeing = 0;
@@ -64,15 +64,15 @@ pub fn agrees_with_precise_instruction_set<E, Set, Generator>(
     assert!(report.is_empty(), "{report}");
 }
 
-fn describe<A>(
-    before: &ExecutionState<'_, A>,
-    simulated: &ExecutionState<'_, A>,
-    executed: &ExecutionState<'_, A>,
+fn describe<Architecture>(
+    before: &ExecutionState<'_, Architecture>,
+    simulated: &ExecutionState<'_, Architecture>,
+    executed: &ExecutionState<'_, Architecture>,
 ) -> String
 where
-    A: ProcessorArchitecture,
-    A::Processor: Debug,
-    A::PagePermission: Debug,
+    Architecture: ProcessorArchitecture,
+    Architecture::Processor: Debug,
+    Architecture::PagePermission: Debug,
 {
     let start = before.memory_mutations.len();
     format!(
@@ -86,10 +86,10 @@ where
     )
 }
 
-fn describe_deltas<A>(deltas: &[MemoryDelta<'_, A>]) -> String
+fn describe_deltas<Architecture>(deltas: &[MemoryDelta<'_, Architecture>]) -> String
 where
-    A: ProcessorArchitecture,
-    A::PagePermission: Debug,
+    Architecture: ProcessorArchitecture,
+    Architecture::PagePermission: Debug,
 {
     let described: Vec<String> = deltas
         .iter()

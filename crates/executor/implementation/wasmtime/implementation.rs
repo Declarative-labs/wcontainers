@@ -30,10 +30,8 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
-use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_precise_instruction_set_translator::Translator;
 use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::{Arm64, Processor};
+use wcontainers_processor_architecture_arm64::Processor;
 use wcontainers_runtime_single_kernel::{
     Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
@@ -43,8 +41,6 @@ use zerocopy::{FromBytes, IntoBytes};
 
 pub use memory::Layout;
 use memory::SLOT_BYTES;
-use single_instruction::FaultingWrite;
-pub use single_instruction::Refusal;
 pub use starts::Sources;
 pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
@@ -3159,42 +3155,38 @@ impl Default for TranslatorConfig {
     }
 }
 
-/// The WebAssembly executor of ARM64, which runs each instruction as [`Translator`] says.
+/// The WebAssembly executor of ARM64: each instruction runs through the translator, as the precise instruction set
+/// `Translator` describes.
 pub struct Arm64Executor {
     side: CpuSide<wcontainers_arm64::Arm64>,
 }
 
 impl Arm64Executor {
-    /// Refuses a set that gives any instruction another behavior than the translator does.
-    pub fn for_precise_set(
-        set: &impl PreciseInstructionSet<Arm64>,
-        translator: TranslatorConfig,
-    ) -> Result<Self, Vec<Refusal>> {
-        single_instruction::check_honored(set, &Translator)?;
-        Ok(Self {
+    /// TODO: temporary placeholder until the executor interface says how an executor is built.
+    pub fn new(translator: TranslatorConfig) -> Self {
+        Self {
             side: CpuSide::new(
                 Compiler::new(None),
                 translator.look_ahead,
                 translator.optimise,
                 (),
             ),
-        })
+        }
     }
 }
 
 impl wcontainers_executor::Executor for Arm64Executor {
-    type Architecture = Arm64;
+    type Architecture = wcontainers_processor_architecture_arm64::Arm64;
     type TranslatorConfig = TranslatorConfig;
 
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor,
-        memory: &[MemoryDelta<'_, Arm64>],
-        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+        memory: &[MemoryDelta<'_, Self::Architecture>],
+        on_memory_mutated: impl FnMut(MemoryDelta<'_, Self::Architecture>),
     ) {
         single_instruction::execute_on_cpu(
             &mut self.side,
-            FaultingWrite::Kept,
             processor,
             memory,
             on_memory_mutated,

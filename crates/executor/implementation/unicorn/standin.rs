@@ -18,16 +18,9 @@ use wcontainers_abi::{
     Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId,
 };
 
-use wcontainers_executor_wasmtime::single_instruction::{
-    FaultingWrite, Refusal, check_honored, execute_on_cpu,
-};
-use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_precise_instruction_set_unicorn::UnicornMax;
-use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_arm64::encoding::RN;
-use wcontainers_processor_architecture_arm64::{
-    Arm64, GENERAL_PURPOSE_REGISTERS, Instruction, Processor,
-};
+use wcontainers_executor_wasmtime::single_instruction::execute_on_cpu;
+use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture_arm64::{Arm64, Processor};
 
 use crate::replay::{DigestMemories, MemoryDigests, digest_pages};
 
@@ -36,9 +29,6 @@ pub const SPACE_32_BIT: u64 = 1 << 32;
 /// A process's address space on a host with 64 bit memories, at the smallest cap such a host
 /// sets (Chrome's 16 GiB).
 pub const SPACE_64_BIT: u64 = 16 << 30;
-
-/// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires while SCTLR_EL1.SA0 is set, as Linux sets it.
-const STACK_POINTER_ALIGNMENT: u64 = 16;
 
 /// QEMU's exception numbers, as unicorn's interrupt hook reports them.
 const EXCEPTION_UNDEFINED: u32 = 1;
@@ -483,14 +473,6 @@ impl StandIn {
         }
     }
 
-    /// A CPU side as on a host with 32 bit memories, which executes single instructions as [`UnicornMax`] says.
-    ///
-    /// Refuses a set that gives any instruction another behavior.
-    pub fn for_precise_set(set: &impl PreciseInstructionSet<Arm64>) -> Result<Self, Vec<Refusal>> {
-        check_honored(set, &UnicornMax)?;
-        Ok(Self::new())
-    }
-
     /// The same CPU side for a kernel on the machine's clock: a turn also ends once its slice has
     /// passed on that clock, since an instruction then takes what it takes.
     pub fn on_wall_clock(self) -> Self {
@@ -564,47 +546,6 @@ impl StandIn {
             wall_clock: self.wall_clock,
             digests: None,
         }
-    }
-
-    /// Runs the thread's next instruction alone.
-    ///
-    /// QEMU leaves out the stack pointer's alignment check (`gen_check_sp_alignment` in its
-    /// target/arm/translate-a64.c), which Linux's EL1 turns on, so the stand-in makes it first for the
-    /// instructions of the architecture that address memory from a base register.
-    fn run_one_instruction(&mut self, thread: ThreadId) -> Result<Exit, Unsupported> {
-        let Thread { memory, registers } = &self.threads[&thread];
-        let (memory, registers) = (*memory, *registers);
-        let mut word = [0; size_of::<u32>()];
-        self.read(memory, registers.pc, &mut word)
-            .expect("the program counter is inside the address space");
-        let word = u32::from_le_bytes(word);
-        let addresses_from_base = Arm64::list_instructions()
-            .filter(|instruction| {
-                let fixed = instruction.to_fixed_bits();
-                word & fixed.mask == fixed.value
-            })
-            .any(|instruction| match instruction {
-                Instruction::LdrImmediateUnsignedOffset64
-                | Instruction::StrImmediateUnsignedOffset64
-                | Instruction::StpSignedOffset64
-                | Instruction::LdrImmediatePostIndex64 => true,
-                Instruction::AddShiftedRegister64
-                | Instruction::AddsShiftedRegister64
-                | Instruction::Csel64
-                | Instruction::Brk
-                | Instruction::Rdvl
-                | Instruction::MrsCtrEl0 => false,
-            });
-        let base_is_stack_pointer = RN.read(word) as usize == GENERAL_PURPOSE_REGISTERS;
-        if addresses_from_base
-            && base_is_stack_pointer
-            && !registers.sp.is_multiple_of(STACK_POINTER_ALIGNMENT)
-        {
-            return Ok(Exit::AlignmentFault {
-                address: registers.sp,
-            });
-        }
-        self.run(thread, Resume::FromRegisters, Some(1))
     }
 
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
@@ -750,9 +691,6 @@ impl wcontainers_executor::Executor for StandIn {
     type TranslatorConfig = ();
 
     /// Panics where unicorn stops for a reason the stand-in cannot give as the processor's ([`Unsupported`]).
-    ///
-    /// Unicorn keeps the bytes a store wrote below the page that faulted, also for the single access of STR,
-    /// whose only behavior the architecture gives is to write nothing; the stand-in undoes them.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor,
@@ -761,13 +699,12 @@ impl wcontainers_executor::Executor for StandIn {
     ) {
         execute_on_cpu(
             self,
-            FaultingWrite::Undone,
             processor,
             memory,
             on_memory_mutated,
             |stand_in, thread| {
                 stand_in
-                    .run_one_instruction(thread)
+                    .run(thread, Resume::FromRegisters, Some(1))
                     .unwrap_or_else(|unsupported| panic!("{unsupported:?}"))
             },
         );

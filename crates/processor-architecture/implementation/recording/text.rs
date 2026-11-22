@@ -1,4 +1,4 @@
-//! A recording of an ARM64 chip as text, one line for each state, so that a change shows as a line in a diff.
+//! The text form of a recording of an ARM64 chip, one line for each state, so that a change shows as a line in a diff.
 //!
 //! ```text
 //! instruction StrImmediateUnsignedOffset64
@@ -21,8 +21,8 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_executor::Executor;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS, InstructionFetch,
-    PagePermission, Processor, VECTOR_REGISTERS,
+    Arm64, ConditionFlags, DataAccess, Exception, InstructionFetch, PagePermission, Processor,
+    ZERO_PROCESSOR,
 };
 
 use crate::{Recording, record};
@@ -36,7 +36,7 @@ const INSTRUCTION_FETCH: &str = "+execute";
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MalformedRecording {
     /// The line, counted from one, cannot be read.
-    Line(usize),
+    UnreadableLine(usize),
     NoInstruction,
     /// The last state before has no state after.
     UnfinishedCase,
@@ -135,7 +135,7 @@ pub fn from_text(text: &str) -> Result<Recording<Arm64>, MalformedRecording> {
                             .find(|instruction| format!("{instruction:?}") == rest)?,
                     );
                 }
-                "processor" => base = Some(from_fields(to_zero_processor(), rest)?),
+                "processor" => base = Some(from_fields(ZERO_PROCESSOR, rest)?),
                 "bytes" => {
                     let (name, hex) = rest.split_once(' ')?;
                     (name == format!("#{}", long_runs.len())).then_some(())?;
@@ -164,7 +164,7 @@ pub fn from_text(text: &str) -> Result<Recording<Arm64>, MalformedRecording> {
             }
             Some(())
         };
-        read().ok_or(MalformedRecording::Line(index + 1))?;
+        read().ok_or(MalformedRecording::UnreadableLine(index + 1))?;
     }
     if before.is_some() {
         return Err(MalformedRecording::UnfinishedCase);
@@ -265,20 +265,6 @@ fn from_fields(mut processor: Processor, fields: &str) -> Option<Processor> {
         }
     }
     Some(processor)
-}
-
-fn to_zero_processor() -> Processor {
-    Processor {
-        general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
-        stack_pointer: 0,
-        program_counter: 0,
-        condition_flags: ConditionFlags::empty(),
-        vector_registers: [0; VECTOR_REGISTERS],
-        floating_point_control: 0,
-        floating_point_status: 0,
-        software_thread_id: 0,
-        exception: None,
-    }
 }
 
 /// Reads an exception as `to_fields` writes it: none, a syndrome, or a syndrome `@` a fault address.

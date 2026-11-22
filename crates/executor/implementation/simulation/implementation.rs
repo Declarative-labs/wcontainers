@@ -2,11 +2,10 @@
 
 #![no_std]
 
-use core::array;
-
 use wcontainers_executor::Executor;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{Arm64, Processor};
 
 /// Runs each instruction as the set's precise instruction simulates it.
@@ -32,12 +31,7 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
         memory: &[MemoryDelta<'_, Arm64>],
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
     ) {
-        let word = u32::from_le_bytes(array::from_fn(|offset| {
-            read_byte(
-                memory,
-                processor.program_counter.wrapping_add(offset as u64),
-            )
-        }));
+        let word = u32::from_le_bytes(read_bytes(memory, processor.program_counter));
         let instruction = Arm64::list_instructions()
             .find(|instruction| {
                 let fixed = instruction.to_fixed_bits();
@@ -50,20 +44,4 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
             on_memory_mutated,
         );
     }
-}
-
-fn read_byte(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> u8 {
-    memory
-        .iter()
-        .rev()
-        .find_map(|delta| match delta {
-            MemoryDelta::ValueAssignment { start, bytes } => {
-                usize::try_from(address.wrapping_sub(*start))
-                    .ok()
-                    .and_then(|offset| bytes.get(offset))
-                    .copied()
-            }
-            MemoryDelta::PermissionAssignment { .. } => None,
-        })
-        .unwrap_or_default()
 }
