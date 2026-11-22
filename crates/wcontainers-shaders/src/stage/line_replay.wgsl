@@ -36,7 +36,7 @@ fn slot(record: u32, s: u32) -> vec4<u32> {
     return textureLoad(records, vec2<u32>(at % width, at / width), 0);
 }
 
-fn corner(vertex: u32) -> array<vec4<u32>, SLOTS> {
+fn line_corner(vertex: u32) -> array<vec4<u32>, SLOTS> {
     let unit = vertex / TRIANGLE_INDICES;
     let triangles = TRIANGLES;
     let k = triangles[vertex % TRIANGLE_INDICES];

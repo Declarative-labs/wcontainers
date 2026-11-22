@@ -395,6 +395,48 @@ fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
         .count() as u32
 }
 
+/// How `picture` differs from `reference`: texels apart, those of them at a clipped line end, the
+/// largest difference of the others, and the largest allowed.
+fn compared_clipped(case: &Case, reference: &[u8], picture: &[u8]) -> (usize, u32, u64, u64) {
+    let (count, largest) = differ(reference, picture, Format::Rgba8Unorm);
+    // A line clipped in the pixel program keeps the pixels whose centres the distance keeps, where
+    // Direct3D clips the line and rasterises what is left by its diamond rule: a line's clipped end
+    // may differ by a pixel (Known gaps). Those texels are listed apart; any other difference
+    // counts.
+    let (ends, largest) = if case.vs == "vs_cull" && lines(case.topology) {
+        let mut ends = 0;
+        let mut largest = 0;
+        for (i, (a, b)) in reference.chunks(4).zip(picture.chunks(4)).enumerate() {
+            let apart = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| u64::from(x.abs_diff(*y)))
+                .max()
+                .unwrap();
+            if apart == 0 {
+                continue;
+            }
+            if near_clip_plane(case, i as u32 % SIZE, i as u32 / SIZE) {
+                ends += 1;
+            } else {
+                largest = largest.max(apart);
+            }
+        }
+        (ends, largest)
+    } else {
+        (0, largest)
+    };
+    // Clipped in the pixel program, attributes are interpolated over the whole triangle, which
+    // rounds apart from Direct3D's over the clipped one by a step or two; a pixel drawn on one side
+    // only differs by far more.
+    let allowed = if case.gs == "gs_clip" || case.vs == "vs_cull" {
+        2
+    } else {
+        0
+    };
+    (count, ends, largest, allowed)
+}
+
 fn lines(t: InputTopology) -> bool {
     matches!(t, InputTopology::LineList | InputTopology::LineStrip)
 }
@@ -1214,8 +1256,15 @@ fn ours_replayed<B: Backend>(
         ..Default::default()
     };
     let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY, None);
+    let writes_cull = vs
+        .reflection
+        .outputs
+        .iter()
+        .any(|v| v.system == Some(SystemValue::CullDistance));
     let mut replay = match &gs {
         Some(gs) => GeometryReplay::new(b, &vs, gs, stream.map(|s| s.0))?,
+        // A vertex shader writing cull distances, drawn without stream output.
+        None if writes_cull && stream.is_none() => GeometryReplay::culled(b, &vs)?,
         // A vertex shader alone is captured for its stream output, and drawn from the capture.
         None => GeometryReplay::streamed(b, &vs, &declaration(case.gs))?,
     };
@@ -2790,42 +2839,7 @@ fn geometry_shaders_draw_as_direct3d_does() {
             else {
                 unreachable!()
             };
-            let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
-            // A line clipped in the pixel program keeps the pixels whose centres the distance
-            // keeps, where Direct3D clips the line and rasterises what is left by its diamond
-            // rule: a line's clipped end may differ by a pixel (Known gaps). Those texels are
-            // listed apart; any other difference counts.
-            let (ends, largest) = if case.vs == "vs_cull" && lines(case.topology) {
-                let mut ends = 0;
-                let mut largest = 0;
-                for (i, (a, b)) in reference.chunks(4).zip(picture.chunks(4)).enumerate() {
-                    let apart = a
-                        .iter()
-                        .zip(b)
-                        .map(|(x, y)| u64::from(x.abs_diff(*y)))
-                        .max()
-                        .unwrap();
-                    if apart == 0 {
-                        continue;
-                    }
-                    if near_clip_plane(case, i as u32 % SIZE, i as u32 / SIZE) {
-                        ends += 1;
-                    } else {
-                        largest = largest.max(apart);
-                    }
-                }
-                (ends, largest)
-            } else {
-                (0, largest)
-            };
-            // Clipped in the pixel program, attributes are interpolated over the whole triangle,
-            // which rounds apart from Direct3D's over the clipped one by a step or two; a pixel
-            // drawn on one side only differs by far more.
-            let allowed = if case.gs == "gs_clip" || case.vs == "vs_cull" {
-                2
-            } else {
-                0
-            };
+            let (count, ends, largest, allowed) = compared_clipped(case, &reference, &picture);
             compared += 1;
             eprintln!(
                 "{name}: {drawn} texels drawn by direct3d, {count} differ ({ends} at a clipped \
@@ -2994,17 +3008,22 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
         route: Route::Dxil,
         ..c
     });
+    // Primitives each cull case's planes drop over the seeds: none would leave culling unshown.
+    let mut dropped = [0u32; CULLED.len()];
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        // Every geometry case, and the vertex shader alone drawn from its capture.
+        // Every geometry case, the vertex shader alone drawn from its capture, and the vertex
+        // shader writing cull distances.
         let vertex_alone = STREAMED.iter().filter(|c| c.gs.is_empty());
-        for (i, case) in CASES.iter().chain(vertex_alone).chain(&dxil).enumerate() {
+        let cases: Vec<&Case> = CASES.iter().chain(vertex_alone).chain(&dxil).collect();
+        let culled_from = cases.len();
+        for (i, case) in cases.into_iter().chain(&CULLED).enumerate() {
             let name = format!(
                 "seed {seed} {} {:?} {:?} {} from {} x{}{}",
-                if case.gs.is_empty() {
-                    "vertex"
-                } else {
-                    case.gs
+                match (case.gs, case.vs) {
+                    ("", "vs_cull") => "vs_cull",
+                    ("", _) => "vertex",
+                    (gs, _) => gs,
                 },
                 case.route,
                 case.topology,
@@ -3039,19 +3058,23 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                 }
                 continue;
             }
+            let mut planes = 0;
+            if let Some(total) = i.checked_sub(culled_from).and_then(|c| dropped.get_mut(c)) {
+                planes = dropped_by_planes(case, &vertices, &indices);
+                eprintln!("{name}: the planes drop {planes} primitives");
+                *total += planes;
+            }
             let drawn = drawn_texels(&reference);
             let Made::Picture(picture) = made.unwrap() else {
                 failures.push(format!("{name}: ours made no primitive"));
                 continue;
             };
-            let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
-            // As on the compute route: clipped in the pixel program, attributes round apart by a step
-            // or two.
-            let allowed = if case.gs == "gs_clip" { 2 } else { 0 };
+            // As on the compute route.
+            let (count, ends, largest, allowed) = compared_clipped(case, &reference, &picture);
             compared += 1;
             eprintln!(
-                "{name}: {drawn} texels drawn by direct3d, {count} differ (largest {largest}, \
-                 allowed {allowed})"
+                "{name}: {drawn} texels drawn by direct3d, {count} differ ({ends} at a clipped \
+                 line end; largest of the others {largest}, allowed {allowed})"
             );
             if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
                 keep(
@@ -3065,7 +3088,10 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                     Format::Rgba8Unorm,
                 );
             }
-            if drawn == 0 || largest > allowed {
+            // An empty scene shows nothing, unless the planes dropped what it held and ours drew
+            // nothing either.
+            let empty = drawn == 0 && (planes == 0 || count > 0);
+            if empty || largest > allowed {
                 let apart = reference
                     .chunks(4)
                     .zip(picture.chunks(4))
@@ -3078,6 +3104,14 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                 }
                 failures.push(name);
             }
+        }
+    }
+    for (case, total) in CULLED.iter().zip(dropped) {
+        if total == 0 {
+            failures.push(format!(
+                "{} {:?}: no primitive dropped",
+                case.vs, case.topology
+            ));
         }
     }
     eprintln!("{compared} comparisons, {} failed", failures.len());

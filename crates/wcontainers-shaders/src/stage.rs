@@ -278,7 +278,7 @@ pub fn capture_program(
     geometry: &crate::Converted,
 ) -> Result<wcontainers_gpu::ShaderModule> {
     let inputs = locations(&geometry.reflection.inputs);
-    capture_program_for(vertex, &inputs, 0, CAPTURED_RECORDS)
+    capture_program_for(vertex, &inputs, (0, 0), CAPTURED_RECORDS)
 }
 
 /// A vertex program's stream output on the replay route ([`replay::GeometryReplay::streamed`]).
@@ -303,7 +303,7 @@ pub(crate) fn streamed_programs(vertex: &crate::Converted) -> Result<StreamedPro
     if drawn.cull != 0 {
         return Err(ConvertError::Unsupported(STREAMED_CULL_DISTANCE));
     }
-    let capture = capture_program_for(vertex, &drawn.locations, drawn.clip, STREAMED_RECORDS)?;
+    let capture = capture_program_for(vertex, &drawn.locations, (drawn.clip, 0), STREAMED_RECORDS)?;
     let passed = drawn.passthrough_values();
     let passthrough = passthrough_of(&passed, false, drawn.clip, None, None)?;
     let mut key = blake3::Hasher::new();
@@ -317,11 +317,11 @@ pub(crate) fn streamed_programs(vertex: &crate::Converted) -> Result<StreamedPro
 }
 
 /// [`capture_program`] writing a slot for each of `inputs` (locations), then the slots of the
-/// program's `clip` clip distances, keyed as `what`.
+/// program's `clip` clip distances and of its `cull` cull distances, keyed as `what`.
 fn capture_program_for(
     vertex: &crate::Converted,
     inputs: &[u32],
-    clip: u32,
+    (clip, cull): (u32, u32),
     what: &[u8],
 ) -> Result<wcontainers_gpu::ShaderModule> {
     let source = &vertex.modules[0];
@@ -388,18 +388,24 @@ fn capture_program_for(
         let at = |binding: &Binding| matches!(binding, Binding::Location { location, .. } if *location == l);
         slots.push(value_of(&mut b, &at)?);
     }
-    if clip > 0 {
+    for (built_in, count) in [
+        (BuiltIn::ClipDistances, clip),
+        (BuiltIn::CullDistance, cull),
+    ] {
+        if count == 0 {
+            continue;
+        }
         let member = outputs
             .iter()
-            .find(|(binding, ..)| matches!(binding, Binding::BuiltIn(BuiltIn::ClipDistances)))
+            .find(|(binding, ..)| *binding == Binding::BuiltIn(built_in))
             .and_then(|(_, member, _)| *member)
             .ok_or(ConvertError::Malformed(VERTEX_OUTPUTS.into()))?;
         let distances = b.field(out, member);
-        for k in 0..distance_slots(clip) {
+        for k in 0..distance_slots(count) {
             let zero = b.u32(0);
             let parts: Vec<Expr> = (0..build::VEC4)
                 .map(|c| match k * build::VEC4 + c {
-                    i if i < clip => {
+                    i if i < count => {
                         let d = b.field(distances, i);
                         b.bitcast(d, ScalarKind::Uint)
                     }
@@ -712,6 +718,80 @@ pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
     })
 }
 
+/// A vertex program on the cull or the primitive route without compute
+/// ([`replay::GeometryReplay::culled`], [`replay::GeometryReplay::primitive_numbered`]).
+pub(crate) struct ReplayedPrimitivePrograms {
+    /// The vertex program writing records of its position, each output location, its clip distances'
+    /// slots and its cull distances' slots as flat four-word values from location 0.
+    pub(crate) capture: wcontainers_gpu::ShaderModule,
+    /// The route's pass-through ([`CullPrograms::passthrough`], [`PrimitivePrograms::passthrough`]).
+    pub(crate) passthrough: wcontainers_gpu::ShaderModule,
+    /// Slots of a vertex record the pass-through draws: the position, the locations and the clip
+    /// distances; then, on the primitive route, the number's slot.
+    pub(crate) drawn_slots: u32,
+    pub(crate) cull_distances: u32,
+}
+
+/// What [`ReplayedPrimitivePrograms::capture`] is, in its key.
+const REPLAYED_PRIMITIVE_RECORDS: &[u8] = b"replayed primitive records";
+
+/// The programs of `vertex` (converted, its inputs as drawn) on the cull route without compute. They
+/// take its outputs from its module, as [`cull_programs`] does.
+pub(crate) fn cull_capture_programs(
+    vertex: &crate::Converted,
+) -> Result<ReplayedPrimitivePrograms> {
+    let drawn = drawn_outputs(&vertex.modules[0])?;
+    if drawn.cull == 0 {
+        return Err(ConvertError::Malformed(NO_CULL_DISTANCES.into()));
+    }
+    replayed_primitive_programs(vertex, &drawn, None)
+}
+
+/// The programs of `vertex` (converted, its inputs as drawn) on the primitive route without compute,
+/// for a pixel program converted with `pixel`'s key, as [`primitive_programs`] makes them.
+pub(crate) fn primitive_capture_programs(
+    vertex: &crate::Converted,
+    pixel: &VariantKey,
+) -> Result<ReplayedPrimitivePrograms> {
+    let drawn = drawn_outputs(&vertex.modules[0])?;
+    if drawn.cull != 0 {
+        return Err(ConvertError::Unsupported(PRIMITIVE_CULL_DISTANCE));
+    }
+    replayed_primitive_programs(vertex, &drawn, Some(primitive_id_location(pixel)))
+}
+
+/// The capture program of `vertex` with its `drawn` outputs, and the pass-through passing the
+/// primitive's number on at `numbered`, or none.
+fn replayed_primitive_programs(
+    vertex: &crate::Converted,
+    drawn: &DrawnOutputs,
+    numbered: Option<u32>,
+) -> Result<ReplayedPrimitivePrograms> {
+    let source = &vertex.modules[0];
+    let capture = capture_program_for(
+        vertex,
+        &drawn.locations,
+        (drawn.clip, drawn.cull),
+        REPLAYED_PRIMITIVE_RECORDS,
+    )?;
+    let passed = drawn.passthrough_values();
+    let extra = numbered.map(ExtraSlot::PrimitiveId);
+    let passthrough = passthrough_of(&passed, false, drawn.clip, None, extra)?;
+    let mut key = blake3::Hasher::new();
+    key.update(&source.key);
+    match numbered {
+        Some(at) => key.update(PRIMITIVE_PASSTHROUGH).update(&at.to_le_bytes()),
+        None => key.update(CULL_PASSTHROUGH),
+    };
+    let record_slots = 1 + drawn.locations.len() as u32 + distance_slots(drawn.clip);
+    Ok(ReplayedPrimitivePrograms {
+        capture,
+        passthrough: vertex_module(passthrough, key)?,
+        drawn_slots: record_slots + u32::from(numbered.is_some()),
+        cull_distances: drawn.cull,
+    })
+}
+
 /// A vertex program of the pass-through kind, keyed by `key`.
 fn vertex_module(module: Module, key: blake3::Hasher) -> Result<wcontainers_gpu::ShaderModule> {
     Ok(wcontainers_gpu::ShaderModule {
@@ -862,7 +942,7 @@ pub fn line_capture_programs(
     pixel: &VariantKey,
 ) -> Result<LinePrograms> {
     line_drawing(&vertex.modules[0], pixel, |drawn| {
-        capture_program_for(vertex, &drawn.locations, drawn.clip, LINE_CAPTURED)
+        capture_program_for(vertex, &drawn.locations, (drawn.clip, 0), LINE_CAPTURED)
     })
 }
 
@@ -1030,10 +1110,54 @@ pub fn line_program() -> Result<wcontainers_gpu::ShaderModule> {
 /// The line replay program's body: one invocation per corner of each line's two triangles, its
 /// record for capture.
 const LINE_REPLAY_PROGRAM: &str = include_str!("stage/line_replay.wgsl");
+/// What it is, in its errors, and its function giving a vertex's record.
+const LINE_REPLAY: &str = "the line replay program";
+const LINE_REPLAY_FUNCTION: &str = "line_corner";
 
 /// The line replay program ([`LINE_REPLAY_PROGRAM`]) writing corner records of `slots` four-word
 /// slots, which [`replay::GeometryReplay::antialiased_lines`] captures after the vertex stage.
 pub(crate) fn line_replay_program(slots: u32) -> Result<wcontainers_gpu::ShaderModule> {
+    replay_program(
+        LINE_REPLAY,
+        &format!("const SLOTS: u32 = {slots}u;\n{LINE_REPLAY_PROGRAM}"),
+        slots,
+        LINE_REPLAY_FUNCTION,
+    )
+}
+
+/// The primitive replay program's body: one invocation per vertex of each primitive, its record (or
+/// the empty record) and its primitive's number for capture.
+const PRIMITIVE_REPLAY_PROGRAM: &str = include_str!("stage/primitive_replay.wgsl");
+/// What it is, in its errors, and its function giving a vertex's record.
+const PRIMITIVE_REPLAY: &str = "the primitive replay program";
+const PRIMITIVE_REPLAY_FUNCTION: &str = "replayed";
+
+/// The primitive replay program ([`PRIMITIVE_REPLAY_PROGRAM`]) writing records of `slots` four-word
+/// slots from captured records of `record_slots`, which [`replay::GeometryReplay::culled`] and
+/// [`replay::GeometryReplay::primitive_numbered`] capture after the vertex stage.
+pub(crate) fn primitive_replay_program(
+    slots: u32,
+    record_slots: u32,
+) -> Result<wcontainers_gpu::ShaderModule> {
+    replay_program(
+        PRIMITIVE_REPLAY,
+        &format!(
+            "const SLOTS: u32 = {slots}u;\nconst RECORD_SLOTS: u32 = {record_slots}u;\n\
+             {PRIMITIVE_REPLAY_PROGRAM}"
+        ),
+        slots,
+        PRIMITIVE_REPLAY_FUNCTION,
+    )
+}
+
+/// A vertex program for capture of `body`, whose `function` gives vertex `v`'s record of `slots`
+/// four-word slots, written as flat values from location 0.
+fn replay_program(
+    what: &str,
+    body: &str,
+    slots: u32,
+    function: &str,
+) -> Result<wcontainers_gpu::ShaderModule> {
     let members: String = (0..slots)
         .map(|i| format!("    @location({i}) @interpolate(flat) s{i}: vec4<u32>,\n"))
         .collect();
@@ -1041,16 +1165,15 @@ pub(crate) fn line_replay_program(slots: u32) -> Result<wcontainers_gpu::ShaderM
         .map(|i| format!("    out.s{i} = c[{i}];\n"))
         .collect();
     let text = format!(
-        "const SLOTS: u32 = {slots}u;\n\
-         struct Corner {{\n    @builtin(position) position: vec4<f32>,\n{members}}}\n\
-         {LINE_REPLAY_PROGRAM}\n\
-         @vertex fn {entry}(@builtin(vertex_index) v: u32) -> Corner {{\n    \
-         let c = corner(v);\n    var out: Corner;\n    \
+        "struct Replayed {{\n    @builtin(position) position: vec4<f32>,\n{members}}}\n\
+         {body}\n\
+         @vertex fn {entry}(@builtin(vertex_index) v: u32) -> Replayed {{\n    \
+         let c = {function}(v);\n    var out: Replayed;\n    \
          out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);\n{written}    return out;\n}}\n",
         entry = crate::ENTRY_POINT,
     );
     let module = naga::front::wgsl::parse_str(&text)
-        .map_err(|e| ConvertError::Malformed(format!("the line replay program: {e}")))?;
+        .map_err(|e| ConvertError::Malformed(format!("{what}: {e}")))?;
     Ok(wcontainers_gpu::ShaderModule {
         info: crate::validate(&module)?,
         module,

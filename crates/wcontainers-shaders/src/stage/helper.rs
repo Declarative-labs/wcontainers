@@ -320,7 +320,7 @@ const PRIMITIVE_VALUES_BINDING: u32 = 0;
 const PRIMITIVE_RECORDS_BINDING: u32 = 1;
 const PRIMITIVE_COPIES_BINDING: u32 = 2;
 /// A draw on the primitive route with adjacency, whose adjacent vertices Direct3D draws without.
-const PRIMITIVE_ID_ADJACENCY: &str = "PrimitiveIdAdjacency";
+pub(super) const PRIMITIVE_ID_ADJACENCY: &str = "PrimitiveIdAdjacency";
 
 /// The strip program, and the list it writes ([`tess::INDEX_HEADER`] words, then the indices).
 struct Strips<B: Backend> {
@@ -368,7 +368,7 @@ const STREAM_OUTPUT_SYSTEM_VALUE: &str = "StreamOutputSystemValue";
 pub(super) const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
 /// A vertex stage writing cull distances, drawn with adjacency, which Direct3D draws without the
 /// adjacent vertices.
-const CULL_DISTANCE_ADJACENCY: &str = "CullDistanceAdjacency";
+pub(super) const CULL_DISTANCE_ADJACENCY: &str = "CullDistanceAdjacency";
 /// Stream output from a vertex stage writing cull distances whose records do not hold its reflected
 /// locations first.
 const CULL_DISTANCE_STREAM_LOCATIONS: &str = "CullDistanceStreamLocations";

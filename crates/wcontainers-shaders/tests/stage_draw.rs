@@ -444,15 +444,17 @@ fn ours<B: Backend>(
     out
 }
 
-/// `case`'s lines through the replay route ([`GeometryReplay::antialiased_lines`]), as a front on a
-/// back end without compute draws them: the vertex shader's inputs as drawn, its clip depth rewritten
-/// where the back end lacks clip depth from zero.
+/// `case` through the replay route ([`GeometryReplay::antialiased_lines`],
+/// [`GeometryReplay::primitive_numbered`]), as a front on a back end without compute draws it: the
+/// vertex shader's inputs as drawn, its clip depth rewritten where the back end lacks clip depth from
+/// zero.
 fn ours_replayed<B: Backend>(
     b: &mut B,
     case: &Case,
     (vertices, indices): (&[f32], &[u8]),
     dxil: bool,
     blending: bool,
+    route: Route,
 ) -> Vec<u8> {
     let zero_one = b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
     let vs_key = VariantKey {
@@ -463,8 +465,11 @@ fn ours_replayed<B: Backend>(
         },
         ..Default::default()
     };
-    let (vs, ps, ps_key) = linked(dxil, Route::Lines, &vs_key);
-    let mut replay = GeometryReplay::antialiased_lines(b, &vs, &ps_key).unwrap();
+    let (vs, ps, ps_key) = linked(dxil, route, &vs_key);
+    let mut replay = match route {
+        Route::Lines => GeometryReplay::antialiased_lines(b, &vs, &ps_key).unwrap(),
+        Route::Primitives => GeometryReplay::primitive_numbered(b, &vs, &ps_key).unwrap(),
+    };
     let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
     let mut layout = VertexLayoutDesc {
         streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
@@ -507,45 +512,43 @@ fn ours_replayed<B: Backend>(
     let index_buffer = case
         .indexed
         .then(|| buffer(b, indices, BufferUsage::INDEX | BufferUsage::COPY_SRC));
-    let last = replay
-        .run_antialiased_lines(
-            b,
-            ReplayDraw {
-                vertex_sets: [None, None, None, Some(&vertex_helpers)],
-                vertex_layout: &vertex_layout,
-                vertex_buffers: &[Some(VertexBinding {
-                    buffer: &vertex_buffer,
-                    offset: 0,
-                })],
-                index: index_buffer.as_ref().map(|buffer| IndexBinding {
-                    buffer,
-                    offset: 0,
-                    format: IndexFormat::U16,
-                }),
-                immediates: &[],
-                geometry_sets: [None; 4],
-                topology: case.topology,
-                range: match case.indexed {
-                    true => DrawRange::Indexed {
-                        first: 0,
-                        count: case.count,
-                        base_vertex: 0,
-                        first_instance: 0,
-                        instances: case.instances,
-                    },
-                    false => DrawRange::Vertices {
-                        first: 0,
-                        count: case.count,
-                        first_instance: 0,
-                        instances: case.instances,
-                    },
-                },
-                stream_output: None,
+    let draw = ReplayDraw {
+        vertex_sets: [None, None, None, Some(&vertex_helpers)],
+        vertex_layout: &vertex_layout,
+        vertex_buffers: &[Some(VertexBinding {
+            buffer: &vertex_buffer,
+            offset: 0,
+        })],
+        index: index_buffer.as_ref().map(|buffer| IndexBinding {
+            buffer,
+            offset: 0,
+            format: IndexFormat::U16,
+        }),
+        immediates: &[],
+        geometry_sets: [None; 4],
+        topology: case.topology,
+        range: match case.indexed {
+            true => DrawRange::Indexed {
+                first: 0,
+                count: case.count,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: case.instances,
             },
-            [SIZE as f32; 2],
-        )
-        .unwrap()
-        .expect("primitives");
+            false => DrawRange::Vertices {
+                first: 0,
+                count: case.count,
+                first_instance: 0,
+                instances: case.instances,
+            },
+        },
+        stream_output: None,
+    };
+    let last = match route {
+        Route::Lines => replay.run_antialiased_lines(b, draw, [SIZE as f32; 2]),
+        Route::Primitives => replay.run(b, draw),
+    };
+    let last = last.unwrap().expect("primitives");
     let out = drawn(
         b,
         replay.passthrough(),
@@ -816,7 +819,7 @@ fn antialiased_lines_draw_as_direct3d_does() {
             ours(&mut backend, case, (v, &[]), false, false, Route::Lines)
         });
         print_coverage("ours replayed on webgl", |case, v| {
-            ours_replayed(&mut gl, case, (v, &[]), false, false)
+            ours_replayed(&mut gl, case, (v, &[]), false, false, Route::Lines)
         });
     }
     let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
@@ -860,10 +863,22 @@ fn antialiased_lines_draw_as_direct3d_does() {
                             true,
                             Route::Lines,
                         );
-                        let replayed =
-                            ours_replayed(&mut gl, case, (&vertices, indices), dxil, true);
-                        let no_clip =
-                            ours_replayed(&mut gl_no_clip, case, (&vertices, indices), dxil, true);
+                        let replayed = ours_replayed(
+                            &mut gl,
+                            case,
+                            (&vertices, indices),
+                            dxil,
+                            true,
+                            Route::Lines,
+                        );
+                        let no_clip = ours_replayed(
+                            &mut gl_no_clip,
+                            case,
+                            (&vertices, indices),
+                            dxil,
+                            true,
+                            Route::Lines,
+                        );
                         [picture, replayed, no_clip]
                             .iter()
                             .all(|p| drawn_texels(p) == 0)
@@ -896,8 +911,22 @@ fn antialiased_lines_draw_as_direct3d_does() {
                         true,
                         Route::Lines,
                     ),
-                    1 => ours_replayed(&mut gl, case, (&vertices, &indices), dxil, true),
-                    _ => ours_replayed(&mut gl_no_clip, case, (&vertices, &indices), dxil, true),
+                    1 => ours_replayed(
+                        &mut gl,
+                        case,
+                        (&vertices, &indices),
+                        dxil,
+                        true,
+                        Route::Lines,
+                    ),
+                    _ => ours_replayed(
+                        &mut gl_no_clip,
+                        case,
+                        (&vertices, &indices),
+                        dxil,
+                        true,
+                        Route::Lines,
+                    ),
                 };
                 let route = [
                     "",
@@ -967,11 +996,14 @@ fn antialiased_lines_draw_as_direct3d_does() {
 }
 
 /// A pixel shader reading its primitive's number, drawn through the stage helper's primitive route
-/// (`PRIMITIVE_ID_FROM_STAGE`, for adapters without the primitive index): every texel equal to real
-/// Direct3D 11's, from the fxc and the dxc build.
+/// (`PRIMITIVE_ID_FROM_STAGE`, for adapters without the primitive index): by compute on WebGPU, and
+/// replayed on WebGL 2 with and without EXT_clip_control; every texel equal to real Direct3D 11's,
+/// from the fxc and the dxc build.
 #[test]
 fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
     let mut backend = webgpu();
+    let mut gl = webgl();
+    let mut gl_no_clip = webgl_without(&["EXT_clip_control"]);
     let gpu = d3d11::create(Driver::Hardware, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
     eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
     let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
@@ -1007,7 +1039,12 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
                             false,
                             Route::Primitives,
                         );
-                        drawn_texels(&picture) == 0
+                        let replayed = [&mut gl, &mut gl_no_clip].map(|gl| {
+                            ours_replayed(gl, case, drawn_from, dxil, false, Route::Primitives)
+                        });
+                        [&picture, &replayed[0], &replayed[1]]
+                            .iter()
+                            .all(|p| drawn_texels(p) == 0)
                     })
                 },
             )
@@ -1016,16 +1053,37 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
             };
             let drawn_from = (&vertices[..], &indices[..]);
             let drawn = drawn_texels(&reference);
-            for dxil in [false, true] {
-                let picture = ours(
-                    &mut backend,
-                    case,
-                    drawn_from,
-                    dxil,
-                    false,
-                    Route::Primitives,
-                );
-                let name = format!("{name} {}", if dxil { "dxil" } else { "dxbc" });
+            // 0: the compute route on WebGPU; 1: replayed on WebGL 2; 2: the same without
+            // EXT_clip_control.
+            for (dxil, replayed) in [false, true]
+                .into_iter()
+                .flat_map(|d| [(d, 0), (d, 1), (d, 2)])
+            {
+                let picture = match replayed {
+                    0 => ours(
+                        &mut backend,
+                        case,
+                        drawn_from,
+                        dxil,
+                        false,
+                        Route::Primitives,
+                    ),
+                    1 => ours_replayed(&mut gl, case, drawn_from, dxil, false, Route::Primitives),
+                    _ => ours_replayed(
+                        &mut gl_no_clip,
+                        case,
+                        drawn_from,
+                        dxil,
+                        false,
+                        Route::Primitives,
+                    ),
+                };
+                let route = [
+                    "",
+                    " replayed on webgl",
+                    " replayed on webgl without clip control",
+                ][replayed];
+                let name = format!("{name} {}{route}", if dxil { "dxil" } else { "dxbc" });
                 let d = apart(&reference, &picture);
                 let count = d.iter().filter(|x| **x != 0).count();
                 compared += 1;
