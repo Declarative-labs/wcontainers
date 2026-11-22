@@ -116,6 +116,8 @@ pub struct Streams {
     given: BTreeMap<End, u64>,
     /// What the kernel's wait on each endpoint asks for.
     armed: BTreeMap<End, ReadyFor>,
+    /// A wait was armed, or room, input or a close came, since the waits were last looked at.
+    stirred: bool,
     /// What came out: the output end's (or the terminal's) and the error end's.
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -204,6 +206,7 @@ impl Streams {
     /// The kernel waits on an endpoint for `interest`.
     pub fn arm(&mut self, end: End, interest: ReadyFor) {
         self.armed.insert(end, interest);
+        self.stirred = true;
     }
 
     /// What an endpoint is ready for now.
@@ -227,6 +230,9 @@ impl Streams {
     /// The waits whose endpoint is now ready for something they ask for, each taken off with
     /// what it is ready for.
     fn take_ready(&mut self) -> Vec<(End, ReadyFor)> {
+        if !core::mem::take(&mut self.stirred) {
+            return Vec::new();
+        }
         let ready: Vec<(End, ReadyFor)> = self
             .armed
             .iter()
@@ -359,12 +365,17 @@ fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end
         let mut streams = host.streams();
         let given = streams.given.entry(end).or_default();
         *given = given.saturating_add(bytes);
+        streams.stirred = true;
     }
     fire(kernel, cpu, host);
 }
 
 fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end: End) {
-    let closes = host.streams().closed_here.insert(end);
+    let closes = {
+        let mut streams = host.streams();
+        streams.stirred = true;
+        streams.closed_here.insert(end)
+    };
     if closes {
         fire(kernel, cpu, host);
     }
@@ -427,6 +438,7 @@ pub fn act(
                 let most = (left.len() as u64).min(MOST_AT_ONCE);
                 let piece = host.choices().draws().random_range(1..=most) as usize;
                 streams.pending = left[..piece].to_vec();
+                streams.stirred = true;
                 streams.sending = Some(left[piece..].to_vec());
                 if piece == left.len() {
                     streams.sending = None;

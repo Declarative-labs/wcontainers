@@ -6,6 +6,22 @@ pub use webgl::*;
 #[cfg(not(feature = "webgl"))]
 pub use webgpu::*;
 
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+/// Refused: a swap chain on a window the back end cannot present to. Both back ends' flip-model
+/// swap chains present only to the process's own windows.
+const UNPRESENTABLE_WINDOW: &str = "a swap chain on a window the back end cannot present to \
+     (another process's, or one taking no format)";
+
+/// Whether this process made `hwnd`.
+fn own_window(hwnd: HWND) -> bool {
+    let mut owner = Default::default();
+    // SAFETY: reads which process made the window.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+    owner == std::process::id()
+}
+
 #[cfg(not(feature = "webgl"))]
 mod webgpu {
     use std::num::NonZeroIsize;
@@ -13,9 +29,7 @@ mod webgpu {
     use windows::Win32::Foundation::{E_INVALIDARG, HWND};
     use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GWLP_HINSTANCE, GetWindowLongPtrW, GetWindowThreadProcessId,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GWLP_HINSTANCE, GetWindowLongPtrW};
     use windows::core::{Error, Result};
 
     use wcontainers_direct3d_11::WARNING_PREFIX;
@@ -38,10 +52,6 @@ mod webgpu {
 
     /// The adapter the back end was made on, which surfaces are asked about.
     static ADAPTER: std::sync::OnceLock<wgpu::Adapter> = std::sync::OnceLock::new();
-
-    /// Refused: a swap chain on another process's window, or on one whose surface takes no format.
-    const UNPRESENTABLE_WINDOW: &str = "a swap chain on a window the back end cannot present to \
-         (another process's, or one taking no format)";
 
     /// Makes the back end on the most capable GPU `wgpu` finds through Direct3D 12, or none if there
     /// is none. Direct3D 12 is what browsers' WebGPU draws through on Windows, and it rasterises
@@ -92,17 +102,16 @@ mod webgpu {
             eprintln!("{WARNING_PREFIX}: no surface for the window: {e}");
             Error::from(DXGI_ERROR_INVALID_CALL)
         })?;
-        // DXGI's answer where it cannot present to the window. The back end's flip-model swap
-        // chain presents only to the process's own windows.
-        let mut owner = Default::default();
-        // SAFETY: reads which process made the window.
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
-        let presents = owner == std::process::id()
+        // DXGI's answer where it cannot present to the window.
+        let presents = super::own_window(hwnd)
             && ADAPTER
                 .get()
                 .is_some_and(|a| !surface.get_capabilities(a).formats.is_empty());
         if !presents {
-            eprintln!("{WARNING_PREFIX}: not served: {UNPRESENTABLE_WINDOW}");
+            eprintln!(
+                "{WARNING_PREFIX}: not served: {}",
+                super::UNPRESENTABLE_WINDOW
+            );
             return Err(DXGI_ERROR_INVALID_CALL.into());
         }
         backend.add_window(id, surface);
@@ -121,7 +130,10 @@ mod webgl {
     use std::sync::OnceLock;
 
     use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
     use windows::core::Result;
+
+    use wcontainers_direct3d_11::WARNING_PREFIX;
 
     pub type Chosen = wcontainers_gpu_webgl::WebGl;
 
@@ -153,6 +165,14 @@ mod webgl {
 
     /// Gives `backend` the program's window `hwnd` as host window `id`.
     pub fn add_window(backend: &mut Chosen, id: u32, hwnd: HWND) -> Result<()> {
+        // DXGI's answer where it cannot present to the window.
+        if !super::own_window(hwnd) {
+            eprintln!(
+                "{WARNING_PREFIX}: not served: {}",
+                super::UNPRESENTABLE_WINDOW
+            );
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
         // SAFETY: the program keeps its window while a swap chain uses it, as DXGI requires.
         unsafe { backend.add_window(id, hwnd.0) };
         Ok(())
