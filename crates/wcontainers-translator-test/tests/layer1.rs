@@ -377,9 +377,9 @@ fn the_time_stamp_is_the_clock_x86_64() {
     }
 }
 
-/// Every default x86-64 code has cases whose meaning is written (or is the fault Linux gives, for the kernel's
-/// instructions), but those left out by design, those the translator decodes as another code, and milestone
-/// X7's.
+/// Every default x86-64 code and every code of a told feature beyond the default list has cases whose meaning is
+/// written (or is the fault Linux gives, for the kernel's instructions), but those left out by design and those
+/// the translator decodes as another code.
 #[test]
 fn every_default_code_is_drawn_and_written_x86_64() {
     use wcontainers_translator_test::guest::x86_64::{

@@ -665,7 +665,7 @@ impl GuestTest for X86_64 {
 }
 
 /// The forms: every default code (plan 7.4) and every code of a told feature beyond the default list with a case
-/// the translator decodes as that code, but those whose meaning is not written yet.
+/// the translator decodes as that code, written or not.
 fn forms() -> Vec<Form> {
     default_codes()
         .chain(beyond_default_codes())
@@ -709,35 +709,25 @@ fn beyond_default(code: Code) -> bool {
 }
 
 /// Why a default code, or one beyond the default list, has no form: left out by design, decoded as another
-/// code, milestone X7's or X8's and not written yet, or not drawn; `None` for a code with a form.
+/// code, or not drawn; `None` for a code with a form, whether or not its meaning is written (`unwritten_forms`
+/// finds those).
 fn default_left_out_because(code: Code) -> Option<&'static str> {
     let drawn: Vec<Vec<u8>> = (0..FORM_DRAWS)
         .filter_map(|draw| case(code, draw))
         .map(|c| c.code.code().to_vec())
         .collect();
-    if let Some(i) = drawn.iter().find_map(|bytes| decoded_as(bytes, code)) {
-        if beyond_default(code) {
-            return (!wcontainers_x86::written(&i)).then_some(MILESTONE_X8);
-        }
-        let x7 = is_x87_or_mmx(code) || uses_x87_or_mmx(&i.iced);
-        return (x7 && !wcontainers_x86::written(&i)).then_some(MILESTONE_X7);
+    if drawn.iter().any(|bytes| decoded_as(bytes, code).is_some()) {
+        return None;
+    }
+    if !drawn.is_empty() {
+        return Some(DECODED_ELSEWHERE);
     }
     // No case: the code's bytes with operands of every kind, as for an unoffered code.
     let encoded: Vec<Vec<u8>> = (0..FORM_DRAWS)
         .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
         .map(|(bytes, _)| bytes)
         .collect();
-    let excluded = encoded.iter().find_map(|bytes| X86_64::excluded(bytes));
-    if beyond_default(code) && drawn.is_empty() {
-        return Some(excluded.unwrap_or(MILESTONE_X8));
-    }
-    if is_x87_or_mmx(code) && drawn.is_empty() {
-        return Some(MILESTONE_X7);
-    }
-    if !drawn.is_empty() {
-        return Some(DECODED_ELSEWHERE);
-    }
-    if let Some(reason) = excluded {
+    if let Some(reason) = encoded.iter().find_map(|bytes| X86_64::excluded(bytes)) {
         return Some(reason);
     }
     // Followed by more bytes, as another code may be longer.
@@ -784,39 +774,6 @@ pub fn unwritten_forms() -> Vec<String> {
 pub const TRANSCENDENTAL_ROUNDING: &str = "Intel's transcendental result is within one unit in the last place, not correctly rounded (SDM Vol. 1 8.3.10)";
 /// The reason of one whose result is ours but whose C1 is not.
 pub const TRANSCENDENTAL_DIRECTION: &str = "Intel's transcendental approximation lies on the other side of the correctly rounded result, so C1 (rounded up) differs";
-
-/// Why a code beyond the default list has no form yet: the x86-64-v3 level's families are milestone X8's.
-pub const MILESTONE_X8: &str = "a family of the x86-64-v3 level: milestone X8's, not written yet";
-
-/// Why a default code has no form yet: the x87 unit, MMX registers and `fxsave` are milestone X7's (plan 9).
-pub const MILESTONE_X7: &str =
-    "the x87 unit, MMX registers or fxsave: milestone X7's, not written yet";
-
-/// A code of the x87 unit, of MMX registers or of `fxsave` and `fxrstor`, by its features and operands, or
-/// `wait`, the x87 unit's check for pending exceptions, which iced counts as the 8086's.
-fn is_x87_or_mmx(code: Code) -> bool {
-    use iced_x86::CpuidFeature::{FPU, FPU287, FPU387, FXSR, MMX};
-    code == Code::Wait
-        || code
-            .cpuid_features()
-            .iter()
-            .any(|f| matches!(f, FPU | FPU287 | FPU387 | MMX | FXSR))
-        || code.op_code().op_kinds().iter().any(|k| {
-            matches!(
-                k,
-                K::mm_reg | K::mm_rm | K::mm_or_mem | K::st0 | K::sti_opcode
-            )
-        })
-}
-
-/// An instruction that uses an x87 or MMX register without naming one (`fisttp`).
-fn uses_x87_or_mmx(i: &Instruction) -> bool {
-    InstructionInfoFactory::new()
-        .info(i)
-        .used_registers()
-        .iter()
-        .any(|used| used.register().is_mm() || used.register().is_st())
-}
 
 /// The translator's decoding of `bytes` when it is `code`, as long as they are.
 fn decoded_as(bytes: &[u8], code: Code) -> Option<wcontainers_x86::Instruction> {
@@ -1406,8 +1363,9 @@ const CPUID_BY_DESIGN: &str = "cpuid: the claims and designed leaves, not the CP
 /// Why layer 1 leaves out `xgetbv`.
 const XGETBV_BY_DESIGN: &str = "xgetbv: the state the program's list enables, not the CPU's";
 /// Why layer 1 leaves out `xsave` and `xrstor`: the reference enables MPX's components too, and reports in
-/// XSTATE_BV which components it saw in use, where ours reports every one it saves (plan 5.10); the x87, SSE and
-/// AVX state they move is compared by a program (`programs/x86_64/xstate.c`).
+/// XSTATE_BV the components it tracked in use since the runner's `xrstor` loaded them, where ours reports those
+/// out of their initial configuration (plan 5.10); the x87, SSE and AVX state they move and XSTATE_BV after
+/// each kind of instruction are compared by a program (`programs/x86_64/xstate.c`).
 const XSTATE_BY_DESIGN: &str = "xsave and xrstor: XCR0 and XSTATE_BV by design";
 /// Why layer 1 leaves out `sgdt` and `sidt`.
 const TABLES_BY_DESIGN: &str = "sgdt and sidt: designed answers, not the kernel's addresses";
