@@ -29,7 +29,9 @@ converter: the owner's ruling is asked ("New for the owner").
 ## G6a run 10 (run 78): the first check's findings at the tip after the interface merge
 
 Every figure here is from runs at a00ab267 (the tip of `agents` when the run started, after the
-merge of the owner's reviewed interfaces). Nothing this crate builds changed since run 77's
+merge of the owner's reviewed interfaces), not at the pushed tip 5c70cc91; the two differ for this
+crate's build inputs only in `literals.baseline` (66 lines of other tracks deleted), and the fourth
+check reran everything at 5c70cc91 and got every figure below exactly. Nothing this crate builds changed since run 77's
 793e1bfe: `git diff 793e1bfe a00ab267` is empty for this crate, `wcontainers-gpu`, `-gpu-webgl`,
 `-gpu-webgpu`, `-gpu-test` and `-graphics-test`, and the lock file differs only in the name of
 another track's crate. None of the changed interfaces (readiness, sockets, resolver) is used here.
@@ -643,6 +645,12 @@ The gap list (every item of the pass bar not met):
   largest 49), 5564 `vs_cull` TriangleList 30 from 3 x2 (16 of 1,420, largest 56), 5567 `vs_cull`
   TriangleList 24 from 3 indexed base 4 (1 of 270, largest 109), 5569 `gs_clip` TriangleList 30
   from 3 x2, DXBC and DXIL (17 of 917, largest 97); 5562's LineStrip passes (0 drawn, 0 differ).
+  G6a's fourth check of run 78 (seed 40961, 24 cases, at 5c70cc91; gpu2.log): 1,152 comparisons,
+  14 failed, all this pattern, 0 texels at a clipped line end in each: 40961 `vs_cull`
+  TriangleStrip 16 from 1 x2 indexed base 1 DXBC (7 of 1,122, largest 81), 40976 `vs_cull`
+  TriangleList 24 from 3 indexed base 4 (3 of 1,268, largest 113), 40981 `gs_clip` TriangleList 30
+  from 3 x2 DXBC (14 of 1,071, largest 111), and `gs_clip` on both routes at 40962, 40980, 40982 and
+  40983; the replay on ANGLE, 912 comparisons, 12 failed, the same `gs_clip` cases.
 - A11. `mutated_bytecode_converts_or_fails_without_ending_the_process` (tests/fuzz.rs, ignored by
   default as a long run) fails: signed but malformed bytecode can end the process (G6a run 1,
   fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; the second check, seed 8128,
@@ -658,7 +666,14 @@ The gap list (every item of the pass bar not met):
   3700); G6a's third check at b5222b3d, x86 machine, seed 4321, 5,000 cases, `ulimit -v 8000000`:
   31, all on DXIL inputs, 26 SIGSEGV and 5 `std::terminate` (for example case 0,
   `hs_line_integer_point.dxil`, and case 3638, `hs_quad_integer_ccw.dxil`, "terminate called
-  without an active exception"); Known gaps has the earlier counts). Causes:
+  without an active exception"); G6a's fourth check of run 78 at 5c70cc91, x86 machine, seed 60606,
+  6,000 cases: 41, every one a DXIL input, 30 SIGSEGV and 11 `std::terminate` (case 179
+  `vs_texels.dxil` word@2274, case 2705 `vs_rows_io.dxil` word@3992, case 2830 `ps_dual.dxil`),
+  and the three backtraced stop inside dxil-spirv under `wcs::contained` (cpp/dxil.cpp): case 179
+  in `NamedMDNode::getNumOperands` on a null node (bc/metadata.cpp, from `get_entry_points`), case
+  2705 in `cast<ConstantAsMetadata>` (from `emit_stage_output_variables`), case 2830 in
+  `cast<MDNode>` (from `emit_stage_input_variables`), all metadata the reader takes unchecked; Known
+  gaps has the earlier counts). Causes:
   - DXIL: dxil-spirv's bitcode reader faults or calls `std::terminate` on such input.
   - DXBC, the third check's case: this crate's own lowering took a resource array's declared count
     unchecked and asked Rust for gigabytes for its register list. Fixed in G6a run 3: a declared or
@@ -708,7 +723,9 @@ The gap list (every item of the pass bar not met):
   steps (largest 8.34e-7), and seed 3138 `gs_cut` TriangleStrip, 165 clamped, 208 differ, 10 steps;
   G6a's second check of the first's findings (seed 2718, 16 cases, at 9fb6e0d1), 2 of 96: seed 2727
   `gs_cut` TriangleList, largest 6.56e-7 (22 steps), and seed 2731 `gs_cut` TriangleStrip,
-  7.15e-7 (12 steps). Cause: not found. Both are `gs_cut`; the pixel program clamps a depth
+  7.15e-7 (12 steps); G6a's fourth check of run 78 (seed 40961, 24 cases, at 5c70cc91), 1 of 144:
+  seed 40981 `gs_cut` TriangleStrip, 155 clamped, 219 differ, largest 6.56e-7 (11 steps). Cause:
+  not found. Both are `gs_cut`; the pixel program clamps a depth
   interpolated as a value between stages from the pass-through's unclamped depth, where Direct3D
   clamps its rasteriser's own depth, so the two interpolations may round apart by more on some
   triangles (inferred, not measured). Waits: nobody (depths some millionths
@@ -3000,8 +3017,10 @@ were already there.
 - A converted shader's record keeps the naga module and the reflection, not naga's `ModuleInfo`
   (naga cannot read it back); `decode` validates the module again.
 - The WebAssembly build imports ten WASI functions, not two (above).
-- The corpus test writes GLSL with the WebGL 2 back end's options copied (its `write_glsl` is private
-  to that crate); if that back end changes them, the test follows by hand.
+- The corpus test writes GLSL with the WebGL 2 back end's own `wcontainers_gpu_webgl::glsl::write`
+  (since run 47). Only `naga_refusal` (tests/corpus.rs) copies naga's GLSL options, to record naga's
+  own reason beside a refusal of that writing; if the back end changes its options, that reason
+  follows by hand.
 - dxil-spirv's converter library is not free of dxbc-spirv as 6.2 says: its bitcode module
   (`bc/module_dxbc_ir.cpp`) reads dxbc-spirv's IR. It is built against our one copy of dxbc-spirv
   (newer than the commit dxil-spirv pins; it compiles), and all of dxil-spirv is built as C++17, as
