@@ -439,7 +439,7 @@ pub(crate) const IPC_PRIVATE: i32 = 0;
 pub(crate) const IPC_CREAT: u32 = 0o1000;
 pub(crate) const IPC_EXCL: u32 = 0o2000;
 /// Return at once rather than wait.
-pub(crate) const IPC_NOWAIT: u32 = 0o4000;
+pub const IPC_NOWAIT: u32 = 0o4000;
 /// `*ctl` commands every kind of object takes.
 pub(crate) const IPC_RMID: i32 = 0;
 pub(crate) const IPC_SET: i32 = 1;
@@ -903,3 +903,6 @@ pub(crate) const NTP_TOLERANCE: i64 = 32_768_000;
 /// and the length of one.
 pub(crate) const USER_HZ: u64 = 100;
 pub(crate) const NANOSECONDS_PER_TICK: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / USER_HZ;
+
+/// The most one read or write moves (`MAX_RW_COUNT`).
+pub const MAX_RW_COUNT: u64 = 0x7fff_f000;

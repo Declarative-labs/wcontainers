@@ -66,7 +66,9 @@ pub use credentials::{
 pub use ends::Standard;
 pub(crate) use errno::Errno;
 pub use executing::{KernelProcess, KernelWithExecutor};
-pub use linux_extra::{ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, sched_attr};
+pub use linux_extra::{
+    ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, IPC_NOWAIT, MAX_RW_COUNT, sched_attr,
+};
 pub use memory::PLACEMENT_TIERS;
 pub use process::DOCKER_LIMITS;
 pub use suspend::{ContextOrigin, ProcessContext, SuspendedTask};

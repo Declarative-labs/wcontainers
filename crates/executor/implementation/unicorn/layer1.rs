@@ -1973,11 +1973,6 @@ pub const BACKEND_CALLS: &[u32] = &[
     linux::__NR_cachestat,
 ];
 
-/// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
-mod linux_extra_ipc {
-    pub const IPC_NOWAIT: u32 = 0o4000;
-}
-
 /// Turns a generated call into real arguments.
 fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
     let number = calls[*kind as usize % calls.len()];
@@ -2665,7 +2660,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             queue(a),
             buffer(b),
             pick(&[0, 1, 5, 100, 8192, 8193, u64::MAX], c),
-            u64::from(linux_extra_ipc::IPC_NOWAIT) | pick(&[0, 0, 0o10000, 1 << 20], d),
+            u64::from(wcontainers_kernel_linux::IPC_NOWAIT) | pick(&[0, 0, 0o10000, 1 << 20], d),
             0,
             0,
         ],
@@ -2677,7 +2672,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                 &[0, 0, 1, 2, u64::MAX, -5i64 as u64, i64::MIN as u64, 1 << 40],
                 d,
             ),
-            u64::from(linux_extra_ipc::IPC_NOWAIT)
+            u64::from(wcontainers_kernel_linux::IPC_NOWAIT)
                 | pick(
                     &[0, 0, 0o10000, 0o20000, 0o40000, 0o60000, 0o50000, 1 << 20],
                     e,
@@ -4456,7 +4451,7 @@ const SCRATCH_ZEROS: u64 = 0x1000;
 /// Where the play area is read into at the end.
 const SCRATCH_PLAY: u64 = 0x11000;
 const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * PAGE_SIZE;
-const MAX_RW_COUNT: u64 = 0x7fff_f000;
+use wcontainers_kernel_linux::MAX_RW_COUNT;
 
 /// Signals both runners' callers ignore, as guest/layer1.c's does: at their default Linux keeps
 /// them from our caller, the container's first process, and not from the reference's. SIGPIPE,

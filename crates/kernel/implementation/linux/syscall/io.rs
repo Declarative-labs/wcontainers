@@ -17,8 +17,7 @@ use crate::process::{Channel, Tid};
 use crate::user::{Guest, access_ok};
 use crate::{Context, Errno, Kernel};
 
-/// The most one read or write moves, as Linux's `MAX_RW_COUNT`.
-pub(super) const MAX_RW_COUNT: u64 = 0x7fff_f000;
+pub(super) use crate::linux_extra::MAX_RW_COUNT;
 
 /// The most bytes the kernel makes at once for a transfer it fills itself, so a large request is
 /// filled in pieces rather than held whole.
