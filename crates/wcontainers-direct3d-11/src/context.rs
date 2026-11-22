@@ -534,6 +534,41 @@ enum Range {
     },
 }
 
+/// A direct draw's range: its first vertex or index, its count, and an indexed draw's base vertex.
+#[derive(Clone, Copy)]
+struct Direct {
+    start: u32,
+    count: u32,
+    base: i32,
+    indexed: bool,
+}
+
+impl Range {
+    /// The range of a direct draw; `None` for an indirect one.
+    fn direct(self) -> Option<Direct> {
+        match self {
+            Range::Vertices { count, start } => Some(Direct {
+                start,
+                count,
+                base: 0,
+                indexed: false,
+            }),
+            Range::Indexed { count, start, base } => Some(Direct {
+                start,
+                count,
+                base,
+                indexed: true,
+            }),
+            Range::Indirect { .. } => None,
+        }
+    }
+}
+
+/// The bytes of the whole storage words in `bytes`, the sizes buffer bindings take.
+fn whole_words(bytes: u64) -> u64 {
+    bytes & !(wcontainers_gpu::STORAGE_WORD - 1)
+}
+
 /// `d` writing nothing in the aspects a depth-stencil view's read-only `flags` mark, where `d`
 /// writes there.
 pub(crate) fn read_only_twin(d: &DepthStencilDesc, flags: u32) -> Option<DepthStencilDesc> {
@@ -3755,8 +3790,9 @@ impl<B: Backend> Device<B> {
         // storage offset alignment to the buffer's end; an empty slot, or an offset past the end,
         // reads the buffer of zeros.
         let limits = &self.backend.caps().limits;
-        let align = u64::from(limits.min_storage_offset_alignment.max(4));
-        let largest = limits.max_storage_buffer_size & !3;
+        let align =
+            u64::from(limits.min_storage_offset_alignment).max(wcontainers_gpu::STORAGE_WORD);
+        let largest = whole_words(limits.max_storage_buffer_size);
         let streams: Vec<_> = pulled
             .iter()
             .map(|&(binding, location)| {
@@ -3771,7 +3807,7 @@ impl<B: Backend> Device<B> {
                 (
                     binding,
                     bound.map(|(b, start)| {
-                        let size = ((b.size.get() - start) & !3).min(largest);
+                        let size = whole_words(b.size.get() - start).min(largest);
                         (b.gpu.borrow(), start, size)
                     }),
                 )
@@ -4475,7 +4511,7 @@ impl<B: Backend> Device<B> {
             .write_buffer_ring(RingKind::Data, &blocks, align, &mut offsets);
         let ring = self.gpu(ring)?;
         self.compute_helpers = None;
-        let args = args.map(|(b, ..)| (b.gpu.borrow(), b.size.get() & !3));
+        let args = args.map(|(b, ..)| (b.gpu.borrow(), whole_words(b.size.get())));
         let mut entries = Vec::with_capacity(3);
         for (i, stage) in [ShaderStage::Vertex, ShaderStage::Fragment]
             .into_iter()

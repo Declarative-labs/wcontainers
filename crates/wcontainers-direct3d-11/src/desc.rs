@@ -481,6 +481,8 @@ pub mod topology {
     pub const LINESTRIP_ADJ: u32 = 11;
     pub const TRIANGLELIST_ADJ: u32 = 12;
     pub const TRIANGLESTRIP_ADJ: u32 = 13;
-    /// The first of the 32 patch list topologies, of one control point.
+    /// The first of the patch list topologies, of one control point.
     pub const PATCHLIST_1: u32 = 33;
+    /// The control points of the last patch list topology (`D3D11_IA_PATCH_MAX_CONTROL_POINT_COUNT`).
+    pub const PATCH_CONTROL_POINTS_MAX: u32 = 32;
 }

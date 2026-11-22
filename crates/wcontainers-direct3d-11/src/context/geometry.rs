@@ -4,7 +4,7 @@
 //! targets (`StreamOutAsCompute`). A pass-through vertex program draws what a geometry stage made
 //! with the pixel program; without one the draw is drawn as usual after its stream output.
 
-use super::tessellation::DomainDraw;
+use super::tessellation::{DomainDraw, PIXEL_HELPERS_BEHIND_DOMAIN, THROUGH_BEHIND_HULL};
 use super::*;
 use crate::desc::{ViewDesc, bind};
 use crate::device::COUNTER_BYTES;
@@ -58,6 +58,16 @@ const VARIANT_BEHIND_REPLAY: &str = "a vertex shader variant behind a replayed g
 /// Storage textures read through buffers of their texels behind a geometry stage.
 const THROUGH_BEHIND_GEOMETRY: &str =
     "storage textures read through buffers behind a geometry shader";
+const GEOMETRY_WHILE_COUNTED: &str = "a draw through a geometry shader or stream output while a \
+     counted occlusion or statistics query runs";
+const VARIANT_BEHIND_GEOMETRY: &str = "a vertex shader variant behind a geometry shader";
+const INDIRECT_BEHIND_GEOMETRY: &str =
+    "an indirect draw through a geometry shader or stream output";
+const HELPERS_IN_GEOMETRY: &str = "a geometry shader reading helper constants";
+const LAYERS_OF_UNEQUAL_TARGETS: &str =
+    "a geometry shader choosing a layer of target views of different layer counts";
+const LAYER_OF_REINTERPRETING_TARGET: &str =
+    "a geometry shader choosing a layer of a target view reinterpreting its texture";
 
 /// One API draw through a replayed geometry stage.
 pub(super) struct Replayed {
@@ -351,10 +361,7 @@ impl<B: Backend> Device<B> {
         topology: InputTopology,
     ) -> Result<bool> {
         if !self.queries.counted.is_empty() || !self.queries.statistics.is_empty() {
-            return not_implemented(
-                "a draw through a geometry shader or stream output while a counted occlusion or \
-                 statistics query runs",
-            );
+            return not_implemented(GEOMETRY_WHILE_COUNTED);
         }
         // Behind a culled vertex shader the pixel program applies its clip distances and clamped
         // depth, which the pass-through passes on.
@@ -371,22 +378,22 @@ impl<B: Backend> Device<B> {
             || (own_route && drawn_variant == StageVariant::default());
         let replayed = !self.backend.caps().has(Features::COMPUTE);
         if !passed && !replayed {
-            return not_implemented("a vertex shader variant behind a geometry shader");
+            return not_implemented(VARIANT_BEHIND_GEOMETRY);
         }
-        let (start, count, base, indexed) = match range {
-            Range::Vertices { count, start } => (start, count, 0, false),
-            Range::Indexed { count, start, base } => (start, count, base, true),
-            Range::Indirect { .. } => {
-                return not_implemented(
-                    "an indirect draw through a geometry shader or stream output",
-                );
-            }
+        let Some(direct) = range.direct() else {
+            return not_implemented(INDIRECT_BEHIND_GEOMETRY);
         };
+        let Direct {
+            start,
+            count,
+            base,
+            indexed,
+        } = direct;
         if self.ctx.topology == topology::UNDEFINED || (indexed && self.ctx.index.is_none()) {
             return Ok(false);
         }
         if gs.stage.as_ref().is_some_and(|(s, _)| s.helpers.size > 0) {
-            return not_implemented("a geometry shader reading helper constants");
+            return not_implemented(HELPERS_IN_GEOMETRY);
         }
         if let Some((s, _)) = &gs.stage {
             self.program_paths(s);
@@ -439,8 +446,7 @@ impl<B: Backend> Device<B> {
             pk,
             raster,
             topology,
-            [start, count, base as u32],
-            indexed,
+            direct,
             first_instance,
             instances,
         );
@@ -464,15 +470,19 @@ impl<B: Backend> Device<B> {
         pk: StageVariant,
         raster: Option<&B::Raster>,
         topology: InputTopology,
-        [start, count, base]: [u32; 3],
-        indexed: bool,
+        Direct {
+            start,
+            count,
+            base,
+            indexed,
+        }: Direct,
         first_instance: u32,
         instances: u32,
     ) -> Result<bool> {
         let geometry = gs.stage.is_some();
         let tessellated = matches!(topology, InputTopology::PatchList(_));
         let selects = staged.stages.as_ref().is_some_and(Stages::selects);
-        let bases = [if indexed { base } else { start }, first_instance];
+        let bases = [if indexed { base as u32 } else { start }, first_instance];
         // The program of the pass-through (or the domain stage's) and pixel stages, and the pixel
         // stage's helpers.
         let culled = staged.culled;
@@ -498,9 +508,7 @@ impl<B: Backend> Device<B> {
             (None, Some(d)) => {
                 let p = self.stage_program(&d.shader.handle.clone(), d.id, ps, pk)?;
                 if p.1.size > 0 || !p.1.merged.is_empty() {
-                    return not_implemented(
-                        "a pixel shader reading helper constants behind a domain shader",
-                    );
+                    return not_implemented(PIXEL_HELPERS_BEHIND_DOMAIN);
                 }
                 Some(p)
             }
@@ -529,9 +537,7 @@ impl<B: Backend> Device<B> {
                 .iter()
                 .any(|&s| !self.ctx.through[s].is_empty())
             {
-                return not_implemented(
-                    "storage textures read through buffers behind a hull shader",
-                );
+                return not_implemented(THROUGH_BEHIND_HULL);
             }
         }
         if let Some((_, ph)) = &program {
@@ -575,7 +581,7 @@ impl<B: Backend> Device<B> {
             .index
             .as_ref()
             .filter(|_| indexed)
-            .map(|(b, f, offset)| (b.gpu.borrow(), b.size.get() & !3, *offset, *f));
+            .map(|(b, f, offset)| (b.gpu.borrow(), whole_words(b.size.get()), *offset, *f));
         let mut vertex_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         vertex_sets[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
         vertex_sets[HELPER_SET as usize] = vertex_set.as_ref();
@@ -592,7 +598,7 @@ impl<B: Backend> Device<B> {
             DrawRange::Indexed {
                 first: start,
                 count,
-                base_vertex: base as i32,
+                base_vertex: base,
                 first_instance,
                 instances,
             }
@@ -627,7 +633,7 @@ impl<B: Backend> Device<B> {
                     target_handles[i].as_ref().map(|(b, size)| BufferRange {
                         buffer: &b.handle,
                         offset: 0,
-                        size: u64::from(*size) & !3,
+                        size: whole_words(u64::from(*size)),
                     })
                 }),
                 filled: BufferRange {
@@ -1250,15 +1256,11 @@ impl<B: Backend> Device<B> {
         let layers = first.desc.layer_count;
         let mut views = self.ctx.targets.iter().flatten().chain(&self.ctx.depth);
         if views.any(|v| v.desc.layer_count != layers) {
-            return not_implemented(
-                "a geometry shader choosing a layer of target views of different layer counts",
-            );
+            return not_implemented(LAYERS_OF_UNEQUAL_TARGETS);
         }
         let mut views = self.ctx.targets.iter().flatten().chain(&self.ctx.depth);
         if layers > 1 && views.any(|v| v.copied()) {
-            return not_implemented(
-                "a geometry shader choosing a layer of a target view reinterpreting its texture",
-            );
+            return not_implemented(LAYER_OF_REINTERPRETING_TARGET);
         }
         Ok(layers)
     }

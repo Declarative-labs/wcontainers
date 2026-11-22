@@ -10,6 +10,19 @@ use wcontainers_shaders::stage::{
     FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages,
 };
 
+const TESSELLATED_WITHOUT_DRAW: &str = "a tessellation stage that made no tessellated draw";
+const TESSELLATED_WHILE_COUNTED: &str = "a draw through hull and domain shaders while a counted \
+     occlusion or statistics query runs";
+const VARIANT_BEHIND_HULL: &str = "a vertex shader variant behind a hull shader";
+const HELPERS_IN_HULL_OR_DOMAIN: &str = "a hull or domain shader reading helper constants";
+const INDIRECT_THROUGH_HULL: &str = "an indirect draw through hull and domain shaders";
+/// Refusals of the stage helper's runs behind hull and domain shaders, with or without a geometry
+/// stage.
+pub(super) const PIXEL_HELPERS_BEHIND_DOMAIN: &str =
+    "a pixel shader reading helper constants behind a domain shader";
+pub(super) const THROUGH_BEHIND_HULL: &str =
+    "storage textures read through buffers behind a hull shader";
+
 /// The stage helper of one vertex shader, input layout, hull, domain and pixel shader.
 pub(crate) struct TessRun<B: Backend> {
     /// Out while a draw runs it.
@@ -30,7 +43,7 @@ pub(crate) struct DomainDraw<B: Backend> {
 
 /// The control points of Direct3D's patch list topologies (33 to 64), none for the others.
 pub(super) fn patch_points(t: u32) -> Option<u8> {
-    (topology::PATCHLIST_1..topology::PATCHLIST_1 + 32)
+    (topology::PATCHLIST_1..topology::PATCHLIST_1 + topology::PATCH_CONTROL_POINTS_MAX)
         .contains(&t)
         .then(|| (t - topology::PATCHLIST_1 + 1) as u8)
 }
@@ -129,7 +142,7 @@ impl<B: Backend> Device<B> {
         out: &FinalDraw<B>,
     ) -> Result<()> {
         let Some(t) = &out.tessellated else {
-            return not_implemented("a tessellation stage that made no tessellated draw");
+            return not_implemented(TESSELLATED_WITHOUT_DRAW);
         };
         let set = self.backend.create_binding_set(&[
             read_only::<B>(DOMAIN_PATCHES_BINDING, &t.patches),
@@ -180,16 +193,13 @@ impl<B: Backend> Device<B> {
             return Ok(());
         };
         if !self.queries.counted.is_empty() || !self.queries.statistics.is_empty() {
-            return not_implemented(
-                "a draw through hull and domain shaders while a counted occlusion or statistics \
-                 query runs",
-            );
+            return not_implemented(TESSELLATED_WHILE_COUNTED);
         }
         if (StageVariant { pulled: 0, ..vk }) != StageVariant::default() {
-            return not_implemented("a vertex shader variant behind a hull shader");
+            return not_implemented(VARIANT_BEHIND_HULL);
         }
         if hs.helpers.size > 0 || ds.helpers.size > 0 {
-            return not_implemented("a hull or domain shader reading helper constants");
+            return not_implemented(HELPERS_IN_HULL_OR_DOMAIN);
         }
         self.program_paths(&hs);
         self.program_paths(&ds);
@@ -210,14 +220,10 @@ impl<B: Backend> Device<B> {
                 )
                 .map(|_| ());
         }
-        let (start, count, base, indexed) = match range {
-            Range::Vertices { count, start } => (start, count, 0, false),
-            Range::Indexed { count, start, base } => (start, count, base, true),
-            Range::Indirect { .. } => {
-                return not_implemented("an indirect draw through hull and domain shaders");
-            }
+        let Some(direct) = range.direct() else {
+            return not_implemented(INDIRECT_THROUGH_HULL);
         };
-        if indexed && self.ctx.index.is_none() {
+        if direct.indexed && self.ctx.index.is_none() {
             return Ok(());
         }
         let key = (
@@ -237,8 +243,7 @@ impl<B: Backend> Device<B> {
             pk,
             raster,
             InputTopology::PatchList(points),
-            [start, count, base as u32],
-            indexed,
+            direct,
             first_instance,
             instances,
         );
@@ -257,18 +262,20 @@ impl<B: Backend> Device<B> {
         pk: StageVariant,
         raster: Option<&B::Raster>,
         topology: InputTopology,
-        [start, count, base]: [u32; 3],
-        indexed: bool,
+        Direct {
+            start,
+            count,
+            base,
+            indexed,
+        }: Direct,
         first_instance: u32,
         instances: u32,
     ) -> Result<()> {
-        let bases = [if indexed { base } else { start }, first_instance];
+        let bases = [if indexed { base as u32 } else { start }, first_instance];
         let (program, ph) =
             self.stage_program(&run.domain.shader.handle.clone(), run.domain.id, ps, pk)?;
         if ph.size > 0 || !ph.merged.is_empty() {
-            return not_implemented(
-                "a pixel shader reading helper constants behind a domain shader",
-            );
+            return not_implemented(PIXEL_HELPERS_BEHIND_DOMAIN);
         }
 
         // The vertex stage's slots and fetched streams, and its helper block, for compute; the
@@ -289,7 +296,7 @@ impl<B: Backend> Device<B> {
             .iter()
             .any(|&s| !self.ctx.through[s].is_empty())
         {
-            return not_implemented("storage textures read through buffers behind a hull shader");
+            return not_implemented(THROUGH_BEHIND_HULL);
         }
         let vertex_set = self.helper_set(&vertex_block, StageSet::COMPUTE)?;
         self.helper_blocks = None;
@@ -302,7 +309,7 @@ impl<B: Backend> Device<B> {
             .index
             .as_ref()
             .filter(|_| indexed)
-            .map(|(b, f, offset)| (b.gpu.borrow(), b.size.get() & !3, *offset, *f));
+            .map(|(b, f, offset)| (b.gpu.borrow(), whole_words(b.size.get()), *offset, *f));
         let mut vertex_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         vertex_sets[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
         vertex_sets[HELPER_SET as usize] = vertex_set.as_ref();
@@ -312,7 +319,7 @@ impl<B: Backend> Device<B> {
             DrawRange::Indexed {
                 first: start,
                 count,
-                base_vertex: base as i32,
+                base_vertex: base,
                 first_instance,
                 instances,
             }
