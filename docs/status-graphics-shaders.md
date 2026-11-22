@@ -71,6 +71,9 @@ Runs (at 4694656f's code, from the scratch clone):
   tracks); this crate's baseline lines 4,787, 356 under src (x86-checks.log).
 - Not run: WebAssembly and Chrome (the converter changed only for DXBC hull programs' factor
   clamp; the corpus verdicts hold), the whole GPU suite.
+- Clean-up: desktop `C:\wc\target\shaders-tip` and `C:\wc\src\shaders-tip`; x86
+  `/work/target/shaders-tip`, its clone and bundle; the scratch clone (logs kept). The corpora
+  stay on the x86 machine at `/work/probes/shaders-corpus`.
 
 ## G6b again, run 1 (run 79): G6a's fourth check, and G6b's bar at the tip
 
