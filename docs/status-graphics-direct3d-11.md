@@ -5,13 +5,27 @@ Branch: agents, in the agents' shared worktree /Users/thomaseaton/Documents/GitH
 This file keeps the current state only; each earlier run's record (what it did, its measurements,
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
-round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 and 2
+round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
 (2026-11-21).
 
 ## Where things stand
 
 G4 is reported complete for its next independent check. What is left on the pass bar waits on
 other tracks (Gap list), or is the joint step with the Direct3D 12 track after both milestones.
+
+Agents run 3 (2026-11-21, from about 21:10 Pacific):
+- The task carried the fifth check's findings once more; each is closed as this file says (the
+  WebGL 2 build at 10_0 with its listed cases passing; the family library the joint step after G4
+  and G5, its two modules measured apart; the 11_0 shortfalls listed as failures of the reported
+  level, each waiting on a named track, with 11_0 left to the owner; `CheckFormatSupport` and
+  `FORMAT_SUPPORT2` compared bit by bit with the RTX 3080 for every format at every level; 16-bit
+  normalised targets held as integer twins with their test running; the minor findings as listed
+  under the Gap list and Differences). The bar was run again at this run's last code commit
+  (Measurements).
+- The owner's interface changes merged at a00ab267 (readiness, binding settings, the negative
+  route crate, the DNS answer) touch nothing this track builds or calls; both crates build and
+  their tests pass after the merge.
+- Literals: 66 lines of this track cut from the baseline (Literals).
 
 Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings:
 - Compute programs reading textures held as integer twins (blocking): a compute program's variant
@@ -36,111 +50,6 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 - The others: the 11_0 shortfalls stay with the owner; the constant buffers' counts wait on the
   WebGPU track; building ahead and B8G8R8X8's X byte are as listed; the literal check's findings
   are none of this track's.
-
-Agents run 1 (2026-11-21 evening), the first run in the agents' worktree:
-- The task carried the fifth check's findings again. Each was closed earlier and is confirmed by
-  this run's bar at 05a2cff4 (Measurements): the WebGL 2 build reports 10_0 and its listed cases
-  pass (round 4 runs 2 to 6); the family library is the joint step after G4 and G5 (the
-  orchestrator's ruling of 2026-11-20, the two modules measured apart below); B5G6R5, the
-  extended-range format and B8G8R8X8's vertex elements are failures of the reported 11_0, each
-  waiting on a named track, with 11_0 left to the owner (Gap list, For the owner);
-  `CheckFormatSupport` and `FORMAT_SUPPORT2` claim every ability the front serves, compared bit by
-  bit with the RTX 3080 for every format at every level (Format support against the RTX 3080);
-  16-bit normalised textures drawn into are held as their integer twins and their test runs
-  (main run 3); the minor findings: the constant buffers' counts on the WebGPU back end have their
-  test (a known failure, the WebGPU track's), building ahead's miss is traced to the tuple,
-  `ClearView` of storage rectangles is served and reported TRUE, the swap chain refusal is of
-  another process's window and warned, `ReadFromSubresource` and `WriteToSubresource` are listed
-  as removing the device, and this file is cut to the current state; the two programs outside the
-  bar that differ keep their causes (Gap list).
-- The interface changes of 2026-11-21 evening (the readiness trait, the DNS answer, poll events)
-  touch nothing this track builds or calls.
-- The scratch scripts named the owner's checkout; they now name the agents' worktree.
-- Through the WebGL 2 build, Wine's d3d10core now has 15 failing tests (96 of 111): the two new
-  ones, test_alpha_to_coverage and test_check_multisample_quality_levels, skip their multisampled
-  parts since main run 3 reports no multisampling there (Gap list, the WebGL 2 item).
-- Literals: 36 lines of this track cut from the baseline (Literals).
-
-Main run 1 (2026-11-21, about 09:40 to 12:00 Pacific), the first run on main:
-- The rig on main: its commands name the desktop's folder by the branch, now `main` for every
-  track, so this track runs a copy (scratch rigmain, How to run) that keeps its own folder, sends
-  one pinned commit with this track's crates as they are, and, while main's Cargo.lock did not
-  parse (another track's 8eaca3b6, all of this run), sends the newest lock that does.
-- The carried findings of the fifth check, all closed in round 4 runs 2 to 6 and confirmed in this
-  run's bar: the WebGL 2 build reports 10_0 and its listed cases pass (5 pass, 1 ignored with its
-  reason); the family library is the joint step (orchestrator's ruling, sizes measured apart);
-  B5G6R5, the extended-range format and B8G8R8X8's vertex elements are listed as failures of the
-  reported 11_0, each waiting on a named track, with 11_0 kept as a departure for the owner;
-  `CheckFormatSupport` and `FORMAT_SUPPORT2` are compared bit by bit with the RTX 3080 for every
-  format at every level (Format support against the RTX 3080); the constant buffers' counts on the
-  WebGPU back end have their test, a known failure that is the WebGPU track's; `ClearView` is
-  served and reported TRUE; the swap chain refusal is of any other process's window, warned
-  (`chosen.rs`), not keyed on the desktop window; `ReadFromSubresource` and `WriteToSubresource`
-  are listed as removing the device; this file is cut to the current state.
-- Building ahead (the minor finding): traced in Godot 3D; the cause of no hit is the tuple, not the
-  pairing (Differences from the RTX 3080). Nothing changed in the code.
-- bgfx-26-occlusion's difference found: one overlay line of GPU memory that ours, without a memory
-  budget to report, leaves out (Gap list); not the occlusion counts.
-- The literal check's one finding in this track's code, the cube faces defined both here and in the
-  NIR crate (the branches met on main), fixed through the interface (Interface changes).
-- The bar rerun on main (Measurements): everything as at round 4 run 6.
-
-Main run 2 (2026-11-21, from about 12:15 Pacific), the sixth check's findings:
-- Video support (blocking): `D3D11CreateDevice` with `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` now
-  answers `DXGI_ERROR_UNSUPPORTED`, warned, and hands nothing out, as Direct3D answers on an adapter
-  without video (Wine's test_video_support accepts that answer for an adapter, and expects it of
-  WARP made directly). The invalid-argument checks of adapter and driver type still come first, as
-  Wine's test asks. Before, the device was made without a video device and Wine's test crashed on
-  the null video device. Test: com.rs `device_creation_answers_as_direct3d`
-  (the new refusal, nothing handed out). Wine: see Wine's Direct3D 11 tests below.
-- The other findings: the extended-range level question is for the owner (For the owner); the
-  constant buffers' counts wait on the WebGPU track; the three ignored programs keep their causes;
-  the E_NOTIMPL list now names plain 2D `B4G4R4A4_UNORM` render targets; the 9_x sharing note says
-  measured for the sRGB twin and names the driver's contradiction ours copies (For the owner).
-- Another track (the shaders track, by its commits) edits this track's src/shader.rs in the shared
-  checkout: it committed dcf9fc21 (the shared container reader) and has further uncommitted edits
-  to it that need uncommitted shaders-crate code. This track leaves the file alone; the rig copy
-  now sends committed trees only (How to run), so this run built dcf9fc21's shader.rs.
-- Literals: 19 lines of this track cut from the baseline (Literals).
-
-Main run 3 (2026-11-21, from about 15:20 Pacific), the seventh check's findings:
-- Format support without float32-filterable (blocking): with the realistic configuration (a
-  browser without float32-filterable has no adapter-specific format features either: natively
-  `WEBGPU_OFF="wgpu-texture-adapter-specific-format-features float32-filterable"`) the 32-bit
-  float formats are gathered (point and linear samplers), sampled and their mips generated by the
-  in-program route and match real Direct3D (programs.rs
-  `float32_textures_gathered_sampled_and_their_mips_generated_as_direct3d_does`, own_cases
-  `float32_reads`), and format support is compared bit by bit in that configuration
-  (`format_support_without_float32_filterable_...`). The check's removal came from the
-  configuration it used, float32-filterable off with the adapter's own format features on: the
-  WebGPU back end then reads the adapter's answer (`adapter.get_texture_format_features`, which
-  says filterable), while wgpu's device takes filtering away without the feature
-  (wgpu-core 30.0.2 device/resource.rs `get_texture_format_features`), so the back end's
-  `FormatCaps` claim `FILTER` the device refuses. That is the WebGPU back end's (Asked); no browser
-  has that combination.
-- Without texture-formats-tier1 (blocking): depth formats `D32_FLOAT` and `D16_UNORM` claim no
-  storage views (`format::storage_viewed`); textures drawn into an 8-bit signed or 16-bit
-  normalised format the back end samples but does not draw into are held as their integer twins
-  (`NormAsInteger`, plan section 9's "no render bits"), so those formats are render targets with
-  generated mips again; only blending into them is missing (Gap list). Tests: programs.rs
-  `format_support_without_texture_formats_tier1_...` (bit by bit) and
-  `normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does` (drawn, read back and mips
-  generated, natively and without tier1, against real Direct3D).
-- The WebGL 2 build's multisampling (blocking): without the back end's sample mask
-  (`SampleMaskInShader` is not built) no format reports multisampling and
-  `CheckMultisampleQualityLevels` answers 0 above one sample, as plan section 9 says at 10_0.
-  Test: programs.rs `no_multisampling_without_a_sample_mask_route_at_10_0` (WebGL 2 build).
-- `D3D11_OPTIONS2.TypedUAVLoadAdditionalFormats` (blocking) answers TRUE where every format of
-  Microsoft's set (the typed UAV loads page, downloads/msdocs-uavload) claims typed loads, as on
-  the RTX 3080 at 11_0; compared at every level by the format support tests, which now also
-  compare `CheckMultisampleQualityLevels` at 4 samples for every format.
-- Minor: BC6H and BC7 at 10_x answer `E_INVALIDARG` to `CheckMultisampleQualityLevels`;
-  `SetMaximumFrameLatency` is served (presents of the device's swap chains without a waitable
-  object pace by it); an occlusion set out of slots splitting a pass is counted and warned
-  (`QuerySetSplitPass`, Interface changes); the call buffer departure gives its reason; the test
-  counts agree. Building ahead and atg-simplemsaa_pc are as before (Gap list).
-- Found: the RTX 3080 generates `R8G8B8A8_SNORM` mips by averaging the bytes as unsigned
-  (Differences from the RTX 3080).
 
 ## Wine's Direct3D 11 tests through ours
 
@@ -810,6 +719,14 @@ Earlier runs' measurements are in this file's git history.
 
 ## Literals
 
+- Agents run 3 (2026-11-21): 66 lines of this track cut: the stage helper's refusals behind
+  geometry, hull and domain shaders, its draw range (`Direct`) and word sizes
+  (`wcontainers_gpu::STORAGE_WORD`), the patch list count, stream output declarations' buffer and
+  stream counts (the shaders crate's `STREAM_BUFFERS` and `STREAMS`), the counting programs'
+  names, sizes and refusals (the shaders crate's `ENTRY_POINT`), split draws' write mask and
+  refusals, and the combination cache's key type (`blake3::OUT_LEN`). Left:
+  wcontainers-direct3d-11 338 lines (404), wcontainers-directx 200. Checked on the rented x86
+  machine (logs/a3-lit1 to a3-lit4): no new finding of this track's.
 - Agents run 1 (2026-11-21): 36 lines of this track cut: the helper block takes each value's
   length from the words it writes (`size_of`), and colours, blend factors, border colours and
   scissor rectangles use the front's `Color`, `Rect` and `COLOR_COMPONENTS` in both crates. Left:
