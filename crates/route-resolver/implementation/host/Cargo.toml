@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-route-resolver-host"
-description = "A route resolver that asks the Linux kernel's routing socket of the network namespace it was made in."
+description = "A route resolver that asks the Linux routing socket of the calling thread's network namespace."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,17 +16,20 @@ wcontainers-abi.workspace = true
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-route-resolver = { path = "../.." }
-etherparse.workspace = true
-libc = "0.2.191"
+wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+etherparse.workspace = true
+libc = "0.2.191"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "netlink", "no_std"] }
-rustix = { version = "1.1.6", features = ["net"] }
 socket2 = "0.6.5"
 netlink-packet-core = "0.9.0"
 netlink-packet-route = "0.34.0"
 netlink-sys = { version = "0.9.0", default-features = false }
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
 
 [dev-dependencies]
 wcontainers-route-resolver-conformance = { path = "../../conformance" }

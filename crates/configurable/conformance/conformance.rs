@@ -5,7 +5,7 @@
 
 use wcontainers_configurable::Configurable;
 
-/// Setting the same value twice gives the answer setting it once gave.
+/// Checks that setting the same value twice gives the answer setting it once gave.
 pub fn setting_twice_equals_setting_once<C, Handle, Setting>(
     (configurable, handle, setting): (C, Handle, Setting),
 ) where
@@ -48,7 +48,7 @@ mod suite {
         }
     }
 
-    /// Keeps the last setting, as a correct implementation does.
+    /// Holds the last setting, as a correct implementation does.
     struct Keeps(Cell<bool>);
 
     impl Configurable<(), bool> for Keeps {

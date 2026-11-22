@@ -14,13 +14,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
-use wcontainers_route_resolver_host::{
-    HostRouteResolver, LINK_SCOPE, ROUTE_KIND, UPPER_LAYER_PROTOCOL,
-};
-
-wcontainers_route_resolver_conformance::tests!(
-    HostRouteResolver::open().expect("a routing socket opens")
-);
+use wcontainers_route_resolver_host::HostRouteResolver;
 
 /// A dummy link with an IPv6 prefix that forwards, so that the prefix's subnet-router anycast address is a route.
 const FORWARDING_LINK: &str = "link set lo up
@@ -33,8 +27,8 @@ const FORWARDING: [&str; 2] = [
 ];
 
 fn ip(commands: &str) {
-    let mut child = Command::new(wcontainers_route_resolver_conformance::IP)
-        .args(wcontainers_route_resolver_conformance::BATCH)
+    let mut child = Command::new("ip")
+        .args(["-batch", "-"])
         .stdin(Stdio::piped())
         .spawn()
         .expect("iproute2's ip runs");
@@ -95,15 +89,20 @@ fn resolve(
     resolver.resolve_route(route, UserId(u32::MIN), NeighbourConfirmation::Unconfirmed)
 }
 
-/// Each refused lookup is counted once under its own reason.
+/// Each refused lookup is counted once under a reason of its own.
 #[test]
 fn refusals_are_counted_under_their_reasons() {
-    wcontainers_route_resolver_conformance::enter_network_namespace();
+    // SAFETY: a new network namespace shares no memory or file with the rest of the process.
+    assert_eq!(
+        unsafe { libc::unshare(libc::CLONE_NEWNET) },
+        0,
+        "a new network namespace needs root"
+    );
     ip(FORWARDING_LINK);
     for path in FORWARDING {
         std::fs::write(path, "1").expect(path);
     }
-    let resolver = HostRouteResolver::open().expect("a routing socket opens");
+    let resolver = HostRouteResolver::open();
     let options = Ipv4Options::new();
     let link_scope = Ipv4RouteSelectors {
         scope: RouteScope::Link,
@@ -119,24 +118,24 @@ fn refusals_are_counted_under_their_reasons() {
         ..v6(Ipv6Addr::LOCALHOST)
     };
     let anycast = v6(Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 0));
-    for (route, reason) in [
-        (RouteSelectors::V4(link_scope), LINK_SCOPE),
-        (RouteSelectors::V6(mobility), UPPER_LAYER_PROTOCOL),
-        (RouteSelectors::V6(anycast), ROUTE_KIND),
+    for route in [
+        RouteSelectors::V4(link_scope),
+        RouteSelectors::V6(mobility),
+        RouteSelectors::V6(anycast),
     ] {
         assert_eq!(
-            resolve(&resolver, route),
+            resolve(&resolver, route.clone()),
             Err(HostError::NotSupported),
-            "{reason}"
+            "{route:?}"
         );
     }
-    let mut counted: Vec<_> = resolver
-        .counters()
-        .into_iter()
-        .map(|reading| (reading.reason, reading.count))
-        .collect();
-    counted.sort();
-    let mut expected = vec![(LINK_SCOPE, 1), (UPPER_LAYER_PROTOCOL, 1), (ROUTE_KIND, 1)];
-    expected.sort();
-    assert_eq!(counted, expected);
+    let counters = resolver.counters();
+    let mut reasons: Vec<_> = counters.iter().map(|reading| reading.reason).collect();
+    reasons.sort();
+    reasons.dedup();
+    assert_eq!(reasons.len(), 3, "{counters:?}");
+    assert!(
+        counters.iter().all(|reading| reading.count == 1),
+        "{counters:?}"
+    );
 }

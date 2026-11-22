@@ -5,7 +5,7 @@
 
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
-/// Advice about a handle's route is taken.
+/// Checks that advice about a handle's route is taken.
 pub fn advice_is_taken<A, Handle>((advice, handle): (A, Handle))
 where
     A: NegativeRouteAdvice<Handle>,
@@ -13,7 +13,7 @@ where
     assert_eq!(advice.give_negative_route_advice(&handle), Ok(()));
 }
 
-/// Advice is taken again when the new route fails too.
+/// Checks that advice is taken again when the new route fails too.
 pub fn advice_is_taken_again<A, Handle>((advice, handle): (A, Handle))
 where
     A: NegativeRouteAdvice<Handle>,
@@ -45,7 +45,7 @@ mod suite {
     use wcontainers_abi::HostError;
     use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
-    /// Counts the advice it takes, as a correct implementation may.
+    /// Tallies the advice it takes, as a correct implementation may.
     struct Counts(Cell<u32>);
 
     impl NegativeRouteAdvice<()> for Counts {

@@ -2,7 +2,6 @@
 //!
 //! Each runs as root in a network namespace of its own, on links, routes and rules it builds there with
 //! iproute2's `ip`, and asks the value made in that namespace about them.
-#![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::fs;
@@ -10,7 +9,10 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
-use linux_raw_sys::net::{IPV6_SRCRT_TYPE_0, IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4};
+use linux_raw_sys::net::{
+    IPOPT_END, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_SSRR, IPV6_SRCRT_TYPE_0, IPV6_SRCRT_TYPE_2,
+    IPV6_SRCRT_TYPE_4,
+};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, Ipv4RouteSelectors,
@@ -23,18 +25,30 @@ use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
 
 /// Moves the calling thread into a new, empty network namespace, which needs `CAP_SYS_ADMIN`.
-pub fn enter_network_namespace() {
+fn enter_network_namespace() {
+    #[cfg(target_os = "linux")]
     // SAFETY: a new network namespace shares no memory or file with the rest of the process.
     unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
         .expect("a new network namespace needs root");
+    #[cfg(not(target_os = "linux"))]
+    panic!("the checks build their routes in a Linux network namespace");
 }
 
-/// The iproute2 tool every check builds its network with, which the other socket suites take from here too.
-pub const IP: &str = "ip";
+/// The iproute2 tool every check builds its network with.
+const IP: &str = "ip";
 const A: &str = "da";
 const B: &str = "db";
+/// da's MTU, more than the least IPv6 takes.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-5
 const A_MTU: u32 = 1400;
+/// db's MTU, less than da's and more than the least IPv6 takes.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-5
 const B_MTU: u32 = 1300;
+/// Linux's loopback MTU, which the network sets again.
+///
+/// https://github.com/torvalds/linux/blob/master/drivers/net/loopback.c
 const LOOPBACK_MTU: u32 = 65520;
 /// Two dummy links, da and db, with routes to `FAR` through a gateway on each: the main table's through da, table 100's through db.
 const NETWORK: &str = "link set lo up mtu 65520
@@ -51,18 +65,53 @@ route add 10.9.0.0/16 via 10.2.0.2 table 100
 route add fd09::/64 via fd01::2
 route add fd09::/64 via fd02::2 table 100
 ";
+/// da's address, in private address space.
+///
+/// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const A_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 1);
+/// db's address, in private address space.
+///
+/// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const B_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 2, 0, 1);
+/// da's IPv6 address, a unique local one.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const A_ADDRESS_V6: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 1);
+/// db's IPv6 address, a unique local one.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const B_ADDRESS_V6: Ipv6Addr = Ipv6Addr::new(0xfd02, 0, 0, 0, 0, 0, 0, 1);
 /// An address on da's link that the namespace does not have.
+///
+/// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const A_NEIGHBOUR: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 5);
+/// Another address on da's link that the namespace does not have.
+///
+/// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const A_FOREIGN: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 99);
+/// An IPv6 address on da's link that the namespace does not have.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const A_FOREIGN_V6: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 0x99);
+/// The gateway of `FAR` on db.
+///
+/// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const B_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 2, 0, 2);
+/// The gateway of `FAR_V6` on db.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const B_GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd02, 0, 0, 0, 0, 0, 0, 2);
+/// An address beyond the gateways.
+///
+/// https://www.rfc-editor.org/rfc/rfc1918#section-3
 const FAR: Ipv4Addr = Ipv4Addr::new(10, 9, 1, 1);
+/// An IPv6 address beyond the gateways.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 const FAR_V6: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1);
+/// The superuser.
+///
+/// https://man7.org/linux/man-pages/man7/credentials.7.html
 const ROOT: UserId = UserId(0);
 
 struct Network {
@@ -95,16 +144,16 @@ fn write_setting(path: &str, value: impl ToString) {
 }
 
 fn index(name: &str) -> InterfaceIndex {
-    let socket = rustix::net::socket(
-        rustix::net::AddressFamily::INET,
-        rustix::net::SocketType::DGRAM,
-        None,
-    )
-    .expect("a socket opens");
-    InterfaceIndex(rustix::net::netdevice::name_to_index(&socket, name).expect(name))
+    let name = std::ffi::CString::new(name).expect("a link's name");
+    // SAFETY: the name is a string that ends in a zero byte, which the call only reads.
+    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    assert_ne!(index, u32::MIN, "{name:?}");
+    InterfaceIndex(index)
 }
 
+/// Builds the two links, their addresses and routes in a network namespace of the calling thread's own.
 fn network() -> Network {
+    enter_network_namespace();
     ip(IPV4, NETWORK);
     Network {
         a: index(A),
@@ -113,10 +162,10 @@ fn network() -> Network {
 }
 
 /// Reads the commands from the input.
-pub const BATCH: [&str; 2] = ["-batch", "-"];
-/// IPv4 is the family of a rule with no address.
+const BATCH: &[&str] = &["-batch", "-"];
+/// No family option, which makes a rule with no address an IPv4 one.
 const IPV4: &[&str] = &[];
-pub const IPV6: &[&str] = &["-6"];
+const IPV6: &[&str] = &["-6"];
 
 fn v4(options: &Ipv4Options, destination: Ipv4Addr) -> Ipv4RouteSelectors<'_> {
     Ipv4RouteSelectors {
@@ -126,7 +175,7 @@ fn v4(options: &Ipv4Options, destination: Ipv4Addr) -> Ipv4RouteSelectors<'_> {
         interface: None,
         dscp: IpDscp::ZERO,
         ecn: IpEcn::NotEct,
-        mark: PacketMark(0),
+        mark: PacketMark(u32::MIN),
         scope: RouteScope::Universe,
         broadcast: BroadcastPermission::Refused,
         options,
@@ -146,7 +195,7 @@ fn v6(destination: Ipv6Addr) -> Ipv6RouteSelectors<'static> {
         dscp: IpDscp::ZERO,
         ecn: IpEcn::NotEct,
         flow_label: Ipv6FlowLabel::ZERO,
-        mark: PacketMark(0),
+        mark: PacketMark(u32::MIN),
         source_preferences: SourcePreferences {
             temporary: TemporaryAddressPreference::SystemDefault,
             mobile: MobileAddressPreference::Home,
@@ -192,7 +241,7 @@ fn unless_refused(result: Result<Route, HostError>, check: impl FnOnce(Result<Ro
     }
 }
 
-/// An address of lo is a local route on lo from that address.
+/// Checks that an address of lo is a local route on lo from that address.
 pub fn loopback_route_is_local<R: RouteResolver>(resolver: R) {
     let network = network();
     let options = Ipv4Options::new();
@@ -210,10 +259,10 @@ pub fn loopback_route_is_local<R: RouteResolver>(resolver: R) {
 /// The namespace's default IPv4 TTL.
 const DEFAULT_TTL: &str = "/proc/sys/net/ipv4/ip_default_ttl";
 /// The packet count of a statistics object in iproute2's JSON.
-pub const PACKETS: &str = "\"packets\":";
+const PACKETS: &str = "\"packets\":";
 
-/// The number after `field` in a tool's JSON output, after the first `after` in it.
-pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
+/// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
+fn number_after(text: &str, after: &str, field: &str) -> u64 {
     let start = text
         .find(after)
         .unwrap_or_else(|| panic!("no {after}: {text}"));
@@ -230,8 +279,11 @@ pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
         .unwrap_or_else(|_| panic!("{text}"))
 }
 
-/// A route through a gateway gives the link's interface, its address as the source, its MTU and the namespace's TTL.
+/// Checks that a route through a gateway gives the link's interface, its address as the source, its MTU and the namespace's TTL.
 pub fn ipv4_route_gives_link_source_and_sizes<R: RouteResolver>(resolver: R) {
+    /// A TTL other than Linux's default.
+    ///
+    /// https://www.kernel.org/doc/html/latest/networking/ip-sysctl.html
     const TTL: HopLimit = HopLimit(77);
     let network = network();
     write_setting(DEFAULT_TTL, TTL.0);
@@ -250,11 +302,17 @@ pub fn ipv4_route_gives_link_source_and_sizes<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// An IPv6 route gives the link's IPv6 MTU as the path MTU and the link's IPv6 hop limit.
+/// Checks that an IPv6 route gives the link's IPv6 MTU as the path MTU and the link's IPv6 hop limit.
 pub fn ipv6_route_gives_link_source_and_sizes<R: RouteResolver>(resolver: R) {
     const A_IPV6_MTU: &str = "/proc/sys/net/ipv6/conf/da/mtu";
     const A_HOP_LIMIT: &str = "/proc/sys/net/ipv6/conf/da/hop_limit";
+    /// An IPv6 MTU of da less than its link's.
+    ///
+    /// https://www.kernel.org/doc/html/latest/networking/ip-sysctl.html
     const IPV6_MTU: MaximumTransmissionUnit = MaximumTransmissionUnit(1350);
+    /// A hop limit other than Linux's default.
+    ///
+    /// https://www.kernel.org/doc/html/latest/networking/ip-sysctl.html
     const HOP_LIMIT: HopLimit = HopLimit(33);
     let network = network();
     write_setting(A_IPV6_MTU, IPV6_MTU.0);
@@ -273,13 +331,31 @@ pub fn ipv6_route_gives_link_source_and_sizes<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A route's own MTU and hop limit are the path MTU and default hop limit, the device's MTU staying its own.
+/// Checks that a route's own MTU and hop limit are the path MTU and default hop limit, the device's MTU staying its own.
 pub fn route_metrics_give_path_mtu_and_hop_limit<R: RouteResolver>(resolver: R) {
+    /// An address the check routes with metrics of its own.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const DESTINATION: Ipv4Addr = Ipv4Addr::new(10, 8, 0, 1);
+    /// An IPv6 address the check routes with metrics of its own.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const DESTINATION_V6: Ipv6Addr = Ipv6Addr::new(0xfd08, 0, 0, 0, 0, 0, 0, 1);
+    /// A route MTU less than da's.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-route.8.html
     const ROUTE_MTU: MaximumTransmissionUnit = MaximumTransmissionUnit(1280);
+    /// An IPv6 route MTU less than da's.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-route.8.html
     const ROUTE_MTU_V6: MaximumTransmissionUnit = MaximumTransmissionUnit(1290);
+    /// A route's hop limit.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-route.8.html
     const ROUTE_HOP_LIMIT: HopLimit = HopLimit(9);
+    /// An IPv6 route's hop limit.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-route.8.html
     const ROUTE_HOP_LIMIT_V6: HopLimit = HopLimit(10);
     network();
     const ROUTES: &str = "route add 10.8.0.0/16 via 10.1.0.2 mtu 1280 hoplimit 9
@@ -296,11 +372,17 @@ route add fd08::/64 via fd01::2 mtu 1290 hoplimit 10";
     assert_eq!(route.default_hop_limit, ROUTE_HOP_LIMIT_V6);
 }
 
-/// A route whose MTU is locked with no value takes the device's MTU, capped through a gateway at the size every IPv4 host reassembles.
+/// Checks that a route whose MTU is locked with no value takes the device's MTU, capped through a gateway at the size every IPv4 host reassembles.
 pub fn locked_mtu_without_value_uses_the_device_mtu<R: RouteResolver>(resolver: R) {
     /// [RFC 791, section 3.1](https://www.rfc-editor.org/rfc/rfc791#section-3.1).
     const MINIMUM_REASSEMBLY: MaximumTransmissionUnit = MaximumTransmissionUnit(576);
+    /// An address routed through a gateway with a locked MTU.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const THROUGH_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 7, 0, 1);
+    /// An address routed on the link with a locked MTU.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 6, 0, 1);
     network();
     const ROUTES: &str = "route add 10.7.0.0/16 via 10.1.0.2 mtu lock 0
@@ -317,26 +399,18 @@ route add 10.6.0.0/16 dev da mtu lock 0";
     }
 }
 
-/// An encapsulating route's path MTU is what a socket connected through it is told, if the resolver answers.
+/// Checks that an encapsulating route's path MTU is what a socket connected through it is told, if the resolver answers.
 pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolver: R) {
+    /// An address behind the encapsulating route.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const DESTINATION: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 1);
     /// The discard port ([RFC 863](https://www.rfc-editor.org/rfc/rfc863)); connecting sends nothing.
     const DISCARD: u16 = 9;
     network();
     const ROUTE: &str = "route add fd05::/64 encap seg6 mode encap segs fd01::7 dev da";
     ip(IPV6, ROUTE);
-    let socket = rustix::net::socket(
-        rustix::net::AddressFamily::INET6,
-        rustix::net::SocketType::DGRAM,
-        None,
-    )
-    .expect("a socket opens");
-    rustix::net::connect(
-        &socket,
-        &core::net::SocketAddrV6::new(DESTINATION, DISCARD, 0, 0),
-    )
-    .expect("connects");
-    let told = rustix::net::sockopt::ipv6_mtu(&socket).expect("a connected socket's path MTU");
+    let told = connected_path_mtu(DESTINATION, DISCARD);
     unless_refused(resolve6(&resolver, v6(DESTINATION)), |route| {
         assert_eq!(
             route.expect("resolves").path_mtu,
@@ -345,12 +419,38 @@ pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolve
     });
 }
 
-/// No route, a prohibited, a blackholed and an unreachable one fail with the kernel's errors.
+/// Returns the path MTU Linux tells a datagram socket connected to the address.
+fn connected_path_mtu(address: Ipv6Addr, port: u16) -> u32 {
+    let socket =
+        std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, u16::MIN)).expect("a socket opens");
+    socket.connect((address, port)).expect("connects");
+    #[cfg(target_os = "linux")]
+    return rustix::net::sockopt::ipv6_mtu(&socket).expect("a connected socket's path MTU");
+    #[cfg(not(target_os = "linux"))]
+    panic!("only Linux tells a connected socket's path MTU");
+}
+
+/// Checks that no route, a prohibited, a blackholed and an unreachable one fail with the kernel's errors.
 pub fn failing_routes_give_their_errors<R: RouteResolver>(resolver: R) {
+    /// An address no route takes.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const UNROUTED: Ipv4Addr = Ipv4Addr::new(10, 200, 0, 1);
+    /// An address of a prohibited route.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const PROHIBITED: Ipv4Addr = Ipv4Addr::new(10, 50, 0, 1);
+    /// An address of a blackhole route.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const BLACKHOLED: Ipv4Addr = Ipv4Addr::new(10, 51, 0, 1);
+    /// An address of an unreachable route.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const UNREACHABLE: Ipv4Addr = Ipv4Addr::new(10, 52, 0, 1);
+    /// An IPv6 address no route takes.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const UNROUTED_V6: Ipv6Addr = Ipv6Addr::new(0xfd99, 0, 0, 0, 0, 0, 0, 1);
     network();
     const ROUTES: &str = "route add prohibit 10.50.0.0/16
@@ -376,8 +476,11 @@ route add unreachable 10.52.0.0/16";
     );
 }
 
-/// A rule on the mark sends only marked lookups to the other table.
+/// Checks that a rule on the mark sends only marked lookups to the other table.
 pub fn mark_selects_the_route<R: RouteResolver>(resolver: R) {
+    /// A mark the rule selects.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-rule.8.html
     const MARK: PacketMark = PacketMark(7);
     let network = network();
     const RULE: &str = "rule add fwmark 7 lookup 100";
@@ -398,8 +501,11 @@ pub fn mark_selects_the_route<R: RouteResolver>(resolver: R) {
     assert_eq!(interface(resolve6(&resolver, v6(FAR_V6))), network.a);
 }
 
-/// A rule on a user sends only that owner's lookups to the other table.
+/// Checks that a rule on a user sends only that owner's lookups to the other table.
 pub fn owner_selects_the_route<R: RouteResolver>(resolver: R) {
+    /// A user the rule selects.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-rule.8.html
     const OWNER: UserId = UserId(4242);
     let network = network();
     const RULE: &str = "rule add uidrange 4242-4242 lookup 100";
@@ -416,7 +522,7 @@ pub fn owner_selects_the_route<R: RouteResolver>(resolver: R) {
     assert_eq!(interface(resolve6(&resolver, v6(FAR_V6))), network.a);
 }
 
-/// A rule on the DSCP sends only lookups with that DSCP, whatever their ECN, to the other table.
+/// Checks that a rule on the DSCP sends only lookups with that DSCP, whatever their ECN, to the other table.
 pub fn dscp_selects_the_route<R: RouteResolver>(resolver: R) {
     const DSCP: IpDscp = IpDscp::CS1;
     let network = network();
@@ -447,7 +553,7 @@ pub fn dscp_selects_the_route<R: RouteResolver>(resolver: R) {
     assert_eq!(interface(resolve6(&resolver, v6(FAR_V6))), network.a);
 }
 
-/// A rule on the source sends lookups from that address to the other table, and the route keeps the source.
+/// Checks that a rule on the source sends lookups from that address to the other table, and the route keeps the source.
 pub fn source_selects_the_route<R: RouteResolver>(resolver: R) {
     let network = network();
     const RULE: &str = "rule add from 10.2.0.1 lookup 100";
@@ -475,7 +581,7 @@ pub fn source_selects_the_route<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A rule on the outgoing interface sends lookups bound to it to the other table.
+/// Checks that a rule on the outgoing interface sends lookups bound to it to the other table.
 pub fn interface_selects_the_route<R: RouteResolver>(resolver: R) {
     let network = network();
     const RULE: &str = "rule add oif db lookup 100";
@@ -503,10 +609,19 @@ pub fn interface_selects_the_route<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A rule on protocol and port sends only that protocol's lookups to that port to the other table.
+/// Checks that a rule on protocol and port sends only that protocol's lookups to that port to the other table.
 pub fn protocol_and_ports_select_the_route<R: RouteResolver>(resolver: R) {
+    /// The DNS port, which the rule selects.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1035#section-4.2
     const DNS: u16 = 53;
+    /// A port the rule does not select.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6335#section-6
     const OTHER: u16 = 54;
+    /// A source port in the registered range.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6335#section-6
     const SOURCE_PORT: Port = Port(40000);
     let network = network();
     const RULE: &str = "rule add ipproto udp dport 53 lookup 100";
@@ -546,10 +661,19 @@ pub fn protocol_and_ports_select_the_route<R: RouteResolver>(resolver: R) {
     }
 }
 
-/// A rule on the source port sends only lookups from that port to the other table.
+/// Checks that a rule on the source port sends only lookups from that port to the other table.
 pub fn source_port_selects_the_route<R: RouteResolver>(resolver: R) {
+    /// A source port in the registered range, which the rule selects.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6335#section-6
     const SOURCE_PORT: u16 = 40000;
+    /// A source port the rule does not select.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6335#section-6
     const OTHER: u16 = 40001;
+    /// The DNS port.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1035#section-4.2
     const DESTINATION_PORT: Port = Port(53);
     let network = network();
     const RULE: &str = "rule add ipproto udp sport 40000 lookup 100";
@@ -577,11 +701,19 @@ pub fn source_port_selects_the_route<R: RouteResolver>(resolver: R) {
     }
 }
 
-/// The kernel's flow keeps an ICMP type and code where a destination port is, so a port rule selects on them.
+/// Checks that the kernel's flow keeps an ICMP type and code where a destination port is, so a port rule selects on them.
 pub fn icmp_type_and_code_select_the_route<R: RouteResolver>(resolver: R) {
+    /// The ICMP echo request's type.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc792
     const ECHO_REQUEST: u8 = 8;
+    /// The ICMPv6 echo request's type.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4443#section-4.1
     const ECHO_REQUEST_V6: u8 = 128;
     /// A code an echo request does not carry, so that the rule matches the code too.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc792
     const CODE: u8 = 3;
     let network = network();
     /// Type 8 and code 3, and type 128 and code 3, as the port the flow keeps them in.
@@ -629,9 +761,15 @@ pub fn icmp_type_and_code_select_the_route<R: RouteResolver>(resolver: R) {
     }
 }
 
-/// The kernel's flow keeps a mobility header's type in the first byte of a destination port, so a port rule selects on it.
+/// Checks that the kernel's flow keeps a mobility header's type in the first byte of a destination port, so a port rule selects on it.
 pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
+    /// The binding update's mobility header type.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1
     const BINDING_UPDATE: u8 = 5;
+    /// The binding acknowledgement's mobility header type.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1
     const BINDING_ACKNOWLEDGEMENT: u8 = 6;
     let network = network();
     /// Type 5 as the port the flow keeps it in.
@@ -656,9 +794,15 @@ pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
     }
 }
 
-/// A rule on the flow label sends only lookups with that label to the other table.
+/// Checks that a rule on the flow label sends only lookups with that label to the other table.
 pub fn flow_label_selects_the_route<R: RouteResolver>(resolver: R) {
+    /// A flow label the rule selects.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6437#section-2
     const LABEL: u32 = 0x12345;
+    /// A flow label the rule does not select.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6437#section-2
     const OTHER_LABEL: u32 = 0x12346;
     let network = network();
     const RULE: &str = "rule add flowlabel 0x12345 lookup 100";
@@ -677,8 +821,11 @@ pub fn flow_label_selects_the_route<R: RouteResolver>(resolver: R) {
     assert_eq!(interface(resolve6(&resolver, route)), network.a);
 }
 
-/// A broadcast route is refused with `EACCES` unless broadcasting is allowed.
+/// Checks that a broadcast route is refused with `EACCES` unless broadcasting is allowed.
 pub fn broadcast_needs_permission<R: RouteResolver>(resolver: R) {
+    /// The broadcast address of da's subnet.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc919#section-7
     const BROADCAST: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 255);
     let network = network();
     let options = Ipv4Options::new();
@@ -699,9 +846,15 @@ pub fn broadcast_needs_permission<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A group address is a multicast route.
+/// Checks that a group address is a multicast route.
 pub fn multicast_route_is_multicast<R: RouteResolver>(resolver: R) {
+    /// An administratively scoped group.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc2365#section-6
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 3);
+    /// A site-local group.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 1);
     let network = network();
     const ROUTE: &str = "route add 224.0.0.0/4 dev da";
@@ -723,7 +876,7 @@ pub fn multicast_route_is_multicast<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A required source check refuses a source the namespace does not have, with the host's error rather than a refusal.
+/// Checks that a required source check refuses a source the namespace does not have, with the host's error rather than a refusal.
 pub fn required_source_check_refuses_a_foreign_address<R: RouteResolver>(resolver: R) {
     network();
     let options = Ipv4Options::new();
@@ -742,18 +895,18 @@ pub fn required_source_check_refuses_a_foreign_address<R: RouteResolver>(resolve
 }
 
 /// The forwarding switches of every link and of da, which make da's subnet-router anycast address a route of its own.
-const FORWARDING_V6: [&str; 2] = [
+const FORWARDING_V6: &[&str] = &[
     "/proc/sys/net/ipv6/conf/all/forwarding",
     "/proc/sys/net/ipv6/conf/da/forwarding",
 ];
 /// The subnet-router anycast address of da's prefix ([RFC 4291](https://www.rfc-editor.org/rfc/rfc4291#section-2.6.1)).
 const A_SUBNET_ROUTER: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 0);
 
-/// An anycast route, a kind the contract has no name for, is refused or given as the local delivery Linux makes of it.
+/// Checks that an anycast route, a kind the contract has no name for, is refused or given as the local delivery Linux makes of it.
 pub fn an_anycast_route_is_not_given_as_another_kind<R: RouteResolver>(resolver: R) {
     network();
     for path in FORWARDING_V6 {
-        write_setting(path, 1);
+        write_setting(path, u8::from(true));
     }
     let result = resolve6(&resolver, v6(A_SUBNET_ROUTER));
     assert!(
@@ -764,9 +917,11 @@ pub fn an_anycast_route_is_not_given_as_another_kind<R: RouteResolver>(resolver:
     );
 }
 
-/// A link-local destination with no interface takes a route, as a datagram Linux sends to it does (only a connect
-/// needs the interface).
+/// Checks that a link-local destination with no interface takes a route, as a datagram Linux sends to it does.
 pub fn a_link_local_destination_without_an_interface_routes<R: RouteResolver>(resolver: R) {
+    /// A link-local address.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4291#section-2.5.6
     const LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     let network = network();
     let route = resolve6(&resolver, v6(LINK_LOCAL)).expect("a link-local destination resolves");
@@ -781,7 +936,7 @@ pub fn a_link_local_destination_without_an_interface_routes<R: RouteResolver>(re
     );
 }
 
-/// A waived source check routes from a source the namespace does not have, keeping it as the source.
+/// Checks that a waived source check routes from a source the namespace does not have, keeping it as the source.
 pub fn waived_source_check_takes_a_foreign_address<R: RouteResolver>(resolver: R) {
     let network = network();
     for nonlocal_bind in [false, true] {
@@ -824,22 +979,30 @@ fn waived_source_check<R: RouteResolver>(resolver: &R, network: &Network) {
 }
 
 /// The length of a source route option of one address: its type, length and pointer, and the address.
+///
+/// https://www.rfc-editor.org/rfc/rfc791#section-3.1
 const SOURCE_ROUTE_LENGTH: u8 = 7;
 
-/// A loose source route is looked up to its first hop.
-pub fn loose_source_route_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
-    let network = network();
-    let [a, b, c, d] = B_GATEWAY.octets();
-    let options = Ipv4Options::from([
-        libc::IPOPT_LSRR,
+/// Returns IPv4 options of one source route of the given kind, through the address.
+fn source_route(kind: u32, first_hop: Ipv4Addr) -> Ipv4Options {
+    let byte = |value: u32| u8::try_from(value).expect("a byte of an option");
+    let [a, b, c, d] = first_hop.octets();
+    Ipv4Options::from([
+        byte(kind),
         SOURCE_ROUTE_LENGTH,
-        libc::IPOPT_MINOFF,
+        byte(IPOPT_MINOFF),
         a,
         b,
         c,
         d,
-        libc::IPOPT_END,
-    ]);
+        byte(IPOPT_END),
+    ])
+}
+
+/// Checks that a loose source route is looked up to its first hop.
+pub fn loose_source_route_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
+    let network = network();
+    let options = source_route(IPOPT_LSRR, B_GATEWAY);
     let route = resolve4(&resolver, v4(&options, FAR)).expect("resolves");
     assert_eq!(
         (route.interface, route.source),
@@ -847,22 +1010,10 @@ pub fn loose_source_route_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A strict source route takes only a first hop on a link, and is looked up to it.
+/// Checks that a strict source route takes only a first hop on a link, and is looked up to it.
 pub fn strict_source_route_takes_only_a_first_hop_on_the_link<R: RouteResolver>(resolver: R) {
     let network = network();
-    let strict = |first_hop: Ipv4Addr| {
-        let [a, b, c, d] = first_hop.octets();
-        Ipv4Options::from([
-            libc::IPOPT_SSRR,
-            SOURCE_ROUTE_LENGTH,
-            libc::IPOPT_MINOFF,
-            a,
-            b,
-            c,
-            d,
-            libc::IPOPT_END,
-        ])
-    };
+    let strict = |first_hop| source_route(IPOPT_SSRR, first_hop);
     let on_link = strict(B_GATEWAY);
     unless_refused(resolve4(&resolver, v4(&on_link, FAR)), |route| {
         let route = route.expect("resolves");
@@ -878,31 +1029,36 @@ pub fn strict_source_route_takes_only_a_first_hop_on_the_link<R: RouteResolver>(
     );
 }
 
-/// A type 2 header is looked up to its address and a type 4 one to its next segment; a type 0 one is refused as `IPV6_RTHDR` refuses it.
+/// Where a routing header's addresses start, after the same eight bytes for each type.
+const FIRST_ADDRESS: usize = core::mem::offset_of!(linux_raw_sys::net::rt0_hdr, addr);
+
+/// Checks that a type 2 header is looked up to its address and a type 4 one to its next segment; a type 0 one is refused as `IPV6_RTHDR` refuses it.
 pub fn routing_header_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     let network = network();
-    let header =
-        |kind: u32, length: u8, segments_left: u8, last_entry: u8, addresses: &[Ipv6Addr]| {
-            let kind = u8::try_from(kind).expect("a routing type");
-            let mut header = vec![
-                IpNumber::IPV6_NO_NEXT_HEADER.0,
-                length,
-                kind,
-                segments_left,
-                last_entry,
-                0,
-                0,
-                0,
-            ];
-            for address in addresses {
-                header.extend_from_slice(&address.octets());
-            }
-            header
-        };
-    // The header's length in eight-byte units after the first eight, for this many addresses.
-    let length = |addresses: u8| addresses * 2;
-    let home = header(IPV6_SRCRT_TYPE_2, length(1), 1, 0, &[B_GATEWAY_V6]);
-    let segments = header(IPV6_SRCRT_TYPE_4, length(2), 1, 1, &[FAR_V6, B_GATEWAY_V6]);
+    let header = |kind: u32, segments_left: usize, addresses: &[Ipv6Addr]| {
+        let byte = |value: usize| u8::try_from(value).expect("a byte of a routing header");
+        // The length counts eight-byte units after the first eight, two for each address.
+        let length = byte(addresses.len() * 2);
+        let last_entry = byte(addresses.len() - 1);
+        let kind = u8::try_from(kind).expect("a routing type");
+        let mut header = vec![
+            IpNumber::IPV6_NO_NEXT_HEADER.0,
+            length,
+            kind,
+            byte(segments_left),
+            last_entry,
+        ];
+        header.resize(FIRST_ADDRESS, u8::MIN);
+        for address in addresses {
+            header.extend_from_slice(&address.octets());
+        }
+        header
+    };
+    // A type 2 header holds one segment left, its address; a type 4 one starts at its last entry.
+    let home = [B_GATEWAY_V6];
+    let segments = [FAR_V6, B_GATEWAY_V6];
+    let home = header(IPV6_SRCRT_TYPE_2, home.len(), &home);
+    let segments = header(IPV6_SRCRT_TYPE_4, segments.len() - 1, &segments);
     for header in [home, segments] {
         let routing_header = Ipv6RawExtHeaderSlice::from_slice(&header).expect("a routing header");
         let route = Ipv6RouteSelectors {
@@ -916,7 +1072,8 @@ pub fn routing_header_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
             "{header:?}"
         );
     }
-    let deprecated = header(IPV6_SRCRT_TYPE_0, length(1), 1, 0, &[B_GATEWAY_V6]);
+    let deprecated = [B_GATEWAY_V6];
+    let deprecated = header(IPV6_SRCRT_TYPE_0, deprecated.len(), &deprecated);
     let routing_header = Ipv6RawExtHeaderSlice::from_slice(&deprecated).expect("a routing header");
     let route = Ipv6RouteSelectors {
         routing_header: Some(routing_header),
@@ -928,7 +1085,7 @@ pub fn routing_header_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A link-scope lookup takes a route on the link and refuses one through a gateway.
+/// Checks that a link-scope lookup takes a route on the link and refuses one through a gateway.
 pub fn link_scope_takes_only_routes_on_the_link<R: RouteResolver>(resolver: R) {
     let network = network();
     let options = Ipv4Options::new();
@@ -948,15 +1105,19 @@ pub fn link_scope_takes_only_routes_on_the_link<R: RouteResolver>(resolver: R) {
     });
 }
 
-/// A confirmed lookup confirms the next hop's neighbour entry and an unconfirmed one does not, the route the same
-/// either way, and neither sends a packet.
+/// Checks that only a confirmed lookup confirms the next hop's neighbour, both give one route, and neither sends.
 pub fn confirmed_neighbour_is_confirmed<R: RouteResolver>(resolver: R) {
-    /// The gateways of `FAR` on da, as neighbours last confirmed long ago; da resolves neighbours so that IPv6
-    /// confirms them, and sends no multicast reports of its own while the check counts what it sends.
+    /// The gateways of `FAR` on da as stale neighbours, on a link that resolves them and sends no reports of its own.
     const NEIGHBOURS: &str = "link set da arp on multicast off
 neigh add 10.1.0.2 lladdr 02:00:00:00:00:02 dev da nud stale
 neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
+    /// The gateway of `FAR` on da.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
     const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 1, 0, 2);
+    /// The gateway of `FAR_V6` on da.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 2);
     network();
     ip(IPV4, NEIGHBOURS);
@@ -982,26 +1143,28 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
     }
 }
 
-/// The number of packets a link has sent, from its statistics.
-pub fn packets_sent(link: &str) -> u64 {
+/// Returns the number of packets a link has sent, from its statistics.
+fn packets_sent(link: &str) -> u64 {
     /// Shows the link with its statistics, as JSON.
-    const SHOW: [&str; 5] = ["-s", "-j", "link", "show", "dev"];
+    const SHOW: &[&str] = &["-s", "-j", "link", "show"];
     const TRANSMITTED: &str = "\"tx\":{";
     let output = Command::new(IP)
         .args(SHOW)
-        .arg(link)
+        .args([DEVICE, link])
         .output()
         .expect("ip runs");
     let text = String::from_utf8(output.stdout).expect("ip writes text");
     number_after(&text, TRANSMITTED, PACKETS)
 }
 
-/// How long ago the link's neighbour entry for the address was confirmed, in whole seconds.
-pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
+/// The word before a link's name in an `ip` command.
+const DEVICE: &str = "dev";
+
+/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds.
+fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
     const FIELD: &str = "\"confirmed\":";
     /// Shows the neighbour entries with their times, as JSON.
-    const SHOW: [&str; 4] = ["-s", "-j", "neigh", "show"];
-    const DEVICE: &str = "dev";
+    const SHOW: &[&str] = &["-s", "-j", "neigh", "show"];
     let output = Command::new(IP)
         .args(SHOW)
         .arg(address.to_string())
@@ -1016,23 +1179,15 @@ pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
 const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/da/use_tempaddr";
 const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr";
 
-/// The temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
-pub fn temporary_address(link: &str) -> Ipv6Addr {
+/// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
+fn temporary_address(link: &str) -> Ipv6Addr {
     /// Shows the link's temporary addresses that are no longer tentative, as JSON.
-    const SHOW: [&str; 7] = [
-        "-6",
-        "-j",
-        "address",
-        "show",
-        "temporary",
-        "-tentative",
-        "dev",
-    ];
+    const SHOW: &[&str] = &["-6", "-j", "address", "show", "temporary", "-tentative"];
     const LOCAL: &str = "\"local\":\"";
     for _ in 0..PATIENT_TRIES {
         let output = Command::new(IP)
             .args(SHOW)
-            .arg(link)
+            .args([DEVICE, link])
             .output()
             .expect("ip runs");
         let text = String::from_utf8(output.stdout).expect("ip writes text");
@@ -1050,13 +1205,18 @@ pub fn temporary_address(link: &str) -> Ipv6Addr {
 const JSON_QUOTE: char = '"';
 
 /// How often and how long apart a check looks for what Linux makes in the background.
+///
+/// https://www.rfc-editor.org/rfc/rfc4861#section-10
 const PATIENT_TRIES: u32 = 200;
+/// The time between two looks, a hundredth of the time duplicate address detection waits.
+///
+/// https://www.rfc-editor.org/rfc/rfc4861#section-10
 const PATIENT_TRY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// A preference for temporary or public addresses chooses between da's address and the temporary one Linux made from it.
+/// Checks that a preference for temporary or public addresses chooses between da's address and the temporary one Linux made from it.
 pub fn source_preferences_choose_among_the_link_addresses<R: RouteResolver>(resolver: R) {
     let network = network();
-    write_setting(TEMPORARY_ADDRESSES, 1);
+    write_setting(TEMPORARY_ADDRESSES, u8::from(true));
     ip(IPV6, MANAGED_TEMPORARY);
     let temporary_address = temporary_address(A);
     for (temporary, source) in [
@@ -1081,7 +1241,7 @@ pub fn source_preferences_choose_among_the_link_addresses<R: RouteResolver>(reso
     }
 }
 
-/// A protocol without ports routes as any other.
+/// Checks that a protocol without ports routes as any other.
 pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
     let network = network();
     let options = Ipv4Options::new();
@@ -1098,57 +1258,158 @@ pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
     });
 }
 
-/// Runs each suite function above as its own test on the value an implementation gives, made anew for every test in a network namespace of its own.
+/// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
-        $crate::each_check!(
-            $value;
-            loopback_route_is_local,
-            ipv4_route_gives_link_source_and_sizes,
-            ipv6_route_gives_link_source_and_sizes,
-            route_metrics_give_path_mtu_and_hop_limit,
-            locked_mtu_without_value_uses_the_device_mtu,
-            encapsulating_route_leaves_room_for_its_headers,
-            failing_routes_give_their_errors,
-            mark_selects_the_route,
-            owner_selects_the_route,
-            dscp_selects_the_route,
-            source_selects_the_route,
-            interface_selects_the_route,
-            protocol_and_ports_select_the_route,
-            source_port_selects_the_route,
-            icmp_type_and_code_select_the_route,
-            mobility_header_type_selects_the_route,
-            flow_label_selects_the_route,
-            broadcast_needs_permission,
-            multicast_route_is_multicast,
-            required_source_check_refuses_a_foreign_address,
-            waived_source_check_takes_a_foreign_address,
-            loose_source_route_goes_to_its_first_hop,
-            strict_source_route_takes_only_a_first_hop_on_the_link,
-            routing_header_goes_to_its_first_hop,
-            link_scope_takes_only_routes_on_the_link,
-            confirmed_neighbour_is_confirmed,
-            source_preferences_choose_among_the_link_addresses,
-            other_protocols_route,
-            an_anycast_route_is_not_given_as_another_kind,
-            a_link_local_destination_without_an_interface_routes,
-        );
-    };
-}
+        #[test]
+        fn loopback_route_is_local() {
+            $crate::loopback_route_is_local($value);
+        }
 
-/// One test per named check, each entering its own network namespace before the value is made.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! each_check {
-    ($value:expr; $($check:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $check() {
-                $crate::enter_network_namespace();
-                $crate::$check($value);
-            }
-        )*
+        #[test]
+        fn ipv4_route_gives_link_source_and_sizes() {
+            $crate::ipv4_route_gives_link_source_and_sizes($value);
+        }
+
+        #[test]
+        fn ipv6_route_gives_link_source_and_sizes() {
+            $crate::ipv6_route_gives_link_source_and_sizes($value);
+        }
+
+        #[test]
+        fn route_metrics_give_path_mtu_and_hop_limit() {
+            $crate::route_metrics_give_path_mtu_and_hop_limit($value);
+        }
+
+        #[test]
+        fn locked_mtu_without_value_uses_the_device_mtu() {
+            $crate::locked_mtu_without_value_uses_the_device_mtu($value);
+        }
+
+        #[test]
+        fn encapsulating_route_leaves_room_for_its_headers() {
+            $crate::encapsulating_route_leaves_room_for_its_headers($value);
+        }
+
+        #[test]
+        fn failing_routes_give_their_errors() {
+            $crate::failing_routes_give_their_errors($value);
+        }
+
+        #[test]
+        fn mark_selects_the_route() {
+            $crate::mark_selects_the_route($value);
+        }
+
+        #[test]
+        fn owner_selects_the_route() {
+            $crate::owner_selects_the_route($value);
+        }
+
+        #[test]
+        fn dscp_selects_the_route() {
+            $crate::dscp_selects_the_route($value);
+        }
+
+        #[test]
+        fn source_selects_the_route() {
+            $crate::source_selects_the_route($value);
+        }
+
+        #[test]
+        fn interface_selects_the_route() {
+            $crate::interface_selects_the_route($value);
+        }
+
+        #[test]
+        fn protocol_and_ports_select_the_route() {
+            $crate::protocol_and_ports_select_the_route($value);
+        }
+
+        #[test]
+        fn source_port_selects_the_route() {
+            $crate::source_port_selects_the_route($value);
+        }
+
+        #[test]
+        fn icmp_type_and_code_select_the_route() {
+            $crate::icmp_type_and_code_select_the_route($value);
+        }
+
+        #[test]
+        fn mobility_header_type_selects_the_route() {
+            $crate::mobility_header_type_selects_the_route($value);
+        }
+
+        #[test]
+        fn flow_label_selects_the_route() {
+            $crate::flow_label_selects_the_route($value);
+        }
+
+        #[test]
+        fn broadcast_needs_permission() {
+            $crate::broadcast_needs_permission($value);
+        }
+
+        #[test]
+        fn multicast_route_is_multicast() {
+            $crate::multicast_route_is_multicast($value);
+        }
+
+        #[test]
+        fn required_source_check_refuses_a_foreign_address() {
+            $crate::required_source_check_refuses_a_foreign_address($value);
+        }
+
+        #[test]
+        fn an_anycast_route_is_not_given_as_another_kind() {
+            $crate::an_anycast_route_is_not_given_as_another_kind($value);
+        }
+
+        #[test]
+        fn a_link_local_destination_without_an_interface_routes() {
+            $crate::a_link_local_destination_without_an_interface_routes($value);
+        }
+
+        #[test]
+        fn waived_source_check_takes_a_foreign_address() {
+            $crate::waived_source_check_takes_a_foreign_address($value);
+        }
+
+        #[test]
+        fn loose_source_route_goes_to_its_first_hop() {
+            $crate::loose_source_route_goes_to_its_first_hop($value);
+        }
+
+        #[test]
+        fn strict_source_route_takes_only_a_first_hop_on_the_link() {
+            $crate::strict_source_route_takes_only_a_first_hop_on_the_link($value);
+        }
+
+        #[test]
+        fn routing_header_goes_to_its_first_hop() {
+            $crate::routing_header_goes_to_its_first_hop($value);
+        }
+
+        #[test]
+        fn link_scope_takes_only_routes_on_the_link() {
+            $crate::link_scope_takes_only_routes_on_the_link($value);
+        }
+
+        #[test]
+        fn confirmed_neighbour_is_confirmed() {
+            $crate::confirmed_neighbour_is_confirmed($value);
+        }
+
+        #[test]
+        fn source_preferences_choose_among_the_link_addresses() {
+            $crate::source_preferences_choose_among_the_link_addresses($value);
+        }
+
+        #[test]
+        fn other_protocols_route() {
+            $crate::other_protocols_route($value);
+        }
     };
 }

@@ -14,7 +14,7 @@ wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true
 libc = "0.2.191"
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1.6", features = ["net", "thread"] }
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
