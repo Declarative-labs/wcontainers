@@ -4450,11 +4450,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         };
         let gather_component = if gather {
             let c = op.lits.first().copied().unwrap_or(0) as usize;
-            // A depth texture has only its first component in the common form; Direct3D gathers
-            // the others' defaults, through the sampler's comparison where it compares.
-            if res.depth && c != 0 {
-                return Err(unsupported(crate::refusal::DEPTH_GATHER_COMPONENT));
-            }
+            // A depth texture's other components are resolved by `variant::swizzle`, through the
+            // view's mapping.
             Some(SwizzleComponent::XYZW[c.min(SwizzleComponent::XYZW.len() - 1)])
         } else {
             None

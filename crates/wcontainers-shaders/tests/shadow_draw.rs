@@ -24,10 +24,11 @@ use wcontainers_gpu::{
     ViewComponent, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
-use wcontainers_shaders::refusal::SWIZZLED_DEPTH;
+use wcontainers_graphics_test::d3d12;
 use wcontainers_shaders::{ConvertError, Converted, Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::{Interface, s};
 
@@ -205,8 +206,209 @@ fn helpers(c: &Converted, plain: Filter) -> Vec<u8> {
     block
 }
 
+/// Direct3D 12's encoding of a view's component mapping (`D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING`):
+/// three bits a component, a component's index or 4 for zero and 5 for one, then the always-set bit.
+fn d3d12_mapping(mapping: [ViewComponent; 4]) -> u32 {
+    const SOURCE_BITS: u32 = 3;
+    const ALWAYS_SET: u32 = 1 << (SOURCE_BITS * 4);
+    mapping
+        .iter()
+        .enumerate()
+        .fold(ALWAYS_SET, |bits, (i, &m)| {
+            bits | ((m as u32) << (SOURCE_BITS * i as u32))
+        })
+}
+
+fn d3d12_compare(compare: CompareFn) -> D3D12_COMPARISON_FUNC {
+    match compare {
+        CompareFn::Less => D3D12_COMPARISON_FUNC_LESS,
+        CompareFn::Greater => D3D12_COMPARISON_FUNC_GREATER,
+        other => panic!("no scene compares by {other:?}"),
+    }
+}
+
+/// Real Direct3D 12 drawing the route's builds over the grid with point samplers, the shadow map a
+/// 16-bit depth texture read through an R16_UNORM view mapped by `mapping` and compared by
+/// `compare`; the target's texels.
+fn direct3d12(
+    gpu: &d3d12::Gpu,
+    shader: &str,
+    dxil: bool,
+    compare: CompareFn,
+    mapping: [ViewComponent; 4],
+    shadow: &[u8],
+) -> Vec<u8> {
+    let ext = if dxil { "dxil" } else { "dxbc" };
+    let vs = bytecode(&format!("vs_transform.{ext}"));
+    let ps = bytecode(&format!("{shader}.{ext}"));
+    let range = D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        ..Default::default()
+    };
+    let parameters = [
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Descriptor: D3D12_ROOT_DESCRIPTOR::default(),
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &range,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        },
+    ];
+    let sampler = |register: u32, filter, compare| D3D12_STATIC_SAMPLER_DESC {
+        Filter: filter,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        MaxAnisotropy: 1,
+        ComparisonFunc: compare,
+        MaxLOD: f32::MAX,
+        ShaderRegister: register,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        ..Default::default()
+    };
+    let samplers = [
+        sampler(
+            PLAIN,
+            D3D12_FILTER_MIN_MAG_MIP_POINT,
+            D3D12_COMPARISON_FUNC_NEVER,
+        ),
+        sampler(
+            COMPARE,
+            D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
+            d3d12_compare(compare),
+        ),
+    ];
+    let root = gpu
+        .root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+            Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
+            Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
+                Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
+                    NumParameters: parameters.len() as u32,
+                    pParameters: parameters.as_ptr(),
+                    NumStaticSamplers: samplers.len() as u32,
+                    pStaticSamplers: samplers.as_ptr(),
+                    Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                },
+            },
+        })
+        .unwrap();
+    let layout = [
+        d3d12::element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
+        d3d12::element(s!("TEXCOORD"), DXGI_FORMAT_R32G32_FLOAT, TEXCOORD_OFFSET),
+    ];
+    let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+        pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+        VS: d3d12::bytecode(&vs),
+        PS: d3d12::bytecode(&ps),
+        SampleMask: u32::MAX,
+        RasterizerState: D3D12_RASTERIZER_DESC {
+            FillMode: D3D12_FILL_MODE_SOLID,
+            CullMode: D3D12_CULL_MODE_NONE,
+            DepthClipEnable: true.into(),
+            ..Default::default()
+        },
+        InputLayout: D3D12_INPUT_LAYOUT_DESC {
+            pInputElementDescs: layout.as_ptr(),
+            NumElements: layout.len() as u32,
+        },
+        PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        NumRenderTargets: 1,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        ..Default::default()
+    };
+    desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
+    desc.RTVFormats[0] = dxgi(TARGET);
+    let pipeline: ID3D12PipelineState =
+        unsafe { gpu.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    let map = gpu
+        .committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &d3d12::tex2d_desc(
+                SIZE,
+                SIZE,
+                DXGI_FORMAT_R16_TYPELESS,
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+            ),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+        )
+        .unwrap();
+    gpu.fill_texture(&map, shadow, SIZE * SHADOW.block().2)
+        .unwrap();
+    let views = gpu
+        .descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true)
+        .unwrap();
+    let mut view = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: SHADOW_DXGI,
+        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+        Shader4ComponentMapping: d3d12_mapping(mapping),
+        ..Default::default()
+    };
+    view.Anonymous.Texture2D.MipLevels = 1;
+    unsafe {
+        gpu.device
+            .CreateShaderResourceView(&map, Some(&view), gpu.cpu(&views, 0))
+    };
+    let (target, rtv_heap) = gpu.target(SIZE, SIZE, dxgi(TARGET)).unwrap();
+    let vertices = grid();
+    let vertex_buffer = gpu.upload(bytes_of(&vertices)).unwrap();
+    let constant_buffer = gpu.upload(&constants([1.0; 4])).unwrap();
+    let list = &gpu.list;
+    unsafe {
+        list.ResourceBarrier(&[d3d12::transition(
+            &map,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )]);
+        let rtv = gpu.cpu(&rtv_heap, 0);
+        list.ClearRenderTargetView(rtv, &CLEAR, None);
+        list.OMSetRenderTargets(1, Some(&rtv), false, None);
+        d3d12::area(list, 0, 0, SIZE, SIZE);
+        list.SetGraphicsRootSignature(&root);
+        list.SetPipelineState(&pipeline);
+        list.SetDescriptorHeaps(&[Some(views.clone())]);
+        list.SetGraphicsRootConstantBufferView(0, constant_buffer.GetGPUVirtualAddress());
+        list.SetGraphicsRootDescriptorTable(1, gpu.gpu(&views, 0));
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list.IASetVertexBuffers(
+            0,
+            Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: vertex_buffer.GetGPUVirtualAddress(),
+                SizeInBytes: size_of_val(vertices.as_slice()) as u32,
+                StrideInBytes: STRIDE,
+            }]),
+        );
+        list.DrawInstanced((vertices.len() / VERTEX_FLOATS) as u32, 1, 0, 0);
+    }
+    for resource in [&map, &vertex_buffer, &constant_buffer] {
+        gpu.keep(resource);
+    }
+    gpu.read(&target, 0, D3D12_RESOURCE_STATE_RENDER_TARGET)
+        .unwrap()
+        .into_rgba32f()
+        .into_raw()
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
+}
+
 /// The same through the WebGPU back end, the shadow map a 16-bit depth texture written from the CPU
-/// and read through a view with the component mapping `mapping` where there is one.
+/// and read through a view with the component mapping `mapping` where there is one, compared by
+/// `compare`.
 fn ours<B: Backend>(
     b: &mut B,
     shader: &str,
@@ -214,6 +416,7 @@ fn ours<B: Backend>(
     shadow: &[u8],
     dxil: bool,
     mapping: Option<[ViewComponent; 4]>,
+    compare: CompareFn,
 ) -> Vec<u8> {
     let in_program = filters.plain == Filter::Linear;
     let ps_key = VariantKey {
@@ -359,7 +562,7 @@ fn ours<B: Backend>(
         },
         None,
     );
-    let compare = sampler(b, filters.compare, Some(CompareFn::Less));
+    let compare = sampler(b, filters.compare, Some(compare));
     let vertices = grid();
     let vertex_buffer = buffer(b, bytes_of(&vertices), BufferUsage::VERTEX);
     let constants = constants([1.0; 4]);
@@ -367,7 +570,8 @@ fn ours<B: Backend>(
     let mut entries: [Vec<BindingEntry<'_, B>>; 4] = Default::default();
     for (c, stages) in [(&vs, StageSet::VERTEX), (&ps, StageSet::FRAGMENT)] {
         for r in &c.reflection.bindings {
-            let resource = match (r.kind, r.slot()) {
+            // By register: a DXIL program's slots rank the registers it declares.
+            let resource = match (r.kind, r.register) {
                 (SlotKind::Uniform, 0) => BindingResource::UniformBuffer(BufferRange {
                     buffer: &constants_buffer,
                     offset: 0,
@@ -538,7 +742,15 @@ fn textures_compared_and_read_plainly_draw_as_direct3d_does() {
             let name = format!("shadow-{seed}-{:?}-{:?}", filters.plain, filters.compare);
             keep(&format!("{name}.d3d11"), &reference, TARGET);
             for (route, dxil) in [("dxbc", false), ("dxil", true)] {
-                let texels = ours(&mut backend, SHADOW_SHADER, filters, &shadow, dxil, None);
+                let texels = ours(
+                    &mut backend,
+                    SHADOW_SHADER,
+                    filters,
+                    &shadow,
+                    dxil,
+                    None,
+                    CompareFn::Less,
+                );
                 keep(&format!("{name}.webgpu-{route}"), &texels, TARGET);
                 let (count, largest) = apart(&reference, &texels, allowed(filters));
                 compared += 1;
@@ -558,16 +770,39 @@ fn textures_compared_and_read_plainly_draw_as_direct3d_does() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// Component mappings of a depth view: three keeping red first, which comparisons read, copying the
-/// depth and moving the defaults into the other components; one moving red away, which a program
-/// comparing against the view cannot take.
-const MAPPINGS: [[ViewComponent; 4]; 4] = {
+/// The seeds a mapped-view test draws: `WCONTAINERS_SHADOW_SEED` (default 1) and
+/// `WCONTAINERS_SHADOW_CASES` seeds from it (default 4).
+fn seeds() -> std::ops::Range<u64> {
+    let seed: u64 = std::env::var("WCONTAINERS_SHADOW_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_SHADOW_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    seed..seed + seeds
+}
+
+/// Component mappings of a depth view keeping red first, copying the depth and moving the defaults
+/// into the other components.
+const KEPT: [[ViewComponent; 4]; 3] = {
     use ViewComponent as C;
     [
         [C::R, C::R, C::R, C::One],
         [C::R, C::A, C::One, C::G],
         [C::R, C::Zero, C::R, C::B],
+    ]
+};
+
+/// Component mappings of a depth view moving red off the first component, onto each kind of source
+/// there: a default zero (green, blue), the default one (alpha), and each constant.
+const MOVED: [[ViewComponent; 4]; 5] = {
+    use ViewComponent as C;
+    [
         [C::A, C::R, C::One, C::R],
+        [C::G, C::R, C::R, C::A],
+        [C::B, C::One, C::R, C::Zero],
+        [C::Zero, C::R, C::B, C::One],
+        [C::One, C::A, C::R, C::G],
     ]
 };
 
@@ -594,14 +829,36 @@ fn mapped(texel: &[u8], mapping: [ViewComponent; 4]) -> Vec<u8> {
         .collect()
 }
 
-/// A depth view with a component mapping (Direct3D 12's `Shader4ComponentMapping`, which Direct3D 11
-/// lacks), read whole by `ps_shadow_wide` and through its first component by `ps_shadow`: the
-/// reference is real Direct3D 11's picture of the unmapped view with the mapping applied to each
-/// texel on the CPU. Both programs compare against the view, so a mapping not keeping red first is
-/// refused by name.
+fn floats(t: &[u8]) -> Vec<f32> {
+    t.chunks(FLOAT)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+/// Prints the first texel where `ours` differs from `reference`, beside the unmapped picture's.
+fn first_apart(reference: &[u8], ours: &[u8], unmapped: &[u8]) {
+    let texel = TARGET.block().2 as usize;
+    if let Some((at, (want, got))) = reference
+        .chunks(texel)
+        .zip(ours.chunks(texel))
+        .enumerate()
+        .find(|(_, (a, b))| a != b)
+    {
+        println!(
+            "  first at texel {at}: reference {:?}, unmapped {:?}, ours {:?}",
+            floats(want),
+            floats(&unmapped[at * texel..][..texel]),
+            floats(got)
+        );
+    }
+}
+
+/// A depth view with a component mapping keeping red first (Direct3D 12's
+/// `Shader4ComponentMapping`, which Direct3D 11 lacks), read whole by `ps_shadow_wide` and through
+/// its first component by `ps_shadow`: the reference is real Direct3D 11's picture of the unmapped
+/// view with the mapping applied to each texel on the CPU.
 #[test]
 fn depth_views_with_component_mappings_read_as_mapped() {
-    use ViewComponent as C;
     let mut backend = webgpu();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
@@ -609,21 +866,15 @@ fn depth_views_with_component_mappings_read_as_mapped() {
         &[D3D_FEATURE_LEVEL_11_0],
     )
     .unwrap();
-    let seed: u64 = std::env::var("WCONTAINERS_SHADOW_SEED")
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(1);
-    let seeds: u64 = std::env::var("WCONTAINERS_SHADOW_CASES")
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(4);
     let filters = SCENES[0];
     let texel = TARGET.block().2 as usize;
     let mut failures = Vec::new();
     let mut compared = 0;
-    for seed in seed..seed + seeds {
+    for seed in seeds() {
         let shadow = shadow_texels(seed);
         for shader in [WIDE_SHADER, SHADOW_SHADER] {
             let plain = direct3d(&gpu, shader, filters, &shadow);
-            for mapping in MAPPINGS {
+            for mapping in KEPT {
                 let reference: Vec<u8> = match shader {
                     WIDE_SHADER => plain
                         .chunks(texel)
@@ -632,26 +883,15 @@ fn depth_views_with_component_mappings_read_as_mapped() {
                     _ => plain.clone(),
                 };
                 for (route, dxil) in [("dxbc", false), ("dxil", true)] {
-                    if mapping[0] != C::R {
-                        let ext = if dxil { "dxil" } else { "dxbc" };
-                        let bytes = bytecode(&format!("{shader}.{ext}"));
-                        let source = if dxil {
-                            Source::Dxil(&bytes)
-                        } else {
-                            Source::Dxbc(&bytes)
-                        };
-                        let key = VariantKey {
-                            swizzled: vec![(SHADOW_SLOT, mapping)],
-                            ..VariantKey::default()
-                        };
-                        assert_eq!(
-                            convert(source, &key, None).err(),
-                            Some(ConvertError::Unsupported(SWIZZLED_DEPTH)),
-                            "{shader} {route} {mapping:?}"
-                        );
-                        continue;
-                    }
-                    let texels = ours(&mut backend, shader, filters, &shadow, dxil, Some(mapping));
+                    let texels = ours(
+                        &mut backend,
+                        shader,
+                        filters,
+                        &shadow,
+                        dxil,
+                        Some(mapping),
+                        CompareFn::Less,
+                    );
                     let (count, largest) = apart(&reference, &texels, [0.0; 4]);
                     compared += 1;
                     println!(
@@ -660,23 +900,7 @@ fn depth_views_with_component_mappings_read_as_mapped() {
                         SIZE * SIZE,
                     );
                     if count != 0 {
-                        let floats = |t: &[u8]| -> Vec<f32> {
-                            t.chunks(FLOAT)
-                                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                                .collect()
-                        };
-                        let (at, (want, got)) = reference
-                            .chunks(texel)
-                            .zip(texels.chunks(texel))
-                            .enumerate()
-                            .find(|(_, (a, b))| a != b)
-                            .unwrap();
-                        println!(
-                            "  first at texel {at}: Direct3D 11 mapped {:?}, unmapped {:?}, ours {:?}",
-                            floats(want),
-                            floats(&plain[at * texel..][..texel]),
-                            floats(got)
-                        );
+                        first_apart(&reference, &texels, &plain);
                         failures.push(format!("seed {seed} {shader} {mapping:?} {route}"));
                     }
                 }
@@ -684,5 +908,160 @@ fn depth_views_with_component_mappings_read_as_mapped() {
         }
     }
     println!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Mappings putting red in one component alone, the rest zero, as vkd3d's comparison gather tests
+/// map views.
+const ALONE: [[ViewComponent; 4]; 3] = {
+    use ViewComponent as C;
+    [
+        [C::Zero, C::R, C::Zero, C::Zero],
+        [C::Zero, C::Zero, C::R, C::Zero],
+        [C::Zero, C::Zero, C::Zero, C::R],
+    ]
+};
+
+/// How a program compares against the depth view: by plain comparisons, or by a comparison gather
+/// of one component.
+#[derive(Clone, Copy)]
+enum Compared {
+    Sample,
+    Gather(usize),
+}
+
+/// The programs reading a depth view through a mapping, with how each compares: whole, through its
+/// first component, gathers of each component, and comparison gathers of each.
+const MAPPED_SHADERS: [(&str, Compared); 7] = [
+    (WIDE_SHADER, Compared::Sample),
+    (SHADOW_SHADER, Compared::Sample),
+    ("ps_shadow_gathers", Compared::Sample),
+    ("ps_shadow_compared_red", Compared::Gather(0)),
+    ("ps_shadow_compared_green", Compared::Gather(1)),
+    ("ps_shadow_compared_blue", Compared::Gather(2)),
+    ("ps_shadow_compared_alpha", Compared::Gather(3)),
+];
+
+/// The refusal a program comparing as `compared` through `mapping` is to meet, where the RTX 3080,
+/// WARP and vkd3d's tests disagree on the result: a plain comparison through green, blue or alpha,
+/// and a comparison gather unless red is in the mapping's first and gathered components.
+fn expected_refusal(compared: Compared, mapping: [ViewComponent; 4]) -> Option<&'static str> {
+    use ViewComponent as C;
+    let disagreed = match compared {
+        Compared::Sample => !matches!(mapping[0], C::R | C::Zero | C::One),
+        Compared::Gather(c) => mapping[c] != C::R || mapping[0] != C::R,
+    };
+    disagreed.then_some(match mapping == [C::R, C::G, C::B, C::A] {
+        true => wcontainers_shaders::refusal::DEPTH_GATHER_COMPONENT,
+        false => wcontainers_shaders::refusal::SWIZZLED_DEPTH,
+    })
+}
+
+/// A depth view with any component mapping, red kept first or moved, against real Direct3D 12 on
+/// the RTX 3080 drawing the same build through a view so mapped: comparisons by two functions
+/// (which the program does not know), gathers and comparison gathers of each component, and reads
+/// used whole or as the depth alone, both routes; where the devices disagree
+/// ([`expected_refusal`]), the program is refused by name. Direct3D 12 on WARP draws each too; where it
+/// differs from the RTX 3080 at texels both draw alike unmapped, the count is printed (a
+/// measurement, not a failure).
+#[test]
+fn depth_views_with_component_mappings_read_as_direct3d_12_maps_them() {
+    use ViewComponent as C;
+    let mut backend = webgpu();
+    let gpu = d3d12::create(wcontainers_graphics_test::Driver::Hardware, false).unwrap();
+    let warp = d3d12::create(wcontainers_graphics_test::Driver::Warp, false).unwrap();
+    let filters = SCENES[0];
+    let identity = [C::R, C::G, C::B, C::A];
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    let mut warp_apart = Vec::new();
+    let mut refused = 0;
+    for seed in seeds() {
+        let shadow = shadow_texels(seed);
+        for (shader, compares) in MAPPED_SHADERS {
+            for compare in [CompareFn::Less, CompareFn::Greater] {
+                for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+                    let unmapped = direct3d12(&gpu, shader, dxil, compare, identity, &shadow);
+                    let warp_unmapped = direct3d12(&warp, shader, dxil, compare, identity, &shadow);
+                    let mappings = [identity].into_iter().chain(KEPT).chain(MOVED).chain(ALONE);
+                    for mapping in mappings {
+                        let reference = direct3d12(&gpu, shader, dxil, compare, mapping, &shadow);
+                        let on_warp = direct3d12(&warp, shader, dxil, compare, mapping, &shadow);
+                        let case = format!("seed {seed} {shader} {compare:?} {mapping:?} {route}");
+                        // Texels the two draw apart unmapped too (which neighbour a sample on a
+                        // texel's edge takes) say nothing of the mapping.
+                        let texel = TARGET.block().2 as usize;
+                        let otherwise: Vec<usize> = (0..reference.len() / texel)
+                            .filter(|&t| {
+                                let at = t * texel..(t + 1) * texel;
+                                reference[at.clone()] != on_warp[at.clone()]
+                                    && unmapped[at.clone()] == warp_unmapped[at]
+                            })
+                            .collect();
+                        if let Some(&t) = otherwise.first() {
+                            let at = t * texel..(t + 1) * texel;
+                            println!(
+                                "{case}: WARP draws {} texels otherwise; first at texel {t}: WARP \
+                                 {:?}, RTX 3080 {:?}, unmapped {:?}",
+                                otherwise.len(),
+                                floats(&on_warp[at.clone()]),
+                                floats(&reference[at.clone()]),
+                                floats(&unmapped[at])
+                            );
+                            warp_apart.push(case.clone());
+                        }
+                        if let Some(refusal) = expected_refusal(compares, mapping) {
+                            let ext = if dxil { "dxil" } else { "dxbc" };
+                            let bytes = bytecode(&format!("{shader}.{ext}"));
+                            let source = match dxil {
+                                true => Source::Dxil(&bytes),
+                                false => Source::Dxbc(&bytes),
+                            };
+                            let key = VariantKey {
+                                swizzled: vec![(SHADOW_SLOT, mapping)],
+                                ..VariantKey::default()
+                            };
+                            let got = convert(source, &key, None).err();
+                            if got != Some(ConvertError::Unsupported(refusal)) {
+                                println!("{case}: expected {refusal}, got {got:?}");
+                                failures.push(case);
+                            }
+                            refused += 1;
+                            continue;
+                        }
+                        let name = format!("mapped-{seed}-{shader}-{compare:?}-{mapping:?}");
+                        keep(&format!("{name}.d3d12-{route}"), &reference, TARGET);
+                        let texels = ours(
+                            &mut backend,
+                            shader,
+                            filters,
+                            &shadow,
+                            dxil,
+                            Some(mapping),
+                            compare,
+                        );
+                        keep(&format!("{name}.webgpu-{route}"), &texels, TARGET);
+                        let (count, largest) = apart(&reference, &texels, [0.0; 4]);
+                        compared += 1;
+                        println!(
+                            "{case}: {count} of {} texels apart from Direct3D 12, largest \
+                             difference {largest}",
+                            SIZE * SIZE,
+                        );
+                        if count != 0 {
+                            first_apart(&reference, &texels, &unmapped);
+                            failures.push(case);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "{compared} comparisons and {refused} refusals by name, {} failed; WARP differs from the \
+         RTX 3080 in {} cases",
+        failures.len(),
+        warp_apart.len()
+    );
     assert!(failures.is_empty(), "{failures:#?}");
 }

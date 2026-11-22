@@ -13,6 +13,9 @@
 #include "boundary.h"
 #include "cast.hpp"
 #include "dxbc/dxbc_container.h"
+#include "dxil.hpp"
+#include "function.hpp"
+#include "instruction.hpp"
 #include "dxil_parser.hpp"
 #include "dxil_spirv_c.h"
 #include "llvm_bitcode_parser.hpp"
@@ -342,6 +345,32 @@ int constant_sizes(const uint8_t* data, size_t size, uint32_t** out, size_t* out
   return give(sizes, out, out_words, error);
 }
 
+// The argument of a `TextureGatherCmp` call naming the channel it gathers (after the opcode, the view,
+// the sampler, four coordinates and two offsets).
+constexpr unsigned GATHER_CHANNEL = 9;
+
+// The channel of every comparison gather (`TextureGatherCmp`) the module calls, UINT32_MAX for one not
+// given as a constant; dxil-spirv's SPIR-V compares the first channel whatever the call names.
+int compared_gather_channels(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  auto* bitcode = parse(data, size, true, error);
+  if (!bitcode)
+    return 1;
+  std::vector<uint32_t> channels;
+  for (auto* f : bitcode->get_module())
+    for (auto& block : *f)
+      for (auto& inst : block) {
+        auto* call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto* op = call && call->getNumArgOperands() > GATHER_CHANNEL
+                       ? llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0))
+                       : nullptr;
+        if (!op || op->getUniqueInteger().getZExtValue() != uint64_t(DXIL::Op::TextureGatherCmp))
+          continue;
+        auto* channel = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(GATHER_CHANNEL));
+        channels.push_back(channel ? uint32_t(channel->getUniqueInteger().getZExtValue()) : UINT32_MAX);
+      }
+  return give(channels, out, out_words, error);
+}
+
 // (class, space, register) of every register a range of the module's resource list covers, used by
 // the program or not; an unbounded range gives its first register.
 int declared_registers(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
@@ -463,6 +492,17 @@ extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_
   *out_words = 0;
   *error = nullptr;
   return wcs::contained("dxil-spirv", error, [&] { return constant_sizes(data, size, out, out_words, error); });
+}
+
+// Returns 0 and the channel of every comparison gather the module calls (`compared_gather_channels`) in
+// `out` (free with wcs_free), or nonzero with the reason in `error`.
+extern "C" int wcs_dxil_compared_gather_channels(const uint8_t* data, size_t size, uint32_t** out,
+                                                 size_t* out_words, char** error) {
+  *out = nullptr;
+  *out_words = 0;
+  *error = nullptr;
+  return wcs::contained("dxil-spirv", error,
+                        [&] { return compared_gather_channels(data, size, out, out_words, error); });
 }
 
 // Returns 0 and the (class, space, register) triples of every register the resource list declares in

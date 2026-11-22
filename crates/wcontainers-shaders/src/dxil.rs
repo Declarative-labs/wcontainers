@@ -48,6 +48,13 @@ unsafe extern "C" {
         out_words: *mut usize,
         error: *mut *mut c_char,
     ) -> c_int;
+    fn wcs_dxil_compared_gather_channels(
+        data: *const u8,
+        size: usize,
+        out: *mut *mut u32,
+        out_words: *mut usize,
+        error: *mut *mut c_char,
+    ) -> c_int;
     fn wcs_dxil_declared_registers(
         data: *const u8,
         size: usize,
@@ -136,7 +143,7 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
 /// The status the C side returns for a call that succeeded.
 const SUCCESS: c_int = 0;
 
-/// A C side reader of the DXIL's resource list, giving words it allocated.
+/// A C side reader of the DXIL's module, giving words it allocated.
 type ListReader =
     unsafe extern "C" fn(*const u8, usize, *mut *mut u32, *mut usize, *mut *mut c_char) -> c_int;
 
@@ -156,6 +163,11 @@ fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError
 /// (space, register, size in bytes) of every constant buffer the DXIL declares.
 fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
     resource_list(dxil, wcs_dxil_constant_sizes)
+}
+
+/// The channel of each comparison gather the DXIL calls, `u32::MAX` for one not constant.
+fn compared_gather_channels(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+    resource_list(dxil, wcs_dxil_compared_gather_channels)
 }
 
 /// Every register the DXIL's resource list declares, used by the program or not, as resources.
@@ -295,6 +307,7 @@ pub(crate) fn lower(
     nonfinite::calls(&mut module)?;
     arrays::split(&mut module, &mut resources, &mut declared, variant)?;
     depth::widen(&mut module)?;
+    depth::compared_gathers(&mut module, &compared_gather_channels(dxil)?)?;
     one_d::as_two_d(&mut module, &declared)?;
     // Before the atomics' stand-ins are made, as it moves the module's functions.
     components::rows(&mut module)?;

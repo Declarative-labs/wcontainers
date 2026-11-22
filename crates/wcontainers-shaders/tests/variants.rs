@@ -1542,7 +1542,8 @@ fn swizzled_slots_compose_what_they_read() {
 }
 
 /// A mapped depth view read whole takes the mapping in the (depth, 0, 0, 1) it reads, by both routes;
-/// comparisons read the first component, so a mapping moving red away from it is refused by name.
+/// with red moved off the first component to zero or one, comparisons convert too, to that
+/// constant; through green, blue or alpha they are refused by name.
 #[test]
 fn mapped_depth_views_compose_what_they_read() {
     use wcontainers_gpu::ViewComponent as C;
@@ -1559,21 +1560,54 @@ fn mapped_depth_views_compose_what_they_read() {
         assert_ne!(wgsl(c), wgsl(plain));
     }
     both(&own_pair("ps_shadow"), &key([C::R, C::R, C::R, C::One]));
-    let moved = [C::Zero, C::R, C::A, C::G];
     for name in ["ps_shadow", "ps_shadow_wide"] {
         let code = own_pair(name);
-        for (route, source) in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])]
-            .into_iter()
-            .enumerate()
-        {
-            match convert(source, &key(moved), None) {
-                Ok(c) => panic!("{name} route {route} converted:\n{}", wgsl(&c)),
-                Err(e) => assert_eq!(
-                    e,
-                    ConvertError::Unsupported(wcontainers_shaders::refusal::SWIZZLED_DEPTH)
-                ),
+        let plain = both(&code, &VariantKey::default());
+        for moved in [[C::Zero, C::R, C::A, C::G], [C::One, C::A, C::R, C::G]] {
+            for (c, plain) in both(&code, &key(moved)).iter().zip(&plain) {
+                assert_ne!(wgsl(c), wgsl(plain), "{name} {moved:?}");
             }
         }
+        for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
+            assert_eq!(
+                convert(source, &key([C::G, C::R, C::One, C::R]), None).err(),
+                Some(ConvertError::Unsupported(
+                    wcontainers_shaders::refusal::SWIZZLED_DEPTH
+                )),
+                "{name}"
+            );
+        }
+    }
+}
+
+/// Gathers of a depth texture's other components convert by both routes, plainly and, through a
+/// mapping keeping red in the first and the gathered component, by comparison; a comparison gather
+/// of another component through no mapping is refused by name on both, the DXIL one included,
+/// whose channel dxil-spirv's SPIR-V drops.
+#[test]
+fn depth_gathers_of_other_components_convert_where_exact() {
+    use wcontainers_gpu::ViewComponent as C;
+    both(&own_pair("ps_shadow_gathers"), &VariantKey::default());
+    let kept = VariantKey {
+        swizzled: vec![(0, [C::R; 4])],
+        ..VariantKey::default()
+    };
+    for name in [
+        "ps_shadow_compared_green",
+        "ps_shadow_compared_blue",
+        "ps_shadow_compared_alpha",
+    ] {
+        let code = own_pair(name);
+        for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
+            assert_eq!(
+                convert(source, &VariantKey::default(), None).err(),
+                Some(ConvertError::Unsupported(
+                    wcontainers_shaders::refusal::DEPTH_GATHER_COMPONENT
+                )),
+                "{name}"
+            );
+        }
+        both(&code, &kept);
     }
 }
 

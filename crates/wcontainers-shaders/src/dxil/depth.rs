@@ -54,12 +54,8 @@ fn plain_reads(module: &Module, f: &Function) -> Result<Vec<Handle<Expression>>>
                 level,
                 ..
             } if depth(module, f, image) => match (gather, level) {
-                (Some(SwizzleComponent::X), _) => continue,
-                (Some(_), _) => {
-                    return Err(ConvertError::Unsupported(
-                        crate::refusal::DEPTH_GATHER_COMPONENT,
-                    ));
-                }
+                // Every component's gather is resolved by `variant::swizzle`.
+                (Some(_), _) => continue,
                 (None, SampleLevel::Bias(_)) => {
                     return Err(ConvertError::Unsupported(crate::refusal::DEPTH_SAMPLE_BIAS));
                 }
@@ -210,4 +206,35 @@ fn helper(module: &Module, f: &Function, r: &Read, vec4: Handle<Type>) -> Result
     h.body
         .push(Statement::Return { value: Some(wide) }, Span::UNDEFINED);
     Ok(h)
+}
+
+/// Gives each comparison gather the channel the DXIL names, which dxil-spirv drops (its SPIR-V
+/// compares the first): `channels` are those of the program's `TextureGatherCmp` calls, as
+/// `cpp/dxil.cpp` reads them. Calls naming different channels, or one not constant, cannot be told
+/// apart in the SPIR-V and are refused by name; `variant::swizzle` resolves the channel given.
+pub(super) fn compared_gathers(module: &mut Module, channels: &[u32]) -> Result<()> {
+    let Some(&channel) = channels.first() else {
+        return Ok(());
+    };
+    let component = SwizzleComponent::XYZW
+        .get(channel as usize)
+        .filter(|_| channels.iter().all(|&c| c == channel))
+        .copied()
+        .ok_or(ConvertError::Unsupported(
+            crate::refusal::DEPTH_GATHER_COMPONENT,
+        ))?;
+    let functions = module.functions.iter_mut().map(|(_, f)| f);
+    for f in functions.chain(module.entry_points.iter_mut().map(|e| &mut e.function)) {
+        for (_, e) in f.expressions.iter_mut() {
+            if let Expression::ImageSample {
+                gather: Some(gather),
+                depth_ref: Some(_),
+                ..
+            } = e
+            {
+                *gather = component;
+            }
+        }
+    }
+    Ok(())
 }

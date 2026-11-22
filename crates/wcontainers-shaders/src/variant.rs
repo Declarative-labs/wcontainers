@@ -46,11 +46,9 @@ pub(crate) fn apply(
         offset::storage_offsets(module, stage, reflection)?;
     }
     alpha::alpha_only(module, variant, reflection)?;
-    if !variant.swizzled.is_empty() {
-        let mut outlined = Outlined::default();
-        swizzle::swizzled(module, &variant.swizzled, reflection, &mut outlined)?;
-        outlined.finish(module);
-    }
+    let mut outlined = Outlined::default();
+    swizzle::swizzled(module, &variant.swizzled, reflection, &mut outlined)?;
+    outlined.finish(module);
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
     constants::constants_as_texture(

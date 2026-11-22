@@ -118,6 +118,11 @@ ps_rows_io.dxbc	ok ; glsl compiles
 ps_samples.dxbc	unsupported SampleCount
 ps_shade.dxbc	ok ; glsl compiles
 ps_shadow.dxbc	ok ; glsl compiles
+ps_shadow_compared_alpha.dxbc	unsupported DepthGatherComponent
+ps_shadow_compared_blue.dxbc	unsupported DepthGatherComponent
+ps_shadow_compared_green.dxbc	unsupported DepthGatherComponent
+ps_shadow_compared_red.dxbc	ok ; glsl compiles
+ps_shadow_gathers.dxbc	ok ; glsl compiles
 ps_shadow_wide.dxbc	ok ; glsl compiles
 ps_signed.dxbc	ok ; glsl compiles
 ps_size.dxbc	ok ; glsl compiles

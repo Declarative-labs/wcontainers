@@ -1,12 +1,17 @@
 //! Views' component mappings applied in the program (`VariantKey::swizzled`): each load or sample
 //! of a mapped slot becomes a call of a function making the same read and composing its result
-//! from the mapping; a gather of component c gathers the component c maps to.
+//! from the mapping; a gather of component c gathers the component c maps to. A depth texture
+//! holds its first component alone in the common form, so its gathers of another component are
+//! resolved here too, through the identity where the slot has no mapping.
 
 use wcontainers_gpu::ViewComponent;
 
-use crate::refusal::SWIZZLED_DEPTH;
+use crate::refusal::{DEPTH_GATHER_COMPONENT, SWIZZLED_DEPTH};
 
 use super::*;
+
+/// Why a texture read is malformed: its result is neither a scalar nor a vector.
+const NEITHER_SCALAR_NOR_VECTOR: &str = "a texture read that is neither a scalar nor a vector";
 
 /// The operands of an image expression: each handle in a fixed order.
 fn operands(e: &mut Expression) -> Vec<&mut Handle<Expression>> {
@@ -99,19 +104,34 @@ fn function_mut(module: &mut Module, owner: usize) -> &mut Function {
 }
 
 /// Maps the read `h` of a depth texture in `f`. A plain read is widened where it is read as
-/// (depth, 0, 0, 1), as Direct3D reads a depth view; that widening takes the mapped components. A
-/// read used as its depth alone, a comparison and a gather each take the first component, which
-/// stays the depth only where the mapping keeps red first.
-fn depth_mapped(f: &mut Function, h: Handle<Expression>, map: &[ViewComponent]) -> Result<()> {
+/// (depth, 0, 0, 1), as Direct3D reads a depth view; that widening takes the mapped components.
+/// A gather of component c and a read used as its depth alone (c the first) give the mapped c-th
+/// component of (depth, 0, 0, 1) for each texel: the read itself where that component is red,
+/// otherwise the constant returned (zero for green, blue and zero, one for alpha and one), for the
+/// caller to put in place of the read. A comparison through a mapping whose first component is
+/// zero or one gives that constant whatever its function, on the RTX 3080 and on WARP alike.
+/// Refused by name, where the devices and vkd3d's tests disagree: a comparison through green, blue
+/// or alpha (the RTX 3080 gives their constant, WARP compares the depth), and a comparison gather
+/// unless the mapping keeps red in its first and its c-th component (the RTX 3080 compares the
+/// depth and maps the result by the first component; vkd3d's tests compare the mapped c-th)
+/// (`refusal`: `SwizzledDepth` through a view's mapping, `DepthGatherComponent` through none).
+fn depth_mapped(
+    f: &mut Function,
+    h: Handle<Expression>,
+    map: &[ViewComponent],
+    refusal: &'static str,
+) -> Result<Option<ViewComponent>> {
     use ViewComponent as C;
-    let plain = matches!(
-        f.expressions[h],
+    let (plain, gather, compared) = match f.expressions[h] {
         Expression::ImageSample {
-            depth_ref: None,
-            gather: None,
-            ..
-        } | Expression::ImageLoad { .. }
-    );
+            depth_ref, gather, ..
+        } => (
+            depth_ref.is_none() && gather.is_none(),
+            gather,
+            depth_ref.is_some(),
+        ),
+        _ => (true, None, false),
+    };
     let widened = f.expressions.iter().find_map(|(w, e)| match e {
         Expression::Compose { components, .. }
             if components.len() == map.len() && components[0] == h =>
@@ -120,23 +140,64 @@ fn depth_mapped(f: &mut Function, h: Handle<Expression>, map: &[ViewComponent]) 
         }
         _ => None,
     });
-    match widened {
-        Some(w) if plain => {
-            let Expression::Compose { components, .. } = f.expressions.get_mut(w) else {
-                unreachable!("found as a composition");
+    if let (Some(w), true) = (widened, plain) {
+        let Expression::Compose { components, .. } = f.expressions.get_mut(w) else {
+            unreachable!("found as a composition");
+        };
+        let read = components.clone();
+        for (to, &from) in components.iter_mut().zip(map) {
+            *to = match from {
+                C::Zero => read[C::G as usize],
+                C::One => read[C::A as usize],
+                c => read[c as usize],
             };
-            let read = components.clone();
-            for (to, &from) in components.iter_mut().zip(map) {
-                *to = match from {
-                    C::Zero => read[C::G as usize],
-                    C::One => read[C::A as usize],
-                    c => read[c as usize],
-                };
-            }
-            Ok(())
         }
-        _ if map[0] == C::R => Ok(()),
-        _ => Err(ConvertError::Unsupported(SWIZZLED_DEPTH)),
+        return Ok(None);
+    }
+    let component = map[gather.map_or(0, |c| c as usize)];
+    let agreed = match (gather, component) {
+        (_, C::R) => map[0] == C::R,
+        (None, C::Zero | C::One) => true,
+        _ => false,
+    };
+    if compared && !agreed {
+        return Err(ConvertError::Unsupported(refusal));
+    }
+    // The read stays a gather of the one component a depth texture has; a constant replaces its
+    // result.
+    if let Expression::ImageSample { gather, .. } = f.expressions.get_mut(h) {
+        *gather = gather.map(|_| naga::SwizzleComponent::X);
+    }
+    Ok(match component {
+        C::R => None,
+        C::G | C::B | C::Zero => Some(C::Zero),
+        C::A | C::One => Some(C::One),
+    })
+}
+
+/// Whether global `g` of `module` is a depth texture.
+fn is_depth(module: &Module, g: Handle<GlobalVariable>) -> bool {
+    matches!(
+        module.types[module.global_variables[g].ty].inner,
+        TypeInner::Image {
+            class: ImageClass::Depth { .. },
+            ..
+        }
+    )
+}
+
+/// Whether `e` of `f` gathers a component past the first of a depth texture of `module`.
+fn depth_gather_past_red(module: &Module, f: &Function, e: &Expression) -> bool {
+    match *e {
+        Expression::ImageSample {
+            image,
+            gather: Some(c),
+            ..
+        } => {
+            c != naga::SwizzleComponent::X
+                && global_of(f, image).is_some_and(|g| is_depth(module, g))
+        }
+        _ => false,
     }
 }
 
@@ -147,7 +208,14 @@ pub(super) fn swizzled(
     outlined: &mut Outlined,
 ) -> Result<()> {
     use ViewComponent as C;
-    if mappings.is_empty() {
+    const IDENTITY: [ViewComponent; 4] = [C::R, C::G, C::B, C::A];
+    if mappings.is_empty()
+        && !owners(module).iter().any(|(_, f)| {
+            f.expressions
+                .iter()
+                .any(|(_, e)| depth_gather_past_red(module, f, e))
+        })
+    {
         return Ok(());
     }
     let mut sites = Vec::new();
@@ -160,15 +228,16 @@ pub(super) fn swizzled(
                 Expression::ImageLoad { image, .. } => (image, None),
                 _ => continue,
             };
-            let g = global_of(f, image)
-                .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
-            let Some(slot) = slot_of(module, reflection, g, SlotKind::Texture) else {
-                continue;
+            let resolved = depth_gather_past_red(module, f, e);
+            let g = match global_of(f, image) {
+                Some(g) => g,
+                None if mappings.is_empty() => continue,
+                None => return Err(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT)),
             };
-            let Some(&(_, map)) = mappings.iter().find(|(s, _)| *s == slot) else {
-                continue;
-            };
-            if map == [C::R, C::G, C::B, C::A] {
+            let map = slot_of(module, reflection, g, SlotKind::Texture)
+                .and_then(|slot| mappings.iter().find(|(s, _)| *s == slot))
+                .map_or(IDENTITY, |&(_, map)| map);
+            if map == IDENTITY && !resolved {
                 continue;
             }
             match module.types[module.global_variables[g].ty].inner {
@@ -198,7 +267,13 @@ pub(super) fn swizzled(
         }
     }
     for (owner, h, map) in depths {
-        depth_mapped(function_mut(module, owner), h, &map)?;
+        let refusal = match map == IDENTITY {
+            true => DEPTH_GATHER_COMPONENT,
+            false => SWIZZLED_DEPTH,
+        };
+        if let Some(constant) = depth_mapped(function_mut(module, owner), h, &map, refusal)? {
+            sites.push((owner, h, map.map(|_| constant)));
+        }
     }
     for (owner, h, to) in gathers {
         let component = match to {
@@ -222,10 +297,12 @@ pub(super) fn swizzled(
         wanted.push(h);
         let types = types_of(module, &f, &wanted)?;
         let result = *types.last().unwrap();
-        let TypeInner::Vector { scalar, .. } = module.types[result].inner else {
-            return Err(ConvertError::Malformed(
-                "a texture read that is not a vector".into(),
-            ));
+        let (scalar, vector) = match module.types[result].inner {
+            TypeInner::Vector { scalar, .. } => (scalar, true),
+            TypeInner::Scalar(scalar) => (scalar, false),
+            _ => {
+                return Err(ConvertError::Malformed(NEITHER_SCALAR_NOR_VECTOR.into()));
+            }
         };
         let mut callee = Function {
             name: Some("swizzled".into()),
@@ -263,29 +340,35 @@ pub(super) fn swizzled(
                 .expressions
                 .append(Expression::Literal(literal), Span::UNDEFINED)
         };
-        let mut components = Vec::new();
-        for c in map {
-            components.push(match c {
-                C::Zero => constant(&mut callee, false),
-                C::One => constant(&mut callee, true),
-                _ => push(
+        // A scalar read is a depth texture's, mapped to a constant by `depth_mapped`.
+        let composed = match vector {
+            false => constant(&mut callee, map[0] == C::One),
+            true => {
+                let mut components = Vec::new();
+                for c in map {
+                    components.push(match c {
+                        C::Zero => constant(&mut callee, false),
+                        C::One => constant(&mut callee, true),
+                        _ => push(
+                            &mut callee,
+                            &mut body,
+                            Expression::AccessIndex {
+                                base: value,
+                                index: c as u32,
+                            },
+                        ),
+                    });
+                }
+                push(
                     &mut callee,
                     &mut body,
-                    Expression::AccessIndex {
-                        base: value,
-                        index: c as u32,
+                    Expression::Compose {
+                        ty: result,
+                        components,
                     },
-                ),
-            });
-        }
-        let composed = push(
-            &mut callee,
-            &mut body,
-            Expression::Compose {
-                ty: result,
-                components,
-            },
-        );
+                )
+            }
+        };
         body.push(
             Statement::Return {
                 value: Some(composed),

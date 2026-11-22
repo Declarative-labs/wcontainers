@@ -110,6 +110,11 @@ ps_rows.dxil	ok ; glsl compiles
 ps_rows_io.dxil	ok ; glsl compiles
 ps_samples.dxil	unsupported SampleCount
 ps_shadow.dxil	ok ; glsl compiles
+ps_shadow_compared_alpha.dxil	unsupported DepthGatherComponent
+ps_shadow_compared_blue.dxil	unsupported DepthGatherComponent
+ps_shadow_compared_green.dxil	unsupported DepthGatherComponent
+ps_shadow_compared_red.dxil	ok ; glsl compiles
+ps_shadow_gathers.dxil	ok ; glsl compiles
 ps_shadow_wide.dxil	ok ; glsl compiles
 ps_signed.dxil	ok ; glsl compiles
 ps_spaces.dxil	ok ; glsl compiles

@@ -177,6 +177,16 @@ for %%e in (ps_fill ps_msarray) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_shadow -Gis -Fo ps_shadow.dxil shadow.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_shadow_wide /Fo ps_shadow_wide.dxbc shadow.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_shadow_wide -Gis -Fo ps_shadow_wide.dxil shadow.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_shadow_gathers /Fo ps_shadow_gathers.dxbc shadow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_shadow_gathers -Gis -Fo ps_shadow_gathers.dxil shadow.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_shadow_compared_red /Fo ps_shadow_compared_red.dxbc shadow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_shadow_compared_red -Gis -Fo ps_shadow_compared_red.dxil shadow.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_shadow_compared_green /Fo ps_shadow_compared_green.dxbc shadow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_shadow_compared_green -Gis -Fo ps_shadow_compared_green.dxil shadow.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_shadow_compared_blue /Fo ps_shadow_compared_blue.dxbc shadow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_shadow_compared_blue -Gis -Fo ps_shadow_compared_blue.dxil shadow.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_shadow_compared_alpha /Fo ps_shadow_compared_alpha.dxbc shadow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_shadow_compared_alpha -Gis -Fo ps_shadow_compared_alpha.dxil shadow.hlsl || exit /b 1
 for %%e in (ps_msloop ps_msswap) do (
   "%FXC%" /nologo /T ps_4_0 /E %%e /Fo %%e.dxbc msloop.hlsl || exit /b 1
 )

@@ -28,3 +28,30 @@ float4 ps_shadow_wide(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Targe
     float4 read = (uint(pos.x) & 1) ? texel : near;
     return lit > uv.x + 2 ? lit.xxxx : read;
 }
+
+// Gathers of each component of a depth view, by the pixel's column: Direct3D gathers that component
+// of the (depth, 0, 0, 1) each texel of a depth view reads, as the view maps it. The comparison
+// only makes it a depth texture, as in ps_shadow_wide.
+float4 ps_shadow_gathers(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
+{
+    float lit = shadow.SampleCmpLevelZero(less, uv, 0.5);
+    uint column = uint(pos.x) & 3;
+    float4 four = column == 0 ? shadow.GatherRed(plain, uv)
+        : column == 1 ? shadow.GatherGreen(plain, uv)
+        : column == 2 ? shadow.GatherBlue(plain, uv)
+        : shadow.GatherAlpha(plain, uv);
+    return lit > uv.x + 2 ? lit.xxxx : four;
+}
+
+// A comparison gather of one component: it compares that component of each texel, as the view maps
+// it.
+#define COMPARED_GATHER(name, gather) \
+    float4 name(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target \
+    { \
+        return shadow.gather(less, uv, 0.5); \
+    }
+
+COMPARED_GATHER(ps_shadow_compared_red, GatherCmpRed)
+COMPARED_GATHER(ps_shadow_compared_green, GatherCmpGreen)
+COMPARED_GATHER(ps_shadow_compared_blue, GatherCmpBlue)
+COMPARED_GATHER(ps_shadow_compared_alpha, GatherCmpAlpha)

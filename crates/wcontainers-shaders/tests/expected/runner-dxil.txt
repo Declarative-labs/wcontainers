@@ -532,11 +532,11 @@ hlsl+gather-6-ps.dxil	ok ; glsl compiles
 hlsl+gather-7-ps.dxil	ok ; glsl compiles
 hlsl+gather-cmp-1-ps.dxil	ok ; glsl compiles
 hlsl+gather-cmp-2-ps.dxil	ok ; glsl compiles
-hlsl+gather-cmp-3-ps.dxil	ok ; glsl compiles
-hlsl+gather-cmp-4-ps.dxil	ok ; glsl compiles
-hlsl+gather-cmp-5-ps.dxil	ok ; glsl compiles
-hlsl+gather-cmp-6-ps.dxil	ok ; glsl compiles
-hlsl+gather-cmp-7-ps.dxil	ok ; glsl compiles
+hlsl+gather-cmp-3-ps.dxil	unsupported DepthGatherComponent
+hlsl+gather-cmp-4-ps.dxil	unsupported DepthGatherComponent
+hlsl+gather-cmp-5-ps.dxil	unsupported DepthGatherComponent
+hlsl+gather-cmp-6-ps.dxil	unsupported DepthGatherComponent
+hlsl+gather-cmp-7-ps.dxil	unsupported DepthGatherComponent
 hlsl+gather-offset-1-ps.dxil	ok ; glsl compiles
 hlsl+gather-offset-2-ps.dxil	ok ; glsl compiles
 hlsl+gather-offset-3-ps.dxil	ok ; glsl compiles
