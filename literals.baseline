@@ -6105,8 +6105,6 @@ code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	6
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	8
 code	crates/wcontainers-direct3d-11/src/format.rs	str	unserved	"a DXGI format this front does not serve"
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
-code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"not a query Direct3D 11 has"
-code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"per-stream stream output queries need feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/record.rs	int	<Recorder as Backend>::read_back	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	<Recorder as Backend>::read_queries	8
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	3

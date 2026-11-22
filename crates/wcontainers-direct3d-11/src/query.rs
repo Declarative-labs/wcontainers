@@ -211,6 +211,11 @@ pub const PREDICATE_HINT: u32 = 1;
 /// The timestamps' frequency: nanoseconds, the host's clocks' unit.
 const NANOSECONDS: u64 = NANOSECONDS_PER_SECOND;
 
+/// Refused: a query kind Direct3D 11 does not define.
+const NOT_A_QUERY: &str = "not a query Direct3D 11 has";
+/// Refused: a per-stream stream output query below 11_0.
+const STREAM_QUERIES_BELOW_11_0: &str = "per-stream stream output queries need feature level 11_0";
+
 /// The device's occlusion sets and the predicates running.
 pub(crate) struct Queries<B: Backend> {
     /// Occlusion predicates begun and not ended.
@@ -260,12 +265,10 @@ impl<B: Backend> Queries<B> {
 impl<B: Backend> Device<B> {
     pub fn create_query(&mut self, kind: u32, misc: u32) -> Result<Rc<Query<B>>> {
         if data_size(kind).is_none() || misc & !1 != 0 {
-            return Err(Error::InvalidArg("not a query Direct3D 11 has"));
+            return Err(Error::InvalidArg(NOT_A_QUERY));
         }
         if kind >= kind::SO_STATISTICS_STREAM0 && self.feature_level() < crate::desc::level::L11_0 {
-            return Err(Error::InvalidArg(
-                "per-stream stream output queries need feature level 11_0",
-            ));
+            return Err(Error::InvalidArg(STREAM_QUERIES_BELOW_11_0));
         }
         match kind {
             kind::EVENT | kind::OCCLUSION | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT => {}
