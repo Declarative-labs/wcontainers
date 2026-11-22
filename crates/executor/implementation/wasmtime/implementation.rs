@@ -4,6 +4,7 @@
 
 pub mod cli;
 mod memory;
+pub mod single_instruction;
 pub mod starts;
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,10 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
+use wcontainers_precise_instruction_set::PreciseInstructionSet;
+use wcontainers_precise_instruction_set_translator::Translator;
+use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture_arm64::{Arm64, Processor};
 use wcontainers_runtime_single_kernel::{
     Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
@@ -38,6 +43,8 @@ use zerocopy::{FromBytes, IntoBytes};
 
 pub use memory::Layout;
 use memory::SLOT_BYTES;
+use single_instruction::FaultingWrite;
+pub use single_instruction::Refusal;
 pub use starts::Sources;
 pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
@@ -475,6 +482,8 @@ pub struct CpuSide<G: Guest> {
     running: Option<Running>,
     /// A write being made one instruction at a time.
     stepping: Option<Stepping>,
+    /// The address of the one instruction a run of exactly one instruction runs.
+    single_instruction: Option<u64>,
     /// Ends a free turn.
     stop_flag: StopFlag,
     counters: BTreeMap<&'static str, (u64, u64)>,
@@ -764,8 +773,23 @@ where
             translated: Vec::new(),
             restored: false,
             stepping: None,
+            single_instruction: None,
             stop_flag: StopFlag::default(),
         }
+    }
+
+    /// Runs exactly the one instruction at the thread's program counter, and returns how it ended:
+    /// [`Exit::Stop`] when it finished, with the program counter where control went after it.
+    pub fn run_one_instruction(&mut self, thread: ThreadId) -> Exit {
+        let mut registers = RegisterBlock::ZERO;
+        Cpu::registers(self, thread, &mut registers);
+        self.single_instruction = Some(registers.pc);
+        let mut ending = Ending(None);
+        let Ok(()) = Execution::run(self, thread, Resume::FromRegisters, Turn::Free, &mut ending);
+        self.single_instruction = None;
+        ending
+            .0
+            .expect("a run of one instruction ends with an exit")
     }
 
     /// Every slow path taken so far: how often and the time spent.
@@ -1654,6 +1678,14 @@ where
         piece
     }
 
+    /// The length of the instruction at `pc`, when the guest decodes one there.
+    fn instruction_length(&self, memory: MemoryId, pc: u64) -> Option<u64> {
+        let mut code = vec![0; G::MAX_LENGTH as usize];
+        let length = self.layout.ceiling.saturating_sub(pc).min(G::MAX_LENGTH) as usize;
+        self.copy_out(memory, pc, &mut code[..length]);
+        G::decode(&code[..length]).map(|(_, length)| u64::from(length))
+    }
+
     /// Makes the lookup run the thread's instruction alone from its piece in the exact slot, and send
     /// the address after it to `load_code`, where the step ends.
     fn step(&mut self, store: &mut Store<Data<G>>, thread: ThreadId) {
@@ -1669,11 +1701,10 @@ where
             .table
             .set(&mut *store, table_slot, Ref::Func(Some(piece)))
             .expect("the exact slot");
-        let mut code = vec![0; G::MAX_LENGTH as usize];
-        let length = self.layout.ceiling.saturating_sub(pc).min(G::MAX_LENGTH) as usize;
-        self.copy_out(memory, pc, &mut code[..length]);
-        let (_, length) = G::decode(&code[..length]).expect("the instruction that wrote");
-        let next = pc + u64::from(length);
+        let length = self
+            .instruction_length(memory, pc)
+            .expect("the instruction that wrote");
+        let next = pc + length;
         let slots = [(pc, self.slot(memory, pc)), (next, self.slot(memory, next))];
         self.set_slot(memory, pc, contract::EXACT_SLOT as u32);
         self.set_slot(memory, next, 0);
@@ -1952,6 +1983,15 @@ where
 {
     let side = side(caller);
     let (memory, thread) = (caller.data().memory, caller.data().thread);
+    // A run of one instruction ends wherever control goes after it.
+    if let Some(pc) = side.single_instruction
+        && side.stepping.is_some()
+        && address != pc
+    {
+        side.flush(memory);
+        caller.data_mut().pending = Some(Exit::Stop);
+        return 0;
+    }
     // Code runs only from pages that allow it, as on Linux.
     let page = address / PAGE_SIZE;
     let runs = side
@@ -2341,6 +2381,19 @@ where
             self.write_held(thread);
             self.start_from(thread, resume);
             let instance = self.thread_instance(thread, &mut store);
+            // A run of one instruction steps it; one the guest cannot decode or run raises its own exit.
+            if let Some(pc) = self.single_instruction
+                && self.stepping.is_none()
+                && self
+                    .process(memory)
+                    .pages
+                    .get(pc / PAGE_SIZE)
+                    .allows
+                    .contains(Permissions::EXECUTE)
+                && self.instruction_length(memory, pc).is_some()
+            {
+                self.step(&mut store, thread);
+            }
             let block_at = self.threads[&thread].block_at;
             let state_base = self.process(memory).state_base;
             let data = store.data_mut();
@@ -3037,6 +3090,22 @@ mod tests {
     }
 }
 
+/// What a run of one instruction answers: it keeps the exit and leaves.
+struct Ending(Option<Exit>);
+
+impl Answer for Ending {
+    fn exit(&mut self, _: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
+        self.0 = Some(exit);
+        Carry::Leave(Leaving::SystemAsked)
+    }
+
+    fn clock(&mut self, _: u64) -> u64 {
+        panic!("an execution state holds no clock for the guest to read")
+    }
+
+    fn warn(&mut self, _: Warning<'_>) {}
+}
+
 /// How the translator works for a container: it changes speed, never behaviour, and is part of
 /// every cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3077,5 +3146,59 @@ where
 
     fn stop_flag(&self) -> StopFlag {
         self.stop_flag.clone()
+    }
+}
+
+impl Default for TranslatorConfig {
+    /// What `wcon` runs with when given no settings.
+    fn default() -> Self {
+        Self {
+            look_ahead: LookAhead::Full,
+            optimise: Optimise::Speed,
+        }
+    }
+}
+
+/// The WebAssembly executor of ARM64, which runs each instruction as [`Translator`] says.
+pub struct Arm64Executor {
+    side: CpuSide<wcontainers_arm64::Arm64>,
+}
+
+impl Arm64Executor {
+    /// Refuses a set that gives any instruction another behavior than the translator does.
+    pub fn for_precise_set(
+        set: &impl PreciseInstructionSet<Arm64>,
+        translator: TranslatorConfig,
+    ) -> Result<Self, Vec<Refusal>> {
+        single_instruction::check_honored(set, &Translator)?;
+        Ok(Self {
+            side: CpuSide::new(
+                Compiler::new(None),
+                translator.look_ahead,
+                translator.optimise,
+                (),
+            ),
+        })
+    }
+}
+
+impl wcontainers_executor::Executor for Arm64Executor {
+    type Architecture = Arm64;
+    type TranslatorConfig = TranslatorConfig;
+
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut Processor,
+        memory: &[MemoryDelta<'_, Arm64>],
+        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+    ) {
+        single_instruction::execute_on_cpu(
+            &mut self.side,
+            FaultingWrite::Kept,
+            processor,
+            memory,
+            on_memory_mutated,
+            CpuSide::run_one_instruction,
+        );
     }
 }
