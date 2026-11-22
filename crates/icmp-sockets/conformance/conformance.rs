@@ -179,6 +179,8 @@ fn identifier(version: IpVersion) -> EchoIdentifier {
 // https://www.rfc-editor.org/rfc/rfc792
 const SEQUENCE: u16 = 0x0102;
 /// How long a check sleeps before it asks again for what has not come yet.
+///
+/// https://doc.rust-lang.org/std/thread/fn.sleep.html
 pub const LOOK_AGAIN_SOON: Duration = Duration::from_millis(1);
 /// How long a check waits for a packet that should come.
 ///
@@ -2574,7 +2576,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
 /// https://doc.rust-lang.org/std/alloc/trait.GlobalAlloc.html
 pub const COUNTED_WAITS: usize = 100;
 
-/// Returns the allocations counted in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
+/// Returns the bytes allocated in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
 pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
@@ -2609,14 +2611,11 @@ pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
     counted
 }
 
-/// Makes the test binary's allocator the system's, counting each thread's allocations, which `allocations()` reads.
+/// Makes the test binary's allocator the system's, counting the bytes each thread asks of it, which `allocations()` reads.
 #[macro_export]
 macro_rules! counting_allocator {
     () => {
         struct Counting;
-
-        /// What each allocation adds to its thread's count.
-        const ONE_CALL: usize = 1;
 
         std::thread_local! {
             static ALLOCATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(usize::MIN) };
@@ -2625,7 +2624,7 @@ macro_rules! counting_allocator {
         // SAFETY: every call is passed on to the system's allocator unchanged.
         unsafe impl std::alloc::GlobalAlloc for Counting {
             unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-                ALLOCATIONS.with(|count| count.set(count.get() + ONE_CALL));
+                ALLOCATIONS.with(|count| count.set(count.get() + layout.size()));
                 // SAFETY: as the caller of alloc promised.
                 unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
             }
@@ -2641,7 +2640,7 @@ macro_rules! counting_allocator {
                 layout: std::alloc::Layout,
                 size: usize,
             ) -> *mut u8 {
-                ALLOCATIONS.with(|count| count.set(count.get() + ONE_CALL));
+                ALLOCATIONS.with(|count| count.set(count.get() + size));
                 // SAFETY: as the caller of realloc promised.
                 unsafe {
                     std::alloc::GlobalAlloc::realloc(&std::alloc::System, pointer, layout, size)
