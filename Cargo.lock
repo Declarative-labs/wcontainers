@@ -5083,6 +5083,7 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "linux-raw-sys",
+ "mitsein",
  "rustix",
  "wcontainers-abi",
  "wcontainers-configurable-conformance",
