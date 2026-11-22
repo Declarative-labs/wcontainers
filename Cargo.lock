@@ -4243,7 +4243,11 @@ dependencies = [
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-distinguishing-state-generator",
  "wcontainers-executor",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
@@ -4251,6 +4255,7 @@ name = "wcontainers-executor-hardware-virtualization"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
+ "aarch64-paging",
  "applevisor",
  "applevisor-sys",
  "arm-gic",
@@ -4272,11 +4277,22 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-clock",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-executor",
+ "wcontainers-executor-conformance",
  "wcontainers-executor-hardware-virtualization-inside",
  "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-kernel-linux",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-apple-m5",
+ "wcontainers-precise-instruction-set-neoverse-v2",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-recording",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
@@ -4348,14 +4364,20 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-clock",
  "wcontainers-configurable",
+ "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-docker",
  "wcontainers-executor",
  "wcontainers-executor-conformance",
  "wcontainers-executor-wasmtime",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-apple-m5",
+ "wcontainers-precise-instruction-set-neoverse-v2",
+ "wcontainers-precise-instruction-set-unicorn",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
@@ -4372,6 +4394,7 @@ dependencies = [
 name = "wcontainers-executor-wasmtime"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "blake3",
  "build-rs",
  "cargo-lock",
@@ -4395,8 +4418,18 @@ dependencies = [
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-docker",
+ "wcontainers-executor",
+ "wcontainers-executor-conformance",
  "wcontainers-guest-cpu",
+ "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-apple-m5",
+ "wcontainers-precise-instruction-set-neoverse-v2",
+ "wcontainers-precise-instruction-set-translator",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
  "zerocopy",
@@ -4796,6 +4829,23 @@ dependencies = [
  "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-processor-architecture-recording",
+]
+
+[[package]]
+name = "wcontainers-precise-instruction-set-translator"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-arm64",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
+name = "wcontainers-precise-instruction-set-unicorn"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-precise-instruction-set",
+ "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
