@@ -1,16 +1,40 @@
 # Direct3D 11 front status
 
-Branch: main, in the one shared checkout (since 2026-11-21; the old phase-2-graphics-direct3d-11
-branch is merged into it). Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
+Branch: agents, in the agents' shared worktree /Users/thomaseaton/Documents/GitHub/wcontainers-agents
+(since the evening of 2026-11-21). Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
 This file keeps the current state only; each earlier run's record (what it did, its measurements,
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
-round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 (2026-11-21).
+round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents run 1 (2026-11-21).
 
 ## Where things stand
 
 G4 is reported complete for its next independent check. What is left on the pass bar waits on
 other tracks (Gap list), or is the joint step with the Direct3D 12 track after both milestones.
+
+Agents run 1 (2026-11-21 evening), the first run in the agents' worktree:
+- The task carried the fifth check's findings again. Each was closed earlier and is confirmed by
+  this run's bar at 05a2cff4 (Measurements): the WebGL 2 build reports 10_0 and its listed cases
+  pass (round 4 runs 2 to 6); the family library is the joint step after G4 and G5 (the
+  orchestrator's ruling of 2026-11-20, the two modules measured apart below); B5G6R5, the
+  extended-range format and B8G8R8X8's vertex elements are failures of the reported 11_0, each
+  waiting on a named track, with 11_0 left to the owner (Gap list, For the owner);
+  `CheckFormatSupport` and `FORMAT_SUPPORT2` claim every ability the front serves, compared bit by
+  bit with the RTX 3080 for every format at every level (Format support against the RTX 3080);
+  16-bit normalised textures drawn into are held as their integer twins and their test runs
+  (main run 3); the minor findings: the constant buffers' counts on the WebGPU back end have their
+  test (a known failure, the WebGPU track's), building ahead's miss is traced to the tuple,
+  `ClearView` of storage rectangles is served and reported TRUE, the swap chain refusal is of
+  another process's window and warned, `ReadFromSubresource` and `WriteToSubresource` are listed
+  as removing the device, and this file is cut to the current state; the two programs outside the
+  bar that differ keep their causes (Gap list).
+- The interface changes of 2026-11-21 evening (the readiness trait, the DNS answer, poll events)
+  touch nothing this track builds or calls.
+- The scratch scripts named the owner's checkout; they now name the agents' worktree.
+- Through the WebGL 2 build, Wine's d3d10core now has 15 failing tests (96 of 111): the two new
+  ones, test_alpha_to_coverage and test_check_multisample_quality_levels, skip their multisampled
+  parts since main run 3 reports no multisampling there (Gap list, the WebGL 2 item).
+- Literals: 36 lines of this track cut from the baseline (Literals).
 
 Main run 1 (2026-11-21, about 09:40 to 12:00 Pacific), the first run on main:
 - The rig on main: its commands name the desktop's folder by the branch, now `main` for every
@@ -96,12 +120,14 @@ Main run 3 (2026-11-21, from about 15:20 Pacific), the seventh check's findings:
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
-3080 through the queue, not alone, rigfix/wine.sh, round 4 run 6 at the code of the run's last commit (logs/r6y-wine*.log):
-- d3d11: 151 pass of 166, the same 15 failing as in round 4 runs 3 to 5; the failing tests are in the Gap list. test_format_support's 7
-  checks are the B5 targets (6) and XR_BIAS's display (1).
+3080 through the queue, not alone, rigfix/wine.sh, agents run 1 at 05a2cff4 (logs/n1-wine*.log):
+- d3d11: 151 pass of 166, the same 15 failing as since round 4 run 3; the failing tests are in the
+  Gap list. test_format_support's 7 checks are the B5 targets (6) and XR_BIAS's display (1).
 - d3d10core: 110 of 111: test_desktop_window (Gap list).
-- d3d10core through the WebGL 2 build (10_0): 98 of 111 at round 4 run 5 (logs/r5z-wine10gl.log),
-  the same 13 failing as at round 2 run 12; they are under the WebGL 2 item of the Gap list.
+- d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/n1-wine10gl.log): the 13 failing
+  since round 2 run 12 and, since main run 3 reports no multisampling there,
+  test_alpha_to_coverage and test_check_multisample_quality_levels; all are under the WebGL 2
+  item of the Gap list.
 - dxgi (not on G4's bar): 4 of the 17 tests without a Direct3D 12 part at round 2 run 8.
 
 ## Gap list (the pass bar's written list)
@@ -201,14 +227,15 @@ Not on Wine's verdicts, against the RTX 3080:
   result). Needs a route the interface does not have; no program measured reaches it.
 
 The WebGL 2 build (10_0; the bar's WebGL 2 cases match real Direct3D through it): what it does
-not give real Direct3D's verdict on, measured at round 2 run 12 (Wine's d3d10core 98 of 111,
-rerun at round 4 run 5 with the integer twins with the same 13; the rig's scenes 95 pass, 17 fail,
-30 absent), each with its owner:
+not give real Direct3D's verdict on (agents run 1: Wine's d3d10core 96 of 111; the rig's scenes
+95 pass, 17 fail, 30 absent), each with its owner:
 - Multisampling: plan section 9 makes it optional at 10_0, and without a route for a partial
   sample mask (WebGL 2's `gl_SampleMask` needs OES_sample_variables and `SampleMaskInShader`,
   which is not built) none is reported, so multisampled textures are refused as Direct3D refuses
   a count it does not report (main run 3; before, 4 samples were reported and a partial mask
-  removed the device). Wine test_sample_mask and test_multisample_resolve; the rig's msaa scene.
+  removed the device). Wine test_sample_mask and test_multisample_resolve, and the skipped
+  multisampled parts of test_alpha_to_coverage (51 checks of 67) and
+  test_check_multisample_quality_levels (21 of 43); the rig's msaa scene.
 - Multisampled textures read by shaders (absent on WebGL 2, plan section 6):
   test_unbound_multisample_texture.
 - A depth bias clamp on float depth, refused by name (Direct3D's float step follows each
@@ -416,7 +443,7 @@ In order:
 Everything builds and runs on the desktop through the rig (docs/status-graphics-rig.md, "How to
 run"); the Mac runs only formatting, git, `cargo check -j 2` of the front, and the front's tests
 on the rented x86 machine. Scripts named below are in scratch (pyro-parked/wcontainers-scratch/
-graphics-direct3d-11); logs go to its logs/. Since every track is on main, the rig's own commands
+graphics-direct3d-11); logs go to its logs/. Since every track is on one branch (agents), the rig's own commands
 would give all tracks one desktop folder (they name it by the branch), so this track runs the copies
 in scratch main/ (the scripts below, run from the checkout after `source main/env.sh`), which
 use scratch rigmain/: the rig with the desktop folder named `phase-2-graphics-direct3d-11`
@@ -439,8 +466,10 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 - Lint: `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo clippy -q
   -j 3 -p wcontainers-direct3d-11 -p wcontainers-directx --all-targets -- -D warnings"`, and the
   same with `--features wcontainers-directx/webgl --target-dir %CARGO_TARGET_DIR%\webgl`.
-- Front tests (recording back end, no GPU): `orchestrator/cloud/x86-run <checkout> --name g-d3d11
-  --jobs 32 -- "cargo test -q -p wcontainers-direct3d-11"`.
+- Front tests (recording back end, no GPU): `orchestrator/cloud/x86-run <clone> --name g-d3d11
+  --jobs 32 -- "cargo test -q -p wcontainers-direct3d-11"`, where `<clone>` is a scratch
+  `git clone --shared` of the commit to test with the submodules' files copied in (x86-run wants a
+  git checkout; the worktree itself holds other agents' unfinished edits).
 - Library tests (real devices and a window, so a GPU job on the hidden desktop):
   `tools/graphics-rig/gpu-job --desktop --build "<sub> && cargo test -q -j 3 -p wcontainers-directx
   --no-run" -- "cargo test -q -j 3 -p wcontainers-directx -- --test-threads 1"`; the WebGL 2 build
@@ -501,9 +530,9 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 
 ## Tests
 
-At round 4 run 6: front.rs 60, tests/cache.rs 1, unit 6 (shader.rs 5, stream.rs 1;
-wcontainers-direct3d-11, recording back end); com.rs 16 (1 ignored) and programs.rs 55 (3 ignored) (wcontainers-directx, real
-devices). New in round 4 run 6: programs.rs `comparisons_through_colour_views_as_direct3d_does`
+At agents run 1: front.rs 60, tests/cache.rs 1, unit 6 (shader.rs 5, stream.rs 1;
+wcontainers-direct3d-11, recording back end); com.rs 16 (1 ignored) and programs.rs 62 (3 ignored)
+(wcontainers-directx, real devices). New in round 4 run 6: programs.rs `comparisons_through_colour_views_as_direct3d_does`
 (own_cases `compare_colour`, 16-bit norm on and off), `depth_clears_outside_the_range_as_direct3d_does`
 (`depth_clears`) and `format_support_and_creations_below_10_0_as_direct3d_reports_them` (9_1, 9_2
 and 9_3, `format_support` and `level9_make`); front.rs
@@ -673,37 +702,40 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
-Main run 2 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
-the queue, not alone except the load times; other tracks' display-reset hazard jobs held the queue
-twice (about 12:44 to 12:55 and 13:13 to 13:37). Code: main at f6b24e8a (the bar, scratch
-main/q5-final.sh m2b, logs/m2b-*), which holds the video refusal and dcf9fc21's shader.rs;
-the literal check, lint, library suite and load times again at the final head (m2c-*, below).
-- Lint of both builds clean (m2b-lint, 12:34). Library (m2b-lib, 12:34 to 12:44): com 15 pass,
-  1 ignored; programs 55 pass, 3 ignored. The WebGL 2 build's 10_0 cases: 5 pass, 1 ignored
-  (m2b-webgllib). Front 60, unit 6, cache 1 on the rented x86 machine (96 cores, load 2 to 4,
-  m2b-front; HEAD 20066035 exported without other tracks' uncommitted edits).
-- Wine (m2b-wine, m2b-wine10, 12:55 to 12:59): d3d11 151 of 166, d3d10core 110 of 111, the same
-  failing tests as before (Gap list); test_video_support now fails 1 check of 49 instead of
-  crashing. Through the WebGL 2 build d3d10core 98 of 111, the same 13 (m2b-wine10gl).
+Agents run 1 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
+the queue, not alone except the load times; another track's display-reset hazard job held the
+queue about 17:46 to 18:06. Code: agents at 05a2cff4 (the bar, scratch main/q5-final.sh n1,
+logs/n1-*), which holds this track's code as at main run 3's last commit.
+- The literal check at 05a2cff4: 20 lines to act on, none this track's (Literals). Lint of both
+  builds clean (17:04 to 17:07).
+- Library (n1-lib, 17:18 to 17:20): com 15 pass, 1 ignored; programs 59 pass, 3 ignored. The
+  WebGL 2 build's 10_0 cases: 6 pass, 1 ignored (n1-webgllib). Front 60, unit 6, cache 1 on the
+  rented x86 machine (96 cores, load 9 to 21, n1-front, n1-front2).
+- Wine (17:19 to 17:24): d3d11 151 of 166, the same 15 failing tests as at main run 2; d3d10core
+  110 of 111 (test_desktop_window). Through the WebGL 2 build d3d10core 96 of 111 (n1-wine10gl,
+  18:20 to 18:29; the two new failures are the multisampling item's).
 - Scenes through the library 135 pass, 0 fail, 4 absent; the WebGL 2 build's 95 pass, 17 fail,
-  30 absent (m2b-scenes, m2b-webgl), as before.
-- Programs (m2b-programs, 13:37 to 13:38): the bar's three (godot-platformer-3d-d3d11,
+  30 absent, as before.
+- Programs (n1-programs, 18:06 to 18:08): the bar's three (godot-platformer-3d-d3d11,
   chocolate-doom, atg-simplelightingpc) match real Direct3D on every compared frame, and so do
   atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
   to 07; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (frame 10: 8 pixels, 4 beyond
   their tiles' allowance) differ as before (Gap list).
-- Module sizes (section 10), release builds at 13:40 (m2b-sizes): `wcontainers_directx.dll`
-  14,340,608 bytes on WebGPU and 9,916,928 bytes on WebGL 2; the forwarders 1,024 bytes each; the
-  Direct3D 12 track's `wcontainers_d3d12.dll` 13,770,752 bytes.
-- Building ahead (m2b-warm): as at main run 1. Godot 3D's warm start built its 61 recorded
-  combinations at start and drew all 61, built 124 ahead and drew none, 26 at their first draw;
-  Godot 2D warm 3 built at start and drawn, 10 at first draw.
-- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians, of the
-  modules m2b-sizes built (m2c-load, 14:19): the system's d3d11.dll 1,149 us; ours on WebGPU
-  1,630 us; ours on WebGL 2 1,095 us; `wcontainers_d3d12.dll` 1,610 us.
-- At the final head 5b323d97 (m2c, 13:59 to 14:19): the literal check finds no line of this
-  track's; lint of both builds clean; library com 15 pass, 1 ignored, programs 55 pass, 3 ignored.
-
+- Module sizes (section 10), release builds at 18:09 to 18:11 (n1-sizes): `wcontainers_directx.dll`
+  14,352,384 bytes on WebGPU and 9,926,656 bytes on WebGL 2; the Direct3D 12 track's
+  `wcontainers_d3d12.dll` 13,766,144 bytes. The family library itself is the joint step.
+- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (n1-load,
+  18:11): the system's d3d11.dll 1,170 us; ours on WebGPU 1,649 us; ours on WebGL 2 1,091 us;
+  `wcontainers_d3d12.dll` 1,648 us.
+- Building ahead (n1-warm, 18:11 to 18:15): Godot 3D's first run built 115 to 124 ahead and drew
+  none; its warm start built its 61 recorded combinations at start and drew all 61, built 124
+  ahead and drew none, 26 at their first draw. Godot 2D warm 3 built at start and drawn, 10 at
+  first draw.
+- At 13175969, which holds this run's literal commits (the helper block's writer, the named colour
+  and rectangle types; n2-*, 18:30 to 18:48): lint of both builds clean; library com 15 pass,
+  1 ignored, programs 59 pass, 3 ignored; the WebGL 2 build's 10_0 cases 6 pass, 1 ignored; the
+  front's 60, 6 and 1 on the x86 machine with the same code (n1-front2); the literal check finds
+  no line of this track's (run on the x86 machine, n1-lit2).
 Earlier runs' measurements are in this file's git history.
 
 ## Known issues
@@ -745,6 +777,12 @@ Earlier runs' measurements are in this file's git history.
 
 ## Literals
 
+- Agents run 1 (2026-11-21): 36 lines of this track cut: the helper block takes each value's
+  length from the words it writes (`size_of`), and colours, blend factors, border colours and
+  scissor rectangles use the front's `Color`, `Rect` and `COLOR_COMPONENTS` in both crates. Left:
+  wcontainers-direct3d-11 404 lines (430), wcontainers-directx 200 (210). The check at
+  05a2cff4 exits 1 with 20 lines to act on, none of this track's (the OpenGL crate, the kernel
+  interface's poll events, the NIR crate's cube faces, two socket suites).
 - Main run 2 (2026-11-21): 19 lines of this track cut from the baseline, the library's messages of
   what it does not serve named once (`CLASS_LINKAGE`, `NO_COMPUTE`, `NO_TESSELLATION`,
   `LOGIC_OPERATIONS`, `FULLSCREEN` and others in device.rs and swapchain.rs, and the device
