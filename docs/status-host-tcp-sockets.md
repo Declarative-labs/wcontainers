@@ -5,6 +5,41 @@ suite's design and its own numbers). Milestones: T1 (connections, listeners, set
 authentication, repair, multipath) are both done; what is left waits on the owner (For the owner, at the end).
 Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -p docs/status-host-tcp-sockets.md`).
 
+## Run 18 (2026-11-22): C22 run 2, the independent check of run 17 answered
+- Which kinds of `LocalPort` are bound by number is now checked: new check
+  disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose connects from `ChosenByKernel(port)`
+  (`AF_UNSPEC` gives the socket back and the port stays held: a bind EADDRINUSE) and from `ChosenByExitNode` with a
+  one-port range (none back, the port free). The checker's two copies are in mutants.sh as chosen-by-kernel-as-zero
+  and exit-node-by-number. The disconnect check's comment no longer claims a port the host chose (it used
+  `Requested(0)`).
+- The wrong note on a listener's timestamp clock is gone from Which check fails; "unicast interface" is gone from the
+  settings list.
+- MD5 keys by VRF, measured first (scratch tools/probe_vrf.py, ARM, as root in a namespace with a VRF device, load
+  5.5): a listener's key of the default VRF drops an unsigned SYN from loopback, a removal as any VRF answers ENOENT
+  and keeps it, a removal as the default VRF frees it; a key of a VRF device is taken and does not hold for loopback;
+  loopback as the device EINVAL. New check an_md5_key_holds_only_in_the_vrf_it_names (`TCP_MD5SIG_EXT` with
+  `TCP_MD5SIG_FLAG_IFINDEX`) follows that; keys_are_for_the_vrf_named now also adds a TCP-AO and an MD5 key of a
+  real VRF device and reads the TCP-AO one back. run-conformance.sh gives the namespace a VRF device
+  (`conformance-vrf`, table 10, `modprobe vrf`); the suite finds it as the only master interface. Copies
+  md5-default-as-any (the checker's) and md5-vrf-ignored.
+- portable.rs's disconnect now does what the list for implementers asks: it aborts, gives `ECONNRESET` as the
+  pending error when the connection had a peer (Linux's disconnect sets it there), else `SO_ERROR`, and binds a new
+  socket to the same address and port for a port bound by number (V6-only kept; the old socket's other settings
+  are lost, said in the counted reason DISCONNECT; a failed bind is counted, PORT_LOST_AT_DISCONNECT). Linted on the
+  Mac only; never run.
+- linux.rs: a refused `connect(AF_UNSPEC)` now reports the socket's `SO_ERROR`, not the refusal's own error.
+- linux/state.rs: the 7.0 bit fields of `TCP_INFO`'s last word are counted from the highest bit on a big-endian host
+  (GCC's layout), from the lowest on a little-endian one. Only little-endian ran.
+- New check pending_error_holds_an_icmp_error_of_an_established_connection: an ICMP host unreachable quoting the
+  connection's next sequence number (its captured SYN one on), sent from a raw socket on loopback to an established
+  connection without ICMP error reports, is its pending error `EHOSTUNREACH`, then none (`SO_ERROR`, which gives
+  Linux's soft error).
+- The suite has 124 checks; `tests!` runs 140. mutants.sh has 193 copies.
+- Broken copies run (ARM, 20:04 to 20:06, load 10 to 13; log c22r2/mutants.log in scratch), each failed:
+  chosen-by-kernel-as-zero and exit-node-by-number the new disconnect check; md5-default-as-any
+  an_md5_key_holds_only_in_the_vrf_it_names; md5-vrf-ignored that and keys_are_for_the_vrf_named; pending-error-never
+  the bound socket check, pending_error_is_taken_once and the new ICMP one.
+
 ## Run 17 (2026-11-22): C22 run 1, the owner's TCP interface changes of 2026-11-22 (merge 158b6c62)
 - Bind on its own: `type BoundSocket = HostTcpBoundSocket` (descriptor, family, protocol, and whether its port was
   bound by number: a requested or kernel-chosen port other than 0, which Linux cannot report later). `bind` is
@@ -15,7 +50,7 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   the last `Backlog` among its settings, so nothing can fail after `listen` but `getsockname`, which disconnects first.
 - `disconnect`: the watch is dropped (`Watched::unwatch`, new in the shared crate), `connect(AF_UNSPEC)` (rustix
   `connect_unspec`), then `SO_ERROR`; the socket comes back only for a port bound by number, never for an accepted
-  connection. portable.rs closes the socket with an abort, counted (no `AF_UNSPEC` there).
+  connection. portable.rs: see run 18.
 - `TakePendingError` on connections and listeners: `SO_ERROR` through socket2's `take_error`, named by the shared
   crate's new `errno::errno_of` (every name of the kernel interface's `Errno`; a number it does not name is a counted
   refusal).
@@ -66,8 +101,9 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   last-header-interface-none). All 15 run failed the suite (ARM, 19:40 to 19:43, load 6 to 11; log
   c22/mutants.log in scratch); which check each failed is in Which check fails.
 - Not checked by behaviour: that the listener's removal is asynchronous (a synchronous one on a listener looks the same
-  from outside), and a listener's pending error other than none (Linux sets one only when the socket is destroyed from
-  outside, `ss -K`).
+  from outside: the checker's copy listener-removal-synchronous passed the whole suite), and a listener's pending
+  error other than none (Linux sets one only when the socket is destroyed from outside, `ss -K`, which needs
+  `CONFIG_INET_DIAG_DESTROY` and a netlink request the suite does not make).
 
 ## Run 16 (2026-11-22): T2 run 1, the independent check of run 15 answered
 - mutants.sh's three setting copies used the names removed at a00ab267: now `Binding(BindingSetting::...)`; each
@@ -116,21 +152,25 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
 - Shared crate `crates/internet-protocol/implementation/linux-socket-options` (made by this track, used by the UDP,
   ICMP and raw hosts): errno mapping, raw option calls, `Shortfalls` (counted refusals, warned once), the internet
   protocol settings, binding and port ranges, `open_socket`, control messages, `write_icmp_error`, `readiness`.
-- Suite `crates/tcp-sockets/conformance`: 121 checks that each take one value, against the traits alone, plus 7
+- Suite `crates/tcp-sockets/conformance`: 124 checks that each take one value, against the traits alone, plus 7
   functions that build values for the required suites (Configurable on a connection and a listener,
-  NegativeRouteAdvisable, four Readiness bundles); `tests!` runs 137 tests, and the implementation's own 4 run beside
+  NegativeRouteAdvisable, four Readiness bundles); `tests!` runs 140 tests, and the implementation's own 4 run beside
   them (allocation checks, discarding_cuts_no_packet, the two-thread peeks). It runs on Linux only (a capture thread
   reads the host's packet socket on loopback) as root in a namespace run-conformance.sh makes.
-- mutants.sh: 189 broken copies, each breaking one method, request, query, setting or field; every one has failed
-  the suite in some run (the latest full run of all is the checker's of run 15; the 15 changed or new of run 17 ran
-  then).
+- mutants.sh: 193 broken copies, each breaking one method, request, query, setting or field; every one has failed
+  the suite in some run (the latest full run of all is the checker's of run 15; the 15 changed or new of run 17 and
+  the 5 of run 18 ran then).
 
 ## Which check fails when a method breaks
+- Run 18's copies: chosen-by-kernel-as-zero and exit-node-by-number
+  disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose; md5-default-as-any
+  an_md5_key_holds_only_in_the_vrf_it_names; md5-vrf-ignored that and keys_are_for_the_vrf_named.
 - Run 17's copies: listen-backlog-argument-ignored listener_reads_its_accept_queue_and_backlog,
   listener_backlog_bounds_the_accept_queue and the two ICMP checks of a synchronizing connection; listener-state-refused
   12 listener checks; disconnect-keeps-every-port disconnect_gives_back_only_a_port_bound_by_number;
   port-zero-bound-by-number that and a_clashing_connect_gives_back_only_a_port_bound_by_number; clash-keeps-every-port
-  the clash check; pending-error-never a_bound_socket_holds_its_port_until_released and pending_error_is_taken_once;
+  the clash check; pending-error-never a_bound_socket_holds_its_port_until_released, pending_error_is_taken_once and
+  pending_error_holds_an_icmp_error_of_an_established_connection;
   listener-queue-and-backlog-swapped listener_reads_its_accept_queue_and_backlog; repair-off-probes-always
   leaving_repair_without_a_window_probe_sends_none; vrf-default-as-any keys_are_for_the_vrf_named;
   ecn-accurate-as-classic ecn_mode_is_what_both_ends_negotiated; last-header-interface-none
@@ -138,10 +178,12 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   accept-interface-none and subflow-information-zeroed their checks as before.
 - bind and release: a_bound_socket_holds_its_port_until_released and every check below that binds first. connect and
   listen from a bound socket: connect_and_listen_take_a_bound_socket_and_its_port and the failure, clash and
-  disconnect checks. disconnect: disconnect_gives_back_only_a_port_bound_by_number. TakePendingError (both):
-  pending_error_is_taken_once. Listener Information: listener_reads_its_accept_queue_and_backlog. Repair
+  disconnect checks. disconnect: disconnect_gives_back_only_a_port_bound_by_number and
+  disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose. TakePendingError (both):
+  pending_error_is_taken_once, and on a connection pending_error_holds_an_icmp_error_of_an_established_connection. Listener Information: listener_reads_its_accept_queue_and_backlog. Repair
   OffWithoutWindowProbe: leaving_repair_without_a_window_probe_sends_none. RemoveAuthenticationKeyAsynchronously:
-  a_listener_removes_a_key_asynchronously. Key VRF: keys_are_for_the_vrf_named. ECN mode:
+  a_listener_removes_a_key_asynchronously. Key VRF: keys_are_for_the_vrf_named and
+  an_md5_key_holds_only_in_the_vrf_it_names. ECN mode:
   ecn_mode_is_what_both_ends_negotiated and the DCTCP case of congestion_control_state_names_the_algorithm.
 - connect, listen, accept: every check. listen's backlog argument: listener_backlog_bounds_the_accept_queue and the
   two ICMP checks of a synchronizing connection. The owner: connect_and_listen_make_sockets_of_their_owner. The
@@ -157,8 +199,8 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   send_window_probe: window_probe_is_answered_and_changes_no_setting. give_negative_route_advice:
   negative_route_advice_picks_a_new_flow and the module negative_route_advice.
 - set_timestamp_clock: timestamp_clock_set_in_repair_mode_stamps_segments, timestamp_clock_in_the_other_unit_counts_in_it,
-  timestamp_reads_the_clock_in_its_unit, the repair check. set_listener_timestamp_clock: the first of these (Linux
-  refuses: see For the owner).
+  timestamp_reads_the_clock_in_its_unit, the repair check. set_listener_timestamp_clock: the first of these (a
+  listener that listened in repair mode takes the clock).
 - set_authentication_counters and the listener's: authentication_counters_are_set_only_where_authentication_is,
   authentication_state_reads_the_keys_and_counters.
 - read_state by query: Information information_reads_what_the_connection_did; CongestionControl
@@ -189,7 +231,7 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   transmit rehash, repair, memberships, MD5 and authentication keys and options, cork, urgent inline, unread byte
   reports, segment size, ICMP error reports, records of the last header, save SYN, the mark; listener backlog, fast
   open queue and keys, flow label reflection). Settings only the set-twice checks see, since loopback shows nothing
-  more: multicast loopback and all-groups, packet priority, unicast interface, route scope, source preferences,
+  more: multicast loopback and all-groups, packet priority, route scope, source preferences,
   bound interface, IPv4 options and IPv6 extension headers on established connections, the IPv6 variants of traffic
   class and path MTU discovery.
 - Tried by breaking the implementation this run (ARM machine, 06:23 to 06:25): send-claims-all (send's count),
@@ -217,6 +259,12 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   statistics (PACKET_OR_STATISTICS).
 
 ## Measurements
+- Run 18, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22: after `cargo clean`, clippy with warnings denied
+  (`--no-deps --tests`) clean on the TCP host, its suite and the shared crate; then 10 full runs at
+  `RUST_TEST_THREADS=12`, each 140 + 4 passed in about 7.3 s (20:06 to 20:08, load 9 to 13; log c22r2/clean.log in
+  scratch). Mac (macOS, `nice -n 19`, `-j 2`, 20:06, load 9 to 12): clippy of the host (portable.rs) and suite clean
+  (the build folder deleted after). `git diff main` of every interface.rs and data file of the tcp-sockets,
+  internet-protocol, readiness, configurable, negative-route-advisable and kernel interfaces: empty.
 - Run 17, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22: clippy with warnings denied (`--no-deps
   --tests`) clean on the TCP host, its suite and the shared crate after `cargo clean` (35 crates built; job
   host-tcp-sockets-clean, 19:45, load 5 to 8); then 10 full runs at `RUST_TEST_THREADS=12`, each 137 + 4 passed in
@@ -278,7 +326,7 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   rustfmt --edition 2024 <file>`) and commits, except the macOS build of portable.rs, which only the Mac can make:
   `CARGO_TARGET_DIR=$PWD/target/host-tcp-sockets nice -n 19 nix develop -c cargo clippy -j 4 --no-deps --tests -p
   wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance -- -D warnings` (delete the folder after).
-- Suite (needs sudo; makes its own namespace): `cloud/arm-run <checkout> --name host-tcp-sockets --
+- Suite (needs sudo; makes its own namespace, with a VRF device, and loads the `vrf` module): `cloud/arm-run <checkout> --name host-tcp-sockets --
   'RUST_TEST_THREADS=12 crates/tcp-sockets/implementation/host/run-conformance.sh'`. Exit 1: a test failed; 2: the
   test binaries did not build.
 - Broken copies: the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 90 s a copy, 180
