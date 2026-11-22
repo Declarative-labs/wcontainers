@@ -12658,9 +12658,6 @@ code	crates/wcontainers-shaders/src/variant.rs	int	position	3
 code	crates/wcontainers-shaders/src/variant.rs	int	position	3
 code	crates/wcontainers-shaders/src/variant.rs	int	position	3
 code	crates/wcontainers-shaders/src/variant.rs	int	position	4
-code	crates/wcontainers-shaders/src/variant.rs	int	sampler_state_helper	16
-code	crates/wcontainers-shaders/src/variant.rs	int	sampler_state_helper	3
-code	crates/wcontainers-shaders/src/variant.rs	int	sampler_state_helper	4
 code	crates/wcontainers-shaders/src/variant.rs	int	vector	3
 code	crates/wcontainers-shaders/src/variant.rs	str	Wrapped::finish	"Outputs"
 code	crates/wcontainers-shaders/src/variant.rs	str	Wrapped::new	"shader"
