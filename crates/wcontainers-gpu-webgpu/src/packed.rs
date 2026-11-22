@@ -293,37 +293,33 @@ fn repeat(x: u32, n: u32) -> u32 {
 /// 8-bit value it starts from adds at most `(2^n - 1) / 510` of a step to the specification's
 /// rounding (0.56 of a step for 6 bits, inside its 0.6).
 pub(crate) fn quantise_program(format: Format, multisampled: bool) -> String {
-    let (texture, sample, index) = if multisampled {
-        (
-            "texture_multisampled_2d<f32>",
-            ", @builtin(sample_index) s: u32",
-            "s",
-        )
-    } else {
-        ("texture_2d<f32>", "", "0")
-    };
+    let (texture, sample, index) = QUANTISE_READS[usize::from(multisampled)];
     let [b, g, r, a] = fields(format);
-    let channel = |c: &str, bits: u32| match bits {
-        0 => String::from("1.0"),
-        n => format!("q(v.{c}, {n}u)"),
-    };
     format!(
         "@group(0) @binding(0) var src: {texture};\n\
          {REPEAT_WGSL}\
          fn q(x: f32, n: u32) -> f32 {{\n\
+             if n == 0u {{ return 1.0; }}\n\
              let top = (1u << n) - 1u;\n\
              return f32(repeat(u32(round(x * f32(top))), n)) / 255.0;\n\
          }}\n\
          @fragment fn quantise(@builtin(position) p: vec4f{sample}) -> @location(0) vec4f {{\n\
              let v = textureLoad(src, vec2u(p.xy), {index});\n\
-             return vec4f({}, {}, {}, {});\n\
-         }}\n",
-        channel("x", r),
-        channel("y", g),
-        channel("z", b),
-        channel("w", a),
+             return vec4f(q(v.x, {r}u), q(v.y, {g}u), q(v.z, {b}u), q(v.w, {a}u));\n\
+         }}\n"
     )
 }
+
+/// What a rounding program binds, the inputs its entry point adds and the sample it loads:
+/// single-sampled, then multisampled (one invocation a sample).
+const QUANTISE_READS: [(&str, &str, &str); 2] = [
+    ("texture_2d<f32>", "", "0"),
+    (
+        "texture_multisampled_2d<f32>",
+        ", @builtin(sample_index) s: u32",
+        "s",
+    ),
+];
 
 /// Bits of blue, green, red and alpha, from the lowest up, of a 16-bit packed format.
 fn fields(format: Format) -> [u32; 4] {
