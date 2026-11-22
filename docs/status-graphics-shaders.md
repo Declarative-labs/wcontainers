@@ -84,6 +84,9 @@ Runs at a00ab267:
 - Not run: the fuzz test and the seeded `geometry_draw` (A10 and A11 hold the checks' figures; no
   input changed), the Direct3D 12 scenes (A6's figures). Gap A29 not met again: the GPU suite ran
   with one test thread.
+- Clean-up: this run's build folders deleted (laptop `target/shaders-tip`, 6.6 GB, its source copy,
+  `out-r78` and `outw-r78`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
+  `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
 ## The unfinished combine work (paused 2026-11-20)
 
