@@ -200,6 +200,11 @@ const QUOTED_HOP_LIMIT: u8 = 64;
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TRANSFER: usize = 1 << 20;
 
+/// The bytes one send offers a peer that reads nothing, more than a connection's buffers take at once.
+///
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+const ONE_SEND_OFFERED: usize = 1 << 25;
+
 /// The key the transmit report checks name their sends by.
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
@@ -1308,6 +1313,25 @@ pub fn bytes_arrive_in_order_both_ways<S: TcpSockets>(sockets: S) {
     assert!(transfer(&sockets, &pair.client, &pair.server, &bytes) == bytes);
     send_all(&sockets, &pair.server, plain(), REPLY);
     assert_eq!(receive_up_to(&sockets, &pair.client, REPLY.len()), REPLY);
+    close(&sockets, pair);
+}
+
+/// Checks that a send offered more than the connection takes at once reports the bytes it took, and exactly those arrive.
+pub fn send_reports_the_bytes_it_took<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let bytes = pattern(ONE_SEND_OFFERED);
+    let taken = retry(|| sockets.send(&pair.client, plain(), &bytes))
+        .expect("send")
+        .0;
+    sockets
+        .shut_down(&pair.client, TcpShutdown::Write)
+        .expect("shut down");
+    let arrived = receive_up_to(&sockets, &pair.server, bytes.len());
+    assert!(
+        arrived[..] == bytes[..taken],
+        "{} arrived of {taken} reported taken",
+        arrived.len()
+    );
     close(&sockets, pair);
 }
 
@@ -7356,6 +7380,11 @@ macro_rules! tests {
         #[test]
         fn bytes_arrive_in_order_both_ways() {
             $crate::bytes_arrive_in_order_both_ways($value);
+        }
+
+        #[test]
+        fn send_reports_the_bytes_it_took() {
+            $crate::send_reports_the_bytes_it_took($value);
         }
 
         #[test]

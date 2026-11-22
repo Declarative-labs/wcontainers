@@ -32,8 +32,10 @@
 ## Methods on the host
 - connect: `socket(family, SOCK_STREAM, IPPROTO_TCP or IPPROTO_MPTCP)`; the owner by the thread's
   filesystem user around `socket` (EPERM when the host may not act as that user); the settings by `configure`;
-  `IPV6_V6ONLY` from the bind address; `bind` for a requested or kernel-chosen port, `IP_BIND_ADDRESS_NO_PORT`
-  and `IP_LOCAL_PORT_RANGE` (once per range between reserved ports) when the exit node chooses; then `connect`,
+  `IPV6_V6ONLY` from the bind address; `bind` for a requested or kernel-chosen port; when the exit node chooses,
+  `bind` at once, for each allowed range, to a port the kernel picks under `IP_LOCAL_PORT_RANGE` in the part of the
+  range inside the host's own range (Linux ignores a socket's range outside it), then to each port of the rest in
+  turn, counted (`IP_BIND_ADDRESS_NO_PORT` is not used: the port is fixed before `connect`); then `connect`,
   `sendto(MSG_FASTOPEN)` for fast open with data, or `TCP_FASTOPEN_CONNECT` and `connect` for until-first-send.
   A fixed IPv6 flow label among the settings is taken from the flow label manager (`IPV6_FLOWLABEL_MGR`, shared
   with the process), with `IPV6_FLOWINFO_SEND` on, and carried in the connect address's `sin6_flowinfo`; Linux keeps
@@ -210,7 +212,9 @@ machine allows, and each stays clear of the value it is checked against.
   buffer doubled, so that each buffer reads its own. SMALL_RECEIVE_BUFFER 8 KiB, the repair check's client receive
   buffer, well below the window a connection offers by default, so that the two ends' windows differ.
   SET_PROCESSOR 3, a processor a listener is told to receive on that is not the first (Linux takes any number).
-- Sizes. TRANSFER 1 MiB for the order check. HEADER_ROOM 256 bytes for a SYN's headers, CUT_HEADER 3 to cut them.
+- Sizes. TRANSFER 1 MiB for the order check. ONE_SEND_OFFERED 32 MiB for one send to a peer that reads nothing,
+  more than loopback's largest buffers take at once (the send buffer's and the peer's receive buffer's ceilings of
+  tcp_wmem and tcp_rmem, 4 and 6 MiB by default), so that the send takes part. HEADER_ROOM 256 bytes for a SYN's headers, CUT_HEADER 3 to cut them.
   ENTRY_ROOM 64 and PACKET_ROOM 512 bytes for error queue entries and their packets. PEEK_OFFSET 2 and READ_PART 4
   bytes into MESSAGE. CAPTURE_BUFFER 16 MiB, enough for every check's traffic at once. STATISTICS_ROUNDS 10 and
   STATISTICS_HOP_LIMIT 33 (unlike any default) for the statistics check. WATCHED_CONNECTIONS 16.
