@@ -4,8 +4,8 @@
 
 use alloc::vec;
 use naga::BinaryOperator::{
-    Add, And, Divide, Equal, GreaterEqual, LessEqual, LogicalAnd, Multiply, ShiftLeft, ShiftRight,
-    Subtract,
+    Add, And, Divide, Equal, GreaterEqual, InclusiveOr, LessEqual, LogicalAnd, Multiply, ShiftLeft,
+    ShiftRight, Subtract,
 };
 use naga::{ArraySize, ScalarKind, SwizzleComponent};
 use wcontainers_gpu::{ReflectedBinding, VertexFormat};
@@ -287,26 +287,34 @@ fn fetch(
         let a = binary(f_, b_, Add, address, at);
         let word_shift = u(f_, build::WORD_SHIFT);
         let word_index = binary(f_, b_, ShiftRight, a, word_shift);
-        let pointer = push(
-            f_,
-            b_,
-            Expression::Access {
-                base,
-                index: word_index,
-            },
-        );
-        let word = push(f_, b_, Expression::Load { pointer });
-        let mut raw = word;
-        if bits < WORD_BITS {
-            let in_word = u(f_, build::WORD - 1);
-            let byte_in_word = binary(f_, b_, And, a, in_word);
-            let byte_shift = u(f_, build::BYTE_SHIFT);
-            let bit_in_word = binary(f_, b_, ShiftLeft, byte_in_word, byte_shift);
+        let word = load_word(f_, b_, base, word_index);
+        let in_word = u(f_, build::WORD - 1);
+        let byte_in_word = binary(f_, b_, And, a, in_word);
+        let byte_shift = u(f_, build::BYTE_SHIFT);
+        let bit_in_word = binary(f_, b_, ShiftLeft, byte_in_word, byte_shift);
+        // The word starting at the component's byte. A component wider than a byte runs into the
+        // next word when it does not start at a multiple of its size, which OpenGL's strides and
+        // offsets allow.
+        let mut raw = binary(f_, b_, ShiftRight, word, bit_in_word);
+        if shift + bits > u8::BITS {
+            let one = u(f_, 1);
+            let next_index = binary(f_, b_, Add, word_index, one);
+            let next = load_word(f_, b_, base, next_index);
+            // The next word moved up by 32 less the bit in the word, in two shifts so that a
+            // component starting a word takes none of it (one shift by 32 is a shift by 0).
+            let doubled = binary(f_, b_, ShiftLeft, next, one);
+            let last_bit = u(f_, WORD_BITS - 1);
+            let by = binary(f_, b_, Subtract, last_bit, bit_in_word);
+            let high = binary(f_, b_, ShiftLeft, doubled, by);
+            raw = binary(f_, b_, InclusiveOr, raw, high);
+        }
+        if shift > 0 {
             let field = u(f_, shift);
-            let from = binary(f_, b_, Add, bit_in_word, field);
-            let shifted = binary(f_, b_, ShiftRight, word, from);
+            raw = binary(f_, b_, ShiftRight, raw, field);
+        }
+        if bits < WORD_BITS {
             let mask = u(f_, (1 << bits) - 1);
-            raw = binary(f_, b_, And, shifted, mask);
+            raw = binary(f_, b_, And, raw, mask);
         }
         values.push(decode(f_, b_, kind, raw, bits));
     }
@@ -392,6 +400,17 @@ fn fetch(
     b.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
     f.body = b;
     Ok(f)
+}
+
+/// The word at `index` of the stream's buffer.
+fn load_word(
+    f: &mut Function,
+    body: &mut Block,
+    base: Handle<Expression>,
+    index: Handle<Expression>,
+) -> Handle<Expression> {
+    let pointer = push(f, body, Expression::Access { base, index });
+    push(f, body, Expression::Load { pointer })
 }
 
 /// One component's value from its `bits` raw bits, as Direct3D converts them: normalised values

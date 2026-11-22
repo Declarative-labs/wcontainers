@@ -4,6 +4,9 @@
 //! first instance of 4, a stream bound at an offset, and reads past each stream's end. One point per
 //! vertex and instance carries one input's bits to its pixel of an RGBA32_UINT target.
 //!
+//! Also drawn with each stream moved to an offset and stride that are not multiples of four, as
+//! OpenGL allows, against Direct3D 11 reading the same elements where it requires them.
+//!
 //! The streams' bytes are seeded (`WCONTAINERS_PULL_SEED`, default 1; `WCONTAINERS_PULL_CASES` draws
 //! that many seeds from it, default 1). Windows only, and needs a GPU: run as a GPU job
 //! (docs/status-graphics-shaders.md).
@@ -118,6 +121,10 @@ fn inputs() -> Vec<Input> {
     ]
 }
 
+/// Each stream's bound offset and stride in the unaligned draw: every component of the first
+/// stream starts at each byte of a word for some vertex.
+const UNALIGNED: [(u32, u32); 4] = [(1, 51), (2, 5), (11, 7), (3, 6)];
+
 /// Each stream's bytes (its bound offset included), from `seed`.
 fn stream_bytes(seed: u64) -> Vec<Vec<u8>> {
     let mut rng = fastrand::Rng::with_seed(seed);
@@ -127,6 +134,28 @@ fn stream_bytes(seed: u64) -> Vec<Vec<u8>> {
             (0..s.offset + s.stride * s.elements)
                 .map(|_| rng.u8(..))
                 .collect()
+        })
+        .collect()
+}
+
+/// `bytes` moved to the offsets and strides of `UNALIGNED`, the bytes between elements seeded, and
+/// each stream padded to whole words.
+fn unaligned(bytes: &[Vec<u8>], seed: u64) -> Vec<Vec<u8>> {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    STREAMS
+        .iter()
+        .zip(UNALIGNED)
+        .zip(bytes)
+        .map(|((s, (offset, stride)), old)| {
+            let size = (offset + stride * s.elements).next_multiple_of(4);
+            let mut new: Vec<u8> = (0..size).map(|_| rng.u8(..)).collect();
+            for e in 0..s.elements {
+                let from = (s.offset + e * s.stride) as usize;
+                let to = (offset + e * stride) as usize;
+                new[to..to + s.stride as usize]
+                    .copy_from_slice(&old[from..from + s.stride as usize]);
+            }
+            new
         })
         .collect()
 }
@@ -188,15 +217,22 @@ fn direct3d_11(
 }
 
 /// The helper values of each pulled input: offset, stride, divisor and bias as
-/// `HelperValue::PulledStream` says, with the stream bound from offset 0.
-fn stream_words(input: &Input) -> [u32; 4] {
+/// `HelperValue::PulledStream` says, with the stream bound from offset 0 and its elements at the
+/// offset and stride `layout` gives.
+fn stream_words(input: &Input, layout: &[(u32, u32)]) -> [u32; 4] {
     let s = &STREAMS[input.stream];
-    let offset = s.offset + input.offset;
+    let (offset, stride) = layout[input.stream];
+    let offset = offset + input.offset;
     match s.rate {
-        None => [offset, s.stride, 0, 0],
-        Some(0) => [offset + FIRST_INSTANCE * s.stride, 0, 1, 0],
-        Some(n) => [offset, s.stride, n, (n - 1) * FIRST_INSTANCE],
+        None => [offset, stride, 0, 0],
+        Some(0) => [offset + FIRST_INSTANCE * stride, 0, 1, 0],
+        Some(n) => [offset, stride, n, (n - 1) * FIRST_INSTANCE],
     }
+}
+
+/// Each stream's offset and stride as Direct3D binds it.
+fn aligned() -> Vec<(u32, u32)> {
+    STREAMS.iter().map(|s| (s.offset, s.stride)).collect()
 }
 
 fn source(c: &[u8], dxil: bool) -> Source<'_> {
@@ -207,7 +243,13 @@ fn source(c: &[u8], dxil: bool) -> Source<'_> {
     }
 }
 
-fn ours<B: Backend>(b: &mut B, code: &[Vec<u8>; 2], dxil: bool, bytes: &[Vec<u8>]) -> Vec<u8> {
+fn ours<B: Backend>(
+    b: &mut B,
+    code: &[Vec<u8>; 2],
+    dxil: bool,
+    bytes: &[Vec<u8>],
+    layout: &[(u32, u32)],
+) -> Vec<u8> {
     let inputs = inputs();
     let ps = convert(source(&code[1], dxil), &VariantKey::default(), None).unwrap();
     let key = VariantKey {
@@ -241,7 +283,7 @@ fn ours<B: Backend>(b: &mut B, code: &[Vec<u8>; 2], dxil: bool, bytes: &[Vec<u8>
     for slot in &vs.reflection.helpers {
         let words = match slot.value {
             HelperValue::DrawBase => [0, FIRST_INSTANCE, 0, 0],
-            HelperValue::PulledStream { input } => stream_words(&inputs[input as usize]),
+            HelperValue::PulledStream { input } => stream_words(&inputs[input as usize], layout),
             other => panic!("no value for {other:?}"),
         };
         let at = slot.offset as usize;
@@ -455,30 +497,40 @@ fn pulled_inputs_read_what_direct3d_fetches() {
                 "Direct3D read input {input} past the stream's end otherwise"
             );
         }
-        for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+        let moved = unaligned(&bytes, case);
+        for (route, dxil, place) in [
+            ("dxbc", false, ""),
+            ("dxil", true, ""),
+            ("dxbc", false, "_unaligned"),
+            ("dxil", true, "_unaligned"),
+        ] {
             let code = [
                 bytecode(&format!("vs_pull.{route}")),
                 bytecode(&format!("ps_pull.{route}")),
             ];
-            let texels = ours(&mut gpu, &code, dxil, &bytes);
+            let texels = if place.is_empty() {
+                ours(&mut gpu, &code, dxil, &bytes, &aligned())
+            } else {
+                ours(&mut gpu, &code, dxil, &moved, &UNALIGNED)
+            };
             let (count, largest) = differ(&reference, &texels, Format::Rgba32Uint);
             let by_input = differing_by_input(&reference, &texels);
             println!(
-                "pulled seed {case} {route} webgpu: {count} of {} texels differ, largest {largest}; by input {by_input:?}",
+                "pulled seed {case} {route}{place} webgpu: {count} of {} texels differ, largest {largest}; by input {by_input:?}",
                 POINTS * POINTS
             );
             keep(
-                &format!("pulled_{case}_{route}.reference"),
+                &format!("pulled_{case}_{route}{place}.reference"),
                 &reference,
                 Format::Rgba32Uint,
             );
             keep(
-                &format!("pulled_{case}_{route}.ours"),
+                &format!("pulled_{case}_{route}{place}.ours"),
                 &texels,
                 Format::Rgba32Uint,
             );
             if count != 0 {
-                failed.push(format!("seed {case} {route}"));
+                failed.push(format!("seed {case} {route}{place}"));
             }
         }
     }
