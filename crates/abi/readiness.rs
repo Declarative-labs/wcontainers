@@ -13,6 +13,7 @@ bitflags! {
         const READABLE = 1 << 0;
         const WRITABLE = 1 << 1;
         const ERROR = 1 << 2;
+        /// The other end has closed; data it already sent can still be read.
         const HANG_UP = 1 << 3;
         /// The peer sent [urgent data](https://man7.org/linux/man-pages/man7/tcp.7.html), a byte marked to be noticed ahead of the stream.
         const URGENT_DATA = 1 << 4;
