@@ -52,6 +52,14 @@ pub const IMAGE_QUERY_LOD: &str = "image_query_lod";
 /// module's user replaces each call.
 pub const IMAGE_SAMPLE_CLAMP: &str = "image_sample_clamp";
 
+/// The names of the functions GLSL.std.450's `InterpolateAtCentroid`, `InterpolateAtSample` and
+/// `InterpolateAtOffset` call, one per signature: arguments the input's value, loaded through the
+/// instruction's pointer (so that the module's user finds the input), and the sample or the offset;
+/// result the value at that place. Their bodies are empty: the module's user replaces each call.
+pub const INTERPOLATE_AT_CENTROID: &str = "interpolate_at_centroid";
+pub const INTERPOLATE_AT_SAMPLE: &str = "interpolate_at_sample";
+pub const INTERPOLATE_AT_OFFSET: &str = "interpolate_at_offset";
+
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{convert::TryInto, mem, num::NonZeroU32};
 
@@ -668,7 +676,7 @@ pub struct Frontend<I> {
     deferred_function_calls: Vec<spirv::Word>,
     dummy_functions: Arena<crate::Function>,
     /// The module's id bound: the ids past it name the stand-in functions (`IMAGE_QUERY_LOD`,
-    /// `IMAGE_SAMPLE_CLAMP`).
+    /// `IMAGE_SAMPLE_CLAMP`, `INTERPOLATE_AT_*`).
     id_bound: spirv::Word,
     /// Each stand-in function's signature and id.
     stand_ins: Vec<(image::StandInSignature, spirv::Word)>,

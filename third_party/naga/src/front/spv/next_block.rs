@@ -1824,6 +1824,59 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     let inst_id = self.next()?;
                     let gl_op = Glo::from_u32(inst_id).ok_or(Error::UnsupportedExtInst(inst_id))?;
 
+                    // An input taken at another place in the pixel, which the IR lacks: a call of
+                    // the stand-in function of the evaluation and its signature, made on first use,
+                    // which the module's user replaces.
+                    let evaluation = match gl_op {
+                        Glo::InterpolateAtCentroid => Some((super::INTERPOLATE_AT_CENTROID, 0)),
+                        Glo::InterpolateAtSample => Some((super::INTERPOLATE_AT_SAMPLE, 1)),
+                        Glo::InterpolateAtOffset => Some((super::INTERPOLATE_AT_OFFSET, 1)),
+                        _ => None,
+                    };
+                    if let Some((name, place_operands)) = evaluation {
+                        inst.expect(base_wc + 1 + place_operands)?;
+                        let pointer_id = self.next()?;
+                        let lexp = self.lookup_expression.lookup(pointer_id)?;
+                        let pointer = get_expr_handle!(pointer_id, lexp);
+                        let value = ctx
+                            .expressions
+                            .append(crate::Expression::Load { pointer }, span);
+                        let result_ty = self.lookup_type.lookup(result_type_id)?.handle;
+                        let mut arguments = vec![value];
+                        let mut types = vec![result_ty];
+                        for _ in 0..place_operands {
+                            let id = self.next()?;
+                            let lexp = self.lookup_expression.lookup(id)?;
+                            let type_id = lexp.type_id;
+                            arguments.push(get_expr_handle!(id, lexp));
+                            types.push(self.lookup_type.lookup(type_id)?.handle);
+                        }
+                        let to = self.stand_in(ctx, (name, types, result_ty), span)?;
+                        block.extend(emitter.finish(ctx.expressions));
+                        let function = self.add_call(ctx.function_id, to);
+                        let result = ctx
+                            .expressions
+                            .append(crate::Expression::CallResult(function), span);
+                        self.lookup_expression.insert(
+                            result_id,
+                            LookupExpression {
+                                handle: result,
+                                type_id: result_type_id,
+                                block_id,
+                            },
+                        );
+                        block.push(
+                            crate::Statement::Call {
+                                function,
+                                arguments,
+                                result: Some(result),
+                            },
+                            span,
+                        );
+                        emitter.start(ctx.expressions);
+                        continue;
+                    }
+
                     let fun = match gl_op {
                         Glo::Round => Mf::Round,
                         Glo::RoundEven => Mf::Round,

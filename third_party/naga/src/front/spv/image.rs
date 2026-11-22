@@ -1203,7 +1203,7 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
 
     /// The id of the stand-in function of `signature`, made on first use: its body is empty, and the
     /// module's user replaces each call of it.
-    fn stand_in(
+    pub(super) fn stand_in(
         &mut self,
         ctx: &mut super::BlockContext,
         signature: StandInSignature,
