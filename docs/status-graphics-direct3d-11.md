@@ -1020,7 +1020,7 @@ ANGLE (BSD-3-Clause), the system's d3dcompiler_47.dll. Installed on the desktop:
 C:\wc\target\phase-2-graphics-direct3d-11, pictures and logs in C:\wc\out, the 15 KB runner copy
 in C:\wc\out\phase-2-graphics-direct3d-11\rigfix, an empty nvapi64.dll there (bgfx's examples),
 the programs' cache files under C:\wc\out\phase-2-graphics-direct3d-11\gpu-cache, the
-test-only WARP d3d11.dll (G4h run 3, built with no dependency; about 1 MB with its build folder)
+test-only WARP d3d11.dll (G4h run 3, built with no dependency; 2.6 MB with its build folder)
 in C:\wc\out\phase-2-graphics-direct3d-11\warpshim, the test-only
 d3d10_1.dll forwarder in C:\wc\out\phase-2-graphics-direct3d-11\d3d10_1fwd, and the LF worktree
 C:\wc\src\phase-2-graphics-direct3d-11-lf for the literal check. On the Mac (not the desktop),
