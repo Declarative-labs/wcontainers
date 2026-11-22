@@ -166,6 +166,9 @@ single files only).
 - For the Direct3D fronts: nothing to call differently. Direct3D 12's runner file
   `patch-syntax-11-ds.dxil` converts; typed buffers of `B8G8R8X8_UNORM` convert where they were
   refused by `TypedBufferFormatAbsent`.
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip` and tar (its
+  `out-r96` and logs kept), the scratch clone and tar (logs kept in `g6-r96`).
 
 ## G6 run 8 (run 95): the B8G8R8X8 vertex format, and A20
 
@@ -2249,7 +2252,11 @@ G6a run 5's tip):
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
    the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
-   in run 88), A26 (the unordered not-equal, both routes, with its drawn NaN
+   in run 88; the array layer: the DXBC route already rounds it half to even in src/lower.rs
+   `layer`, the carried reader's `front/spv/image.rs` casts it with `As` alone; the patch is a
+   `MathFunction::Round` before that cast, and its drawn test needs a sampled 2D array texture in
+   tests/common's `Setup` and a pixel shader sampling layers 0.5 to 2.5 against real Direct3D 11
+   and 12), A26 (the unordered not-equal, both routes, with its drawn NaN
    test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
    cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv and
    A8 (both want a way to carry dxbc-spirv patches), A22 on WARP.
