@@ -1,5 +1,6 @@
-//! The shared settings of crates/internet-protocol as host socket options, for the host implementations of the
-//! socket interfaces: on Linux all of them, elsewhere what socket2 covers.
+//! The shared settings of crates/internet-protocol as host socket options, for the host socket implementations.
+//!
+//! On Linux all of them, elsewhere what socket2 covers.
 #![cfg(unix)]
 
 #[cfg(target_os = "linux")]

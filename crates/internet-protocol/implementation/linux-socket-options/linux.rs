@@ -141,9 +141,9 @@ pub fn get_int(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<c_int, H
     get_option(socket, level, name)
 }
 
-/// The flags of `SO_TIMESTAMPING` that a socket's receive timestamping asks for.
+/// Gives the flags of `SO_TIMESTAMPING` that a socket's receive timestamping asks for.
 pub fn receive_timestamping_flags(timestamping: &Timestamping) -> u32 {
-    let mut flags = 0;
+    let mut flags = u32::MIN;
     if timestamping.receive_software == wcontainers_internet_protocol::Report::Requested {
         flags |= uapi::SOF_TIMESTAMPING_RX_SOFTWARE as u32 | uapi::SOF_TIMESTAMPING_SOFTWARE as u32;
     }
@@ -153,6 +153,9 @@ pub fn receive_timestamping_flags(timestamping: &Timestamping) -> u32 {
     }
     flags
 }
+
+/// The `bind_phc` of `SO_TIMESTAMPING` when no hardware clock is bound: https://docs.kernel.org/networking/timestamping.html
+const NO_HARDWARE_CLOCK: c_int = 0;
 
 /// Sets `SO_TIMESTAMPING` to the flags, bound to the hardware clock if one is given.
 pub fn set_timestamping(
@@ -165,7 +168,7 @@ pub fn set_timestamping(
             flags | uapi::SOF_TIMESTAMPING_BIND_PHC as u32,
             c_int::try_from(clock.0).map_err(|_| HostError::Errno(libc::EINVAL))?,
         ),
-        None => (flags, 0),
+        None => (flags, NO_HARDWARE_CLOCK),
     };
     let value = uapi::so_timestamping {
         flags: flags as c_int,
@@ -207,7 +210,7 @@ pub fn set_filter(
             };
             set_option(socket, uapi::SOL_SOCKET, attach, &value)
         }
-        None => match set_int(socket, uapi::SOL_SOCKET, detach, 0) {
+        None => match set_int(socket, uapi::SOL_SOCKET, detach, DETACH_VALUE) {
             Err(HostError::Errno(libc::ENOENT)) => Ok(()),
             other => other,
         },
@@ -303,11 +306,23 @@ pub fn set_port_setting(
             )
             .map_err(|error| io_host_error(&error)),
         // socket2 sets only a processor; none is Linux's -1.
-        PortSetting::IncomingProcessor(None) => {
-            set_int(socket, uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU, -1)
-        }
+        PortSetting::IncomingProcessor(None) => set_int(
+            socket,
+            uapi::SOL_SOCKET,
+            uapi::SO_INCOMING_CPU,
+            NO_PROCESSOR,
+        ),
     }
 }
+
+/// The value a filter's detach takes, which Linux ignores: https://man7.org/linux/man-pages/man7/socket.7.html
+const DETACH_VALUE: c_int = 0;
+
+/// The `SO_INCOMING_CPU` value that ties the socket to no processor: https://man7.org/linux/man-pages/man7/socket.7.html
+const NO_PROCESSOR: c_int = -1;
+
+/// The hop limit value that takes the route's: https://man7.org/linux/man-pages/man7/ipv6.7.html
+const ROUTE_HOP_LIMIT: c_int = -1;
 
 fn path_mtu_discovery(mode: PathMtuDiscovery) -> u32 {
     match mode {
@@ -328,7 +343,7 @@ pub fn set_packet_setting(
     shortfalls: &Shortfalls,
 ) -> Result<(), HostError> {
     let default_or = |limit: Option<wcontainers_internet_protocol::HopLimit>| {
-        limit.map_or(-1, |limit| c_int::from(limit.0))
+        limit.map_or(ROUTE_HOP_LIMIT, |limit| c_int::from(limit.0))
     };
     match setting {
         IpPacketSetting::HopLimit {
@@ -413,7 +428,7 @@ pub fn set_packet_setting(
             set_option(socket, uapi::SOL_SOCKET, uapi::SO_PRIORITY, &priority.0)
         }
         IpPacketSetting::UnicastInterface(interface) => {
-            let index = interface.map_or(0, |interface| interface.0);
+            let index = interface.map_or(u32::MIN, |interface| interface.0);
             // Both versions take the index in network byte order.
             match family {
                 IpVersion::V4 => {
@@ -455,18 +470,21 @@ pub fn set_packet_setting(
 
 /// `SCM_TSTAMP_SND`, the stage of a transmit timestamp taken as the packet left, from [linux/errqueue.h](https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h), which neither libc nor linux-raw-sys carries.
 pub const TIMESTAMP_STAGE_SENT: u32 = 0;
-/// `SCM_TSTAMP_SCHED`, taken as the packet entered the queueing discipline.
+/// `SCM_TSTAMP_SCHED`, taken as the packet entered the queueing discipline: https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMP_STAGE_SCHEDULED: u32 = 1;
-/// `SCM_TSTAMP_ACK`, taken as the peer acknowledged the data.
+/// `SCM_TSTAMP_ACK`, taken as the peer acknowledged the data: https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMP_STAGE_ACKNOWLEDGED: u32 = 2;
-/// `SCM_TSTAMP_COMPLETION`, taken as the device completed the transmission.
+/// `SCM_TSTAMP_COMPLETION`, taken as the device completed the transmission: https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 
-/// The times of an `SCM_TIMESTAMPING` message, `struct scm_timestamping` of linux/errqueue.h: software, deprecated, hardware.
+/// The times of an `SCM_TIMESTAMPING` message, `struct scm_timestamping`: software, deprecated, hardware.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMPING_TIMES: usize = 3;
 
-/// The room for the control messages of one receive: timestamps, an extended error with its offender, packet
-/// information and the TCP statistics of a transmit report.
+/// The room for the control messages of one receive: timestamps, an extended error, packet information, statistics.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const CONTROL_ROOM: usize = 1024;
 
 /// The control messages of one `recvmsg`, in words so that they are aligned as `cmsghdr` needs.
@@ -474,7 +492,7 @@ pub struct ControlBuffer([usize; CONTROL_ROOM / size_of::<usize>()]);
 
 impl Default for ControlBuffer {
     fn default() -> Self {
-        Self([0; CONTROL_ROOM / size_of::<usize>()])
+        Self([usize::MIN; CONTROL_ROOM / size_of::<usize>()])
     }
 }
 
@@ -491,7 +509,7 @@ impl<'a> ReceivedMessage<'a> {
     }
 }
 
-/// One `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
+/// Makes one `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
 ///
 /// Made with libc rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`: a cut is the caller's to count.
 pub fn receive_message<'a>(
@@ -500,17 +518,17 @@ pub fn receive_message<'a>(
     flags: c_int,
     control: &'a mut ControlBuffer,
 ) -> Result<ReceivedMessage<'a>, HostError> {
-    let mut vector = libc::iovec {
+    let mut vectors = [libc::iovec {
         iov_base: into.as_mut_ptr().cast(),
         iov_len: into.len(),
-    };
+    }];
     // SAFETY: msghdr is plain data; the fields set below are the only ones the call reads.
     let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-    header.msg_iov = &mut vector;
-    header.msg_iovlen = 1;
+    header.msg_iov = vectors.as_mut_ptr();
+    header.msg_iovlen = vectors.len() as _;
     header.msg_control = control.0.as_mut_ptr().cast();
     header.msg_controllen = CONTROL_ROOM as _;
-    // SAFETY: the vector and the control buffer stay alive and writable for the call.
+    // SAFETY: the vectors and the control buffer stay alive and writable for the call.
     let length = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut header, flags) };
     if length < 0 {
         return Err(last_host_error());
@@ -537,7 +555,7 @@ pub struct ControlMessages<'a> {
 }
 
 impl<'a> ControlMessages<'a> {
-    /// The messages of control bytes the kernel wrote, aligned as `cmsghdr` needs.
+    /// Walks the messages of control bytes the kernel wrote, aligned as `cmsghdr` needs.
     pub fn new(control: &'a [u8]) -> Self {
         // SAFETY: msghdr is plain data; only its control fields are read by the walk.
         let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -586,7 +604,7 @@ fn timespec(time: &libc::timespec) -> Option<Duration> {
     (!duration.is_zero()).then_some(duration)
 }
 
-/// The software and hardware times of an `SCM_TIMESTAMPING` control message, each absent when it is zero.
+/// Gives the software and hardware times of an `SCM_TIMESTAMPING` control message, each absent when it is zero.
 pub fn timestamps(data: &[u8]) -> (Option<Duration>, Option<Duration>) {
     if data.len() < size_of::<[libc::timespec; TIMESTAMPING_TIMES]>() {
         return (None, None);
@@ -652,7 +670,7 @@ pub fn open_socket(
     socket
 }
 
-/// The ports of a choice outside its reserved ranges, as ranges.
+/// Gives the ports of a choice outside its reserved ranges, as ranges.
 pub fn allowed_ranges(choice: &PortChoice<'_>) -> Vec<PortRange> {
     let mut reserved: Vec<PortRange> = choice.reserved.to_vec();
     reserved.sort_by_key(|range| range.first.0);
@@ -718,7 +736,7 @@ pub fn bind<'a>(
             Ok(None)
         }
         LocalPort::ChosenByExitNode(choice) => {
-            let any = SocketAddr::new(address, 0);
+            let any = SocketAddr::new(address, u16::MIN);
             if choose_now {
                 in_port_ranges(socket, Some(&choice), || {
                     bind_to(socket, any).map_err(host_error)
@@ -732,7 +750,7 @@ pub fn bind<'a>(
     }
 }
 
-/// The address of a binding, with the IPv6 families of an IPv6 one set on the socket.
+/// Gives the address of a binding, with the IPv6 families of an IPv6 one set on the socket.
 pub fn bind_address(socket: BorrowedFd<'_>, address: &BindAddress) -> Result<IpAddr, HostError> {
     match *address {
         BindAddress::V4(address) => Ok(IpAddr::V4(address)),
@@ -751,7 +769,7 @@ pub const PORTS_OUTSIDE_THE_HOSTS_RANGE: &str =
 /// Where the host keeps its own range of ports to choose from, for the caller's network.
 const HOST_PORT_RANGE: &str = "/proc/sys/net/ipv4/ip_local_port_range";
 
-/// The host's own range of ports to choose from, `net.ipv4.ip_local_port_range`.
+/// Reads the host's own range of ports to choose from, `net.ipv4.ip_local_port_range`.
 pub fn host_port_range() -> Result<PortRange, HostError> {
     let text = std::fs::read_to_string(HOST_PORT_RANGE)
         .map_err(|error| HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO)))?;
@@ -765,9 +783,10 @@ pub fn host_port_range() -> Result<PortRange, HostError> {
     }
 }
 
-/// Binds to a free port of the first allowed range of a choice that has one, at once: the kernel chooses in the
-/// part of a range inside the host's own range (Linux ignores a socket's range outside it), and each port of the
-/// rest is tried in turn, counted.
+/// Binds at once to a free port of the first allowed range of a choice that has one.
+///
+/// The kernel chooses in the part of a range inside the host's own range (Linux ignores a socket's range outside it),
+/// and each port of the rest is tried in turn, counted.
 pub fn bind_chosen_by_exit_node(
     socket: BorrowedFd<'_>,
     address: IpAddr,
@@ -808,14 +827,14 @@ pub fn bind_chosen_by_exit_node(
     Err(HostError::Errno(libc::EADDRINUSE))
 }
 
-/// The peer as the socket's family takes it, an IPv4 peer of an IPv6 socket mapped into IPv6.
+/// Gives the peer as the socket's family takes it, an IPv4 peer of an IPv6 socket mapped into IPv6.
 pub fn peer_for(family: IpVersion, peer: SocketAddr) -> SocketAddr {
     match (family, peer) {
         (IpVersion::V6, SocketAddr::V4(peer)) => SocketAddr::V6(SocketAddrV6::new(
             peer.ip().to_ipv6_mapped(),
             peer.port(),
-            0,
-            0,
+            u32::MIN,
+            u32::MIN,
         )),
         _ => peer,
     }

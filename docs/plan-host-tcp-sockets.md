@@ -178,3 +178,11 @@ machine allows, and each stays clear of the value it is checked against.
   Owners 1001 and 1002 beside root. Peers: SHARING_PEERS 3 (two share, one does not), BACKLOG_OVERFLOW 3 (more than
   the smallest backlog holds). ONE_MEMBER: one socket joined, however often, is one user in the host's tables;
   ONE_WAKE: a waker woken once.
+
+## The shared crate's own choices
+
+Numbers of crates/internet-protocol/implementation/linux-socket-options that no standard fixes, linked from there.
+- REASON_SLOTS 64: how many reasons one `Shortfalls` counts apart, more than any host implementation names; the
+  rest are counted together in the last slot and warned of at every count.
+- CONTROL_ROOM 1024 bytes: room for one receive's control messages (timestamps, an extended error with its
+  offender, packet information and a transmit report's TCP statistics); a cut is seen by `MSG_CTRUNC` and counted by the caller.

@@ -8,17 +8,17 @@ use rustix::io::Errno;
 use socket2::SockRef;
 use wcontainers_abi::{CounterReading, HostError};
 
-/// A socket2 handle on a borrowed descriptor, through which the calls socket2 covers are made.
+/// Gives a socket2 handle on a borrowed descriptor, through which the calls socket2 covers are made.
 pub fn sock<'a>(socket: &'a BorrowedFd<'_>) -> SockRef<'a> {
     SockRef::from(socket)
 }
 
-/// The error of a call socket2 or the standard library made.
+/// Gives the error of a call socket2 or the standard library made.
 pub fn io_host_error(error: &std::io::Error) -> HostError {
     host_error(Errno::from_io_error(error).unwrap_or(Errno::IO))
 }
 
-/// A host's error as the contract gives it: a would-block, or Linux's number for it.
+/// Gives a host's error as the contract gives it: a would-block, or Linux's number for it.
 pub fn host_error(errno: Errno) -> HostError {
     if errno == Errno::AGAIN {
         HostError::WouldBlock
@@ -27,7 +27,7 @@ pub fn host_error(errno: Errno) -> HostError {
     }
 }
 
-/// The error of the last libc call on this thread.
+/// Gives the error of the last libc call on this thread.
 pub fn last_host_error() -> HostError {
     host_error(Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::IO))
 }
@@ -90,6 +90,8 @@ fn linux_number(errno: Errno) -> i32 {
 }
 
 /// How many different reasons one value counts apart, more than any host implementation names.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const REASON_SLOTS: usize = 64;
 
 /// Where the reasons past [`REASON_SLOTS`] are counted, in the last slot.
@@ -102,8 +104,9 @@ struct Slot {
     count: AtomicU64,
 }
 
-/// The requests a host implementation could not honour, counted by reason without a lock, each reason warned of at
-/// its first count; the reasons counted together in the last slot are warned of at every count.
+/// The requests a host implementation could not honour, counted by reason without a lock, each warned of at its first count.
+///
+/// The reasons counted together in the last slot are warned of at every count.
 #[derive(Debug)]
 pub struct Shortfalls {
     slots: [Slot; REASON_SLOTS],
@@ -115,7 +118,7 @@ impl Default for Shortfalls {
             slots: [const {
                 Slot {
                     reason: OnceLock::new(),
-                    count: AtomicU64::new(0),
+                    count: AtomicU64::new(u64::MIN),
                 }
             }; REASON_SLOTS],
         }
@@ -156,9 +159,9 @@ impl Shortfalls {
             .filter_map(|slot| {
                 Some(CounterReading {
                     reason: slot.reason.get()?,
-                    detail: 0,
+                    detail: u64::MIN,
                     count: slot.count.load(Ordering::Relaxed),
-                    nanoseconds: 0,
+                    nanoseconds: u64::MIN,
                 })
             })
             .filter(|reading| reading.count > 0)

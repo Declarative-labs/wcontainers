@@ -20,7 +20,7 @@ impl Wake for Wakes {
     }
 }
 
-/// A call already waiting when an error is held is woken once, and then finishes with the error.
+/// Checks that a call already waiting when an error is held is woken once, and then finishes with the error.
 #[test]
 fn a_held_error_wakes_a_waiting_call() {
     let watcher = Watcher::new().expect("the watcher starts");

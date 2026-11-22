@@ -8,8 +8,10 @@ use etherparse::{Icmpv4Header, Icmpv6Header, IpNumber, icmpv4, icmpv6};
 
 use crate::datagram::receive::{Ancillary, Headers, ipv4_header, push_ipv6_headers};
 
-/// Writes the ICMP error of an error queue entry whole from its IP header, before the `copied` bytes Linux gave at the
-/// start of `into`, which follow `quoted`, the part of the quoted transport header Linux took off. Returns its length.
+/// Writes the ICMP error of an error queue entry whole from its IP header, giving its length.
+///
+/// It goes before the `copied` bytes Linux gave at the start of `into`, which follow `quoted`, the part of the quoted
+/// transport header Linux took off.
 #[allow(clippy::too_many_arguments)]
 pub fn write_icmp_error(
     into: &mut [u8],
@@ -62,8 +64,9 @@ pub fn write_whole_icmp_error(
     Some(place_whole(into, data, error))
 }
 
-/// Writes the ICMP error of an error queue entry whose `copied` bytes at the start of `into` quote the packet
-/// from its IP header on, as Linux gives them to a raw socket that writes its own headers. Returns its length.
+/// Writes the ICMP error of an error queue entry whose copied bytes quote the packet from its IP header, giving its length.
+///
+/// The `copied` bytes at the start of `into` are as Linux gives them to a raw socket that writes its own headers.
 pub fn write_icmp_error_quoting_header(
     into: &mut [u8],
     copied: usize,
@@ -77,8 +80,7 @@ pub fn write_icmp_error_quoting_header(
     Some(length)
 }
 
-/// Writes the ICMP error as `write_icmp_error_quoting_header` does, of all the `data` Linux gave, which `into`
-/// may cut.
+/// Writes the ICMP error as `write_icmp_error_quoting_header` does, of all the `data` Linux gave, which `into` may cut.
 pub fn write_whole_icmp_error_quoting_header(
     into: &mut [u8],
     data: &[u8],
@@ -99,8 +101,7 @@ fn place_whole(into: &mut [u8], data: &[u8], (headers, length): (Headers, usize)
     length
 }
 
-/// The headers before `data` of an ICMP error about a payload, from its outer IP header to `quoted`, and the
-/// error's whole length.
+/// Gives the headers before `data` of an ICMP error about a payload, from its outer IP header to `quoted`, and its length.
 #[allow(clippy::too_many_arguments)]
 fn payload_error(
     data: &[u8],
@@ -129,8 +130,7 @@ fn payload_error(
     error_headers(ancillary, error, offender?, us, inner.as_slice(), data)
 }
 
-/// The headers before `data` of an ICMP error that quotes a packet from its IP header on, and the error's whole
-/// length.
+/// Gives the headers before `data` of an ICMP error that quotes a packet from its IP header on, and its whole length.
 fn header_error(
     data: &[u8],
     ancillary: &Ancillary<'_>,
@@ -142,8 +142,10 @@ fn header_error(
     error_headers(ancillary, error, offender?, us, &[], data)
 }
 
-/// The outer IP header, the ICMP header with its checksum over `quoted` and `data`, then `quoted`, of an error from
-/// `offender` to `us`; and the error's whole length. `quoted` is whole headers, of an even length.
+/// Gives the headers of an error from `offender` to `us` and its whole length.
+///
+/// The headers are the outer IP header, the ICMP header with its checksum over `quoted` and `data`, then `quoted`, which
+/// is whole headers, of an even length.
 fn error_headers(
     ancillary: &Ancillary<'_>,
     error: &libc::sock_extended_err,
@@ -191,8 +193,7 @@ fn error_headers(
     Some((headers, length))
 }
 
-/// The four bytes after an ICMP message's checksum: the MTU of a packet too big, the pointer of a parameter
-/// problem, else unused.
+/// Gives the four bytes after an ICMP message's checksum: a too big packet's MTU, a parameter problem's pointer, or none.
 fn rest_of_header(error: &libc::sock_extended_err) -> [u8; size_of::<u32>()] {
     let v4 = error.ee_origin == libc::SO_EE_ORIGIN_ICMP;
     let mtu = if v4 {

@@ -91,7 +91,7 @@ const POLL_BITS: &[(ReadyFor, PollFlags)] = &[
     (ReadyFor::PEER_FINISHED_SENDING, PollFlags::RDHUP),
 ];
 
-/// A poll that answers at once.
+/// A poll that answers at once: https://man7.org/linux/man-pages/man2/poll.2.html
 const NO_WAIT: Timespec = Timespec {
     tv_sec: 0,
     tv_nsec: 0,
@@ -117,14 +117,14 @@ fn facts(flags: PollFlags) -> ReadyFor {
         .fold(ReadyFor::empty(), |facts, (fact, _)| facts | *fact)
 }
 
-/// The facts a socket has now, of those asked for and those always reported.
+/// Gives the facts a socket has now, of those asked for and those always reported.
 fn facts_now(fd: BorrowedFd<'_>, interest: ReadyFor) -> Result<ReadyFor, HostError> {
     let mut polled = [PollFd::new(&fd, poll_flags(interest))];
     rustix::event::poll(&mut polled, Some(&NO_WAIT)).map_err(host_error)?;
     Ok(facts(polled[0].revents()))
 }
 
-/// What the poller is asked to report for facts; it reports an error and a hang-up with any of them.
+/// Gives what the poller is asked to report for facts; it reports an error and a hang-up with any of them.
 fn registration(key: usize, interest: ReadyFor) -> Event {
     let writable = interest.contains(ReadyFor::WRITABLE);
     // No peer shutdown is registrable, but it makes the socket readable; kqueue reports errors and hang-ups only with either.
@@ -215,8 +215,7 @@ impl Shared {
         }
     }
 
-    /// Moves the wakers of the calls whose facts the socket now has into `woken`, and disarms it once none waits
-    /// unwoken.
+    /// Moves the wakers of the calls whose facts the socket now has into `woken`, disarming it once none waits unwoken.
     fn take_woken(&self, watch: &Watch, woken: &mut Vec<Waker>) {
         let mut state = locked(&watch.state);
         if !state.open || state.armed.is_none() {
@@ -277,7 +276,7 @@ impl Shared {
     }
 }
 
-/// The facts the calls waiting unwoken on a socket ask for, or none when no call waits unwoken.
+/// Gives the facts the calls waiting unwoken on a socket ask for, or none when no call waits unwoken.
 fn waiting_interest(state: &WatchState) -> Option<ReadyFor> {
     state
         .waiters
@@ -316,7 +315,7 @@ impl Watched {
         }
     }
 
-    /// A call that finishes when the socket has one of the facts asked for, giving every fact it has.
+    /// Makes a call that finishes when the socket has one of the facts asked for, giving every fact it has.
     pub fn wait_until_ready(&self, interest: ReadyFor) -> WaitUntilReady<'_> {
         WaitUntilReady {
             watched: self,
@@ -349,7 +348,7 @@ impl WaitUntilReady<'_> {
         }
     }
 
-    /// Every fact the socket has now once one asked for or always reported holds, withdrawing the wait, or none yet.
+    /// Gives every fact the socket has once one asked for or always reported holds, withdrawing the wait, or none yet.
     fn answer(&mut self) -> Option<Result<ReadyFor, HostError>> {
         let watch = &self.watched.watch;
         let held = locked(&watch.state).held;
