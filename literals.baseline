@@ -2180,13 +2180,6 @@ code	crates/executor/implementation/unicorn/ltp.rs	str	warned	"; "
 code	crates/executor/implementation/unicorn/ltp.rs	str	warnings	" "
 code	crates/executor/implementation/unicorn/ltp.rs	str	warnings	"-"
 code	crates/executor/implementation/unicorn/ltp.rs	str	warnings	"; "
-code	crates/executor/implementation/unicorn/network.rs	int	Network::connect	10
-code	crates/executor/implementation/unicorn/network.rs	int	local	16
-code	crates/executor/implementation/unicorn/network.rs	int	local	3
-code	crates/executor/implementation/unicorn/network.rs	int	local	4
-code	crates/executor/implementation/unicorn/network.rs	str	Network::connect	"0.0.0.0:0"
-code	crates/executor/implementation/unicorn/network.rs	str	Network::connect	"[::]:0"
-code	crates/executor/implementation/unicorn/network.rs	str	local	"16 bytes"
 code	crates/executor/implementation/unicorn/reference.rs	str	run_one_cpu	"--cpuset-cpus=0"
 code	crates/executor/implementation/unicorn/runtimes.rs	char	program_path	'/'
 code	crates/executor/implementation/unicorn/runtimes.rs	char	program_path	'/'
