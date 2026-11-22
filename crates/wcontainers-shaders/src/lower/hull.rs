@@ -56,7 +56,7 @@ const IR_PARTITIONING_FRACTIONAL_EVEN: u64 = 2;
 const POINT_U: u32 = 0;
 const POINT_V: u32 = 1;
 const POINT_PATCH: u32 = 2;
-const POINT_PRIMITIVE: u32 = 3;
+pub(super) const POINT_PRIMITIVE: u32 = 3;
 /// The tessellation factors' words in a record: outer 0 to 3, then inner 0 and 1.
 const OUTER_FACTORS: u32 = build::VEC4;
 const INNER_BASE: u32 = OUTER_FACTORS;
@@ -64,8 +64,8 @@ const INNER_FACTORS: u32 = 2;
 
 /// The patch records, written by the hull program and read by the domain program.
 const PATCHES_VARIABLE: &str = "stage_patches";
-/// The tessellator's points the domain program reads.
-const POINTS_VARIABLE: &str = "stage_points";
+/// The tessellator's points the domain program reads, and a geometry program its primitives' numbers.
+pub(super) const POINTS_VARIABLE: &str = "stage_points";
 /// The function filling a domain program's inputs, and its argument: the vertex number.
 pub(crate) const DOMAIN_INPUTS_FUNCTION: &str = "domain_inputs";
 pub(crate) const DOMAIN_VERTEX_ARGUMENT: &str = "domain_vertex";

@@ -161,6 +161,9 @@ enum Form {
         /// The listed primitives after a tessellation stage (`stage::word::LISTED`).
         list: Handle<naga::GlobalVariable>,
         out: Handle<naga::GlobalVariable>,
+        /// The tessellator's points (`stage::POINTS_BINDING`), whose fourth word is a listed
+        /// primitive's number, where the shader reads that number.
+        points: Option<Handle<naga::GlobalVariable>>,
     },
     Replay(Replay),
 }
@@ -575,7 +578,23 @@ impl GeometryPass<'_> {
                 Some(stage::binding(stage::GEOMETRY_BINDING)),
                 word_array,
             );
-            Form::Compute { list, out }
+            let numbered = self
+                .values
+                .iter()
+                .any(|io| io.side == Side::Input && io.builtin == Some(builtin::PRIMITIVE_ID));
+            let points = numbered.then(|| {
+                let point_array = build::runtime_array(m, uvec4, stage::RECORD_SLOT_BYTES);
+                build::global(
+                    m,
+                    super::hull::POINTS_VARIABLE,
+                    AddressSpace::Storage {
+                        access: StorageAccess::LOAD,
+                    },
+                    Some(stage::binding(stage::POINTS_BINDING)),
+                    point_array,
+                )
+            });
+            Form::Compute { list, out, points }
         };
         let invocation = private(m, INVOCATION_VARIABLE, u32_ty);
         let counters: Vec<Counters> = (0..streams)
@@ -1280,6 +1299,7 @@ impl GeometryPass<'_> {
         let odd = b.binary(BinaryOperator::And, prim, one);
         let is_odd = b.binary(BinaryOperator::NotEqual, odd, zero);
         let mut records = Vec::new();
+        let mut first_listed = None;
         for k in 0..n {
             let nn = b.u32(n);
             let list_first = b.mul(prim, nn);
@@ -1300,12 +1320,30 @@ impl GeometryPass<'_> {
             let l = b.global(state.list());
             let p = b.at(l, at);
             let listed_r = b.load(p);
+            first_listed.get_or_insert(listed_r);
             let r = b.select(is_listed, listed_r, r);
             let words = b.u32(in_words);
             records.push(b.mul(r, words));
         }
+        // A listed primitive's number is its patch's, held by the point of its first vertex.
+        let number = match (state.form, first_listed) {
+            (
+                Form::Compute {
+                    points: Some(points),
+                    ..
+                },
+                Some(first),
+            ) => {
+                let points = b.global(points);
+                let p = b.at(points, first);
+                let point = b.load(p);
+                let patch = b.field(point, super::hull::POINT_PRIMITIVE);
+                b.select(is_listed, patch, prim)
+            }
+            _ => prim,
+        };
 
-        self.geometry_inputs(&mut b, state, &records, (prim, gi), inputs)?;
+        self.geometry_inputs(&mut b, state, &records, (number, gi), inputs)?;
 
         b.when(runs, |b| {
             b.call(main, Vec::new(), false);

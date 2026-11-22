@@ -198,6 +198,9 @@ struct Geometry<B: Backend> {
     out_locations: u32,
     selects: bool,
     cull: Option<GeometryCull<B>>,
+    /// Whether the shader reads its primitive's number, which after a domain stage it takes from
+    /// the tessellator's points bound at [`POINTS_BINDING`].
+    numbered: bool,
 }
 
 /// The geometry cull program, and where the geometry output's records hold the cull distances.
@@ -381,7 +384,6 @@ const WITHOUT_WORK: &str = "the stage helper without work";
 const STAGE_INDEX_U8: &str = "StageIndexU8";
 pub(super) const STAGE_INDIRECT: &str = "StageIndirect";
 const DOMAIN_SETS: &str = "the sets of the stages after a domain stage";
-const GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN: &str = "GeometryPrimitiveIdAfterDomain";
 const NOT_A_DOMAIN_SHADER: &str = "not a domain shader";
 const NOT_A_HULL_SHADER: &str = "not a hull shader";
 pub(super) const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
@@ -846,27 +848,16 @@ impl<B: Backend> Stages<B> {
         let (geometry, domain_stage, stream) = match (geometry, stream_output) {
             (None, None) => (None, None, None),
             _ => {
-                let (read, last) =
-                    match geometry {
-                        Some(g) => {
-                            if g.reflection.inputs.iter().any(|v| {
-                                v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId)
-                            }) {
-                                // Its primitive would be the patch's, which the domain's records lack.
-                                return Err(StageError::Unsupported(
-                                    GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN,
-                                ));
-                            }
-                            (
-                                super::locations(&g.reflection.inputs),
-                                &g.reflection.outputs,
-                            )
-                        }
-                        None => (
-                            super::locations(&domain.reflection.outputs),
-                            &domain.reflection.outputs,
-                        ),
-                    };
+                let (read, last) = match geometry {
+                    Some(g) => (
+                        super::locations(&g.reflection.inputs),
+                        &g.reflection.outputs,
+                    ),
+                    None => (
+                        super::locations(&domain.reflection.outputs),
+                        &domain.reflection.outputs,
+                    ),
+                };
                 let shader = backend.create_shader(&super::domain_program_for(domain, &read)?)?;
                 let program = backend.create_program(&Program::Compute(&shader))?;
                 let geometry = match geometry {
@@ -1596,7 +1587,7 @@ impl<B: Backend> Stages<B> {
             };
             let part = values_part(part);
             let at = ring_values(backend, part)?;
-            let geometry_set = backend.create_binding_set(&[
+            let mut entries = vec![
                 values_entry(&at, part),
                 BindingEntry {
                     binding: INDICES_BINDING,
@@ -1608,7 +1599,30 @@ impl<B: Backend> Stages<B> {
                 },
                 storage(VERTICES_BINDING, input, input_bytes, false),
                 storage(GEOMETRY_BINDING, out, out_bytes, true),
-            ])?;
+            ];
+            if g.numbered {
+                // The points hold listed primitives' numbers; unlisted ones are numbered in order.
+                let range = match (&self.hull, listed) {
+                    (Some(h), Some(_)) => {
+                        let (_, points, _) = h.tessellator.owned();
+                        BufferRange {
+                            buffer: &points.buffer,
+                            offset: 0,
+                            size: points.size,
+                        }
+                    }
+                    _ => self.unused_range(0),
+                };
+                entries.push(BindingEntry {
+                    binding: POINTS_BINDING,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageBuffer {
+                        range,
+                        writable: false,
+                    },
+                });
+            }
+            let geometry_set = backend.create_binding_set(&entries)?;
             let mut sets = sets;
             sets[super::STAGE_SET as usize] = Some(&geometry_set);
             backend.dispatch(&DispatchCall {
@@ -1988,6 +2002,11 @@ fn geometry_parts<B: Backend>(
         out_locations: slots as u32,
         selects,
         cull,
+        numbered: geometry
+            .reflection
+            .inputs
+            .iter()
+            .any(|v| v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId)),
     })
 }
 
