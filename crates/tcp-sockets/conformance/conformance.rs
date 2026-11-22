@@ -36,18 +36,19 @@ use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, AnycastAddress, BindAddress, ByteCount, BytesPerSecond, FilterInstruction,
-    FilterJump, FilterOperand, FilterOperation, FlowLabelChoice, HopLimit, InterfaceIndex,
-    IpPacketSetting, IpPrefix, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort,
-    Membership, MobileAddressPreference, MulticastGroup, MulticastMembership, NonlocalAddresses,
-    PacketMark, PacketPriority, PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting,
-    PortSharing, PrefixLength, ProcessorIndex, ReceivedPacketFields, Report, RouteScope,
-    SocketFilter, SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource,
-    Timestamping, TransmitEvent, TransmitReportKey, TransmitReportRequest, TransmitStage,
+    AddressSharing, AnycastAddress, BindAddress, BindingSetting, ByteCount, BytesPerSecond,
+    FilterInstruction, FilterJump, FilterOperand, FilterOperation, FlowLabelChoice, HopLimit,
+    InterfaceIndex, IpPacketSetting, IpPrefix, IpSocketSetting, IpVersion, Ipv6Families,
+    LocalBinding, LocalPort, Membership, MobileAddressPreference, MulticastGroup,
+    MulticastMembership, NonlocalAddresses, PacketMark, PacketPriority, PathMtuDiscovery, Port,
+    PortChoice, PortRange, PortSharing, PrefixLength, ProcessorIndex, ReceivedPacketFields, Report,
+    RouteScope, SocketFilter, SourceFilter, SourcePreferences, TemporaryAddressPreference,
+    TimestampSource, Timestamping, TransmitEvent, TransmitReportKey, TransmitReportRequest,
+    TransmitStage,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::Waiting;
 use wcontainers_tcp_sockets::authentication::{
     SequenceNumberExtension, TcpAuthenticationCounters, TcpAuthenticationIcmpErrors,
@@ -57,10 +58,12 @@ use wcontainers_tcp_sockets::authentication::{
     TcpAuthenticationRepair, TcpAuthenticationRequirement, TcpAuthenticationStatus,
     TcpMd5KeyChange, TcpMd5Peer,
 };
-use wcontainers_tcp_sockets::multipath::{MultipathInformation, MultipathSubflowPosition};
+use wcontainers_tcp_sockets::multipath::{
+    MultipathInformation, MultipathSubflowIdentifier, MultipathSubflowPosition,
+};
 use wcontainers_tcp_sockets::repair::{
-    TcpRepair, TcpRepairOption, TcpRepairQueue, TcpRepairState, TcpTimestamp, TcpTimestampClock,
-    TcpTimestampUnit,
+    TcpRepair, TcpRepairOption, TcpRepairQueue, TcpRepairState, TcpRepairWindow, TcpTimestamp,
+    TcpTimestampClock, TcpTimestampUnit,
 };
 use wcontainers_tcp_sockets::settings::{
     BufferLocks, BufferTuning, FAST_OPEN_KEY_LENGTH, FastOpenKey, FastOpenKeys, MaximumSegmentSize,
@@ -68,9 +71,11 @@ use wcontainers_tcp_sockets::settings::{
     TcpSavedSynchronize, TcpSequenceNumber, TcpSetting, TransmitRehash, WindowSize,
 };
 use wcontainers_tcp_sockets::state::{
-    ByteTotal, CongestionControlInformation, DATA_CENTER_FRACTION_WHOLE, DeliveryRateLimit,
-    TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpInformation, TcpListenerQuery, TcpQuery,
-    TcpQueues, TcpReading, TcpSavedSynchronizeHeader, TcpState, TcpTuned, UrgentMark,
+    AccurateEcnFailures, AccurateEcnOptionSeen, ByteTotal, CongestionControlInformation,
+    DATA_CENTER_FRACTION_WHOLE, DeliveryRateLimit, EcnByteCounts, EventCount,
+    TcpCongestionAvoidanceState, TcpErrorQueueEntry, TcpFastOpenClientFailure, TcpInformation,
+    TcpListenerQuery, TcpQuery, TcpQueues, TcpReading, TcpSavedSynchronizeHeader, TcpState,
+    TcpTuned, UrgentMark,
 };
 use wcontainers_tcp_sockets::{
     ListenBacklog, TcpClose, TcpConnectStart, TcpContinuation, TcpFastOpen, TcpListening,
@@ -803,6 +808,43 @@ fn authentication_option(options: &[u8]) -> Option<AuthenticationOption> {
     }
 }
 
+/// The subtype of Multipath TCP's MP_CAPABLE option, the high half of the byte after the option's length.
+///
+/// https://www.rfc-editor.org/rfc/rfc8684#section-3.1
+const MULTIPATH_CAPABLE: u8 = 0;
+
+/// The shift of a Multipath TCP option's subtype within its byte.
+///
+/// https://www.rfc-editor.org/rfc/rfc8684#section-3.1
+const SUBTYPE_SHIFT: u8 = 4;
+
+/// The MP_CAPABLE flag ("A") that asks for checksums.
+///
+/// https://www.rfc-editor.org/rfc/rfc8684#section-3.1
+const CHECKSUM_REQUIRED: u8 = 0x80;
+
+/// Tells whether a segment's MP_CAPABLE option asks for checksums, none without the option.
+fn multipath_checksum(options: &[u8]) -> Option<bool> {
+    let mut rest = options;
+    loop {
+        match *rest {
+            [kind, ..] if kind == tcp_option::KIND_END => return None,
+            [kind, ..] if kind == tcp_option::KIND_NOOP => rest = &rest[1..],
+            [kind, length, subtype, flags, ..]
+                if kind == MULTIPATH_OPTION
+                    && length >= OPTION_HEAD
+                    && subtype >> SUBTYPE_SHIFT == MULTIPATH_CAPABLE =>
+            {
+                return Some(flags & CHECKSUM_REQUIRED != u8::MIN);
+            }
+            [_, length, ..] if length >= OPTION_HEAD => {
+                rest = rest.get(usize::from(length)..)?;
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// One TCP segment loopback carried, as the host's packet socket saw it.
 #[derive(Clone, Debug)]
 struct Segment {
@@ -824,6 +866,8 @@ struct Segment {
     timestamp: Option<u32>,
     /// Whether the segment carries a Multipath TCP option.
     multipath: bool,
+    /// Whether its MP_CAPABLE option asks for checksums, none without the option.
+    multipath_checksum: Option<bool>,
     /// Whether the segment carries an MD5 signature option.
     signed: bool,
     authentication: Option<AuthenticationOption>,
@@ -886,6 +930,7 @@ impl Segment {
             multipath: tcp
                 .options_iterator()
                 .any(|option| option == Err(TcpOptionReadError::UnknownId(MULTIPATH_OPTION))),
+            multipath_checksum: multipath_checksum(tcp.options()),
             signed: tcp
                 .options_iterator()
                 .any(|option| option == Err(TcpOptionReadError::UnknownId(MD5_OPTION))),
@@ -3911,7 +3956,7 @@ pub fn transmit_delay_holds_each_segment<S: TcpSockets>(sockets: S) {
 
 /// Connections sharing their address leave from one port to different peers; one not sharing cannot take it.
 pub fn address_sharing_lets_connections_leave_from_one_port<S: TcpSockets>(sockets: S) {
-    let shared = [TcpSetting::Port(PortSetting::AddressSharing(
+    let shared = [TcpSetting::Binding(BindingSetting::AddressSharing(
         AddressSharing::Shared,
     ))];
     let listeners = [(); SHARING_PEERS].map(|_| listen(&sockets, ipv4_loopback(), &[]));
@@ -3963,8 +4008,8 @@ fn listen_at<S: TcpSockets>(
 
 /// Listeners sharing their port listen on one; one not sharing cannot.
 pub fn port_sharing_lets_listeners_share_a_port<S: TcpSockets>(sockets: S) {
-    let shared = [TcpListenerSetting::Socket(TcpSetting::Port(
-        PortSetting::PortSharing(PortSharing::Shared),
+    let shared = [TcpListenerSetting::Socket(TcpSetting::Binding(
+        BindingSetting::PortSharing(PortSharing::Shared),
     ))];
     let first = listen_at(&sockets, ipv4_loopback(), ANY_PORT, &shared).expect("listen");
     let port = Port(first.local.port());
@@ -3981,7 +4026,9 @@ pub fn port_sharing_lets_listeners_share_a_port<S: TcpSockets>(sockets: S) {
 pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S) {
     let address = BindAddress::V4(NONLOCAL);
     let setting = |addresses| {
-        TcpListenerSetting::Socket(TcpSetting::Port(PortSetting::NonlocalAddresses(addresses)))
+        TcpListenerSetting::Socket(TcpSetting::Binding(BindingSetting::NonlocalAddresses(
+            addresses,
+        )))
     };
     let bound = listen_at(
         &sockets,
@@ -4171,7 +4218,7 @@ pub fn flow_label_reflection_answers_with_the_peers_label<S: TcpSockets>(sockets
 ///
 /// The connection keeps sharing its address and, when in repair mode, stays in it.
 pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S) {
-    let shared = [TcpSetting::Port(PortSetting::AddressSharing(
+    let shared = [TcpSetting::Binding(BindingSetting::AddressSharing(
         AddressSharing::Shared,
     ))];
     let from_port = |port: u16| LocalBinding {
@@ -4282,6 +4329,14 @@ fn clock_run<S: TcpSockets>(
         .configure(&pair.client, TcpSetting::Repair(TcpRepair::Off))
         .expect("out of repair mode");
     let run = outcome.map(|()| {
+        // The unit stays the one set after repair mode ends, and the connection's options say so.
+        assert_eq!(timestamp(sockets, &pair.client).unit, unit);
+        assert_eq!(
+            information(sockets, &pair.client)
+                .options
+                .microsecond_timestamps,
+            unit == TcpTimestampUnit::Microseconds
+        );
         send_all(sockets, &pair.client, plain(), MESSAGE);
         let data = capture
             .wait_for(set, DEADLINE, Segment::is_data_to_listener)
@@ -4357,8 +4412,8 @@ pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets
     }
 }
 
-/// Checks that a clock asked to count in the other unit than its route's segments carry either does so or is refused as not supported.
-pub fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused<S: TcpSockets>(sockets: S) {
+/// Checks that a clock asked to count in the other unit than its route gave the connection counts in the unit asked.
+pub fn timestamp_clock_in_the_other_unit_counts_in_it<S: TcpSockets>(sockets: S) {
     for (address, unit) in [
         (ipv4_loopback(), TcpTimestampUnit::Microseconds),
         (
@@ -4366,10 +4421,9 @@ pub fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused<S: TcpSocket
             TcpTimestampUnit::Milliseconds,
         ),
     ] {
-        match clock_run(&sockets, address, unit) {
-            Ok(run) => assert_counts_in(unit, run),
-            Err(error) => assert_eq!(error, HostError::NotSupported, "{unit:?}"),
-        }
+        let run = clock_run(&sockets, address, unit)
+            .unwrap_or_else(|error| panic!("{unit:?}: {error:?}"));
+        assert_counts_in(unit, run);
     }
 }
 
@@ -4983,13 +5037,17 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
         TcpSetting::Packet(IpPacketSetting::UnicastInterface(Some(interface))),
         TcpSetting::Packet(IpPacketSetting::UnicastInterface(None)),
         TcpSetting::Packet(IpPacketSetting::RouteScope(RouteScope::Universe)),
-        TcpSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
-        TcpSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
-        TcpSetting::Port(PortSetting::NonlocalAddresses(NonlocalAddresses::Bindable)),
-        TcpSetting::Port(PortSetting::NonlocalAddresses(NonlocalAddresses::Refused)),
-        TcpSetting::Port(PortSetting::BoundInterface(Some(interface))),
-        TcpSetting::Port(PortSetting::BoundInterface(None)),
-        TcpSetting::Port(PortSetting::IncomingProcessor(None)),
+        TcpSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared)),
+        TcpSetting::Binding(BindingSetting::PortSharing(PortSharing::Shared)),
+        TcpSetting::Binding(BindingSetting::NonlocalAddresses(
+            NonlocalAddresses::Bindable,
+        )),
+        TcpSetting::Binding(BindingSetting::NonlocalAddresses(
+            NonlocalAddresses::Refused,
+        )),
+        TcpSetting::Binding(BindingSetting::BoundInterface(Some(interface))),
+        TcpSetting::Binding(BindingSetting::BoundInterface(None)),
+        TcpSetting::Binding(BindingSetting::IncomingProcessor(None)),
         TcpSetting::BufferLocks(BufferLocks {
             send: BufferTuning::Locked,
             receive: BufferTuning::Automatic,
@@ -5341,8 +5399,8 @@ pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(soc
             TcpAuthenticationKeyUse::Stored,
         ),
         TcpSetting::InitialAuthenticationCounters(AUTHENTICATION_COUNTERS),
-        TcpSetting::Port(PortSetting::GroupFilter(Some(SocketFilter(&ACCEPT_ALL)))),
-        TcpSetting::Port(PortSetting::GroupFilter(None)),
+        TcpSetting::Binding(BindingSetting::GroupFilter(Some(SocketFilter(&ACCEPT_ALL)))),
+        TcpSetting::Binding(BindingSetting::GroupFilter(None)),
         TcpSetting::Ip(IpSocketSetting::MulticastV4(MulticastGroup {
             group: MULTICAST_V4,
             interface: Some(interface),
@@ -5519,6 +5577,21 @@ fn observed<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> Observed 
     }
 }
 
+/// The ECN byte counts of a connection that counted none.
+const NO_ECN_BYTES: EcnByteCounts = EcnByteCounts {
+    capable_transport_1: ByteTotal(u64::MIN),
+    capable_transport_0: ByteTotal(u64::MIN),
+    congestion_experienced: ByteTotal(u64::MIN),
+};
+
+/// The Accurate ECN failures of a connection that met none.
+const NO_ACCURATE_ECN_FAILURES: AccurateEcnFailures = AccurateEcnFailures {
+    ace_field_sending: false,
+    ace_field_receiving: false,
+    option_sending: false,
+    option_receiving: false,
+};
+
 /// What part of the first round trip measured RFC 6298's first variance estimate is.
 ///
 /// https://www.rfc-editor.org/rfc/rfc6298#section-2
@@ -5526,10 +5599,17 @@ const ROUND_TRIP_VARIANCE_SHARE: u128 = 2;
 
 /// Checks that a connection's information reads its state and what it carried, each end agreeing with the other.
 ///
-/// The window scales and options each end negotiated, the bytes sent, acknowledged and received, and the states a
-/// shutdown leads to; a listener reads as listening.
+/// The window scales, windows and options each end negotiated, the bytes and segments sent, acknowledged and received,
+/// the timers, the times since each end last sent and received, and the states a shutdown leads to.
 pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
-    let pair = pair(&sockets);
+    // A small receive buffer on the client's side, so that its window and the server's differ.
+    let pair = pair_with(
+        &sockets,
+        &[TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(
+            SMALL_RECEIVE_BUFFER,
+        )))],
+        &[],
+    );
     let (client, server) = (
         information(&sockets, &pair.client),
         information(&sockets, &pair.server),
@@ -5552,6 +5632,18 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         client.options.selective_acknowledgements,
         server.options.selective_acknowledgements
     );
+    assert_eq!(client.options.window_scaling, server.options.window_scaling);
+    // Neither end asked for fast open.
+    for end in [&client, &server] {
+        assert_eq!(
+            end.fast_open_client_failure,
+            TcpFastOpenClientFailure::Unspecified
+        );
+        assert!(
+            !end.options.synchronize_data_acknowledged && !end.options.fast_open_child,
+            "{end:?}"
+        );
+    }
     let bytes = pattern(TRANSFER);
     assert_eq!(
         transfer(&sockets, &pair.client, &pair.server, &bytes),
@@ -5582,7 +5674,129 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         "{received:?}"
     );
     assert!(sent.segments_out.0 >= sent.data_segments_out.0);
-    assert!(received.since_last_data_received < DEADLINE);
+    assert!(received.segments_in.0 >= received.data_segments_in.0);
+    // Every segment one end received the other sent, but the SYN-ACK, which the listener may count as its own.
+    assert!(
+        sent.segments_in.0 <= received.segments_out.0 + u64::from(true)
+            && received.segments_in.0 <= sent.segments_out.0,
+        "{sent:?} {received:?}"
+    );
+    // Each end's send window is the window the other offered last, the client's the smaller.
+    assert_eq!(
+        (sent.send_window, sent.receive_window),
+        (received.receive_window, received.send_window)
+    );
+    assert!(
+        sent.receive_window.0 < received.receive_window.0,
+        "{sent:?} {received:?}"
+    );
+    // RFC 6298 keeps the retransmission timeout above the round trip, and RFC 1122 delays an acknowledgement less.
+    for end in [&sent, &received] {
+        assert!(
+            end.retransmission_timeout > end.round_trip_time
+                && end.retransmission_timeout > end.acknowledgement_timeout,
+            "{end:?}"
+        );
+    }
+    assert!(
+        received.acknowledgement_timeout > Duration::ZERO,
+        "{received:?}"
+    );
+    // Nothing is outstanding once everything is acknowledged.
+    assert_eq!(
+        (sent.retransmits, sent.backoff, sent.probes),
+        (
+            RetryCount(u8::MIN),
+            RetryCount(u8::MIN),
+            ProbeCount(u8::MIN)
+        ),
+        "{sent:?}"
+    );
+    assert_eq!(
+        [
+            sent.lost,
+            sent.retransmitted,
+            sent.selectively_acknowledged,
+            sent.forward_acknowledged,
+        ],
+        [SegmentCount(u64::MIN); 4],
+        "{sent:?}"
+    );
+    // A transfer that needed no retransmission counts no timeout, and its receiver nothing out of order.
+    if sent.total_retransmissions == SegmentCount(u64::MIN) {
+        assert_eq!(
+            (sent.bytes_retransmitted, received.received_out_of_order),
+            (ByteTotal(u64::MIN), SegmentCount(u64::MIN)),
+            "{sent:?} {received:?}"
+        );
+        assert_eq!(
+            (
+                sent.retransmission_timeouts,
+                sent.retransmission_timeout_recoveries,
+                sent.in_retransmission_timeout_recovery
+            ),
+            (EventCount(u32::MIN), EventCount(u32::MIN), Duration::ZERO)
+        );
+    }
+    // The sender's segments are within what the receiver offered, and the receiver sizes its own by them.
+    assert!(
+        sent.send_maximum_segment_size.0 <= received.advertised_maximum_segment_size.0,
+        "{sent:?} {received:?}"
+    );
+    assert_eq!(
+        received.receive_maximum_segment_size,
+        sent.send_maximum_segment_size
+    );
+    // The receiver measured its own round trip and grew its receive space and threshold over the transfer.
+    assert!(
+        received.receive_round_trip_time > Duration::ZERO
+            && received.receive_round_trip_time < SETTLE,
+        "{received:?}"
+    );
+    assert!(received.receive_space.0 > usize::MIN, "{received:?}");
+    assert!(
+        received.receive_slow_start_threshold.0 > u32::MIN,
+        "{received:?}"
+    );
+    assert!(sent.reordering.0 > u64::MIN, "{sent:?}");
+    assert!(sent.maximum_pacing_rate.0 >= sent.pacing_rate.0, "{sent:?}");
+    // The sender's data went out before the settle and acknowledgements came after it; the server sent no data.
+    assert!(sent.since_last_data_sent >= SETTLE / 2, "{sent:?}");
+    assert!(
+        sent.since_last_acknowledgement_received <= sent.since_last_data_sent
+            && sent.since_last_data_received >= sent.since_last_data_sent,
+        "{sent:?}"
+    );
+    assert!(
+        received.since_last_data_received < DEADLINE
+            && received.since_last_data_sent >= received.since_last_data_received,
+        "{received:?}"
+    );
+    // The receiver acknowledged the last data after it came.
+    assert!(
+        received.since_last_acknowledgement_sent <= received.since_last_data_received,
+        "{received:?}"
+    );
+    // Without ECN there is no Accurate ECN to count.
+    if !sent.options.explicit_congestion_notification {
+        for end in [&sent, &received] {
+            assert_eq!(
+                (
+                    end.delivered_ecn_bytes,
+                    end.received_ecn_bytes,
+                    end.accurate_ecn_failures,
+                    end.accurate_ecn_option_seen
+                ),
+                (
+                    NO_ECN_BYTES,
+                    NO_ECN_BYTES,
+                    NO_ACCURATE_ECN_FAILURES,
+                    AccurateEcnOptionSeen::NotSeen
+                ),
+                "{end:?}"
+            );
+        }
+    }
     sockets
         .shut_down(&pair.server, TcpShutdown::Write)
         .expect("shut down");
@@ -5643,6 +5857,17 @@ pub fn congestion_control_state_names_the_algorithm<S: TcpSockets>(sockets: S) {
             ) => {
                 assert!(enabled, "{information:?}");
                 assert!(alpha.0 <= DATA_CENTER_FRACTION_WHOLE, "{information:?}");
+                // DCTCP needs ECN, so both ends negotiated it, and the server saw it on the data.
+                let (client, server) = (
+                    self::information(&sockets, &pair.client).options,
+                    self::information(&sockets, &pair.server).options,
+                );
+                assert!(
+                    client.explicit_congestion_notification
+                        && server.explicit_congestion_notification
+                        && server.explicit_congestion_notification_seen,
+                    "{client:?} {server:?}"
+                );
             }
             (
                 VEGAS,
@@ -5761,14 +5986,12 @@ const LARGER_BUFFER: usize = 4;
 /// Checks that the tuned values follow the settings given: buffers at least as asked, the low water and clamp as asked.
 ///
 /// The segment size within the one given before connect, quick acknowledgement as last set, a path MTU loopback
-/// carries; a listener reads its own.
+/// carries; each buffer set larger than the other reads larger, on a connection and a listener.
 pub fn tuned_values_follow_the_settings<S: TcpSockets>(sockets: S) {
     let pair = pair_with(
         &sockets,
         &[TcpSetting::MaximumSegmentSize(Some(SEGMENT))],
-        &[TcpListenerSetting::Socket(TcpSetting::Ip(
-            IpSocketSetting::SendBuffer(ByteCount(SETTING_BYTES)),
-        ))],
+        &[],
     );
     let clamp = WindowSize(SETTING_BYTES as u32);
     // Larger than the send buffer doubled, so that a receive buffer read from the send buffer is seen.
@@ -5800,13 +6023,46 @@ pub fn tuned_values_follow_the_settings<S: TcpSockets>(sockets: S) {
         )
         .expect("quick acknowledgement off");
     assert!(!tuned(&sockets, &pair.client).quick_acknowledgement);
-    match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Tuned) {
-        Ok(TcpReading::Tuned(listener)) => {
-            assert!(listener.send_buffer.0 >= SETTING_BYTES, "{listener:?}")
+    // Now the send buffer above the receive buffer, so that a send buffer read from the receive buffer is seen.
+    let send_buffer = SETTING_BYTES * LARGER_BUFFER;
+    for setting in [
+        TcpSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(send_buffer))),
+        TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(SETTING_BYTES))),
+    ] {
+        sockets
+            .configure(&pair.client, setting.clone())
+            .unwrap_or_else(|error| panic!("{setting:?}: {error:?}"));
+    }
+    let read = tuned(&sockets, &pair.client);
+    assert!(read.send_buffer.0 >= send_buffer, "{read:?}");
+    assert!(
+        (SETTING_BYTES..send_buffer).contains(&read.receive_buffer.0),
+        "{read:?}"
+    );
+    close(&sockets, pair);
+    let (listener, _) = listen(
+        &sockets,
+        ipv4_loopback(),
+        &[
+            TcpListenerSetting::Socket(TcpSetting::Ip(IpSocketSetting::SendBuffer(ByteCount(
+                send_buffer,
+            )))),
+            TcpListenerSetting::Socket(TcpSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(
+                SETTING_BYTES,
+            )))),
+        ],
+    );
+    match sockets.read_listener_state(&listener, TcpListenerQuery::Tuned) {
+        Ok(TcpReading::Tuned(read)) => {
+            assert!(read.send_buffer.0 >= send_buffer, "{read:?}");
+            assert!(
+                (SETTING_BYTES..send_buffer).contains(&read.receive_buffer.0),
+                "{read:?}"
+            );
         }
         other => panic!("the listener's tuned values read {other:?}"),
     }
-    close(&sockets, pair);
+    sockets.stop_listening(listener);
 }
 
 /// Checks that the timestamp clock reads in the unit of its route and advances as time does, between two readings.
@@ -5918,6 +6174,15 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
         original.window.receive_window.0 < original.window.send_window.0,
         "{original:?}"
     );
+    // The client last offered its window having received everything, and the peer's last window came with its reply.
+    assert_eq!(
+        original.window.receive_update_sequence,
+        original.receive_sequence
+    );
+    assert_eq!(
+        original.window.send_update_sequence,
+        TcpSequenceNumber(original.receive_sequence.0.wrapping_sub(REPLY.len() as u32))
+    );
     assert_eq!(original.authentication, None);
     sockets
         .configure(&pair.server, TcpSetting::Repair(TcpRepair::Off))
@@ -5947,7 +6212,7 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
             },
             local,
             &[
-                TcpSetting::Port(PortSetting::AddressSharing(AddressSharing::Shared)),
+                TcpSetting::Binding(BindingSetting::AddressSharing(AddressSharing::Shared)),
                 TcpSetting::Repair(TcpRepair::On),
                 TcpSetting::RepairQueue(TcpRepairQueue::Send),
                 TcpSetting::QueueSequence(original.send_sequence),
@@ -5960,9 +6225,14 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
         .expect("connect in repair mode");
     assert_eq!(restored.start, TcpConnectStart::EstablishedForRepair);
     let restored = restored.connection;
+    // A largest window above the send window, so that the two are told apart.
+    let window = TcpRepairWindow {
+        maximum_window: WindowSize(original.window.send_window.0 * 2),
+        ..original.window
+    };
     for setting in [
         TcpSetting::RepairOptions(&repair_options),
-        TcpSetting::RepairWindow(original.window),
+        TcpSetting::RepairWindow(window),
     ] {
         sockets
             .configure(&restored, setting.clone())
@@ -5982,6 +6252,7 @@ pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(
     assert_eq!(
         repair_state(&sockets, &restored),
         Ok(TcpRepairState {
+            window,
             authentication: None,
             ..original
         })
@@ -6215,10 +6486,8 @@ pub fn authentication_repair_values_are_read_and_written<S: TcpSockets>(sockets:
     sockets.stop_listening(pair.listener);
 }
 
-/// Checks that a multipath connection's state reads what it carried, its data sequence numbers agreeing with its peer's.
-///
-/// Its first subflow reads the connection's addresses and none follows it; a TCP connection has no multipath state.
-pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
+/// Makes a multipath connection to a multipath listener on IPv4 loopback, giving the client's address too, watched from the listener's.
+fn multipath_pair<S: TcpSockets>(sockets: &S) -> (Pair<S>, SocketAddr, Capture) {
     let listening = sockets
         .listen(
             TcpProtocol::Multipath,
@@ -6228,6 +6497,7 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
             &[],
         )
         .expect("listen");
+    let capture = Capture::start(listening.local);
     let connected = sockets
         .connect(
             TcpProtocol::Multipath,
@@ -6238,19 +6508,53 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
             TcpFastOpen::Off,
         )
         .expect("connect");
-    let server = accept(&sockets, &listening.listener);
+    let server = accept(sockets, &listening.listener);
     let pair = Pair {
         listener: listening.listener,
         local: listening.local,
         client: connected.connection,
         server,
     };
+    (pair, connected.local, capture)
+}
+
+/// Checks that a multipath connection's state reads what it carried, its data sequence numbers agreeing with its peer's.
+///
+/// Its counts within their limits, checksums as the handshake asked, the times since each end last sent and received;
+/// its first subflow reads the connection's addresses and none follows it; a TCP connection has no multipath state.
+pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
+    let (pair, client_address, capture) = multipath_pair(&sockets);
+    let listener_address = pair.local;
     assert_carries_bytes(&sockets, &pair);
     std::thread::sleep(SETTLE);
     let (client, server) = (
         multipath(&sockets, &pair.client),
         multipath(&sockets, &pair.server),
     );
+    // Checksums are used when either end's MP_CAPABLE asks for them.
+    let asked = |to_listener: bool| {
+        capture
+            .first(|segment| segment.synchronize && segment.to_listener == to_listener)
+            .multipath_checksum
+            .expect("an MP_CAPABLE option in the handshake")
+    };
+    let checksums = asked(true) || asked(false);
+    assert_eq!((client.checksums, server.checksums), (checksums, checksums));
+    for end in [&client, &server] {
+        assert!(
+            end.extra_subflows.0 <= end.extra_subflows_limit.0
+                && end.addresses_signalled.0 <= end.signal_endpoints_limit.0
+                && end.addresses_accepted.0 <= end.accepted_addresses_limit.0
+                && end.local_addresses_used.0 <= end.subflow_endpoints_limit.0,
+            "{end:?}"
+        );
+        // Loopback lost nothing.
+        assert_eq!(
+            (end.retransmits, end.bytes_retransmitted),
+            (SegmentCount(u64::MIN), ByteTotal(u64::MIN)),
+            "{end:?}"
+        );
+    }
     assert!(
         !client.fell_back_to_tcp && !server.fell_back_to_tcp,
         "{client:?}"
@@ -6282,8 +6586,10 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
         Ok(TcpReading::MultipathSubflow(Some(subflow))) => {
             assert_eq!(
                 (subflow.local, subflow.peer),
-                (connected.local, listening.local)
+                (client_address, listener_address)
             );
+            // Linux numbers a connection's subflows from 1.
+            assert_ne!(subflow.identifier, MultipathSubflowIdentifier(u32::MIN));
             // The one subflow carried every byte, as the connection's own information reads.
             let carried = subflow.information;
             assert_eq!(carried.state, TcpState::Established);
@@ -6311,6 +6617,22 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
         ),
         Ok(TcpReading::MultipathSubflow(None))
     );
+    // A second reply, a settle after the first exchange, is the last data either end carried.
+    send_all(&sockets, &pair.server, plain(), REPLY);
+    assert_eq!(receive_up_to(&sockets, &pair.client, REPLY.len()), REPLY);
+    let (client, server) = (
+        multipath(&sockets, &pair.client),
+        multipath(&sockets, &pair.server),
+    );
+    assert!(
+        client.since_last_data_received + SETTLE / 2 <= client.since_last_data_sent
+            && client.since_last_acknowledgement_received <= client.since_last_data_sent,
+        "{client:?}"
+    );
+    assert!(
+        server.since_last_data_sent + SETTLE / 2 <= server.since_last_data_received,
+        "{server:?}"
+    );
     close(&sockets, pair);
     let pair = self::pair(&sockets);
     assert!(
@@ -6326,6 +6648,76 @@ pub fn multipath_state_describes_the_connection<S: TcpSockets>(sockets: S) {
             )
             .is_err()
     );
+    close(&sockets, pair);
+}
+
+/// Checks that a multipath connection and listener answer what Linux keeps for a multipath socket, and refuse the rest.
+///
+/// Information, the queues, the congestion control and the listener's state read as on TCP; the tuned values, the clock,
+/// repair, authentication and the last header, which Linux keeps for TCP alone, read or are refused.
+pub fn multipath_connection_answers_every_query<S: TcpSockets>(sockets: S) {
+    let (pair, _, _capture) = multipath_pair(&sockets);
+    assert_carries_bytes(&sockets, &pair);
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    wait_for_unread(&sockets, &pair.server, MESSAGE.len());
+    std::thread::sleep(SETTLE);
+    for end in [&pair.client, &pair.server] {
+        assert_eq!(information(&sockets, end).state, TcpState::Established);
+    }
+    assert_eq!(
+        queues(&sockets, &pair.server),
+        TcpQueues {
+            unread: ByteCount(MESSAGE.len()),
+            unacknowledged: NO_BYTES,
+            unsent: NO_BYTES,
+            urgent_mark: UrgentMark::NotReached,
+        }
+    );
+    let mut room = [u8::MIN; HEADER_ROOM];
+    match sockets.read_state(&pair.client, TcpQuery::CongestionControl(&mut room)) {
+        Ok(TcpReading::CongestionControl { name, .. }) => assert!(!name.is_empty()),
+        other => panic!("the congestion control read {other:?}"),
+    }
+    match sockets.read_state(&pair.client, TcpQuery::Tuned) {
+        Ok(TcpReading::Tuned(read)) => assert!(read.send_buffer.0 > usize::MIN, "{read:?}"),
+        Err(error) => assert_eq!(error, HostError::NotSupported),
+        other => panic!("the tuned values read {other:?}"),
+    }
+    // Linux keeps these for TCP alone, so each is either read as the kind asked or refused.
+    let mut room = [u8::MIN; HEADER_ROOM];
+    for (query, outcome) in [
+        (
+            "timestamp",
+            sockets.read_state(&pair.client, TcpQuery::Timestamp),
+        ),
+        ("repair", sockets.read_state(&pair.client, TcpQuery::Repair)),
+        (
+            "authentication",
+            sockets.read_state(&pair.client, TcpQuery::Authentication),
+        ),
+        (
+            "last header",
+            sockets.read_state(&pair.client, TcpQuery::LastReceivedHeader(&mut room)),
+        ),
+    ] {
+        match outcome {
+            Ok(TcpReading::Timestamp(_))
+            | Ok(TcpReading::Repair(_))
+            | Ok(TcpReading::Authentication(_))
+            | Ok(TcpReading::LastReceivedHeader { .. })
+            | Err(_) => {}
+            other => panic!("{query} read {other:?}"),
+        }
+    }
+    match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Information) {
+        Ok(TcpReading::Information(read)) => assert_eq!(read.state, TcpState::Listen),
+        other => panic!("the listener's information read {other:?}"),
+    }
+    match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Tuned) {
+        Ok(TcpReading::Tuned(read)) => assert!(read.send_buffer.0 > usize::MIN, "{read:?}"),
+        Err(error) => assert_eq!(error, HostError::NotSupported),
+        other => panic!("the listener's tuned values read {other:?}"),
+    }
     close(&sockets, pair);
 }
 
@@ -6418,7 +6810,7 @@ pub fn incoming_processor_is_read_as_received_or_set<S: TcpSockets>(sockets: S) 
         sockets
             .configure(
                 &listener,
-                TcpListenerSetting::Socket(TcpSetting::Port(PortSetting::IncomingProcessor(
+                TcpListenerSetting::Socket(TcpSetting::Binding(BindingSetting::IncomingProcessor(
                     processor,
                 ))),
             )
@@ -6661,8 +7053,11 @@ pub fn waits_on_many_connections_each_wake_once<S: TcpSockets>(sockets: S) {
             woken_within(counter, ONE_WAKE, DEADLINE),
             "wait {index} was not woken"
         );
-        let facts = poll_once(wait.as_mut(), waker);
-        assert!(matches!(facts, Poll::Ready(Ok(facts)) if facts.contains(ReadyFor::READABLE)));
+        let report = poll_once(wait.as_mut(), waker);
+        assert!(
+            matches!(report, Poll::Ready(Ok(report)) if report.ready_for.contains(ReadyFor::READABLE)),
+            "{report:?}"
+        );
     }
     std::thread::sleep(SETTLE);
     for (index, (_, counter, _)) in waits.iter().enumerate() {
@@ -6706,8 +7101,8 @@ pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
                 Err(error) => panic!("receive: {error:?}"),
             }
         }
-        let facts = finish(wait, &counter, &waker).expect("wait for room");
-        assert!(facts.contains(ReadyFor::WRITABLE), "{facts:?}");
+        let report = finish(wait, &counter, &waker).expect("wait for room");
+        assert!(report.ready_for.contains(ReadyFor::WRITABLE), "{report:?}");
     }
     close(&sockets, pair);
 }
@@ -6718,7 +7113,7 @@ fn wait_finishes_when_the_peer_acts<S: TcpSockets>(
     interest: ReadyFor,
     own: impl FnOnce(&S, &S::Connection),
     act: impl FnOnce(&S, &S::Connection),
-    given: impl Fn(ReadyFor) -> bool,
+    given: impl Fn(ReadinessReport) -> bool,
 ) {
     let pair = pair(sockets);
     own(sockets, &pair.server);
@@ -6736,8 +7131,8 @@ fn wait_finishes_when_the_peer_acts<S: TcpSockets>(
             woken_within(&counter, ONE_WAKE, DEADLINE),
             "not woken when the peer acted"
         );
-        let facts = finish(wait, &counter, &waker).expect("wait");
-        assert!(given(facts), "{facts:?}");
+        let report = finish(wait, &counter, &waker).expect("wait");
+        assert!(given(report), "{report:?}");
     }
     close(sockets, pair);
 }
@@ -6749,7 +7144,7 @@ pub fn wait_for_urgent_data_finishes_when_it_arrives<S: TcpSockets>(sockets: S) 
         ReadyFor::URGENT_DATA,
         |_, _| {},
         |sockets, client| send_all(sockets, client, urgent(), URGENT),
-        |facts| facts.contains(ReadyFor::URGENT_DATA),
+        |report| report.ready_for.contains(ReadyFor::URGENT_DATA),
     );
 }
 
@@ -6764,13 +7159,14 @@ pub fn wait_for_the_peers_shutdown_finishes_when_it_comes<S: TcpSockets>(sockets
                 .shut_down(client, TcpShutdown::Write)
                 .expect("shut down");
         },
-        |facts| {
-            facts.contains(ReadyFor::PEER_FINISHED_SENDING) && !facts.contains(ReadyFor::HANG_UP)
+        |report| {
+            report.ready_for.contains(ReadyFor::PEER_FINISHED_SENDING)
+                && report.unconditional.is_empty()
         },
     );
 }
 
-/// Checks that a wait for a hang-up finishes, with no error, when the peer shuts down writing after this end has.
+/// Checks that a wait that asks for nothing finishes with a hang-up and no error when the peer shuts down writing after this end has.
 pub fn wait_for_a_hang_up_finishes_when_both_ways_are_shut<S: TcpSockets>(sockets: S) {
     let shut_down_writing = |sockets: &S, connection: &S::Connection| {
         sockets
@@ -6779,15 +7175,19 @@ pub fn wait_for_a_hang_up_finishes_when_both_ways_are_shut<S: TcpSockets>(socket
     };
     wait_finishes_when_the_peer_acts(
         &sockets,
-        ReadyFor::HANG_UP,
+        ReadyFor::empty(),
         shut_down_writing,
         shut_down_writing,
-        |facts| facts.contains(ReadyFor::HANG_UP) && !facts.contains(ReadyFor::ERROR),
+        |report| report.unconditional == UnconditionalEvents::HANG_UP,
     );
 }
 
-/// Gives the facts a wait on the handle gives once it finishes.
-fn facts_once_ready<R: Readiness<H>, H>(readiness: &R, handle: &H, interest: ReadyFor) -> ReadyFor {
+/// Gives the report a wait on the handle gives once it finishes.
+fn facts_once_ready<R: Readiness<H>, H>(
+    readiness: &R,
+    handle: &H,
+    interest: ReadyFor,
+) -> ReadinessReport {
     let (counter, waker) = counting_waker();
     finish(
         pin!(readiness.wait_until_ready(handle, interest)),
@@ -6797,21 +7197,38 @@ fn facts_once_ready<R: Readiness<H>, H>(readiness: &R, handle: &H, interest: Rea
     .expect("wait")
 }
 
+/// A report of the facts and unconditional events given.
+fn report(ready_for: ReadyFor, unconditional: UnconditionalEvents) -> ReadinessReport {
+    ReadinessReport {
+        ready_for,
+        unconditional,
+    }
+}
+
 /// Checks that a wait for every fact gives exactly the facts the connection has, in each state that brings a different set.
 pub fn a_wait_gives_the_facts_the_connection_has_and_no_others<S: TcpSockets>(sockets: S) {
+    let none = UnconditionalEvents::empty();
     let every =
         |connection: &S::Connection| facts_once_ready(&sockets, connection, ReadyFor::all());
     let readable_and_writable = ReadyFor::READABLE | ReadyFor::WRITABLE;
     let data = pair(&sockets);
-    assert_eq!(every(&data.server), ReadyFor::WRITABLE, "nothing to read");
+    assert_eq!(
+        every(&data.server),
+        report(ReadyFor::WRITABLE, none),
+        "nothing to read"
+    );
     send_all(&sockets, &data.client, plain(), MESSAGE);
     facts_once_ready(&sockets, &data.server, ReadyFor::READABLE);
-    assert_eq!(every(&data.server), readable_and_writable, "data to read");
+    assert_eq!(
+        every(&data.server),
+        report(readable_and_writable, none),
+        "data to read"
+    );
     send_all(&sockets, &data.client, urgent(), URGENT);
     facts_once_ready(&sockets, &data.server, ReadyFor::URGENT_DATA);
     assert_eq!(
         every(&data.server),
-        readable_and_writable | ReadyFor::URGENT_DATA,
+        report(readable_and_writable | ReadyFor::URGENT_DATA, none),
         "urgent data behind data"
     );
     close(&sockets, data);
@@ -6823,26 +7240,32 @@ pub fn a_wait_gives_the_facts_the_connection_has_and_no_others<S: TcpSockets>(so
     facts_once_ready(&sockets, &shut.server, ReadyFor::PEER_FINISHED_SENDING);
     assert_eq!(
         every(&shut.server),
-        readable_and_writable | ReadyFor::PEER_FINISHED_SENDING,
+        report(
+            readable_and_writable | ReadyFor::PEER_FINISHED_SENDING,
+            none
+        ),
         "the peer finished sending"
     );
     sockets
         .shut_down(&shut.server, TcpShutdown::Write)
         .expect("shut down");
-    facts_once_ready(&sockets, &shut.client, ReadyFor::HANG_UP);
+    facts_once_ready(&sockets, &shut.client, ReadyFor::empty());
     assert_eq!(
         every(&shut.client),
-        readable_and_writable | ReadyFor::PEER_FINISHED_SENDING | ReadyFor::HANG_UP,
+        report(
+            readable_and_writable | ReadyFor::PEER_FINISHED_SENDING,
+            UnconditionalEvents::HANG_UP
+        ),
         "both ways shut"
     );
     close(&sockets, shut);
 
     let reported = pair(&sockets);
     send_all(&sockets, &reported.client, software_reported(), MESSAGE);
-    facts_once_ready(&sockets, &reported.client, ReadyFor::ERROR);
+    facts_once_ready(&sockets, &reported.client, ReadyFor::empty());
     assert_eq!(
         every(&reported.client),
-        ReadyFor::WRITABLE | ReadyFor::ERROR,
+        report(ReadyFor::WRITABLE, UnconditionalEvents::ERROR),
         "a transmit report queued"
     );
     assert_eq!(
@@ -6881,29 +7304,30 @@ pub fn a_wait_gives_the_facts_the_listener_has_and_no_others<S: TcpSockets>(sock
     facts_once_ready(&sockets, &listener, ReadyFor::READABLE);
     assert_eq!(
         facts_once_ready(&sockets, &listener, ReadyFor::all()),
-        ReadyFor::READABLE,
+        report(ReadyFor::READABLE, UnconditionalEvents::empty()),
         "a connection to accept"
     );
     sockets.close(client, TcpClose::Orderly);
     sockets.stop_listening(listener);
 }
 
-/// Checks that a wait for an error finishes when the peer resets the connection, and gives the error with the hang-up.
+/// Checks that a wait that asks for nothing finishes when the peer resets the connection, and gives the error with the hang-up.
 pub fn wait_for_an_error_finishes_when_the_peer_resets<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let (counter, waker) = counting_waker();
     {
-        let mut wait = pin!(sockets.wait_until_ready(&pair.client, ReadyFor::ERROR));
+        let mut wait = pin!(sockets.wait_until_ready(&pair.client, ReadyFor::empty()));
         assert!(poll_once(wait.as_mut(), &waker).is_pending());
         assert!(
             !woken_within(&counter, ONE_WAKE, SETTLE),
             "woken before the reset"
         );
         sockets.close(pair.server, TcpClose::Abort);
-        let facts = finish(wait, &counter, &waker).expect("wait across the reset");
-        assert!(
-            facts.contains(ReadyFor::ERROR | ReadyFor::HANG_UP),
-            "{facts:?}"
+        let report = finish(wait, &counter, &waker).expect("wait across the reset");
+        assert_eq!(
+            report.unconditional,
+            UnconditionalEvents::all(),
+            "{report:?}"
         );
     }
     sockets.close(pair.client, TcpClose::Orderly);
@@ -7285,8 +7709,8 @@ macro_rules! tests {
         }
 
         #[test]
-        fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused() {
-            $crate::timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused($value);
+        fn timestamp_clock_in_the_other_unit_counts_in_it() {
+            $crate::timestamp_clock_in_the_other_unit_counts_in_it($value);
         }
 
         #[test]
@@ -7377,6 +7801,11 @@ macro_rules! tests {
         #[test]
         fn multipath_state_describes_the_connection() {
             $crate::multipath_state_describes_the_connection($value);
+        }
+
+        #[test]
+        fn multipath_connection_answers_every_query() {
+            $crate::multipath_connection_answers_every_query($value);
         }
 
         #[test]

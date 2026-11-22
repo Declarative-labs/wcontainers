@@ -38,7 +38,7 @@ use wcontainers_internet_protocol_linux_socket_options::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::{
     TcpAuthenticationCounters, TcpAuthenticationIcmpErrors, TcpAuthenticationKeyAddition,
     TcpAuthenticationKeyIdentity, TcpAuthenticationKeyRemoval, TcpAuthenticationKeyUse,
@@ -140,7 +140,8 @@ const CUT_REPORT_PACKET: &str = "a transmit report's packet was cut to the buffe
 const NO_STATISTICS: &str = "a transmit report came without the statistics its send asked for";
 const CUT_CONTROL: &str = "the control messages of a receive or an error queue entry did not fit";
 const UNASKED_REPORT: &str = "a transmit report for no send that asked for it";
-const CLOCK_UNIT_OF_THE_ROUTE: &str = "a TCP timestamp clock counts in the unit its route gives (the tcp_usec_ts route feature), which Linux cannot change";
+const NO_MICROSECOND_CLOCK: &str =
+    "the host's TCP timestamp clock counts only milliseconds (Linux before 6.7 has no tcp_usec_ts)";
 const FLOW_LABEL_FIXED_AT_CONNECT: &str = "Linux fixes a TCP socket's IPv6 flow label only as it connects: a listener, an accepted connection or a connected one takes no other";
 
 impl HostTcpSockets {
@@ -986,7 +987,9 @@ impl HostTcpSockets {
             TcpSetting::Packet(ref packet) => {
                 options::set_packet_setting(socket, family, packet, &self.shortfalls)
             }
-            TcpSetting::Port(ref port) => options::set_port_setting(socket, family, port),
+            TcpSetting::Binding(ref binding) => {
+                options::set_binding_setting(socket, family, binding)
+            }
             TcpSetting::BufferLocks(locks) => {
                 let mut value = u32::MIN;
                 if locks.send == BufferTuning::Locked {
@@ -1823,7 +1826,7 @@ impl TcpConnections for HostTcpSockets {
                 );
                 state::last_received_header(socket, peer, into, &self.shortfalls)
             }
-            TcpQuery::Queues => state::queues(socket).map(TcpReading::Queues),
+            TcpQuery::Queues => state::queues(socket, &self.shortfalls).map(TcpReading::Queues),
             TcpQuery::Repair => state::repair_state(socket).map(TcpReading::Repair),
             TcpQuery::Multipath => {
                 state::multipath(socket, &self.shortfalls).map(TcpReading::Multipath)
@@ -2038,25 +2041,33 @@ impl HostTcpSockets {
         }
     }
 
-    /// Sets the clock, which counts in the unit its route gave the socket (`tcp_usec_ts`): Linux cannot change it.
+    /// Sets the clock's value and, from the value's low bit, the unit it counts in from now on, as Linux 6.7 and later do.
+    ///
+    /// An older kernel counts milliseconds whatever the bit: a clock asked for microseconds there is put back and refused.
     fn set_timestamp_clock(
         &self,
         socket: BorrowedFd<'_>,
         reading: TcpTimestampClock,
     ) -> Result<(), HostError> {
-        let information: uapi::tcp_info =
-            options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?;
-        let microseconds = u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS != 0;
-        if microseconds != (reading.unit == TcpTimestampUnit::Microseconds) {
-            return Err(self.shortfalls.refuse(CLOCK_UNIT_OF_THE_ROUTE));
-        }
+        let microseconds = reading.unit == TcpTimestampUnit::Microseconds;
         let unit = if microseconds {
             TIMESTAMP_IN_MICROSECONDS
         } else {
             u32::MIN
         };
         let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit;
-        set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)
+        if !microseconds {
+            return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);
+        }
+        let before: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;
+        set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)?;
+        let information: uapi::tcp_info =
+            options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?;
+        if u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS == u32::MIN {
+            set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &before)?;
+            return Err(self.shortfalls.refuse(NO_MICROSECOND_CLOCK));
+        }
+        Ok(())
     }
 }
 
@@ -2219,7 +2230,7 @@ impl Readiness<HostTcpConnection> for HostTcpSockets {
         &self,
         connection: &HostTcpConnection,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         connection.socket.wait_until_ready(interest).await
     }
 }
@@ -2229,7 +2240,7 @@ impl Readiness<HostTcpListener> for HostTcpSockets {
         &self,
         listener: &HostTcpListener,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         listener.socket.wait_until_ready(interest).await
     }
 }
@@ -2488,7 +2499,7 @@ mod tests {
             )
             .expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
-        wait(&sockets, &client, ReadyFor::ERROR, &waker);
+        wait(&sockets, &client, ReadyFor::empty(), &waker);
         sockets
             .discard_error_queue_entries(&client)
             .expect("discard");

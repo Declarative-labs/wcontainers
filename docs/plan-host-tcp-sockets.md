@@ -3,7 +3,7 @@
 ## What it is
 - Crate `crates/tcp-sockets/implementation/host`, package `wcontainers-tcp-sockets-host`, type
   `HostTcpSockets`. It implements `TcpSockets` (and so `TcpConnections`, `TcpListeners`,
-  `Configurable` for both setting types and `NegativeRouteAdvice`) with real Linux TCP and MPTCP sockets of the
+  `Configurable` for both setting types and `NegativeRouteAdvisable`) with real Linux TCP and MPTCP sockets of the
   machine it runs on, the exit node. It builds on every unix system: implementation.rs holds the three exported
   types (their Linux-only fields under `cfg`), linux.rs every call, request and setting on Linux, and portable.rs,
   elsewhere, what socket2 covers (connect, listen, accept, plain send and receive, shutdown, close, buffers,
@@ -61,7 +61,8 @@
   with `OPT_TSONLY` off, its statistics from `OPT_STATS`, wireless status from `SO_WIFI_STATUS`.
 - discard_error_queue_entries: `recvmsg(MSG_ERRQUEUE)` until `EAGAIN`, each entry read as the take reads it (its
   report forgotten) but with no packet counted as cut.
-- wait_until_ready (both `Readiness` impls): `poll` with no timeout, then the shared readiness (epoll).
+- wait_until_ready (both `Readiness` impls): `poll` with no timeout, then the shared readiness (epoll); `POLLERR`
+  and `POLLHUP` are the report's unconditional events and end every wait, the other bits its facts.
 - shut_down: `shutdown`. close: `SO_LINGER` of zero for an abort, then the descriptor closes. stop_listening:
   the descriptor closes.
 - push_queued_data: `TCP_NODELAY` set to its current value (`CorkAndNagle`) or `TCP_CORK` set to its current
@@ -74,8 +75,9 @@
   `TCP_REPAIR_OFF` sends: repair on, then off; it needs CAP_NET_ADMIN (EPERM without it). Leaving repair mode clears
   `SO_REUSEADDR` and the repair mode, so both are put back (with the repair queue) as they were.
 - give_negative_route_advice: `SO_CNX_ADVICE` set to one, which calls `dst_negative_advice`.
-- set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode). The unit is the one the route gave the
-  socket (`tcp_usec_ts`, read from `TCP_INFO`'s `TCPI_OPT_USEC_TS`): Linux cannot change it, so the other unit is
+- set_timestamp_clock and the listener's: `TCP_TIMESTAMP` (repair mode), the unit in the value's low bit, which
+  Linux 6.7 and later take as the connection's unit (`tp->tcp_usec_ts = val & 1`); an older kernel keeps
+  milliseconds, so a microsecond clock that `TCP_INFO`'s `TCPI_OPT_USEC_TS` does not then show is put back and
   refused with a counted reason. set_authentication_counters and the
   listener's: `TCP_AO_INFO` with its counter flag.
 - read_state and read_listener_state (linux/state.rs), one source per query: Information `TCP_INFO` (linux-raw-sys's
@@ -180,7 +182,7 @@
   checkout's pinned nixpkgs (the machine's 6.1 does not know the feature).
 - `tests!` runs each function as its own test on a value made anew, then the suites of the traits the interface
   requires, as the layout writes them: `Configurable` on a connection and on a listener (`configured_connection`,
-  `configured_listener`), `NegativeRouteAdvice` (`advised_connection`) and `Readiness` (its bundles; see the status
+  `configured_listener`), `NegativeRouteAdvisable` (`advised_connection`) and `Readiness` (its bundles; see the status
   file for why they are not yet the layout's one line). The implementation runs it from its own conformance.rs.
 - The suite builds on every unix system and runs on Linux: only Linux has the packet socket the wire checks read.
 

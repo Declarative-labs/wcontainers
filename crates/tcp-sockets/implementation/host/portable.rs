@@ -9,15 +9,15 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    AddressSharing, BindAddress, ByteCount, DropCount, InterfaceIndex, IpSocketSetting, IpVersion,
-    Ipv6Families, LocalBinding, LocalPort, PacketMark, PacketPriority, PortSetting, PortSharing,
-    ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
+    AddressSharing, BindAddress, BindingSetting, ByteCount, DropCount, InterfaceIndex,
+    IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort, PacketMark, PacketPriority,
+    PortSharing, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
 };
 use wcontainers_internet_protocol_linux_socket_options::readiness::Watched;
 use wcontainers_internet_protocol_linux_socket_options::{host_error, io_host_error, sock};
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
-use wcontainers_readiness::{Readiness, ReadyFor};
+use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::TcpTimestampClock;
 use wcontainers_tcp_sockets::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
@@ -123,10 +123,10 @@ fn set(
             host.set_multicast_loop_v6(on)
         }
         TcpSetting::Ip(IpSocketSetting::MulticastLoopback(on)) => host.set_multicast_loop_v4(on),
-        TcpSetting::Port(PortSetting::AddressSharing(sharing)) => {
+        TcpSetting::Binding(BindingSetting::AddressSharing(sharing)) => {
             host.set_reuse_address(sharing == AddressSharing::Shared)
         }
-        TcpSetting::Port(PortSetting::PortSharing(sharing)) => {
+        TcpSetting::Binding(BindingSetting::PortSharing(sharing)) => {
             host.set_reuse_port(sharing == PortSharing::Shared)
         }
         TcpSetting::KeepAlive(on) => host.set_keepalive(on),
@@ -539,7 +539,7 @@ impl Readiness<HostTcpConnection> for HostTcpSockets {
         &self,
         connection: &HostTcpConnection,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         connection.socket.wait_until_ready(interest).await
     }
 }
@@ -549,7 +549,7 @@ impl Readiness<HostTcpListener> for HostTcpSockets {
         &self,
         listener: &HostTcpListener,
         interest: ReadyFor,
-    ) -> Result<ReadyFor, HostError> {
+    ) -> Result<ReadinessReport, HostError> {
         listener.socket.wait_until_ready(interest).await
     }
 }

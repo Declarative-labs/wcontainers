@@ -10,6 +10,7 @@ use libc::socklen_t;
 use linux_raw_sys::ioctl as requests;
 use linux_raw_sys::net as uapi;
 use rustix::net::addr::SocketAddrStorage;
+use rustix::net::{ipproto, sockopt};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     ByteCount, BytesPerSecond, IpVersion, MaximumTransmissionUnit, ProcessorIndex,
@@ -60,6 +61,10 @@ const RECORDS_FILL_THE_ROOM: &str = "the records of the last packet a TCP socket
 const HEADERS_CUT: &str = "the buffer given for the last packet's extension headers was shorter than the headers Linux recorded";
 const SUBFLOWS_PAST_THE_ROOM: &str =
     "a subflow past those the in-kernel path manager allows is read through arrays on the heap";
+const UNFILLED_INFORMATION: &str = "Linux fills neither tcpi_last_ack_sent nor tcpi_fackets: the time since the last acknowledgement sent and the forward-acknowledged count are given as zero";
+const NO_MULTIPATH_URGENT_MARK: &str = "Linux keeps no urgent mark for a multipath socket, which takes no urgent data (SIOCATMARK is not an MPTCP ioctl): it reads not reached";
+const NO_MULTIPATH_CLAMP: &str = "Linux reads no window clamp or quick acknowledgement mode of a multipath socket (TCP_WINDOW_CLAMP and TCP_QUICKACK answer EOPNOTSUPP), and the tuned values need both";
+const NO_FULLMESH_LIMIT: &str = "the host's MPTCP_INFO gives the limit of fullmesh endpoints, which the contract's multipath information has no field for";
 
 /// The TCP states in the order Linux numbers them from `TCP_ESTABLISHED`, which is one.
 ///
@@ -272,7 +277,11 @@ struct MptcpInfo {
     bytes_acked: u64,
     subflows_total: u8,
     endp_laminar_max: u8,
-    reserved: u16,
+    /// `mptcpi_endp_fullmesh_max`, in Linux 6.19 and later, a reserved zero before.
+    ///
+    /// https://github.com/torvalds/linux/blob/v6.19/include/uapi/linux/mptcp.h
+    endp_fullmesh_max: u8,
+    reserved: u8,
     last_data_sent: u32,
     last_data_recv: u32,
     last_ack_recv: u32,
@@ -418,6 +427,7 @@ fn information_of(
 ) -> Result<TcpInformation, HostError> {
     let info: uapi::tcp_info = view(&bytes.bytes);
     let ecn: AccurateEcnInformation = view(&bytes.bytes[ACCURATE_ECN_AT..]);
+    shortfalls.count(UNFILLED_INFORMATION);
     let state = info
         .tcpi_state
         .checked_sub(FIRST_STATE)
@@ -617,7 +627,10 @@ pub(super) fn congestion_control<'a>(
 }
 
 /// Reads the bytes unread, unacknowledged and unsent (`SIOCINQ`, `SIOCOUTQ`, `SIOCOUTQNSD`) and the urgent mark.
-pub(super) fn queues(socket: BorrowedFd<'_>) -> Result<TcpQueues, HostError> {
+pub(super) fn queues(
+    socket: BorrowedFd<'_>,
+    shortfalls: &Shortfalls,
+) -> Result<TcpQueues, HostError> {
     let count = |request| ioctl_count(socket, request).and_then(narrow::<usize>);
     let queued = count(requests::TIOCOUTQ)?;
     let unsent = count(libc::SIOCOUTQNSD as u32)?;
@@ -625,12 +638,21 @@ pub(super) fn queues(socket: BorrowedFd<'_>) -> Result<TcpQueues, HostError> {
         unread: ByteCount(count(requests::FIONREAD)?),
         unacknowledged: ByteCount(queued.saturating_sub(unsent)),
         unsent: ByteCount(unsent),
-        urgent_mark: if ioctl_count(socket, requests::SIOCATMARK)? == NOT_AT_MARK {
-            UrgentMark::NotReached
-        } else {
-            UrgentMark::Reached
+        urgent_mark: match ioctl_count(socket, requests::SIOCATMARK) {
+            Ok(NOT_AT_MARK) => UrgentMark::NotReached,
+            Ok(_) => UrgentMark::Reached,
+            Err(_) if is_multipath(socket) => {
+                shortfalls.count(NO_MULTIPATH_URGENT_MARK);
+                UrgentMark::NotReached
+            }
+            Err(error) => return Err(error),
         },
     })
+}
+
+/// Tells whether the socket is a multipath one, whose refusals of TCP's own options have reasons of their own.
+fn is_multipath(socket: BorrowedFd<'_>) -> bool {
+    sockopt::socket_protocol(socket).is_ok_and(|protocol| protocol == Some(ipproto::MPTCP))
 }
 
 /// Reads the values the stack chose for the socket's buffers, low water, segment size, clamp, path MTU and acknowledging.
@@ -645,13 +667,31 @@ pub(super) fn tuned(
         receive_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_RCVBUF)?)?),
         receive_low_water: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_RCVLOWAT)?)?),
         maximum_segment_size: MaximumSegmentSize(narrow(int(uapi::SOL_TCP, uapi::TCP_MAXSEG)?)?),
-        window_clamp: WindowSize(narrow(int(uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP)?)?),
+        window_clamp: WindowSize(narrow(
+            int(uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP)
+                .map_err(|error| multipath_refusal(socket, error, shortfalls))?,
+        )?),
         path_mtu: MaximumTransmissionUnit(information.tcpi_pmtu),
-        quick_acknowledgement: int(uapi::SOL_TCP, uapi::TCP_QUICKACK)? != super::UNSET,
+        quick_acknowledgement: int(uapi::SOL_TCP, uapi::TCP_QUICKACK)
+            .map_err(|error| multipath_refusal(socket, error, shortfalls))?
+            != super::UNSET,
     })
 }
 
-/// Reads the timestamp clock, in the unit its route gave the socket.
+/// Gives a multipath socket's refusal of the clamp or quick acknowledgement as the counted refusal of the tuned values.
+fn multipath_refusal(
+    socket: BorrowedFd<'_>,
+    error: HostError,
+    shortfalls: &Shortfalls,
+) -> HostError {
+    if is_multipath(socket) {
+        shortfalls.refuse(NO_MULTIPATH_CLAMP)
+    } else {
+        error
+    }
+}
+
+/// Reads the timestamp clock, in the unit it counts in.
 pub(super) fn timestamp(
     socket: BorrowedFd<'_>,
     shortfalls: &Shortfalls,
@@ -874,14 +914,20 @@ pub(super) fn multipath(
     if length < size_of::<MptcpInfo>() {
         shortfalls.count(SHORT_MULTIPATH_INFORMATION);
     }
+    if found.endp_fullmesh_max != u8::MIN {
+        shortfalls.count(NO_FULLMESH_LIMIT);
+    }
     Ok(multipath_of(&found))
 }
 
 /// Reads `MPTCP_FULL_INFO` with arrays of the given length, giving how many subflows the connection has.
+///
+/// A host whose subflow `TCP_INFO` is shorter than the room is counted, as a plain `TCP_INFO` read is.
 fn full_information(
     socket: BorrowedFd<'_>,
     subflows: &mut [MptcpSubflowInfo],
     information: &mut [InformationBytes],
+    shortfalls: &Shortfalls,
 ) -> Result<u32, HostError> {
     let mut full: MptcpFullInfo = zeroed();
     full.size_tcpinfo_user = narrow(size_of::<InformationBytes>() as u64)?;
@@ -895,6 +941,9 @@ fn full_information(
         MPTCP_FULL_INFO,
         bytes_of(&mut full),
     )?;
+    if usize::try_from(full.size_tcpinfo_kernel).map_err(|_| overflow())? < INFORMATION_LENGTH {
+        shortfalls.count(SHORT_INFORMATION);
+    }
     Ok(full.num_subflows)
 }
 
@@ -910,7 +959,7 @@ pub(super) fn multipath_subflow(
     };
     let mut subflows = [zeroed::<MptcpSubflowInfo>(); SUBFLOW_ROOM];
     let mut information = [empty; SUBFLOW_ROOM];
-    let count = full_information(socket, &mut subflows, &mut information)?;
+    let count = full_information(socket, &mut subflows, &mut information, shortfalls)?;
     let index = usize::try_from(position.0).map_err(|_| overflow())?;
     if position.0 >= count {
         return Ok(None);
@@ -922,7 +971,7 @@ pub(super) fn multipath_subflow(
     let length = usize::try_from(count).map_err(|_| overflow())?;
     let mut subflows = vec![zeroed::<MptcpSubflowInfo>(); length];
     let mut information = vec![empty; length];
-    let filled = full_information(socket, &mut subflows, &mut information)?;
+    let filled = full_information(socket, &mut subflows, &mut information, shortfalls)?;
     if position.0 >= filled.min(count) {
         return Ok(None);
     }

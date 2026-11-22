@@ -33,9 +33,13 @@ mutant rearm-noop "$implementation" 'let idle = get_int(socket, uapi::SOL_TCP, u
 mutant window-probe-noop "$implementation" 'let sharing = SockRef::from(&socket)' \
     'return Ok(()); #[allow(unreachable_code)] let sharing = SockRef::from(&socket)'
 mutant window-probe-clears-sharing "$implementation" '} else if sharing {' '} else if sharing && false {'
-mutant clock-always-refused "$implementation" 'let information: uapi::tcp_info =' \
-    'let _ = (socket, reading); return Err(HostError::Errno(libc::EPERM)); #[allow(unreachable_code)] let information: uapi::tcp_info ='
-mutant clock-unit-ignored "$implementation" 'if microseconds != (reading.unit == TcpTimestampUnit::Microseconds) {' 'if false {'
+mutant clock-always-refused "$implementation" 'let microseconds = reading.unit == TcpTimestampUnit::Microseconds;' \
+    'let _ = (socket, reading); return Err(HostError::Errno(libc::EPERM)); #[allow(unreachable_code)] let microseconds = reading.unit == TcpTimestampUnit::Microseconds;'
+mutant clock-unit-ignored "$implementation" 'let microseconds = reading.unit == TcpTimestampUnit::Microseconds;' 'let microseconds = false;'
+mutant clock-microseconds-refused-on-a-millisecond-route "$implementation" 'let before: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;' \
+    'let route: uapi::tcp_info = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?; if u32::from(route.tcpi_options) & uapi::TCPI_OPT_USEC_TS == 0 { return Err(HostError::NotSupported); } let before: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;'
+mutant clock-milliseconds-refused-on-a-microsecond-route "$implementation" 'return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);' \
+    'let route: uapi::tcp_info = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?; if u32::from(route.tcpi_options) & uapi::TCPI_OPT_USEC_TS != 0 { return Err(HostError::NotSupported); } return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);'
 mutant clock-microseconds-as-milliseconds "$implementation" 'let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit;' \
     'let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit; if microseconds { return Ok(()); }'
 mutant multipath-is-tcp "$implementation" 'TcpProtocol::Multipath => ipproto::MPTCP,' 'TcpProtocol::Multipath => ipproto::TCP,'
@@ -96,13 +100,18 @@ mutant saved-synchronize-not-kept "$implementation" \
 mutant saved-synchronize-off-ignored "$implementation" 'listener.saves_synchronize.store(value, Ordering::Relaxed);' \
     'listener.saves_synchronize.store(value.max(listener.saves_synchronize.load(Ordering::Relaxed)), Ordering::Relaxed);'
 mutant saved-synchronize-taken-twice "$implementation" '*saved = None;' ';'
-mutant wait-finishes-at-once "$implementation" 'connection.socket.wait_until_ready(interest).await' 'Ok(interest)'
+mutant wait-finishes-at-once "$implementation" 'connection.socket.wait_until_ready(interest).await' \
+    'Ok(ReadinessReport { ready_for: interest, unconditional: wcontainers_readiness::UnconditionalEvents::empty() })'
 mutant wait-never-finishes "$implementation" 'connection.socket.wait_until_ready(interest).await' 'std::future::pending().await'
-mutant listener-wait-finishes-at-once "$implementation" 'listener.socket.wait_until_ready(interest).await' 'Ok(interest)'
+mutant listener-wait-finishes-at-once "$implementation" 'listener.socket.wait_until_ready(interest).await' \
+    'Ok(ReadinessReport { ready_for: interest, unconditional: wcontainers_readiness::UnconditionalEvents::empty() })'
 mutant listener-wait-never-finishes "$implementation" 'listener.socket.wait_until_ready(interest).await' \
     'std::future::pending().await'
 mutant readiness-withdraw-noop "$readiness" '    fn withdraw(&mut self) {' '    fn withdraw(&mut self) { if self.id.is_some() { return; }'
 mutant readiness-wakes-nothing "$readiness" '        waker.wake();' '        drop(waker);'
+mutant unconditional-events-end-no-wait "$readiness" '    report.ready_for.intersects(interest) || !report.unconditional.is_empty()' '    report.ready_for.intersects(interest)'
+mutant hang-up-unreported "$readiness" '(UnconditionalEvents::HANG_UP, PollFlags::HUP),' '(UnconditionalEvents::empty(), PollFlags::HUP),'
+mutant error-unreported "$readiness" '(UnconditionalEvents::ERROR, PollFlags::ERR),' '(UnconditionalEvents::empty(), PollFlags::ERR),'
 mutant plain-sends-uncounted-once-armed "$implementation" '&& !connection.reports_armed.load(Ordering::Relaxed)' ''
 # Each setting doing nothing, one at a time.
 mutant multicast-noop "$implementation" '            TcpSetting::Ip(IpSocketSetting::MulticastV4(ref group)) => set_multicast_group(' \
@@ -156,8 +165,8 @@ for pattern in 'Backlog(..)' 'FastOpenQueue(..)' 'FastOpenKeys(..)' 'FlowLabelRe
 done
 mutant listen-backlog-argument-ignored "$implementation" $'self.bind(socket, &local)?;\n        SockRef::from(&socket)\n            .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))' \
     $'self.bind(socket, &local)?; let _ = backlog;\n        SockRef::from(&socket)\n            .listen(4096)'
-mutant clock-set-outside-repair "$implementation" 'set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)' \
-    'set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value).or(Ok(()))'
+mutant clock-set-outside-repair "$implementation" 'return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);' \
+    'return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value).or(Ok(()));'
 mutant synchronize-frame-is-the-link-header "$implementation" '.and_then(|link| u32::try_from(link + length).ok())' \
     '.and_then(|link| u32::try_from(link).ok())'
 mutant information-state-shifted "$state" '.checked_sub(FIRST_STATE)' '.checked_add(u8::MIN)'
@@ -165,7 +174,9 @@ mutant information-acknowledged-as-received "$state" 'bytes_acknowledged: ByteTo
 mutant congestion-information-none "$state" '(_, usize::MIN) => None,' '(_, _) if true => None,'
 mutant congestion-name-cut-short "$state" 'let cut = length.min(into.len());' 'let cut = length.min(into.len()).saturating_sub(1);'
 mutant queues-unsent-unacknowledged "$state" 'unacknowledged: ByteCount(queued.saturating_sub(unsent)),' 'unacknowledged: ByteCount(queued),'
-mutant urgent-mark-never-reached "$state" '== NOT_AT_MARK {' '== NOT_AT_MARK || true {'
+mutant urgent-mark-never-reached "$state" 'Ok(_) => UrgentMark::Reached,' 'Ok(_) => UrgentMark::NotReached,'
+mutant multipath-queues-refused "$state" 'Err(_) if is_multipath(socket) => {' 'Err(_) if false => {'
+mutant multipath-tuned-passes-the-errno "$state" $'    if is_multipath(socket) {\n        shortfalls.refuse(NO_MULTIPATH_CLAMP)' $'    if false {\n        shortfalls.refuse(NO_MULTIPATH_CLAMP)'
 mutant tuned-clamp-is-the-segment "$state" 'uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP)' 'uapi::SOL_TCP, uapi::TCP_MAXSEG)'
 mutant timestamp-unit-milliseconds "$state" 'unit: if u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS != u32::MIN {' 'unit: if false {'
 mutant repair-sequences-one-queue "$state" 'let sequences = sequence_of(uapi::TCP_SEND_QUEUE as c_int)' 'let sequences = sequence_of(uapi::TCP_RECV_QUEUE as c_int)'
@@ -197,6 +208,16 @@ mutant subflow-information-zeroed "$state" 'information: information_of(informat
     'information: information_of(&{ let mut zeroed = *information; zeroed.bytes[8..].fill(0); zeroed }, shortfalls)?,'
 mutant repair-window-read-swapped "$state" $'send_window: WindowSize(window.snd_wnd),\n            maximum_window: WindowSize(window.max_window),\n            receive_window: WindowSize(window.rcv_wnd),' \
     $'send_window: WindowSize(window.rcv_wnd),\n            maximum_window: WindowSize(window.max_window),\n            receive_window: WindowSize(window.snd_wnd),'
+mutant ic-send-buffer-is-receive "$state" 'send_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_SNDBUF)?)?),' 'send_buffer: ByteCount(narrow(int(uapi::SOL_SOCKET, uapi::SO_RCVBUF)?)?),'
+mutant ic-rto-ato-swapped "$state" $'retransmission_timeout: microseconds(info.tcpi_rto),\n        acknowledgement_timeout: microseconds(info.tcpi_ato),' $'retransmission_timeout: microseconds(info.tcpi_ato),\n        acknowledgement_timeout: microseconds(info.tcpi_rto),'
+mutant ic-info-windows-swapped "$state" $'send_window: WindowSize(info.tcpi_snd_wnd),\n        receive_window: WindowSize(info.tcpi_rcv_wnd),' $'send_window: WindowSize(info.tcpi_rcv_wnd),\n        receive_window: WindowSize(info.tcpi_snd_wnd),'
+mutant ic-multipath-last-swapped "$state" $'since_last_data_sent: milliseconds(found.last_data_sent),\n        since_last_data_received: milliseconds(found.last_data_recv),' $'since_last_data_sent: milliseconds(found.last_data_recv),\n        since_last_data_received: milliseconds(found.last_data_sent),'
+mutant ic-subflow-identifier-zero "$state" 'identifier: MultipathSubflowIdentifier(subflow.id),' 'identifier: MultipathSubflowIdentifier(u32::MIN),'
+mutant ic-segments-in-is-out "$state" 'segments_in: segments(info.tcpi_segs_in),' 'segments_in: segments(info.tcpi_segs_out),'
+mutant ic-authentication-icmp-inverted "$state" 'icmp_errors: if found.accept_icmps() == u32::MIN {' 'icmp_errors: if found.accept_icmps() != u32::MIN {'
+mutant ic-repair-timestamps-as-sack "$state" 'TcpRepairOption::Timestamps => (KIND_TIMESTAMP, NO_OPTION_VALUE),' 'TcpRepairOption::Timestamps => (KIND_SELECTIVE_ACK_PERMITTED, NO_OPTION_VALUE),'
+mutant ic-repair-max-window-is-send "$state" 'max_window: window.maximum_window.0,' 'max_window: window.send_window.0,'
+mutant ic-multipath-checksums-on "$state" 'checksums: found.csum_enabled != u8::MIN,' 'checksums: true,'
 status=0
 for index in "${!names[@]}"; do
     name=${names[$index]}
