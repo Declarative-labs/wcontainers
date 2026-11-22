@@ -179,3 +179,59 @@ Not done:
 - The precise instruction set suite takes `Recording`, a type of an implementation crate, because no
   interface describes a recording. If recordings are to stay, a small interface for "the recorded pairs of
   one instruction" would let the suite name no implementation.
+
+## Really executing one instruction (2026-11-22)
+
+What exists:
+- crates/executor/implementation/hardware-virtualization/single_step.rs: `SingleStepMachine`, the
+  `Executor` of ARM64 on Hypervisor.framework (Mac) and KVM (Linux). One virtual machine, one virtual CPU. Each
+  state is a slot in guest memory: its registers before and after, its own translation tables, frames and
+  ASID. A handler at EL1 loads the slot, enters EL0 with software step on, and saves everything when the step
+  or the instruction's own exception comes back; then it goes to the next slot without leaving the guest.
+  Pages a state can write are compared with their bytes before, and each changed run of bytes goes to the
+  hook as a slice of guest memory. `execute_each_single_instruction` is the batch form (one exit per batch,
+  65,536 slots at most, or 256 on a chip with 8-bit ASIDs); `time_in_guest` gives the time inside.
+- EL1 as Linux sets it: SA0 on, little-endian, CTR_EL0 readable at EL0, SVE open where the chip shows it, SME
+  open where the chip shows it. The OS lock is opened on entry; Hypervisor.framework traps that write, and the
+  executor steps past it.
+- crates/executor/conformance: `agrees_with_precise_instruction_set(executor, set, generator)` and its
+  `tests!`. A store of the bytes already there: the executor reports no change, a formula may report the
+  store; the suite compares the memory the two lists leave, through `leave_same_memory` of the recording
+  crate, the one place that rule lives.
+- tests/single_step.rs runs the batch twice and the suite once against this host's chip's set, and checks that
+  the suite rejects the other chip's set.
+
+Measured, warm batch (second pass), 32,277 states:
+- Apple M5 (this Mac, Hypervisor.framework, load 3.6 to 5): 2.79 us per state, 0.67 us of it in the guest.
+  First pass 4.20 (1.46 in the guest). One at a time through the suite: 5.46 us.
+- Neoverse V2 (rented Graviton4, KVM, load 14 to 18): 4.22 us per state, 0.78 in the guest. First pass 8.28
+  (2.55). One at a time: 10.6 us. Before the per-slot ASIDs the guest took 1.41 us per state.
+- The rest of each state's time is the host writing its tables and frames and comparing the written pages.
+
+What the chips did:
+- V2: agrees with the NeoverseV2 set on all 32,277 states.
+- M5, against the AppleM5 set (expected, not measured), three disagreements, FOR THE M5 SET'S ENGINEER:
+  - LDR (immediate, post-index) with the target as its base is UNDEFINED on the M5: syndrome 0x02000000 on
+    the 640 states where Rt = Rn. That is `LoadIntoBaseWithWriteback::Undefined`.
+  - RDVL raises SME's trap, syndrome 0x76000000, not 0x02000000. Hypervisor.framework shows no SME in
+    ID_AA64PFR1_EL1, so the executor leaves CPACR_EL1.SMEN closed. With SMEN forced open the M5 gives
+    0x76000002 (an SVE instruction outside streaming mode), which is what Linux turns into SIGILL.
+    `VectorLengthReading` has no behavior for either; the architecture's engineer must add one.
+  - CTR_EL0 reads 0x0000_0009_9444_C004 inside the virtual machine.
+- STP across a fault wrote nothing on both chips.
+
+Not done:
+- The host's part of each state (about 2 us on the M5, 3.4 on the V2) is not tuned: each slot gets a fresh
+  top-level table and fresh tables on each page's way.
+
+### For the owner (really executing one instruction)
+
+- The executor interface has no way to build an executor, and building one can fail (no hypervisor, no
+  entitlement). `SingleStepMachine::new() -> Result<Self, Error>` is a placeholder. The trait I would need:
+  `trait StandaloneExecutor: Executor + Sized { type Error; fn new() -> Result<Self, Self::Error>; }`.
+- The batch form is not in the interface, so the probe can only reach it by naming this crate. Example of
+  what would let it stay generic: a provided `fn execute_each_single_instruction<'memory>(&mut self, befores:
+  impl IntoIterator<Item = ExecutionState<'memory, Self::Architecture>>) -> Vec<ExecutionState<'memory,
+  Self::Architecture>>` on `Executor` that calls the single form, which this executor overrides.
+- `MemoryDelta::PermissionAssignment` allows any range, but a chip gives permissions to whole pages. Example:
+  `addresses: 0x1000..0x1800` cannot be run, and the executor panics on it.
