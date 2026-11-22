@@ -2920,6 +2920,170 @@ fn geometry_shaders_draw_as_direct3d_does() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// Geometry shaders writing cull distances beside clip distances in one register, as fxc packs them:
+/// triangle, line and point output, cut strips, from lists and strips, indexed and instanced.
+const GEOMETRY_CULLED: [Case; 6] = [
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cull",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cull",
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(3),
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cull_lines",
+        topology: InputTopology::TriangleList,
+        count: 24,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cull_lines",
+        topology: InputTopology::TriangleStrip,
+        count: 16,
+        first: 1,
+        instances: 2,
+        first_instance: 0,
+        indexed: Some(0),
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cull_points",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(-1),
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cull_points",
+        topology: InputTopology::TriangleStrip,
+        count: 12,
+        first: 1,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+];
+
+/// Geometry shaders writing cull distances (`gs_cull`, `gs_cull_lines`, `gs_cull_points`: whole
+/// primitives dropped, single primitives of a strip dropped, and primitives each of whose vertices is
+/// below zero on another distance kept), run as compute by the stage helper on WebGPU with its
+/// geometry cull program, from fxc's and dxc's builds: every texel equal to real Direct3D 11's
+/// drawing fxc's builds. Every fourth primitive is dropped whole, so a helper that kept every
+/// primitive would draw what Direct3D does not.
+#[test]
+fn geometry_shaders_writing_cull_distances_draw_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for (i, case) in on_both_routes(&GEOMETRY_CULLED).iter().enumerate() {
+            let name = format!(
+                "seed {seed} {} {:?} {:?} {} from {} x{}{}",
+                case.gs,
+                case.route,
+                case.topology,
+                case.count,
+                case.first,
+                case.instances,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let Ok((indices, reference)) = scene(
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
+                |indices| direct3d(&gpu, case, &vertices, indices, None),
+                |reference| drawn_texels(reference) != 0,
+                |indices, _| {
+                    let made = ours(&mut backend, case, &vertices, indices, None, None);
+                    matches!(made, Made::Picture(picture) if drawn_texels(&picture) == 0)
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
+            let Made::Picture(picture) = ours(&mut backend, case, &vertices, &indices, None, None)
+            else {
+                unreachable!()
+            };
+            let drawn = drawn_texels(&reference);
+            let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
+            compared += 1;
+            eprintln!(
+                "{name}: {drawn} texels drawn by direct3d, {count} differ (largest {largest})"
+            );
+            if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
+                keep(
+                    &format!("geometry-cull-{seed}-{i}-{}-d3d", case.gs),
+                    &reference,
+                    Format::Rgba8Unorm,
+                );
+                keep(
+                    &format!("geometry-cull-{seed}-{i}-{}-ours", case.gs),
+                    &picture,
+                    Format::Rgba8Unorm,
+                );
+            }
+            if drawn == 0 || count != 0 {
+                let apart = reference
+                    .chunks(4)
+                    .zip(picture.chunks(4))
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .take(16);
+                for (i, (a, b)) in apart {
+                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
+                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
+                }
+                failures.push(name);
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// Units in the last place two interpolations of one value may round apart by.
 const INTERPOLATION_ULPS: f32 = 4.0;
 

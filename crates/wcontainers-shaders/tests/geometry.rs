@@ -134,6 +134,62 @@ fn geometry_shaders_take_patches_as_primitives() {
     );
 }
 
+/// Geometry shaders writing cull distances beside clip distances in one register (`gs_cull`,
+/// `gs_cull_lines`, `gs_cull_points`) convert from fxc's and dxc's builds with their distances
+/// reflected as the signature places them (two clip, three cull) and their compute form's records
+/// holding the cull distances' slots past what the pass-through reads; the replay form refuses them by
+/// name.
+#[test]
+fn geometry_shaders_write_cull_distances() {
+    let replay = VariantKey {
+        flags: VariantFlags::GEOMETRY_REPLAY,
+        ..Default::default()
+    };
+    for (name, output) in [("gs_cull", 3), ("gs_cull_lines", 2), ("gs_cull_points", 1)] {
+        for ext in ["dxbc", "dxil"] {
+            let bytes = own(&format!("{name}.{ext}"));
+            let source = |b| match ext {
+                "dxbc" => Source::Dxbc(b),
+                _ => Source::Dxil(b),
+            };
+            let c = convert(source(&bytes), &VariantKey::default(), None)
+                .unwrap_or_else(|e| panic!("{name}.{ext}: {e}"));
+            let StageExtras::Geometry {
+                output_vertices, ..
+            } = c.reflection.extras
+            else {
+                panic!("{name}.{ext}: {:?}", c.reflection.extras);
+            };
+            assert_eq!(output_vertices, output, "{name}.{ext}");
+            let count = |system| -> u32 {
+                c.reflection
+                    .outputs
+                    .iter()
+                    .filter(|v| v.system == Some(system))
+                    .map(|v| v.mask.count_ones())
+                    .sum()
+            };
+            assert_eq!(
+                (
+                    count(SystemValue::ClipDistance),
+                    count(SystemValue::CullDistance)
+                ),
+                (2, 3),
+                "{name}.{ext}"
+            );
+            c.modules.iter().for_each(|m| drop(wgsl(m)));
+            assert_eq!(
+                convert(source(&bytes), &replay, None).err(),
+                Some(ConvertError::Unsupported(
+                    wcontainers_shaders::refusal::GEOMETRY_CULL_DISTANCE_REPLAY
+                )),
+                "{name}.{ext}"
+            );
+        }
+    }
+    wgsl(&wcontainers_shaders::stage::geometry_cull_program().unwrap());
+}
+
 /// The replay form (`GEOMETRY_REPLAY`, for back ends without compute) is a vertex program writing a
 /// record a slot per location, the same records the compute form writes, which the same pass-through
 /// draws; WebGL 2's back end writes it and the vertex program it captures.

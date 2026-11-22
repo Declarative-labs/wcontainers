@@ -193,9 +193,35 @@ struct Geometry<B: Backend> {
     streams: u32,
     out_words: u32,
     /// Vertex attributes after the position: the output locations, then the layer and viewport slot
-    /// when the shader writes either.
+    /// when the shader writes either, then the clip distances' slots; the cull distances' slots
+    /// follow them in the record.
     out_locations: u32,
     selects: bool,
+    cull: Option<GeometryCull<B>>,
+}
+
+/// The geometry cull program, and where the geometry output's records hold the cull distances.
+struct GeometryCull<B: Backend> {
+    program: B::Program,
+    cull_word: u32,
+    distances: u32,
+}
+
+/// The geometry cull program's values (`geometry_cull.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct GeometryCullValues {
+    invocations: u32,
+    index_slots: u32,
+    primitives: u32,
+    vertices: u32,
+    record_words: u32,
+    cull_word: u32,
+    cull_count: u32,
+    index_base: u32,
+    list_base: u32,
+    empty: u32,
+    pad: [u32; 2],
 }
 
 /// The hull stage's compute program, the tessellator, and the patch records between them.
@@ -910,6 +936,9 @@ impl<B: Backend> Stages<B> {
         backend.destroy(Object::Program(self.vertex));
         if let Some(g) = self.geometry {
             backend.destroy(Object::Program(g.program));
+            if let Some(c) = g.cull {
+                backend.destroy(Object::Program(c.program));
+            }
         }
         if let Some(h) = self.hull {
             backend.destroy(Object::Program(h.program));
@@ -1171,23 +1200,26 @@ impl<B: Backend> Stages<B> {
                 let invocations = u64::from(geometry_primitives)
                     * u64::from(g.instances)
                     * u64::from(geometry_instances);
-                // Each stream's vertex slots, then each stream's index slots.
+                // Each stream's vertex slots, then each stream's index slots. With cull distances, the
+                // empty record follows the vertex slots, and the cull program's list the index slots.
                 let slots = invocations * u64::from(g.streams) * u64::from(g.max_vertices);
-                let vertex_words = slots * u64::from(g.out_words);
+                let culled = g.cull.is_some();
+                let vertex_words = (slots + u64::from(culled)) * u64::from(g.out_words);
                 let index_words = 2 * slots;
+                let list_words = match culled {
+                    true => {
+                        invocations
+                            * u64::from(super::replay_slots(g.max_vertices, g.output))
+                            * u64::from(g.output)
+                    }
+                    false => 0,
+                };
                 let index_base = u32::try_from(vertex_words).map_err(|_| GpuError::OutOfMemory)?;
+                let bytes = (vertex_words + index_words + list_words) * u64::from(WORD);
+                u32::try_from(bytes / u64::from(WORD)).map_err(|_| GpuError::OutOfMemory)?;
                 let usage = BufferUsage::STORAGE | BufferUsage::VERTEX | BufferUsage::INDEX;
-                grow(
-                    backend,
-                    &mut self.out,
-                    (vertex_words + index_words) * u64::from(WORD),
-                    usage,
-                )?;
-                (
-                    invocations,
-                    (vertex_words + index_words) * u64::from(WORD),
-                    index_base,
-                )
+                grow(backend, &mut self.out, bytes, usage)?;
+                (invocations, bytes, index_base)
             }
             None => match &self.lines {
                 Some(_) => {
@@ -1599,6 +1631,66 @@ impl<B: Backend> Stages<B> {
                 count: if strips { 2 * total } else { total },
                 tessellated: None,
             });
+            if let Some(c) = &g.cull {
+                // The drawn stream's primitives its cull distances keep, listed; stream output still
+                // takes every primitive from the index slots.
+                backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+                let units = u32::try_from(invocations).map_err(|_| GpuError::OutOfMemory)?;
+                let index_slots = 2 * g.max_vertices;
+                let primitives = super::replay_slots(g.max_vertices, g.output);
+                let slots = u32::try_from(invocations * u64::from(g.streams))
+                    .ok()
+                    .and_then(|i| i.checked_mul(g.max_vertices))
+                    .ok_or(GpuError::OutOfMemory)?;
+                let list_base = index_base + slots * 2;
+                let mut cv = [0u32; word_at(size_of::<GeometryCullValues>())];
+                let at = |offset| word_at(offset);
+                cv[at(offset_of!(GeometryCullValues, invocations))] = units;
+                cv[at(offset_of!(GeometryCullValues, index_slots))] = index_slots;
+                cv[at(offset_of!(GeometryCullValues, primitives))] = primitives;
+                cv[at(offset_of!(GeometryCullValues, vertices))] = g.output;
+                cv[at(offset_of!(GeometryCullValues, record_words))] = g.out_words;
+                cv[at(offset_of!(GeometryCullValues, cull_word))] = c.cull_word;
+                cv[at(offset_of!(GeometryCullValues, cull_count))] = c.distances;
+                cv[at(offset_of!(GeometryCullValues, index_base))] = index_base;
+                cv[at(offset_of!(GeometryCullValues, list_base))] = list_base;
+                cv[at(offset_of!(GeometryCullValues, empty))] = slots;
+                let bytes = words_as_bytes(&cv);
+                let mut offsets = [0u64];
+                let ring = backend.write_buffer_ring(
+                    RingKind::Data,
+                    &[&bytes],
+                    limits.min_uniform_offset_alignment,
+                    &mut offsets,
+                )?;
+                let set = backend.create_binding_set(&[
+                    BindingEntry {
+                        binding: CULL_VALUES_BINDING,
+                        stages: StageSet::COMPUTE,
+                        resource: BindingResource::UniformBuffer(BufferRange {
+                            buffer: &ring,
+                            offset: offsets[0],
+                            size: bytes.len() as u64,
+                        }),
+                    },
+                    storage(CULL_DATA_BINDING, out, out_bytes, true),
+                ])?;
+                let mut sets = [None; MAX_BINDING_SETS];
+                sets[super::STAGE_SET as usize] = Some(&set);
+                backend.dispatch(&DispatchCall {
+                    program: &c.program,
+                    bindings: sets,
+                    immediates: &[],
+                    groups: groups(units, 1),
+                })?;
+                last = Some(FinalDraw {
+                    buffer: out.clone(),
+                    index_offset: Some(u64::from(list_base) * u64::from(WORD)),
+                    topology: list_topology(g.output),
+                    count: units * primitives * g.output,
+                    tessellated: None,
+                });
+            }
         }
 
         if let (Some(declared), Some(targets)) = (&self.stream, &draw.stream_output) {
@@ -1871,6 +1963,18 @@ fn geometry_parts<B: Backend>(
     let slots = super::locations(&geometry.reflection.outputs).len()
         + usize::from(selects)
         + super::distance_slots(distances) as usize;
+    let culled = super::cull_distances(&geometry.reflection);
+    let cull = match culled {
+        0 => None,
+        _ => {
+            let shader = backend.create_shader(&super::geometry_cull_program()?)?;
+            Some(GeometryCull {
+                program: backend.create_program(&Program::Compute(&shader))?,
+                cull_word: super::record_words(slots),
+                distances: culled,
+            })
+        }
+    };
     let shader = backend.create_shader(&geometry.modules[0])?;
     Ok(Geometry {
         program: backend.create_program(&Program::Compute(&shader))?,
@@ -1880,9 +1984,10 @@ fn geometry_parts<B: Backend>(
         instances,
         output: output_vertices.into(),
         streams: streams.into(),
-        out_words: super::record_words(slots),
+        out_words: super::record_words(slots + super::distance_slots(culled) as usize),
         out_locations: slots as u32,
         selects,
+        cull,
     })
 }
 

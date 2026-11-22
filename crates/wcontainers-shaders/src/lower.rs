@@ -1221,8 +1221,9 @@ impl<'a> Lowering<'a> {
                 builtin::CLIP_DISTANCE,
             ) => true,
             (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
-            // Drawn through the stage helper ([`crate::stage::Stages::culled`]).
-            (SourceStage::Vertex, false, builtin::CULL_DISTANCE) => true,
+            // Drawn through the stage helper ([`crate::stage::Stages::culled`], and its geometry
+            // stage's cull program).
+            (SourceStage::Vertex | SourceStage::Geometry, false, builtin::CULL_DISTANCE) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)

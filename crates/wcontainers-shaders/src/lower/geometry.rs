@@ -415,12 +415,14 @@ impl GeometryPass<'_> {
         Ok((found != [None, None]).then_some(found))
     }
 
-    /// The clip distance outputs' variables and how many distances each holds, in declaration order:
-    /// each vertex record ends with their slots, four distances a slot ([`stage::distance_slots`]).
-    fn clip_outputs(&self) -> Result<Vec<(Handle<naga::GlobalVariable>, u32)>> {
+    /// The clip (`builtin::CLIP_DISTANCE`) or cull (`builtin::CULL_DISTANCE`) distance outputs'
+    /// variables and how many distances each holds, in declaration order: each vertex record ends
+    /// with the clip distances' slots, then the cull distances', four distances a slot
+    /// ([`stage::distance_slots`]).
+    fn distance_outputs(&self, which: u64) -> Result<Vec<(Handle<naga::GlobalVariable>, u32)>> {
         let mut found = Vec::new();
         for io in self.built_ins(Side::Output) {
-            if io.builtin != Some(builtin::CLIP_DISTANCE) || io.stream != 0 {
+            if io.builtin != Some(which) || io.stream != 0 {
                 continue;
             }
             let element = io.ty.members[..]
@@ -436,10 +438,15 @@ impl GeometryPass<'_> {
         Ok(found)
     }
 
-    /// The slots after the output locations: the layer and viewport slot, then the clip distances'.
+    /// The slots after the output locations: the layer and viewport slot, then the clip distances',
+    /// then the cull distances'.
     fn extra_slots(&self) -> Result<usize> {
-        let distances: u32 = self.clip_outputs()?.iter().map(|c| c.1).sum();
-        Ok(usize::from(self.selection()?.is_some()) + stage::distance_slots(distances) as usize)
+        let mut slots = usize::from(self.selection()?.is_some());
+        for which in [builtin::CLIP_DISTANCE, builtin::CULL_DISTANCE] {
+            let distances: u32 = self.distance_outputs(which)?.iter().map(|c| c.1).sum();
+            slots += stage::distance_slots(distances) as usize;
+        }
+        Ok(slots)
     }
 
     /// Vertices per output primitive.
@@ -595,7 +602,12 @@ impl GeometryPass<'_> {
         };
         let strips = self.strips();
         let selection = self.selection()?;
-        let clips = self.clip_outputs()?;
+        let clips = self.distance_outputs(builtin::CLIP_DISTANCE)?;
+        let culls = self.distance_outputs(builtin::CULL_DISTANCE)?;
+        // The replay form's slots hold what the pass-through draws, which has no cull distances.
+        if replay && !culls.is_empty() {
+            return Err(unsupported(crate::refusal::GEOMETRY_CULL_DISTANCE_REPLAY));
+        }
         let record = stage::record_words(outputs.len() + self.extra_slots()?);
         let output_vertices = self.output_vertices();
 
@@ -689,32 +701,35 @@ impl GeometryPass<'_> {
                 comps.extend([zero, zero]);
                 slots.push((b.compose(uvec4, comps), ScalarKind::Uint));
             }
-            let mut distances = Vec::new();
-            for &(var, count) in &clips {
-                if stream != 0 {
-                    for _ in 0..count {
-                        distances.push(b.expr(naga::Expression::Literal(naga::Literal::F32(0.0))));
-                    }
-                    continue;
-                }
-                let p = b.global(var);
-                let v = b.load(p);
-                match self.module.types[self.module.global_variables[var].ty].inner {
-                    naga::TypeInner::Array { .. } => {
-                        for i in 0..count {
-                            distances.push(b.field(v, i));
-                        }
-                    }
-                    _ => distances.push(v),
-                }
-            }
             let vec4 = build::vec4(&mut *self.module, Scalar::F32);
-            for chunk in distances.chunks(build::VEC4 as usize) {
-                let mut comps = chunk.to_vec();
-                while comps.len() < build::VEC4 as usize {
-                    comps.push(b.expr(naga::Expression::Literal(naga::Literal::F32(0.0))));
+            for outputs in [&clips, &culls] {
+                let mut distances = Vec::new();
+                for &(var, count) in outputs {
+                    if stream != 0 {
+                        for _ in 0..count {
+                            distances
+                                .push(b.expr(naga::Expression::Literal(naga::Literal::F32(0.0))));
+                        }
+                        continue;
+                    }
+                    let p = b.global(var);
+                    let v = b.load(p);
+                    match self.module.types[self.module.global_variables[var].ty].inner {
+                        naga::TypeInner::Array { .. } => {
+                            for i in 0..count {
+                                distances.push(b.field(v, i));
+                            }
+                        }
+                        _ => distances.push(v),
+                    }
                 }
-                slots.push((b.compose(vec4, comps), ScalarKind::Float));
+                for chunk in distances.chunks(build::VEC4 as usize) {
+                    let mut comps = chunk.to_vec();
+                    while comps.len() < build::VEC4 as usize {
+                        comps.push(b.expr(naga::Expression::Literal(naga::Literal::F32(0.0))));
+                    }
+                    slots.push((b.compose(vec4, comps), ScalarKind::Float));
+                }
             }
             let slots: Vec<Expr> = slots
                 .into_iter()
@@ -910,18 +925,22 @@ impl GeometryPass<'_> {
             if io.side != Side::Output {
                 continue;
             }
-            // The layer, viewport and clip distances are the drawn stream's alone.
+            // The layer, viewport and clip and cull distances are the drawn stream's alone.
             if io.stream != 0 && io.location.is_none() && io.builtin != Some(builtin::POSITION) {
                 continue;
             }
-            if io.builtin == Some(builtin::CLIP_DISTANCE) {
+            let distances = match io.builtin {
+                Some(builtin::CLIP_DISTANCE) => Some(SystemValue::ClipDistance),
+                Some(builtin::CULL_DISTANCE) => Some(SystemValue::CullDistance),
+                _ => None,
+            };
+            if let Some(system) = distances {
                 let member = *io
                     .ty
                     .members
                     .first()
                     .ok_or(unsupported(super::CLIP_DISTANCE_TYPE))?;
-                let system = Some(SystemValue::ClipDistance);
-                self.reflect(i, Side::Output, None, 0, member, 0, system);
+                self.reflect(i, Side::Output, None, 0, member, 0, Some(system));
                 continue;
             }
             let member = io.row()?;

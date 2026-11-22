@@ -177,6 +177,76 @@ void gs_clip(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
     }
 }
 
+struct GsCullOut {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+    nointerpolation uint4 ids : TEXCOORD0;
+    float2 clip : SV_ClipDistance0;
+    float2 cull : SV_CullDistance0;
+    float more : SV_CullDistance1;
+};
+
+// Vertex k of a triangle's strip through its corners and the fourth corner of its parallelogram (k
+// = 3), with two clip distances keeping everything and three cull distances: the first drops what
+// lies wholly left of x = -0.3, the second what holds none of the corners `kept` names (a bit each),
+// the third every fourth primitive whole.
+GsCullOut cull_vertex(GsIn t[3], uint primitive, uint k, uint kept) {
+    GsCullOut o;
+    uint corner = min(k, 2u);
+    o.position = k == 3 ? t[0].position + t[2].position - t[1].position : t[corner].position;
+    o.colour = t[corner].colour;
+    o.ids = uint4(t[corner].ids, primitive, k);
+    o.clip = float2(1.0, 0.5);
+    o.cull = float2(o.position.x + 0.3, ((kept >> k) & 1) != 0 ? 1.0 : -1.0);
+    o.more = primitive % 4 == 1 ? -1.0 : 0.25;
+    return o;
+}
+
+// Each triangle becomes a strip of two triangles (corners 0 to 3), the second dropped by the second
+// distance in even primitives; every third primitive cuts the strip after its first triangle and
+// starts the second again.
+[maxvertexcount(6)]
+void gs_cull(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+             inout TriangleStream<GsCullOut> stream) {
+    uint kept = primitive % 2 == 0 ? 1 : 15;
+    for (uint k = 0; k < 3; k++) {
+        stream.Append(cull_vertex(t, primitive, k, kept));
+    }
+    if (primitive % 3 == 0) {
+        stream.RestartStrip();
+        stream.Append(cull_vertex(t, primitive, 1, kept));
+        stream.Append(cull_vertex(t, primitive, 2, kept));
+    }
+    stream.Append(cull_vertex(t, primitive, 3, kept));
+}
+
+// Each triangle becomes a line strip through corners 0, 1, 2 and 3, its middle line dropped by the
+// second distance in even primitives; every third primitive cuts the strip after its first line.
+[maxvertexcount(5)]
+void gs_cull_lines(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                   inout LineStream<GsCullOut> stream) {
+    uint kept = primitive % 2 == 0 ? 9 : 15;
+    stream.Append(cull_vertex(t, primitive, 0, kept));
+    stream.Append(cull_vertex(t, primitive, 1, kept));
+    if (primitive % 3 == 0) {
+        stream.RestartStrip();
+        stream.Append(cull_vertex(t, primitive, 1, kept));
+    }
+    stream.Append(cull_vertex(t, primitive, 2, kept));
+    stream.Append(cull_vertex(t, primitive, 3, kept));
+}
+
+// Each triangle becomes points at corners 0 to 3, the second dropped by the second distance in even
+// primitives.
+[maxvertexcount(4)]
+void gs_cull_points(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                    inout PointStream<GsCullOut> stream) {
+    uint kept = primitive % 2 == 0 ? 13 : 15;
+    for (uint k = 0; k < 4; k++) {
+        stream.Append(cull_vertex(t, primitive, k, kept));
+    }
+}
+
 
 struct CullOut {
     float4 position : SV_Position;

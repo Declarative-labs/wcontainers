@@ -611,6 +611,22 @@ pub fn cull_program() -> Result<wcontainers_gpu::ShaderModule> {
     })
 }
 
+const GEOMETRY_CULL_PROGRAM: &str = include_str!("stage/geometry_cull.wgsl");
+
+/// The program listing a geometry stage's primitives its cull distances keep (`geometry_cull.wgsl`),
+/// which [`Stages`] runs after a geometry stage writing cull distances.
+pub fn geometry_cull_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let module = naga::front::wgsl::parse_str(GEOMETRY_CULL_PROGRAM)
+        .map_err(|e| ConvertError::Malformed(format!("the geometry cull program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(GEOMETRY_CULL_PROGRAM.as_bytes()).as_bytes(),
+    })
+}
+
 /// A vertex program writing cull distances, drawn through the stage helper
 /// ([`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]); also, with none, one writing storage
 /// ([`writes_storage`]).
@@ -1713,10 +1729,19 @@ pub fn selects(reflection: &Reflection) -> bool {
 
 /// The clip distances a stage's outputs hold, counted from their components.
 pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
+    distances(reflection, wcontainers_gpu::SystemValue::ClipDistance)
+}
+
+/// The cull distances a stage's outputs hold, counted from their components.
+pub(crate) fn cull_distances(reflection: &Reflection) -> u32 {
+    distances(reflection, wcontainers_gpu::SystemValue::CullDistance)
+}
+
+fn distances(reflection: &Reflection, system: wcontainers_gpu::SystemValue) -> u32 {
     reflection
         .outputs
         .iter()
-        .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+        .filter(|v| v.system == Some(system))
         .map(|v| v.mask.count_ones())
         .sum()
 }
