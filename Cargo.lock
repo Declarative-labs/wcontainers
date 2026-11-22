@@ -4201,6 +4201,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-distinguishing-state-generator"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-distinguishing-state-generator-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-distinguishing-state-generator",
+]
+
+[[package]]
 name = "wcontainers-docker"
 version = "0.1.0"
 

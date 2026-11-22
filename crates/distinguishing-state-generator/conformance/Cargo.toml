@@ -1,0 +1,11 @@
+[package]
+name = "wcontainers-distinguishing-state-generator-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-distinguishing-state-generator = { path = ".." }
