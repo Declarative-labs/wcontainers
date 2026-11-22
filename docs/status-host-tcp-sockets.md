@@ -3,6 +3,29 @@
 Plan: docs/plan-host-tcp-sockets.md. Milestones there: T1 (connections and listeners, the suite), T2 (state
 readings, repair, authentication, multipath state, the privileged settings).
 
+## 2026-11-21: waiting is the Readiness trait
+- `wait_for_events`, `wait_for_listener_events` and `PollEvents` are gone. `HostTcpSockets` implements
+  `wcontainers_readiness::Readiness<HostTcpConnection>` and `Readiness<HostTcpListener>` (`wait_until_ready` on the six
+  facts of `ReadyFor`), through the shared `Watcher`, each socket watched with `ReadyFor::all()`. A wait gives every
+  fact that holds, not only those asked for.
+- Suite: it re-exports the readiness suite as `readiness_conformance` and runs it as `connection_readiness_contract`
+  (`waiting_for_data`, and `waiting_for_urgent_data_until_a_reset` for the failure check) and
+  `listener_readiness_contract` (`waiting_for_a_connection`). The listener runs five of the six checks, not the failure
+  check: no call of the TCP traits makes a listener get an error or a hang-up.
+- Deleted as copies of the readiness suite: wait_for_events_finishes_when_data_arrives,
+  wait_for_events_answers_at_once_when_ready, dropping_a_wait_cancels_it, wait_ends_with_the_errors_always_reported,
+  listener_wait_finishes_when_a_connection_comes, dropping_a_listener_wait_cancels_it. Deleted as of the twelve bits:
+  the normal-writable interest and the "no data_to_read given" assertions. many_waits_each_wake_once is now
+  waits_on_many_connections_each_wake_once (one wait on each of 16 connections; two on one is the readiness suite's).
+- A real check for each fact: READABLE (the readiness suite, and a listener with a connection to accept), WRITABLE
+  (wait_for_room_finishes_when_the_peer_reads), URGENT_DATA, PEER_FINISHED_SENDING (with no hang-up), HANG_UP (new:
+  wait_for_a_hang_up_finishes_when_both_ways_are_shut, both ends shut down writing, no error) and ERROR (new:
+  wait_for_an_error_finishes_when_the_peer_resets). mutants.sh names the new texts of the shared crate.
+- Run on the ARM machine (job readiness-tcp): 113 passed, six runs; the eight wait mutants each fail the suite.
+  Clippy: no warning in this track's files (two in crates/kernel/interface.rs, not this track's). Literal check: nothing.
+- For the owner: the trait's comment does not say that ERROR and HANG_UP end a wait whether or not they were asked for,
+  which the implementation does and the readiness suite checks.
+
 ## For the UDP, ICMP and raw tracks
 - New, run 6: `receive_message` (TCP's only) no longer allocates: `ReceivedMessage` has `length`, `flags` and
   `control` (the bytes), and `messages()` walks them in place as level, type and data (`ControlMessages`, which
@@ -298,6 +321,28 @@ readings, repair, authentication, multipath state, the privileged settings).
   T2 settings (the authentication repair values, repair options and windows) are not in T1.
 
 ## Measurements
+- Run 9, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-22 00:04 to 00:12, load 1.2 to 2.6: clippy with
+  warnings denied clean (tcp host, suite, shared crate); 106 passed, 0 failed, six runs, each 7.2 to 7.3 s (the
+  keep-alive check now waits about 4 s for its second count). The first run failed only in
+  accept_names_where_the_synchronize_arrived on a multipath accept's mark (0, see For the owner), now TCP only.
+- Run 9 broken copies (mutants.sh, 00:06 to 00:11, load 1.6 to 2.6; logs mutants-run9.log and run9-b.log in
+  scratch): multicast-noop (multicast_groups_are_joined_and_left), anycast-noop (anycast_addresses_are_joined_and_left),
+  owner-ignored (connect_and_listen_make_sockets_of_their_owner), listener-unread-reports-kept (its new check),
+  keep-alive-probes-always-one (keep_alive_probes_end_an_unanswered_connection), accept-interface-exact-address-only
+  (accept_names_where_the_synchronize_arrived), and every authentication copy (mac length, coverage, key use, a held
+  key's use, a held key refused, removal's current key, an absent key's removal refused, the options' current key,
+  the requirement, and each of the three settings doing nothing) failed the suite. Three passed the first time
+  (key use, a held key's use, removal's current key: the key Linux chooses without a current one was the same);
+  the check now adds the keys in both orders and removes with three keys held, and all three fail it. 130 copies.
+- Run 9 independent check from a clean clone of main at 209469ac (job host-tcp-sockets-clean, 00:12 to 00:13, load
+  1.6 to 5; log clean-check-run9.log in scratch): build folder emptied, clippy with warnings denied clean (9 s), 106
+  passed in 7.24 s; `cargo tree` of tcp-sockets, internet-protocol, configurable, negative-route-advice, kernel, abi
+  and the suite names only abi, configurable, executor, internet-protocol, kernel, negative-route-advice,
+  tcp-sockets and the two conformance crates; `git diff ae9c53ca HEAD` of the .rs files beside the tcp-sockets,
+  internet-protocol, kernel, configurable and negative-route-advice interfaces is empty (abi's and system's changed
+  only in other tracks' commits 564626c0, fd65d351, 4ee5def7, 5da46611). The literal check found one redefinition
+  (`HEXADECIMAL`), renamed in 592ee1b9; again from a clean clone at 592ee1b9 (00:14, load 4.6): 106 passed, no
+  literal finding in this track's files.
 - Run 8, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 23:17 to 23:21, load 2.8 to 5.3: clippy with
   warnings denied clean (tcp host, suite, shared crate); 60 full runs in a row at `RUST_TEST_THREADS=12`, each 101
   passed, 0 failed, 3.44 to 3.51 s (log repeat-run8b.log in scratch). Before the backlog check's second change, 60
