@@ -34,6 +34,7 @@ gs_streams.dxbc	ok ; glsl absent compute
 gs_tess_line.dxbc	ok ; glsl absent compute
 gs_tess_point.dxbc	ok ; glsl absent compute
 gs_tess_tri.dxbc	ok ; glsl absent compute
+gs_typed.dxbc	ok views:R32Float ; glsl absent compute
 gs_unplaced.dxbc	ok ; glsl absent compute
 gs_values_tess.dxbc	ok ; glsl absent compute
 hs_line_even_line.dxbc	ok ; glsl absent compute

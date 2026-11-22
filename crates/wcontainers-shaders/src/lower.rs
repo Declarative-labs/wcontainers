@@ -836,9 +836,6 @@ impl<'a> Lowering<'a> {
                 return Err(unsupported(crate::refusal::TYPED_BUFFER_STORAGE_AS_TEXTURE));
             }
         };
-        if self.stage == SourceStage::Geometry {
-            return Err(unsupported(crate::refusal::TYPED_BUFFER_IN_GEOMETRY));
-        }
         let kind = if storage {
             SlotKind::Storage
         } else {

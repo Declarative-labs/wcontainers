@@ -33,6 +33,7 @@ gs_streams.dxil	ok ; glsl absent compute
 gs_tess_line.dxil	ok ; glsl absent compute
 gs_tess_point.dxil	ok ; glsl absent compute
 gs_tess_tri.dxil	ok ; glsl absent compute
+gs_typed.dxil	ok views:R32Float ; glsl absent compute
 gs_unplaced.dxil	ok ; glsl absent compute
 gs_values_tess.dxil	ok ; glsl absent compute
 hs_line_even_line.dxil	ok ; glsl absent compute

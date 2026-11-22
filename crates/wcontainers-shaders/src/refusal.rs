@@ -140,7 +140,6 @@ pub const TYPED_BUFFER: &str = "TypedBuffer";
 pub const TYPED_BUFFER_ATOMIC_FORMAT: &str = "TypedBufferAtomicFormat";
 pub const TYPED_BUFFER_FORMAT: &str = "TypedBufferFormat";
 pub const TYPED_BUFFER_FORMAT_ABSENT: &str = "TypedBufferFormatAbsent";
-pub const TYPED_BUFFER_IN_GEOMETRY: &str = "TypedBufferInGeometry";
 pub const TYPED_BUFFER_STORAGE_AS_TEXTURE: &str = "TypedBufferStorageAsTexture";
 pub const TYPED_BUFFER_USE: &str = "TypedBufferUse";
 pub const TYPE_16_BIT: &str = "Type16Bit";
