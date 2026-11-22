@@ -9,11 +9,15 @@ use linux_raw_sys::net::{
     IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
 };
 use linux_raw_sys::netlink::RTAX_MTU;
-use netlink_packet_core::{NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload};
+use netlink_packet_core::{
+    ErrorMessage, NLM_F_DUMP, NLM_F_REQUEST, NLMSG_ALIGNTO, NetlinkHeader, NetlinkMessage,
+    NetlinkPayload,
+};
 use netlink_packet_route::link::{AfSpecInet6, AfSpecUnspec, LinkAttribute, LinkMessage};
 use netlink_packet_route::route::{
     RouteAddress, RouteAttribute, RouteFlags, RouteMessage, RouteMetric, RouteType, RouteVia,
 };
+use netlink_packet_route::rule::{RuleAttribute, RuleMessage};
 use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
 use netlink_sys::protocols::NETLINK_ROUTE;
 use netlink_sys::{Socket, SocketAddr as NetlinkAddress};
@@ -34,6 +38,8 @@ use wcontainers_kernel::UserId;
 const LINK_SCOPE: &str = "route lookup: a link-scope IPv4 lookup the routing socket cannot ask for";
 const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IPv4 address the host lacks, which the routing socket always checks";
 const UPPER_LAYER_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take (it takes TCP, UDP, ICMP and ICMPv6)";
+const RULE_ON_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take, which a rule of the namespace selects on";
+const HASHED_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take, on a routing entry whose choice among next hops may hash the protocol";
 const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
 const PROBE: &str = "route lookup: a datagram socket connected out of the route's interface took another routing entry or none, so what it is told is not this route's";
 
@@ -131,9 +137,56 @@ impl<'a> RoutingSocket<'a> {
     }
 
     fn exchange(&mut self, message: RouteNetlinkMessage) -> Result<RouteNetlinkMessage, HostError> {
+        self.send(message, NLM_F_REQUEST)?;
+        loop {
+            self.receive()?;
+            let reply = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&self.buffers.reply)
+                .map_err(|_| HostError::Errno(libc::EPROTO))?;
+            if reply.header.sequence_number != self.sequence {
+                continue;
+            }
+            return match reply.payload {
+                NetlinkPayload::InnerMessage(message) => Ok(message),
+                NetlinkPayload::Error(error) => Err(netlink_error(&error)),
+                _ => Err(HostError::Errno(libc::EPROTO)),
+            };
+        }
+    }
+
+    /// Asks for a dump and tells whether any message of it matches, reading it to its end.
+    fn dump(
+        &mut self,
+        message: RouteNetlinkMessage,
+        matches: impl Fn(&RouteNetlinkMessage) -> bool,
+    ) -> Result<bool, HostError> {
+        self.send(message, NLM_F_REQUEST | NLM_F_DUMP)?;
+        let mut matched = false;
+        loop {
+            self.receive()?;
+            let mut rest = self.buffers.reply.as_slice();
+            while !rest.is_empty() {
+                let reply = NetlinkMessage::<RouteNetlinkMessage>::deserialize(rest)
+                    .map_err(|_| HostError::Errno(libc::EPROTO))?;
+                let length = usize::try_from(reply.header.length)
+                    .map_err(|_| HostError::Errno(libc::EPROTO))?
+                    .next_multiple_of(usize::from(NLMSG_ALIGNTO));
+                if reply.header.sequence_number == self.sequence {
+                    match reply.payload {
+                        NetlinkPayload::Done(_) => return Ok(matched),
+                        NetlinkPayload::InnerMessage(message) => matched |= matches(&message),
+                        NetlinkPayload::Error(error) => return Err(netlink_error(&error)),
+                        _ => {}
+                    }
+                }
+                rest = rest.get(length..).unwrap_or_default();
+            }
+        }
+    }
+
+    fn send(&mut self, message: RouteNetlinkMessage, flags: u16) -> Result<(), HostError> {
         self.sequence = self.sequence.wrapping_add(1);
         let mut header = NetlinkHeader::default();
-        header.flags = NLM_F_REQUEST;
+        header.flags = flags;
         header.sequence_number = self.sequence;
         let mut packet = NetlinkMessage::new(header, NetlinkPayload::from(message));
         packet.finalize();
@@ -144,33 +197,22 @@ impl<'a> RoutingSocket<'a> {
         self.socket
             .send(&buffers.request, NO_FLAGS)
             .map_err(io_error)?;
-        loop {
-            // A peek tells the reply's whole length, so that the buffer grows to take it before it is read.
-            buffers.reply.clear();
-            let length = self
-                .socket
-                .recv(&mut buffers.reply, libc::MSG_PEEK | libc::MSG_TRUNC)
-                .map_err(io_error)?;
-            buffers.reply.clear();
-            buffers.reply.reserve(length);
-            self.socket
-                .recv(&mut buffers.reply, NO_FLAGS)
-                .map_err(io_error)?;
-            let reply = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&buffers.reply)
-                .map_err(|_| HostError::Errno(libc::EPROTO))?;
-            if reply.header.sequence_number != self.sequence {
-                continue;
-            }
-            return match reply.payload {
-                NetlinkPayload::InnerMessage(message) => Ok(message),
-                NetlinkPayload::Error(error) => Err(HostError::Errno(
-                    error
-                        .code
-                        .map_or(libc::EPROTO, |code| code.get().saturating_neg()),
-                )),
-                _ => Err(HostError::Errno(libc::EPROTO)),
-            };
-        }
+        Ok(())
+    }
+
+    /// Reads one datagram of the kernel's into the reply buffer.
+    fn receive(&mut self) -> Result<(), HostError> {
+        let reply = &mut self.buffers.reply;
+        // A peek tells the datagram's whole length, so that the buffer grows to take it before it is read.
+        reply.clear();
+        let length = self
+            .socket
+            .recv(reply, libc::MSG_PEEK | libc::MSG_TRUNC)
+            .map_err(io_error)?;
+        reply.clear();
+        reply.reserve(length);
+        self.socket.recv(reply, NO_FLAGS).map_err(io_error)?;
+        Ok(())
     }
 }
 
@@ -207,8 +249,9 @@ impl Lookup<'_> {
                 .attributes
                 .push(RouteAttribute::Source(RouteAddress::Inet(source)));
         }
-        self.selectors(
+        let protocol = self.selectors(
             &mut request,
+            IpVersion::V4,
             route.interface,
             route.mark.0,
             owner,
@@ -218,6 +261,9 @@ impl Lookup<'_> {
             &self.exchange_route(request.clone())?,
             IpAddr::V4(destination),
         )?;
+        if protocol == Protocol::Withheld {
+            self.protocol_not_hashed(&request)?;
+        }
         if found.kind == RouteKind::Broadcast && route.broadcast == BroadcastPermission::Refused {
             return Err(HostError::Errno(libc::EACCES));
         }
@@ -271,9 +317,15 @@ impl Lookup<'_> {
         route: &Ipv6RouteSelectors<'_>,
         owner: UserId,
     ) -> Result<(FoundRoute, Route), HostError> {
+        // Every IPv6 send of Linux takes the unspecified destination for loopback's address.
+        let destination = if route.destination.is_unspecified() {
+            Ipv6Addr::LOCALHOST
+        } else {
+            route.destination
+        };
         let destination = match &route.routing_header {
-            None => route.destination,
-            Some(header) => self.routing_header_first_hop(header, route.destination)?,
+            None => destination,
+            Some(header) => self.routing_header_first_hop(header, destination)?,
         };
         let mut request = RouteMessage::default();
         request.header.address_family = AddressFamily::Inet6;
@@ -296,8 +348,9 @@ impl Lookup<'_> {
         request
             .attributes
             .push(RouteAttribute::Flowlabel(route.flow_label.value()));
-        self.selectors(
+        let protocol = self.selectors(
             &mut request,
+            IpVersion::V6,
             route.interface,
             route.mark.0,
             owner,
@@ -307,6 +360,9 @@ impl Lookup<'_> {
             &self.exchange_route(request.clone())?,
             IpAddr::V6(destination),
         )?;
+        if protocol == Protocol::Withheld {
+            self.protocol_not_hashed(&request)?;
+        }
         let link = self.read_link(found.interface)?;
         // A source an address of the host's own routes from itself whatever the preferences, as the first rule of choosing a source says.
         let preferences = (route.source.is_none()
@@ -653,18 +709,27 @@ impl Lookup<'_> {
     fn selectors(
         &self,
         request: &mut RouteMessage,
+        version: IpVersion,
         interface: Option<InterfaceIndex>,
         mark: u32,
         owner: UserId,
         upper_layer: UpperLayer,
-    ) -> Result<(), HostError> {
+    ) -> Result<Protocol, HostError> {
+        let protocol = if routing_socket_takes(version, upper_layer.protocol) {
+            Protocol::Given
+        } else {
+            self.no_rule_selects(version, upper_layer.protocol)?;
+            Protocol::Withheld
+        };
         let attributes = &mut request.attributes;
         if let Some(interface) = interface {
             attributes.push(RouteAttribute::Oif(interface.0));
         }
         attributes.push(RouteAttribute::Mark(mark));
         attributes.push(RouteAttribute::Uid(owner.0));
-        attributes.push(RouteAttribute::IpProto(upper_layer.protocol.0));
+        if protocol == Protocol::Given {
+            attributes.push(RouteAttribute::IpProto(upper_layer.protocol.0));
+        }
         match upper_layer.selector {
             None => {}
             Some(UpperLayerSelector::Ports(ports)) => {
@@ -678,13 +743,76 @@ impl Lookup<'_> {
                     code.0,
                 ])));
             }
-            // The routing socket takes no protocol with a mobility header type, which it would read from the same bytes.
-            Some(UpperLayerSelector::MobilityHeader(_)) => {
-                return Err(self.shortfalls.refuse(UPPER_LAYER_PROTOCOL));
+            // The kernel's flow keeps a mobility header type in the destination port's first byte.
+            Some(UpperLayerSelector::MobilityHeader(message_type)) => {
+                attributes.push(RouteAttribute::Dport(u16::from_be_bytes([
+                    message_type.0,
+                    u8::MIN,
+                ])));
             }
+        }
+        Ok(protocol)
+    }
+
+    /// Refuses a protocol the routing socket does not take when one of the version's rules selects on it or on what a lookup without one is asked as.
+    ///
+    /// A lookup without the protocol differs from Linux's own only there and in a hash among next hops.
+    fn no_rule_selects(&self, version: IpVersion, protocol: IpNumber) -> Result<(), HostError> {
+        let mut request = RuleMessage::default();
+        // The IPv4 routing socket asks a lookup without a protocol as UDP, the IPv6 one as protocol 0, which no rule selects.
+        let (family, asked_as) = match version {
+            IpVersion::V4 => (AddressFamily::Inet, Some(IpNumber::UDP)),
+            IpVersion::V6 => (AddressFamily::Inet6, None),
+        };
+        request.header.family = family;
+        let selected = |number: u8| number == protocol.0 || Some(IpNumber(number)) == asked_as;
+        let selects = self.routing.borrow_mut().dump(
+            RouteNetlinkMessage::GetRule(request),
+            |message| {
+                matches!(message, RouteNetlinkMessage::NewRule(rule) if rule.attributes.iter().any(
+                    |attribute| matches!(attribute, RuleAttribute::IpProtocol(number) if selected(u8::from(*number)))
+                ))
+            },
+        )?;
+        if selects {
+            return Err(self.shortfalls.refuse(RULE_ON_PROTOCOL));
         }
         Ok(())
     }
+
+    /// Refuses a lookup without its protocol whose routing entry has several next hops, among which Linux may choose by a hash of the protocol.
+    fn protocol_not_hashed(&self, request: &RouteMessage) -> Result<(), HostError> {
+        let several = self
+            .entry(request.clone())?
+            .attributes
+            .iter()
+            .any(|attribute| {
+                matches!(
+                    attribute,
+                    RouteAttribute::MultiPath(_) | RouteAttribute::NhId(_)
+                )
+            });
+        if several {
+            return Err(self.shortfalls.refuse(HASHED_PROTOCOL));
+        }
+        Ok(())
+    }
+}
+
+/// Whether the routing socket was given the lookup's protocol.
+#[derive(PartialEq, Eq)]
+enum Protocol {
+    Given,
+    Withheld,
+}
+
+/// Tells whether the routing socket takes the protocol: TCP, UDP and the version's ICMP.
+fn routing_socket_takes(version: IpVersion, protocol: IpNumber) -> bool {
+    let icmp = match version {
+        IpVersion::V4 => IpNumber::ICMP,
+        IpVersion::V6 => IpNumber::IPV6_ICMP,
+    };
+    [IpNumber::TCP, IpNumber::UDP, icmp].contains(&protocol)
 }
 
 struct FoundRoute {
@@ -822,6 +950,14 @@ fn hop_limit(limit: u32) -> Result<HopLimit, HostError> {
     u8::try_from(limit)
         .map(HopLimit)
         .map_err(|_| HostError::Errno(libc::EPROTO))
+}
+
+fn netlink_error(error: &ErrorMessage) -> HostError {
+    HostError::Errno(
+        error
+            .code
+            .map_or(libc::EPROTO, |code| code.get().saturating_neg()),
+    )
 }
 
 fn io_error(error: io::Error) -> HostError {

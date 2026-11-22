@@ -274,6 +274,33 @@ pub fn loopback_route_is_local<R: RouteResolver>(resolver: R) {
     }
 }
 
+/// Checks that the unspecified destination routes as loopback's address, where Linux sends a datagram to it.
+pub fn unspecified_destination_is_loopback<R: RouteResolver>(resolver: R) {
+    network();
+    let options = Ipv4Options::new();
+    let routes = [
+        (
+            resolve4(&resolver, v4(&options, Ipv4Addr::UNSPECIFIED)),
+            resolve4(&resolver, v4(&options, Ipv4Addr::LOCALHOST)),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        ),
+        (
+            resolve6(&resolver, v6(Ipv6Addr::UNSPECIFIED)),
+            resolve6(&resolver, v6(Ipv6Addr::LOCALHOST)),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        ),
+    ];
+    for (unspecified, loopback, address) in routes {
+        let route = unspecified.expect("the unspecified address resolves");
+        assert_eq!(route, loopback.expect("loopback resolves"), "{address}");
+        assert_eq!(
+            (route.source, route.path_mtu),
+            connected_source_and_path_mtu(address, DISCARD),
+            "{address}"
+        );
+    }
+}
+
 /// The namespace's default IPv4 TTL.
 const DEFAULT_TTL: &str = "/proc/sys/net/ipv4/ip_default_ttl";
 /// The packet count of a statistics object in iproute2's JSON.
@@ -417,22 +444,40 @@ route add 10.6.0.0/16 dev da mtu lock 0";
     }
 }
 
-/// Checks that an encapsulating route's path MTU is what a socket connected through it is told, if the resolver answers.
+/// Checks that an encapsulating route's path MTU is what a socket connected through it is told, IPv4 and IPv6.
 pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolver: R) {
     /// An address behind the encapsulating route.
     ///
+    /// https://www.rfc-editor.org/rfc/rfc1918#section-3
+    const DESTINATION: Ipv4Addr = Ipv4Addr::new(10, 5, 0, 1);
+    /// An IPv6 address behind the encapsulating route.
+    ///
     /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
-    const DESTINATION: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 1);
+    const DESTINATION_V6: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 1);
     network();
-    const ROUTE: &str = "route add fd05::/64 encap seg6 mode encap segs fd01::7 dev da";
-    ip(IPV6, ROUTE);
-    let told = connected_path_mtu(IpAddr::V6(DESTINATION), DISCARD);
-    unless_refused(resolve6(&resolver, v6(DESTINATION)), |route| {
+    const ROUTE: &str = "route add 10.5.0.0/16 encap seg6 mode encap segs fd01::7 dev da";
+    const ROUTE_V6: &str = "route add fd05::/64 encap seg6 mode encap segs fd01::7 dev da";
+    ip(IPV4, ROUTE);
+    ip(IPV6, ROUTE_V6);
+    let options = Ipv4Options::new();
+    for (route, destination) in [
+        (
+            resolve4(&resolver, v4(&options, DESTINATION)),
+            IpAddr::V4(DESTINATION),
+        ),
+        (
+            resolve6(&resolver, v6(DESTINATION_V6)),
+            IpAddr::V6(DESTINATION_V6),
+        ),
+    ] {
+        let told = connected_path_mtu(destination, DISCARD);
+        assert!(told < A_MTU, "{destination}: {told}");
         assert_eq!(
             route.expect("resolves").path_mtu,
-            MaximumTransmissionUnit(told)
+            MaximumTransmissionUnit(told),
+            "{destination}"
         );
-    });
+    }
 }
 
 /// The discard port ([RFC 863](https://www.rfc-editor.org/rfc/rfc863)); connecting sends nothing.
@@ -440,20 +485,34 @@ const DISCARD: u16 = 9;
 
 /// Returns the path MTU Linux tells a datagram socket connected to the address.
 fn connected_path_mtu(address: IpAddr, port: u16) -> u32 {
+    connected_source_and_path_mtu(address, port).1.0
+}
+
+/// Returns the source Linux gives a datagram socket connected to the address, and the path MTU it tells it.
+fn connected_source_and_path_mtu(address: IpAddr, port: u16) -> (IpAddr, MaximumTransmissionUnit) {
     let any = match address {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     };
     let socket = std::net::UdpSocket::bind((any, u16::MIN)).expect("a socket opens");
     socket.connect((address, port)).expect("connects");
+    let source = socket
+        .local_addr()
+        .expect("a connected socket's source")
+        .ip();
     #[cfg(target_os = "linux")]
-    return match address {
-        IpAddr::V4(_) => rustix::net::sockopt::ip_mtu(&socket),
-        IpAddr::V6(_) => rustix::net::sockopt::ipv6_mtu(&socket),
-    }
-    .expect("a connected socket's path MTU");
+    return (
+        source,
+        MaximumTransmissionUnit(
+            match address {
+                IpAddr::V4(_) => rustix::net::sockopt::ip_mtu(&socket),
+                IpAddr::V6(_) => rustix::net::sockopt::ipv6_mtu(&socket),
+            }
+            .expect("a connected socket's path MTU"),
+        ),
+    );
     #[cfg(not(target_os = "linux"))]
-    panic!("only Linux tells a connected socket's path MTU");
+    panic!("only Linux tells a connected socket's path MTU, not {source}");
 }
 
 /// Checks that no route, a prohibited, a blackholed and an unreachable one fail with the kernel's errors.
@@ -797,27 +856,43 @@ pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
     ///
     /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1
     const BINDING_ACKNOWLEDGEMENT: u8 = 6;
+    /// The binding error's mobility header type.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1
+    const BINDING_ERROR: u8 = 7;
     let network = network();
-    /// Type 5 as the port the flow keeps it in.
-    const RULE_V6: &str = "rule add ipproto 135 dport 1280 lookup 100";
-    ip(IPV6, RULE_V6);
-    for (message_type, expected) in [
+    /// Type 5 as the port the flow keeps it in, for any protocol.
+    const PORT_RULE: &str = "rule add dport 1280 lookup 100";
+    /// Type 6 as the port the flow keeps it in, for the mobility header alone.
+    const PROTOCOL_RULE: &str = "rule add ipproto 135 dport 1536 lookup 100";
+    let check = |cases: &[(u8, InterfaceIndex)]| {
+        for &(message_type, expected) in cases {
+            let route = Ipv6RouteSelectors {
+                upper_layer: UpperLayer {
+                    protocol: IpNumber::MOBILITY_HEADER,
+                    selector: Some(UpperLayerSelector::MobilityHeader(MobilityHeaderType(
+                        message_type,
+                    ))),
+                },
+                ..v6(FAR_V6)
+            };
+            unless_refused(resolve6(&resolver, route), |route| {
+                assert_eq!(interface(route), expected, "{message_type}");
+            });
+        }
+    };
+    ip(IPV6, PORT_RULE);
+    check(&[
         (BINDING_UPDATE, network.b),
         (BINDING_ACKNOWLEDGEMENT, network.a),
-    ] {
-        let route = Ipv6RouteSelectors {
-            upper_layer: UpperLayer {
-                protocol: IpNumber::MOBILITY_HEADER,
-                selector: Some(UpperLayerSelector::MobilityHeader(MobilityHeaderType(
-                    message_type,
-                ))),
-            },
-            ..v6(FAR_V6)
-        };
-        unless_refused(resolve6(&resolver, route), |route| {
-            assert_eq!(interface(route), expected, "{message_type}");
-        });
-    }
+        (BINDING_ERROR, network.a),
+    ]);
+    ip(IPV6, PROTOCOL_RULE);
+    check(&[
+        (BINDING_UPDATE, network.b),
+        (BINDING_ACKNOWLEDGEMENT, network.b),
+        (BINDING_ERROR, network.a),
+    ]);
 }
 
 /// Checks that a rule on the flow label sends only lookups with that label to the other table.
@@ -1320,21 +1395,60 @@ rule add uidrange 4242-4242 lookup 100";
     }
 }
 
-/// Checks that a protocol without ports routes as any other.
+/// Checks that a rule on another protocol leaves GRE alone, that one on GRE selects it, and that SCTP's ports select as any protocol's.
 pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
+    /// A port SCTP's rule selects, M3UA's.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4666#section-1.4.8
+    const M3UA: u16 = 2905;
+    /// A port no rule selects.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6335#section-6
+    const OTHER: u16 = 2906;
+    /// A source port in the registered range.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc6335#section-6
+    const SOURCE_PORT: Port = Port(40000);
     let network = network();
+    const OTHER_RULES: &str = "rule add ipproto udp lookup 100
+rule add dport 2905 lookup 100";
+    const GRE_RULE: &str = "rule add ipproto gre lookup 100";
     let options = Ipv4Options::new();
+    let check = |upper_layer: UpperLayer, expected: InterfaceIndex| {
+        let route = Ipv4RouteSelectors {
+            upper_layer,
+            ..v4(&options, FAR)
+        };
+        unless_refused(resolve4(&resolver, route), |route| {
+            assert_eq!(interface(route), expected, "{upper_layer:?}");
+        });
+        let route = Ipv6RouteSelectors {
+            upper_layer,
+            ..v6(FAR_V6)
+        };
+        unless_refused(resolve6(&resolver, route), |route| {
+            assert_eq!(interface(route), expected, "{upper_layer:?}");
+        });
+    };
     let gre = UpperLayer {
         protocol: IpNumber::GRE,
         selector: None,
     };
-    let route = Ipv4RouteSelectors {
-        upper_layer: gre,
-        ..v4(&options, FAR)
+    let sctp = |port| UpperLayer {
+        protocol: IpNumber::SCTP,
+        selector: Some(UpperLayerSelector::Ports(TransportPorts {
+            source: SOURCE_PORT,
+            destination: Port(port),
+        })),
     };
-    unless_refused(resolve4(&resolver, route), |route| {
-        assert_eq!(interface(route), network.a);
-    });
+    ip(IPV4, OTHER_RULES);
+    ip(IPV6, OTHER_RULES);
+    check(gre, network.a);
+    check(sctp(M3UA), network.b);
+    check(sctp(OTHER), network.a);
+    ip(IPV4, GRE_RULE);
+    ip(IPV6, GRE_RULE);
+    check(gre, network.b);
 }
 
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
@@ -1344,6 +1458,11 @@ macro_rules! tests {
         #[test]
         fn loopback_route_is_local() {
             $crate::loopback_route_is_local($value);
+        }
+
+        #[test]
+        fn unspecified_destination_is_loopback() {
+            $crate::unspecified_destination_is_loopback($value);
         }
 
         #[test]
