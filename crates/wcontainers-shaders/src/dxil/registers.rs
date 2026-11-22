@@ -110,7 +110,7 @@ fn with_location(binding: &Binding, register: u32) -> Binding {
 }
 
 /// The binding of a register shared by `values`: the first one's interpolation (the reader leaves an
-/// array's unset: WGSL's default then), flat for integers.
+/// array's unset: WGSL's default then, its sampling kept), flat for integers.
 fn register_binding(values: &[&Value], register: u32, scalar: Scalar) -> Binding {
     let mut binding = with_location(&values[0].binding, register);
     if let Binding::Location {
@@ -124,7 +124,7 @@ fn register_binding(values: &[&Value], register: u32, scalar: Scalar) -> Binding
             *sampling = None;
         } else if interpolation.is_none() {
             *interpolation = Some(naga::Interpolation::Perspective);
-            *sampling = Some(naga::Sampling::Center);
+            sampling.get_or_insert(naga::Sampling::Center);
         }
     }
     binding
