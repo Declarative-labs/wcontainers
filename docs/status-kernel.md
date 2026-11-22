@@ -771,6 +771,11 @@ kernel lib 17 and its conformance suite 14 passed; the stand-in's round_trips 3 
 passed; saving with 12 seeds passed (16:24 to 16:29 UTC, load 4 to 8; and again at a1c69571,
 check2.log). Not run, by the rulings of 2026-11-22: the Mac's part of the suite and the linter.
 
+The whole suite at 2c1808e6, the fixes before the literal renames (scratch ka11/suite.sh; job
+kernel/20261122-163819-1896356, 16:38 to 18:04 UTC, load 1.6 at its start and 5 at its end;
+kb1/suite.log, failed-now.txt): 378 passed, 35 failed, 8 ignored. The 35 are exactly the ARM list
+(ka12/failed-606d8273.txt); the two new tests pass.
+
 The literal check at a1c69571 (kb1/literals4.log): exits 1, as it did before this run, on lines
 of other tracks' crates and of the interface's files. In this track's crates three findings are
 left, each a test literal of this track's embedders that now equals a constant another track added
