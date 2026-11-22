@@ -5,6 +5,7 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_executor::Executor;
 use wcontainers_executor_simulation::Simulation;
+use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_precise_instruction_set_apple_m5::AppleM5;
 use wcontainers_precise_instruction_set_neoverse_v2::NeoverseV2;
@@ -16,6 +17,10 @@ use wcontainers_processor_architecture_arm64::{
 };
 
 use crate::{MeasuredInstructionSet, MeasurementFailure};
+
+/// Every combination of the critical values of each instruction's operands.
+const GENERATOR: CriticalValueProduct<Arm64InputDomain> =
+    CriticalValueProduct::new(Arm64InputDomain);
 
 const KNOWN: [&dyn PreciseInstructionSet<Arm64>; 2] = [&AppleM5, &NeoverseV2];
 
@@ -71,11 +76,9 @@ impl<Chip: Executor<Architecture = Arm64>> Executor for Counted<Chip> {
 
 /// Measures a stand-in that plays the chip of `played`, which `set` is a second value of.
 fn assert_measures_as<Set: PreciseInstructionSet<Arm64>>(set: Set, played: Set) {
-    let Ok(measured) = MeasuredInstructionSet::measure(
-        &mut Simulation::new(played),
-        &KNOWN,
-        &CriticalValueProduct,
-    ) else {
+    let Ok(measured) =
+        MeasuredInstructionSet::measure(&mut Simulation::new(played), &KNOWN, &GENERATOR)
+    else {
         panic!("a stand-in playing a known set measures as that set");
     };
     for instruction in Arm64::list_instructions() {
@@ -102,26 +105,20 @@ fn instruction_the_known_sets_agree_on_is_not_run() {
         chip: Simulation::new(AppleM5),
         runs: 0,
     };
-    assert!(
-        MeasuredInstructionSet::measure(&mut chip, &[&AppleM5, &AppleM5], &CriticalValueProduct)
-            .is_ok()
-    );
+    assert!(MeasuredInstructionSet::measure(&mut chip, &[&AppleM5, &AppleM5], &GENERATOR).is_ok());
     assert_eq!(chip.runs, 0);
-    assert!(MeasuredInstructionSet::measure(&mut chip, &KNOWN, &CriticalValueProduct).is_ok());
+    assert!(MeasuredInstructionSet::measure(&mut chip, &KNOWN, &GENERATOR).is_ok());
     let differing = [Instruction::Rdvl, Instruction::MrsCtrEl0].map(|instruction| {
-        DistinguishingStateGenerator::<Arm64>::generate_states(&CriticalValueProduct, instruction)
-            .count()
+        DistinguishingStateGenerator::<Arm64>::generate_states(&GENERATOR, instruction).count()
     });
     assert_eq!(chip.runs, differing.iter().sum::<usize>());
 }
 
 #[test]
 fn behavior_no_set_knows_is_named_with_its_state() {
-    let Err(failure) = MeasuredInstructionSet::measure(
-        &mut Simulation::new(UnknownCacheType),
-        &KNOWN,
-        &CriticalValueProduct,
-    ) else {
+    let Err(failure) =
+        MeasuredInstructionSet::measure(&mut Simulation::new(UnknownCacheType), &KNOWN, &GENERATOR)
+    else {
         panic!("no known set gives the chip's cache type");
     };
     let MeasurementFailure::NoBehaviorAgrees {
@@ -169,8 +166,7 @@ fn behaviors_no_state_tells_apart_are_named() {
 
 #[test]
 fn no_known_set_is_named() {
-    let measured =
-        MeasuredInstructionSet::measure(&mut Simulation::new(AppleM5), &[], &CriticalValueProduct);
+    let measured = MeasuredInstructionSet::measure(&mut Simulation::new(AppleM5), &[], &GENERATOR);
     assert!(matches!(
         measured,
         Err(MeasurementFailure::NoKnownBehavior {

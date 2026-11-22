@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_executor_simulation::Simulation;
+use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set_apple_m5::AppleM5;
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture, Simulator};
 use wcontainers_processor_architecture_arm64::{
@@ -9,6 +10,10 @@ use wcontainers_processor_architecture_arm64::{
 };
 
 use crate::{MalformedRecording, from_text, leave_same_memory, record, to_text};
+
+/// Every combination of the critical values of each instruction's operands.
+const GENERATOR: CriticalValueProduct<Arm64InputDomain> =
+    CriticalValueProduct::new(Arm64InputDomain);
 
 const READ_WRITE: PagePermission = PagePermission::Mapped {
     data_access: DataAccess::ReadWrite,
@@ -27,11 +32,7 @@ fn to_value_assignment(start: u64, bytes: &[u8]) -> MemoryDelta<'_, Arm64> {
 #[test]
 fn text_gives_back_every_recorded_state() {
     for instruction in Arm64::list_instructions() {
-        let recording = record(
-            &mut Simulation::new(AppleM5),
-            &CriticalValueProduct,
-            instruction,
-        );
+        let recording = record(&mut Simulation::new(AppleM5), &GENERATOR, instruction);
         let text = to_text(&recording);
         let Ok(read) = from_text(&text) else {
             panic!("the text of {instruction:?} does not read back");
@@ -120,11 +121,7 @@ fn permission_changed_inside_a_range_is_seen() {
 
 #[test]
 fn recording_answers_only_its_states() {
-    let recording = record(
-        &mut Simulation::new(AppleM5),
-        &CriticalValueProduct,
-        Instruction::Brk,
-    );
+    let recording = record(&mut Simulation::new(AppleM5), &GENERATOR, Instruction::Brk);
     let mut unrecorded = recording.cases()[0].0.clone();
     unrecorded.processor.stack_pointer ^= 1;
     assert!(recording.simulate(unrecorded).is_err());

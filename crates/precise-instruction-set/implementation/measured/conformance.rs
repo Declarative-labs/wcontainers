@@ -1,5 +1,6 @@
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_executor_simulation::Simulation;
+use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_precise_instruction_set_apple_m5::AppleM5;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
@@ -8,14 +9,15 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_processor_architecture_arm64::Arm64;
 use wcontainers_processor_architecture_recording::{Recording, record};
 
+/// Every combination of the critical values of each instruction's operands.
+const GENERATOR: CriticalValueProduct<Arm64InputDomain> =
+    CriticalValueProduct::new(Arm64InputDomain);
+
 /// The set measured on a stand-in that plays the Neoverse V2.
 fn measured() -> MeasuredInstructionSet<Arm64> {
     let known: [&dyn PreciseInstructionSet<Arm64>; 2] = [&AppleM5, &NeoverseV2];
-    let measured = MeasuredInstructionSet::measure(
-        &mut Simulation::new(NeoverseV2),
-        &known,
-        &CriticalValueProduct,
-    );
+    let measured =
+        MeasuredInstructionSet::measure(&mut Simulation::new(NeoverseV2), &known, &GENERATOR);
     let Ok(measured) = measured else {
         panic!("the stand-in plays a known chip, so measuring it succeeds");
     };
@@ -24,13 +26,7 @@ fn measured() -> MeasuredInstructionSet<Arm64> {
 
 fn recordings() -> Vec<Recording<Arm64>> {
     Arm64::list_instructions()
-        .map(|instruction| {
-            record(
-                &mut Simulation::new(NeoverseV2),
-                &CriticalValueProduct,
-                instruction,
-            )
-        })
+        .map(|instruction| record(&mut Simulation::new(NeoverseV2), &GENERATOR, instruction))
         .collect()
 }
 
