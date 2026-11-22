@@ -47,7 +47,6 @@ zerocopy.workspace = true
 coarsetime = "0.1.38"
 
 [dev-dependencies]
-wcontainers-kernel-conformance = { path = "../../../kernel/conformance" }
 
 [features]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)

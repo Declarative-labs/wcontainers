@@ -24,6 +24,15 @@ domain = { version = "0.12.3", default-features = false, features = ["alloc"] }
 rangemap = { version = "1.8.0", default-features = false }
 smallbox = { version = "0.8.9", default-features = false }
 
+[dev-dependencies]
+wcontainers-kernel-conformance = { path = "../../conformance" }
+# The stand-in executor and its test host, which make the kernel the suite runs on.
+wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn" }
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
 [build-dependencies]
 flate2 = "1"
 

@@ -1274,6 +1274,42 @@ pub fn started_with_executor<State: Clone + 'static>(
     (kernel, host)
 }
 
+/// The id of a container's first process, as the kernel numbers it inside the container.
+pub const FIRST_PROCESS: wcontainers_kernel::TaskId = wcontainers_kernel::TaskId(1);
+
+/// A kernel on the stand-in with a container started with the `hello` guest, built into `out`, whose
+/// first process has not run; the kernel interface's suite takes it.
+pub fn hello_not_run(
+    out: &str,
+) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, ()> {
+    const PROGRAM: &str = "hello";
+    let program = crate::guest::build(
+        PROGRAM,
+        &["-nostdlib"],
+        &std::path::Path::new(out).join("guest"),
+    );
+    let mut files = image::reference_image().to_vec();
+    files.extend(image::host_directory(
+        program.parent().expect("a directory"),
+        crate::guest_directory_entry(),
+    ));
+    let path = reference::in_guest_directory(PROGRAM);
+    let arguments = [path.as_str()];
+    let container = Container {
+        files: &files,
+        path: &path,
+        arguments: &arguments,
+        environment: reference::ENVIRONMENT,
+        working_directory: reference::ROOT_DIRECTORY,
+        backend: None,
+        cached: false,
+        published: &[],
+        root_image: None,
+        address_space: crate::standin::SPACE_32_BIT,
+    };
+    started_with_executor(prepare(&container), &container, ()).0
+}
+
 fn run_hosted<H: BetweenSteps + Send>(
     prepared: Prepared,
     mut host: TestHost<H>,
