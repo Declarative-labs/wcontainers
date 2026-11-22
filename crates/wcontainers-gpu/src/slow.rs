@@ -22,6 +22,9 @@ const SHARED_THROUGH_HOST: &str = "shared resource copied between devices throug
 /// The reason [`SlowPath::QuerySetSplitPass`] shows.
 const QUERY_SET_SPLIT_PASS: &str = "query set out of indices split a pass";
 
+/// The reason [`SlowPath::PackedTargetQuantised`] shows.
+const PACKED_TARGET_QUANTISED: &str = "packed target drawn wider and rounded to its bits by a draw";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -314,11 +317,15 @@ pub enum SlowPath {
     /// A pass whose query set had no index left for the next stretch, or that began without a set,
     /// ended, and the next opened with a fresh set.
     QuerySetSplitPass,
+    /// A target of a 16-bit packed format (`B5G6R5`, `B5G5R5A1`) held in a wider one,
+    /// drawn, blended and resolved at the wider precision, and each channel rounded to its own bits
+    /// by a draw when the pass ends.
+    PackedTargetQuantised,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 112] = [
+    pub const ALL: [SlowPath; 113] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -431,6 +438,7 @@ impl SlowPath {
         SlowPath::FrameStretched,
         SlowPath::SharedThroughHost,
         SlowPath::QuerySetSplitPass,
+        SlowPath::PackedTargetQuantised,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -568,6 +576,7 @@ impl SlowPath {
             SlowPath::FrameStretched => FRAME_STRETCHED,
             SlowPath::SharedThroughHost => SHARED_THROUGH_HOST,
             SlowPath::QuerySetSplitPass => QUERY_SET_SPLIT_PASS,
+            SlowPath::PackedTargetQuantised => PACKED_TARGET_QUANTISED,
         }
     }
 }
@@ -654,7 +663,7 @@ mod tests {
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
             StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched \
-            SharedThroughHost QuerySetSplitPass";
+            SharedThroughHost QuerySetSplitPass PackedTargetQuantised";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {
