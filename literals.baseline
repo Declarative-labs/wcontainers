@@ -9117,7 +9117,6 @@ code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"t.y"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"t.z"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"{pair} let w = p0.x | (p0.y << 8u) | (p0.z << 16u) | (p1.y << 24u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"{pair} let w = p0.y | (p0.x << 8u) | (p1.y << 16u) | (p0.z << 24u);"
-code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\n             @group(0) @binding(1) var src: texture_2d<u32>;\n\\n             fn repeat(x: u32, n: u32) -… #68fc31ef009bf1c6
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"texture_3d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"vec2u(at.x + x, at.y + y)"
