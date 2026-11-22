@@ -178,6 +178,9 @@ Nothing built on the Mac (rustfmt of single files only).
   its location and type).
 - For the Direct3D fronts: a geometry shader writing `SV_PrimitiveID` converts; link it with
   `PRIMITIVE_ID_FROM_STAGE` in both keys ("How the Direct3D fronts call `convert`").
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the laptop's `src/shaders-tip`, `target/shaders-tip`, tar and
+  `chrome-r97` (its `out-r97`, `out-r97b` and logs kept), the scratch clones `tip` and `tip-arm`.
 
 ## G6 run 9 (run 96): A14's DXIL part, and typed buffers of B8G8R8X8
 
