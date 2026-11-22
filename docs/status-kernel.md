@@ -349,6 +349,14 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KA, twelfth run: the whole suite at the tip gives K6c bar's results once the reference's own file
+server stopped printing a reply Linux refused for an interrupted request (1fcc83c8; it had made
+one backend test fail now and then under load, on the reference's side). No interface changed
+since a00ab267. KA is not complete, for the same reasons as after the eleventh run: the hooks as
+`ProcessTracer`, warnings through `FallbackObserver` and the release profile wait for the owner;
+the linter and the Mac's part of the suite may not run; the independent check. See "KA, twelfth
+run".
+
 KA, eleventh run: the hardware monitor's tests build again (this milestone had removed names they
 used) and give the same results as at the milestone's start: busybox passes, the kernel test and
 the speed test's compute part fail as they did then. A getppid answered by the kernel inside that
@@ -660,6 +668,43 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, twelfth run
+
+Started about 09:00 UTC on 2026-11-22 at 2e1f61f0 (branch agents). No new merge from main since
+a00ab267, so no interface change to conform to. Everything ran on the ARM64 machine; the Mac only
+edited and formatted files. Scratch kernel/ka12.
+
+The whole suite at the tip (job kernel/20261122-090337-871806, 09:03 to 10:30 UTC, load 5 at its
+start and 3 at its end; ka12/suite-tip.log): 371 passed, 36 failed, 8 ignored. Against the run at
+606d8273 one more failure, backend `large_writes_match_reference`, and nothing else changed (the
+only kernel-side commit between them, ee57be38, changes no reading of the clock).
+- Alone it passed 3 times of 3. The whole backend binary (8 threads) failed one more test in 2 of
+  9 runs, once `large_writes`, once `cached_file_mappings` (load 5 to 26; ka12/backend3.log,
+  lw.out). In the decoded failure our run's output and exit code matched the reference's and our
+  stderr was empty; the reference's stderr held one line, from its own file server:
+  `wc-backend: EncodeMessage(Custom { kind: Other, error: "ENOENT: No such file or directory" })`.
+  Linux refuses a reply with ENOENT when the request was interrupted and no longer waits for it,
+  which libfuse ignores; the test server printed it, so the reference's stderr changed with timing.
+  Neither our kernel nor this milestone is in that path.
+- Fixed in the reference's server (1fcc83c8, crates/executor/implementation/unicorn/backend): in
+  `mount` an ENOENT on writing a reply is not printed. fuse-backend-rs keeps only the error's text,
+  so it is compared with nix's text of ENOENT; nix 0.24 (MIT) was already in that program's build
+  through fuse-backend-rs and is now named as its own dependency. Our kernel's side (`listen`) still
+  prints every error. After it the whole backend binary ran 10 times with only the two ARM-list
+  failures (file_capabilities, special_files; load 6 to 29; ka12/backend10.log).
+- So the suite gives K6c bar's results at the tip, as at 606d8273.
+
+`cargo metadata` on the ARM64 machine: none of the 36 top-level crates under crates/ (every
+interface and the old unmoved crates) has an implementation crate among its normal or build
+dependencies, direct or not.
+
+Looked at for the independent check, not changed: a link to the outside whose wait would ask for
+nothing (a receive has not yet found it empty, and the system took all it was given) keeps no
+wait, so ERROR and HANG_UP, which are reported unasked, are not heard until the next receive or
+send on it; a stream end keeps its wait even then (`Option<ReadyFor>`). A guest blocked on such a
+socket cannot be waiting for input (it has some) or for room (it has it), so no guest result
+was found that depends on it; not measured.
 
 ## KA, eleventh run
 
