@@ -171,6 +171,9 @@ side of each is worked around without changing the interface.
   `lto = "fat"` and `codegen-units = 1` it holds in cycles too. The kernel generic over its system
   is compiled in each embedder's crate, so how its code is inlined, and so its cycles, follow the
   embedder's profile. Example: tests/waitcost.rs's pipe kind, KA ninth run's measurements.
+  KA, tenth run: measured again at load 5 to 10 with thin LTO, the cycles are the same as at the
+  milestone's start (32782 and 32776 per round trip, 11 and 12 pairs), so the 2 percent was not
+  seen at a lower load; a ruling on the profile is only needed if it comes back.
 - KA, eighth run: the kernel's hooks cannot be the interface's `ProcessTracer` without making the
   whole kernel generic over its executor: each hook takes `P: ProcessOf<ProcessState, Executor>`,
   a process handle whose kernel is a `ProcessController` with that executor, but the kernel calls
@@ -178,7 +181,34 @@ side of each is worked around without changing the interface.
   without it. Example: `on_thread_starting` fires inside `clone`, where only `&mut Kernel` and
   `&mut dyn Cpu` exist.
 
+- KA, tenth run: the kernel's hooks can be given through `ProcessTracer` without making the kernel
+  generic over its executor (the handle `KernelProcess` names `S::Executor` only as a type and
+  holds the executor as `&mut dyn Cpu`; tried and undone, see "KA, tenth run"), but two things of
+  the interface then stop it:
+  - A hook's process is any `P: ProcessOf<State, Executor>`, so what it gets from
+    `suspend_process`, `suspend_tasks` and `copy_process_context` is of `P::Kernel`'s types, which
+    the embedder can neither name outside the call nor store (no `'static` bound), nor hand to the
+    kernel it holds. So a process taken off the kernel inside a hook can only be dropped. Example:
+    the stand-in's tests/away.rs (line 190) suspends a process in `on_process_exiting` and resumes
+    the context later on its kernel; taskend.rs and embedder.rs do the same with tasks. A
+    `ProcessTracer` generic over the kernel (`ProcessTracer<K: ProcessController>`, hooks taking
+    `P: Process<Kernel = K>`) would let it, and makes no cycle with this kernel, which is not
+    generic over its system.
+  - A system names one `Executor`, but the runtime's `LocalSystem` runs with any executor (the
+    wasmtime one, the stand-in, the hardware one), so it must become `LocalSystem<E>`, a change in
+    every one of its impls (the runtime track's crate). Example: `Container<CpuSide<Arm64>,
+    LocalSystem>` in the wasmtime tests.
+  Also needed and settled on the kernel's side: the first process's `ExecutionConfig<E>` and
+  `ProcessState` are given at `Kernel::start`, so that every process carries them and `state()` in
+  a hook never meets a process without one.
+
 ## For the orchestrator
+
+- KA, tenth run: inotify `instances_are_limited_per_user` failed on the ARM64 machine because its
+  `fs.inotify.max_user_instances` was Ubuntu's 128 (22 of them taken by the host's root), not
+  Docker Desktop's 8192, which the kernel models and a container's root shares with the host's.
+  Set to 8192 on the machine (/etc/sysctl.d/90-reference-inotify.conf) and added to
+  cloud/setup-machine.sh beside the core pattern.
 
 - KA, ninth run (about 05:48 UTC on the 22nd): the ARM64 machine's disk filled (/work lies on
   /dev/root, 581 GB, not on the stripe arm-machine.md names) and builds failed with "No space left
@@ -299,6 +329,19 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, tenth run: the guest pipe, measured again at load 5 to 10 with thin LTO and the front-end
+counters, is no slower than at the milestone's start (32782 cycles per round trip after, 32776
+before, means of 11 and 12 pairs whose own spread is about 3 percent); the ninth run's 2 percent
+was at load 20 to 25. No front-end event explains a difference: more instruction cache misses
+(about 90 per round trip) and fewer instruction TLB misses (about 70) after. The hooks as
+`ProcessTracer` were built on the kernel's side without making it generic over its executor, and
+undone: the interface gives a hook no way to keep a process it takes off the kernel, and the
+runtime's system would have to be generic over its executor (For the owner, with the kernel's side
+ready to redo). The ARM64 machine's inotify limit now matches Docker Desktop's (For the
+orchestrator). KA is not complete: the hooks wait for the owner's ruling, and as before warnings
+through `FallbackObserver`, ICMP and raw sockets, the linter findings and the independent check.
+See "KA, tenth run".
 
 KA, ninth run: the owner's readiness report (a00ab267) is conformed to in the kernel, the stand-in
 and the embedders it changed, and their tests give the same results as before. The guest pipe's 2
@@ -584,6 +627,49 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, tenth run
+
+Started about 06:20 UTC on 2026-11-22 at 5b1a4c90 (branch agents). All runs on the ARM64 machine;
+scratch kernel/ka10 (pmu.sh, pmu2.sh, pmu.py, after-tree; logs beside them). No code of the
+kernel's changed in this run.
+
+The guest pipe (pipe kind of tests/waitcost.rs, per round trip: perf stat of the run at n 4000
+minus the run at n 2000, over 6000 round trips; thin LTO; pinned to core 90; before is ka8's
+clone at e5d693d2, the milestone's start, after a clone of agents at 2750b5ce, alternately):
+- pmu.log (load 7 to 10, 06:31 UTC on): 4 pairs before, 3 after (the first after pair is dropped:
+  its first run built the guest programs, 219 billion instructions). Before 137894 instructions,
+  32907 cycles; after 138370 and 32400.
+- pmu2.log (load 5 to 8): 8 pairs each. Before 138675 instructions, 32710 cycles, 41.8 branch
+  misses, 2333 instruction cache misses, 675 instruction TLB misses, 6284 front-end and 3266
+  back-end stall cycles; after 138075, 32925, 48.6, 2422, 607, 6054 and 3455. One pair's cycles
+  range from 31631 to 34258.
+- Together: before 32776 cycles (12 pairs), after 32782 (11). So at this load the round trip
+  takes no more cycles than at the milestone's start, within a spread of about 3 percent per pair.
+  The ninth run's 2.1 percent more (statpipe2.log) was at load 20 to 25; whether load alone makes
+  that difference was not measured.
+
+The hooks as the interface's `ProcessTracer` (tried, then undone with git checkout of this track's
+own five files; nothing was committed):
+- Built: the kernel's `System` without its hook methods, requiring
+  `ProcessTracer<Executor: Cpu + 'static, ProcessState: 'static>`; every hook given a
+  `KernelProcess<'_, S::Executor, S::ProcessState>` (alias `HookProcess<'_, S>`), which holds the
+  kernel and the executor as `&mut dyn Cpu` apart, so the kernel's entry points stay as they are;
+  `Kernel::start` taking the first process's `ExecutionConfig<S::Executor>` and `ProcessState` in
+  place of `Start::execution`, so every process carries the embedder's data. The hook call sites
+  are the four `announce` functions (system.rs, sharing.rs); nothing else in the kernel changes.
+- Stopped there: the stand-in's tests whose hooks take a process or its tasks off the kernel
+  (away.rs, taskend.rs, embedder.rs) get contexts of a type the interface does not let them keep,
+  and the runtime's `LocalSystem` cannot name one executor (For the owner).
+- A trial build of that state reached the ARM64 machine by the first pmu.sh run (it copies the
+  checkout as it is) and failed there; the measurement was rerun from a clone.
+
+Next, in order: the owner's ruling on `ProcessTracer` (then redo the kernel's side above, give the
+stand-in's hooks and the runtime their part, and remove the kernel's own `System` trait); read the
+whole suite at 05c95620 (job kernel/20261122-055108-3455272, still running at this run's end) and
+rerun inotify `instances_are_limited_per_user` on the ARM64 machine now that its limit is 8192;
+warnings through `FallbackObserver` once the owner rules; ICMP and raw sockets; the linter findings
+once the linter may run again; the independent check.
 
 ## KA, ninth run
 
