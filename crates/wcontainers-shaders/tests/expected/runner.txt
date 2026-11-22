@@ -255,11 +255,11 @@ hlsl+clip-cull-distance-1-14-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#ext
 hlsl+clip-cull-distance-1-15-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-16-gs.dxbc	unsupported ClipDistance
 hlsl+clip-cull-distance-1-17-vs.dxbc	ok ; glsl compiles
-hlsl+clip-cull-distance-1-18-gs.dxbc	unsupported CullDistance
-hlsl+clip-cull-distance-1-19-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-18-gs.dxbc	ok ; glsl absent compute
+hlsl+clip-cull-distance-1-19-gs.dxbc	ok ; glsl absent compute
 hlsl+clip-cull-distance-1-2-ps.dxbc	ok ; glsl compiles
-hlsl+clip-cull-distance-1-20-gs.dxbc	unsupported CullDistance
-hlsl+clip-cull-distance-1-21-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-20-gs.dxbc	ok ; glsl absent compute
+hlsl+clip-cull-distance-1-21-gs.dxbc	ok ; glsl absent compute
 hlsl+clip-cull-distance-1-4-ps.dxbc	ok ; glsl compiles
 hlsl+clip-cull-distance-1-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-6-ps.dxbc	unsupported CullDistance

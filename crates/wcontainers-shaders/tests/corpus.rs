@@ -588,12 +588,14 @@ const UNDECLARED: &str = "undeclared ";
 /// A named refusal's first word.
 const UNSUPPORTED: &str = "unsupported ";
 
+/// A vertex program writing cull distances (a geometry shader's compute form culls by its own).
 fn writes_cull_distances(converted: &Converted) -> bool {
-    converted
-        .reflection
-        .outputs
-        .iter()
-        .any(|v| v.system == Some(SystemValue::CullDistance))
+    converted.modules[0].stage == wcontainers_gpu::ShaderStage::Vertex
+        && converted
+            .reflection
+            .outputs
+            .iter()
+            .any(|v| v.system == Some(SystemValue::CullDistance))
 }
 
 /// Every vertex input pulled, in the format its reflection gives.

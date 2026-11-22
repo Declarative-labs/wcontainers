@@ -48,7 +48,9 @@ both cull routes. G6 given again on 2026-11-22 as its run 1 (run 88, the section
 track's public entry for geometry, hull and domain programs from a naga module (`staged`), and its
 three asks of `rewrite`. Run 2 (run 89, the section below): A13, geometry shaders taking patches
 drawn without tessellation, and A14, hull shaders giving no control points, both on the DXBC route
-(the Direct3D 12 runner's six files). Not complete: the gap list below.
+(the Direct3D 12 runner's six files). Run 3 (run 90, the section below): A7's cull distances
+written by geometry shaders (the Direct3D 12 runner's eight files). Not complete: the gap list
+below.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
@@ -94,6 +96,54 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 3 (run 90): cull distances written by geometry shaders (A7)
+
+Logs and scripts in scratch `graphics-shaders/g6-r90` (run 89's with its folder: `gpu.sh`,
+`gpu-noclippy.sh`, `tree-tar.sh`, `suite-laptop.sh` as `~/wcontainers-graphics/suite-r90.sh` writing
+`out-r90`; `cull.cmd` compiles the three new shaders alone on the desktop; jobs `job1.log`,
+`job2-mutant.log`; `arm1.log`, `arm2.log`, `arm-lit.log`; `chrome.log`). Builds, clippy and CPU tests
+on the rented ARM64 machine from the shared worktree; nothing built on the Mac.
+- Built: a DXBC or DXIL geometry shader writing `SV_CullDistance` converts (src/lower.rs,
+  src/dxil/geometry.rs); its compute form's records end with the cull distances' slots after the
+  clip distances' (src/lower/geometry.rs `distance_outputs`), reflected as the signature places
+  them. The stage helper (src/stage/helper.rs) then runs the geometry cull program
+  (src/stage/geometry_cull.wgsl, `stage::geometry_cull_program`) after the geometry stage: one
+  invocation per geometry invocation walks the drawn stream's strip indices and lists each
+  primitive's vertices, or an empty record's (outside every clip volume) where all its vertices are
+  below zero on one distance, and the final draw is that list (`FinalDraw` of a list topology);
+  stream output still takes every primitive from the strips. `SlowPath::CullDistanceAsGeometry`
+  is counted. Also after a domain stage (the same path); not drawn there. The replay form (WebGL 2)
+  refuses such a shader by name (`GeometryCullDistanceReplay`).
+- Test: own `gs_cull` (triangle strips, a cut restarting the second triangle), `gs_cull_lines`
+  and `gs_cull_points` (geometry.hlsl, fxc gs_5_0 and dxc gs_6_0; two clip and three cull
+  distances, packed by fxc as the runner's are: clip and cull in one register), every fourth
+  primitive dropped whole, a strip's single primitives dropped, primitives whose vertices are each
+  below zero on another distance kept. `geometry_shaders_writing_cull_distances_draw_as_direct3d_does`
+  (tests/geometry_draw.rs) on WebGPU against real Direct3D 11 drawing fxc's builds on the RTX 3080:
+  six cases (lists and strips, indexed, instanced) on both builds, seeds 1 to 4, 48 comparisons, 0
+  failed, every texel equal (job1.log). With the cull program made to keep every primitive (a
+  mutant in the scratch clone) all 48 fail (job2-mutant.log). CPU test
+  `geometry_shaders_write_cull_distances` (tests/geometry.rs; both builds, the reflection's two
+  clip and three cull distances, the replay refusal).
+- Corpus (laptop, `--test corpus`): the runner's `clip-cull-distance-1-18` to `-21-gs` (DXBC and
+  DXIL, 8) convert; own records added for the three shaders' six builds. The corpus test's
+  `writes_cull_distances` (which sends a vertex shader writing them to the cull route) now asks
+  for a vertex program.
+- Runs: ARM64 machine (load 15 to 24): clippy of this crate with warnings denied clean; `geometry`
+  23 passed (1 ignored as before), the library 10 (arm2.log); the literal check prints no line of
+  this crate (arm-lit.log). Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy clean.
+  Laptop (load 4 to 5.4, 4 jobs): `corpus` 13 passed with every corpus and glslang (11 in
+  `logs/suite-r90.log` there, where own and runner failed on the corpus test's cull route; both
+  then passed, with rig and games again, in `logs/suite-r90b.log`). Chrome 157 on the desktop
+  compiles all 14 new WGSL files (chrome.log).
+- For the Direct3D fronts: nothing new to call. Such a geometry shader is made and run through
+  `Stages::new` (or `tessellated_with`) as any; its `FinalDraw` is then an indexed list (u32
+  indices at `index_offset` of `buffer`) instead of strips, drawn with `passthrough()` and
+  `vertex_layout()` as before.
+- Not run: WebAssembly, the whole GPU suite (only the new drawn test; no other converted module
+  changed, and the geometry stage's records and final draw change only for shaders writing cull
+  distances).
 
 ## G6 run 2 (run 89): geometry shaders taking patches (A13), hulls giving no control points (A14)
 
@@ -1167,18 +1217,14 @@ The gap list (every item of the pass bar not met):
   geometry shaders convert and run since run 86 (`TypedBufferInGeometry` gone; drawn equal to
   Direct3D 11, `typed_buffers_in_geometry_shaders_draw_as_direct3d_does`, both builds; the front
   gives the view's `HelperValue::TexelBufferView` in the geometry stage's helper block, set 3 of
-  `geometry_sets`). Cull distances written by a geometry or domain shader
-  are refused at conversion by name (`CullDistance`; DXBC: src/lower.rs accepts the
-  built-in from a vertex program only, every other stage falls to the refusal; DXIL: src/dxil.rs
-  refuses it in any entry point that is not a vertex program, and src/dxil/geometry.rs in a
-  geometry shader's values), so no stage helper program is ever made for such a shader: the
-  pass-through takes clip distances only (`stage::clip_distances`) and has no cull distance slot,
-  and only the cull route of a vertex program culls by them (records: runner and runner DXIL,
-  `clip-cull-distance-1-18` to `-21-gs`, 8, in the tally below). Cause: not built; the cull route
-  takes a vertex program's records only. Waits: the Direct3D 11 and 12 fronts' runner and Wine
-  files named in their statuses; no real program seen with them. Takes: each its route (for cull
-  distances, the cull route culling the records a geometry or domain stage writes) and a drawn
-  test.
+  `geometry_sets`). Cull distances written by a geometry shader convert and are culled since run
+  90 (its section; the runner's `clip-cull-distance-1-18` to `-21-gs`, both builds, convert):
+  the geometry stage's records end with their slots and the stage helper's geometry cull program
+  lists the kept primitives for the final draw. Still refused by name: cull distances written by a
+  domain shader (`CullDistance`; no file of any corpus or real program seen with one; takes the
+  same cull program over the tessellator's listed primitives and a drawn test), and a geometry
+  shader writing them in the replay form (`GeometryCullDistanceReplay`, WebGL 2; takes a replay
+  slot that sees every vertex of its primitive).
 - A8. The WebAssembly build converts 27 shaders, all DXBC, to modules whose expression order
   differs from the native build's (G6a run 4, wasm.log, every corpus including the runner's; no
   DXIL file differs; the same 27 and nothing else at run 76's tip, g6a-r76/wasm.log, where every
@@ -1815,9 +1861,9 @@ G6a run 5's tip):
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
   `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
   `GeometryPrimitiveIdAfterDomain` (A20, at `Stages::tessellated_with`, not a conversion verdict); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
-  writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) and `CullDistance` 8
-  (geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL)
-  (A7); "convert rejected: Unknown type!" 1 (A1).
+  writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) (A7; `CullDistance` 8 of
+  geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL,
+  gone in run 90: they convert); "convert rejected: Unknown type!" 1 (A1).
 - Absent on both back ends, reported as the guest expects (plan 4.12 and section 9's absent
   lists): `Float64` 42 and
   `Int64` 35 (no 64-bit types), `RasterizerOrderedView` 12 (no fragment interlock), `StencilRef` 7,
@@ -1846,9 +1892,14 @@ G6a run 5's tip):
    cull distances from geometry or domain shaders, the primitive's number behind a geometry
    shader), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
-   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); A7's cull
-   distances from geometry shaders are the next Direct3D 12 runner item (8 files), then A20 and
-   the DXIL parts of A13 and A14 (dxil-spirv's; A13 and A14's DXBC parts closed in run 89).
+   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
+   Direct3D 12 runner items are A20 and the DXIL parts of A13 and A14 (dxil-spirv's; A13 and A14's
+   DXBC parts closed in run 89, A7's cull distances from geometry shaders in run 90). A20 takes:
+   the geometry compute form reading the patch's primitive number from the tessellator's points
+   (word 3 of the point its first vertex's record is, `Tessellator::points`) when listed, which
+   needs the points bound at `POINTS_BINDING` of its set for every geometry shader reading
+   `SV_PrimitiveID` (so their converted modules change: Chrome again), and a drawn test
+   (`gs_values_tess` with `hs_values_*`).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
    the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built

@@ -22,6 +22,9 @@ ds_tri_none.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga 
 ds_values.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 gs_adjacent.dxbc	ok ; glsl absent compute
 gs_clip.dxbc	ok ; glsl absent compute
+gs_cull.dxbc	ok ; glsl absent compute
+gs_cull_lines.dxbc	ok ; glsl absent compute
+gs_cull_points.dxbc	ok ; glsl absent compute
 gs_cut.dxbc	ok ; glsl absent compute
 gs_instances.dxbc	ok ; glsl absent compute
 gs_layers.dxbc	ok ; glsl absent compute

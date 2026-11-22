@@ -22,6 +22,9 @@ ds_tri_none.dxil	unsupported DomainWithoutControlPoints
 ds_values.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
 gs_adjacent.dxil	ok ; glsl absent compute
 gs_clip.dxil	ok ; glsl absent compute
+gs_cull.dxil	ok ; glsl absent compute
+gs_cull_lines.dxil	ok ; glsl absent compute
+gs_cull_points.dxil	ok ; glsl absent compute
 gs_cut.dxil	ok ; glsl absent compute
 gs_instances.dxil	ok ; glsl absent compute
 gs_line_adjacent.dxil	ok ; glsl absent compute
