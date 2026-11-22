@@ -865,7 +865,7 @@ pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
     const PORT_RULE: &str = "rule add dport 1280 lookup 100";
     /// Type 6 as the port the flow keeps it in, for the mobility header alone.
     const PROTOCOL_RULE: &str = "rule add ipproto 135 dport 1536 lookup 100";
-    let check = |cases: &[(u8, InterfaceIndex)]| {
+    let check = |refusable: bool, cases: &[(u8, InterfaceIndex)]| {
         for &(message_type, expected) in cases {
             let route = Ipv6RouteSelectors {
                 upper_layer: UpperLayer {
@@ -876,23 +876,34 @@ pub fn mobility_header_type_selects_the_route<R: RouteResolver>(resolver: R) {
                 },
                 ..v6(FAR_V6)
             };
-            unless_refused(resolve6(&resolver, route), |route| {
+            let route = resolve6(&resolver, route);
+            if refusable {
+                unless_refused(route, |route| {
+                    assert_eq!(interface(route), expected, "{message_type}");
+                });
+            } else {
                 assert_eq!(interface(route), expected, "{message_type}");
-            });
+            }
         }
     };
     ip(IPV6, PORT_RULE);
-    check(&[
-        (BINDING_UPDATE, network.b),
-        (BINDING_ACKNOWLEDGEMENT, network.a),
-        (BINDING_ERROR, network.a),
-    ]);
+    check(
+        false,
+        &[
+            (BINDING_UPDATE, network.b),
+            (BINDING_ACKNOWLEDGEMENT, network.a),
+            (BINDING_ERROR, network.a),
+        ],
+    );
     ip(IPV6, PROTOCOL_RULE);
-    check(&[
-        (BINDING_UPDATE, network.b),
-        (BINDING_ACKNOWLEDGEMENT, network.b),
-        (BINDING_ERROR, network.a),
-    ]);
+    check(
+        true,
+        &[
+            (BINDING_UPDATE, network.b),
+            (BINDING_ACKNOWLEDGEMENT, network.b),
+            (BINDING_ERROR, network.a),
+        ],
+    );
 }
 
 /// Checks that a rule on the flow label sends only lookups with that label to the other table.
@@ -1395,7 +1406,7 @@ rule add uidrange 4242-4242 lookup 100";
     }
 }
 
-/// Checks that a rule on another protocol leaves GRE alone, that one on GRE selects it, and that SCTP's ports select as any protocol's.
+/// Checks that a protocol no rule names routes as any protocol would, that SCTP's ports select as any protocol's, and that a rule on GRE selects it.
 pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
     /// A port SCTP's rule selects, M3UA's.
     ///
@@ -1410,25 +1421,37 @@ pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
     /// https://www.rfc-editor.org/rfc/rfc6335#section-6
     const SOURCE_PORT: Port = Port(40000);
     let network = network();
-    const OTHER_RULES: &str = "rule add ipproto udp lookup 100
-rule add dport 2905 lookup 100";
+    const PORT_RULE: &str = "rule add dport 2905 lookup 100";
+    const UDP_RULE: &str = "rule add ipproto udp lookup 100";
     const GRE_RULE: &str = "rule add ipproto gre lookup 100";
     let options = Ipv4Options::new();
-    let check = |upper_layer: UpperLayer, expected: InterfaceIndex| {
+    let check4 = |upper_layer: UpperLayer, expected: InterfaceIndex, refusable: bool| {
         let route = Ipv4RouteSelectors {
             upper_layer,
             ..v4(&options, FAR)
         };
-        unless_refused(resolve4(&resolver, route), |route| {
+        let route = resolve4(&resolver, route);
+        if refusable {
+            unless_refused(route, |route| {
+                assert_eq!(interface(route), expected, "{upper_layer:?}");
+            });
+        } else {
             assert_eq!(interface(route), expected, "{upper_layer:?}");
-        });
+        }
+    };
+    let check6 = |upper_layer: UpperLayer, expected: InterfaceIndex, refusable: bool| {
         let route = Ipv6RouteSelectors {
             upper_layer,
             ..v6(FAR_V6)
         };
-        unless_refused(resolve6(&resolver, route), |route| {
+        let route = resolve6(&resolver, route);
+        if refusable {
+            unless_refused(route, |route| {
+                assert_eq!(interface(route), expected, "{upper_layer:?}");
+            });
+        } else {
             assert_eq!(interface(route), expected, "{upper_layer:?}");
-        });
+        }
     };
     let gre = UpperLayer {
         protocol: IpNumber::GRE,
@@ -1441,14 +1464,24 @@ rule add dport 2905 lookup 100";
             destination: Port(port),
         })),
     };
-    ip(IPV4, OTHER_RULES);
-    ip(IPV6, OTHER_RULES);
-    check(gre, network.a);
-    check(sctp(M3UA), network.b);
-    check(sctp(OTHER), network.a);
+    ip(IPV4, PORT_RULE);
+    ip(IPV6, UDP_RULE);
+    ip(IPV6, PORT_RULE);
+    check4(gre, network.a, false);
+    check4(sctp(M3UA), network.b, false);
+    check4(sctp(OTHER), network.a, false);
+    check6(gre, network.a, false);
+    check6(sctp(M3UA), network.b, false);
+    check6(sctp(OTHER), network.a, false);
+    ip(IPV4, UDP_RULE);
+    check4(gre, network.a, true);
+    check4(sctp(M3UA), network.b, true);
+    check4(sctp(OTHER), network.a, true);
     ip(IPV4, GRE_RULE);
     ip(IPV6, GRE_RULE);
-    check(gre, network.b);
+    check4(gre, network.b, true);
+    check6(gre, network.b, true);
+    check6(sctp(OTHER), network.a, false);
 }
 
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
