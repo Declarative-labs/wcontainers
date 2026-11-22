@@ -75,6 +75,11 @@ pub const WATCHER_THREAD: &str = "socket waits";
 /// The facts that end a wait whether or not they are asked for.
 const ALWAYS_REPORTED: ReadyFor = ReadyFor::ERROR.union(ReadyFor::HANG_UP);
 
+/// The facts a datagram socket can have: it has no urgent data and no peer that finishes sending.
+pub const DATAGRAM_FACTS: ReadyFor = ReadyFor::READABLE
+    .union(ReadyFor::WRITABLE)
+    .union(ALWAYS_REPORTED);
+
 /// Each fact and the host's poll bit for it.
 const POLL_BITS: &[(ReadyFor, PollFlags)] = &[
     (ReadyFor::READABLE, PollFlags::IN),
