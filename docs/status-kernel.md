@@ -83,9 +83,12 @@ side of each is worked around without changing the interface.
   a fork's child cannot be given a copy of its parent's configuration. The kernel will have to
   share one value between them (for example behind an `Rc`). Example: `fork` in a process whose
   `translator` is not the default.
-- `ProcessInfo::is_inspected` needs to know when another process reads this one's state; the
-  kernel has no such notion yet (no `on_inspection_starting` is built), so it cannot answer it
-  truthfully until `/proc/<pid>/mem`, `process_vm_readv` and ptrace are tied to it.
+- `ProcessInfo::is_inspected` is answered since KA's fifteenth run from the open files: true while
+  a process other than this one holds this one's memory open through `/proc/<pid>/mem`
+  (`process_vm_readv` reads within its call, ptrace is not built). The hooks
+  `on_inspection_starting` and `on_inspection_ended` are not fired (they are `ProcessTracer`'s,
+  ruled out of KA). Example: a child that opens its parent's mem file and closes it again
+  (stand-in tests/embedder.rs `a_process_is_inspected_while_another_holds_its_memory_open`).
 - `Signal` has no 0, so `Process::send_signal` cannot be asked to send signal 0 any more; two
   embedder test steps that checked such a request is counted and not sent were removed
   (Departures).
@@ -150,10 +153,15 @@ side of each is worked around without changing the interface.
   says ERROR, and the test host and the runtime answer that peek with `HostError::Errno` of the
   connect's error. Example: a connect to a closed port must end the guest's connect with
   ECONNREFUSED, and only the peek's error says so.
-- KA, fifth run: a system's TCP handles are of the system's types, and the kernel is not generic
-  over its system, so it keeps each connection's and listener's handle without its type (an
-  `Rc<dyn Any>`, one allocation per connection, a type check per call), as it does each process's
-  state. Example: syscall/socket/outside.rs `Link::handle`.
+- KA, fifth run: a system's TCP handles are of the system's types, and this kernel's state is not
+  generic over its system (its entry points are; its state is one type whatever the system), so
+  it keeps each connection's, listener's, flow's and stream end's handle without its type (an
+  `Rc<dyn Any>`, one allocation per connection, a type check per call on it), and each waiting
+  call as a `SmallBox<dyn Future>` polled through one virtual call. This is this kernel's choice,
+  not the interface's: a kernel whose state is generic over its system would hold them typed. It
+  was kept so that the kernel's state stays one type, copied and saved as it is today, and costs
+  nothing on paths inside the container (pipes, futexes and signals hold no handle). Example:
+  syscall/socket/outside.rs `Link::handle`.
 - KA, fifth run: the kernel uses 8 of the 20 TCP methods (connect, send, receive, shut_down,
   close, listen, accept, stop_listening) and `wait_until_ready`; every implementation in the tree
   (test host, runtime, policy) answers the other 12, `configure` and
@@ -685,6 +693,83 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, fifteenth run
+
+Started about 12:40 UTC on 2026-11-22 at 8fb40546, with the findings of KA's independent check.
+Everything built and ran on the ARM64 machine; the Mac only edited and formatted files. Scratch
+kernel/ka15 (check.sh, wcheck.sh, some.sh, ab.sh; suite.sh is ka11's).
+
+The check's findings, each dealt with:
+- Allocations per waiting call (blocking): a backend reply was copied into a new `Rc<[u8]>` (an
+  empty one for an error) and a name answer into a new `Vec`. Now a call that brings bytes back
+  brings them in a buffer it was given, kept for later calls once read (waiting.rs's module
+  comment): a backend request's own buffer holds its reply's body, which becomes a reply body
+  from the client's list of bodies, one nothing else holds any more, whose old buffer goes to the
+  next request (fs/backend.rs `State::body`); a lookup's buffer comes from the waiting calls'
+  spares and goes back once its answer is read; the client's list of requests handed over is kept
+  too. Tests through the real waiting calls (`ask_backend`, `resolve`) with a counting allocator
+  and a system whose call waits until opened: after the first rounds, 97 backend requests
+  answered later (a page each) and 99 lookups allocate nothing (fs/backend.rs and outside.rs,
+  `..._allocates_nothing_once_its_buffers_exist`). Still made once per call and not the waiting
+  call's: the guest's question as the kernel keeps it (a lookup's name, the record of a backend
+  call's replies in `Asked`), and what the kernel delivers (bytes queued for the guest, the reply
+  packet it builds). The buffers kept are at most as many as were under way at once, each as large
+  as the largest it held; none goes back to the allocator.
+- `ProcessInfo::is_inspected` (blocking): answered from the open files (For the owner), with a
+  stand-in test (a child opens its parent's mem file and closes it; the parent's own open of
+  /proc/self/mem does not count).
+- A reset unheard while a stream's queue is full (minor): every outside connection now keeps a
+  wait, one asking for nothing more than the error and hang-up every wait hears, until it heard
+  one it could not take yet; a stream whose wait reports an error with bytes its queue had no room
+  for is reset at once, its queue kept, as Linux's `tcp_reset` (outside.rs `ready`). The stand-in's
+  test host did not hear an error or hang-up on a wait that asked for nothing (it polled only
+  sockets with events asked); it now does. Test: tests/outside.rs `a_full_connection_hears_a_reset`
+  (the check's case), which failed before the change and passes against the reference.
+- A restore on another system kept the backend's calls on the old one (minor): now dropped and
+  asked again there (Departures, first item).
+- The kernel's own `System` trait and a second `ExecutionConfig` (minor): the kernel's
+  `ExecutionConfig` is gone: `Start` and `Kernel::resume_process` take none and the kernel keeps
+  none per process (it runs every process serially with exact replay); `KernelWithExecutor`
+  refuses another way by name (`Unsupported`), at start and at resume, from the interface's
+  configuration. The trait stays: it carries the hooks, the owner's `ProcessTracer` question.
+- Page fills kept by request number (minor): kept, as they are not a table of answers matched to
+  questions: a fault or copy that needs pages already asked for finds the read under way by page
+  in that table and waits for it instead of asking again (`Client::ask_pages`); the number is the
+  fill's key, and `WaitFor::Backend` carries the request's own record.
+- Weak suite checks (minor): `copy_leaves_the_process` writes, copies, reads back and takes the
+  thread; `no_time_is_used_while_not_running` reads the CPU time before and after the embedder
+  writes, reads and watches memory; the memory checks use the first range written since start
+  (`execve` writes the arguments), not "every writable page". A copy's content is seen only by
+  resuming it on a kernel, which a process handle cannot reach (For the owner), so
+  `Process::copy_process_context`'s value is still only dropped in the suite.
+- `Rc<dyn Any>` and `SmallBox<dyn Future>` (minor): the For-the-owner item now says it is this
+  kernel's choice and why.
+- `watch_thread_memory` panics (minor): left as it is. No executor implements `PerThreadWatch`,
+  so nothing can call it, and the trait gives no way to refuse; building it needs per-thread page
+  permissions in an executor to test against.
+- The literal lines (minor): unchanged; all are in the interface's own files (For the owner).
+
+Changed outside this track's crates (the smallest change for the kernel's `Start` without an
+execution configuration, and `Kernel::start`, which can no longer fail): the `execution` field and
+the `expect` on the start in crates/runtime/implementation/single-kernel/container.rs,
+crates/executor/implementation/hardware-virtualization-inside/container.rs and
+crates/executor/implementation/hardware-virtualization/tests/speed.rs.
+
+Measurements (ARM64 machine, scratch ka15/ab.sh and ab.log: tests/waitcost.rs in release, before
+at e5d693d2, the milestone's start, and after at c1a6cb72, alternately three times each, 12:59 to
+13:02 UTC, load 1.2 to 4.2 on 96 cores; median of 9 per kind, ns per repetition; allocations are
+the whole test process's per repetition, kernel and test host together):
+- pipe ping-pong: before 11819, 11942, 11878; after 11994, 12258, 12174 (1 to 3 percent slower,
+  the code generation the release-profile ruling accepts); 142.00 allocations both.
+- outside socket read: before 14083, 14147, 14036; after 16045, 14250, 14516; 78.93 to 79.04
+  allocations both.
+- backend open and read: before 496354, 516614, 529733; after 508859, 488633, 500375; allocations
+  347.99 before and 294.00 after.
+- name lookup: before 137092, 136785, 136610; after 139074, 139359, 139161 (1.5 percent slower,
+  as the independent check also found, about 1 percent there); allocations 711.00 before and
+  708.00 after.
+
 
 ## KA, fourteenth run
 
@@ -4491,7 +4576,11 @@ Everything a reviewer should know about what is not compared, in one place.
   test, 14 checks). The four waits are measured by tests/waitcost.rs of the stand-in (scratch
   ka8/ab.sh, before at e5d693d2, the milestone's start; ka10/pmu2.sh for the pipe's cycles). ICMP
   and raw sockets to the outside are not carried (Departures, KA eleventh run). The places a
-  waiting call is dropped are listed in "KA, thirteenth run".
+  waiting call is dropped are listed in "KA, thirteenth run"; a restore on another system also
+  drops the backend's (Departures, first item). From the fifteenth run, zero allocations per
+  waiting call is shown by the kernel's own tests through the real backend and lookup calls
+  (`cargo test -p wcontainers-kernel-linux --lib allocates_nothing`); waitcost's counts are the
+  whole test process's, kernel and test host together, per repetition of a guest program.
 
 - K6c: the bar is the LTP verdicts (`ltp ours` then `ltp compare` against
   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv, the reference run once at load 20 to
@@ -5953,6 +6042,15 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- KA, second and fifteenth runs: a waiting call is not always dropped and asked again at a
+  restore, as the brief says. A restore on the same system (the same `Arc`, as the stand-in's
+  saves do) keeps the backend's requests under way, since asking again would send a request twice
+  to a backend that already has it (a CREATE with O_EXCL would then fail); on another system they
+  are dropped, and each call or fault that waited for one asks again when it runs (a restore runs
+  every parked call again), while a message nothing waits for (a FORGET, a RELEASE) is lost,
+  counted "backend message lost at restore" (fs/backend.rs `backend_restored`). Readiness waits,
+  stream ends' waits and name lookups are dropped at every restore and asked again, as before.
+  Not tested on another system: the stand-in restores on the one it saved on.
 - KA, eleventh run: KA does not carry ICMP (ping) or raw sockets to the outside, though its brief
   names "an outside socket" among the waits. The kernel refuses both (plan section 15) and never
   asks the system for them, so there is no wait to move; carrying them would change what guests
