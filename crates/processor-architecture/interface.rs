@@ -17,7 +17,7 @@ pub trait ProcessorArchitecture: Sized {
     ///
     /// On A64 this is an [instruction variant](https://developer.arm.com/documentation/ddi0487/mc/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-1-About-the-A64-instruction-set#:~:text=each%20syntax%20is%20an%20instruction%20variant), on x86 an [instruction form](https://intelxed.github.io/ref-manual/group__IFORM.html).
     type Instruction: Copy + Eq;
-    /// An instruction with a specific pinned behaviour that should be expected of it.
+    /// An instruction with a specific pinned behavior that should be expected of it.
     type PreciseInstruction: Simulator<Self, Error = Infallible> + Copy + Eq;
 
     /// The addresses a program can use.
