@@ -75,6 +75,8 @@ Runs (code at the scratch clone's e1925a6a, the checkout's 960220c4 with this ru
   (x86-tests.log).
 - Not run: the corpus records (the change touches only the stage helper's programs, which no
   record holds), WebAssembly, Chrome.
+- Clean-up: the desktop's `C:\wc\src\shaders-tip` and `C:\wc\target\shaders-tip`, the x86
+  machine's clone, build folder and bundle, the scratch clone and bundle (logs kept in `g6-r83`).
 
 ## G6 run 3 (run 82): mapped depth views measured on Direct3D 12, depth gathers
 
@@ -1505,6 +1507,13 @@ G6a run 5's tip):
   float'"). They would not compile where WEBGL_clip_cull_distance is enabled either; each element
   assigned on its own would. The records name the need, so the corpus test counts them as named.
 
+- Answered for the Direct3D 11 front (run 83, its ask "the geometry replay's streams past the
+  first"): `GeometryReplay::new` takes a stream output declaration naming several streams, and
+  `run` writes every stream; give the filled block `stage::STREAM_FILLED_WORDS` words, as on the
+  compute route ("How the Direct3D fronts call `convert`"). Also answered earlier: a primitive
+  naming a layer past the bound view's is drawn into the first layer (`passthrough` with
+  `VariantFlags::LAYER_FROM_STAGE`, test `layers_past_the_views_draw_into_the_first_as_direct3d_11_does`),
+  `A8Unorm` storage views (run 81) and single-sample `combine` (run 80).
 - Answered for the Direct3D 11 front (its asks of this track, run 65): halves toward zero are
   built (A19 for the drawn proof); `ClearView` of a storage view's rectangles takes
   `builtin::storage_clear` with each rectangle's `origin` and `end` (one dispatch a rectangle),
