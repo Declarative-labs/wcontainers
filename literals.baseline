@@ -12766,7 +12766,6 @@ code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	3
 code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	3
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	int	swizzled	4
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	int	swizzled	4
-code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"a texture read that is not a vector"
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"swizzled"
 code	crates/wcontainers-shaders/src/variant/texel.rs	float	encode	0.5
 code	crates/wcontainers-shaders/src/variant/texel.rs	int	TexelBuffer::texel_layout	3
