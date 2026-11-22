@@ -166,45 +166,40 @@ fn u64_at(bytes: &Bytes, at: usize) -> u64 {
     u64::from_le_bytes(read(bytes, at))
 }
 
+/// Each interface poll event beside Linux's bit for it.
+const POLL_BITS: &[(PollEvents, u32)] = &[
+    (PollEvents::POLLIN, POLLIN),
+    (PollEvents::POLLPRI, POLLPRI),
+    (PollEvents::POLLOUT, POLLOUT),
+    (PollEvents::POLLERR, POLLERR),
+    (PollEvents::POLLHUP, POLLHUP),
+    (PollEvents::POLLNVAL, POLLNVAL),
+    (PollEvents::POLLRDNORM, POLLRDNORM),
+    (PollEvents::POLLRDBAND, POLLRDBAND),
+    (PollEvents::POLLWRNORM, POLLWRNORM),
+    (PollEvents::POLLWRBAND, POLLWRBAND),
+    (PollEvents::POLLMSG, POLLMSG),
+    (PollEvents::POLLRDHUP, POLLRDHUP),
+];
+
 /// The events of a `poll` mask.
 fn poll_events(mask: u64) -> PollEvents {
-    let has = |bit: u32| mask & u64::from(bit) != 0;
-    PollEvents {
-        data_to_read: has(POLLIN),
-        exceptional_condition: has(POLLPRI),
-        writing_possible: has(POLLOUT),
-        error_condition: has(POLLERR),
-        hang_up: has(POLLHUP),
-        descriptor_not_open: has(POLLNVAL),
-        normal_data_to_read: has(POLLRDNORM),
-        priority_band_data_to_read: has(POLLRDBAND),
-        normal_data_writable: has(POLLWRNORM),
-        priority_data_writable: has(POLLWRBAND),
-        message_available: has(POLLMSG),
-        peer_shut_down_writing: has(POLLRDHUP),
-    }
+    POLL_BITS
+        .iter()
+        .copied()
+        .filter(|(_, bit)| mask & u64::from(*bit) != 0)
+        .map(|(event, _)| event)
+        .collect()
 }
 
 /// The `poll` mask of a set of events.
 fn poll_mask(events: PollEvents) -> u64 {
-    [
-        (events.data_to_read, POLLIN),
-        (events.exceptional_condition, POLLPRI),
-        (events.writing_possible, POLLOUT),
-        (events.error_condition, POLLERR),
-        (events.hang_up, POLLHUP),
-        (events.descriptor_not_open, POLLNVAL),
-        (events.normal_data_to_read, POLLRDNORM),
-        (events.priority_band_data_to_read, POLLRDBAND),
-        (events.normal_data_writable, POLLWRNORM),
-        (events.priority_data_writable, POLLWRBAND),
-        (events.message_available, POLLMSG),
-        (events.peer_shut_down_writing, POLLRDHUP),
-    ]
-    .into_iter()
-    .filter(|(set, _)| *set)
-    .map(|(_, bit)| u64::from(bit))
-    .sum()
+    POLL_BITS
+        .iter()
+        .copied()
+        .filter(|(event, _)| events.contains(*event))
+        .map(|(_, bit)| u64::from(bit))
+        .sum()
 }
 
 fn identity(bytes: &Bytes) -> ProcessIdentity {
