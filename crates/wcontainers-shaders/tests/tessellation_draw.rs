@@ -342,16 +342,23 @@ fn compare(reference: &[Vertex], ours: &[Vertex], per: usize) -> Result<String, 
     ))
 }
 
+/// Our tessellator against real Direct3D 11's on the GPU and on WARP, every topology: each patch's
+/// primitives equal to the GPU's (whose order within a patch is the device's), and every point and
+/// index equal to WARP's in order (WARP's order is the reference tessellator's, which ours follows).
 #[test]
 fn tessellator_matches_direct3d() {
     let mut backend = webgpu();
     let mut tessellator = Tessellator::new(&mut backend).unwrap();
-    let gpu = d3d11::create(
+    let gpus = [
         wcontainers_graphics_test::Driver::Hardware,
-        false,
-        &[D3D_FEATURE_LEVEL_11_0],
-    )
-    .unwrap();
+        wcontainers_graphics_test::Driver::Warp,
+    ]
+    .map(|driver| {
+        (
+            driver,
+            d3d11::create(driver, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap(),
+        )
+    });
     let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
@@ -392,16 +399,24 @@ fn tessellator_matches_direct3d() {
                 _ => 3,
             };
             let bound = PATCHES * tess::patch_bounds(t.max_factor).1 as usize;
-            let (reference, written) = direct3d(&gpu, hs, ds, None, 1, bound, &factors);
-            let reference = &reference[..written as usize * per];
             let streamed = ours(&mut backend, &mut tessellator, t, &factors);
-            compared += 1;
-            let name = format!("seed {seed} {hs}");
-            match compare(reference, &streamed, per) {
-                Ok(note) => eprintln!("{name}: {} vertices; {note}", reference.len()),
-                Err(why) => {
-                    eprintln!("{name}: {why}; factors {factors:?}");
-                    failures.push(name);
+            for (driver, gpu) in &gpus {
+                let (reference, written) = direct3d(gpu, hs, ds, None, 1, bound, &factors);
+                let reference = &reference[..written as usize * per];
+                compared += 1;
+                let name = format!("seed {seed} {hs} {driver:?}");
+                let result = match (driver, compare(reference, &streamed, per)) {
+                    (wcontainers_graphics_test::Driver::Warp, Ok(_)) if reference != streamed => {
+                        Err("every patch's primitives equal, not in warp's order".into())
+                    }
+                    (_, result) => result,
+                };
+                match result {
+                    Ok(note) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+                    Err(why) => {
+                        eprintln!("{name}: {why}; factors {factors:?}");
+                        failures.push(name);
+                    }
                 }
             }
         }
@@ -1007,6 +1022,47 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does_in_any_order() {
         let cells = by_cell(&reference, &ours);
         eprintln!(
             "tessellation scene, largest values, {route:?}, per cell (differ, missed, only ours, apart): {cells:?}"
+        );
+        for (i, c) in cells.iter().enumerate() {
+            assert_eq!(c[0], 0, "{route:?} cell {i}");
+        }
+    }
+}
+
+/// The rig's tessellation scene as it is, its patches drawn as lines but the last, through the stage
+/// helper on wgpu's Direct3D 12 path on WARP, against real Direct3D 11 on WARP running the scene
+/// itself: every texel equal. WARP orders a patch's triangles as the reference tessellator does, as
+/// ours does, so the triangle drawn last on a shared edge is the same one.
+#[test]
+fn rig_tessellation_scene_draws_as_direct3d_11_on_warp_does() {
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Warp,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let (_, scene) = d3d11::scenes::find("tessellation").unwrap();
+    let outputs = scene(&gpu).unwrap();
+    let wcontainers_graphics_test::output::Value::Picture(picture) = &outputs[0].value else {
+        panic!("the scene draws a picture");
+    };
+    let reference = picture.to_rgba8().into_raw();
+    keep(
+        "tessellation-scene-warp",
+        &reference,
+        wcontainers_gpu::Format::Rgba8Unorm,
+    );
+    let mut backend = webgpu_on_warp();
+    for route in Route::BOTH {
+        let ours = scene_ours(&mut backend, false, route, false);
+        keep(
+            &format!("tessellation-scene-warp-ours-{}", route.extension()),
+            &ours,
+            wcontainers_gpu::Format::Rgba8Unorm,
+        );
+        let cells = by_cell(&reference, &ours);
+        eprintln!(
+            "tessellation scene on warp, {route:?}, per cell (differ, missed, only ours, apart): {cells:?}"
         );
         for (i, c) in cells.iter().enumerate() {
             assert_eq!(c[0], 0, "{route:?} cell {i}");

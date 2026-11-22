@@ -1705,16 +1705,38 @@ pub fn webgpu_with(
     backends: wgpu::Backends,
     more: wgpu::Features,
 ) -> wcontainers_gpu_webgpu::WebGpu {
+    webgpu_adapter(backends, more, false)
+}
+
+/// The WebGPU back end on wgpu's Direct3D 12 path on WARP, Microsoft's software rasteriser, to draw
+/// against Direct3D on WARP where the device chooses (the order of a patch's primitives).
+pub fn webgpu_on_warp() -> wcontainers_gpu_webgpu::WebGpu {
+    webgpu_adapter(wgpu::Backends::DX12, wgpu::Features::empty(), true)
+}
+
+/// The WebGPU back end on wgpu's `backends` with `more` features: on the GPU, or with `software` on
+/// the system's software adapter.
+fn webgpu_adapter(
+    backends: wgpu::Backends,
+    more: wgpu::Features,
+    software: bool,
+) -> wcontainers_gpu_webgpu::WebGpu {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
     let instance = wgpu::Instance::new(desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
+        force_fallback_adapter: software,
         ..Default::default()
     }))
     .expect("an adapter");
     let info = adapter.get_info();
-    assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "{}", info.name);
+    assert_eq!(
+        info.device_type == wgpu::DeviceType::Cpu,
+        software,
+        "{}",
+        info.name
+    );
     eprintln!("webgpu: {} ({:?})", info.name, info.backend);
     let mut device_desc = wcontainers_gpu_webgpu::WebGpu::device_descriptor(&adapter);
     assert!(adapter.features().contains(more), "{more:?}");
