@@ -1,9 +1,10 @@
 //! Formats WebGPU lacks, held in an 8-bit RGBA format (plan 5.7, `FormatConverted`). Drawn into
 //! with only their own channels written: 8-bit alpha as (0, 0, 0, a), and BGRX as BGRA with alpha
-//! one. Sampled and filtered only: the 16-bit packed formats (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`),
-//! each channel widened to 8 bits (a draw would keep 8 bits a channel, not 4, 5 or 6), and the
-//! two-pixel formats (`R8G8_B8G8`, `G8R8_G8B8`), each pixel its own texel (`BlockDecoded`'s formats,
-//! converted the same way). The three-channel 32-bit formats (`R32G32B32_*`) are held in their
+//! one. The 16-bit packed formats (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`) hold each channel widened to 8
+//! bits; the two 5-bit ones are drawn, blended and resolved at 8 bits, and each channel rounded to
+//! its own bits when the pass or resolve ends (`PackedTargetQuantised`). Sampled and filtered only:
+//! `B4G4R4A4`, and the two-pixel formats (`R8G8_B8G8`, `G8R8_G8B8`), each pixel its own texel
+//! (`BlockDecoded`'s formats, converted the same way). The three-channel 32-bit formats (`R32G32B32_*`) are held in their
 //! four-channel twins with alpha one, sampled (filtered where the twin is) and copied. Writes are
 //! widened on the host and read backs packed again on the host, exactly, since 8 bits keep every
 //! narrower value apart; copies between a buffer and such a texture widen and pack the same way on
@@ -36,9 +37,18 @@ pub(crate) fn held(format: Format) -> Option<Format> {
 pub(crate) fn drawn(format: Format) -> Option<wgpu::ColorWrites> {
     match format {
         Format::A8Unorm => Some(wgpu::ColorWrites::ALPHA),
-        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => Some(wgpu::ColorWrites::COLOR),
+        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb | Format::B5g6r5Unorm => {
+            Some(wgpu::ColorWrites::COLOR)
+        }
+        Format::Bgr5a1Unorm => Some(wgpu::ColorWrites::ALL),
         _ => None,
     }
+}
+
+/// Whether what a pass or resolve leaves in a target of `format` is rounded to the format's own
+/// bits when it ends: the 16-bit packed formats drawn into (`PackedTargetQuantised`).
+pub(crate) fn quantised(format: Format) -> bool {
+    matches!(format, Format::B5g6r5Unorm | Format::Bgr5a1Unorm)
 }
 
 /// Whether programs store into a converted format through its held format: 8-bit alpha, whose
@@ -56,7 +66,9 @@ pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
             b: 0.0,
             ..c
         },
-        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => wgpu::Color { a: 1.0, ..c },
+        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb | Format::B5g6r5Unorm => {
+            wgpu::Color { a: 1.0, ..c }
+        }
         _ => c,
     }
 }
@@ -227,16 +239,7 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
         format!(
             "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
              @group(0) @binding(1) var src: texture_2d<u32>;\n\
-             fn repeat(x: u32, n: u32) -> u32 {{\n\
-                 var wide = 0u;\n\
-                 var filled = 0u;\n\
-                 loop {{\n\
-                     wide = (wide << n) | x;\n\
-                     filled += n;\n\
-                     if filled >= 8u {{ break; }}\n\
-                 }}\n\
-                 return wide >> (filled - 8u);\n\
-             }}\n\
+             {REPEAT_WGSL}\
              @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4f {{\n\
                  let i = u32(p.x) - at.x;\n\
                  let j = u32(p.y) - at.y;\n\
@@ -268,6 +271,58 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
             body = pack_wgsl(format),
         )
     }
+}
+
+/// WGSL widening `x`, a code of `n` bits, to 8 by repeating its bits, as [`widen`] does.
+const REPEAT_WGSL: &str = "
+fn repeat(x: u32, n: u32) -> u32 {
+    var wide = 0u;
+    var filled = 0u;
+    loop {
+        wide = (wide << n) | x;
+        filled += n;
+        if filled >= 8u { break; }
+    }
+    return wide >> (filled - 8u);
+}
+";
+
+/// The fragment program, entry point `quantise`, rounding each channel of a target of the packed
+/// `format`, read from a copy of it bound at binding 0 (multisampled: per sample), to its own bits
+/// and widening it back to 8 as [`widen`] does: `round(v * (2^n - 1))`, its bits repeated. The
+/// 8-bit value it starts from adds at most `(2^n - 1) / 510` of a step to the specification's
+/// rounding (0.56 of a step for 6 bits, inside its 0.6).
+pub(crate) fn quantise_program(format: Format, multisampled: bool) -> String {
+    let (texture, sample, index) = if multisampled {
+        (
+            "texture_multisampled_2d<f32>",
+            ", @builtin(sample_index) s: u32",
+            "s",
+        )
+    } else {
+        ("texture_2d<f32>", "", "0")
+    };
+    let [b, g, r, a] = fields(format);
+    let channel = |c: &str, bits: u32| match bits {
+        0 => String::from("1.0"),
+        n => format!("q(v.{c}, {n}u)"),
+    };
+    format!(
+        "@group(0) @binding(0) var src: {texture};\n\
+         {REPEAT_WGSL}\
+         fn q(x: f32, n: u32) -> f32 {{\n\
+             let top = (1u << n) - 1u;\n\
+             return f32(repeat(u32(round(x * f32(top))), n)) / 255.0;\n\
+         }}\n\
+         @fragment fn quantise(@builtin(position) p: vec4f{sample}) -> @location(0) vec4f {{\n\
+             let v = textureLoad(src, vec2u(p.xy), {index});\n\
+             return vec4f({}, {}, {}, {});\n\
+         }}\n",
+        channel("x", r),
+        channel("y", g),
+        channel("z", b),
+        channel("w", a),
+    )
 }
 
 /// Bits of blue, green, red and alpha, from the lowest up, of a 16-bit packed format.

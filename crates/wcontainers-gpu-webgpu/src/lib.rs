@@ -1609,8 +1609,9 @@ impl Backend for WebGpu {
     }
 
     fn end_pass(&mut self) {
-        if self.pass.take().is_none() {
-            self.fail("end_pass without a pass");
+        match self.pass.take() {
+            Some(pass) => self.close_pass(pass),
+            None => self.fail("end_pass without a pass"),
         }
     }
 

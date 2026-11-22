@@ -383,6 +383,8 @@ pub struct Pass {
     last: Last,
     /// The textures it draws or resolves into, which a write may not rename while it is open.
     pub attached: Vec<crate::Texture>,
+    /// Its targets of 16-bit packed formats, rounded to their bits whenever a part of it ends.
+    packed: Vec<crate::fill::PackedTarget>,
 }
 
 #[derive(Default)]
@@ -947,18 +949,31 @@ impl WebGpu {
         let mut colors = Vec::new();
         let mut by_draw = Vec::new();
         let mut attached = Vec::new();
+        let mut packed = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else {
                 colors.push(None);
                 continue;
             };
             let v = &c.view.0;
-            for t in std::iter::once(&**v)
+            for (view, t) in std::iter::once(&**v)
                 .chain(c.resolve.map(|r| &*r.0))
-                .filter_map(|v| v.texture.as_ref())
+                .filter_map(|v| Some((v, v.texture.as_ref()?)))
             {
                 t.0.used_in.set(serial);
                 attached.push(t.clone());
+                if let Some(desc) = view.desc.filter(|d| crate::packed::quantised(d.format)) {
+                    packed.push(crate::fill::PackedTarget {
+                        format: desc.format,
+                        texture: t.0.raw(),
+                        mip: desc.base_mip,
+                        z: if view.three_d {
+                            c.depth_slice
+                        } else {
+                            desc.base_layer
+                        },
+                    });
+                }
             }
             targets.colors[i] = Some(v.format);
             targets.samples = v.samples;
@@ -1087,7 +1102,17 @@ impl WebGpu {
             page: 0,
             last: Last::default(),
             attached,
+            packed,
         });
+    }
+
+    /// Ends `pass`, rounding its packed targets to their bits (`PackedTargetQuantised`).
+    pub(crate) fn close_pass(&mut self, pass: Pass) {
+        let Pass { rp, packed, .. } = pass;
+        drop(rp);
+        for t in &packed {
+            self.quantise(t);
+        }
     }
 
     /// Ends the open pass, records `between` outside it, and opens the pass again loading what it
@@ -1128,6 +1153,9 @@ impl WebGpu {
         }
         self.slow.hit(why);
         drop(pass.rp);
+        for t in &pass.packed {
+            self.quantise(t);
+        }
         between(self);
         let raw = pass.occlusion_set.as_ref().map(|q| q.0.page(pass.page));
         let encoder = self.encoder.as_mut().expect("a pass implies an encoder");
@@ -1578,6 +1606,14 @@ impl WebGpu {
             clear: None,
         })];
         drop(open(self.encoder(), &colors, &None, None, false));
+        if crate::packed::quantised(dst.texture.0.desc.format) {
+            self.quantise(&crate::fill::PackedTarget {
+                format: dst.texture.0.desc.format,
+                texture: dst.texture.0.raw(),
+                mip: dst.mip,
+                z: dst.layer,
+            });
+        }
     }
 }
 

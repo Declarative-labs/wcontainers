@@ -141,6 +141,20 @@ pub struct Fills {
     resolves: HashMap<wgpu::TextureFormat, DepthProgram>,
     /// Keyed by the converted format, whether it widens into the texture, and whether that is 3D.
     converts: HashMap<(Format, bool, bool), DepthProgram>,
+    /// Keyed by the packed format and the sample count.
+    quantises: HashMap<(Format, u32), DepthProgram>,
+    /// The copies packed targets are rounded from, by width, height and sample count.
+    quantise_copies: HashMap<(u32, u32, u32), wgpu::Texture>,
+}
+
+/// One level and layer (or depth slice) of a texture of a 16-bit packed format a pass or resolve
+/// drew into, rounded to the format's bits when it ends (`PackedTargetQuantised`).
+pub(crate) struct PackedTarget {
+    pub format: Format,
+    pub texture: wgpu::Texture,
+    pub mip: u32,
+    /// The array layer, or the depth slice of a 3D texture.
+    pub z: u32,
 }
 
 /// A view of one level and layer of `texture` in `aspect`, in that aspect's own format.
@@ -311,13 +325,14 @@ impl WebGpu {
             .clone()
     }
 
-    /// A program drawing a whole target of `format` from one bound texture, the fragment stage of
-    /// `source`.
+    /// A program drawing a whole target of `format` and `samples` from one bound texture, the
+    /// fragment stage of `source`.
     fn texel_program(
         &mut self,
         source: &str,
         multisampled: bool,
         format: wgpu::TextureFormat,
+        samples: u32,
     ) -> DepthProgram {
         let cover = self.cover();
         let device = &self.device;
@@ -352,7 +367,10 @@ impl WebGpu {
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: None,
@@ -375,7 +393,7 @@ impl WebGpu {
     ) {
         self.slow.hit(SlowPath::ResolveByDraw);
         if !self.fills.resolves.contains_key(&format) {
-            let program = self.texel_program(RESOLVE_WGSL, true, format);
+            let program = self.texel_program(RESOLVE_WGSL, true, format, 1);
             self.fills.resolves.insert(format, program);
         }
         let program = &self.fills.resolves[&format];
@@ -404,13 +422,114 @@ impl WebGpu {
         rp.draw(COVER_VERTICES, 0..1);
     }
 
+    /// Rounds each channel of `target`, held in `rgba8unorm`, to its packed format's bits: copies
+    /// the subresource and draws it back from the copy, per sample where multisampled
+    /// (`PackedTargetQuantised`). In the frame's encoder, outside a pass.
+    pub(crate) fn quantise(&mut self, target: &PackedTarget) {
+        self.slow.hit(SlowPath::PackedTargetQuantised);
+        let samples = target.texture.sample_count();
+        let size = target
+            .texture
+            .size()
+            .mip_level_size(target.mip, target.texture.dimension());
+        let (width, height) = (size.width, size.height);
+        let device = &self.device;
+        let copy = self
+            .fills
+            .quantise_copies
+            .entry((width, height, samples))
+            .or_insert_with(|| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: samples,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    // WebGPU makes multisampled textures only as attachments.
+                    usage: wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+            })
+            .clone();
+        let key = (target.format, samples);
+        if !self.fills.quantises.contains_key(&key) {
+            let source = crate::packed::quantise_program(target.format, samples > 1);
+            let program = self.texel_program(
+                &source,
+                samples > 1,
+                wgpu::TextureFormat::Rgba8Unorm,
+                samples,
+            );
+            self.fills.quantises.insert(key, program);
+        }
+        let program = &self.fills.quantises[&key];
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &copy.create_view(&Default::default()),
+                ),
+            }],
+        });
+        let pipeline = program.pipeline.clone();
+        let three_d = target.texture.dimension() == wgpu::TextureDimension::D3;
+        let view = target.texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_mip_level: target.mip,
+            mip_level_count: Some(1),
+            base_array_layer: if three_d { 0 } else { target.z },
+            array_layer_count: Some(1),
+            ..Default::default()
+        });
+        let encoder = self.encoder();
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: target.mip,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: target.z,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            copy.as_image_copy(),
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: three_d.then_some(target.z),
+                resolve_target: None,
+                ops: keep(),
+            })],
+            ..Default::default()
+        });
+        rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(COVER_VERTICES, 0..1);
+    }
+
     /// Draws `frame` into `window`, a texture of its size in the window's own format
     /// (`PresentConverted`), in the frame's encoder.
     pub(crate) fn present_by_draw(&mut self, frame: &wgpu::Texture, window: &wgpu::Texture) {
         self.slow.hit(SlowPath::PresentConverted);
         let format = window.format();
         if !self.fills.presents.contains_key(&format) {
-            let program = self.texel_program(PRESENT_WGSL, false, format);
+            let program = self.texel_program(PRESENT_WGSL, false, format, 1);
             self.fills.presents.insert(format, program);
         }
         let program = &self.fills.presents[&format];

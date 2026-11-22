@@ -50,7 +50,16 @@ const BITS_WGSL: &str = "
 ";
 
 /// The converted formats drawn into.
-pub const DRAWN: [Format; 3] = [Format::A8Unorm, Format::Bgrx8Unorm, Format::Bgrx8UnormSrgb];
+pub const DRAWN: [Format; 5] = [
+    Format::A8Unorm,
+    Format::Bgrx8Unorm,
+    Format::Bgrx8UnormSrgb,
+    Format::B5g6r5Unorm,
+    Format::Bgr5a1Unorm,
+];
+
+/// The converted formats programs store into.
+pub const STORED: [Format; 1] = [Format::A8Unorm];
 
 /// Bytes of a row of `width` texels of `format`: whole blocks.
 pub fn row_bytes(format: Format, width: u32) -> usize {
@@ -745,9 +754,10 @@ pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
         let drawn = DRAWN.contains(&format);
         let want = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
         ensure!(uses.contains(want), "{format:?} declares {uses:?}");
+        let stored = FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE;
         ensure!(
             uses.contains(FormatUse::RENDER | FormatUse::BLEND) == drawn
-                && !uses.intersects(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE),
+                && (uses & stored).is_empty() != STORED.contains(&format),
             "{format:?} declares {uses:?}"
         );
     }
