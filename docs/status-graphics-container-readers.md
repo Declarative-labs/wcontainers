@@ -293,8 +293,35 @@ dependencies of wcontainers-shaders.
   a container's header and chunks itself, with its own plausibility rules (at most 64 chunks,
   alphanumeric tags). Not this track's file; it could use `container::chunk_list`. With it, "one
   reader in the tree" holds for shipped code and the tests, not for that example.
-- Not changed, found by run 1's comparison: the Direct3D 12 declaration scans (dxbc.rs
-  `element_slots`, and dxil.rs `places` likewise) list every element of a range whose length comes
-  from the bytecode (up to 2^32). The shaders crate refuses such a range by name
-  (`BindingsBeyondLimit`); the Direct3D 12 front does not yet. Fixing it changes behaviour, so it
-  is left for its own item.
+- Fixed on 2026-11-22 (commits 06a2647d, 8c13643d), found by run 1's comparison: the Direct3D 12
+  declaration scans (dxbc.rs `element_slots`, dxil.rs `places`) listed every element of a range
+  whose length comes from the bytecode (up to 2^32; one mutated container took 45 GB). Now a
+  range is a first slot and an end (`TypedView::slots`, `multisampled_arrays` gives ranges), and
+  slots under Direct3D 12's numbering are counted from merged runs of places (`dxil::Places`).
+  `formats::typed_key` puts in the key only the slots below their kind's range
+  (`SlotKind::slots`), the only ones the converter binds; it refuses the rest
+  (`BindingsBeyondLimit`). Same answers as before for the 450 real containers of the shaders
+  crate's corpus and the graphics test's shaders: tests/declared.rs, recorded before the change
+  in tests/declared.expected. Two behaviour notes, both for malformed bytecode only: a shader
+  model 5.1 range whose upper bound is just below its lower bound (2^32 elements counted modulo
+  2^32) is no element, as release builds read it before; debug builds panicked on it. An array
+  of no elements is no longer listed as an empty typed view (it never gave a slot).
+
+## The semantic name rule (checked 2026-11-22)
+
+The open item "a semantic name with no terminator inside its chunk is accepted by the shared
+reader" is already fixed, by f51d47ce (C1's check, above under "Where things stand"). I checked
+again against the reference: dxbc-spirv reads the name with `readString` on a reader bounded by
+the chunk, and an element whose name has no NUL before the chunk's end fails and resets the whole
+signature. container.rs `signature_element` takes the name up to its first NUL inside the chunk's
+contents and refuses the element otherwise; `a_name_ends_with_its_nul_inside_its_chunk` pins
+it. Nothing changed in this run.
+
+## Requests to other tracks
+
+- Shaders track (crates/wcontainers-shaders/src/container.rs `signature`): where one element of a
+  signature chunk is malformed, the converters' list keeps the elements before it. The reference
+  (dxbc-spirv `Signature`, `resetOnError`) drops the whole signature then. Only malformed
+  containers differ, and dxbc-spirv refuses their conversion itself, so this is not clearly
+  worth changing; if the list should follow the reference, `signature` would give no elements of
+  a chunk with any malformed element. Not changed by me (not my file).
