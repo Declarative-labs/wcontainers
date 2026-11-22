@@ -20,12 +20,13 @@ use etherparse::{
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets_conformance::seconds_since_confirmed;
 use wcontainers_icmp_sockets_conformance::{
-    BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, GATEWAY, GATEWAY_V6, HOP_LIMIT, LOCAL,
-    LOCAL_V6, MARK, MARK_PROHIBITED, NETWORK, NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE,
-    OTHER_USER, OWNER_PROHIBITED, PATIENCE, PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT,
-    SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, TWO_SEGMENTS, Wakes, buffer, filtered_membership,
-    finished, finished_soon, index, ip, ip6, ipv4, ipv6, no_reports, output, plain_fields,
-    poll_with, seen, source_filters_are_written, tc, version_of, woken, write_setting,
+    BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FAR_V6_SEGMENT, FLOW_LABEL, GATEWAY, GATEWAY_V6,
+    HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
+    NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED, PATIENCE,
+    PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, Wakes,
+    buffer, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4, ipv6, no_reports,
+    output, plain_fields, poll_with, seen, segment_routing_header, source_filters_are_written, tc,
+    version_of, woken, write_setting,
 };
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
@@ -62,6 +63,10 @@ pub const RAW_PROTOCOL: IpNumber = IpNumber(linux_raw_sys::net::IPPROTO_RAW as u
 ///
 /// https://www.rfc-editor.org/rfc/rfc2711
 const ROUTER_ALERT_HOP_OPTION: [u8; 2] = [5, 2];
+/// The type of the option that pads an extension header by its length and two bytes more.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
+const PAD_N: u8 = 1;
 /// A payload longer than the link of the check that sends one too long.
 ///
 /// https://man7.org/linux/man-pages/man7/ip.7.html
@@ -76,7 +81,7 @@ const RAW_PACING: BytesPerSecond = BytesPerSecond(16_000);
 ///
 /// https://man7.org/linux/man-pages/man7/socket.7.html
 const FLOODING_SENDS: usize = 63;
-/// iproute2's brief listing of a link: its name, state and link address.
+/// The brief listing iproute2 gives of a link: its name, state and link address.
 const BRIEF_LINK: &[&str] = &["-br", "link", "show"];
 /// The network namespace of the calling thread.
 const THREAD_NAMESPACE: &str = "/proc/thread-self/ns/net";
@@ -241,7 +246,7 @@ fn receive<S: RawSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> R
     loop {
         match sockets.receive(socket, into) {
             Err(HostError::WouldBlock) if start.elapsed() < PATIENCE => {
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(LOOK_AGAIN_SOON);
             }
             other => return other.expect("something arrives"),
         }
@@ -436,19 +441,7 @@ pub fn a_payload_goes_out_with_its_ipv6_header<S: RawSockets>(sockets: S) {
     /// https://www.rfc-editor.org/rfc/rfc8200#section-4
     const PADDING: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
     let padding = Ipv6RawExtHeaderSlice::from_slice(&PADDING).unwrap();
-    // A segment routing header of two segments, the next of them on the link.
-    let mut routing = vec![
-        u8::MIN,
-        TWO_SEGMENTS,
-        linux_raw_sys::net::IPV6_SRCRT_TYPE_4 as u8,
-        1,
-        1,
-        u8::MIN,
-        u8::MIN,
-        u8::MIN,
-    ];
-    routing.extend_from_slice(&FAR_V6_SEGMENT.octets());
-    routing.extend_from_slice(&ON_LINK_V6.octets());
+    let routing = segment_routing_header();
     let routing = Ipv6RawExtHeaderSlice::from_slice(&routing).unwrap();
     let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
     let route = Ipv6RouteSelectors {
@@ -498,11 +491,6 @@ pub fn a_payload_goes_out_with_its_ipv6_header<S: RawSockets>(sockets: S) {
     );
     assert_eq!(seen.payload, PAYLOAD);
 }
-
-/// The last segment of the routing header the IPv6 check sends, beyond the link.
-///
-/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
-const FAR_V6_SEGMENT: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 9);
 
 /// Checks that an IPv6 socket of `IPPROTO_RAW` sends a payload under the protocol its header asks for.
 pub fn an_ipv6_raw_protocol_socket_sends_under_the_asked_protocol<S: RawSockets>(sockets: S) {
@@ -833,8 +821,7 @@ pub fn receive_with_nothing_queued_would_block<S: RawSockets>(sockets: S) {
     }
 }
 
-/// Checks that a buffer that cuts a packet in its IP header, after it or in its payload takes its start and tells its whole
-/// length.
+/// Checks that a buffer cutting a packet in its IP header, after it or in its payload takes its start and tells its whole length.
 pub fn a_short_buffer_keeps_the_whole_length<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     for (to, header) in [
@@ -860,8 +847,7 @@ pub fn a_short_buffer_keeps_the_whole_length<S: RawSockets>(sockets: S) {
     }
 }
 
-/// Receives what `sent` makes arrive, whole and then into buffers of each length of `cuts`, which must take its
-/// start and tell its whole length. Gives the whole.
+/// Returns the whole of what `sent` makes arrive, after buffers of each length of `cuts` took its start and its whole length.
 fn short_buffers_take_the_start<S: RawSockets>(
     sockets: &S,
     socket: &S::Socket,
@@ -887,8 +873,7 @@ fn short_buffers_take_the_start<S: RawSockets>(
     whole
 }
 
-/// Returns the start of a packet without what differs between two sends of it: an IPv4 header's identification and the
-/// checksum over it.
+/// Returns a packet's start without what differs between two sends of it, an IPv4 header's identification and checksum.
 fn unnumbered(version: IpVersion, mut start: Vec<u8>) -> Vec<u8> {
     // https://www.rfc-editor.org/rfc/rfc791#section-3.1
     const IPV4_NUMBERED: &[core::ops::Range<usize>] = &[4..6, 10..12];
@@ -1096,7 +1081,7 @@ pub fn an_ipv6_router_alert_takes_forwarded_packets<S: RawSockets>(sockets: S) {
         option_length,
         high,
         low,
-        1,
+        PAD_N,
         u8::MIN,
     ];
     let packet = ipv6_packet(
@@ -1188,8 +1173,7 @@ pub fn multicast_routing_takes_the_namespace_role<S: RawSockets>(sockets: S) {
     }
 }
 
-/// Checks that closing a socket gives up what it held: the namespace's multicast routing role, at once or once no child forked
-/// meanwhile holds its descriptor.
+/// Checks that closing a socket gives up the namespace's multicast routing role, at once or once no forked child holds it.
 pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     let routing = RawSocketSetting::MulticastRouting(MulticastRouting::Enabled);
@@ -1201,14 +1185,14 @@ pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
     let start = Instant::now();
     let taken = loop {
         match sockets.configure(&second, routing) {
-            Err(_) if start.elapsed() < PATIENCE => std::thread::sleep(Duration::from_millis(1)),
+            Err(_) if start.elapsed() < PATIENCE => std::thread::sleep(LOOK_AGAIN_SOON),
             other => break other,
         }
     };
     assert_eq!(taken, Ok(()));
 }
 
-/// Checks that the IP header fields that choose a payload's route are taken: interface, link scope, broadcast, a waived source, source preferences, owner, mark.
+/// Checks that a payload's route takes its header fields: interface, link scope, broadcast, waived source, preferences, owner, mark.
 pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1570,9 +1554,10 @@ pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: RawSockets>(sockets: S) {
     });
 }
 
-/// Checks that an ICMP error about a sent packet arrives whole, its outer header as on the wire, quoting the packet's header as
-/// Linux kept it or as it was written; a buffer that cuts it in its outer header, its ICMP header or the quoted
-/// packet takes its start.
+/// Checks that an ICMP error about a sent packet arrives whole, its outer header as on the wire, quoting the packet's header.
+///
+/// The quoted header is as Linux kept it or as it was written; a buffer that cuts the error in its outer header, its
+/// ICMP header or the quoted packet takes its start.
 pub fn icmp_errors_arrive_whole<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1791,8 +1776,7 @@ pub fn a_transmit_time_holds_the_send<S: RawSockets>(sockets: S) {
     }
 }
 
-/// Checks that the socket settings of the IP layer are taken: pacing and the unsent count, the send and receive buffers, receive
-/// timestamps.
+/// Checks that the IP layer's socket settings are taken: pacing and the unsent count, send and receive buffers, receive timestamps.
 pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -1813,8 +1797,8 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
             send(&sockets, &sender, payload_to(to, OTHER_EXPERIMENT, &long)).unwrap();
         }
         std::thread::sleep(QUIET);
-        let mut received = 0;
-        let mut dropped = 0;
+        let mut received = usize::MIN;
+        let mut dropped = usize::MIN;
         let end = loop {
             match sockets.receive(&receiver, &mut into) {
                 Ok(Received::Packet(fields)) => {
@@ -1914,8 +1898,9 @@ fn membership(group: IpAddr, joined: bool) -> RawSocketSetting<'static> {
     })
 }
 
-/// Checks that a joined group is the host's while joined; multicast loopback brings the socket its own multicast send, and an
-/// IPv4 socket of no membership takes it only while it takes every group's.
+/// Checks that a joined group is the host's while joined and that multicast loopback brings the socket its own multicast send.
+///
+/// An IPv4 socket of no membership takes that send only while it takes every group's.
 pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -2007,11 +1992,11 @@ pub fn multicast_source_filters_choose_the_senders<S: RawSockets>(sockets: S) {
     for (group, sources) in [
         (
             IpAddr::V4(GROUP),
-            [IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)],
+            (IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)),
         ),
         (
             IpAddr::V6(GROUP_V6),
-            [IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)],
+            (IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)),
         ),
     ] {
         let socket = opened(&sockets, version_of(group), EXPERIMENT);
@@ -2131,7 +2116,7 @@ pub fn waits_on_many_sockets_each_wake_once<S: RawSockets>(sockets: S) {
     let sender = opened(&sockets, IpVersion::V6, EXPERIMENT);
     send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
     for (wait, wakes) in &mut waits {
-        assert!(wakes.reach(1), "a wait woken when the packet arrives");
+        assert!(wakes.first_came(), "a wait woken when the packet arrives");
         assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
     }
     std::thread::sleep(QUIET);
@@ -2296,8 +2281,7 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
     );
 }
 
-/// Checks that a transmit time the link's schedule cannot keep is reported with the key of its send and why, as the ICMP suite
-/// checks it.
+/// Checks that a transmit time the link's schedule cannot keep is reported with its send's key and why, as the ICMP suite does.
 pub fn rejected_transmit_times_are_reported_with_their_keys<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -2322,8 +2306,7 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: RawSockets>(socke
     );
 }
 
-/// Checks that a setting set twice answers as it did once, by Configurable's own suite.
-/// Returns a socket of a namespace of its own with an IPv4 router alert, for Configurable's suite.
+/// Returns a socket with an IPv4 router alert in a namespace of its own, for Configurable's suite to set twice.
 pub fn configurable_value<S: RawSockets>(sockets: S) -> (S, S::Socket, RawSocketSetting<'static>) {
     enter_network_namespace();
     let socket = opened(
