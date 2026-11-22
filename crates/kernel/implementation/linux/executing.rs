@@ -442,7 +442,7 @@ mod tests {
                 wcontainers_processor_architecture::MemoryDelta<'_, Self::Architecture>,
             ),
         ) {
-            todo!("single instruction execution is not built for the kernel's test executor yet")
+            unreachable!("the kernel's tests use Plain only for its translator settings")
         }
     }
 
