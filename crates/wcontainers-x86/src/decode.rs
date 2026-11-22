@@ -4,7 +4,7 @@
 use crate::X86_64;
 use crate::encoding::{
     ADDRESS_SIZE, ESCAPE, ESCAPE_0F3A, ESCAPES_THREE_BYTE, EVEX, EVEX_LENGTH, LEGACY_PREFIXES,
-    MAP_0F, MAP_0F3A, MAP_0F38, MAP_ONE_BYTE, MODE_DISPLACEMENT8, MODE_DISPLACEMENT32,
+    LOCK, MAP_0F, MAP_0F3A, MAP_0F38, MAP_ONE_BYTE, MODE_DISPLACEMENT8, MODE_DISPLACEMENT32,
     MODE_REGISTER, MODRM_FIELD, MODRM_MODE_SHIFT, MODRM_REG_SHIFT, OPERAND_SIZE, REX_W,
     RM_DISPLACEMENT32, RM_SIB, VEX_MAP_LOW, VEX2, VEX2_LENGTH, VEX3, VEX3_LENGTH, is_rex,
 };
@@ -74,10 +74,14 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     let operand_size_prefix = code[..prefixes].contains(&OPERAND_SIZE);
     let mut too_long = false;
     // iced reads `wait` and the x87 instruction after it as one (`fstsw` for `wait; fnstsw`); the CPU runs
-    // them as two, which a single step or a fault between them tells apart.
-    if code.get(prefixes) == Some(&WAIT) && iced.code() != Code::Wait {
-        iced.set_code(Code::Wait);
-        iced.set_len(prefixes + 1);
+    // them as two, which a single step or a fault between them tells apart. A lock prefix makes `wait` illegal.
+    if code.get(prefixes) == Some(&WAIT) {
+        if code[..prefixes].contains(&LOCK) {
+            iced.set_code(Code::INVALID);
+        } else if iced.code() != Code::Wait {
+            iced.set_code(Code::Wait);
+            iced.set_len(prefixes + 1);
+        }
     }
     // `wbnoinvd` is `wbinvd` with an F3 prefix, which a CPU without it (the one presented) ignores.
     if iced.code() == Code::Wbnoinvd {

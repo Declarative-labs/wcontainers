@@ -1,7 +1,7 @@
 //! What x86-64 tells the translator about single instructions: whether a real CPU may give a different
 //! result, how the stack pointer moves, and which memory is reached.
 
-use wcontainers_guest_cpu::{AccessKind, Guest, StackMove};
+use wcontainers_guest_cpu::{AccessKind, BuiltAddress, Guest, StackMove};
 use wcontainers_x86::{X86_64, decode};
 
 fn instruction(bytes: &[u8]) -> wcontainers_x86::Instruction {
@@ -237,5 +237,80 @@ fn memory_reached() {
             "{bytes:02x?}"
         );
         assert!(second.is_none());
+    }
+}
+
+/// Addresses an instruction writes out or builds relative to itself, for code that may take a function's.
+#[test]
+fn built_addresses() {
+    const AT: u64 = 0x20;
+    let cases: &[(&[u8], Option<BuiltAddress>)] = &[
+        // lea rax, [rip + 0x10]: relative to the next instruction.
+        (
+            &[0x48, 0x8d, 0x05, 0x10, 0, 0, 0],
+            Some(BuiltAddress::Offset(AT + 7 + 0x10)),
+        ),
+        // mov edi, 0x401000 and push 0x401000.
+        (
+            &[0xbf, 0x00, 0x10, 0x40, 0x00],
+            Some(BuiltAddress::Absolute(0x40_1000)),
+        ),
+        (
+            &[0x68, 0x00, 0x10, 0x40, 0x00],
+            Some(BuiltAddress::Absolute(0x40_1000)),
+        ),
+        // lea rax, [0x401000] and lea eax, [0x401000]: a displacement alone.
+        (
+            &[0x48, 0x8d, 0x04, 0x25, 0x00, 0x10, 0x40, 0x00],
+            Some(BuiltAddress::Absolute(0x40_1000)),
+        ),
+        (
+            &[0x8d, 0x04, 0x25, 0x00, 0x10, 0x40, 0x00],
+            Some(BuiltAddress::Absolute(0x40_1000)),
+        ),
+        // The displacement is sign-extended to 64 bits, and a 32-bit register keeps its low half.
+        (
+            &[0x48, 0x8d, 0x04, 0x25, 0x00, 0x00, 0x00, 0x80],
+            Some(BuiltAddress::Absolute(0xffff_ffff_8000_0000)),
+        ),
+        (
+            &[0x8d, 0x04, 0x25, 0x00, 0x00, 0x00, 0x80],
+            Some(BuiltAddress::Absolute(0x8000_0000)),
+        ),
+        // lea ax, [0x401000] keeps 16 bits, not the address; lea rax, [rbx + 0x401000] adds a register.
+        (&[0x66, 0x8d, 0x04, 0x25, 0x00, 0x10, 0x40, 0x00], None),
+        (&[0x48, 0x8d, 0x83, 0x00, 0x10, 0x40, 0x00], None),
+    ];
+    for &(bytes, built) in cases {
+        assert_eq!(
+            X86_64::built_address(AT, &instruction(bytes), &[], 0..0x100, |_| None),
+            built,
+            "{bytes:02x?}"
+        );
+    }
+}
+
+/// `wait` runs alone before the x87 instruction iced reads with it, whatever its other prefixes, and a lock
+/// prefix makes it illegal, as the reference CPU raises.
+#[test]
+fn wait_alone_and_locked() {
+    use iced_x86::Code;
+    for (bytes, code, length) in [
+        (&[0x9b, 0xdf, 0xe0][..], Code::Wait, 1),
+        (&[0x66, 0x48, 0x9b, 0xdf, 0xe0], Code::Wait, 3),
+        (&[0x3e, 0xf3, 0x9b], Code::Wait, 3),
+        (&[0xf0, 0x9b], Code::INVALID, 2),
+        (&[0xf0, 0x9b, 0xdf, 0xe0], Code::INVALID, 2),
+        (
+            &[
+                0x3e, 0x3e, 0x40, 0x49, 0x49, 0x42, 0x65, 0xf0, 0xf3, 0x48, 0x67, 0x36, 0x9b, 0, 0,
+                0,
+            ],
+            Code::INVALID,
+            13,
+        ),
+    ] {
+        let (i, decoded) = decode(bytes).expect("an instruction");
+        assert_eq!((i.iced.code(), decoded), (code, length), "{bytes:02x?}");
     }
 }

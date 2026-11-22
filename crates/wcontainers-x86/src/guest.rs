@@ -1108,8 +1108,9 @@ impl Guest for X86_64 {
         }
     }
 
-    /// `lea r, [rip + d]` builds a blob offset; `mov` and `push` of a 32- or 64-bit immediate write out an
-    /// absolute address, as code linked at a fixed address passes a function's.
+    /// `lea r, [rip + d]` builds a blob offset; `mov` and `push` of a 32- or 64-bit immediate, and `lea` of a
+    /// displacement alone into a 32- or 64-bit register, write out an absolute address, as code linked at a
+    /// fixed address passes a function's.
     fn built_address(
         at: u64,
         i: &Instruction,
@@ -1122,6 +1123,16 @@ impl Guest for X86_64 {
             Mnemonic::Lea if ins.memory_base() == Register::RIP => Some(BuiltAddress::Offset(
                 at.wrapping_add(ins.memory_displacement64()),
             )),
+            Mnemonic::Lea
+                if ins.memory_base() == Register::None && ins.memory_index() == Register::None =>
+            {
+                let displacement = ins.memory_displacement64();
+                match u32::from(general(ins.op0_register())?.width) {
+                    u64::BITS => Some(BuiltAddress::Absolute(displacement)),
+                    u32::BITS => Some(BuiltAddress::Absolute(u64::from(displacement as u32))),
+                    _ => None,
+                }
+            }
             Mnemonic::Mov | Mnemonic::Push => {
                 let last = ins.op_count().checked_sub(1)?;
                 matches!(

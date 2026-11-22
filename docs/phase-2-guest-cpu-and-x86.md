@@ -1140,7 +1140,10 @@ bytes apart) through `before`.
   for a fixed address takes a function's address as an absolute immediate (`mov edi, imm32`, as musl's
   `_start_c` passes `main`). `built_address` returns `BuiltAddress::Offset` for an address built relative to
   the instruction and `BuiltAddress::Absolute` for one written out in it: on x86 `mov` and `push` of a 32-
-  or 64-bit immediate, to a register or to memory. The translator turns an absolute one into a blob offset
+  or 64-bit immediate, to a register or to memory, and `lea` of a displacement alone (no base, no index)
+  into a 32- or 64-bit register (the value the register gets, so a 32-bit one keeps the low half). A
+  function reached only by a direct `jmp`, with its return address pushed by hand, is translated as blocks
+  of the function that jumps; that run is exact, it only gets no piece of its own. The translator turns an absolute one into a blob offset
   only when it is given the program's link address (`translate`'s `link_address`, the address of the blob's
   first byte, from the ELF of a program of type `ET_EXEC`), and the found offset is an entry like any other
   built address ("built addresses" among `Translation::found`). The output still holds no absolute address
