@@ -1,4 +1,5 @@
 use super::*;
+use crate::back::OPEN;
 
 /// Writer responsible for all code generation.
 #[expect(missing_debug_implementations, reason = "would be way too verbose?")]
@@ -50,8 +51,7 @@ pub struct Writer<'a, W> {
     clip_distance_count: u32,
 }
 
-/// The punctuation of a select written one component at a time.
-const OPEN: &str = "(";
+/// The punctuation of a select written one component at a time (and `back::OPEN`).
 const CLOSE: &str = ")";
 const COMPONENT_GAP: &str = ", ";
 const MEMBER: char = '.';

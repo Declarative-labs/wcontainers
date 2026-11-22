@@ -36,6 +36,8 @@ pub use nt::TaskDispatchLimits;
 pub const COMPONENTS: &[char] = &['x', 'y', 'z', 'w'];
 /// Indent for backends.
 pub const INDENT: &str = "    ";
+/// An opening parenthesis in written code.
+pub(crate) const OPEN: &str = "(";
 
 /// Expressions that need baking.
 pub type NeedBakeExpressions = crate::FastHashSet<crate::Handle<crate::Expression>>;

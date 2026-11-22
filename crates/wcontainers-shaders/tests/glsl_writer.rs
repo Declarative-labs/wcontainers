@@ -204,6 +204,38 @@ fn hlsl_continuing_reads_the_body_values_of_its_iteration() {
 }
 
 #[test]
+fn hlsl_texel_offsets_keep_their_width() {
+    use naga::back::hlsl;
+    let module = naga::front::wgsl::parse_str(
+        "
+@group(0) @binding(0) var volume: texture_3d<f32>;
+@group(0) @binding(1) var flat: texture_2d<f32>;
+@group(0) @binding(2) var nearest: sampler;
+@fragment
+fn main() -> @location(0) vec4f {
+    return textureSample(volume, nearest, vec3f(0.5), vec3i(1, -2, 3))
+        + textureSample(flat, nearest, vec2f(0.5), vec2i(-1, 2));
+}
+",
+    )
+    .expect("parse");
+    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&module)
+        .expect("validate");
+    let mut out = String::new();
+    hlsl::Writer::new(
+        &mut out,
+        &hlsl::Options::default(),
+        &hlsl::PipelineOptions::default(),
+    )
+    .write(&module, &info, None)
+    .expect("write");
+    assert!(out.contains(", int3(int3("), "{out}");
+    assert!(out.contains(", int2(int2("), "{out}");
+    assert!(!out.contains("int2(int3("), "{out}");
+}
+
+#[test]
 fn msl_continuing_reads_the_body_values_of_its_iteration() {
     use naga::back::msl;
     let module = naga::front::wgsl::parse_str(CONTINUING).expect("parse");

@@ -4302,7 +4302,10 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
 
                 if let Some(offset) = offset {
                     write!(self.out, ", ")?;
-                    write!(self.out, "int2(")?; // work around https://github.com/microsoft/DirectXShaderCompiler/issues/5082#issuecomment-1540147807
+                    // work around https://github.com/microsoft/DirectXShaderCompiler/issues/5082#issuecomment-1540147807
+                    // with the offset's own width (`int3` for a 3D texture)
+                    self.write_value_type_of(module, offset, func_ctx)?;
+                    self.out.write_str(back::OPEN)?;
                     self.write_const_expression(module, offset, func_ctx.expressions)?;
                     write!(self.out, ")")?;
                 }
