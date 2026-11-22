@@ -152,7 +152,7 @@ Runs 4 to 15 wrote a long history here; it is in this file's git log (`git log -
   (interface.rs and the data files): none.
 - Mac (macOS, 06:24): clippy with warnings denied of the host (portable.rs) and the suite: clean, 11 s.
 - Run 16 broken copies (mutants.sh, 06:23 to 06:25, load 11 to 14; log t2r1/fixes.log in scratch): the four above,
-  each failed. After the two flake fixes (06:47 to 07:00, load 2 to 8; log t2r1/mutants-clock.log): the seven clock
+  each failed. After the two flake fixes (06:47 to 06:49, load 2 to 8; log t2r1/mutants-clock.log): the seven clock
   copies (clock-always-refused, clock-unit-ignored, both route refusals, clock-microseconds-as-milliseconds,
   clock-set-outside-repair, timestamp-unit-milliseconds) and four of the information reading
   (information-state-shifted, information-acknowledged-as-received, information-rtt-is-variance,
