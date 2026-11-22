@@ -128,7 +128,9 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   absolute immediates through it, with the address in the cache key (see "X6f, run 1"). X6f's check passed.
   Run 2 (2026-11-21, X6f dispatched again after the reorganization) found all of it on main and verified it
   there (see "X6f, run 2"). Run 3 (2026-11-21, X6f dispatched a third time, on branch agents) verified it again
-  from a clean build after the owner's evening interface changes (see "X6f, run 3").
+  from a clean build after the owner's evening interface changes (see "X6f, run 3"). Run 4 (2026-11-22, X6f
+  dispatched a fourth time) verified it again from a clean build after the owner's reviewed interfaces were merged
+  at a00ab267 (see "X6f, run 4").
 - X7 (x87 and MMX): run 1 (2026-11-21) fixed the two findings of the X6f check and built the x87 unit in
   software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
   `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
@@ -156,6 +158,43 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
   it found (see "X8, runs 4 and 5"). Run 6 (2026-11-21, the workflow's first dispatch of X8 after X7's check)
   fixed the X7 check's three findings and ran X8's bar from the tree as it is (see "X8, run 6").
+
+## X6f, run 4 (2026-11-22)
+
+X6f was dispatched a fourth time, with the same five findings of the X6 check. All of it is in the tree (runs 1 and
+2), so nothing was rebuilt; this run checked it again after the owner's reviewed interfaces were merged at
+a00ab267. Of those, only comment wording reaches this track (`x86_64_features.rs`, the kernel interface's links);
+`ReadinessReport`, `BindingSetting`, `negative-route-advisable` and `DomainNameResolver` are used nowhere in its
+crates. Following the notice of 2026-11-22, every build, test and check ran on the rented machines; the Mac only
+edited and committed, and `cargo reviewable check` was not run. Logs and scripts in scratch `x6f4/`.
+- The five findings, checked in the tree: plan 5.7 and 12 say X6 measured only a loop writing its own next
+  instruction and the JIT case is expected; `self_written.c`'s `100 93 90` is under seen; `browser.rs` names each
+  stop kind's signal; `SPIN_TIME_LIMIT` bounds the other-thread test; the X10 list has the write during a system
+  call.
+- The link address: as at runs 1 to 3. The wasmtime executor's one caller (implementation.rs line 1056) still
+  passes `None`; it stays listed for the runtime track under "For the orchestrator".
+- Rented x86-64 machine (96 processors, kernel 7.0.0-1018-aws, load 1.9 to 25 during the jobs), a new build folder
+  (`--name x6f4`), agents at a00ab267 with other agents' uncommitted edits in the copy (`verify.log`, 15 min):
+  `cargo fmt --check` of the five crates and the browser crate's wasm32 clippy for both guests: pass. Unit tests of
+  the translator, guest-cpu, x86 and arm64 crates and the test crate's library: pass. `--test programs --test
+  checks --test smoke -- x86_64`: 28 + 2 + 6 passed, 0 failed (487 s; `main_is_in_the_full_translation_x86_64`
+  and `code_written_by_another_thread_matches_linux_x86_64` among them, Chrome included). `valid -- x86_64`,
+  PROPTEST_CASES=40000, seed 11413: 6 passed (`absolute_entries_are_valid_x86_64` among them, 29 s). `changes --
+  x86_64`, 200 cases, seed 11414, 4 program seeds: 3 passed (45 s). Layer 2 x86, seed 11412, 10,000 programs, all
+  on the CPU, 96 at once: 0 failing (140 s; 3,441 faulted, 1,121 left to an address at full, 24,572 stacks lost,
+  23,934 pieces forgotten).
+- In that first job, clippy and the wasmtime executor's tests did not build: `wcontainers-kernel-linux` (the kernel
+  track's) still used `ReadyFor::ERROR` and `HANG_UP` in uncommitted edits. A second job 20 minutes later
+  (`second.log`, same build folder, the kernel then built): clippy `--no-deps` with warnings denied of the four
+  owned crates and arm64, all targets, and of the wasmtime executor: pass; the executor's unit and cache tests (11):
+  pass.
+- The literal check now runs on the rented machine; it lists files through git, which the copy leaves out, so the
+  job makes a git index in the copy first. Exit 0, marks 0, nothing in this track's crates. Baseline lines: x86
+  117, guest-cpu 26, the test crate 1,738, the translator 8, unchanged.
+- Rented ARM64 machine (`arm.log`, load 2.3 at start): ARM64's programs, output, browser, layer 2, valid and checks
+  tests: 28 passed, 0 failed (464 s).
+- The benchmark pairs before and after the link address were not run again: the translator's handling of it is
+  unchanged since run 1 (`x6f/pairs.log`).
 
 ## X8, run 6 (2026-11-21)
 
@@ -1982,7 +2021,7 @@ wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the 
   of a run and its header's `e_type` is `ET_EXEC`, pass `Some(run.start)` (a fixed image is mapped at its link
   address, so the run's start is where its first byte is linked); `None` otherwise and at run time. Add a
   test to its `tests/cache.rs` that compiles one image with `Some` and with `None` and finds two entries.
-  Still open at X7 run 5 (2026-11-21): the executor's line 1055 passes `None`; the X6f check measured 45 to 55
+  Still open at X6f run 4 (2026-11-22): the executor's line 1056 passes `None`; the X6f check measured 45 to 55
   translations at run time for its fixed programs at full look-ahead without the address, 15 to 18 with it.
 - X6f run 1, a question: addresses held in data are still not followed, the global offset table's above all
   (rustc's x86 start code and, I expect, ARM64's position independent start code take `main` from it). For a
@@ -3974,6 +4013,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- Since 2026-11-22 nothing builds, tests or checks on the Mac. X6f run 4's bar from a clean build:
+  `x86-run <checkout> --name <new name> -- "$(cat <scratch>/x6f4/verify.sh)"`, then `x6f4/second.sh` the same way
+  (lint alone, the wasmtime executor, and the literal check, which needs a git index: the script makes one in the
+  copy with `git init -q && git add -A`). ARM64: the `arm-run` command at the top of `x6f4/arm.log`.
 - X8 run 5: the v3 programs, `--test programs -- avx2_fma_and_f16c_match_linux_x86_64 xstate_matches_linux_x86_64
   benchmark_set_for_x86_64_v3_runs_only_when_told_x86_64` and `--test browser --
   x86_64_v3_programs_match_linux_in_chrome_x86_64` on the rented x86-64 machine (`WC_PROBE_ANSWER=1` for a host
@@ -4263,6 +4306,8 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X6f run 4: valid at 40,000 (seed 11413), changes at 200 cases and 4 program seeds (seed 11414), layer 2 for x86 at
+  10,000, all on the CPU (seed 11412), rented x86-64 machine; ARM64's tests at their defaults, rented ARM64 machine.
 - X7 run 5: layer 1 on the i7-8750H, the 1,375 x87 and "mm" forms at 1,000 a form (seed 11852), the hand cases,
   the cases in no form at their default and the Chrome sample at 1 a form (seed 11854); layer 2 for x86 at
   10,000, all on the CPU (seed 11853, rented x86-64 machine); the suite's other random tests at their defaults.
