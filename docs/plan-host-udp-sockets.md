@@ -32,7 +32,7 @@
   and control messages, and control messages and the error queue onto `ReceivedPacketFields`,
   `TransmitReport` and ICMP errors written whole from their IP header.
 - On other unix systems: open (UDP as the process's own user), bind (requested or kernel-chosen port, IPv6 only or
-  dual stack), connect (destination and ports alone), wait_for_events, close, and the settings socket2 covers
+  dual stack), connect (destination and ports alone), wait_until_ready, close, and the settings socket2 covers
   (buffers, address and port sharing, multicast loopback) through socket2; the settings at the value every socket
   there has and cannot leave are taken. Everything else is refused, counted under a named reason: UDP-Lite,
   another owner, the exit node's port choice, other route selectors, disconnect (no socket2 call), send (the
@@ -77,7 +77,7 @@
   -1 is none.
 - give_negative_route_advice: Linux has no call for it; a connected socket is connected again to its peer,
   which drops its cached route and takes a new flow hash; an unconnected socket caches no route.
-- wait_for_events: `Watched::wait_for_events`, the events of `poll` (asked for and always reported), with an
+- wait_until_ready (`Readiness<HostUdpSocket>`): `Watched::wait_until_ready`, the facts of `poll`, with an
   error held while entries a send read off the error queue wait for receives.
 - close: the registration is deleted, then the descriptor closes.
 - Settings: `Ip` and `Port` through the shared crate; `ReceiveCoalescing` is `UDP_GRO`,
