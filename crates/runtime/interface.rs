@@ -13,7 +13,9 @@ pub trait Runtime {
     type ImageError;
     type Container: Container;
     type Interrupter: Interrupter + 'static;
+    type Config;
 
+    fn new(config: Self::Config) -> Self;
     fn open_image(&self, source: Self::ImageSource) -> Result<Self::Image, Self::ImageError>;
     fn make_container(
         &self,
@@ -70,11 +72,4 @@ pub enum ContainerError {
         path: PathBuf,
         error: Errno,
     },
-}
-
-/// A runtime built from a configuration given once.
-pub trait StandaloneRuntime: Runtime {
-    type Config;
-
-    fn new(config: Self::Config) -> Self;
 }
