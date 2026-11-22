@@ -134,7 +134,8 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
 - X7 (x87 and MMX): run 1 (2026-11-21) fixed the two findings of the X6f check and built the x87 unit in
   software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
   `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
-  ones (494 forms) passes layer 1 at 1,000 cases a form on the i7-8750H with 0 failing, and the long double C
+  ones (248 of the 256 x87, MMX and `fxsave` forms, in a run of 494 forms with every other form whose name
+  holds "mm") passes layer 1 at 1,000 cases a form on the i7-8750H with 0 failing, and the long double C
   program matches Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Run 2 (2026-11-21) wrote
   the eight transcendental instructions (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`,
   `fyl2xp1`), layer 1's count of the reference's known failures, and the long double program's transcendental
@@ -962,8 +963,9 @@ Measured:
   bits, canonical under 57). Then after later changes: `fprem` and `fprem1` 1,000 cases at seeds 9736 to 9739,
   0 failing; MMX's conversions, `fscale` and `maskmovq` at seed 9744, 0 failing; the state instructions at seed
   9735, 0 failing but `fxsave`/`fxrstor` as above.
-- The verdict, the i7-8750H (load 3.5 to 4.4, 4 at once, the tree at a99645a8): every x87 and MMX form, 494
-  forms (all but the eight transcendental ones), 1,000 cases a form, seed 9755: 0 failing (1,345 s). On the way
+- The verdict, the i7-8750H (load 3.5 to 4.4, 4 at once, the tree at a99645a8): every x87 and MMX form but
+  the eight transcendental ones (248 of the 256 x87, MMX and `fxsave` forms; 494 forms in all, with every other
+  form whose name holds "mm"), 1,000 cases a form, seed 9755: 0 failing (1,345 s). On the way
   there (each fixed, then rerun): seed 9731 from bbfa0c40, stopped part way, found `fldenv` and `fnstenv` 4
   bytes below 2^47 and `fscale`'s C1 on an out-of-range infinity; seed 9751 from fd3a55f9 found `wait` and
   `emms` stops read from MXCSR by the harness, `maskmovq`'s access missing from the access list, the 80-bit

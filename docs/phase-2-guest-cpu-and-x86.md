@@ -3273,7 +3273,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   `fsqrt` by section 5.8's root, the
   transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
   bar: layer 1 for every x87 and MMX form at 1,000 cases a form, zero mismatches except known failures
-  recorded with their reasons; a C program using `long double` gives the native output.
+  recorded with their reasons; a C program using `long double` gives the native output, its transcendental
+  results printed to 16 digits (exact ones differ in about 8% of lines, by one unit or C1, section 5.8).
 - **X8, the AVX setting** (since the owner's ruling of 2026-11-20 no setting: the per-process list a program
   is told, `Offer`, section 5.10, with "on" the v3 list and "off" the default list). AVX, AVX2, FMA, F16C,
   BMI2, XSAVE in the setting, the two counters, the setting
