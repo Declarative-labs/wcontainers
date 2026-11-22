@@ -2,7 +2,8 @@
 //!
 //! A kernel's checks take a kernel with one process, which has not run. A process's checks take a
 //! handle to a container's first process that has not run yet, started to run serially and exactly,
-//! which maps writable memory and leaves its first page unmapped.
+//! which leaves its first page unmapped. Its start has written pages for it, as Linux's `execve`
+//! writes the new program's arguments onto its stack before its first instruction.
 
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::SignalInformation;
@@ -43,12 +44,12 @@ pub fn first_process_tells_of_itself<P: Process>(process: P) {
     assert_ne!(process.id(), ABSENT);
 }
 
-/// Checks that bytes written into the process's writable memory are read back.
+/// Checks that bytes written into the process's memory are read back.
 pub fn reads_back_what_it_writes<P: Process>(mut process: P) {
-    let range = first_writable(&mut process);
+    let range = first_written(&mut process);
     process
         .write_memory(range.clone(), &WRITTEN)
-        .expect("a writable page is written");
+        .expect("a written page is written");
     assert_eq!(read(&mut process, range), WRITTEN);
 }
 
@@ -73,9 +74,18 @@ pub fn process_suspends_itself<P: Process>(process: P) {
     assert_eq!(ids, [id], "a process that has not run has its first thread");
 }
 
-/// Checks that a process that is not running uses no CPU time between two readings.
-pub fn no_time_is_used_while_not_running<P: Process>(process: P) {
-    assert_eq!(process.cpu_time(), process.cpu_time());
+/// Checks that a process that is not running uses no CPU time while the embedder reads and
+/// writes its memory and watches it.
+pub fn no_time_is_used_while_not_running<P: Process>(mut process: P) {
+    let before = process.cpu_time();
+    let range = first_written(&mut process);
+    process.watch_memory(range.clone(), WatchesFor::Writes);
+    process
+        .write_memory(range.clone(), &WRITTEN)
+        .expect("a written page is written");
+    assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    process.watch_memory(range, WatchesFor::None);
+    assert_eq!(process.cpu_time(), before, "the process has not run");
 }
 
 /// Checks that the process runs as it was started: serially and exactly.
@@ -92,11 +102,20 @@ pub fn state_stays_in_one_place<P: Process>(mut process: P) {
     assert_eq!(first, second);
 }
 
-/// Checks that copying a process's context leaves the process with its thread.
-pub fn copy_leaves_the_process<P: Process>(process: P) {
+/// Checks that copying a process's context leaves the process as it was: its memory read and
+/// written, and its thread there to take. What a copy holds is only seen by resuming it on a
+/// kernel, which a process's handle cannot reach.
+pub fn copy_leaves_the_process<P: Process>(mut process: P) {
+    let range = first_written(&mut process);
+    process
+        .write_memory(range.clone(), &WRITTEN)
+        .expect("a written page is written");
     let copy = process.copy_process_context();
+    assert_eq!(read(&mut process, range), WRITTEN);
+    let id = process.id();
     let (context, tasks) = process.suspend_process();
-    assert_eq!(tasks.count(), 1, "the copied process still has its thread");
+    let ids: Vec<TaskId> = tasks.map(|(task, _)| task).collect();
+    assert_eq!(ids, [id], "the copied process still has its thread");
     drop((copy, context));
 }
 
@@ -119,10 +138,10 @@ pub fn continue_signal_leaves_the_process<P: Process>(mut process: P) {
             signal: Signal::SIGCONT,
         },
     );
-    let range = first_writable(&mut process);
+    let range = first_written(&mut process);
     process
         .write_memory(range.clone(), &WRITTEN)
-        .expect("a writable page is written");
+        .expect("a written page is written");
     assert_eq!(read(&mut process, range), WRITTEN);
     let (_, tasks) = process.suspend_process();
     assert_eq!(
@@ -134,7 +153,7 @@ pub fn continue_signal_leaves_the_process<P: Process>(mut process: P) {
 
 /// Checks that the embedder still reads and writes memory it watches, and after the watch ends.
 pub fn watched_memory_is_read_and_written<P: Process>(mut process: P) {
-    let range = first_writable(&mut process);
+    let range = first_written(&mut process);
     for watches in [WatchesFor::All, WatchesFor::Writes, WatchesFor::None] {
         process.watch_memory(range.clone(), watches);
         process
@@ -144,12 +163,13 @@ pub fn watched_memory_is_read_and_written<P: Process>(mut process: P) {
     }
 }
 
-/// Returns the range of [`WRITTEN`]'s length at the start of the process's first writable page.
-fn first_writable<P: Process>(process: &mut P) -> core::ops::Range<u64> {
-    let writable = process.take_dirty_memory();
-    let first = writable
+/// Returns the range of [`WRITTEN`]'s length at the start of the first range of pages written for
+/// the process since its start, which wrote its program's arguments at least.
+fn first_written<P: Process>(process: &mut P) -> core::ops::Range<u64> {
+    let written = process.take_dirty_memory();
+    let first = written
         .first()
-        .expect("the first answer is every writable page")
+        .expect("the start wrote the program's arguments")
         .start;
     first..first + WRITTEN.len() as u64
 }
