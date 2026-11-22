@@ -42,6 +42,36 @@ Done this run:
   driver's refusal and its component byte record are gone.
 - Adjacency primitives without a geometry program are refused by name.
 
+The table of lists and shares on our driver, WHOLE lists, at 737f7b49 (desktop, RTX 3080, one
+GPU job, 8 glcts at once, other tracks' jobs queued beside), 15:21:44 to 15:44:34 (Pacific):
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030
+  run, 99.64% (run 12: 99.42%; 38 crashes fewer, the fetched components across words).
+- dEQP-GLES3: 44,768 cases; Pass 43,982, Warn 6, Fail 175, Crash 111, Flake 1, Skip 493: 43,988
+  of 44,275 run, 99.35% (run 12: 99.21%).
+- dEQP-GLES31: 37,802 cases; Pass 16,601, Warn 4, Fail 106, Crash 372, Flake 3, Skip 20,716:
+  16,605 of 17,086 run, 97.18% (run 12: 15,648 of 15,998, 97.81%; 1,088 more cases run now that
+  the geometry stage is reported, 957 more passing).
+- KHR-GLES2: 473 cases; Pass 438, Skip 35: 100.00%.
+- KHR-GLES3: 6,498 cases; Pass 6,191, Fail 3, Crash 73, Skip 231: 6,191 of 6,267, 98.79% (run
+  12: 97.45%).
+- KHR-GLES31: 4,101 cases; Pass 2,805, Fail 18, Crash 45, Skip 1,233: 2,805 of 2,868, 97.80%
+  (run 12: 2,466 of 2,499, 98.68%).
+- KHR-GLES32 (1,405 cases), KHR-GL33 (9,886), KHR-GL46 (19,714): cannot start (no context of
+  their version).
+- Over the six lists that start: 86,996 of 87,964 run, 98.90% (run 12: 85,476 of 86,467,
+  98.85%). The bar's measure, over the GLES lists and KHR-GL33, counting the 11,291 cases of
+  KHR-GLES32 and KHR-GL33 as run and failed: 86,996 of 99,255, 87.65%; not met (92.9%).
+  KHR-GL46: none run.
+- The most frequent refusals of the run: image atomics 302 and 32, `gl_HelperInvocation` 160,
+  sampling an integer texture 126, `R10G10B10A2_SSCALED` vertices 64, flat values from the last
+  vertex of a geometry program's output 62, blits the blitter does not make 62, one slice of a
+  volume texture as an image 52, border on a comparison sampler 48, layered geometry output 46,
+  comparisons with a bias or gradients 34, device lost 24 (KHR-GLES3 packed_depth_stencil and
+  shader_integer_mix, as many crashes as in run 12: not yet read).
+- Results: scratch `results/g9r14/full/<list>/` (`results.csv`, `failures.csv`), the job's
+  output `logs/g9r14-full.log`. No comparison with the RTX 3080's own OpenGL and no independent
+  check this run.
+
 Refused by name, not built (each seen in the group runs below):
 - A geometry program writing a layer or viewport (`Stages::selects`): 46 refusals; needs a draw
   per layer of the targets and per viewport with the pass-through's helper constants, as the
