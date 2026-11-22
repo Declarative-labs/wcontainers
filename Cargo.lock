@@ -4492,8 +4492,6 @@ dependencies = [
  "wcontainers-icmp-sockets",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
- "wcontainers-readiness",
- "wcontainers-readiness-conformance",
  "wcontainers-route-resolver-conformance",
 ]
 
@@ -4513,7 +4511,6 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
- "wcontainers-readiness",
 ]
 
 [[package]]
@@ -4701,8 +4698,6 @@ dependencies = [
  "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-raw-sockets",
- "wcontainers-readiness",
- "wcontainers-readiness-conformance",
  "wcontainers-route-resolver-conformance",
 ]
 
@@ -4722,7 +4717,6 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-raw-sockets",
  "wcontainers-raw-sockets-conformance",
- "wcontainers-readiness",
 ]
 
 [[package]]
