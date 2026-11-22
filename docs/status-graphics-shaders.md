@@ -42,7 +42,66 @@ geometry replay of streams past the first, the Direct3D 11 front's ask. Run 5 (r
 section below): A5's alpha-antialiased lines on WebGL 2. Run 6 (run 85, the section below): A5's
 cull distances and primitive numbers on WebGL 2, A4's multisampled integer twins found absent by
 the plan. Run 7 (run 86, the section below): A9, vertex shaders writing storage, run as compute
-through the stage helper; A7's typed buffers in geometry shaders. Not complete: the gap list below.
+through the stage helper; A7's typed buffers in geometry shaders. Run 8 (run 87, the section
+below): arrays of constant and structured buffers on the DXIL route, and dxc's `vs_cull` drawn on
+both cull routes. Not complete: the gap list below.
+
+## G6 run 8 (run 87): arrays of constant and structured buffers on the DXIL route, dxc's `vs_cull` drawn
+
+Logs and scripts in scratch `graphics-shaders/g6-r87` (run 86's with its folder: `gpu.sh`,
+`tree-tar2.sh` for the clone `tip2`, `suite-laptop.sh`; `x86-literals.sh` runs fmt, clippy, the
+CPU test binaries and the literal check on the x86 machine from the bundle `shaders-r87.bundle`;
+jobs `job1.log`, `job2.log`, `gpu-suite.log`; `x86-tests.log`).
+- Interface changes merged at a00ab267 (readiness, binding settings, the resolver): none touches
+  this crate or what it calls; it builds and its tests pass at the tip.
+- Built (src/dxil/buffer_arrays.rs, new; src/dxil/arrays.rs; src/dxil.rs): dxc's arrays of
+  constant and structured buffers (`ConstantBuffer<T> b[n]`, `StructuredBuffer<T> s[]`,
+  `RWStructuredBuffer<T> u[n]`), which naga's reader takes as one buffer holding an array of
+  blocks, are split into one buffer per element at its own register (an array without a length
+  sized by `register_ranges`, as typed buffer arrays since run 55). An element picked by a
+  constant is that buffer; each load, store, atomic operation and length taken through an element
+  picked at run time is a call of a function switching on the index (the last element for an
+  index past the array, which Direct3D leaves undefined). A pointer into a picked element passed
+  to a function stays refused (`ResourceArray`; no shader of any corpus does so). A constant
+  buffer element declared 64 KiB by dxil-spirv takes its array's declared size (`declared_sizes`
+  reads the entry holding the element's register; dxc's metadata gives one element's size, as
+  I read it, not measured with an element indexed at run time inside). The typing copy of a
+  function, shared with the texture arrays' pass, is `arrays::typing_copy`.
+- Tests: `buffer_arrays_use_the_elements_picked` (tests/compute_draw.rs) now runs dxc's
+  `cs_buffer_array` too; new own shader `cs_structured_array` (arrays.hlsl, fxc cs_5_1 and dxc
+  cs_6_0) and test `structured_buffer_arrays_use_the_elements_picked_on_both_routes`: reads,
+  stores, atomic adds with the value returned, and `GetDimensions` through elements picked at run
+  time, against the words Direct3D's rules give, on WebGPU on the RTX 3080. Seeds 1 to 4 (job1.log):
+  cs_buffer_array DXBC and DXIL, cs_structured_array DXBC and DXIL, cs_typed_array both: 24
+  comparisons, 0 words apart. Seeds 100 to 115 (job2.log): 96 comparisons, 0 words apart. CPU
+  tests (tests/variants.rs): `buffer_arrays_are_a_binding_per_element` takes both routes (the DXIL
+  route's refusal it asserted is gone) and new
+  `structured_buffer_arrays_are_a_binding_per_element_on_both_routes`.
+  Not drawn against real Direct3D 12 (as for the other arrays: Direct3D's rules, not its device).
+- Corpus: own `cs_buffer_array.dxil` now records `UnboundedResourceArray` (it converts with
+  ranges; the corpus gives none), new `cs_structured_array` records the same on both routes. The
+  laptop's corpus test: 13 passed (`logs/suite-r87b.log` there, load 0.3 to 1.3). No other record
+  changed, so Chrome had no new WGSL to compile.
+- dxc's build of `vs_cull` (gap A5's leftover) is drawn on both cull routes:
+  `geometry_shaders_draw_as_direct3d_does` (WebGPU) and
+  `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` (ANGLE) now take the eight `CULLED`
+  cases by both builds (`culled_by_both_builds`), and each must drop a primitive by its planes.
+  Seeds 1 to 4 (job2.log): 224 and 216 comparisons, 0 failed; the DXIL cases within the allowance
+  the DXBC ones have (largest 1, allowed 2, where printed).
+- Literals: the resource list message is one named constant (`dxil::PAST_THE_LIST`), so two
+  baseline lines of this crate are gone (8fb40546); the new file adds no finding (x86-tests.log:
+  no line of this crate among the check's 20 findings, all other tracks').
+- Runs, at 8fb40546: x86 machine (load 10 to 50, other tracks' jobs beside): rustfmt clean,
+  clippy of this crate and the interface with warnings denied clean, the CPU test binaries
+  `geometry`, `variants`, `rewrite`, `builtin`, `cache`, `glsl_writer` and `compute`: 100 passed,
+  2 ignored as before. Desktop (RTX 3080, one GPU job at a time, 3 cargo jobs): Windows clippy
+  clean; the whole suite (one job, one test thread): 24 test binaries, 179 passed, 0 failed, 6
+  ignored as before (gpu-suite.log).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip` and
+  `C:\wc\out\shaders-tip`, the x86 machine's clone, build folders and bundle, the laptop's
+  `src/shaders-tip`, `target/shaders-tip` and tar (its `out-r87` and `logs/suite-r87*.log` kept),
+  the scratch clones, tar and bundle (logs kept in `g6-r87`).
+- Not run: WebAssembly (no converted module of a corpus record changed).
 
 ## G6 run 7 (run 86): vertex shaders writing storage through the stage helper (A9), typed buffers in geometry shaders (A7)
 
@@ -673,9 +732,9 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (162 and 151 records, 152 and 143
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (163 and 152 records, 152 and 143
      converting, counted in run 86 with the vertex shaders writing storage, which convert since
-     that run, and `gs_typed`) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1439 and 1414 converting,
+     that run, and `gs_typed`; run 87 added `cs_structured_array`, refused for want of ranges) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1439 and 1414 converting,
      counted in run 86). Every record holds at run 86's code (its section above).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
@@ -764,9 +823,11 @@ The pass bar, item by item:
      `texels_through_buffer` (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
      (`storage_views_at_any_first_element_match_direct3d`), `register_ranges`
      (`buffer_arrays_use_the_elements_picked`: arrays of constant and typed buffers, two declared
-     without a length, sized by the ranges, DXBC; since run 55
+     without a length, sized by the ranges, DXBC and since run 87 DXIL; since run 55
      `typed_buffer_arrays_use_the_elements_picked_on_both_routes`, typed buffers alone, DXBC and
-     DXIL; against Direct3D's rules, not against real Direct3D 12, which no drawn test here drives
+     DXIL; since run 87 `structured_buffer_arrays_use_the_elements_picked_on_both_routes`, arrays
+     of structured buffers read, stored to, added to atomically and measured, DXBC and DXIL;
+     against Direct3D's rules, not against real Direct3D 12, which no drawn test here drives
      yet).
    - `filter_draw`: `filter_in_shader`, `border_in_shader`, `decoded` (since run 54: R16_UNORM,
      R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their integer formats, every
@@ -922,7 +983,8 @@ The gap list (every item of the pass bar not met):
   line crosses the near plane, as both line programs take Direct3D's near plane z = 0 (or z = -w
   under `CLIP_DEPTH_REWRITE` on the replay route); not tested. Waits: nobody (the Direct3D 11
   front at feature level 10_0 on WebGL 2 now has its geometry shaders, their stream output and
-  its alpha-antialiased lines). Takes: each its route and its drawn test on ANGLE.
+  its alpha-antialiased lines). Takes: each its route and its drawn test on ANGLE. dxc's build of
+  `vs_cull` is drawn on both cull routes since run 87.
 - A6. Converter part closed in G6b (runs 65, 66, 68 and 69): DXIL geometry, hull and domain shaders convert through the
   passes the DXBC route uses and draw equal to real Direct3D with dxc's builds of every program
   (`geometry_draw`, `tessellation_draw`); a DXIL pixel shader reads its layer and viewport. Since
@@ -1571,10 +1633,11 @@ The gap list (every item of the pass bar not met):
   wait on A4's `combine` and the other items below, while these passes are proven by the drawn
   tests and the corpus records today. Waits: nobody. Takes: each pass on rspirv's `dr::Module`
   (load, edit, assemble), proven by every corpus record and written file staying byte-equal.
-- Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
-  for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
-  holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
-  there since run 55), `InterpolateAt` on the DXIL route,
+- Also open but not on the pass bar's words, for the fronts' real programs (arrays of constant and
+  structured buffers on the DXIL route convert since run 87, its section): `rewrite` refusing
+  arrays of buffers (its input's binding arrays of blocks; `src/dxil/buffer_arrays.rs` would serve
+  it with the elements numbered as `common::split_arrays` numbers images; no front has asked),
+  `InterpolateAt` on the DXIL route,
   `CalculateLevelOfDetail`, `SampleClamp`, `globallycoherent` views (refused by name on both
   routes: on DXBC `GloballyCoherent` since G6a run 5, before which the flag was dropped without a
   word; on DXIL the reader's "unsupported memory operand .. at scope .."; no shader of any corpus
@@ -1623,7 +1686,8 @@ G6a run 5's tip):
   "unsupported instruction ImageQueryLod" 4 (DXIL); `SparseFeedback` 3 (DXBC) and the reader's
   "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
   `SampleClamp` 2 (DXBC) and the reader's "image sample operand 0x80" 2 (DXIL, the same minimum
-  level operand); `AtomicSignedness` 1; `ResourceArray` 1; a clip or cull distance read as an input
+  level operand); `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
+  since run 87, recorded `UnboundedResourceArray` as the corpus has no ranges); a clip or cull distance read as an input
   (`ClipDistance` 4, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`, DXBC and,
   since run 65, DXIL). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
   builtin" 4) converts since run 66.
@@ -1636,10 +1700,7 @@ G6a run 5's tip):
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
    cull distances from geometry or domain shaders, the primitive's number behind a geometry
-   shader), A1, the DXIL route's `ResourceArray` (arrays of constant and structured buffers: an
-   element picked at run time needs each load, store and atomic through the array switched over
-   its elements, as src/dxil/arrays.rs does for textures; the same pass would serve `rewrite`,
-   which refuses buffer arrays alike), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   shader), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
@@ -1801,7 +1862,9 @@ G6a run 5's tip):
   `VariantKey::register_ranges` (kind, space, registers; a range of unbounded length cannot size
   an array and stays refused), or only after a plain conversion is refused
   `UnboundedResourceArray`, and bind each element of an array at its reflected (space, register)
-  as any binding. For shader_eval_attribute nothing new: the pixel program's reflection now asks
+  as any binding. Since run 87 the same holds for dxc's arrays of constant and structured buffers
+  (`ConstantBuffer<T> b[n]`, `StructuredBuffer<T> s[]`, read and written; each element is a
+  binding of its own, nothing else to do). For shader_eval_attribute nothing new: the pixel program's reflection now asks
   `PerspectiveSample` for such an input, which the front's `output_interpolation` already passes.
 
 - The WebGL 2 track (run 47): keep the public `glsl` module this branch added to
