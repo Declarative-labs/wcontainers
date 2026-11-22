@@ -61,3 +61,27 @@ void cs_typed_array(uint3 id : SV_DispatchThreadID)
     stored[(pick.x + i) % 2][i] = loaded[(pick.y + i) % 3][i] + loaded_rest[(pick.z + i) % 2][i];
     stored[2][i] = loaded[2][i] ^ loaded_rest[(pick.w + i) % 2][i];
 }
+
+// Arrays of structured buffers, one declared without a length (sized by the root signature's
+// ranges), each element picked at run time from a constant: invocation i reads word i of the
+// elements it picks, takes the length of one, and stores and adds atomically to word i of others,
+// so every result is determined.
+cbuffer structured_choice : register(b0)
+{
+    uint4 structured_pick;
+};
+StructuredBuffer<uint> structured[3] : register(t0);
+StructuredBuffer<uint> structured_rest[] : register(t3);
+RWStructuredBuffer<uint> structured_out[3] : register(u0);
+
+[numthreads(8, 1, 1)]
+void cs_structured_array(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint count, stride;
+    structured_rest[(structured_pick.z + i) % 2].GetDimensions(count, stride);
+    structured_out[(structured_pick.x + i) % 2][i] = structured[(structured_pick.y + i) % 3][i] + count * stride;
+    uint before;
+    InterlockedAdd(structured_out[(structured_pick.w + i) % 3][i], structured_rest[i % 2][i], before);
+    structured_out[2][i] ^= before << 1;
+}

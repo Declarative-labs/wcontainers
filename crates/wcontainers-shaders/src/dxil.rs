@@ -2,6 +2,7 @@
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
 pub(crate) mod arrays;
+mod buffer_arrays;
 mod components;
 mod depth;
 mod geometry;
@@ -229,7 +230,9 @@ fn declared_sizes(
             .as_chunks::<TRIPLE>()
             .0
             .iter()
-            .find(|d| (d[0], d[1]) == (space, register))
+            // An element of an array of constant buffers (`buffer_arrays`) is sized as its array.
+            .filter(|d| d[0] == space && d[1] <= register)
+            .max_by_key(|d| d[1])
             .map(|d| d[2].div_ceil(stride));
         let Some(declared) = declared.and_then(core::num::NonZeroU32::new) else {
             continue;

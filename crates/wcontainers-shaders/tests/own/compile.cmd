@@ -161,6 +161,8 @@ for %%e in (hs_values_odd_ccw hs_values_even_cw hs_values_integer_point) do (
 "%DXC%" -nologo -T cs_6_0 -E cs_buffer_array -Gis -Fo cs_buffer_array.dxil arrays.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_1 /E cs_typed_array /enable_unbounded_descriptor_tables /Fo cs_typed_array.dxbc arrays.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_typed_array -Gis -Fo cs_typed_array.dxil arrays.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_1 /E cs_structured_array /enable_unbounded_descriptor_tables /Fo cs_structured_array.dxbc arrays.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_structured_array -Gis -Fo cs_structured_array.dxil arrays.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_one_d /Fo cs_one_d.dxbc one_d.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_one_d -Gis -Fo cs_one_d.dxil one_d.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_view_kinds /Fo cs_view_kinds.dxbc views.hlsl || exit /b 1

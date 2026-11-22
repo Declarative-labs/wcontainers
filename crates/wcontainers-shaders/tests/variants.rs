@@ -1321,12 +1321,11 @@ fn buffer_array_ranges() -> Vec<(SlotKind, u32, std::ops::Range<u32>)> {
         .collect()
 }
 
-/// Arrays of constant buffers and typed buffers (DXBC shader model 5.1), two declared without a
-/// length: every element a binding at its register, sized by the root signature's ranges, and
-/// refused by name without them. The DXIL route refuses arrays of constant buffers by name.
+/// Arrays of constant buffers and typed buffers (fxc's shader model 5.1 and dxc's 6.0), two declared
+/// without a length, by both routes: every element a binding at its register, sized by the root
+/// signature's ranges, and refused by name without them.
 #[test]
 fn buffer_arrays_are_a_binding_per_element() {
-    let code = read("tests/own/cs_buffer_array.dxbc");
     let formats = |kind| {
         BUFFER_ARRAYS
             .iter()
@@ -1342,41 +1341,35 @@ fn buffer_arrays_are_a_binding_per_element() {
         register_ranges: buffer_array_ranges(),
         ..Default::default()
     };
-    let c = convert(Source::Dxbc(&code), &key, None).unwrap();
-    for (kind, first, elements) in BUFFER_ARRAYS {
-        for register in first..first + elements {
-            let b = c
-                .reflection
-                .bindings
-                .iter()
-                .find(|b| b.kind == kind && b.register == register)
-                .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-            assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
-        }
-    }
-    let text = wgsl(&c);
-    assert!(text.matches("switch").count() >= 5, "{text}");
     let without_ranges = VariantKey {
         register_ranges: Vec::new(),
         ..key.clone()
     };
-    assert_eq!(
-        convert(Source::Dxbc(&code), &without_ranges, None).err(),
-        Some(ConvertError::Unsupported(
-            wcontainers_shaders::refusal::UNBOUNDED_RESOURCE_ARRAY
-        ))
-    );
-    assert_eq!(
-        convert(
-            Source::Dxil(&read("tests/own/cs_buffer_array.dxil")),
-            &key,
-            None
-        )
-        .err(),
-        Some(ConvertError::Unsupported(
-            wcontainers_shaders::refusal::RESOURCE_ARRAY
-        ))
-    );
+    let dxbc = read("tests/own/cs_buffer_array.dxbc");
+    let dxil = read("tests/own/cs_buffer_array.dxil");
+    for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+        let c = convert(source, &key, None).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        for (kind, first, elements) in BUFFER_ARRAYS {
+            for register in first..first + elements {
+                let b = c
+                    .reflection
+                    .bindings
+                    .iter()
+                    .find(|b| b.kind == kind && b.register == register)
+                    .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
+                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+            }
+        }
+        let text = wgsl(&c);
+        assert!(text.matches("switch").count() >= 5, "{text}");
+        assert_eq!(
+            convert(source, &without_ranges, None).err(),
+            Some(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::UNBOUNDED_RESOURCE_ARRAY
+            )),
+            "{source:?}"
+        );
+    }
 }
 
 /// Arrays of typed buffers alone (`cs_typed_array`), one of each kind declared without a length, by

@@ -1303,8 +1303,8 @@ fn buffer_array_expected(
     out
 }
 
-/// Arrays of constant buffers and typed buffers (fxc's shader model 5.1 `cs_buffer_array`), two
-/// declared without a length and sized by the root signature's ranges, through the WebGPU back end:
+/// Arrays of constant buffers and typed buffers (`cs_buffer_array`, fxc's shader model 5.1 and dxc's
+/// 6.0), two declared without a length and sized by the root signature's ranges, through the WebGPU back end:
 /// every element read or written after a pick at run time is the one named, against the results
 /// Direct3D's rules give. Seeded words: `WCONTAINERS_COMPUTE_SEED` and `WCONTAINERS_COMPUTE_CASES`.
 #[test]
@@ -1313,7 +1313,7 @@ fn buffer_arrays_use_the_elements_picked() {
         "cs_buffer_array",
         &BUFFER_ARRAYS,
         buffer_array_expected,
-        &[false],
+        &[false, true],
     );
 }
 

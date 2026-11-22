@@ -17,7 +17,7 @@ use wcontainers_gpu::VariantKey;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
-fn refused() -> ConvertError {
+pub(super) fn refused() -> ConvertError {
     ConvertError::Unsupported(crate::refusal::RESOURCE_ARRAY)
 }
 
@@ -182,7 +182,7 @@ pub(crate) fn copy_constant(
 }
 
 /// A constant index's value.
-fn constant_index(module: &Module, f: &Function, e: Handle<Expression>) -> Option<u32> {
+pub(super) fn constant_index(module: &Module, f: &Function, e: Handle<Expression>) -> Option<u32> {
     let literal = |e: &Expression| match *e {
         Expression::Literal(Literal::U32(v)) => Some(v),
         Expression::Literal(Literal::I32(v)) => u32::try_from(v).ok(),
@@ -203,21 +203,10 @@ pub(super) fn split(
     declared: &mut Vec<super::images::Declared>,
     variant: &VariantKey,
 ) -> Result<()> {
-    // An array of constant or structured buffers, which the reader takes as one buffer holding an
-    // array, stays refused.
-    let buffers = module.global_variables.iter().any(|(_, v)| {
-        v.binding.is_some()
-            && matches!(
-                v.space,
-                naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }
-            )
-            && matches!(module.types[v.ty].inner, TypeInner::Array { base, .. }
-                if matches!(module.types[base].inner, TypeInner::Struct { .. }))
-    });
-    if buffers {
-        return Err(refused());
-    }
     let vec4 = super::depth::vec4(module);
+    super::buffer_arrays::split(module, resources, variant, |module, f| {
+        super::depth::as_widened(module, f, vec4)
+    })?;
     split_with(
         module,
         |module, binding, base, size| {
@@ -421,29 +410,7 @@ pub(crate) fn split_with(
         .collect();
     let mut plans = Vec::new();
     for &(i, h, image, sampler, index) in &dynamic {
-        let mut f = typed(module, all[i])?;
-        // Texel pointers (an access into an image, which atomic operations use) have no type;
-        // for typing, each stands for its image.
-        let handles: Vec<_> = f.expressions.iter().map(|(h, _)| h).collect();
-        for h in handles {
-            let Expression::Access { base, .. } = f.expressions[h] else {
-                continue;
-            };
-            let image = match f.expressions[base] {
-                Expression::GlobalVariable(g) => matches!(
-                    module.types[module.global_variables[g].ty].inner,
-                    TypeInner::Image { .. }
-                ),
-                Expression::Access { base, .. } | Expression::AccessIndex { base, .. } => {
-                    array_of(&f.expressions[base]).is_some()
-                }
-                _ => false,
-            };
-            if image {
-                *f.expressions.get_mut(h) = f.expressions[base].clone();
-            }
-        }
-        let f = &f;
+        let f = &typing_copy(module, all[i], &typed)?;
         let mut typifier = naga::front::Typifier::new();
         let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
         let mut e = f.expressions[h].clone();
@@ -560,6 +527,41 @@ pub(crate) fn split_with(
     Ok(())
 }
 
+/// The copy of `f` its expressions are typed in: `typed`'s, with each texel pointer (an access into
+/// an image, which atomic operations use, and which has no type) standing for its image.
+pub(super) fn typing_copy(
+    module: &Module,
+    f: &Function,
+    typed: &impl Fn(&Module, &Function) -> Result<Function>,
+) -> Result<Function> {
+    let mut f = typed(module, f)?;
+    let global_is = |e: &Expression, is: fn(&TypeInner) -> bool| match *e {
+        Expression::GlobalVariable(g) => is(&module.types[module.global_variables[g].ty].inner),
+        _ => false,
+    };
+    let handles: Vec<_> = f.expressions.iter().map(|(h, _)| h).collect();
+    for h in handles {
+        let Expression::Access { base, .. } = f.expressions[h] else {
+            continue;
+        };
+        let image = match f.expressions[base] {
+            ref e @ Expression::GlobalVariable(_) => {
+                global_is(e, |t| matches!(t, TypeInner::Image { .. }))
+            }
+            Expression::Access { base, .. } | Expression::AccessIndex { base, .. } => {
+                global_is(&f.expressions[base], |t| {
+                    matches!(t, TypeInner::BindingArray { .. })
+                })
+            }
+            _ => false,
+        };
+        if image {
+            *f.expressions.get_mut(h) = f.expressions[base].clone();
+        }
+    }
+    Ok(f)
+}
+
 /// An element of an array picked at run time: the access, the array and the index.
 struct Pick {
     access: Handle<Expression>,
@@ -569,7 +571,12 @@ struct Pick {
 
 /// The length of an array declared without one: the rest of the root signature's range of its kind
 /// and space holding its first register. No more elements than the kind's slots hold.
-fn unbounded_length(variant: &VariantKey, class: u32, space: u32, register: u32) -> Result<u32> {
+pub(super) fn unbounded_length(
+    variant: &VariantKey,
+    class: u32,
+    space: u32,
+    register: u32,
+) -> Result<u32> {
     let kind =
         super::slot_kind(class).ok_or_else(|| ConvertError::Malformed(super::NO_CLASS.into()))?;
     let length = variant
@@ -588,7 +595,7 @@ fn unbounded_length(variant: &VariantKey, class: u32, space: u32, register: u32)
     Ok(length)
 }
 
-fn is_signed(inner: &TypeInner) -> bool {
+pub(super) fn is_signed(inner: &TypeInner) -> bool {
     matches!(
         *inner,
         TypeInner::Scalar(naga::Scalar {
@@ -600,7 +607,7 @@ fn is_signed(inner: &TypeInner) -> bool {
 
 /// The case of a switch on an index that runs for element `k` of `count` (the last for any index
 /// past the array, which Direct3D leaves undefined).
-fn case_value(k: usize, count: usize, signed: bool) -> SwitchValue {
+pub(super) fn case_value(k: usize, count: usize, signed: bool) -> SwitchValue {
     match k + 1 == count {
         true => SwitchValue::Default,
         false if signed => SwitchValue::I32(k as i32),
@@ -770,7 +777,7 @@ fn helper(
 }
 
 /// Takes `dead` out of every emitted range in `block` and the blocks in it.
-fn unemit(block: &mut Block, dead: &[Handle<Expression>]) {
+pub(super) fn unemit(block: &mut Block, dead: &[Handle<Expression>]) {
     if dead.is_empty() {
         return;
     }
