@@ -49,8 +49,9 @@ track's public entry for geometry, hull and domain programs from a naga module (
 three asks of `rewrite`. Run 2 (run 89, the section below): A13, geometry shaders taking patches
 drawn without tessellation, and A14, hull shaders giving no control points, both on the DXBC route
 (the Direct3D 12 runner's six files). Run 3 (run 90, the section below): A7's cull distances
-written by geometry shaders (the Direct3D 12 runner's eight files). Not complete: the gap list
-below.
+written by geometry shaders (the Direct3D 12 runner's eight files). Run 4 (run 91, the section
+below): level-of-detail queries (`CalculateLevelOfDetail`) on the DXBC route (the runner's four
+`calculate-lod` files). Not complete: the gap list below.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
@@ -96,6 +97,66 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
   (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the array layer and
   unordered not-equal items (A26), below.
+
+## G6 run 4 (run 91): level-of-detail queries on the DXBC route
+
+Logs and scripts in scratch `graphics-shaders/g6-r91` (run 90's with its folder: `gpu.sh`,
+`tree-tar.sh`, `suite-laptop.sh` as `~/wcontainers-graphics/suite-r91.sh` writing `out-r91`; `lod.cmd`
+compiles `ps_lod` alone on the desktop; jobs `job1.log` to `job6.log`, `gpu-suite.log`; `arm1.log` to
+`arm5.log`; `chrome.log`, `chrome-out/`). Builds, clippy and CPU tests on the rented ARM64 machine from
+the shared worktree; nothing built on the Mac.
+- Chosen because the Direct3D 12 front's runner has eight files refused for it (`calculate-lod-1` to
+  `-4`, both builds), the largest group of runner refusals that is neither absent nor waiting on a
+  device's ruling (A4's `DepthGatherComponent`).
+- Built: DXBC `lod` (`CalculateLevelOfDetail` and `CalculateLevelOfDetailUnclamped`) in pixel
+  programs converts (src/lower.rs `level_of_detail`): a call of the library function
+  `level_of_detail` (src/variant/lod.wgsl, imported by `variant::lod::function`) with the
+  coordinate's derivatives, the texture's size and level count, the sampler's state and bias from
+  the helper block (`HelperValue::SamplerState`, `LodBias`, which the fronts already fill wherever
+  reflected) and, for a texture in `min_lod_clamped`, its `MinLod`. Unclamped: log2 of the longer
+  footprint axis in texels (anisotropic samplers: divided by the axes' ratio up to the sampler's
+  anisotropy) plus the bias. Clamped: to the sampler's level range, the resource's clamp and the
+  view's levels; under a point mip filter the nearest level, taken from the level of detail at 8
+  fraction bits. A cube texture is refused by name (`CalculateLevelOfDetailCube`, no file of any
+  corpus has one), as is the query outside a pixel program (`CalculateLevelOfDetail`). The variant
+  passes now take an existing helper member for the sampler state, bias and resource clamp
+  (`helper_once`) instead of adding a second one. The DXIL route still refuses it (the carried
+  reader's "unsupported instruction ImageQueryLod"; "Next" has the way).
+- Measured on the RTX 3080 against real Direct3D 11 and WARP (job2.log, job5.log): the GPU's levels
+  of detail are its own approximation in 1/256 steps (up to 0.47 from WARP's at the same texel,
+  2,462 of 4,096 texels past 1.5/256 at seed 1), WARP's agree with the exact formula within 0.003;
+  the bias is in both values; a point mip filter rounds the clamped value; the two devices round
+  half a level apart differently (from the sampler's level range 0.5 the GPU gives 1, WARP 0; 2.5
+  gives 3 and 2), and both take 0.4991 to 1 (so the level of detail is rounded to 1/256 first).
+- Test `levels_of_detail_match_direct3d` (tests/filter_draw.rs, own `ps_lod` in filter.hlsl, fxc
+  ps_5_0 and dxc ps_6_0; `WCONTAINERS_FILTER_SEED`, `WCONTAINERS_FILTER_CASES`, the seeded sampler
+  states of the filtering test): each value within 1.5/256 of the GPU's or WARP's, on WebGPU and
+  WebGL 2 (`TEXTURE_INFO`); dxc's build refused by the reader's name. Seeds 1 to 8 (job6.log): 16
+  comparisons, 0 failed, 2 known; seeds 100 to 131 (job5.log): 64, 0 failed, 20 known. Known: the
+  anisotropic samplers (`case.anisotropy > 1`), whose footprint is the implementation's own as for
+  sampling (the GPU and WARP differ there by up to 2.75; WARP gives 0 before the bias where the
+  footprint is magnified, ours and the GPU about -2.7). Without the point mip filter's rounding
+  (job1.log) 12 of 16 comparisons failed (10 of them isotropic); without the 1/256 rounding
+  (job4.log) 6 of 64 (the isotropic cases 100, 119 and 127).
+  CPU test `level_of_detail_queries_read_the_samplers_state_from_the_helpers` (tests/variants.rs).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 0 to 3.3): the runner's
+  `calculate-lod-1` to `-4` (DXBC) convert and compile in glslang; own records added for `ps_lod`
+  (`ok`, and dxc's the reader's refusal); the other records hold, 13 passed
+  (`logs/suite-r91b.log` there). Chrome 157 on the desktop compiles the five new WGSL files
+  (chrome.log).
+- Runs: ARM64 machine (load 8 to 25): rustfmt clean, clippy of this crate with warnings denied
+  clean, every CPU test binary passed (arm4.log, variants 41 again in arm5.log); the literal check
+  prints no line of this crate, and the three baseline lines of `sampler_state_helper` are gone
+  (its numbers named: `SAMPLER_STATE_ROWS`, a row's size). Desktop (RTX 3080, one GPU job, 3 cargo
+  jobs): Windows clippy clean; the whole suite (one job, one test thread): 25 test binaries, 193
+  passed, 0 failed, 6 ignored as before (gpu-suite.log; at the code before the sampler state's
+  numbers were named, which changes no module).
+- For the Direct3D fronts: nothing new to call. A program with the query reflects
+  `HelperValue::SamplerState` and `LodBias` for its sampler (and `MinLod` under `min_lod_clamped`)
+  whatever the key, which the fronts fill as they do for filtering in the program; under WebGL 2
+  the key needs `TEXTURE_INFO` as for every level count. The Direct3D 12 runner's `calculate-lod`
+  DXBC files should now pass where its sampler state reaches the helpers.
+- Not run: WebAssembly (no module of an existing record changed but the runner's four).
 
 ## G6 run 3 (run 90): cull distances written by geometry shaders (A7)
 
@@ -925,11 +986,11 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (166 and 154 records, 155 and 143
-     converting, counted in run 89 with `gs_patch`, `hs_tri_none` and `ds_tri_none`) and vkd3d's
-     shader runner files (1503 DXBC, 1517 DXIL; 1445 and 1414 converting, counted in run 89, the
-     DXBC six more than run 86's by A13 and A14). Every record holds at run 89's code (its section
-     above).
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (170 and 158 records, 159 and 146
+     converting, counted in run 91 with `ps_lod`) and vkd3d's shader runner files (1503 DXBC, 1517
+     DXIL; 1453 and 1418 converting, counted in run 91: since run 86 the DXBC six more by A13 and
+     A14, both four more by run 90's cull distances, the DXBC four more by run 91's `calculate-lod`).
+     Every record holds at run 91's code (its section above).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
    since run 47 the corpus test writes it with the WebGL 2 back end's own writing
@@ -1675,6 +1736,9 @@ The gap list (every item of the pass bar not met):
     through the stage helper), `ReadWriteStorageFormat` (a storage texture both read and written in
     a format other than the three one-channel 32-bit ones, the only read-write formats of WebGPU's
     core; DXBC and DXIL), `TexelsThroughBufferInGeometry`.
+  - Level-of-detail queries (src/lower.rs, since run 91): `CalculateLevelOfDetailCube` (of a cube
+    texture, whose footprint is taken on the face) and `CalculateLevelOfDetail` outside a pixel
+    program (no derivatives there; shader model 6.6's compute derivatives).
   - Sampling (src/lower.rs and src/dxil/depth.rs): `SampleCompareBias`, `SampleCompareGradient`,
     `SampleCompareLevel` (a comparison sample with a bias, gradients or a level other than zero,
     which WGSL's comparison samples do not take), `DepthSampleBias`, `DepthSampleGradient`,
@@ -1830,7 +1894,7 @@ The gap list (every item of the pass bar not met):
   arrays of buffers (its input's binding arrays of blocks; `src/dxil/buffer_arrays.rs` would serve
   it with the elements numbered as `common::split_arrays` numbers images; no front has asked),
   `InterpolateAt` on the DXIL route,
-  `CalculateLevelOfDetail`, `SampleClamp`, `globallycoherent` views (refused by name on both
+  `CalculateLevelOfDetail` on the DXIL route (DXBC since run 91), `SampleClamp`, `globallycoherent` views (refused by name on both
   routes: on DXBC `GloballyCoherent` since G6a run 5, before which the flag was dropped without a
   word; on DXIL the reader's "unsupported memory operand .. at scope .."; no shader of any corpus
   declares one), DXIL signed atomic minimum
@@ -1876,8 +1940,8 @@ G6a run 5's tip):
   `MultisampledArrayTexture` 5 (`texture_layers`), `UnboundedResourceArray` 4 (`register_ranges`).
 - In "Also open": `DepthGatherComponent` 10 (vkd3d's `gather-cmp-3` to `-7`, DXBC and, since
   run 82, DXIL; A4's `swizzled`) and own 6 (expected: the comparison gathers of green, blue and
-  alpha without a mapping); `CalculateLevelOfDetail` 4 (DXBC) and the reader's
-  "unsupported instruction ImageQueryLod" 4 (DXIL); `SparseFeedback` 3 (DXBC) and the reader's
+  alpha without a mapping); `CalculateLevelOfDetail` 0 (the DXBC 4 convert since run 91) and the
+  reader's "unsupported instruction ImageQueryLod" 5 (DXIL, own `ps_lod` among them); `SparseFeedback` 3 (DXBC) and the reader's
   "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
   `SampleClamp` 2 (DXBC) and the reader's "image sample operand 0x80" 2 (DXIL, the same minimum
   level operand); `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
@@ -1888,7 +1952,19 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
+1. The DXIL route of `CalculateLevelOfDetail` (the runner's four `calculate-lod` DXIL files and own
+   `ps_lod.dxil`; DXBC done in run 91). Way: the carried reader (third_party/naga front/spv,
+   its own commit) reads `OpImageQueryLod` as a call of a function it makes once per signature,
+   named by a constant beside `HELPER_INVOCATION` (arguments the image, the sampler and the
+   coordinate, result vec2), and a DXIL pass (src/dxil) replaces each such call by the same
+   expressions `lower.rs`'s `level_of_detail` makes (move them into `variant::lod` as one function
+   over a `Function` and block, used by both routes), then drops the reader's functions (the
+   function arena rebuilt, calls remapped, as `Outlined::finish` does). Then dxc's `ps_lod` drawn in
+   `levels_of_detail_match_direct3d` and its records. After it `SampleClamp` (the runner's
+   `sampler-13` and `-15`, both builds), which can take the same library: the sample made with
+   gradients scaled by two to the clamp's distance above the level of detail where the clamp
+   is higher (a native sample otherwise), drawn against Direct3D 11.
+2. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
    front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
@@ -1904,8 +1980,8 @@ G6a run 5's tip):
    needs the points bound at `POINTS_BINDING` of its set for every geometry shader reading
    `SV_PrimitiveID` (so their converted modules change: Chrome again), and a drawn test
    (`gs_values_tess` with `hs_values_*`).
-2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
+3. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
+4. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals,
    the array layer's rounding; its geometry and tessellation entry and `rewrite` asks were built
    in run 88), A26 (the unordered not-equal, both routes, with its drawn NaN
    test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
