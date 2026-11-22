@@ -89,7 +89,7 @@ pub fn receive_packet(
     Ok(headers + length)
 }
 
-/// Describes a datagram received as a whole packet of `length` bytes, of which nothing else is known.
+/// Describes a whole packet of `length` bytes received, of which nothing else is known.
 pub fn received(length: usize) -> UdpReceived {
     UdpReceived::Packet(UdpReceivedPacket {
         fields: ReceivedPacketFields {
