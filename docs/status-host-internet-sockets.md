@@ -6,9 +6,42 @@ reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the inde
 on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared the suites' comment and literal
 findings and checked itself; run 3 answered the I2 check's four findings, below). I1 run 5 (2026-11-22, after the
 restart) conformed the ICMP and raw crates to the owner's interfaces of a00ab267 and checked I1 again. I2 run 4
-(2026-11-22) answered that check's five findings. Next: the independent check of I2; the linter findings left all
-wait on a ruling (below), and the interface selector's meaning on the owner's (For the owner). Nothing of this
-track is in progress.
+(2026-11-22) answered that check's five findings; I2 run 5 answered the next check's four. Next: the independent
+check of I2; the linter findings left all wait on a ruling (below), and the interface selector's meaning on the
+owner's (For the owner). Nothing of this track is in progress.
+
+## 2026-11-22: I2 run 5 (the check's four findings)
+- Checksum offset value never checked (blocking): true. a_checksum_offset_is_written now wants the all-zero payload
+  to carry its checksum at the offset alone: every other byte still zero, the two bytes there not both zero, and the
+  whole summing to zero with the pseudo-header, which leaves one value for them (`is_checksummed_at`). New
+  a_checksum_offset_is_checked_on_receipt: over loopback, a sender sends an all-zero payload without the offset
+  (a wrong checksum) and then with it; a socket without the offset takes the wrong one first, a socket with it takes
+  the right one first and nothing after. Broken copies (`i2-run5/broken.sh`, log beside it, ARM, 05:56 UTC, load 9.8
+  to 11.8): the verifier's offset moved by two fails both checks; the offset never set (left off) fails both.
+- Raw send of the other version (minor): fixed. A payload or a packet with its own header of the other version
+  than the socket's now goes to the host as the address alone (IPv4-mapped on an IPv6 socket, no options set, the
+  socket's sticky state untouched), as the ICMP host does, and the host's error is the answer, uncounted; the
+  hard-coded EINVAL is gone. New a_header_of_the_other_version_gets_the_hosts_error (raw) compares the four cases
+  with the host's own raw socket of protocol 253 sent the same bytes; it passes, so the answers are the verifier's
+  measured host errors: EAFNOSUPPORT on an IPv4 socket for both kinds, and on an IPv6 socket the error the
+  IPv4-mapped address gets (ENETUNREACH in the verifier's run). A packet with its own IPv4 header on an IPv6 socket
+  answered EINVAL before (Linux's answer for a `sockaddr_in`); it now takes the mapped address as the other three
+  do, for one rule. Broken copy: the early answer skipped (back through the options) fails the new check.
+- Hardware, acknowledgement and completion transmit reports (minor): the record was wrong to list them beside the
+  refused wireless status. They are accepted and passed to Linux as `SO_TIMESTAMPING` flags, and Linux reports none
+  on these sockets here: acknowledgement reports are TCP's, and hardware and completion reports need a device that
+  makes them, which the namespace has not. That is Linux's own answer for these sockets, not a fake, so no counter
+  (corrected under Honoured and Not honoured below). The flags are set by the shared crate, which the UDP track
+  uses too; counting them would be a change there for both tracks.
+- ARM disk full (minor, not this track's code): at this run's start (05:55 UTC) / had 187 GB free of 581 GB, and
+  /work is on /dev/root, not the separate stripe arm-machine.md names. This run deleted this track's stale build
+  folders there (clean-i2r2, check, verify, mutant, bench); its check scripts remove their clean and broken-copy
+  folders when they end. The machine's layout is the orchestrator's.
+- Check (`i2-run5/check.sh`, log beside it, ARM, 05:57 UTC, load 9.6 to 18.8): clean build of the nine packages,
+  clippy with warnings denied clean; three rounds, each ICMP 59 and 5 crate tests, raw 53 and 1, both allocation
+  tests, resolver 37 and its counter test, Configurable 2, NegativeRouteAdvisable 7 (37 s with the build). cargo
+  tree (normal, build, dev) of the 30 interface and conformance crates: none reaches any of the 17 implementations
+  (control 2). This run's one code commit touches only the raw suite and the raw host, no interface.rs or data file.
 
 ## 2026-11-22: I2 run 4 (the check's five findings)
 - IPv6 path MTU not capped (minor): fixed. resolve_v6 caps every IPv6 path MTU at `IP6_MAX_MTU` (65535 plus the
@@ -792,6 +825,9 @@ track is in progress.
 - Literal check: no finding in this track's files (20 in all, elsewhere).
 
 ## Which check fails when a method breaks
+- I2 run 5 adds: raw configure (the checksum's offset by a_checksum_offset_is_written and
+  a_checksum_offset_is_checked_on_receipt), raw send_to and receive (the same receipt check, and
+  a_header_of_the_other_version_gets_the_hosts_error).
 - Run 5 adds: receive (both largest fragment checks, the report interface and length in check_loopback_reports),
   send_to (each_path_mtu_discovery_mode_takes_its_mtu in both suites, the absent source's host error).
 - Run 4 adds: receive (an_echo_reply_arrives_with_its_ipv4_options, icmp_errors_queued_together_each_arrive,
@@ -824,7 +860,7 @@ track is in progress.
 - Send fields: neighbour confirmation, priority (third band of a prio queue), transmit time (fq holds 300 ms;
   rejected times reported with their keys, among them a Realtime send etf drops as of another clock), transmit
   reports scheduled and software with key, with and without the packet, and with it the loopback link and the
-  frame's length.
+  frame's length. Hardware, acknowledgement and completion reports are passed to Linux, which makes none here (below).
 - Received fields: interface, specific destination, largest fragment (none for a whole packet), software timestamps, drops since previous, mark and priority
   (raw), whole IPv4 and IPv6 headers with extension headers (raw IPv6 traffic class checked), the whole length and
   the start when the buffer cuts the packet anywhere; ICMP errors whole, their outer header as on the wire, and
@@ -832,15 +868,16 @@ track is in progress.
   ICMP error's outer header (both suites) is checked with a request or error sent with DSCP EF and ECN.
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
   mobility header is sent by its type;
-  withdrawn reassembly; checksum offset; IPv4 and IPv6 router alerts with isolation, turned off and changed; multicast routing.
+  withdrawn reassembly; checksum offset (where it is written, and a wrong checksum dropped on receipt); IPv4 and IPv6 router alerts with isolation, turned off and changed; multicast routing.
 - Settings: multicast membership, its source filters (as Linux lists them, and IPv4 raw delivery) and loopback
   (both versions), IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
 - Waits, through the host's poll: for data and for writing, each through the readiness suite (ready and failing
   bundles), a wait for writing on a new socket at once; ERROR and HANG_UP end waits that did not ask; URGENT_DATA
   and PEER_FINISHED_SENDING never come on these sockets and a wait for them waits on (checked).
-- A header of the other version than an ICMP socket's goes to the host as its address alone (IPv4-mapped on an
-  IPv6 socket), and the host's error is the answer: EINVAL both ways (measured on the ARM machine's 7.0 kernel).
+- A header of the other version than an ICMP or raw socket's goes to the host as its address alone (IPv4-mapped on
+  an IPv6 socket), and the host's error is the answer: ICMP EINVAL both ways (measured on the ARM machine's 7.0
+  kernel); raw as the host's own raw socket answers (checked).
 
 ## Not honoured, with the Linux reason
 - ICMP over IPv6 (net/ipv6/ping.c), refused with NotSupported, counted and warned: a source address, extension
@@ -870,8 +907,10 @@ track is in progress.
   fq reads every transmit time as monotonic whatever the socket's clock, and etf takes only `CLOCK_TAI` and drops
   any other socket clock alike; only `getsockopt(SO_TXTIME)` shows it, which the traits do not give. A Realtime
   mapped to the atomic clock is caught.
-- Wireless status reports: refused as in the UDP track. Acknowledgement reports are TCP's; hardware and
-  completion reports need a device with a hardware clock, which the namespace has not.
+- Wireless status reports: refused as in the UDP track, counted and warned.
+- Hardware, acknowledgement and completion reports: accepted, not refused. They are passed to Linux and the send
+  answers as Linux does, but no report arrives: acknowledgement reports are TCP's, and hardware and completion
+  reports need a device that makes them, which the namespace has not. Not counted: it is Linux's own answer.
 - Measured Linux behaviour the suites follow: a raw send into a full send buffer answers `ENOBUFS`;
   `IPV6_DONTFRAG` holds for an IPv6 raw payload of another protocol than UDP or ICMPv6 only in mode `Do`;
   `IPV6_MTU` fragments nothing smaller than the path MTU; IPv6 router alerts reach only `IPPROTO_RAW` sockets.

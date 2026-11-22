@@ -203,7 +203,10 @@ dropped and not woken, and 32 waits each woken once. A wait for writing on a new
 writable and not readable; 32 sockets with one wait each wake once; an ICMP error ends a wait for data with the
 error condition, also when a too long send took it off the host first. Echo requests and the checks' ICMP errors
 carry a traffic class that is not zero (DSCP EF with ECN), so a reply's or error's received class is the wire's.
-A header of the other version than the socket's gets the error the host's own ping socket gives that address.
+A header of the other version than the socket's gets the error the host's own ping or raw socket gives that address
+(IPv4-mapped on an IPv6 socket), sent as the address alone (raw: a payload or a packet with its own header). A raw
+checksum offset is checked by what leaves the dummy link (an all-zero payload must carry its checksum at that
+offset alone) and on receipt (a socket with it set drops a packet whose checksum is wrong and takes a right one).
 The transmit clock: Linux's etf takes only the atomic clock and drops a send whose socket clock is another (a
 Realtime send is reported invalid there, as Monotonic would be); fq reads every time as monotonic whatever the
 socket's clock. So Realtime is told from the atomic clock but not from Monotonic: only `getsockopt(SO_TXTIME)`
