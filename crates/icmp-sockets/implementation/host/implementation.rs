@@ -19,7 +19,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
+use wcontainers_readiness::{Readiness, ReadyFor};
 
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
@@ -29,7 +29,7 @@ use shared::datagram::exchange::{
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
-use shared::readiness::{NO_EVENTS, Readiness, Watched};
+use shared::readiness::{DATAGRAM_FACTS, Watched, Watcher};
 use shared::{Shortfalls, host_error, io_host_error, set_flag, sock};
 
 /// ICMP echo sockets of the Linux machine this runs on, its ping sockets, with a count of each refusal by its reason.
@@ -37,7 +37,7 @@ pub struct HostIcmpSockets {
     shortfalls: Shortfalls,
     fields_not_given: PacketCount,
     drops_asked: PacketCount,
-    readiness: Readiness,
+    watcher: Watcher,
 }
 
 /// A count every received packet adds to without a lock, warned of at its first.
@@ -128,7 +128,7 @@ impl HostIcmpSockets {
             shortfalls: Shortfalls::default(),
             fields_not_given: PacketCount::new(RECEIVED_FIELDS_NOT_GIVEN),
             drops_asked: PacketCount::new(DROPS_ASKED),
-            readiness: Readiness::new()?,
+            watcher: Watcher::new()?,
         })
     }
 
@@ -179,9 +179,10 @@ impl HostIcmpSocket {
         let holds = state.errors.holds_entries();
         if holds != state.held_errors {
             state.held_errors = holds;
-            self.watched.hold(PollEvents {
-                error_condition: holds,
-                ..NO_EVENTS
+            self.watched.hold(if holds {
+                ReadyFor::ERROR
+            } else {
+                ReadyFor::empty()
             });
         }
     }
@@ -268,7 +269,7 @@ impl IcmpSockets for HostIcmpSockets {
         }
         let send = SendState::open(borrowed, ipv6)?;
         Ok(HostIcmpSocket {
-            watched: self.readiness.watch(fd)?,
+            watched: self.watcher.watch(fd, DATAGRAM_FACTS)?,
             ipv6,
             state: RefCell::new(SocketState {
                 send,
@@ -403,16 +404,18 @@ impl IcmpSockets for HostIcmpSockets {
         unsent_bytes(socket.fd())
     }
 
-    async fn wait_for_events(
-        &self,
-        socket: &Self::Socket,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError> {
-        socket.watched.wait_for_events(interest).await
-    }
-
     fn close(&self, socket: Self::Socket) {
         drop(socket);
+    }
+}
+
+impl Readiness<HostIcmpSocket> for HostIcmpSockets {
+    async fn wait_until_ready(
+        &self,
+        socket: &HostIcmpSocket,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        socket.watched.wait_until_ready(interest).await
     }
 }
 

@@ -9,6 +9,7 @@ use wcontainers_raw_sockets::RawSockets;
 use wcontainers_raw_sockets_conformance as suite;
 use wcontainers_raw_sockets_conformance::icmp_suite as tools;
 use wcontainers_raw_sockets_host::HostRawSockets;
+use wcontainers_readiness::{Readiness, ReadyFor};
 
 tools::counting_allocator!();
 
@@ -26,7 +27,7 @@ fn a_wait_allocates_nothing_once_warm() {
     let to = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let mut into = tools::buffer();
     let counted = tools::wait_allocations(
-        || sockets.wait_for_events(&socket, tools::READABLE),
+        || sockets.wait_until_ready(&socket, ReadyFor::READABLE),
         || {
             sockets
                 .send_to(

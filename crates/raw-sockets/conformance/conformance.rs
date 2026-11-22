@@ -20,12 +20,11 @@ use etherparse::{
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, GATEWAY, GATEWAY_V6, HOP_LIMIT, LOCAL,
-    LOCAL_V6, MARK, MARK_PROHIBITED, NETWORK, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER,
-    OWNER_PROHIBITED, PATIENCE, PAYLOAD, QUEUED_ERRORS, QUIET, READABLE, REPORT_KEY, ROOT,
-    SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, TWO_SEGMENTS, WAITED_SOCKETS, WAITS_ON_ONE, WRITABLE,
-    Wakes, buffer, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4, ipv6,
-    no_reports, only_asked_for, output, plain_fields, poll_with, seen, source_filters_are_written,
-    tc, version_of, write_setting,
+    LOCAL_V6, MARK, MARK_PROHIBITED, NETWORK, NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE,
+    OTHER_USER, OWNER_PROHIBITED, PATIENCE, PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT,
+    SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, TWO_SEGMENTS, Wakes, buffer, filtered_membership,
+    finished, finished_soon, index, ip, ip6, ipv4, ipv6, no_reports, output, plain_fields,
+    poll_with, seen, source_filters_are_written, tc, version_of, woken, write_setting,
 };
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
@@ -41,12 +40,16 @@ use wcontainers_raw_sockets::{
     ChecksumOffset, HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket,
     RawSocketSetting, RawSockets, RouterAlert, RouterAlertIsolation,
 };
+use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
 use wcontainers_route_resolver_conformance::seconds_since_confirmed;
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance as configurable_suite;
 /// The ICMP suite, whose wait and allocation tools serve raw sockets too.
 pub use wcontainers_icmp_sockets_conformance as icmp_suite;
+#[doc(hidden)]
+pub use wcontainers_readiness_conformance as readiness_conformance;
 
 /// Moves the calling thread into a new network namespace, with loopback up, which needs `CAP_SYS_ADMIN`.
 pub fn enter_network_namespace() {
@@ -2029,85 +2032,17 @@ pub fn anycast_is_taken<S: RawSockets>(sockets: S) {
     }
 }
 
-/// A wait for data does not finish before a packet of the socket's protocol arrives, and finishes, woken once, when one does.
-pub fn a_wait_for_data_finishes_when_a_packet_arrives<S: RawSockets>(sockets: S) {
-    for to in [
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        IpAddr::V6(Ipv6Addr::LOCALHOST),
-    ] {
-        let version = version_of(to);
-        let receiver = opened(&sockets, version, EXPERIMENT);
-        let sender = opened(&sockets, version, EXPERIMENT);
-        let wakes = Arc::new(Wakes::default());
-        let mut wait = pin!(sockets.wait_for_events(&receiver, READABLE));
-        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        std::thread::sleep(QUIET);
-        assert_eq!(wakes.count(), 0, "woken with nothing to read");
-        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
-        assert!(wakes.reach(1), "woken when the packet arrives");
-        let events = finished(poll_with(wait.as_mut(), &wakes));
-        assert!(events.data_to_read, "{events:?}");
-        assert!(only_asked_for(events, READABLE), "{events:?}");
-        assert_eq!(wakes.count(), 1);
-        assert!(matches!(
-            sockets.receive(&receiver, &mut buffer()),
-            Ok(Received::Packet(_))
-        ));
-    }
-}
-
-/// A wait for what the socket already has finishes at its first poll, with only the events asked for.
-pub fn a_wait_for_writing_finishes_at_once<S: RawSockets>(sockets: S) {
-    let socket = opened(&sockets, IpVersion::V6, RAW_PROTOCOL);
-    let wakes = Arc::new(Wakes::default());
-    let events = finished(poll_with(
-        pin!(sockets.wait_for_events(&socket, WRITABLE)),
-        &wakes,
-    ));
-    assert!(events.writing_possible, "{events:?}");
-    assert!(only_asked_for(events, WRITABLE), "{events:?}");
-    assert_eq!(wakes.count(), 0);
-}
-
-/// A dropped wait gives up its waker and is not woken by the event it waited for; a new wait then sees it.
-pub fn a_dropped_wait_is_withdrawn<S: RawSockets>(sockets: S) {
-    let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let receiver = opened(&sockets, IpVersion::V4, EXPERIMENT);
-    let wakes = Arc::new(Wakes::default());
-    {
-        let wait = pin!(sockets.wait_for_events(&receiver, READABLE));
-        assert!(poll_with(wait, &wakes).is_pending());
-    }
-    assert_eq!(
-        Arc::strong_count(&wakes),
-        1,
-        "the dropped wait kept its waker"
-    );
-    let sender = opened(&sockets, IpVersion::V4, EXPERIMENT);
-    send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
-    std::thread::sleep(QUIET);
-    assert_eq!(wakes.count(), 0, "a dropped wait was woken");
-    let events = finished(poll_with(
-        pin!(sockets.wait_for_events(&receiver, READABLE)),
-        &wakes,
-    ));
-    assert!(events.data_to_read, "{events:?}");
-}
-
-/// Many waits at once, on many sockets of one protocol and several on one, each finish woken once by the packet
-/// they all take.
-pub fn many_waits_each_wake_once<S: RawSockets>(sockets: S) {
+/// A wait on each of many sockets of one protocol at once is woken once by the packet they all take.
+pub fn waits_on_many_sockets_each_wake_once<S: RawSockets>(sockets: S) {
     let to = IpAddr::V6(Ipv6Addr::LOCALHOST);
-    let watched: Vec<_> = (0..WAITED_SOCKETS)
+    let watched: Vec<_> = (0..MANY_WAITS)
         .map(|_| opened(&sockets, IpVersion::V6, EXPERIMENT))
         .collect();
     let mut waits: Vec<_> = watched
         .iter()
-        .chain(core::iter::repeat_n(&watched[0], WAITS_ON_ONE))
         .map(|socket| {
             (
-                Box::pin(sockets.wait_for_events(socket, READABLE)),
+                Box::pin(sockets.wait_until_ready(socket, ReadyFor::READABLE)),
                 Arc::new(Wakes::default()),
             )
         })
@@ -2119,7 +2054,7 @@ pub fn many_waits_each_wake_once<S: RawSockets>(sockets: S) {
     send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
     for (wait, wakes) in &mut waits {
         assert!(wakes.reach(1), "a wait woken when the packet arrives");
-        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
+        assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
     }
     std::thread::sleep(QUIET);
     for (_, wakes) in &waits {
@@ -2127,29 +2062,100 @@ pub fn many_waits_each_wake_once<S: RawSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error about a payload sent ends a wait for data with the error condition, which poll always reports.
-pub fn an_icmp_error_ends_a_wait_for_data<S: RawSockets>(sockets: S) {
+/// Sends a payload to an address on the dummy link and an ICMP error about it to its source, giving the error.
+fn provoke_icmp_error<S: RawSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    capture: &Capture,
+    to: IpAddr,
+) -> Vec<u8> {
+    send(sockets, socket, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+    let sent = capture
+        .next(|packet| seen(packet).protocol == EXPERIMENT && seen(packet).destination == to);
+    send_icmp_error_about(&sent)
+}
+
+/// A wait for a fact no raw socket has waits on, unwoken, while the socket has a packet to read and room to send,
+/// until an ICMP error ends it, never with a fact the socket cannot have.
+pub fn a_wait_for_a_fact_a_raw_socket_never_has_waits_on<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     let capture = Capture::on(DUMMY);
-    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
-        let socket = opened(&sockets, version_of(to), EXPERIMENT);
-        let wakes = Arc::new(Wakes::default());
-        let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
-        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
-        let sent = capture
-            .next(|packet| seen(packet).protocol == EXPERIMENT && seen(packet).destination == to);
-        let error = send_icmp_error_about(&sent);
-        wcontainers_icmp_sockets_conformance::woken(
+    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let sender = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    send(
+        &sockets,
+        &sender,
+        payload_to(IpAddr::V4(Ipv4Addr::LOCALHOST), EXPERIMENT, PAYLOAD),
+    )
+    .expect("the payload is sent");
+    finished_soon(
+        pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
+        &Arc::new(Wakes::default()),
+    );
+    let mut waits: Vec<_> = NEVER_ON_DATAGRAMS
+        .iter()
+        .map(|interest| {
+            (
+                Box::pin(sockets.wait_until_ready(&socket, *interest)),
+                Arc::new(Wakes::default()),
+            )
+        })
+        .collect();
+    for (wait, wakes) in &mut waits {
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    std::thread::sleep(QUIET);
+    for (wait, wakes) in &mut waits {
+        assert_eq!(wakes.count(), 0, "woken with no fact asked for");
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    provoke_icmp_error(&sockets, &socket, &capture, IpAddr::V4(ON_LINK));
+    for ((wait, wakes), interest) in waits.iter_mut().zip(NEVER_ON_DATAGRAMS) {
+        woken(
             wait.as_mut(),
-            &wakes,
-            &format!("{to}: the ICMP error"),
+            wakes,
+            &format!("{interest:?}: the ICMP error"),
         );
-        let events = finished(poll_with(wait.as_mut(), &wakes));
-        assert!(events.error_condition, "{events:?}");
-        let mut into = buffer();
-        let fields = receive_packet(&sockets, &socket, &mut into);
-        assert_eq!(seen(&into[..fields.length]).payload[..2], error[..2]);
+        let facts = finished(poll_with(wait.as_mut(), wakes));
+        assert!(facts.contains(ReadyFor::ERROR), "{interest:?}: {facts:?}");
+        for never in NEVER_ON_DATAGRAMS {
+            assert!(!facts.contains(never), "{interest:?}: {facts:?}");
+        }
+    }
+}
+
+/// A socket waited on for data, made ready by a packet of its protocol from another socket, for the readiness suite.
+pub fn waiting_for_a_packet<S: RawSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    let receiver = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let sender = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    Waiting {
+        readiness: sockets,
+        handle: receiver,
+        interest: ReadyFor::READABLE,
+        make_ready: move |sockets: &S, _: &S::Socket| {
+            let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
+            send(sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD))
+                .expect("the payload is sent");
+        },
+    }
+}
+
+/// A socket waited on for data, which an ICMP error about a payload it sends fails, for the readiness suite.
+pub fn waiting_for_data_until_an_icmp_error<S: RawSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    ip(NETWORK);
+    let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::READABLE,
+        make_ready: |sockets: &S, socket: &S::Socket| {
+            let capture = Capture::on(DUMMY);
+            provoke_icmp_error(sockets, socket, &capture, IpAddr::V6(ON_LINK_V6));
+        },
     }
 }
 
@@ -2166,8 +2172,11 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
     )
     .expect("the payload is sent");
     let error = send_icmp_error_about(&capture.next(|packet| seen(packet).protocol == EXPERIMENT));
-    let events = finished_soon(pin!(sockets.wait_for_events(&socket, READABLE)), &wakes);
-    assert!(events.error_condition, "{events:?}");
+    let facts = finished_soon(
+        pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
+        &wakes,
+    );
+    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
     let long = vec![u8::MAX; OVERSIZED_PAYLOAD];
     let mtu = u32::try_from(OVERSIZED_PAYLOAD / 2).expect("a small MTU");
     ip(&format!("link set {DUMMY} mtu {mtu}"));
@@ -2188,18 +2197,18 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: RawSockets>(sockets: S) {
             maximum_transmission_unit: MaximumTransmissionUnit(mtu)
         })
     );
-    let events = finished(poll_with(
-        pin!(sockets.wait_for_events(&socket, READABLE)),
+    let facts = finished(poll_with(
+        pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
         &wakes,
     ));
-    assert!(events.error_condition, "{events:?}");
+    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
     let packet = seen(&into[..fields.length]);
     assert_eq!(packet.protocol, IpNumber::ICMP);
     assert_eq!(&packet.payload[..2], &error[..2]);
     assert!(nothing_arrives(&sockets, &socket));
-    let wait = pin!(sockets.wait_for_events(&socket, READABLE));
+    let wait = pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE));
     assert!(
         poll_with(wait, &wakes).is_pending(),
         "an error held after its entry was received"
@@ -2280,13 +2289,21 @@ macro_rules! tests {
             multicast_settings_are_taken,
             multicast_source_filters_choose_the_senders,
             anycast_is_taken,
-            a_wait_for_data_finishes_when_a_packet_arrives,
-            a_wait_for_writing_finishes_at_once,
-            a_dropped_wait_is_withdrawn,
-            many_waits_each_wake_once,
-            an_icmp_error_ends_a_wait_for_data,
+            waits_on_many_sockets_each_wake_once,
             a_wait_sees_an_error_a_send_read_first,
+            a_wait_for_a_fact_a_raw_socket_never_has_waits_on,
             rejected_transmit_times_are_reported_with_their_keys,
+        );
+        $crate::readiness_conformance::tests!(
+            readiness_contract,
+            ready: {
+                $crate::enter_network_namespace();
+                $crate::waiting_for_a_packet($value)
+            },
+            failing: {
+                $crate::enter_network_namespace();
+                $crate::waiting_for_data_until_an_icmp_error($value)
+            }
         );
         $crate::configurable_checks!(
             $value;

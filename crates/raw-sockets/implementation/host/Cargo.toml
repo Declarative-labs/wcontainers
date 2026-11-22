@@ -17,6 +17,7 @@ wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-raw-sockets = { path = "../.." }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
+wcontainers-readiness = { path = "../../../readiness" }
 etherparse.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

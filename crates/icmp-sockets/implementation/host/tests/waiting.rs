@@ -8,6 +8,7 @@ use wcontainers_icmp_sockets_conformance as suite;
 use wcontainers_icmp_sockets_host::HostIcmpSockets;
 use wcontainers_internet_protocol::{IpVersion, Received};
 use wcontainers_kernel::UserId;
+use wcontainers_readiness::{Readiness, ReadyFor};
 
 suite::counting_allocator!();
 
@@ -23,7 +24,7 @@ fn a_wait_allocates_nothing_once_warm() {
     let message = suite::echo(IpVersion::V4, suite::PAYLOAD);
     let mut into = suite::buffer();
     let counted = suite::wait_allocations(
-        || sockets.wait_for_events(&socket, suite::READABLE),
+        || sockets.wait_until_ready(&socket, ReadyFor::READABLE),
         || {
             sockets
                 .send_to(

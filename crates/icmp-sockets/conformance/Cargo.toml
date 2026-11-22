@@ -14,6 +14,8 @@ wcontainers-configurable-conformance = { path = "../../configurable/conformance"
 wcontainers-icmp-sockets = { path = ".." }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
+wcontainers-readiness = { path = "../../readiness" }
+wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 # The network namespace tools of the route resolver suite: iproute2, link and neighbour statistics.
 wcontainers-route-resolver-conformance = { path = "../../route-resolver/conformance" }
 etherparse.workspace = true

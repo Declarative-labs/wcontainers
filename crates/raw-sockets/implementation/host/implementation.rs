@@ -19,11 +19,11 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_raw_sockets::{
     HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket, RawSocketSetting,
     RawSockets, RouterAlert, RouterAlertIsolation,
 };
+use wcontainers_readiness::{Readiness, ReadyFor};
 
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
@@ -32,13 +32,13 @@ use shared::datagram::exchange::{
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
-use shared::readiness::{NO_EVENTS, Readiness, Watched};
+use shared::readiness::{DATAGRAM_FACTS, Watched, Watcher};
 use shared::{Shortfalls, io_host_error, set_bytes, set_flag, set_int, sock};
 
 /// Raw IP sockets of the Linux machine this runs on, with a count of each refusal by its reason.
 pub struct HostRawSockets {
     shortfalls: Shortfalls,
-    readiness: Readiness,
+    watcher: Watcher,
 }
 
 pub struct HostRawSocket {
@@ -99,7 +99,7 @@ impl HostRawSockets {
     pub fn new() -> Result<Self, HostError> {
         Ok(Self {
             shortfalls: Shortfalls::default(),
-            readiness: Readiness::new()?,
+            watcher: Watcher::new()?,
         })
     }
 
@@ -147,9 +147,10 @@ impl HostRawSocket {
         let holds = state.errors.holds_entries();
         if holds != state.held_errors {
             state.held_errors = holds;
-            self.watched.hold(PollEvents {
-                error_condition: holds,
-                ..NO_EVENTS
+            self.watched.hold(if holds {
+                ReadyFor::ERROR
+            } else {
+                ReadyFor::empty()
             });
         }
     }
@@ -284,7 +285,7 @@ impl RawSockets for HostRawSockets {
         }
         let send = SendState::open(borrowed, ipv6)?;
         Ok(HostRawSocket {
-            watched: self.readiness.watch(fd)?,
+            watched: self.watcher.watch(fd, DATAGRAM_FACTS)?,
             ipv6,
             protocol,
             state: RefCell::new(SocketState {
@@ -477,16 +478,18 @@ impl RawSockets for HostRawSockets {
         unsent_bytes(socket.fd())
     }
 
-    async fn wait_for_events(
-        &self,
-        socket: &Self::Socket,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError> {
-        socket.watched.wait_for_events(interest).await
-    }
-
     fn close(&self, socket: Self::Socket) {
         drop(socket);
+    }
+}
+
+impl Readiness<HostRawSocket> for HostRawSockets {
+    async fn wait_until_ready(
+        &self,
+        socket: &HostRawSocket,
+        interest: ReadyFor,
+    ) -> Result<ReadyFor, HostError> {
+        socket.watched.wait_until_ready(interest).await
     }
 }
 

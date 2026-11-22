@@ -35,13 +35,15 @@ use wcontainers_internet_protocol::{
     TransmitTime, TransmitTimeError, TransmitTimeMode, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
-use wcontainers_kernel::signal_information::PollEvents;
+use wcontainers_readiness::ReadyFor;
+use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
 use wcontainers_route_resolver_conformance::{
     BATCH, IP, IPV6, PACKETS, number_after, seconds_since_confirmed,
 };
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance as configurable_suite;
+pub use wcontainers_readiness_conformance as readiness_conformance;
 
 /// Moves the calling thread into a new network namespace, which needs `CAP_SYS_ADMIN`, with loopback up and
 /// every group in the range Linux lets open ICMP echo sockets.
@@ -2359,39 +2361,13 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
     assert!(!listed());
 }
 
-/// No poll event at all, from which a check asks for the ones it waits for.
-pub const NO_EVENTS: PollEvents = PollEvents {
-    data_to_read: false,
-    exceptional_condition: false,
-    writing_possible: false,
-    error_condition: false,
-    hang_up: false,
-    descriptor_not_open: false,
-    normal_data_to_read: false,
-    priority_band_data_to_read: false,
-    normal_data_writable: false,
-    priority_data_writable: false,
-    message_available: false,
-    peer_shut_down_writing: false,
-};
-
-pub const READABLE: PollEvents = PollEvents {
-    data_to_read: true,
-    ..NO_EVENTS
-};
-
-pub const WRITABLE: PollEvents = PollEvents {
-    writing_possible: true,
-    ..NO_EVENTS
-};
-
 /// How many waits [`wait_allocations`] counts, after as many that warm the socket.
 pub const COUNTED_WAITS: usize = 100;
 
 /// The allocations `allocations` counts in [`COUNTED_WAITS`] waits that each have to wait, after as many that warm
-/// the socket: each is made and polled, `arrive` makes its event come, and it is polled to its end and dropped
+/// the socket: each is made and polled, `arrive` makes its fact hold, and it is polled to its end and dropped
 /// before `take` takes what came.
-pub fn wait_allocations<F: Future<Output = Result<PollEvents, HostError>>>(
+pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
     mut take: impl FnMut(),
@@ -2412,7 +2388,7 @@ pub fn wait_allocations<F: Future<Output = Result<PollEvents, HostError>>>(
             arrive();
             assert!(wakes.reach(1), "the wait is woken");
             let before = allocations();
-            assert!(finished(poll_with(call.as_mut(), &wakes)).data_to_read);
+            assert!(finished(poll_with(call.as_mut(), &wakes)).contains(ReadyFor::READABLE));
             during += allocations() - before;
             allocations()
         };
@@ -2471,10 +2447,6 @@ macro_rules! counting_allocator {
     };
 }
 
-/// How many sockets a check waits on at once, and how many more waits it makes on the first of them.
-pub const WAITED_SOCKETS: usize = 32;
-pub const WAITS_ON_ONE: usize = 3;
-
 /// The wakes a waiting call has given, counted, for a check that polls the call by hand.
 #[derive(Default)]
 pub struct Wakes {
@@ -2510,8 +2482,8 @@ impl Wakes {
 }
 
 /// Checks that the wait is woken within the patience of a check; if not, tells whether polled again it has its
-/// events by now, a wake lost, or not, an event that never came.
-pub fn woken<F: Future<Output = Result<PollEvents, HostError>>>(
+/// facts by now, a wake lost, or not, a fact that never came.
+pub fn woken<F: Future<Output = Result<ReadyFor, HostError>>>(
     call: Pin<&mut F>,
     wakes: &Arc<Wakes>,
     by: &str,
@@ -2528,19 +2500,19 @@ pub fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Ou
     call.poll(&mut Context::from_waker(&waker))
 }
 
-/// The events a finished wait gave.
-pub fn finished(poll: Poll<Result<PollEvents, HostError>>) -> PollEvents {
+/// The facts a finished wait gave.
+pub fn finished(poll: Poll<Result<ReadyFor, HostError>>) -> ReadyFor {
     match poll {
-        Poll::Ready(events) => events.expect("wait for events"),
+        Poll::Ready(facts) => facts.expect("the wait succeeds"),
         Poll::Pending => panic!("the wait did not finish"),
     }
 }
 
-/// The events a wait gives at once or when it is next woken.
-pub fn finished_soon<F: Future<Output = Result<PollEvents, HostError>>>(
+/// The facts a wait gives at once or when it is next woken.
+pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
     mut call: Pin<&mut F>,
     wakes: &Arc<Wakes>,
-) -> PollEvents {
+) -> ReadyFor {
     match poll_with(call.as_mut(), wakes) {
         Poll::Pending => {
             assert!(wakes.reach(1), "the wait is woken");
@@ -2550,104 +2522,17 @@ pub fn finished_soon<F: Future<Output = Result<PollEvents, HostError>>>(
     }
 }
 
-/// Whether events hold none that was not asked for, but for those poll always reports.
-pub fn only_asked_for(events: PollEvents, interest: PollEvents) -> bool {
-    let asked = |got: bool, wanted: bool| !got || wanted;
-    asked(events.data_to_read, interest.data_to_read)
-        && asked(events.exceptional_condition, interest.exceptional_condition)
-        && asked(events.writing_possible, interest.writing_possible)
-        && asked(events.normal_data_to_read, interest.normal_data_to_read)
-        && asked(
-            events.priority_band_data_to_read,
-            interest.priority_band_data_to_read,
-        )
-        && asked(events.normal_data_writable, interest.normal_data_writable)
-        && asked(
-            events.priority_data_writable,
-            interest.priority_data_writable,
-        )
-        && asked(events.message_available, interest.message_available)
-        && asked(
-            events.peer_shut_down_writing,
-            interest.peer_shut_down_writing,
-        )
-}
-
-/// A wait for data does not finish before the echo reply arrives, and finishes, woken once, when it does.
-pub fn a_wait_for_data_finishes_when_the_reply_arrives<S: IcmpSockets>(sockets: S) {
-    for to in [
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        IpAddr::V6(Ipv6Addr::LOCALHOST),
-    ] {
-        let socket = opened(&sockets, version_of(to));
-        let wakes = Arc::new(Wakes::default());
-        let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
-        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        std::thread::sleep(QUIET);
-        assert_eq!(wakes.count(), 0, "woken with nothing to read");
-        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
-        assert!(wakes.reach(1), "woken when the reply arrives");
-        let events = finished(poll_with(wait.as_mut(), &wakes));
-        assert!(events.data_to_read, "{events:?}");
-        assert!(only_asked_for(events, READABLE), "{events:?}");
-        assert_eq!(wakes.count(), 1);
-        assert!(matches!(
-            sockets.receive(&socket, &mut buffer()),
-            Ok(Received::Packet(_))
-        ));
-    }
-}
-
-/// A wait for what the socket already has finishes at its first poll, with only the events asked for.
-pub fn a_wait_for_writing_finishes_at_once<S: IcmpSockets>(sockets: S) {
-    let socket = opened(&sockets, IpVersion::V4);
-    let wakes = Arc::new(Wakes::default());
-    let events = finished(poll_with(
-        pin!(sockets.wait_for_events(&socket, WRITABLE)),
-        &wakes,
-    ));
-    assert!(events.writing_possible, "{events:?}");
-    assert!(only_asked_for(events, WRITABLE), "{events:?}");
-    assert_eq!(wakes.count(), 0);
-}
-
-/// A dropped wait gives up its waker and is not woken by the event it waited for; a new wait then sees it.
-pub fn a_dropped_wait_is_withdrawn<S: IcmpSockets>(sockets: S) {
-    let to = IpAddr::V6(Ipv6Addr::LOCALHOST);
-    let socket = opened(&sockets, IpVersion::V6);
-    let wakes = Arc::new(Wakes::default());
-    {
-        let wait = pin!(sockets.wait_for_events(&socket, READABLE));
-        assert!(poll_with(wait, &wakes).is_pending());
-    }
-    assert_eq!(
-        Arc::strong_count(&wakes),
-        1,
-        "the dropped wait kept its waker"
-    );
-    ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
-    std::thread::sleep(QUIET);
-    assert_eq!(wakes.count(), 0, "a dropped wait was woken");
-    let events = finished(poll_with(
-        pin!(sockets.wait_for_events(&socket, READABLE)),
-        &wakes,
-    ));
-    assert!(events.data_to_read, "{events:?}");
-}
-
-/// Many waits at once, on many sockets and several on one, each finish woken once when their reply arrives.
-pub fn many_waits_each_wake_once<S: IcmpSockets>(sockets: S) {
+/// A wait on each of many sockets at once is woken once when its reply arrives, however many more do.
+pub fn waits_on_many_sockets_each_wake_once<S: IcmpSockets>(sockets: S) {
     let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let watched: Vec<_> = (0..WAITED_SOCKETS)
+    let watched: Vec<_> = (0..MANY_WAITS)
         .map(|_| opened(&sockets, IpVersion::V4))
         .collect();
     let mut waits: Vec<_> = watched
         .iter()
-        .chain(core::iter::repeat_n(&watched[0], WAITS_ON_ONE))
         .map(|socket| {
             (
-                Box::pin(sockets.wait_for_events(socket, READABLE)),
+                Box::pin(sockets.wait_until_ready(socket, ReadyFor::READABLE)),
                 Arc::new(Wakes::default()),
             )
         })
@@ -2660,7 +2545,7 @@ pub fn many_waits_each_wake_once<S: IcmpSockets>(sockets: S) {
     }
     for (wait, wakes) in &mut waits {
         assert!(wakes.reach(1), "a wait woken when its reply arrives");
-        assert!(finished(poll_with(wait.as_mut(), wakes)).data_to_read);
+        assert!(finished(poll_with(wait.as_mut(), wakes)).contains(ReadyFor::READABLE));
     }
     std::thread::sleep(QUIET);
     for (_, wakes) in &waits {
@@ -2761,25 +2646,6 @@ pub fn an_icmp_error_a_send_met_still_arrives<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error about a request ends a wait for data with the error condition, which poll always reports.
-pub fn an_icmp_error_ends_a_wait_for_data<S: IcmpSockets>(sockets: S) {
-    ip(NETWORK);
-    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
-        let socket = opened(&sockets, version_of(to));
-        let wakes = Arc::new(Wakes::default());
-        let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
-        assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        provoke_icmp_error(&sockets, &socket, to, Quote::Least);
-        woken(wait.as_mut(), &wakes, &format!("{to}: the ICMP error"));
-        let events = finished(poll_with(wait.as_mut(), &wakes));
-        assert!(events.error_condition, "{events:?}");
-        assert!(matches!(
-            sockets.receive(&socket, &mut buffer()),
-            Ok(Received::Packet(_))
-        ));
-    }
-}
-
 /// An ICMP error that a too long send read off the host while looking for its own error still ends a wait at once.
 pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
@@ -2787,8 +2653,11 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
     let socket = opened(&sockets, IpVersion::V6);
     let wakes = Arc::new(Wakes::default());
     provoke_icmp_error(&sockets, &socket, to, Quote::Least);
-    let events = finished_soon(pin!(sockets.wait_for_events(&socket, READABLE)), &wakes);
-    assert!(events.error_condition, "{events:?}");
+    let facts = finished_soon(
+        pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
+        &wakes,
+    );
+    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
     let message = echo(IpVersion::V6, &vec![u8::MAX; LONG_MESSAGE]);
     let forbidden = Ipv6HeaderFields {
         local_fragmentation: LocalFragmentation::Forbidden,
@@ -2806,20 +2675,99 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
             maximum_transmission_unit: MaximumTransmissionUnit(FRAGMENT_MTU)
         })
     );
-    let events = finished(poll_with(
-        pin!(sockets.wait_for_events(&socket, READABLE)),
+    let facts = finished(poll_with(
+        pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
         &wakes,
     ));
-    assert!(events.error_condition, "{events:?}");
+    assert!(facts.contains(ReadyFor::ERROR), "{facts:?}");
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
     assert_eq!(seen(&into[..fields.length]).protocol, IpNumber::IPV6_ICMP);
     assert!(nothing_arrives(&sockets, &socket));
-    let wait = pin!(sockets.wait_for_events(&socket, READABLE));
+    let wait = pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE));
     assert!(
         poll_with(wait, &wakes).is_pending(),
         "an error held after its entry was received"
     );
+}
+
+/// The facts no ICMP echo socket has, for it has no urgent data and no peer that finishes sending.
+pub const NEVER_ON_DATAGRAMS: [ReadyFor; 2] =
+    [ReadyFor::URGENT_DATA, ReadyFor::PEER_FINISHED_SENDING];
+
+/// A wait for a fact no echo socket has waits on, unwoken, while the socket has a reply to read and room to send,
+/// until an ICMP error ends it, never with a fact the socket cannot have.
+pub fn a_wait_for_a_fact_icmp_never_has_waits_on<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    let to = IpAddr::V4(ON_LINK);
+    let socket = opened(&sockets, IpVersion::V4);
+    ping(&sockets, &socket, IpAddr::V4(Ipv4Addr::LOCALHOST), PAYLOAD).expect("the request is sent");
+    finished_soon(
+        pin!(sockets.wait_until_ready(&socket, ReadyFor::READABLE)),
+        &Arc::new(Wakes::default()),
+    );
+    let mut waits: Vec<_> = NEVER_ON_DATAGRAMS
+        .iter()
+        .map(|interest| {
+            (
+                Box::pin(sockets.wait_until_ready(&socket, *interest)),
+                Arc::new(Wakes::default()),
+            )
+        })
+        .collect();
+    for (wait, wakes) in &mut waits {
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    std::thread::sleep(QUIET);
+    for (wait, wakes) in &mut waits {
+        assert_eq!(wakes.count(), 0, "woken with no fact asked for");
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    provoke_icmp_error(&sockets, &socket, to, Quote::Least);
+    for ((wait, wakes), interest) in waits.iter_mut().zip(NEVER_ON_DATAGRAMS) {
+        woken(
+            wait.as_mut(),
+            wakes,
+            &format!("{interest:?}: the ICMP error"),
+        );
+        let facts = finished(poll_with(wait.as_mut(), wakes));
+        assert!(facts.contains(ReadyFor::ERROR), "{interest:?}: {facts:?}");
+        for never in NEVER_ON_DATAGRAMS {
+            assert!(!facts.contains(never), "{interest:?}: {facts:?}");
+        }
+    }
+}
+
+/// A socket waited on for data, made ready by the reply to an echo request it sends, for the readiness suite.
+pub fn waiting_for_a_reply<S: IcmpSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    let socket = opened(&sockets, IpVersion::V4);
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::READABLE,
+        make_ready: |sockets: &S, socket: &S::Socket| {
+            ping(sockets, socket, IpAddr::V4(Ipv4Addr::LOCALHOST), PAYLOAD)
+                .expect("the request is sent");
+        },
+    }
+}
+
+/// A socket waited on for data, which an ICMP error about a request it sends fails, for the readiness suite.
+pub fn waiting_for_data_until_an_icmp_error<S: IcmpSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    ip(NETWORK);
+    let socket = opened(&sockets, IpVersion::V6);
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::READABLE,
+        make_ready: |sockets: &S, socket: &S::Socket| {
+            provoke_icmp_error(sockets, socket, IpAddr::V6(ON_LINK_V6), Quote::Least);
+        },
+    }
 }
 
 /// Each setting set twice answers as it did once, by Configurable's own suite.
@@ -2909,13 +2857,21 @@ macro_rules! tests {
             a_small_receive_buffer_counts_its_drops,
             memberships_are_taken,
             multicast_source_filters_are_written,
-            a_wait_for_data_finishes_when_the_reply_arrives,
-            a_wait_for_writing_finishes_at_once,
-            a_dropped_wait_is_withdrawn,
-            many_waits_each_wake_once,
-            an_icmp_error_ends_a_wait_for_data,
+            waits_on_many_sockets_each_wake_once,
             a_wait_sees_an_error_a_send_read_first,
+            a_wait_for_a_fact_icmp_never_has_waits_on,
             rejected_transmit_times_are_reported_with_their_keys,
+        );
+        $crate::readiness_conformance::tests!(
+            readiness_contract,
+            ready: {
+                $crate::enter_network_namespace();
+                $crate::waiting_for_a_reply($value)
+            },
+            failing: {
+                $crate::enter_network_namespace();
+                $crate::waiting_for_data_until_an_icmp_error($value)
+            }
         );
         mod configurable_multicast {
             $crate::configurable_suite::tests!({

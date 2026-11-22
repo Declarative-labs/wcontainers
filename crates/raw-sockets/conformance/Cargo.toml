@@ -18,6 +18,8 @@ etherparse.workspace = true
 # The packet capture, address and network tools of the ICMP and route resolver suites.
 wcontainers-icmp-sockets-conformance = { path = "../../icmp-sockets/conformance" }
 wcontainers-route-resolver-conformance = { path = "../../route-resolver/conformance" }
+wcontainers-readiness = { path = "../../readiness" }
+wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 # The errno values of Linux.
 libc = "0.2.191"
 # The routing header type of Linux.
