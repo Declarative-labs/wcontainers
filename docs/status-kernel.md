@@ -102,6 +102,8 @@ side of each is worked around without changing the interface.
   Example: `[profile.release] lto = "thin"` in the root Cargo.toml (shared by every track, and
   slower to link), or the same in each embedder's binary. Marking the hot helpers `#[inline]`
   made it worse (868 against 853 million instructions per 6000 round trips).
+  Ruled on 2026-11-22 (through the orchestrator): the release profile stays as it is; the
+  difference is recorded and accepted until speed is tuned.
 - `Process::state` and `Process::execution_config` return references to values of types only the
   embedder knows, kept for each process and copied by a fork, so a kernel that is not generic
   over them must keep them type-erased: this kernel keeps one boxed value per process beside its
@@ -348,6 +350,16 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KA, fourteenth run: KA is complete under the orchestrator's rulings of 2026-11-22 and goes to its
+independent check. The hooks as `ProcessTracer` and warnings through `FallbackObserver` are the
+owner's interface questions and outside KA (For the owner); the release profile stays as it is;
+the Mac's part of the suite and the linter were not run, since neither may run now. At the tip the
+workspace builds with all targets, this track's crates pass clippy with warnings denied and fmt,
+and the kernel conformance suite passes (14). The whole suite's result at the tip is the twelfth
+run's (371 passed, 36 failed: the 35-test ARM list and backend `large_writes`, the reference-side
+flake fixed in 1fcc83c8). How to check it: For the independent check, entry KA. See "KA,
+fourteenth run".
 
 KA, thirteenth run: nothing to conform to (no merge from main since a00ab267) and no new ruling,
 so no code changed and no suite was run again (its inputs are those of the twelfth run). Every
@@ -673,6 +685,25 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KA, fourteenth run
+
+Started about 10:40 UTC on 2026-11-22 at a97d6cbf, with the orchestrator's rulings of that day:
+the hooks as `ProcessTracer` and warnings through `FallbackObserver` are out of KA, the release
+profile stays, nothing builds or tests on the Mac, the linter is not run. Nothing was built on the
+Mac.
+- The eleven findings of K6c's thirteenth check named in this run's task were all dealt with in
+  K6c's fourteenth run (see that section); nothing to do again.
+- For the independent check, entry KA: what the rulings leave out, the suite and measurement
+  scripts, and where the dropped waiting calls are listed (135635fa).
+- ARM64 machine, job kernel/20261122-105054-3070324, 10:50 to 10:53 UTC, load 4 at its start and 9
+  at its end, at 135635fa (no kernel, abi, stand-in or interface change since the twelfth run's
+  suite but 1fcc83c8, which that run covered): `cargo check --workspace --all-targets` passed;
+  clippy with warnings denied and `cargo fmt --check` passed for wcontainers-abi,
+  wcontainers-kernel-linux and wcontainers-executor-unicorn; the kernel conformance suite passed
+  14 of 14 (scratch kernel/ka14/check.log, attach.log).
+- The whole suite was not run again: its inputs are those of the twelfth run's (371 passed, 36
+  failed, 8 ignored).
 
 ## KA, thirteenth run
 
