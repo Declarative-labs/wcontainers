@@ -3,7 +3,7 @@
 use domain::base::iana::{Class, Rtype};
 use domain::base::{Name, Question};
 use wcontainers_kernel::TaskId;
-use wcontainers_system::{DomainNameResolver, FuseServer, TaskIdAllocator};
+use wcontainers_system::{DomainNameResolver, FuseServer, StreamTransport, TaskIdAllocator};
 
 /// The id today's kernel gives as the one before its first.
 const BEFORE_FIRST_TASK_ID: TaskId = TaskId(u32::MIN);
@@ -25,15 +25,30 @@ pub fn free_task_id_alone<S: TaskIdAllocator>(source: S) {
 
 /// Calls each method of `FuseServer` as a placeholder that fails until the real checks are written.
 pub fn call_fuse_server_methods<F: FuseServer>(server: F) {
-    let _ = server.send_request(&[]);
+    drop(server.send_request(&[]));
     todo!("this is a placeholder: the real checks of FuseServer are not written yet");
 }
 
 /// Calls each method of `DomainNameResolver` as a placeholder that fails until the real checks are written.
 pub fn call_domain_name_resolver_methods<R: DomainNameResolver>(resolver: R) {
     let question = Question::new(Name::root_slice(), Rtype::A, Class::IN);
-    let _ = resolver.resolve_domain(question);
+    drop(resolver.resolve_domain(question));
     todo!("this is a placeholder: the real checks of DomainNameResolver are not written yet");
+}
+
+/// Names each method of `StreamTransport` and its `Readiness<Endpoint>` as a placeholder that fails until the real
+/// checks are written; it names them rather than calls them, since the trait alone gives no endpoint to call them on.
+pub fn call_stream_transport_methods<T: StreamTransport>(transport: T) {
+    let _ = (
+        &transport,
+        T::send_stream,
+        T::receive_stream,
+        T::close_stream,
+        T::wait_until_ready,
+    );
+    todo!(
+        "this is a placeholder: the real checks of StreamTransport and its Readiness<Endpoint> are not written yet"
+    );
 }
 
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
@@ -58,6 +73,11 @@ macro_rules! tests {
         #[test]
         fn call_domain_name_resolver_methods() {
             $crate::call_domain_name_resolver_methods($value);
+        }
+
+        #[test]
+        fn call_stream_transport_methods() {
+            $crate::call_stream_transport_methods($value);
         }
     };
 }
