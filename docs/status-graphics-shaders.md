@@ -144,6 +144,10 @@ on the rented ARM64 machine from the shared worktree; nothing built on the Mac.
 - Not run: WebAssembly, the whole GPU suite (only the new drawn test; no other converted module
   changed, and the geometry stage's records and final draw change only for shaders writing cull
   distances).
+- Clean-up: the desktop's `C:\wc\src\shaders-tip`, `C:\wc\target\shaders-tip`,
+  `C:\wc\out\shaders-tip` and `C:\wc\scratch\shaders-cull`, the laptop's `src/shaders-tip`,
+  `target/shaders-tip` and tar (its `out-r90` and logs kept), the scratch clone and tar. The ARM64
+  machine's `/work/target/graphics-shaders` is kept.
 
 ## G6 run 2 (run 89): geometry shaders taking patches (A13), hulls giving no control points (A14)
 
