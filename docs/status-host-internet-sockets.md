@@ -4,8 +4,50 @@ Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the 
 on 2026-11-21 evening for the owner's linter and twice on 2026-11-22 for the checks' findings, below), I2 ICMP and raw sockets (redone in run 1 after the
 reorganization and the async ruling of 2026-11-21; runs 2 to 5 answered the independent checks' findings; a new run 1
 on 2026-11-22 put the ICMP and raw crates in the linter's layout; run 2 cleared the suites' comment and literal
-findings and checked itself, below). Next: the independent check of I2; the linter findings left all wait on a ruling
-(below). Nothing of this track is in progress.
+findings and checked itself; run 3 answered the I2 check's four findings, below). Next: the independent check of
+I2; the linter findings left all wait on a ruling (below). Nothing of this track is in progress.
+
+## 2026-11-22: I2 run 3 (the I2 check's four findings)
+- Waits for writing never checked (blocking): true; the readiness switch had dropped the only one. Each suite now
+  runs the readiness suite a second time, `readiness_for_writing`: ready is `waiting_to_write` (the smallest send
+  buffer filled, until WouldBlock, or ENOBUFS for raw, with sends that loopback's fq holds 5 s by their Monotonic
+  transmit time; made writable by `tc qdisc del dev lo root`, which frees them); failing is
+  `waiting_to_write_until_an_icmp_error` (the same on the dummy link's fq after one plain send that leaves at once,
+  then an ICMP error about it). New a_wait_for_writing_finishes_at_once in both: a new socket of each version, a wait
+  for WRITABLE and for READABLE | WRITABLE each finish at the first poll with exactly WRITABLE. The plan's text and
+  its "35 waits on 32 sockets" are corrected. ICMP now 59 checks, raw 51.
+- Received traffic class unchecked (minor): echo requests in reply_arrives_whole now carry DSCP EF with ECN ECT(0)
+  (IPv4) and ECT(1) (IPv6), and the reply's received class must be that; every ICMP error the suites send from a
+  raw socket carries EF with ECT(0) (`ERROR_DSCP`, `ERROR_ECN`, set with IP_TOS / IPV6_TCLASS), and
+  `has_the_error_traffic_class` checks it in both ICMP error checks and the raw icmp_errors_arrive_whole.
+- Realtime never sent (minor): the shared rejected-times list now has a Realtime send, which etf (CLOCK_TAI only)
+  drops as invalid; its time is TAI's now plus 100 ms, so a Realtime mapped to the atomic clock is only missed
+  (caught). Linux tells a rejection by its time alone, so it goes before the missed send of the same time (the first
+  attempt put it after and the check failed on the right code). Realtime against Monotonic cannot be told apart
+  (Not honoured, below).
+- Header of the other version (minor): an ICMP send whose header is of the other version than the socket's now goes
+  to the host as the address alone (IPv4-mapped on an IPv6 socket, no options set) and the host's error is the
+  answer, uncounted. New a_header_of_the_other_version_gets_the_hosts_error compares with the host's own ping socket
+  sent the same message: EINVAL both ways on the ARM machine (the check's note expected EAFNOSUPPORT for an IPv6
+  address on an IPv4 socket; measured EINVAL). The first version set the header's IPv6 options on the IPv4 socket
+  and answered ENOPROTOOPT; caught by the new check.
+- Broken copies (`i2-run3/broken.sh`, `broken2.sh`, logs `broken.log`, `broken3.log`, ARM, 04:50 to 04:56 UTC, load
+  2.3 to 5.8), each failing: DATAGRAM_FACTS without WRITABLE (5 ICMP, 5 raw checks), WRITABLE polled as IN (5 and
+  5), IP_RECVTOS off (ICMP 3: both IPv4 reply checks and the IPv4 error; raw icmp_errors_arrive_whole), IPV6_RECVTCLASS
+  off (ICMP 2; raw 2), Realtime as CLOCK_TAI (rejected_transmit_times in both), the other-version header refused as
+  before (a_header_of_the_other_version_gets_the_hosts_error). Realtime as CLOCK_MONOTONIC passes, as expected.
+  The first broken.sh lacked the verifier's `touch` of every source, so three later copies kept an earlier copy's
+  shared crate; their results were not used, and broken2.sh runs them again with it.
+- The ICMP a_wait_sees_an_error_a_send_read_first failed in 3 of the first 9 rounds (04:44 to 04:45 UTC, load 8.5
+  to 26), "the wait is woken", then passed in 10 rounds alone and 45 rounds of the whole suite after (04:46 to 04:56,
+  load 2.3 to 26). The same unexplained wake flake as "The wait flake" below. finished_soon now polls again when not
+  woken and prints what the wait gives, telling a lost wake from a lost fact next time.
+- Final (`lint-and-suites.sh`, ARM, 04:56 UTC, load 2.8): clippy with warnings denied clean on the nine packages;
+  ICMP 59 and 5, raw 51 and 1, both allocation tests, resolver 35 and 1, Configurable 2, NegativeRouteAdvice 3.
+  Neither commit of this run touches an interface.rs or a data file.
+- Linter (Mac, 04:52 UTC): new findings of the same kinds already raised: public_outside_interface on
+  `has_the_error_traffic_class` and `held_fields` (shared with the raw suite), conformance_not_run on the two
+  `waiting_to_write*` bundles. One magic literal it found in finished_soon is gone.
 
 ## 2026-11-22: I2 run 2 (the suites' comment and literal findings, then a self-check)
 - Linter (Mac, `cargo reviewable check`, besides the model's unanswered names and summaries): 170 findings in this
@@ -675,11 +717,11 @@ findings and checked itself, below). Next: the independent check of I2; the lint
   check; each header and send field its own, below), receive (echo reply, ICMP error, short buffer of a reply or
   an error, would block,
   transmit report and rejection, drops checks), count_unsent_bytes (pacing_holds_messages_in_the_send_buffer),
-  Readiness::wait_until_ready (the readiness suite's five, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight), close (close_frees_the_identifier), configure (each setting's check and
+  Readiness::wait_until_ready (the readiness suite's six for data and six for writing, a_wait_for_writing_finishes_at_once, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight), close (close_frees_the_identifier), configure (each setting's check and
   Configurable's suite).
 - RawSockets: open (every check, open_takes_each_version_and_protocol), send_to (payload, header included,
   reassembly, route selector, mobility header, path MTU, send field checks), receive (arrival, mark and
-  priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), Readiness::wait_until_ready (the readiness suite's five, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight),
+  priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), Readiness::wait_until_ready (the readiness suite's six for data and six for writing, a_wait_for_writing_finishes_at_once, waits_on_many_sockets_each_wake_once, a_wait_sees_an_error_a_send_read_first, the never-had fact; run 2's broken wait fails eight),
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
 - RouteResolver::resolve_route: 28 suite checks that see answers, each selector its own; 3 see only refusals
@@ -692,19 +734,25 @@ findings and checked itself, below). Next: the independent check of I2; the lint
   preferences (a temporary address against the public one), local fragmentation and fragment MTU, and for raw sockets source, hop-by-hop, routing destination
   and destination options and a segment routing header. Received IPv4 options (an echoed record route).
 - Send fields: neighbour confirmation, priority (third band of a prio queue), transmit time (fq holds 300 ms;
-  rejected times reported with their keys), transmit reports scheduled and software with key, with and without
-  the packet, and with it the loopback link and the frame's length.
+  rejected times reported with their keys, among them a Realtime send etf drops as of another clock), transmit
+  reports scheduled and software with key, with and without the packet, and with it the loopback link and the
+  frame's length.
 - Received fields: interface, specific destination, largest fragment (none for a whole packet), software timestamps, drops since previous, mark and priority
   (raw), whole IPv4 and IPv6 headers with extension headers (raw IPv6 traffic class checked), the whole length and
   the start when the buffer cuts the packet anywhere; ICMP errors whole, their outer header as on the wire, and
-  their start and whole length when cut.
+  their start and whole length when cut. The received traffic class of an echo reply (both versions) and of an
+  ICMP error's outer header (both suites) is checked with a request or error sent with DSCP EF and ECN.
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
   mobility header is sent by its type;
   withdrawn reassembly; checksum offset; IPv4 and IPv6 router alerts with isolation, turned off and changed; multicast routing.
 - Settings: multicast membership, its source filters (as Linux lists them, and IPv4 raw delivery) and loopback
   (both versions), IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
-- Waits: every event poll gives, through the host's poll.
+- Waits, through the host's poll: for data and for writing, each through the readiness suite (ready and failing
+  bundles), a wait for writing on a new socket at once; ERROR and HANG_UP end waits that did not ask; URGENT_DATA
+  and PEER_FINISHED_SENDING never come on these sockets and a wait for them waits on (checked).
+- A header of the other version than an ICMP socket's goes to the host as its address alone (IPv4-mapped on an
+  IPv6 socket), and the host's error is the answer: EINVAL both ways (measured on the ARM machine's 7.0 kernel).
 
 ## Not honoured, with the Linux reason
 - ICMP over IPv6 (net/ipv6/ping.c), refused with NotSupported, counted and warned: a source address, extension
@@ -730,6 +778,10 @@ findings and checked itself, below). Next: the independent check of I2; the lint
 - Whether reports hold the packet is a socket flag Linux reads when it takes each timestamp: a send that changes
   it while earlier sends wait in the host changes their reports too; counted and warned (PACKET_WISH_CHANGED).
 - IPv6 path MTU modes Probe and Interface send alike here; they differ only in taking learnt path MTUs.
+- Transmit clock Realtime against Monotonic: honoured (`CLOCK_REALTIME`) but not told apart by any check. Linux's
+  fq reads every transmit time as monotonic whatever the socket's clock, and etf takes only `CLOCK_TAI` and drops
+  any other socket clock alike; only `getsockopt(SO_TXTIME)` shows it, which the traits do not give. A Realtime
+  mapped to the atomic clock is caught.
 - Wireless status reports: refused as in the UDP track. Acknowledgement reports are TCP's; hardware and
   completion reports need a device with a hardware clock, which the namespace has not.
 - Measured Linux behaviour the suites follow: a raw send into a full send buffer answers `ENOBUFS`;

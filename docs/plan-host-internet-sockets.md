@@ -189,9 +189,18 @@ Linux failed with the error. Settings by their effect; source filters by the nam
 (`/proc/net/mcfilter`, `mcfilter6`) and, for IPv4 raw sockets, by which senders' packets arrive; an IPv6 router alert
 turned off or changed by which sockets take a forwarded packet; drops over two floods;
 Configurable's own suite runs on a setting of each socket kind. Waits are polled by hand with a waker that
-counts its wakes: a wait for data is pending until the reply or packet arrives and is then woken once; a wait for
-writing finishes at its first poll; a dropped wait gives up its waker and is not woken; 35 waits on 32 sockets
-each wake once; an ICMP error ends a wait for data with the error condition, also when a too long send took it
-off the host first. Each implementation crate's own test counts the waiting thread's allocations over a hundred
+counts its wakes, through the readiness suite twice in each: for data (pending until a reply or packet arrives,
+ended by an ICMP error) and for writing (the smallest send buffer filled with sends a fair queue holds by their
+transmit time, made writable by removing the queue, ended by an ICMP error about the first send, which left at
+once); each run of it checks a wait unfinished before, woken once after, finished at once when already ready,
+dropped and not woken, and 32 waits each woken once. A wait for writing on a new socket finishes at its first poll,
+writable and not readable; 32 sockets with one wait each wake once; an ICMP error ends a wait for data with the
+error condition, also when a too long send took it off the host first. Echo requests and the checks' ICMP errors
+carry a traffic class that is not zero (DSCP EF with ECN), so a reply's or error's received class is the wire's.
+A header of the other version than the socket's gets the error the host's own ping socket gives that address.
+The transmit clock: Linux's etf takes only the atomic clock and drops a send whose socket clock is another (a
+Realtime send is reported invalid there, as Monotonic would be); fq reads every time as monotonic whatever the
+socket's clock. So Realtime is told from the atomic clock but not from Monotonic: only `getsockopt(SO_TXTIME)`
+shows the difference, which the traits do not give. Each implementation crate's own test counts the waiting thread's allocations over a hundred
 waits that have to wait, after a hundred that warm the socket, and expects none. IPv6 source preferences are
 checked with a temporary address beside the link's public one, so that the preference decides the source.
