@@ -5813,19 +5813,16 @@ code	crates/wcontainers-direct3d-11/src/cache.rs	int	Record	4
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Warm<B>::start	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Warm<B>::start	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	128
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	14
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	14
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	16
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	8
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bias_step	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bias_step	24
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bound_as_target	22
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bound_as_target	47
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::check_indirect	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::clear_render_target_view	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::clear_uav	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_resource	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_structure_count	4
@@ -5839,28 +5836,8 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	0b1111
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	5
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	5
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	9
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	9
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::indexed_strip	0xff
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::indexed_strip	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::om_set_blend_state	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::om_set_blend_state	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::om_set_render_targets	8
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::om_set_render_targets	8
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
@@ -5894,7 +5871,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	5
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::rs_set_scissor_rects	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::set_constant_ranges	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::set_constant_ranges	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::set_constant_ranges	4096
@@ -6024,9 +6000,7 @@ code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"@f
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"main"
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"the counting program of a draw without a pixel shader"
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	3
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	4
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	3
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	4
 code	crates/wcontainers-direct3d-11/src/device.rs	float	gpu_sampler	32.0
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
@@ -6592,16 +6566,6 @@ code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	"WEBGL_AN
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	r"C:\wc\tools\angle-mozangle-0.7.1"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"wcontainers direct3d 11: no WebGL 2 back end: {e}"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::own_directory	"\\"
-code	crates/wcontainers-directx/src/com/context.rs	int	<Bound as Default>::default	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_render_target_view	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_float	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_uint	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::dispatch_indirect	3
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_get_blend_state	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::set_scissor_rects	4
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::after_list	"ClearState"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::begin	"Begin"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_depth_stencil_view	"ClearDepthStencilView"
