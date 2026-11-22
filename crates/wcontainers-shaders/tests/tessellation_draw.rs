@@ -10,6 +10,7 @@
 #![cfg(windows)]
 
 mod common;
+mod forms;
 
 use common::*;
 use wcontainers_gpu::{Backend, BufferRange, BufferUsage, ReadSource, RingKind};
@@ -1077,6 +1078,9 @@ struct Staged<'a> {
     ds: &'a str,
     gs: Option<&'a str>,
     route: Route,
+    /// The hull and domain programs handed over as naga modules (`wcontainers_shaders::staged`), in
+    /// place of the route's builds of `hs` and `ds`.
+    from_module: bool,
 }
 
 /// The same patches streamed through the whole stage helper: the vertex and hull stages, the
@@ -1097,12 +1101,27 @@ fn ours_staged<B: Backend>(
         DomainSets, InputTopology, StageDraw, Stages, StreamOutput, StreamOutputEntry,
         StreamTargets,
     };
-    let Staged { hs, ds, gs, route } = *programs;
+    let Staged {
+        hs,
+        ds,
+        gs,
+        route,
+        from_module,
+    } = *programs;
     let plain = VariantKey::default();
     let read = |name: &str| bytecode(&format!("{name}.{}", route.extension()));
     let vs = convert(route.source(&read("vs_patch")), &plain, None).unwrap();
-    let hull = convert(route.source(&read(hs)), &plain, None).unwrap();
-    let domain = convert(route.source(&read(ds)), &plain, None).unwrap();
+    let mut hull = convert(route.source(&read(hs)), &plain, None).unwrap();
+    let mut domain = convert(route.source(&read(ds)), &plain, None).unwrap();
+    if from_module {
+        // The route's builds give the constant buffer's binding and the outputs' reflection.
+        let declared: Vec<&str> = hs.trim_start_matches("hs_").split('_').collect();
+        let [d, mode, out] = declared[..] else {
+            panic!("{hs}")
+        };
+        hull = forms::hull(d, mode, out, &hull.reflection.bindings).unwrap();
+        domain = forms::domain(d, domain.reflection.outputs.clone()).unwrap();
+    }
     let geometry = gs.map(|gs| convert(route.source(&read(gs)), &plain, None).unwrap());
     let entry = |semantic: &str, count| StreamOutputEntry {
         stream: 0,
@@ -1319,6 +1338,7 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
                         ds,
                         gs: *gs,
                         route,
+                        from_module: false,
                     },
                     *points,
                     bound,
@@ -1345,6 +1365,93 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
                         eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
                         failures.push(name);
                     }
+                }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Hull and domain programs handed over as naga modules (`wcontainers_shaders::staged::hull` and
+/// `domain`, the NIR route's entry) stream as Direct3D 11 streams fxc's builds of the same programs,
+/// directly and through a geometry shader: each domain, partitioning and output, compared as
+/// [`stream_output_after_the_domain_stage_matches_direct3d`] compares.
+#[test]
+fn hull_and_domain_programs_from_a_module_stream_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_TESSELLATION_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut cases = Vec::new();
+    for (name, partitionings, outputs) in [
+        (
+            "tri",
+            &["integer", "odd", "even"][..],
+            &["point", "cw", "ccw"][..],
+        ),
+        ("quad", &["pow2", "even", "odd"], &["point", "cw"]),
+        ("line", &["integer", "odd", "even"], &["point", "line"]),
+    ] {
+        for mode in partitionings {
+            for out in outputs {
+                let (per, gs) = match *out {
+                    "point" => (1, "gs_tess_point"),
+                    "line" => (2, "gs_tess_line"),
+                    _ => (3, "gs_tess_tri"),
+                };
+                for gs in [None, Some(gs)] {
+                    cases.push((
+                        format!("hs_{name}_{mode}_{out}"),
+                        format!("ds_{name}"),
+                        gs,
+                        per,
+                    ));
+                }
+            }
+        }
+    }
+    let bound = 2 * PATCHES * tess::patch_bounds(64.0).1 as usize;
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        for (i, (hs, ds, gs, per)) in cases.iter().enumerate() {
+            let mut rng = fastrand::Rng::with_seed(seed * 1000 + i as u64);
+            let factors = factors(&mut rng);
+            let (reference, written) = direct3d(&gpu, hs, ds, *gs, 1, bound, &factors);
+            let reference = &reference[..written as usize * per];
+            let staged = Staged {
+                hs,
+                ds,
+                gs: *gs,
+                route: Route::Dxbc,
+                from_module: true,
+            };
+            let (streamed, counted) = ours_staged(&mut backend, &staged, 1, bound, &factors, None);
+            compared += 1;
+            let name = format!("seed {seed} module {hs} {}", gs.unwrap_or("streamed"));
+            let counts = match counted == [written as u32; 2] {
+                true => Ok(()),
+                false => Err(format!(
+                    "primitives written and made {counted:?}, direct3d {written}"
+                )),
+            };
+            match (counts, compare(reference, &streamed, *per)) {
+                (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+                (counts, shape) => {
+                    let why: Vec<String> =
+                        [counts.err(), shape.err()].into_iter().flatten().collect();
+                    eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
+                    failures.push(name);
                 }
             }
         }
@@ -1414,7 +1521,13 @@ fn stage_values_hold_wherever_the_data_ring_wraps() {
         let reference = &reference[..written as usize * per];
         for parts in 0..=RING_PLACES {
             for route in Route::BOTH {
-                let staged = Staged { hs, ds, gs, route };
+                let staged = Staged {
+                    hs,
+                    ds,
+                    gs,
+                    route,
+                    from_module: false,
+                };
                 let (streamed, counted) =
                     ours_staged(&mut backend, &staged, points, bound, &factors, Some(parts));
                 compared += 1;

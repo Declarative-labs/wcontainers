@@ -6,6 +6,7 @@
 #![cfg(windows)]
 
 mod common;
+mod forms;
 
 use common::*;
 use wcontainers_gpu::{
@@ -763,13 +764,18 @@ fn gs_source<'a>(case: &Case, code: &'a [u8]) -> Source<'a> {
     }
 }
 
-/// The case's vertex, geometry and pixel programs as its route's compiler builds them, linked as a
-/// front links them: the vertex shader under `vs_key`, the geometry shader with `gs_flags` too.
+/// Makes a case's geometry program under a key in place of its route's build.
+type GeometryMade = fn(&VariantKey) -> Converted;
+
+/// The case's vertex, geometry and pixel programs as its route's compiler builds them (the geometry
+/// program by `made` where given), linked as a front links them: the vertex shader under `vs_key`, the
+/// geometry shader with `gs_flags` too.
 fn linked(
     case: &Case,
     vs_key: VariantKey,
     gs_flags: VariantFlags,
     clamped: Clamped,
+    made: Option<GeometryMade>,
 ) -> (Converted, Option<Converted>, Converted) {
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
@@ -788,8 +794,11 @@ fn linked(
         ..Default::default()
     };
     let gs_code = gs_bytecode(case);
-    let gs =
-        (!case.gs.is_empty()).then(|| convert(gs_source(case, &gs_code), &gs_key, None).unwrap());
+    let gs_converted = |key: &VariantKey| match made {
+        Some(made) => made(key),
+        None => convert(gs_source(case, &gs_code), key, None).unwrap(),
+    };
+    let gs = (!case.gs.is_empty()).then(|| gs_converted(&gs_key));
     let vs_code = bytecode(&format!("{}.{ext}", case.vs));
     let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
@@ -842,7 +851,7 @@ fn linked(
         .unwrap();
         match gs {
             Some(_) => {
-                let gs = convert(gs_source(case, &gs_code), &key(&gs_key, 0), None).unwrap();
+                let gs = gs_converted(&key(&gs_key, 0));
                 (vs, Some(gs), ps)
             }
             None => {
@@ -862,13 +871,26 @@ fn ours<B: Backend>(
     stream: Option<(&StreamOutput, &Bound)>,
     clamped: Clamped,
 ) -> Made {
+    ours_made(b, case, None, vertices, indices, stream, clamped)
+}
+
+/// [`ours`] with the geometry program `made` makes, where given.
+fn ours_made<B: Backend>(
+    b: &mut B,
+    case: &Case,
+    made: Option<GeometryMade>,
+    vertices: &[f32],
+    indices: &[u8],
+    stream: Option<(&StreamOutput, &Bound)>,
+    clamped: Clamped,
+) -> Made {
     let (stream, bound) = (stream.map(|s| s.0), stream.map(|s| s.1));
     let vs_key = VariantKey {
         pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
-    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped);
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped, made);
     // Without a geometry stage or stream output, the vertex stage writes cull distances.
     let mut stages = match (&gs, stream) {
         (None, None) => Stages::culled(b, &vs, None).unwrap(),
@@ -1264,7 +1286,7 @@ fn ours_replayed<B: Backend>(
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
-    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY, None);
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY, None, None);
     let writes_cull = vs
         .reflection
         .outputs
@@ -3495,4 +3517,90 @@ fn layered_geometry(layers: u32, route: Route) {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert!(failed.is_empty(), "{route:?}: layers {failed:?} differ");
+}
+
+/// `gs_cut` handed over as a naga module (`wcontainers_shaders::staged::geometry`, the NIR route's
+/// entry) draws as Direct3D 11 draws fxc's build, in the cases that draw fxc's build: the same vertex
+/// and pixel programs, the same comparison.
+#[test]
+fn geometry_programs_from_a_module_draw_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let made: GeometryMade = |key| forms::gs_cut(key).unwrap();
+    let cases: Vec<&Case> = CASES
+        .iter()
+        .filter(|c| c.gs == "gs_cut" && c.route == Route::Dxbc)
+        .collect();
+    assert!(!cases.is_empty());
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &cases {
+            let name = format!(
+                "seed {seed} module gs_cut {:?} {} from {}{}",
+                case.topology,
+                case.count,
+                case.first,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let Ok((indices, reference)) = scene(
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
+                |indices| direct3d(&gpu, case, &vertices, indices, None),
+                |reference| drawn_texels(reference) != 0,
+                |indices, _| {
+                    let made = ours_made(
+                        &mut backend,
+                        case,
+                        Some(made),
+                        &vertices,
+                        indices,
+                        None,
+                        None,
+                    );
+                    matches!(made, Made::Picture(picture) if drawn_texels(&picture) == 0)
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
+            let Made::Picture(picture) = ours_made(
+                &mut backend,
+                case,
+                Some(made),
+                &vertices,
+                &indices,
+                None,
+                None,
+            ) else {
+                unreachable!()
+            };
+            let (count, ends, largest, allowed) = compared_clipped(case, &reference, &picture);
+            compared += 1;
+            eprintln!(
+                "{name}: {} texels drawn by direct3d, {count} differ ({ends} at a clipped line end; \
+                 largest of the others {largest}, allowed {allowed})",
+                drawn_texels(&reference)
+            );
+            if drawn_texels(&reference) == 0 || largest > allowed {
+                failures.push(name);
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
 }
