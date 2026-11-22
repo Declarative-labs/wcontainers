@@ -18,6 +18,7 @@ use etherparse::{
     Ipv6RawExtHeaderSlice, icmpv4, icmpv6,
 };
 use wcontainers_abi::HostError;
+use wcontainers_icmp_sockets_conformance::seconds_since_confirmed;
 use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, GATEWAY, GATEWAY_V6, HOP_LIMIT, LOCAL,
     LOCAL_V6, MARK, MARK_PROHIBITED, NETWORK, NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE,
@@ -42,7 +43,6 @@ use wcontainers_raw_sockets::{
 };
 use wcontainers_readiness::ReadyFor;
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
-use wcontainers_route_resolver_conformance::seconds_since_confirmed;
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance as configurable_suite;
@@ -935,7 +935,7 @@ fn forwarding_pair() {
     }
     // The link address of the second link, from iproute2's brief listing: name, state, address.
     let text = output(
-        wcontainers_route_resolver_conformance::IP,
+        wcontainers_icmp_sockets_conformance::IP,
         &[&BRIEF_LINK[..], &[SECOND_OF_PAIR]].concat(),
     );
     let address = text.split_whitespace().nth(2).expect("a link address");
@@ -1640,7 +1640,7 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
     }
     tc(wcontainers_icmp_sockets_conformance::PRIO_QUEUE);
     let third_band = || {
-        wcontainers_route_resolver_conformance::number_after(
+        wcontainers_icmp_sockets_conformance::number_after(
             &output(
                 wcontainers_icmp_sockets_conformance::TRAFFIC_CONTROL,
                 &[
@@ -1650,7 +1650,7 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
                 .concat(),
             ),
             wcontainers_icmp_sockets_conformance::THIRD_BAND,
-            wcontainers_route_resolver_conformance::PACKETS,
+            wcontainers_icmp_sockets_conformance::PACKETS,
         )
     };
     let filler = IpSendFields {
@@ -1856,7 +1856,7 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     let link = Some(index(DUMMY));
     let joined = |group: IpAddr| {
         output(
-            wcontainers_route_resolver_conformance::IP,
+            wcontainers_icmp_sockets_conformance::IP,
             &[&SHOW_GROUPS[..], &[DUMMY]].concat(),
         )
         .contains(&group.to_string())

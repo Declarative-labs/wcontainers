@@ -15,9 +15,8 @@ wcontainers-raw-sockets = { path = ".." }
 etherparse.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The packet capture, address and network tools of the ICMP and route resolver suites.
+# The packet capture, address and network tools of the ICMP suite.
 wcontainers-icmp-sockets-conformance = { path = "../../icmp-sockets/conformance" }
-wcontainers-route-resolver-conformance = { path = "../../route-resolver/conformance" }
 wcontainers-readiness = { path = "../../readiness" }
 wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 # The errno values of Linux.

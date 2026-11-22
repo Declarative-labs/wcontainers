@@ -37,9 +37,6 @@ use wcontainers_internet_protocol::{
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::ReadyFor;
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
-use wcontainers_route_resolver_conformance::{
-    BATCH, IP, IPV6, PACKETS, number_after, seconds_since_confirmed,
-};
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance as configurable_suite;
@@ -148,6 +145,78 @@ fn identifier(version: IpVersion) -> EchoIdentifier {
 const SEQUENCE: u16 = 0x0102;
 /// How long a check waits for a packet that should come.
 pub const PATIENCE: Duration = Duration::from_secs(2);
+/// The iproute2 tool the checks build their networks with.
+pub const IP: &str = "ip";
+/// Reads the commands from the input.
+const BATCH: &[&str] = &["-batch", "-"];
+const IPV6: &[&str] = &["-6"];
+/// The packet count of a statistics object in iproute2's JSON.
+pub const PACKETS: &str = "\"packets\":";
+/// The word before a link's name in an `ip` command.
+const DEVICE: &str = "dev";
+
+/// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
+pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
+    let start = text
+        .find(after)
+        .unwrap_or_else(|| panic!("no {after}: {text}"));
+    let rest = &text[start..];
+    let at = rest
+        .find(field)
+        .unwrap_or_else(|| panic!("no {field}: {text}"))
+        + field.len();
+    rest[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("{text}"))
+}
+
+/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds.
+pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
+    const FIELD: &str = "\"confirmed\":";
+    /// Shows the neighbour entries with their times, as JSON.
+    const SHOW: &[&str] = &["-s", "-j", "neigh", "show"];
+    let output = Command::new(IP)
+        .args(SHOW)
+        .arg(address.to_string())
+        .args([DEVICE, link])
+        .output()
+        .expect("ip runs");
+    let text = String::from_utf8(output.stdout).expect("ip writes text");
+    number_after(&text, FIELD, FIELD)
+}
+
+/// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
+fn temporary_address(link: &str) -> Ipv6Addr {
+    /// Shows the link's temporary addresses that are no longer tentative, as JSON.
+    const SHOW: &[&str] = &["-6", "-j", "address", "show", "temporary", "-tentative"];
+    /// The mark that ends a string in iproute2's JSON.
+    const JSON_QUOTE: char = '"';
+    /// The time between two looks, a hundredth of the time duplicate address detection waits.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc4861#section-10
+    const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(10);
+    const LOCAL: &str = "\"local\":\"";
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while std::time::Instant::now() < deadline {
+        let output = Command::new(IP)
+            .args(SHOW)
+            .args([DEVICE, link])
+            .output()
+            .expect("ip runs");
+        let text = String::from_utf8(output.stdout).expect("ip writes text");
+        if let Some(start) = text.find(LOCAL) {
+            let rest = &text[start + LOCAL.len()..];
+            let end = rest.find(JSON_QUOTE).expect("an address ends");
+            return rest[..end].parse().expect("an IPv6 address");
+        }
+        std::thread::sleep(LOOK_AGAIN);
+    }
+    panic!("no temporary address on {link}");
+}
+
 /// How long a check waits to be sure that a packet does not come.
 pub const QUIET: Duration = Duration::from_millis(200);
 /// The bytes of an ICMP header, as Linux reads one from an echo socket's message.
@@ -1523,7 +1592,7 @@ const TEMPORARY_BUT_PUBLIC_PREFERRED: &str = "1";
 pub fn sources_by_preference() -> [(TemporaryAddressPreference, Ipv6Addr); 2] {
     write_setting(TEMPORARY_ADDRESSES, TEMPORARY_BUT_PUBLIC_PREFERRED);
     ip6(MANAGED_TEMPORARY);
-    let temporary = wcontainers_route_resolver_conformance::temporary_address(DUMMY);
+    let temporary = temporary_address(DUMMY);
     [
         (TemporaryAddressPreference::Temporary, temporary),
         (TemporaryAddressPreference::Public, LOCAL_V6),
