@@ -8,9 +8,9 @@ use wcontainers_processor_architecture_arm64::{
     VectorLength, VectorLengthReading,
 };
 
+/// Each choice agrees with every state of the recordings beside this file, made under KVM on an AWS Graviton4.
 pub struct NeoverseV2;
 
-/// TODO: temporary placeholder until the V2's recordings: the store pair and the load into its base are expected, not measured.
 impl PreciseInstructionSet<Arm64> for NeoverseV2 {
     fn to_precise(&self, instruction: Instruction) -> PreciseInstruction {
         match instruction {
@@ -30,11 +30,9 @@ impl PreciseInstructionSet<Arm64> for NeoverseV2 {
                 LoadIntoBaseWithWriteback::WritebackSuppressed,
             ),
             Instruction::Brk => PreciseInstruction::Brk,
-            // RDVL x0, #1 read 16 at EL0 under Linux 7.0 on a Graviton4.
             Instruction::Rdvl => {
                 PreciseInstruction::Rdvl(VectorLengthReading::Reads(VectorLength::Bits128))
             }
-            // Read at EL0 under Linux 7.0 on a Graviton4, outside a virtual machine.
             Instruction::MrsCtrEl0 => PreciseInstruction::MrsCtrEl0 {
                 cache_type: 0xB444_C004,
             },

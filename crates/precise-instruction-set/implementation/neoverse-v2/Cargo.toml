@@ -11,9 +11,17 @@ publish = false
 [lib]
 path = "implementation.rs"
 
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
 [dependencies]
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[dev-dependencies]
+wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
+wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
 
 [lints]
 workspace = true
