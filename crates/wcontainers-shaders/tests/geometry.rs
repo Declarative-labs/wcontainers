@@ -43,13 +43,19 @@ fn geometry_shaders_declare_what_they_are() {
         ("gs_line_adjacent", 4, 4, 2, 1),
     ];
     let vertex = vertex();
-    for (name, inputs, max, outputs, instances) in expected {
-        let c = convert(
-            Source::Dxbc(&own(&format!("{name}.dxbc"))),
-            &VariantKey::default(),
-            None,
-        )
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    // fxc's and dxc's build of each.
+    let builds = expected
+        .iter()
+        .flat_map(|e| ["dxbc", "dxil"].map(|b| (e, b)));
+    for (&(shader, inputs, max, outputs, instances), build) in builds {
+        let name = &format!("{shader}.{build}");
+        let bytes = own(name);
+        let source = match build {
+            "dxbc" => Source::Dxbc(&bytes),
+            _ => Source::Dxil(&bytes),
+        };
+        let c =
+            convert(source, &VariantKey::default(), None).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(
             c.reflection.extras,
             StageExtras::Geometry {
