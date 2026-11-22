@@ -323,6 +323,14 @@ fn a8_storage_views_store_as_direct3d_does() {
     case("a8_storage");
 }
 
+/// `A8_UNORM`, `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`
+/// textures of each dimension written, read back, loaded and sampled, and the two targets among
+/// them drawn, blended and their mips generated, on 10_0 devices, as on the RTX 3080.
+#[test]
+fn small_formats_read_and_drawn_at_10_0_as_direct3d_does() {
+    case_args(&["small_formats", "10_0"], "ours", &[]);
+}
+
 /// `B5G6R5_UNORM` and `B5G5R5A1_UNORM` targets cleared, drawn, blended, drawn with 4 and 8
 /// samples and resolved, and their mips generated, as on the RTX 3080.
 #[test]
