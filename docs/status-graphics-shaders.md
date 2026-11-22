@@ -39,7 +39,48 @@ first part, `A8Unorm` storage views, built and drawn. Run 3 (run 82, the section
 `SwizzledDepth` measured on real Direct3D 12 and settled where the devices agree, gathers of a
 depth texture's other components on both routes. Run 4 (run 83, the section below): A5's
 geometry replay of streams past the first, the Direct3D 11 front's ask. Run 5 (run 84, the
-section below): A5's alpha-antialiased lines on WebGL 2. Not complete: the gap list below.
+section below): A5's alpha-antialiased lines on WebGL 2. Run 6 (run 85, the section below): A5's
+cull distances and primitive numbers on WebGL 2, A4's multisampled integer twins found absent by
+the plan. Not complete: the gap list below.
+
+## G6 run 6 (run 85): cull distances and primitive numbers on WebGL 2 (A5)
+
+Logs and scripts in scratch `graphics-shaders/g6-r85` (run 84's with its folder: `gpu.sh`,
+`x86-tests.sh`; jobs `job1.log`, `gpu-suite.log`; `x86-tests.log` to `x86-tests3.log`).
+- Built (src/stage/replay.rs, src/stage.rs, src/stage/primitive_replay.wgsl):
+  `GeometryReplay::culled` and `GeometryReplay::primitive_numbered`, the Direct3D 11 front's
+  WebGL 2 item for test_combined_clip_and_cull_distances and the primitive route's twin. Each draw
+  captures the vertex stage (records with the cull distances' slots after the clip distances'),
+  copies the records into the records' texture, then captures `primitive_replay.wgsl` once a
+  vertex of each primitive: a primitive all of whose vertices lie below zero on one cull distance
+  is written as records outside every clip volume (as the compute route's empty record), and on
+  the primitive route each record is followed by its primitive's number in its instance. The cull
+  route's or the primitive route's own pass-through draws the capture. How the front calls it:
+  "How the Direct3D fronts call `convert`", primitive numbers and cull distances without compute.
+  The line replay program and the new one share one wrapper (`replay_program`).
+- A4: multisampled `combine` into integer twins is absent by plan 4.12 (its entry); a logic
+  operation into a multisampled target is what stays open there.
+- Tests: `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` (tests/geometry_draw.rs) now
+  replays the eight `CULLED` cases (`vs_cull`, fxc's build: lists, strips, indexed strips with
+  restarts, points, instanced) on ANGLE against real Direct3D 11 on the RTX 3080: 184 comparisons,
+  0 failed (32 of them cull cases; the planes drop 118 primitives over the four seeds, and every
+  case drops some), and each cull case's figures are those of the compute route word for word (10
+  of the 32 with texels a step apart, largest 1, allowed 2, as on the compute route; the comparison
+  is shared, `compared_clipped`). `primitive_numbers_from_the_stage_helper_draw_as_direct3d_does`
+  (tests/stage_draw.rs) draws each case by compute on WebGPU and replayed on WebGL 2 with and
+  without EXT_clip_control, fxc and dxc builds: 168 comparisons, 0 failed, every texel equal.
+  `geometry_shaders_draw_as_direct3d_does` 192, 0 failed; `antialiased_lines_draw_as_direct3d_does`
+  144, 0 failed (unchanged figures). Default seeds 1 to 4 (job1.log).
+- Runs: x86 machine (load 1 to 47, other tracks' jobs beside): rustfmt clean, clippy of this crate
+  and the interface with warnings denied clean, the CPU test binaries `geometry`, `variants`,
+  `rewrite`, `builtin`, `cache`, `glsl_writer` and `compute`: 99 passed, 2 ignored as before; the
+  literal check prints no line of this crate (x86-tests3.log). Desktop (RTX 3080, GPU jobs one at
+  a time, 3 cargo jobs): Windows clippy clean, job1 as above; the whole suite at the committed
+  code (f264c3a8, one job, one test thread): 24 test binaries, 175 passed, 0 failed, 6 ignored as
+  before (gpu-suite.log).
+- Not run: WebAssembly, Chrome, the corpora (no converted shader changed; the stage helper's
+  programs are in no corpus record). A DXIL build of `vs_cull` is not drawn on either cull route
+  (as before this run).
 
 ## G6 run 5 (run 84): alpha-antialiased lines on WebGL 2 (A5)
 
@@ -636,7 +677,8 @@ The pass bar, item by item:
 3. Each variant field and flag of 6.4 has a test showing the rewritten program's result equals the
    unrewritten one's with the native feature, or real Direct3D's picture. Met for every field and
    flag but three, for `swizzled` but the comparisons the devices disagree on, and for `targets_in_shader`'s `combine` but
-   multisampled targets (gap A4; `combine` drawn since run 80). Where each is tested (drawn on the RTX 3080; test binaries of
+   multisampled targets (gap A4; `combine` drawn since run 80; multisampled integer twins are
+   absent by plan 4.12, a logic operation into a multisampled target is the open part). Where each is tested (drawn on the RTX 3080; test binaries of
    `crates/wcontainers-shaders/tests`):
    - `variant_draw` (`variants_draw_as_the_native_feature_does` unless named): `CLIP_DEPTH_REWRITE`
      (WebGL 2 with and without EXT_clip_control against WebGPU), `VIEWPORT_DEPTH_FLIP`,
@@ -706,7 +748,9 @@ The pass bar, item by item:
    DXIL since G6b: geometry, hull and domain shaders with dxc's builds (A6 closed); stream output
    from dxc's builds against real Direct3D 12 running them since G6b run 3 (A21, A22).
    Alpha-antialiased lines on WebGL 2 since run 84 (`stage_draw`, replayed on ANGLE).
-   Not met: the rest of WebGL 2 (tessellation, cull distances, primitive numbers: gap A5), some topologies and streams (A7), vertex shaders writing storage (A9), single texels on
+   Cull distances and primitive numbers on WebGL 2 since run 85 (`geometry_draw`, `stage_draw`,
+   replayed on ANGLE); tessellation is not offered on WebGL 2 (plan section 7).
+   Not met: some topologies and streams (A7), vertex shaders writing storage (A9), single texels on
    the edges of clipped triangles and a few of culled lines (A10), clamped depth behind a
    geometry stage at some seeds (A12), geometry shaders taking patches (A13), hull shaders
    giving no control points (A14) and the written count of a stream with no buffer bound (A15).
@@ -771,12 +815,17 @@ The gap list (every item of the pass bar not met):
     R16_UNORM, R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their integer twins,
     from old values, each within one code of Direct3D in every texel (Direct3D's float-to-integer
     tolerance; up to 882 of 4,096 texels a code apart); and all sixteen logic operations into
-    R32G32B32A32_UINT with a write mask, against Direct3D 11.1's, equal in every texel. Not met:
-    a multisampled target, refused by name (`BlendInShaderMultisampled`), and a key without a
-    sample count (`SampleCount`). Waits: the Direct3D 11 front can now blend into integer twins
-    (its status: "Blending into integer twins (`BlendInShader`) once the shaders crate builds
-    `combine`") and do logic operations ("How the Direct3D fronts call `convert`"). Takes, for
-    the rest: every sample's old value from a multisampled copy, and its drawn test.
+    R32G32B32A32_UINT with a write mask, against Direct3D 11.1's, equal in every texel. A
+    multisampled target is refused by name (`BlendInShaderMultisampled`), as is a key without a
+    sample count (`SampleCount`). For the formats held as integer twins this is the plan's own
+    rule, not a gap (read in run 85): plan 4.12, "16-bit normalised formats and rendered signed
+    normalised ones", says "Multisampling of these formats is reported absent on such adapters",
+    which is what the Direct3D 11 front does (it withdraws the multisample bits of the nine
+    formats), and WebGL 2 reads no multisampled texture in a program at all (plan section 6). Left
+    open: a logic operation into a multisampled target on WebGPU (`LogicOpInShader`, which plan
+    4.12 does not list as absent there). Waits: nobody (no front program or test file seen with
+    one). Takes: every sample's old value from a multisampled copy, the program run once a sample,
+    and a drawn test against Direct3D 11.1.
   - `swizzled` on a depth texture (`SwizzledDepth`, src/variant/swizzle.rs `depth_mapped`):
     measured on real Direct3D 12 in run 82 (its section). Met, drawn equal to the RTX 3080: plain
     reads, gathers of any component and reads used as the depth alone through any mapping, and
@@ -804,9 +853,12 @@ The gap list (every item of the pass bar not met):
   the stream `word::STREAM` names, replayed once a stream, stream 0 last; its section);
   alpha-antialiased lines run since run 84 (`GeometryReplay::antialiased_lines`: the vertex stage
   captured, then `line_replay.wgsl` captured once a corner of each line's two triangles, as
-  `lines.wgsl` writes them; its section). Not built: cull distances, primitive numbers and
-  tessellation on WebGL 2 (each the vertex stage captured the same way; the tessellator needs
-  compute, so tessellation stays absent there). Also open on both line routes: a vertex program
+  `lines.wgsl` writes them; its section); cull distances and primitive numbers from a vertex
+  shader alone run since run 85 (`GeometryReplay::culled` and `primitive_numbered`: the vertex
+  stage captured, then `primitive_replay.wgsl` captured once a vertex of each primitive, writing
+  a dropped primitive's vertices outside every clip volume or each with its number; its section).
+  Absent by the plan: tessellation on WebGL 2 (plan section 7: "Hull and domain shaders are not
+  offered on WebGL 2 (feature level 10_0 does not have them)"). Also open on both line routes: a vertex program
   converted with `VIEWPORT_DEPTH_FLIP` (a swapped depth range) is cut at the wrong plane where a
   line crosses the near plane, as both line programs take Direct3D's near plane z = 0 (or z = -w
   under `CLIP_DEPTH_REWRITE` on the replay route); not tested. Waits: nobody (the Direct3D 11
@@ -1524,11 +1576,11 @@ G6a run 5's tip):
 
 1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
    view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
-   front's asks, both waiting on the interface track; A5's replayed streams were done in run 83
-   and its alpha-antialiased lines on WebGL 2 in run 84), A4's multisampled `combine` (the Direct3D
-   11 front withdraws the multisample bits of the nine formats held as integer twins until then),
-   A9, A7, A1, the DXIL route's `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv
-   patches), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP` (A5).
+   front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
+   83 to 85, A4's multisampled integer twins are absent by plan 4.12), A9, A7, A1, the DXIL route's
+   `ResourceArray`, A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
+   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's asks under "New for the owner" (the geometry and tessellation entry
    point its G9 waits on first), A26 (the unordered not-equal, both routes, with its drawn NaN
@@ -1565,6 +1617,13 @@ G6a run 5's tip):
   at run time (its status, `divisions_match_direct3d`). What is left for that program is the colour
   map's sample at u just below 1 (the front's sampler state and the texture's addressing), which
   the front can compare with a real run's.
+- Answered for the Direct3D 11 front (run 85, A5; its WebGL 2 item "Cull distances
+  (`CullDistanceAsGeometry` needs compute): test_combined_clip_and_cull_distances"): cull distances
+  from a vertex shader alone run on WebGL 2 through `GeometryReplay::culled`, and a pixel shader's
+  primitive number without a geometry stage through `GeometryReplay::primitive_numbered` ("How the
+  Direct3D fronts call `convert`"). Multisampled `combine` into integer twins is absent by plan
+  4.12 ("Multisampling of these formats is reported absent on such adapters"), which the front
+  already reports; nothing waits on this track there.
 - Answered for the Direct3D 11 front (run 84, A5): alpha-antialiased lines on WebGL 2 run through
   `GeometryReplay::antialiased_lines` ("How the Direct3D fronts call `convert`").
 - Answered for the Direct3D 11 front (run 83, its ask "the geometry replay's streams past the
@@ -1815,6 +1874,22 @@ G6a run 5's tip):
   vertex shader (`PrimitiveIdCullDistance`), the built-in inside a struct of inputs
   (`PrimitiveIdInStruct`). Indexed strips run (since run 50). `tests/stage_draw.rs` does exactly
   this. Behind a geometry shader the pixel shader's number is still not passed (next).
+- The same, and cull distances from a vertex shader alone, on a back end without compute (WebGL 2,
+  `Features::TRANSFORM_FEEDBACK`; since run 85): convert the vertex shader with its inputs as drawn,
+  `draw_base: Helpers`, `CLIP_DEPTH_REWRITE` where the back end lacks clip depth from zero, and the
+  pixel shader's `linked` (for primitive numbers the pixel shader as above);
+  `GeometryReplay::primitive_numbered(backend, &vertex, &pixel_key)` or
+  `GeometryReplay::culled(backend, &vertex)` once per vertex shader (and pixel key); per draw,
+  outside the pass, `replay.run` with a `ReplayDraw` as for a vertex shader alone (the API draw's
+  layout, streams and indices, `geometry_sets` all `None`, `stream_output: None`), then draw the
+  returned `FinalDraw` through `replay.passthrough()` and `replay.vertex_layout()` (a list without
+  indices; a dropped primitive's vertices lie outside every clip volume). Make index buffers with
+  `BufferUsage::COPY_SRC`, as indexed strips are read back. Refused by name: adjacency
+  (`PrimitiveIdAdjacency`, `CullDistanceAdjacency`), indirect draws (as every replay), records wider
+  than one capture target (`GeometryReplayComponents`), both on one vertex shader
+  (`PrimitiveIdCullDistance`); stream output from a vertex shader writing cull distances stays
+  refused (`StreamOutCullDistance`). `tests/stage_draw.rs` (`ours_replayed`, `Route::Primitives`)
+  and `tests/geometry_draw.rs` (`ours_replayed` with the `CULLED` cases) do exactly this.
 - Cull distances from a vertex shader without a geometry or hull stage (WebGPU, `Features::COMPUTE`,
   the back end without `Features::CULL_DISTANCE`; since run 39): the vertex shader converted as for
   a geometry shader (every input pulled, `draw_base: Helpers`, its other flags as for a plain draw,
