@@ -10,10 +10,9 @@ pub trait Executor {
     type Architecture: ProcessorArchitecture;
     type TranslatorConfig: Default;
 
-    /// Executes the one instruction given on the before state.
+    /// Executes exactly one instruction from the before state.
     fn execute_single_instruction(
         &mut self,
-        instruction: <Self::Architecture as ProcessorArchitecture>::Instruction,
         before: ExecutionState<Self::Architecture>,
     ) -> ExecutionState<Self::Architecture>;
 }
