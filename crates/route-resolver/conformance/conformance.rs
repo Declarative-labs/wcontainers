@@ -1758,6 +1758,11 @@ route add unreachable fd52::/64";
             network.b,
         ),
         (
+            IpAddr::V6(TWO_WAY_V6),
+            Some(IpAddr::V6(A_ADDRESS_V6)),
+            network.a,
+        ),
+        (
             IpAddr::V6(FAR_V6),
             Some(IpAddr::V6(B_ADDRESS_V6)),
             network.b,
@@ -1828,15 +1833,21 @@ pub fn a_bound_interface_routes_as_a_bound_socket<R: RouteResolver>(resolver: R)
     let cases = interface_cases();
     for (destination, source, interface) in cases {
         let selector = InterfaceSelector::Bound(interface);
-        unless_refused(
-            resolve_by_interface(&resolver, destination, source, selector),
-            |route| {
-                assert_eq!(
-                    route.map(|route| (route.source, route.path_mtu)),
-                    told_by_interface(destination, source, selector),
-                    "{destination} from {source:?} bound to {interface:?}"
-                );
-            },
+        let told = told_by_interface(destination, source, selector);
+        let route = resolve_by_interface(&resolver, destination, source, selector);
+        // Linux's IPv6 lookup from a source only prefers an interface, so only where it leaves by another may one be refused.
+        let requested = InterfaceSelector::Requested(interface);
+        let refusable = destination.is_ipv6()
+            && source.is_some()
+            && resolve_by_interface(&resolver, destination, source, requested)
+                .map_or(true, |route| route.interface != interface);
+        if refusable && route == Err(HostError::NotSupported) {
+            continue;
+        }
+        assert_eq!(
+            route.map(|route| (route.source, route.path_mtu)),
+            told,
+            "{destination} from {source:?} bound to {interface:?}"
         );
     }
 }

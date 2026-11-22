@@ -238,3 +238,62 @@ fn a_packet_wish_changed_while_sends_are_held_is_counted() {
         .collect();
     assert_eq!(counted, [1]);
 }
+
+/// Checks that an IPv6 ping from a bound address by a bound interface counts the lookup it asks, and its refusal apart.
+#[test]
+fn a_ping_from_a_bound_address_by_a_bound_interface_is_counted() {
+    use wcontainers_icmp_sockets::{
+        EchoBindAddress, EchoBinding, IdentifierSharing, LocalIdentifier,
+    };
+    use wcontainers_icmp_sockets_conformance as suite;
+    use wcontainers_internet_protocol::InterfaceSelector;
+    suite::enter_network_namespace();
+    suite::ip(suite::NETWORK);
+    suite::ip(suite::TWO_ROUTES);
+    let message = suite::echo(IpVersion::V6, suite::PAYLOAD);
+    let mut counted = Vec::new();
+    // The first link is the one the lookup from the bound address prefers; the second is not.
+    for (link, held) in [(suite::DUMMY, true), (suite::SECOND, false)] {
+        let sockets = HostIcmpSockets::new().unwrap();
+        let socket = sockets.open(IpVersion::V6, UserId(u32::MIN)).unwrap();
+        let binding = EchoBinding {
+            address: EchoBindAddress::V6 {
+                address: suite::LOCAL_V6,
+                scope: None,
+            },
+            identifier: LocalIdentifier::ChosenByExitNode,
+            sharing: IdentifierSharing::Exclusive,
+        };
+        sockets.bind(&socket, binding).unwrap();
+        let to = std::net::IpAddr::V6(suite::NOWHERE_V6);
+        let IpHeaderFields::V6(mut header) = suite::header_to(to, &message) else {
+            unreachable!("an IPv6 destination has an IPv6 header");
+        };
+        header.route.interface = Some(InterfaceSelector::Bound(suite::index(link)));
+        let sent = sockets.send_to(
+            &socket,
+            IpHeaderFields::V6(header),
+            suite::plain_fields(),
+            &message,
+        );
+        let refused = Err(SendError::Host(HostError::NotSupported));
+        assert_eq!(sent, if held { Ok(()) } else { refused }, "{link}");
+        counted.push(
+            sockets
+                .counters()
+                .into_iter()
+                .map(|reading| (reading.reason, reading.count))
+                .collect::<Vec<_>>(),
+        );
+    }
+    // The lookup asked under one reason both times, and the refusal under another.
+    assert!(
+        matches!(counted.as_slice(), [held, refused]
+            if held.len() == 1
+                && held[0].1 == 1
+                && refused.len() == 2
+                && refused.contains(&held[0])
+                && refused.iter().all(|(_, count)| *count == 1)),
+        "{counted:?}"
+    );
+}

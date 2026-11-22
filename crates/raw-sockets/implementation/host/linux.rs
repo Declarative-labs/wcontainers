@@ -11,9 +11,10 @@ use rustix::net::{Protocol, SocketType};
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BufferSizes, ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting,
-    IpVersion, Ipv4HeaderFields, Ipv6HeaderFields, LocalFragmentation, MobilityHeaderType,
-    PathMtuDiscovery, Received, Report, SendError, UpperLayer, UpperLayerSelector,
+    BufferSizes, ByteCount, IcmpCode, IcmpType, InterfaceSelector, IpHeaderFields, IpSendFields,
+    IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv6HeaderFields, Ipv6RouteSelectors,
+    LocalFragmentation, MobilityHeaderType, NeighbourConfirmation, PathMtuDiscovery, Received,
+    Report, RouteSelectors, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
@@ -22,6 +23,8 @@ use wcontainers_raw_sockets::{
     RouterAlertIsolation,
 };
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
+use wcontainers_route_resolver::RouteResolver;
+use wcontainers_route_resolver_host::HostRouteResolver;
 
 use crate::{HostRawSocket, HostRawSockets};
 use shared::datagram::addresses::local_address;
@@ -45,8 +48,13 @@ pub(crate) struct SocketState {
     header_included: bool,
     reassembly: OutgoingReassembly,
     router_alert: RouterAlert,
+    owner: UserId,
 }
 
+const BOUND_ROUTE_ASKED: &str = "an ipv6 raw send from a source by a bound interface, which linux's lookup with \
+     a source only prefers: the routing socket is asked whether it leaves by that interface";
+const BOUND_WITH_SOURCE: &str = "an ipv6 raw send from a source by a bound interface, whose lookup by \
+     preference leaves by another interface than a socket bound to it would";
 const UPPER_LAYER: &str = "an upper layer other than the one linux routes a raw send by: the message's ICMP type and code or mobility header type, else none";
 const OTHER_PROTOCOL: &str =
     "a payload under another protocol than its raw socket's, which linux sends under the socket's";
@@ -89,16 +97,41 @@ impl HostRawSockets {
         Ok(Self {
             shortfalls: Shortfalls::default(),
             watcher: Watcher::new()?,
+            routes: HostRouteResolver::open(),
         })
     }
 
-    /// Returns how many times each named reason has made this value refuse or drop something.
+    /// Returns how many times each named reason has made this value refuse, drop or slow down something.
     pub fn counters(&self) -> Vec<CounterReading> {
         self.shortfalls.readings()
     }
 
     fn refuse(&self, reason: &'static str) -> SendError {
         SendError::Host(self.shortfalls.refuse(reason))
+    }
+
+    /// Holds an IPv6 send from a source to the bound interface, which Linux's lookup with a source only prefers.
+    ///
+    /// The packet is sent where that lookup leaves by the interface anyway; else the bound lookup's error answers, or a refusal.
+    fn hold_to_bound(
+        &self,
+        route: &Ipv6RouteSelectors<'_>,
+        owner: UserId,
+        neighbour: NeighbourConfirmation,
+    ) -> Result<(), SendError> {
+        let (Some(InterfaceSelector::Bound(bound)), Some(_)) = (route.interface, route.source)
+        else {
+            return Ok(());
+        };
+        self.shortfalls.count(BOUND_ROUTE_ASKED);
+        match self
+            .routes
+            .resolve_route(RouteSelectors::V6(route.clone()), owner, neighbour)
+        {
+            Ok(found) if found.interface == bound => Ok(()),
+            Ok(_) | Err(HostError::NotSupported) => Err(self.refuse(BOUND_WITH_SOURCE)),
+            Err(error) => Err(SendError::Host(error)),
+        }
     }
 }
 
@@ -325,6 +358,7 @@ impl RawSockets for HostRawSockets {
                 header_included: protocol == raw_protocol(),
                 reassembly: OutgoingReassembly::Allowed,
                 router_alert: RouterAlert::Off,
+                owner,
             }),
         })
     }
@@ -377,6 +411,9 @@ impl RawSockets for HostRawSockets {
                 };
                 if upper_layer.selector != payload_selector(protocol, socket.ipv6, payload) {
                     return Err(self.refuse(UPPER_LAYER));
+                }
+                if let IpHeaderFields::V6(header) = &header {
+                    self.hold_to_bound(&header.route, state.owner, fields.neighbour)?;
                 }
                 socket
                     .include_header(state, false)
@@ -435,6 +472,7 @@ impl RawSockets for HostRawSockets {
                 if route.upper_layer.selector.is_some() {
                     return Err(self.refuse(UPPER_LAYER));
                 }
+                self.hold_to_bound(&route, state.owner, fields.neighbour)?;
                 socket
                     .include_header(state, true)
                     .map_err(SendError::Host)?;

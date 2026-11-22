@@ -3,7 +3,7 @@ use core::cmp::Ordering;
 use core::mem::MaybeUninit;
 use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
 use etherparse::IpNumber;
@@ -15,12 +15,15 @@ use wcontainers_icmp_sockets::{
     EchoBindAddress, EchoBinding, EchoIdentifier, IcmpSockets, IdentifierSharing, LocalIdentifier,
 };
 use wcontainers_internet_protocol::{
-    BufferSizes, ByteCount, IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpSocketSetting,
-    IpVersion, NeighbourConfirmation, Received, Report, SendError, UpperLayer, UpperLayerSelector,
+    BufferSizes, ByteCount, IcmpCode, IcmpType, InterfaceIndex, InterfaceSelector, IpHeaderFields,
+    IpSendFields, IpSocketSetting, IpVersion, Ipv6RouteSelectors, NeighbourConfirmation, Received,
+    Report, RouteSelectors, SendError, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
+use wcontainers_route_resolver::RouteResolver;
+use wcontainers_route_resolver_host::HostRouteResolver;
 
 use crate::{HostIcmpSocket, HostIcmpSockets};
 use shared::datagram::addresses::local_address;
@@ -73,8 +76,15 @@ pub(crate) struct SocketState {
     /// Whether the socket's readiness holds an error for the entries kept off the host's error queue.
     held_errors: bool,
     drops: u32,
+    owner: UserId,
+    /// The address an IPv6 socket is bound to, while it is one and no link-local scope binds the socket to its link.
+    bound_source: Option<Ipv6Addr>,
 }
 
+const BOUND_ROUTE_ASKED: &str = "an ipv6 ping from a bound address by a bound interface, which linux's lookup with \
+     a source only prefers: the routing socket is asked whether it leaves by that interface";
+const BOUND_WITH_SOURCE: &str = "an ipv6 ping from a bound address by a bound interface, whose lookup by \
+     preference leaves by another interface than a socket bound to it would";
 const IPV6_SOURCE: &str =
     "linux's ipv6 ping sockets send from their bound address, not from one a send gives";
 const IPV6_EXTENSION_HEADERS: &str =
@@ -118,6 +128,7 @@ impl HostIcmpSockets {
             fields_not_given: PacketCount::new(RECEIVED_FIELDS_NOT_GIVEN),
             drops_asked: PacketCount::new(DROPS_ASKED),
             watcher: Watcher::new()?,
+            routes: HostRouteResolver::open(),
         })
     }
 
@@ -135,6 +146,32 @@ impl HostIcmpSockets {
 
     fn refuse(&self, reason: &'static str) -> SendError {
         SendError::Host(self.shortfalls.refuse(reason))
+    }
+
+    /// Holds an IPv6 ping from `source` to the bound interface, which Linux's lookup with a source only prefers.
+    ///
+    /// The ping is sent where that lookup leaves by the interface anyway; else the bound lookup's error answers, or a refusal.
+    fn hold_to_bound(
+        &self,
+        route: &Ipv6RouteSelectors<'_>,
+        source: Ipv6Addr,
+        bound: InterfaceIndex,
+        owner: UserId,
+        neighbour: NeighbourConfirmation,
+    ) -> Result<(), SendError> {
+        self.shortfalls.count(BOUND_ROUTE_ASKED);
+        let route = Ipv6RouteSelectors {
+            source: Some(source),
+            ..route.clone()
+        };
+        match self
+            .routes
+            .resolve_route(RouteSelectors::V6(route), owner, neighbour)
+        {
+            Ok(found) if found.interface == bound => Ok(()),
+            Ok(_) | Err(HostError::NotSupported) => Err(self.refuse(BOUND_WITH_SOURCE)),
+            Err(error) => Err(SendError::Host(error)),
+        }
     }
 }
 
@@ -269,6 +306,8 @@ impl IcmpSockets for HostIcmpSockets {
                 errors: ErrorQueue::default(),
                 held_errors: false,
                 drops: u32::MIN,
+                owner,
+                bound_source: None,
             }),
         })
     }
@@ -294,7 +333,14 @@ impl IcmpSockets for HostIcmpSockets {
             )),
         };
         shared::bind_to(fd, address).map_err(host_error)?;
-        NonZeroU16::new(local_address(fd)?.port())
+        let bound = local_address(fd)?;
+        if let SocketAddr::V6(bound) = bound {
+            // Linux gives a scope only to a link-local address, whose link the bind holds the socket to.
+            socket.state.borrow_mut().bound_source = (!bound.ip().is_unspecified()
+                && bound.scope_id() == u32::MIN)
+                .then_some(*bound.ip());
+        }
+        NonZeroU16::new(bound.port())
             .map(EchoIdentifier)
             .ok_or(HostError::Errno(libc::EPROTO))
     }
@@ -337,6 +383,15 @@ impl IcmpSockets for HostIcmpSockets {
                 }
                 if fields.neighbour == NeighbourConfirmation::Confirmed {
                     return Err(self.refuse(IPV6_NEIGHBOUR_CONFIRMATION));
+                }
+                if let Some(InterfaceSelector::Bound(bound)) = header.route.interface {
+                    let (source, owner) = {
+                        let state = socket.state.borrow();
+                        (state.bound_source, state.owner)
+                    };
+                    if let Some(source) = source {
+                        self.hold_to_bound(&header.route, source, bound, owner, fields.neighbour)?;
+                    }
                 }
                 header.route.upper_layer
             }

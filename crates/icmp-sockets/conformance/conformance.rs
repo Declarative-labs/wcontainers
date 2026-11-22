@@ -1107,6 +1107,19 @@ pub fn the_exit_node_chooses_an_identifier_when_asked<S: IcmpSockets>(sockets: S
             Err(HostError::Errno(libc::EADDRINUSE)),
             "{to}"
         );
+        // Linux chooses a free identifier, so another socket that asks for one is given another.
+        let again = opened(&sockets, version);
+        let another = sockets
+            .bind(
+                &again,
+                EchoBinding {
+                    address: any_address(version),
+                    identifier: LocalIdentifier::ChosenByExitNode,
+                    sharing: IdentifierSharing::Exclusive,
+                },
+            )
+            .expect("another identifier is chosen");
+        assert_ne!(another, chosen, "{to}");
     }
 }
 
@@ -1980,6 +1993,63 @@ pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
         // A send that names no interface takes the preferred link again.
         ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
         assert_eq!(seen(&first_capture.echo_request()).destination, to);
+    }
+}
+
+/// Checks that a bound interface holds a ping from a bound address to its link, as a socket bound to the link is held.
+///
+/// Linux's IPv6 lookup with a source only prefers the interface a packet asks for, so an IPv6 ping by a link that
+/// lookup does not prefer may be refused; no ping may leave by another link.
+pub fn a_bound_interface_holds_a_ping_from_a_bound_address<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    ip(TWO_ROUTES);
+    let first = index(DUMMY);
+    let second = index(SECOND);
+    let first_capture = Capture::on(DUMMY);
+    let second_capture = Capture::on(SECOND);
+    for (to, address) in [
+        (IpAddr::V4(NOWHERE), EchoBindAddress::V4(LOCAL)),
+        (
+            IpAddr::V6(NOWHERE_V6),
+            EchoBindAddress::V6 {
+                address: LOCAL_V6,
+                scope: None,
+            },
+        ),
+    ] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        let binding = EchoBinding {
+            address,
+            identifier: LocalIdentifier::ChosenByExitNode,
+            sharing: IdentifierSharing::Exclusive,
+        };
+        sockets
+            .bind(&socket, binding)
+            .expect("the socket binds to its address");
+        for (bound, capture, other) in [
+            (first, &first_capture, &second_capture),
+            (second, &second_capture, &first_capture),
+        ] {
+            let message = echo(version, PAYLOAD);
+            let mut header = header_to(to, &message);
+            let selector = Some(InterfaceSelector::Bound(bound));
+            match &mut header {
+                IpHeaderFields::V4(header) => header.route.interface = selector,
+                IpHeaderFields::V6(header) => header.route.interface = selector,
+            }
+            match sockets.send_to(&socket, header, plain_fields(), &message) {
+                Ok(()) => assert_eq!(seen(&capture.echo_request()).destination, to),
+                Err(SendError::Host(HostError::NotSupported))
+                    if version == IpVersion::V6 && bound == second => {}
+                sent => panic!("{to} by {bound:?}: {sent:?}"),
+            }
+            let elsewhere = other.within(QUIET, |packet| {
+                is_echo_request(packet) && seen(packet).destination == to
+            });
+            assert_eq!(elsewhere, None, "{to} by {bound:?} left by another link");
+        }
     }
 }
 
@@ -3815,6 +3885,11 @@ macro_rules! tests {
         #[test]
         fn interface_selects_the_link() {
             $crate::interface_selects_the_link($value);
+        }
+
+        #[test]
+        fn a_bound_interface_holds_a_ping_from_a_bound_address() {
+            $crate::a_bound_interface_holds_a_ping_from_a_bound_address($value);
         }
 
         #[test]

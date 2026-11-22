@@ -24,6 +24,9 @@ pub struct HostIcmpSockets {
     drops_asked: linux::PacketCount,
     #[cfg(target_os = "linux")]
     watcher: Watcher,
+    /// Tells where Linux's lookup sends an IPv6 ping from a bound address by a bound interface.
+    #[cfg(target_os = "linux")]
+    routes: wcontainers_route_resolver_host::HostRouteResolver,
 }
 
 /// A ping socket; on a system without them none can be made.

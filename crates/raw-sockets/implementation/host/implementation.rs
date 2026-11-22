@@ -22,6 +22,9 @@ pub struct HostRawSockets {
     shortfalls: Shortfalls,
     #[cfg(target_os = "linux")]
     watcher: Watcher,
+    /// Tells where Linux's lookup sends an IPv6 packet from a source by a bound interface.
+    #[cfg(target_os = "linux")]
+    routes: wcontainers_route_resolver_host::HostRouteResolver,
 }
 
 /// A raw IP socket; on a system without Linux's none can be made.

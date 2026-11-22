@@ -30,6 +30,9 @@ socket2 = { version = "0.6.5", features = ["all"] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # getsockopt for SO_MEMINFO and the errno values.
 libc = "0.2.191"
+# Where an IPv6 send from a source by a bound interface leaves.
+wcontainers-route-resolver = { path = "../../../route-resolver" }
+wcontainers-route-resolver-host = { path = "../../../route-resolver/implementation/host" }
 
 [[test]]
 name = "conformance"
