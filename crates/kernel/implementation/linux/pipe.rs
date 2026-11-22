@@ -44,6 +44,9 @@ pub(crate) struct Pipe {
     /// The open files of its ends, for counting readers and writers, each with the count of writers
     /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
     ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
+    /// At least how many of its open ends have `FASYNC` set: none means no end hears I/O signals,
+    /// so a read or write looks at no end for them.
+    asynchronous: core::cell::Cell<usize>,
     /// The end whose kernel side is this pipe's reader: a write goes straight to it.
     pub reading_end: Option<crate::ends::EndNumber>,
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
@@ -76,6 +79,7 @@ impl Pipe {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
             ends: Vec::new(),
+            asynchronous: core::cell::Cell::new(0),
             reading_end: None,
             opened_readers: 0,
             opened_writers: 0,
@@ -120,23 +124,45 @@ impl Pipe {
         self.ends.retain(|(end, _)| end.strong_count() > 0);
         self.ends
             .push((alloc::rc::Rc::downgrade(file), seen_writers));
+        if file.borrow().flags & FASYNC != 0 {
+            self.async_changed(true);
+        }
+    }
+
+    /// Notes that an open file of one of its ends set (or cleared) `FASYNC`.
+    pub fn async_changed(&self, set: bool) {
+        let count = self.asynchronous.get();
+        self.asynchronous.set(match set {
+            true => count + 1,
+            false => count.saturating_sub(1),
+        });
     }
 
     /// The open files of its reading (or writing) ends with `FASYNC` set, which I/O signals go to.
     pub fn async_ends(&self, readers: bool) -> Vec<FileRef> {
-        self.ends
+        if self.asynchronous.get() == 0 {
+            return Vec::new();
+        }
+        let mut asynchronous = 0;
+        let ends = self
+            .ends
             .iter()
             .filter_map(|(end, _)| end.upgrade())
             .filter(|end| {
                 let end = end.borrow();
-                end.flags & FASYNC != 0
+                let fasync = end.flags & FASYNC != 0;
+                asynchronous += usize::from(fasync);
+                fasync
                     && if readers {
                         end.readable()
                     } else {
                         end.writable()
                     }
             })
-            .collect()
+            .collect();
+        // Ends closed with `FASYNC` set are no longer counted.
+        self.asynchronous.set(asynchronous);
+        ends
     }
 
     /// Whether any end is open.

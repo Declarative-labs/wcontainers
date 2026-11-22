@@ -251,6 +251,11 @@ pub(super) fn set_async(
     }
     {
         let mut file = file.borrow_mut();
+        if (file.flags & FASYNC != 0) != on
+            && let Content::Pipe(pipe) = &file.node.borrow().content
+        {
+            pipe.async_changed(on);
+        }
         if on {
             file.flags |= FASYNC;
             file.async_fd = Some(fd);
