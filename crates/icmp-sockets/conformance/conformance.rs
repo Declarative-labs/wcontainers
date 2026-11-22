@@ -15,7 +15,7 @@ use std::pin::{Pin, pin};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use etherparse::{
     IpDscp, IpEcn, IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6FragmentHeaderSlice,
@@ -774,12 +774,19 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Opt
         .expect("the identifier binds");
     let wire = Capture::on(SELF_LINK);
     let request = echo(version, PAYLOAD);
+    // A reply takes its request's traffic class, which is not zero, so that the received one is the wire's.
     let header = match to {
         IpAddr::V4(address) => IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
             options,
+            dscp: IpDscp::EF,
+            ecn: IpEcn::Ect0,
             ..v4_route(address, &request)
         })),
-        IpAddr::V6(_) => header_to(to, &request),
+        IpAddr::V6(address) => IpHeaderFields::V6(v6_header(Ipv6RouteSelectors {
+            dscp: IpDscp::EF,
+            ecn: IpEcn::Ect1,
+            ..v6_route(address, &request)
+        })),
     };
     sockets
         .send_to(&socket, header, plain_fields(), &request)
@@ -802,8 +809,18 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Opt
     });
     assert_eq!(packet.len(), on_the_wire.len());
     headers_are_as_on_the_wire(packet, &on_the_wire);
-    if version == IpVersion::V4 {
-        assert_eq!(ipv4(packet).options().len(), options.len());
+    match version {
+        IpVersion::V4 => {
+            assert_eq!(ipv4(packet).options().len(), options.len());
+            assert_eq!(
+                (ipv4(packet).dcp(), ipv4(packet).ecn()),
+                (IpDscp::EF, IpEcn::Ect0)
+            );
+        }
+        IpVersion::V6 => assert_eq!(
+            (ipv6(packet).dscp(), ipv6(packet).ecn()),
+            (IpDscp::EF, IpEcn::Ect1)
+        ),
     }
     let message = seen.payload;
     assert_eq!((message[0], message[1]), (reply, u8::MIN));
@@ -1885,6 +1902,19 @@ pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
             ),
             Some(TransmitTimeError::Missed),
         ),
+        // A time on another clock than the schedule's is invalid however near it is on its own clock.
+        (
+            TransmitTime {
+                clock: TransmitClock::Realtime,
+                at: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("a time after the epoch")
+                    + SCHEDULED_AHEAD,
+                mode: TransmitTimeMode::Strict,
+                errors: Report::Requested,
+            },
+            Some(TransmitTimeError::InvalidParameter),
+        ),
     ]
 }
 
@@ -1951,8 +1981,8 @@ pub fn check_rejections(
 
 /// Checks that a transmit time the link's schedule cannot keep is reported with its send's key and why.
 ///
-/// A time already past or a mode other than the schedule's is invalid, and a time the schedule misses is missed, with
-/// the packet as asked; a send that did not ask for errors gets no report.
+/// A time already past or a mode or clock other than the schedule's is invalid, and a time the schedule misses is
+/// missed, with the packet as asked; a send that did not ask for errors gets no report.
 pub fn rejected_transmit_times_are_reported_with_their_keys<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
@@ -2108,6 +2138,7 @@ fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     let on_the_wire = wire.next(|packet| is_unreachable(version, packet));
     assert_eq!(given.len(), on_the_wire.len());
     headers_are_as_on_the_wire(given, &on_the_wire);
+    has_the_error_traffic_class(given);
 }
 
 /// Answers whether a packet is the ICMP error of the version that a host or address is unreachable.
@@ -2164,6 +2195,20 @@ pub fn an_icmp_error_arrives_whole_over_ipv6<S: IcmpSockets>(sockets: S) {
     icmp_error_arrives_whole(sockets, IpAddr::V6(ON_LINK_V6));
 }
 
+/// The DSCP of every ICMP message a check sends from a raw socket, not zero so that a received one shows it was read.
+pub const ERROR_DSCP: IpDscp = IpDscp::EF;
+/// The ECN of every ICMP message a check sends from a raw socket.
+pub const ERROR_ECN: IpEcn = IpEcn::Ect0;
+
+/// Checks that a received ICMP error's outer header carries the traffic class the check sent it with.
+pub fn has_the_error_traffic_class(packet: &[u8]) {
+    let class = match version_of(seen(packet).source) {
+        IpVersion::V4 => (ipv4(packet).dcp(), ipv4(packet).ecn()),
+        IpVersion::V6 => (ipv6(packet).dscp(), ipv6(packet).ecn()),
+    };
+    assert_eq!(class, (ERROR_DSCP, ERROR_ECN));
+}
+
 /// Sends an ICMP message from a raw socket of the namespace to a local address; the checksum is written here for IPv4.
 pub fn send_raw_icmp(version: IpVersion, to: IpAddr, message: &mut [u8]) {
     let (family, protocol) = match version {
@@ -2182,6 +2227,14 @@ pub fn send_raw_icmp(version: IpVersion, to: IpAddr, message: &mut [u8]) {
     }
     let raw = rustix::net::socket(family, rustix::net::SocketType::RAW, Some(protocol))
         .expect("a raw socket opens");
+    let mut class = etherparse::Ipv6Header::default();
+    class.set_dscp(ERROR_DSCP);
+    class.set_ecn(ERROR_ECN);
+    match version {
+        IpVersion::V4 => rustix::net::sockopt::set_ip_tos(&raw, class.traffic_class),
+        IpVersion::V6 => rustix::net::sockopt::set_ipv6_tclass(&raw, class.traffic_class.into()),
+    }
+    .expect("the traffic class is set");
     rustix::net::sendto(
         &raw,
         message,
@@ -2724,7 +2777,7 @@ pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
 ) -> ReadyFor {
     match poll_with(call.as_mut(), wakes) {
         Poll::Pending => {
-            assert!(wakes.first_came(), "the wait is woken");
+            woken(call.as_mut(), wakes, "the facts it waits for");
             finished(poll_with(call, wakes))
         }
         ready => finished(ready),
@@ -2989,6 +3042,146 @@ pub fn waiting_for_data_until_an_icmp_error<S: IcmpSockets>(
         make_ready: |sockets: &S, socket: &S::Socket| {
             provoke_icmp_error(sockets, socket, IpAddr::V6(ON_LINK_V6), Quote::Least);
         },
+    }
+}
+
+/// Checks that a header of the other version than the socket's gets the error the host's own ping socket gives it.
+///
+/// The host's socket is sent the same message to the address in the form its family takes: IPv4-mapped for IPv6.
+pub fn a_header_of_the_other_version_gets_the_hosts_error<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    for (version, to) in [
+        (IpVersion::V6, IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        (IpVersion::V4, IpAddr::V6(Ipv6Addr::LOCALHOST)),
+    ] {
+        let socket = opened(&sockets, version);
+        let message = echo(version_of(to), PAYLOAD);
+        let ours = sockets.send_to(&socket, header_to(to, &message), plain_fields(), &message);
+        let (family, protocol, address) = match (version, to) {
+            (IpVersion::V6, IpAddr::V4(address)) => (
+                rustix::net::AddressFamily::INET6,
+                rustix::net::ipproto::ICMPV6,
+                IpAddr::V6(address.to_ipv6_mapped()),
+            ),
+            _ => (
+                rustix::net::AddressFamily::INET,
+                rustix::net::ipproto::ICMP,
+                to,
+            ),
+        };
+        let host = rustix::net::socket(family, rustix::net::SocketType::DGRAM, Some(protocol))
+            .expect("the host's ping socket opens");
+        let error = rustix::net::sendto(
+            &host,
+            &message,
+            rustix::net::SendFlags::DONTWAIT,
+            &std::net::SocketAddr::new(address, u16::MIN),
+        )
+        .expect_err("the host refuses the address");
+        assert_eq!(
+            ours,
+            Err(SendError::Host(HostError::Errno(error.raw_os_error()))),
+            "{version:?} to {to}"
+        );
+    }
+}
+
+/// Checks that a wait for writing on a new socket finishes at its first poll, writable and not readable.
+pub fn a_wait_for_writing_finishes_at_once<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let socket = opened(&sockets, version);
+        for interest in [ReadyFor::WRITABLE, ReadyFor::READABLE | ReadyFor::WRITABLE] {
+            let wakes = Arc::new(Wakes::default());
+            let facts = finished(poll_with(
+                pin!(sockets.wait_until_ready(&socket, interest)),
+                &wakes,
+            ));
+            assert_eq!(facts, ReadyFor::WRITABLE, "{version:?} {interest:?}");
+        }
+    }
+}
+
+/// How long a send that fills a send buffer is held on its link's fair queue: longer than a check waits on it.
+///
+/// https://man7.org/linux/man-pages/man8/tc-fq.8.html
+pub const HELD_TO_FILL: Duration = Duration::from_secs(5);
+
+/// The fair queue on the dummy link, which holds the sends that fill a send buffer there.
+pub const FAIR_QUEUE_ON_DUMMY: &str = "qdisc add dev ia root fq";
+/// Removes loopback's fair queue, and with it every send it holds.
+pub const NO_FAIR_QUEUE: &str = "qdisc del dev lo root";
+
+/// Returns send fields that hold a send on a fair queue for [`HELD_TO_FILL`].
+pub fn held_fields() -> IpSendFields {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let now = Duration::new(
+        u64::try_from(now.tv_sec).expect("a time after boot"),
+        u32::try_from(now.tv_nsec).expect("nanoseconds"),
+    );
+    IpSendFields {
+        transmit_time: Some(TransmitTime {
+            clock: TransmitClock::Monotonic,
+            at: now + HELD_TO_FILL,
+            mode: TransmitTimeMode::Strict,
+            errors: Report::NotRequested,
+        }),
+        ..plain_fields()
+    }
+}
+
+/// Fills the smallest send buffer of a socket with requests to the address that its link's fair queue holds.
+fn fill_send_buffer<S: IcmpSockets>(sockets: &S, socket: &S::Socket, to: IpAddr) {
+    set(
+        sockets,
+        socket,
+        IpSocketSetting::SendBuffer(ByteCount(usize::MIN)),
+    );
+    let message = echo(version_of(to), &vec![u8::MAX; PACED_MESSAGE]);
+    let full = (0..ATTEMPTS).any(|_| {
+        match sockets.send_to(socket, header_to(to, &message), held_fields(), &message) {
+            Ok(()) => false,
+            Err(SendError::Host(HostError::WouldBlock)) => true,
+            Err(error) => panic!("{to}: {error:?}"),
+        }
+    });
+    assert!(full, "{to}: the send buffer fills");
+}
+
+/// Returns a socket waited on for writing, its send buffer full of held requests, which removing the queue frees.
+pub fn waiting_to_write<S: IcmpSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    enter_network_namespace();
+    tc(FAIR_QUEUE);
+    let socket = opened(&sockets, IpVersion::V4);
+    fill_send_buffer(&sockets, &socket, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::WRITABLE,
+        make_ready: |_: &S, _: &S::Socket| tc(NO_FAIR_QUEUE),
+    }
+}
+
+/// Returns a socket waited on for writing, its send buffer full, which an ICMP error about its first request fails.
+pub fn waiting_to_write_until_an_icmp_error<S: IcmpSockets>(
+    sockets: S,
+) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    enter_network_namespace();
+    ip(NETWORK);
+    tc(FAIR_QUEUE_ON_DUMMY);
+    let to = IpAddr::V4(ON_LINK);
+    let socket = opened(&sockets, IpVersion::V4);
+    let capture = Capture::on(DUMMY);
+    ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+    let request = capture.echo_request();
+    fill_send_buffer(&sockets, &socket, to);
+    Waiting {
+        readiness: sockets,
+        handle: socket,
+        interest: ReadyFor::WRITABLE,
+        make_ready: move |_: &S, _: &S::Socket| send_icmp_error_about(&request, Quote::Least),
     }
 }
 
@@ -3273,10 +3466,26 @@ macro_rules! tests {
             $crate::other_settings_set_twice_answer_as_once($value);
         }
 
+        #[test]
+        fn a_header_of_the_other_version_gets_the_hosts_error() {
+            $crate::a_header_of_the_other_version_gets_the_hosts_error($value);
+        }
+
+        #[test]
+        fn a_wait_for_writing_finishes_at_once() {
+            $crate::a_wait_for_writing_finishes_at_once($value);
+        }
+
         $crate::wcontainers_readiness_conformance::tests!(
             readiness,
             ready: $crate::waiting_for_a_reply($value),
             failing: $crate::waiting_for_data_until_an_icmp_error($value)
+        );
+
+        $crate::wcontainers_readiness_conformance::tests!(
+            readiness_for_writing,
+            ready: $crate::waiting_to_write($value),
+            failing: $crate::waiting_to_write_until_an_icmp_error($value)
         );
 
         mod configurable {

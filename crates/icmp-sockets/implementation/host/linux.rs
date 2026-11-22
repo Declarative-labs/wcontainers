@@ -292,6 +292,22 @@ impl IcmpSockets for HostIcmpSockets {
         fields: IpSendFields,
         message: &[u8],
     ) -> Result<(), SendError> {
+        // Linux answers an address of the other version by the address alone, which it is given as its family takes it.
+        let other_version = match &header {
+            IpHeaderFields::V4(header) if socket.ipv6 => {
+                Some(IpAddr::V6(header.route.destination.to_ipv6_mapped()))
+            }
+            IpHeaderFields::V6(header) if !socket.ipv6 => {
+                Some(IpAddr::V6(header.route.destination))
+            }
+            _ => None,
+        };
+        if let Some(destination) = other_version {
+            let flags = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
+            let destination = SocketAddr::new(destination, u16::MIN);
+            return send_message(socket.fd(), Some(destination), message, &[], flags)
+                .map_err(SendError::Host);
+        }
         let upper_layer = match &header {
             IpHeaderFields::V4(header) => header.route.upper_layer,
             IpHeaderFields::V6(header) => {
