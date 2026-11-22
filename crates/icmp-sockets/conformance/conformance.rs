@@ -18,15 +18,15 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use etherparse::{
-    IpDscp, IpEcn, IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6HeaderSlice,
-    Ipv6RawExtHeaderSlice, icmpv4, icmpv6,
+    IpDscp, IpEcn, IpNumber, Ipv4HeaderSlice, Ipv4Options, Ipv6FlowLabel, Ipv6FragmentHeaderSlice,
+    Ipv6HeaderSlice, Ipv6RawExtHeaderSlice, icmpv4, icmpv6,
 };
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets::{EchoIdentifier, IcmpSockets, IdentifierSharing};
 use wcontainers_internet_protocol::{
-    AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, HopLimit, IcmpCode, IcmpType,
-    InterfaceIndex, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
-    Ipv4RouteSelectors, Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation,
+    AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, HopLimit,
+    IcmpCode, IcmpType, InterfaceIndex, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion,
+    Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation,
     MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
     MulticastMembership, NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery,
     Received, ReceivedPacketFields, Report, RouteScope, SendError, SourceAddressCheck,
@@ -510,6 +510,60 @@ impl Capture {
     }
 }
 
+/// Where a fragment belongs: its packet's identification, its offset in eight-byte units, and whether more follow.
+#[derive(Clone, Copy, Debug)]
+pub struct Fragment {
+    pub identification: u32,
+    pub offset: u16,
+    pub more: bool,
+}
+
+/// The fragment an IP packet is, or none for a whole packet.
+pub fn fragment(packet: &[u8]) -> Option<Fragment> {
+    if let Ok(header) = Ipv4HeaderSlice::from_slice(packet) {
+        return header.is_fragmenting_payload().then(|| Fragment {
+            identification: u32::from(header.identification()),
+            offset: header.fragments_offset().value(),
+            more: header.more_fragments(),
+        });
+    }
+    seen(packet)
+        .extensions
+        .iter()
+        .find(|(kind, _)| *kind == IpNumber::IPV6_FRAGMENTATION_HEADER)
+        .map(|(_, bytes)| {
+            let header = Ipv6FragmentHeaderSlice::from_slice(bytes).expect("a fragment header");
+            Fragment {
+                identification: header.identification(),
+                offset: header.fragment_offset().value(),
+                more: header.more_fragments(),
+            }
+        })
+}
+
+/// The lengths, in order, of the fragments of the next packet leaving the link whose first fragment `first` takes.
+pub fn fragment_lengths(capture: &Capture, first: impl Fn(&[u8]) -> bool) -> Vec<usize> {
+    let start = capture.next(|packet| {
+        fragment(packet).is_some_and(|fragment| fragment.offset == u16::MIN) && first(packet)
+    });
+    let identification = fragment(&start).expect("a fragment").identification;
+    let mut lengths = vec![start.len()];
+    let mut more = true;
+    while more {
+        let next = capture.next(|packet| {
+            fragment(packet).is_some_and(|fragment| fragment.identification == identification)
+        });
+        more = fragment(&next).expect("a fragment").more;
+        lengths.push(next.len());
+    }
+    lengths
+}
+
+/// Loopback's MTU in the checks that fragment on it, the least IPv6 allows.
+pub const SMALL_LOOPBACK: &str = "link set lo mtu 1280";
+/// A payload that [`SMALL_LOOPBACK`] fragments.
+pub const FRAGMENTED_PAYLOAD: [u8; 3000] = [u8::MAX; 3000];
+
 fn is_echo_request(packet: &[u8]) -> bool {
     let seen = seen(packet);
     matches!(
@@ -645,6 +699,7 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Opt
         IpVersion::V6 => usize::from(ipv6(packet).payload_length()) + etherparse::Ipv6Header::LEN,
     };
     assert_eq!(length, fields.length);
+    assert_eq!(fields.largest_fragment, None, "a reply in one piece");
     // The preferred source of a reply to the packet, which only IPv4 has, if it is told at all.
     let preferred = match to {
         IpAddr::V4(address) => Some(address),
@@ -678,6 +733,28 @@ pub fn an_echo_reply_arrives_with_its_ipv4_options<S: IcmpSockets>(sockets: S) {
 /// An IPv6 echo request to loopback gets its reply, whole from its IPv6 header.
 pub fn echo_reply_arrives_whole_over_ipv6<S: IcmpSockets>(sockets: S) {
     reply_arrives_whole(sockets, IpAddr::V6(Ipv6Addr::LOCALHOST), &NO_OPTIONS);
+}
+
+/// A reply that arrived in fragments tells the length of the largest, as it was on the wire.
+pub fn a_fragmented_reply_tells_its_largest_fragment<S: IcmpSockets>(sockets: S) {
+    ip(SMALL_LOOPBACK);
+    for (to, reply) in [
+        (IpAddr::V4(Ipv4Addr::LOCALHOST), icmpv4::TYPE_ECHO_REPLY),
+        (IpAddr::V6(Ipv6Addr::LOCALHOST), icmpv6::TYPE_ECHO_REPLY),
+    ] {
+        let socket = opened(&sockets, version_of(to));
+        let wire = Capture::on(SELF_LINK);
+        ping(&sockets, &socket, to, &FRAGMENTED_PAYLOAD).expect("the request is sent");
+        let fields = receive_packet(&sockets, &socket, &mut buffer());
+        let lengths =
+            fragment_lengths(&wire, |packet| seen(packet).payload.first() == Some(&reply));
+        assert!(lengths.len() > 1, "{to}: {lengths:?}");
+        let largest = lengths
+            .iter()
+            .max()
+            .map(|&length| FragmentSize(length as u16));
+        assert_eq!(fields.largest_fragment, largest, "{to}: {lengths:?}");
+    }
 }
 
 /// The request that leaves carries the bound identifier and the message's sequence number and payload.
@@ -1052,6 +1129,115 @@ pub fn every_path_mtu_discovery_mode_sends<S: IcmpSockets>(sockets: S) {
     }
 }
 
+pub const PATH_MTU_MODES: [PathMtuDiscovery; 6] = [
+    PathMtuDiscovery::Dont,
+    PathMtuDiscovery::Want,
+    PathMtuDiscovery::Do,
+    PathMtuDiscovery::Probe,
+    PathMtuDiscovery::Interface,
+    PathMtuDiscovery::Omit,
+];
+/// The dummy link at Linux's usual MTU, with routes out of it to [`NARROW`] and [`NARROW_V6`] of a smaller MTU.
+pub const NARROW_ROUTES: &str = "link set ia mtu 1500
+route add 10.4.0.0/16 dev ia mtu 1300
+route add fd04::/64 dev ia mtu 1300";
+pub const NARROW: Ipv4Addr = Ipv4Addr::new(10, 4, 0, 1);
+pub const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0xfd04, 0, 0, 0, 0, 0, 0, 1);
+/// The MTUs [`NARROW_ROUTES`] sets, of the routes and of the link.
+const ROUTE_MTU: usize = 1300;
+const NARROW_LINK_MTU: usize = 1500;
+/// IP packet lengths over the route's MTU alone, and over the link's too.
+const OVER_THE_ROUTE: usize = 1400;
+const OVER_THE_LINK: usize = 1600;
+
+/// What each path MTU discovery mode makes of an IP packet over its route's MTU, and of one over its link's too, as
+/// `send` sends one of the length given toward [`NARROW`] or [`NARROW_V6`]: fragments of the route's MTU (dont,
+/// want); too long for the route's (do); whole, then too long for the link's (probe, with the don't-fragment bit
+/// on IPv4, and interface); whole, then fragments of the link's MTU (omit).
+pub fn path_mtu_modes_take_their_mtu(
+    send: impl Fn(IpAddr, PathMtuDiscovery, usize) -> Result<(), SendError>,
+) {
+    ip(NARROW_ROUTES);
+    let capture = Capture::on(DUMMY);
+    let too_long = |mtu: usize| {
+        Err(SendError::MessageTooLong {
+            maximum_transmission_unit: MaximumTransmissionUnit(mtu as u32),
+        })
+    };
+    for to in [IpAddr::V4(NARROW), IpAddr::V6(NARROW_V6)] {
+        let toward = |packet: &[u8]| seen(packet).destination == to;
+        for mode in PATH_MTU_MODES {
+            for length in [OVER_THE_ROUTE, OVER_THE_LINK] {
+                let sent = send(to, mode, length);
+                let context = format!("{to} {mode:?} {length}");
+                match (mode, length > NARROW_LINK_MTU) {
+                    (PathMtuDiscovery::Do, _) => assert_eq!(sent, too_long(ROUTE_MTU), "{context}"),
+                    (PathMtuDiscovery::Probe | PathMtuDiscovery::Interface, true) => {
+                        assert_eq!(sent, too_long(NARROW_LINK_MTU), "{context}")
+                    }
+                    (
+                        PathMtuDiscovery::Probe
+                        | PathMtuDiscovery::Interface
+                        | PathMtuDiscovery::Omit,
+                        false,
+                    ) => {
+                        sent.unwrap_or_else(|error| panic!("{context}: {error:?}"));
+                        let packet = capture.next(toward);
+                        assert!(fragment(&packet).is_none(), "{context}");
+                        assert_eq!(packet.len(), length, "{context}");
+                        if to.is_ipv4() {
+                            assert_eq!(
+                                ipv4(&packet).dont_fragment(),
+                                mode == PathMtuDiscovery::Probe,
+                                "{context}"
+                            );
+                        }
+                    }
+                    (PathMtuDiscovery::Omit, true)
+                    | (PathMtuDiscovery::Dont | PathMtuDiscovery::Want, _) => {
+                        sent.unwrap_or_else(|error| panic!("{context}: {error:?}"));
+                        let lengths = fragment_lengths(&capture, toward);
+                        let largest = lengths.iter().max().copied().unwrap_or_default();
+                        if mode == PathMtuDiscovery::Omit {
+                            assert!(
+                                largest > ROUTE_MTU && largest <= NARROW_LINK_MTU,
+                                "{context}: {lengths:?}"
+                            );
+                        } else {
+                            assert!(largest <= ROUTE_MTU, "{context}: {lengths:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Each path MTU discovery mode takes the MTU of the route or of the link, and fragments or refuses, as Linux does.
+pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    path_mtu_modes_take_their_mtu(|to, mode, length| {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        let headers = match version {
+            IpVersion::V4 => etherparse::Ipv4Header::MIN_LEN,
+            IpVersion::V6 => etherparse::Ipv6Header::LEN,
+        };
+        let message = echo(version, &vec![u8::MAX; length - headers - ICMP_HEADER]);
+        let header = match header_to(to, &message) {
+            IpHeaderFields::V4(header) => IpHeaderFields::V4(Ipv4HeaderFields {
+                path_mtu_discovery: mode,
+                ..header
+            }),
+            IpHeaderFields::V6(header) => IpHeaderFields::V6(Ipv6HeaderFields {
+                path_mtu_discovery: mode,
+                ..header
+            }),
+        };
+        sockets.send_to(&socket, header, plain_fields(), &message)
+    });
+}
+
 /// A fragment MTU below the dummy link's MTU, which a long message does not fit.
 const FRAGMENT_MTU: u32 = 1320;
 
@@ -1300,15 +1486,15 @@ pub fn a_waived_source_check_sends_from_an_absent_address<S: IcmpSockets>(socket
         source: Some(ABSENT),
         ..v4_route(ON_LINK, &message)
     };
+    let refused = sockets.send_to(
+        &socket,
+        IpHeaderFields::V4(v4_header(required)),
+        plain_fields(),
+        &message,
+    );
     assert!(
-        sockets
-            .send_to(
-                &socket,
-                IpHeaderFields::V4(v4_header(required)),
-                plain_fields(),
-                &message
-            )
-            .is_err()
+        matches!(refused, Err(SendError::Host(HostError::Errno(_)))),
+        "the host's source check, not {refused:?}"
     );
     let waived = Ipv4RouteSelectors {
         source_address_check: SourceAddressCheck::Waived,
@@ -1616,33 +1802,57 @@ pub fn transmit_reports_carry_the_key_of_their_send<S: IcmpSockets>(sockets: S) 
                 },
                 ..plain_fields()
             };
+            let wire = Capture::on(SELF_LINK);
             sockets
                 .send_to(&socket, header_to(to, &message), fields, &message)
                 .expect("the request is sent");
-            let mut stages = Vec::new();
-            let mut into = buffer();
-            while stages.len() < 2 {
-                match receive(&sockets, &socket, &mut into) {
-                    Received::TransmitReport(report) => {
-                        assert_eq!(report.key, key);
-                        assert_eq!(report.packet_length.is_some(), packet == Report::Requested);
-                        let TransmitEvent::Timestamp { stage, source, .. } = report.event else {
-                            panic!("a timestamp, not {:?}", report.event);
-                        };
-                        assert_eq!(source, TimestampSource::Software);
-                        stages.push(stage);
-                    }
-                    Received::Packet(_) => {}
-                }
-            }
-            stages.sort_by_key(|stage| *stage as u8);
-            assert_eq!(
-                stages,
-                [TransmitStage::Scheduled, TransmitStage::Sent],
-                "{to}"
-            );
+            let sent = wire.echo_request();
+            check_loopback_reports(|into| receive(&sockets, &socket, into), packet, &sent);
         }
     }
+}
+
+/// The header of a frame on loopback, which a transmit report's packet starts with.
+pub const LOOPBACK_LINK_HEADER: usize = etherparse::Ethernet2Header::LEN;
+
+/// Checks the scheduled and software transmit reports `receive` gives of a send to loopback keyed
+/// [`REPORT_KEY`]: each carries the key, and when the packet was asked for, the loopback link and the length of
+/// the `sent` IP packet's frame.
+pub fn check_loopback_reports(
+    mut receive: impl FnMut(&mut [u8]) -> Received,
+    packet: Report,
+    sent: &[u8],
+) {
+    let mut stages = Vec::new();
+    let mut into = buffer();
+    while stages.len() < 2 {
+        let Received::TransmitReport(report) = receive(&mut into) else {
+            continue;
+        };
+        assert_eq!(report.key, REPORT_KEY);
+        if packet == Report::Requested {
+            assert_eq!(report.interface, index(SELF_LINK), "{report:?}");
+            assert_eq!(
+                report.packet_length,
+                Some(ByteCount(LOOPBACK_LINK_HEADER + sent.len())),
+                "{report:?}"
+            );
+        } else {
+            assert_eq!(report.packet_length, None, "{report:?}");
+        }
+        let TransmitEvent::Timestamp { stage, source, .. } = report.event else {
+            panic!("a timestamp, not {:?}", report.event);
+        };
+        assert_eq!(source, TimestampSource::Software);
+        stages.push(stage);
+    }
+    stages.sort_by_key(|stage| *stage as u8);
+    assert_eq!(
+        stages,
+        [TransmitStage::Scheduled, TransmitStage::Sent],
+        "{:?}",
+        seen(sent).destination
+    );
 }
 
 /// Receive timestamps come only when the setting asks for them; loopback has no hardware clock to bind to.
@@ -2650,6 +2860,7 @@ macro_rules! tests {
             echo_reply_arrives_whole_over_ipv4,
             echo_reply_arrives_whole_over_ipv6,
             an_echo_reply_arrives_with_its_ipv4_options,
+            a_fragmented_reply_tells_its_largest_fragment,
             the_request_carries_the_bound_identifier,
             identifiers_are_shared_only_when_both_ask,
             close_frees_the_identifier,
@@ -2660,6 +2871,7 @@ macro_rules! tests {
             ipv6_extension_headers_go_out,
             an_ipv6_source_goes_out,
             every_path_mtu_discovery_mode_sends,
+            each_path_mtu_discovery_mode_takes_its_mtu,
             a_message_over_the_mtu_is_too_long_or_fragmented,
             mark_selects_the_route,
             owner_selects_the_route,

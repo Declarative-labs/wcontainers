@@ -28,15 +28,14 @@ use wcontainers_icmp_sockets_conformance::{
     tc, version_of, write_setting,
 };
 use wcontainers_internet_protocol::{
-    AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, IcmpType, IpHeaderFields,
-    IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
+    AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
+    IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
     Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation, MaximumTransmissionUnit, Membership,
     MobileAddressPreference, MobilityHeaderType, MulticastGroup, MulticastMembership,
     NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Port, Received,
     ReceivedPacketFields, Report, RouteScope, RouterAlertValue, SendError, SourceAddressCheck,
-    SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping,
-    TransmitEvent, TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer,
-    UpperLayerSelector,
+    SourceFilter, SourcePreferences, TemporaryAddressPreference, Timestamping,
+    TransmitReportRequest, TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_raw_sockets::{
     ChecksumOffset, HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket,
@@ -688,6 +687,31 @@ pub fn ipv4_packets_arrive_whole<S: RawSockets>(sockets: S) {
     assert_eq!(seen(packet).payload, message);
     assert_eq!(fields.interface, index(SELF_LINK));
     assert_eq!(fields.specific_destination, Some(Ipv4Addr::LOCALHOST));
+    assert_eq!(fields.largest_fragment, None, "a packet in one piece");
+}
+
+/// A packet that arrived in fragments tells the length of the largest, as it was on the wire.
+pub fn a_fragmented_packet_tells_its_largest_fragment<S: RawSockets>(sockets: S) {
+    ip(wcontainers_icmp_sockets_conformance::SMALL_LOOPBACK);
+    for to in [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ] {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        let wire = Capture::on(SELF_LINK);
+        let payload = &wcontainers_icmp_sockets_conformance::FRAGMENTED_PAYLOAD;
+        send(&sockets, &socket, payload_to(to, EXPERIMENT, payload)).expect("the payload is sent");
+        let fields = receive_packet(&sockets, &socket, &mut buffer());
+        let lengths = wcontainers_icmp_sockets_conformance::fragment_lengths(&wire, |packet| {
+            seen(packet).protocol == EXPERIMENT
+        });
+        assert!(lengths.len() > 1, "{to}: {lengths:?}");
+        let largest = lengths
+            .iter()
+            .max()
+            .map(|&length| FragmentSize(length as u16));
+        assert_eq!(fields.largest_fragment, largest, "{to}: {lengths:?}");
+    }
 }
 
 /// Assured forwarding class 4, low drop, which no default sets.
@@ -1177,12 +1201,13 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
     })
     .expect("the broadcast is sent");
     const ABSENT: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 1);
+    let refused = sent(Ipv4RouteSelectors {
+        source: Some(ABSENT),
+        ..route
+    });
     assert!(
-        sent(Ipv4RouteSelectors {
-            source: Some(ABSENT),
-            ..route
-        })
-        .is_err()
+        matches!(refused, Err(SendError::Host(HostError::Errno(_)))),
+        "the host's source check, not {refused:?}"
     );
     sent(Ipv4RouteSelectors {
         source: Some(ABSENT),
@@ -1247,12 +1272,13 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
         capture.next(|packet| seen(packet).destination == IpAddr::V6(nowhere.destination));
     }
     const ABSENT_V6: Ipv6Addr = Ipv6Addr::new(0xfd99, 0, 0, 0, 0, 0, 0, 1);
+    let refused = sent(Ipv6RouteSelectors {
+        source: Some(ABSENT_V6),
+        ..route.clone()
+    });
     assert!(
-        sent(Ipv6RouteSelectors {
-            source: Some(ABSENT_V6),
-            ..route.clone()
-        })
-        .is_err()
+        matches!(refused, Err(SendError::Host(HostError::Errno(_)))),
+        "the host's source check, not {refused:?}"
     );
     sent(Ipv6RouteSelectors {
         source: Some(ABSENT_V6),
@@ -1441,6 +1467,42 @@ pub fn path_mtu_modes_and_too_long_payloads<S: RawSockets>(sockets: S) {
     });
 }
 
+/// Each path MTU discovery mode takes the MTU of the route or of the link, and fragments or refuses, as Linux does.
+pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    let v4 = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let v6 = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    wcontainers_icmp_sockets_conformance::path_mtu_modes_take_their_mtu(|to, mode, length| {
+        let (socket, header, headers) = match to {
+            IpAddr::V4(address) => (
+                &v4,
+                IpHeaderFields::V4(Ipv4HeaderFields {
+                    path_mtu_discovery: mode,
+                    ..v4_header(v4_route(address, under(EXPERIMENT)))
+                }),
+                Ipv4Header::MIN_LEN,
+            ),
+            IpAddr::V6(address) => (
+                &v6,
+                IpHeaderFields::V6(Ipv6HeaderFields {
+                    path_mtu_discovery: mode,
+                    ..v6_header(v6_route(address, under(EXPERIMENT)))
+                }),
+                Ipv6Header::LEN,
+            ),
+        };
+        let payload = vec![u8::MAX; length - headers];
+        send(
+            &sockets,
+            socket,
+            RawPacket::Payload {
+                header,
+                payload: &payload,
+            },
+        )
+    });
+}
+
 /// An ICMP error about a sent packet arrives whole, its outer header as on the wire, quoting the packet's header as
 /// Linux kept it or as it was written; a buffer that cuts it in its outer header, its ICMP header or the quoted
 /// packet takes its start.
@@ -1617,27 +1679,15 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
                 },
                 ..plain_fields()
             };
+            let wire = Capture::on(SELF_LINK);
             sockets
                 .send_to(&socket, payload_to(to, EXPERIMENT, PAYLOAD), fields)
                 .unwrap();
-            let mut stages = Vec::new();
-            let mut into = buffer();
-            while stages.len() < 2 {
-                if let Received::TransmitReport(report) = receive(&sockets, &socket, &mut into) {
-                    assert_eq!(report.key, REPORT_KEY);
-                    assert_eq!(report.packet_length.is_some(), packet == Report::Requested);
-                    let TransmitEvent::Timestamp { stage, source, .. } = report.event else {
-                        panic!("a timestamp, not {:?}", report.event);
-                    };
-                    assert_eq!(source, TimestampSource::Software);
-                    stages.push(stage);
-                }
-            }
-            stages.sort_by_key(|stage| *stage as u8);
-            assert_eq!(
-                stages,
-                [TransmitStage::Scheduled, TransmitStage::Sent],
-                "{to}"
+            let sent = wire.next(|packet| seen(packet).protocol == EXPERIMENT);
+            wcontainers_icmp_sockets_conformance::check_loopback_reports(
+                |into| receive(&sockets, &socket, into),
+                packet,
+                &sent,
             );
         }
     }
@@ -2203,6 +2253,7 @@ macro_rules! tests {
             header_included_packets_take_their_route,
             withdrawn_reassembly_lets_a_fragment_leave,
             ipv4_packets_arrive_whole,
+            a_fragmented_packet_tells_its_largest_fragment,
             ipv6_packets_arrive_with_their_headers,
             receive_with_nothing_queued_would_block,
             a_short_buffer_keeps_the_whole_length,
@@ -2216,6 +2267,7 @@ macro_rules! tests {
             ipv6_source_preferences_choose_the_source,
             a_mobility_header_is_sent_by_its_type,
             path_mtu_modes_and_too_long_payloads,
+            each_path_mtu_discovery_mode_takes_its_mtu,
             icmp_errors_arrive_whole,
             icmp_errors_queued_together_each_arrive,
             send_fields_are_taken,
