@@ -60,7 +60,9 @@ reading its primitive's number. Run 9 (run 96, the section below): A14's DXIL pa
 shaders of a patch of no control points), and typed buffers of `B8G8R8X8_UNORM` (the Direct3D 11
 track's ask). Run 10 (run 97, the section below): A7's geometry shaders writing their primitive
 numbers (the runner's `primitive-id-2-gs`), and the NIR track's array layer rounding in the carried
-reader. Not complete: the gap list below.
+reader. Run 11 (run 98, the section below): A26, float comparisons with Direct3D's NaN rules on
+both routes (the carried reader's unordered comparisons, the NIR track's finding), and A30,
+saturate of a NaN on the DXIL route through WebGL 2. Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -118,14 +120,70 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   track's own copy of `clip_unpositioned` can go); `BuiltIn::BaseVertex` and `BaseInstance`
   arguments read the draw's bases from where `draw_base` says (the DXIL route's pass). Test
   `a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_gives_them`
-  (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals and the unordered
-  not-equal item (A26), below.
+  (tests/rewrite.rs). Not done: the carried SPIR-V reader's three refusals (the unordered
+  comparisons, A26, done in run 98, below).
 - Since run 97: the carried SPIR-V reader rounds a float array layer to the nearest integer, ties
   to even, before making it an integer (third_party/naga `front/spv/image.rs`, 6681ff34), as
   Vulkan and Direct3D select a layer; the DXIL route takes it from there too. And a geometry
   program writing `BuiltIn::PrimitiveId` (GLSL's `gl_PrimitiveID` out) is no longer refused: give
   `VariantFlags::PRIMITIVE_ID_FROM_STAGE` and `linked` in its key and its fragment program's, as
   "How the Direct3D fronts call `convert`" says.
+- Since run 98: the carried reader reads SPIR-V's unordered float comparisons
+  (`OpFUnordLessThan`, ... `OpFUnordNotEqual`, true where an operand is NaN) as the negated ordered
+  opposite, `OpFOrdNotEqual` as less or greater, and `OpFUnordEqual` as its negation (naga's
+  operators are ordered on every back end); before, each was read as the ordered operator. Drawn
+  on WebGPU (run 98's section); through ANGLE the negated forms still give the ordered result
+  (A26).
+
+## G6 run 11 (run 98): float comparisons' NaN rules (A26), saturate of a NaN on WebGL 2 (A30)
+
+Logs and scripts in scratch `graphics-shaders/g6-r98` (run 97's with its folder). Nothing built on
+the Mac (rustfmt of single files only).
+- New own shaders (compare.hlsl, fxc and dxc, both IEEE-strict): `cs_compare` (each pair of
+  eleven special values, NaNs of two signs and payloads, a signalling NaN, both infinities, both
+  zeros, 1, -1, 0.5 and the least subnormal, then seeded pairs: every comparison and its negation
+  as one bit each, scalar and vector `!=`, `any` of a vector `!=`, `!=` inside `&&`, a branch on
+  `!=` and one on a float as a condition, and the bits of min, max and saturate, NaNs made one) and
+  `ps_compare` (the same for pairs of eight special values picked by the pixel's position).
+- Test `nan_rules_match_direct3d` (tests/compute_draw.rs): `cs_compare` against real Direct3D 11
+  running fxc's build on the RTX 3080, both builds, on wgpu's Direct3D 12 and Vulkan paths, seeds 1
+  to 4. Before the fix (job1.log, an earlier `cs_compare` without the last forms): the DXIL build
+  76 to 87 words apart at each seed on both paths (the pair of NaNs gives 0x3802 on Direct3D 12
+  and 0x0800 on Vulkan where Direct3D gives 0x3bc2: the negated comparisons, and on Vulkan `!=`
+  too), the DXBC build 0. After (job2.log): 16 comparisons, 0 words apart.
+- The DXBC route: dxbc-spirv's passes turn nearly every `ne` into a negated `eq` (fxc's `ne` of
+  `cs_compare`'s forms all reach this crate as equalities, read in the WGSL written), so the route
+  was already exact; the lowering of a remaining `F_NE` (a branch on a float register, as
+  `if_nz` of a float) is now the negated equality too (it was `!=`, ordered in SPIR-V), which
+  changes 4 games and 1 runner WGSL file (`if (x != 0f)` becomes `if !((x == 0f))`). The float
+  condition in `cs_compare` (`if (b)`) is drawn equal on both paths; that it reaches the lowering
+  as `F_NE` is not checked.
+- A30: `ps_compare` drawn by `own_shaders_draw_as_direct3d_does` (tests/draw.rs, Rgba32Uint) with
+  the comparison fix (job2.log, job4.log): webgpu-dxbc, webgl-dxbc and webgpu-dxil 0 of 4,096
+  texels apart, webgl-dxil 1,118 apart (largest 960), Direct3D 12's DXIL picture equal to
+  Direct3D 11's fxc one. Every differing texel (job3.log's pictures, `pics/`) is a pair with a NaN
+  whose comparison word differs in bits 6 to 9 alone: the four negated comparisons, which the
+  reader now writes as `!(a >= b)` and so on, give the ordered result through ANGLE. Expected
+  cause, not proven: ANGLE writes HLSL for Direct3D 11 and compiles it without IEEE strictness, so
+  the negation is folded into the opposite comparison; the DXBC build is exact there because
+  dxbc-spirv's passes swap a select's arms instead of negating. Marked a known failure on WebGL 2
+  naming A26.
+- Tried and not kept: `NClamp` read as `min(max(x, low), high)` for A30 (job3.log); with and
+  without it `ps_compare`'s saturate of a NaN is 0 on webgl-dxil as on Direct3D 12 (job4.log's
+  pictures), so A30's case is not reproduced by this form (A30).
+- At the commit (a9543f9a): `compute_draw` and `draw` on the RTX 3080 (job5.log, Windows clippy
+  with warnings denied clean first): every test passed, `nan_rules_match_direct3d` 16 comparisons
+  0 apart, `ps_compare` as above. The whole GPU suite passed earlier in the run with the same
+  converter (gpu-suite.log, one job, one test thread; the reader's arms were merged afterwards
+  for the literal check, the same reading). CPU (ARM64, arm4.log, load 13 to 15): `cargo fmt -p
+  wcontainers-shaders --check` clean, clippy with warnings denied clean, every CPU test binary
+  passed. The literal check prints no line of this crate or of the reader's files (it found two:
+  a repeated `inst.expect(5)` in the reader, now one arm, and a test's `0x8000_0000`, now
+  `(-0f32).to_bits()`).
+- Corpus (laptop, `--test corpus` with every corpus and glslang, load 0.1 to 1.1): 13 passed
+  (`out-r98b`); records unchanged but the four new own builds. WGSL files that differ from run
+  97's `out-r97b` or are new: 103 (74 games-dxil, 20 runner-dxil, 4 games, 1 runner, the four new
+  own); Chrome on the desktop compiles all 103 (chrome.log).
 
 ## G6 run 10 (run 97): geometry shaders writing their primitive numbers (A7), the reader's array layer
 
@@ -2032,25 +2090,23 @@ The gap list (every item of the pass bar not met):
   array's elements; two independent picks need a switch over every pair, not built. Waits: the
   NIR track's route B on Vulkan programs (its status names no program refused so). Takes: the
   nested switch (or one switch over the pairs) and a case of `rewrite_draw`.
-- A26. A float not-equal comparison that Direct3D defines as unordered (true where either operand
-  is NaN) is drawn as an ordered one (false there) on wgpu's Vulkan path, on both routes (the
-  third check of G6a, read in the code, not drawn). DXBC: dxbc-spirv's IR `FNe` is Direct3D's `ne`
-  (its own SPIR-V writer emits `OpFUnordNotEqual`, spirv/spirv_builder.cpp), and this crate lowers
-  it to naga's `BinaryOperator::NotEqual` (src/lower.rs, `c::F_NE`), which naga's SPIR-V writer
-  emits as `OpFOrdNotEqual` (third_party/naga/src/back/spv/block.rs). DXIL: dxil-spirv writes
-  dxc's `fcmp une` as `OpFUnordNotEqual`, and the carried naga reader takes it, and its other
-  unordered comparisons, as the ordered operators (front/spv/convert.rs; the NIR track's finding,
-  "New for the owner"). What a browser does with WGSL's `!=` on a NaN is not measured. No test
-  covers it, no corpus record shows it (a verdict is not a drawing). Waits: nobody (no program
-  seen depending on a NaN compared so). Takes: `ne` lowered as the negation of an ordered
-  equality (`!(a == b)`, unordered on every back end that keeps NaN), the reader patched the
-  same way for its unordered forms, and a drawn test: a pixel shader `return (a != b) ? 1 : 0;`
-  with a NaN in a constant buffer, built by fxc and dxc, against real Direct3D 11 and 12.
-  That test alone does not reach the gap (the fourth check of G6a, its NaN probe drawn on both
-  routes and back ends, 0 of 4096 texels apart): fxc writes `a != b` as the negation of `eq`, not
-  as `ne`, and wgpu's Direct3D 12 path, which the drawn tests' WebGPU runs on, writes HLSL `!=`,
-  unordered already. The drawn test needs a DXBC `ne` (assembled by hand or from another compiler)
-  and a back end emitting `OpFOrdNotEqual` (wgpu on Vulkan, `webgpu_on(Backends::VULKAN)`).
+- A26. Closed on WebGPU in run 98 (its section), open on WebGL 2's DXIL route. Direct3D's `ne` and
+  dxc's unordered comparisons (`fcmp une`, `ult`, `uge`, ...; true where an operand is NaN) were
+  read as naga's ordered operators. Now: the carried reader writes each unordered comparison as the
+  negated ordered opposite (`OpFUnordLessThan` as `!(a >= b)`, `OpFUnordNotEqual` as `!(a == b)`),
+  `OpFOrdNotEqual` as `(a < b) | (a > b)` and `OpFUnordEqual` as its negation; this crate lowers a
+  DXBC `F_NE` as `!(a == b)` (dxbc-spirv turns most `ne` into a negated `eq` before it reaches the
+  lowering). Drawn (own `cs_compare`, `nan_rules_match_direct3d`): both builds 0 words apart from
+  Direct3D 11 on wgpu's Direct3D 12 and Vulkan paths, where the DXIL build was 76 to 87 apart at
+  each seed. Left: through ANGLE the DXIL build's negated ordered comparisons give the ordered
+  result for a NaN (own `ps_compare`, webgl-dxil 1,118 of 4,096 texels, bits 6 to 9 of the
+  comparison word; a known failure in `own_shaders_draw_as_direct3d_does`). Waits: nobody (a NaN
+  compared by an unordered comparison in a dxc build on WebGL 2). Takes: a form ANGLE's compiler
+  keeps, measured there (for example the ordered opposite selected with swapped arms, as dxbc-spirv
+  writes it, which the reader would have to do at the comparison's uses, or an `isnan` by bits
+  joined with the ordered comparison, at its cost), then `ps_compare`'s known failure removed.
+  The `OpFOrdNotEqual` and `OpFUnordEqual` forms are not drawn (dxc wrote neither for
+  `cs_compare`).
 - A27. Refusals by name that no file of any corpus meets and that no entry above lists (the third
   check of G6a counted 92 such names in src; run 72, with the check's `git grep` of src at its tip,
   93 refusals besides five names of the helper's own programs that are not refusals; G6a's second
@@ -2200,7 +2256,12 @@ The gap list (every item of the pass bar not met):
   saturate on WebGL 2). Takes: the reader writing `NClamp`, `NMin` and `NMax` in a form that keeps
   their NaN rule on every back end (a max with the low bound before a min with the high one, if
   each back end's min and max give the number over the NaN, to be measured), the check's case added
-  to the own shaders, and that case drawn on both routes against Direct3D 12.
+  to the own shaders, and that case drawn on both routes against Direct3D 12. Run 98: not
+  reproduced by own `ps_compare` (`saturate` of a NaN made at run time by a product, dxc
+  `ps_6_0 -Gis`): webgl-dxil gives 0 there as Direct3D 12 does, with the reader's plain clamp
+  (job4.log's pictures, every differing texel is A26's). `NClamp` read as `min(max(x, low), high)`
+  was tried and changed nothing measured, so it was not kept. The check's `sqrt` form is what is
+  left to add and draw.
 - A31. Gathers on WebGL 2 differ from Direct3D in a few texels, on both routes: own `ps_gatheroff`
   (offsets known only at run time) 7 of 4,096 texels (largest 9), the third check's
   `ps_c3_gather` 6 of 4,096 (largest 36); WebGPU is exact for both. Before run 77 the draw test
@@ -2309,7 +2370,7 @@ G6a run 5's tip):
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
    cull distances from domain shaders; a geometry shader's written primitive number done in run
-   97), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
+   97), A26's WebGL 2 part (a form of unordered comparisons ANGLE keeps), A1 (the DXIL route's buffer arrays done in run 87), A33 (rspirv), A8 (needs a way to carry dxbc-spirv patches), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
    Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
@@ -2317,8 +2378,8 @@ G6a run 5's tip):
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
 3. Besides, as asked: the NIR track's reader items (the carried SPIR-V reader's three refusals;
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
-   rounding in run 97), A26 (the unordered not-equal, both routes, with its drawn NaN
-   test), A30 (`NClamp` keeping its NaN rule, drawn on both routes), A32 (the DXIL overflow's
+   rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
+   `saturate` of a NaN added to `ps_compare` and drawn on WebGL 2), A32 (the DXIL overflow's
    cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv and
    A8 (both want a way to carry dxbc-spirv patches), A22 on WARP.
 
@@ -3843,9 +3904,19 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 - Default interpolation (run 94, `front/interpolator.rs`, every reader), a sampling given without
   an interpolation is kept instead of replaced by the centre (SPIR-V's `Sample` or `Centroid` on a
   perspective-correct input, GLSL's `sample in` without `smooth`). For upstream as it stands.
+- SPIR-V reader (run 98, `parse_expr_float_comparison`), float comparisons by their NaN rule:
+  `OpFUnord*` as the negated ordered opposite, `OpFOrdNotEqual` as `(a < b) | (a > b)`,
+  `OpFUnordEqual` as its negation (naga's operators are ordered); before, each was read as the
+  ordered operator. For upstream as it stands.
 
 ## How to run
 
+- Run 98's scripts in scratch `graphics-shaders/g6-r98` are run 97's with its folder (`tip-arm`
+  made first with `git clone -q tip tip-arm`). `compare.hlsl`'s builds were compiled by a
+  temporary `compare.cmd` (compile.cmd's first lines and its compare lines) in the clone, run by
+  `tools/graphics-rig/remote`, and fetched with `rig_scp`; `/Fc` and `-Fc` there write the
+  disassembly. A kept picture is fetched from `C:\wc\out\shaders-tip\draw` after a job run with
+  `set WCONTAINERS_SHADERS_OUT=C:\wc\out\shaders-tip&&` before its command.
 - Run 97's scripts in scratch `graphics-shaders/g6-r97` are run 96's with its folder, plus
   `arm-sync.sh`: arm-run needs a git checkout with the converters' submodules, and the rig's
   `remote` must not see copied submodule files in the clone `tip` (it adds the working tree with
