@@ -146,7 +146,89 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   and `xrstor` are left (see "X8, run 1"). Run 2 (2026-11-21) built the AVX and AVX2 instructions that work lane
   by lane (454 of the 667 codes) on the ymm registers' upper halves as registers of their own (see "X8, run 2").
   Run 3 (2026-11-21) fixed the 256-bit float instructions' exceptions, built the AVX and AVX2 instructions that
-  cross lanes or have no legacy form (75 forms) and `xsave` and `xrstor` (see "X8, run 3").
+  cross lanes or have no legacy form (75 forms) and `xsave` and `xrstor` (see "X8, run 3"). Run 4 (2026-11-21)
+  built FMA, F16C, the masked moves and the gathers, the host probe for a fusing multiply-add and the browser
+  runner's offer; its tool access ended before it wrote this file, so run 5 records it. Run 5 (2026-11-21) ran
+  the v3 programs in wasmtime and Chrome, built the benchmark set for x86-64-v3 and its test, and fixed two bugs
+  it found (see "X8, runs 4 and 5").
+
+## X8, runs 4 and 5 (2026-11-21)
+
+Machines: the rented x86-64 machine (96 processors, 5-level paging, load 0 to 7 during my jobs) for builds,
+lint, the programs and Chrome; the i7-8750H (load 1 to 4, 4 jobs at once) for layer 1 verdicts; the rented ARM64
+machine for ARM64's tests; the Mac for git and the literal check. Logs in scratch `x8r4/` and `x8r5/`, and on
+the laptop in `~/wcontainers-x86/logs/x8r4-*.log`, `x8r5-v3.log` (copies in `x8r5/`).
+
+Built in run 4 (commits 9a0ab5d9, 46555f58):
+- FMA (`crate::fused`, 96 codes): WebAssembly's relaxed multiply-add on a host whose probe sees it fuse, in
+  MXCSR's default mode; every other case (exact mode, or a host that does not fuse) goes to the float hook with a
+  third operand (rustc_apfloat's `mul_add`), counted "software fused multiply-add". The probe (`Host`'s
+  `fused_multiply_add`) is part of the host facts like the not-a-number probe.
+- F16C (`crate::half`): `vcvtph2ps` exactly in integer and float operations; `vcvtps2ph` always through the float
+  hook (WebAssembly has no half precision), counted "half precision rounding in software"; precision is raised
+  for a denormal operand under an unmasked overflow or underflow as the reference does.
+- The masked moves and the gathers (`crate::masked`, 32 codes), with plan 5.4's fault rules, now written into
+  the plan: a masked load checks its selected elements in lane order; a store reports S or E; a gather first
+  makes every mask element all ones or zero by its sign (which a fault at the first element leaves) and clears
+  a 128-bit form's upper halves only when done. Layer 1 draws gathers (small indexes, a share across the data's
+  end) and VEX `vmaskmovdqu`; the designed case of a gather faulting part way under the trap flag (plan 5.1's
+  known difference) is a hand case.
+- The browser runner takes a program's offer: `runner.js` passes a blob's or a case's key to `translate`,
+  which rebuilds the list with `Guest::offer_from_key`; layer 1's Chrome sample runs each offer's cases in pages
+  of their own and no longer leaves out the forms beyond the default list.
+- Run 4's verdicts (before run 5's fixes): FMA's 96 forms and `vcvtph2ps` at 1,000 a form on the i7-8750H, 0
+  failing; on the rented machine, with 5-level paging's cases set aside, F16C at 2,000 a form (seed 8418) and
+  the 16 masked moves at 2,000 (seed 8420), 0 failing.
+
+Built and found in run 5:
+- Two programs of my own, `programs/x86_64/avx2_integer.c` (AVX2's integer, permute, gather and masked move
+  instructions with BMI2) and `fma_f16c.c` (FMA, F16C, AVX's floating point in every rounding mode and with DAZ
+  and FTZ, the flags read back), beside run 3's `xstate.c`. `fma_f16c.c` first differed from Linux in one line:
+  it read MXCSR's flags without ever writing MXCSR, which plan 5.8 by design does not keep ("MXCSR's exception
+  flags read while not kept", counted); at -O0 musl's `fma` wrote MXCSR first, so only -O1 and up differed. The
+  program now clears the flags first, as `feclearexcept` does. Not a change of the translator.
+- `benchmark_set_for_x86_64_v3_runs_only_when_told_x86_64` (tests/programs.rs): `bench.c` built for x86-64-v3
+  (`programs::build_for` with `guest::x86_64::V3_CPU`, zig's `-mcpu=x86_64_v3`; a program without a C library is
+  then built for that processor instead of general registers only) at -O2 and -O3. Told the v3 list: Linux's
+  output at none, full for speed and size and bounded, with no instruction of an untold feature reached. Told the
+  default list: killed by SIGILL at every look-ahead, with "an instruction of a feature the program was not told
+  of was reached" counted once.
+- That test found a translator bug: a VEX instruction that runs lane by lane with a 256-bit memory operand left
+  the operand's address on the WebAssembly stack in each lane (`vex::Lane::check` pushed the data address
+  instead of making it in place, as `Emitter::check` says), which is invalid WebAssembly where the code falls
+  through the end of a block (it compiled wherever a branch followed, which is why no earlier test saw it).
+  Fixed. `every_form_is_valid_x86_64` (tests/valid.rs, new: every layer 1 form, each told the list that has it,
+  three times in a row, at none, bounded and full) and the random x86 validity tests now told v3 half the time
+  pass, but they did not catch this bug with the fix taken out: their code has no block that falls through
+  after such an instruction. The benchmark test does.
+- Layer 1's run of the whole v3 list on the i7-8750H (679 forms at 1,000 a form, seed 8421, the tree before the
+  fixes; `x8r5/laptop-x8r4-v3.log`, 1,840 s): 1 failing, VEX `vmaskmovdqu` with a non-canonical address gave a
+  page fault where the CPU gives general protection: the instruction's access list knew only the legacy
+  mnemonic. Fixed (`guest.rs`, `accesses`). Hand cases: pass.
+- The literal check: the seven build flags `build_with` wrote bare are named once in `programs.rs`
+  (`FREESTANDING_FLAGS`, `NO_LIBRARY_NEEDED_FLAGS`, `INCLUDE_FLAG`, now shared with layer 3, the two
+  separators); `-D` stays bare in `build_with` (its baseline line kept), as a constant of it would restate a
+  private one of `wcontainers-nir`'s build script. The gather case's name is a constant. Baseline lines: x86 117,
+  guest-cpu 26, the test crate 1,738 (1,745 before), the translator 8.
+
+What a program is told (the plan's "AVX setting"): no setting of the build or the container. It is the
+per-process list the kernel interface's `X86_64Features` carries (x86's `Offer`), given with every
+translation, in the cache key and the description section, answering `cpuid` and `xgetbv`; "on" is
+`offer::V3`, "off" the default list `offer::FULL_SPEED` (run 1, plan 5.10).
+
+Verdicts of run 5 (the tree at 88792578 or later, with other tracks' edits):
+- The rented machine: `avx2_fma_and_f16c_match_linux_x86_64` (the two programs, 3 distinct blobs each of 5
+  levels, 15 look-aheads each) and again with `WC_PROBE_ANSWER=1`, `xstate_matches_linux_x86_64`,
+  `benchmark_set_for_x86_64_v3_runs_only_when_told_x86_64` (2 levels, 4 look-aheads, both lists): pass.
+  `x86_64_v3_programs_match_linux_in_chrome_x86_64` (the three programs, 5 ways each): pass (38 s).
+  `--test valid -- x86_64` at 3,000 and 1,000 cases (seeds 8501, 8503; the every-form test 32,128 cases of 2,008
+  forms, seeds 8502, 8504): pass.
+
+For the orchestrator:
+- Commit d60b9609 ("refactored everything to fit the new reviewable rust format", 16:02) by another session took
+  this track's uncommitted files with it (the browser offer path, the two programs, `valid.rs`, the vex fix, the
+  plan's edits) and a scratch test of mine, `tests/scratch_v3.rs`; 550c94cf deletes the scratch test. Nothing was
+  lost, but the history names those changes under that message.
 
 ## X8, run 3 (2026-11-21): partly done
 
@@ -3778,6 +3860,15 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X8 run 5: the v3 programs, `--test programs -- avx2_fma_and_f16c_match_linux_x86_64 xstate_matches_linux_x86_64
+  benchmark_set_for_x86_64_v3_runs_only_when_told_x86_64` and `--test browser --
+  x86_64_v3_programs_match_linux_in_chrome_x86_64` on the rented x86-64 machine (`WC_PROBE_ANSWER=1` for a host
+  that does not fuse); `--test valid -- x86_64` (`PROPTEST_CASES`, `PROPTEST_RNG_SEED`; the every-form test
+  `WC_VALID_WORDS`, `WC_VALID_SEED`). Layer 1 of the whole v3 list on the laptop: `x8r4/laptop-bg.sh <name>
+  'F=$(cat ~/wcontainers-x86/v3-forms.csv); ARM_JOBS=4 ~/wcontainers-x86/x8-l1-forms.sh 1000 <seed> $F'` (the
+  679 form names are in scratch `x8r4/v3-forms.csv`; copy it and `x8r1/l1-forms.sh` there first). The quick bar:
+  `x86-run <checkout> --name x86 -- "$(cat <scratch>/x8r5/check.sh)"`; the suite in pieces: `x8r5/suite.sh <log
+  dir>` (a piece's exit 1 is grep's when nothing matched: read the log).
 - X8 run 1: the quick bar, `x86-run <checkout> --name x86 -- "$(cat <scratch>/x8r1/check.sh)"` (fmt, clippy of
   the five crates, the browser crate's wasm32 clippy, unit tests, the test crate's library, the told-features
   and hand-case tests); a form list at layer 1 on the laptop, `<scratch>/x8r1/laptop-bg.sh <name> 'ARM_JOBS=4
