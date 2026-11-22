@@ -102,7 +102,7 @@ struct Effect<Architecture: ProcessorArchitecture> {
 }
 
 impl<Architecture: ProcessorArchitecture + Clone + Eq> Effect<Architecture> {
-    fn of(
+    fn observe(
         before: &ExecutionState<'static, Architecture>,
         run: impl FnOnce(&mut Architecture::Processor, &mut Vec<MemoryDelta<'static, Architecture>>),
     ) -> Self {
@@ -143,7 +143,7 @@ where
 {
     if candidates.len() > 1 {
         for before in generator.generate_states(instruction) {
-            let observed = Effect::of(&before, |processor, made| {
+            let observed = Effect::observe(&before, |processor, made| {
                 chip.execute_single_instruction_in_place(
                     processor,
                     &before.memory_mutations,
@@ -153,7 +153,7 @@ where
             let simulated: Vec<_> = candidates
                 .iter()
                 .map(|precise| {
-                    let effect = Effect::of(&before, |processor, made| {
+                    let effect = Effect::observe(&before, |processor, made| {
                         let Ok(()) = precise.simulate_in_place(
                             processor,
                             &before.memory_mutations,
