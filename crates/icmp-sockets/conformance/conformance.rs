@@ -39,8 +39,8 @@ use wcontainers_readiness::ReadyFor;
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
 
 #[doc(hidden)]
-pub use wcontainers_configurable_conformance as configurable_suite;
-pub use wcontainers_readiness_conformance as readiness_conformance;
+pub use wcontainers_configurable_conformance;
+pub use wcontainers_readiness_conformance;
 
 /// Moves the calling thread into a new network namespace, which needs `CAP_SYS_ADMIN`, with loopback up and
 /// every group in the range Linux lets open ICMP echo sockets.
@@ -62,8 +62,8 @@ pub const ANYCAST_LIST: &str = "/proc/thread-self/net/anycast6";
 pub const TRAFFIC_CONTROL: &str = "tc";
 const STATISTICS: &str = "-s";
 const JSON: &str = "-j";
-pub const SHOW_CLASSES: [&str; 5] = [STATISTICS, JSON, "class", "show", "dev"];
-pub const SHOW_GROUPS: [&str; 3] = ["maddr", "show", "dev"];
+pub const SHOW_CLASSES: &[&str] = &[STATISTICS, JSON, "class", "show", "dev"];
+pub const SHOW_GROUPS: &[&str] = &["maddr", "show", "dev"];
 /// The third band of a prio queue, which its default map gives `TC_PRIO_FILLER` alone.
 pub const THIRD_BAND: &str = "\"handle\":\"1:3\"";
 /// The gateways of the dummy link, as neighbours last confirmed long ago; the link resolves neighbours so that IPv6 confirms them.
@@ -71,11 +71,14 @@ pub const STALE_GATEWAYS: &str = "link set ia arp on
 neigh add 10.3.0.2 lladdr 02:00:00:00:00:02 dev ia nud stale
 neigh add fd03::2 lladdr 02:00:00:00:00:02 dev ia nud stale";
 /// `TC_PRIO_FILLER`, which the prio queue's default map puts in its third band, 1:3, where nothing else goes.
+///
+/// https://man7.org/linux/man-pages/man8/tc-prio.8.html
 pub const FILLER: u32 = 1;
 pub const PRIO_QUEUE: &str = "qdisc add dev ia root handle 1: prio";
 /// A queue that paces each flow and keeps departure times.
 pub const FAIR_QUEUE: &str = "qdisc add dev lo root fq";
 pub const SELF_LINK: &str = "lo";
+// https://man7.org/linux/man-pages/man7/socket.7.html
 pub const MARK: PacketMark = PacketMark(7);
 pub const MARK_PROHIBITED: &str = "rule add fwmark 7 prohibit";
 pub const OWNER_PROHIBITED: &str = "rule add uidrange 1000-1000 prohibit";
@@ -84,23 +87,38 @@ const ECHO_PROHIBITED: &str = "rule add ipproto icmp dport 2048 prohibit";
 /// Type 128 code 0, where the flow keeps a destination port.
 const ECHO_PROHIBITED_V6: &str = "rule add ipproto ipv6-icmp dport 32768 prohibit";
 /// A code an echo request does not carry.
+///
+/// https://www.rfc-editor.org/rfc/rfc792
 pub const OTHER_CODE: IcmpCode = IcmpCode(1);
+// https://www.rfc-editor.org/rfc/rfc791#section-3.1
 pub const TIME_TO_LIVE: HopLimit = HopLimit(7);
+// https://www.rfc-editor.org/rfc/rfc8200#section-4
 pub const HOP_LIMIT: HopLimit = HopLimit(9);
+// https://www.rfc-editor.org/rfc/rfc6437
 pub const FLOW_LABEL: u32 = 0x5a5a5;
+// https://docs.kernel.org/networking/timestamping.html
 pub const REPORT_KEY: TransmitReportKey = TransmitReportKey(0x5eed);
 /// An echo message longer than the links of the checks that fragment.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const LONG_MESSAGE: usize = 1400;
 /// The length of each paced message, and the rate a send buffer fills at.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const PACED_MESSAGE: usize = 1100;
+// https://man7.org/linux/man-pages/man7/socket.7.html
 const SLOW_RATE: BytesPerSecond = BytesPerSecond(1000);
 /// How many sends a check tries before it expects the send buffer to be full.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const ATTEMPTS: usize = 64;
 /// Where an echo message keeps its identifier, after its type, code and checksum.
 const IDENTIFIER_BYTES: core::ops::Range<usize> = 4..6;
 /// Where an ICMP message keeps its checksum.
 pub const CHECKSUM_BYTES: core::ops::Range<usize> = 2..4;
+// https://man7.org/linux/man-pages/man7/credentials.7.html
 pub const ROOT: UserId = UserId(0);
+// https://man7.org/linux/man-pages/man7/credentials.7.html
 pub const OTHER_USER: UserId = UserId(1000);
 pub const DUMMY: &str = "ia";
 /// A dummy link with an IPv4 and an IPv6 prefix, a gateway on each and routes through it to far networks.
@@ -119,21 +137,35 @@ route add 10.8.0.0/16 dev ib metric 2
 route add fd08::/64 dev ia metric 1
 route add fd08::/64 dev ib metric 2";
 pub const SECOND: &str = "ib";
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const ON_LINK: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 7);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const ON_LINK_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 7);
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const LOCAL: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 1);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const LOCAL_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 1);
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 2);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 2);
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const BROADCAST: Ipv4Addr = Ipv4Addr::new(10, 3, 0, 255);
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const FAR: Ipv4Addr = Ipv4Addr::new(10, 9, 1, 1);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const FAR_V6: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1);
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const NOWHERE: Ipv4Addr = Ipv4Addr::new(10, 8, 0, 1);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const NOWHERE_V6: Ipv6Addr = Ipv6Addr::new(0xfd08, 0, 0, 0, 0, 0, 0, 1);
 pub const PAYLOAD: &[u8] = b"wcontainers echo";
+// https://www.rfc-editor.org/rfc/rfc792
 const IDENTIFIER: EchoIdentifier = EchoIdentifier(NonZeroU16::new(0x4a21).unwrap());
 /// Another identifier, for a socket of the other version: Linux keeps one table of identifiers for both, and a
 /// closed socket's identifier stays taken while a child that another test thread forks still holds its descriptor.
+///
+/// https://www.rfc-editor.org/rfc/rfc792
 const IDENTIFIER_V6: EchoIdentifier = EchoIdentifier(NonZeroU16::new(0x4a22).unwrap());
 
 fn identifier(version: IpVersion) -> EchoIdentifier {
@@ -142,8 +174,11 @@ fn identifier(version: IpVersion) -> EchoIdentifier {
         IpVersion::V6 => IDENTIFIER_V6,
     }
 }
+// https://www.rfc-editor.org/rfc/rfc792
 const SEQUENCE: u16 = 0x0102;
 /// How long a check waits for a packet that should come.
+///
+/// https://man7.org/linux/man-pages/man7/icmp.7.html
 pub const PATIENCE: Duration = Duration::from_secs(2);
 /// The iproute2 tool the checks build their networks with.
 pub const IP: &str = "ip";
@@ -218,8 +253,12 @@ fn temporary_address(link: &str) -> Ipv6Addr {
 }
 
 /// How long a check waits to be sure that a packet does not come.
+///
+/// https://man7.org/linux/man-pages/man7/icmp.7.html
 pub const QUIET: Duration = Duration::from_millis(200);
 /// The bytes of an ICMP header, as Linux reads one from an echo socket's message.
+///
+/// https://www.rfc-editor.org/rfc/rfc792
 const ICMP_HEADER: usize = 8;
 static NO_OPTIONS: std::sync::LazyLock<Ipv4Options> = std::sync::LazyLock::new(Ipv4Options::new);
 
@@ -277,7 +316,7 @@ pub fn index(name: &str) -> InterfaceIndex {
     InterfaceIndex(rustix::net::netdevice::name_to_index(&socket, name).expect(name))
 }
 
-/// An echo request of the version with the sequence number and payload; Linux writes the identifier and checksum.
+/// Returns an echo request of the version with the sequence number and payload; Linux writes the identifier and checksum.
 pub fn echo(version: IpVersion, payload: &[u8]) -> Vec<u8> {
     let kind = match version {
         IpVersion::V4 => icmpv4::TYPE_ECHO_REQUEST,
@@ -296,7 +335,7 @@ fn protocol(version: IpVersion) -> IpNumber {
     }
 }
 
-/// The upper layer a message is routed by: its protocol, type and code.
+/// Returns the upper layer a message is routed by: its protocol, type and code.
 fn upper(version: IpVersion, message: &[u8]) -> UpperLayer {
     UpperLayer {
         protocol: protocol(version),
@@ -363,7 +402,7 @@ fn v6_header(route: Ipv6RouteSelectors<'_>) -> Ipv6HeaderFields<'_> {
     }
 }
 
-/// The plain header of a message to the address.
+/// Returns the plain header of a message to the address.
 pub fn header_to(destination: IpAddr, message: &[u8]) -> IpHeaderFields<'static> {
     match destination {
         IpAddr::V4(address) => IpHeaderFields::V4(v4_header(v4_route(address, message))),
@@ -540,7 +579,7 @@ impl Capture {
         Self(fd)
     }
 
-    /// The next packet leaving the link that `wanted` takes, if one leaves within the time given.
+    /// Returns the next packet leaving the link that `wanted` takes, if one leaves within the time given.
     pub fn within(&self, time: Duration, wanted: impl Fn(&[u8]) -> bool) -> Option<Vec<u8>> {
         let start = Instant::now();
         let mut packet = buffer();
@@ -589,7 +628,7 @@ pub struct Fragment {
     pub more: bool,
 }
 
-/// The fragment an IP packet is, or none for a whole packet.
+/// Returns the fragment an IP packet is, or none for a whole packet.
 pub fn fragment(packet: &[u8]) -> Option<Fragment> {
     if let Ok(header) = Ipv4HeaderSlice::from_slice(packet) {
         return header.is_fragmenting_payload().then(|| Fragment {
@@ -612,7 +651,7 @@ pub fn fragment(packet: &[u8]) -> Option<Fragment> {
         })
 }
 
-/// The lengths, in order, of the fragments of the next packet leaving the link whose first fragment `first` takes.
+/// Returns the lengths, in order, of the fragments of the next packet leaving the link whose first fragment `first` takes.
 pub fn fragment_lengths(capture: &Capture, first: impl Fn(&[u8]) -> bool) -> Vec<usize> {
     let start = capture.next(|packet| {
         fragment(packet).is_some_and(|fragment| fragment.offset == u16::MIN) && first(packet)
@@ -633,6 +672,8 @@ pub fn fragment_lengths(capture: &Capture, first: impl Fn(&[u8]) -> bool) -> Vec
 /// Loopback's MTU in the checks that fragment on it, the least IPv6 allows.
 pub const SMALL_LOOPBACK: &str = "link set lo mtu 1280";
 /// A payload that [`SMALL_LOOPBACK`] fragments.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 pub const FRAGMENTED_PAYLOAD: [u8; 3000] = [u8::MAX; 3000];
 
 fn is_echo_request(packet: &[u8]) -> bool {
@@ -652,7 +693,7 @@ pub fn ipv6(packet: &[u8]) -> Ipv6HeaderSlice<'_> {
     Ipv6HeaderSlice::from_slice(packet).expect("an IPv6 packet")
 }
 
-/// The echo identifier of an ICMP echo message.
+/// Returns the echo identifier of an ICMP echo message.
 fn identifier_of(message: &[u8]) -> u16 {
     u16::from_be_bytes(
         message[IDENTIFIER_BYTES]
@@ -697,11 +738,12 @@ pub fn headers_are_as_on_the_wire(packet: &[u8], on_the_wire: &[u8]) {
     match version_of(seen(packet).source) {
         IpVersion::V4 => {
             // Every field but the identification, the fragment flags and offset, and the checksum over them.
-            const NOT_COMPARED: [core::ops::Range<usize>; 2] = [4..8, 10..12];
+            // https://www.rfc-editor.org/rfc/rfc791#section-3.1
+            const NOT_COMPARED: &[core::ops::Range<usize>] = &[4..8, 10..12];
             let compared = |header: &[u8]| {
                 let mut header = header[..headers].to_vec();
                 for range in NOT_COMPARED {
-                    header[range].fill(u8::MIN);
+                    header[range.clone()].fill(u8::MIN);
                 }
                 header
             };
@@ -716,7 +758,7 @@ pub fn headers_are_as_on_the_wire(packet: &[u8], on_the_wire: &[u8]) {
     }
 }
 
-/// An echo request to a local address gets its reply, written whole from its IP header as it was on the wire, with the identifier bound.
+/// Returns an echo request to a local address gets its reply, written whole from its IP header as it was on the wire, with the identifier bound.
 fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Options) {
     let version = version_of(to);
     let socket = opened(&sockets, version);
@@ -784,16 +826,20 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Opt
     assert_eq!(fields.interface, index(SELF_LINK));
 }
 
-/// An IPv4 echo request to loopback gets its reply, whole from its IPv4 header.
+/// Checks that an IPv4 echo request to loopback gets its reply, whole from its IPv4 header.
 pub fn echo_reply_arrives_whole_over_ipv4<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     reply_arrives_whole(sockets, IpAddr::V4(Ipv4Addr::LOCALHOST), &NO_OPTIONS);
 }
 
 /// A record route option with room for two addresses, then the end of the options.
+///
+/// https://www.rfc-editor.org/rfc/rfc791#section-3.1
 const RECORD_ROUTE: [u8; 12] = [7, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-/// An IPv4 echo request with a record route option gets its reply with the option Linux echoes, as on the wire.
+/// Checks that an IPv4 echo request with a record route option gets its reply with the option Linux echoes, as on the wire.
 pub fn an_echo_reply_arrives_with_its_ipv4_options<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     reply_arrives_whole(
         sockets,
         IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -801,13 +847,15 @@ pub fn an_echo_reply_arrives_with_its_ipv4_options<S: IcmpSockets>(sockets: S) {
     );
 }
 
-/// An IPv6 echo request to loopback gets its reply, whole from its IPv6 header.
+/// Checks that an IPv6 echo request to loopback gets its reply, whole from its IPv6 header.
 pub fn echo_reply_arrives_whole_over_ipv6<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     reply_arrives_whole(sockets, IpAddr::V6(Ipv6Addr::LOCALHOST), &NO_OPTIONS);
 }
 
-/// A reply that arrived in fragments tells the length of the largest, as it was on the wire.
+/// Checks that a reply that arrived in fragments tells the length of the largest, as it was on the wire.
 pub fn a_fragmented_reply_tells_its_largest_fragment<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(SMALL_LOOPBACK);
     for (to, reply) in [
         (IpAddr::V4(Ipv4Addr::LOCALHOST), icmpv4::TYPE_ECHO_REPLY),
@@ -828,8 +876,9 @@ pub fn a_fragmented_reply_tells_its_largest_fragment<S: IcmpSockets>(sockets: S)
     }
 }
 
-/// The request that leaves carries the bound identifier and the message's sequence number and payload.
+/// Checks that the request that leaves carries the bound identifier and the message's sequence number and payload.
 pub fn the_request_carries_the_bound_identifier<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let socket = opened(&sockets, version_of(to));
@@ -848,8 +897,9 @@ pub fn the_request_carries_the_bound_identifier<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Two sockets take one identifier only when both share it.
+/// Checks that two sockets take one identifier only when both share it.
 pub fn identifiers_are_shared_only_when_both_ask<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     for version in [IpVersion::V4, IpVersion::V6] {
         let first = opened(&sockets, version);
         let second = opened(&sockets, version);
@@ -872,8 +922,9 @@ pub fn identifiers_are_shared_only_when_both_ask<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Closing a socket frees its identifier, at once or once no child forked meanwhile holds its descriptor.
+/// Checks that closing a socket frees its identifier, at once or once no child forked meanwhile holds its descriptor.
 pub fn close_frees_the_identifier<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     for version in [IpVersion::V4, IpVersion::V6] {
         let first = opened(&sockets, version);
         let identifier = identifier(version);
@@ -900,6 +951,7 @@ pub fn close_frees_the_identifier<S: IcmpSockets>(sockets: S) {
 }
 
 pub fn receive_with_nothing_queued_would_block<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     for version in [IpVersion::V4, IpVersion::V6] {
         let socket = opened(&sockets, version);
         assert_eq!(
@@ -910,11 +962,15 @@ pub fn receive_with_nothing_queued_would_block<S: IcmpSockets>(sockets: S) {
 }
 
 /// Where an IPv4 header keeps its total length.
+///
+/// https://www.rfc-editor.org/rfc/rfc791#section-3.1
 const IPV4_TOTAL_LENGTH: core::ops::Range<usize> = 2..4;
 /// Where an IPv6 header keeps its payload length.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4
 const IPV6_PAYLOAD_LENGTH: core::ops::Range<usize> = 4..6;
 
-/// The whole length of a packet that the start of its header tells.
+/// Returns the whole length of a packet that the start of its header tells.
 fn told_length(version: IpVersion, start: &[u8]) -> usize {
     let field = |range: core::ops::Range<usize>| {
         usize::from(u16::from_be_bytes(
@@ -927,9 +983,10 @@ fn told_length(version: IpVersion, start: &[u8]) -> usize {
     }
 }
 
-/// A buffer that cuts the reply in its IP header or in its ICMP message takes its start, whose header and the
+/// Checks that a buffer that cuts the reply in its IP header or in its ICMP message takes its start, whose header and the
 /// received length both tell the whole length.
 pub fn a_short_buffer_keeps_the_whole_length<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     for (to, header, reply) in [
         (
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -963,10 +1020,13 @@ pub fn a_short_buffer_keeps_the_whole_length<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// The TTL, DSCP, ECN, options and source of an IPv4 send are in the header that leaves.
+/// Checks that the TTL, DSCP, ECN, options and source of an IPv4 send are in the header that leaves.
 pub fn ipv4_header_fields_go_out<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     /// A router alert option, then the end of the options.
+    ///
+    /// https://www.rfc-editor.org/rfc/rfc2113
     const ROUTER_ALERT: [u8; 4] = [148, 4, 0, 0];
     let options = Ipv4Options::from(ROUTER_ALERT);
     let socket = opened(&sockets, IpVersion::V4);
@@ -1004,7 +1064,7 @@ pub fn ipv4_header_fields_go_out<S: IcmpSockets>(sockets: S) {
     assert_eq!(ipv4(&plain).ttl(), default_ttl());
 }
 
-/// The namespace's default TTL, as a socket that never set its own reads it.
+/// Returns the namespace's default TTL, as a socket that never set its own reads it.
 fn default_ttl() -> u8 {
     let socket = rustix::net::socket(
         rustix::net::AddressFamily::INET,
@@ -1015,8 +1075,9 @@ fn default_ttl() -> u8 {
     rustix::net::sockopt::ip_ttl(&socket).expect("the default TTL") as u8
 }
 
-/// The hop limit, DSCP, ECN and flow label of an IPv6 send are in the header that leaves.
+/// Checks that the hop limit, DSCP, ECN and flow label of an IPv6 send are in the header that leaves.
 pub fn ipv6_header_fields_go_out<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V6);
     let message = echo(IpVersion::V6, PAYLOAD);
@@ -1047,14 +1108,20 @@ pub fn ipv6_header_fields_go_out<S: IcmpSockets>(sockets: S) {
 }
 
 /// The last segment of a segment routing header the checks send, beyond the link.
+///
+/// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const FAR_V6_SEGMENT: Ipv6Addr = Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 9);
 /// An IPv6 extension header of eight bytes: next header, length, then padding (PadN of four).
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4
 pub const PADDING_HEADER: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
 
 /// A routing header's length in eight-byte units after its first eight, for two segments.
+///
+/// https://www.rfc-editor.org/rfc/rfc8754#section-2
 pub const TWO_SEGMENTS: u8 = 4;
 
-/// A segment routing header of two segments, [`FAR_V6_SEGMENT`] last and [`ON_LINK_V6`] next.
+/// Returns a segment routing header of two segments, [`FAR_V6_SEGMENT`] last and [`ON_LINK_V6`] next.
 pub fn segment_routing_header() -> Vec<u8> {
     let mut routing = vec![
         u8::MIN,
@@ -1071,7 +1138,7 @@ pub fn segment_routing_header() -> Vec<u8> {
     routing
 }
 
-/// The kinds of the extension headers a packet carries, in order.
+/// Returns the kinds of the extension headers a packet carries, in order.
 pub fn extension_kinds(packet: &[u8]) -> Vec<IpNumber> {
     seen(packet)
         .extensions
@@ -1080,8 +1147,9 @@ pub fn extension_kinds(packet: &[u8]) -> Vec<IpNumber> {
         .collect()
 }
 
-/// IPv6 extension headers and a routing header go out with the request, or are refused.
+/// Checks that IPv6 extension headers and a routing header go out with the request, or are refused.
 pub fn ipv6_extension_headers_go_out<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let padding = Ipv6RawExtHeaderSlice::from_slice(&PADDING_HEADER).unwrap();
     let routing = segment_routing_header();
@@ -1123,12 +1191,14 @@ pub fn ipv6_extension_headers_go_out<S: IcmpSockets>(sockets: S) {
     assert!(extension_kinds(&capture.echo_request()).is_empty());
 }
 
-/// An IPv6 request leaves from the local source address its send gives, or the source is refused; of two
+/// Checks that an IPv6 request leaves from the local source address its send gives, or the source is refused; of two
 /// addresses on the link, either is taken when asked for, whichever the host would choose by itself.
 pub fn an_ipv6_source_goes_out<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     const SECOND_ADDRESS: &str = "address add fd03::5/64 dev ia nodad";
     ip(SECOND_ADDRESS);
+    // https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const SOURCE: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 5);
     let message = echo(IpVersion::V6, PAYLOAD);
     let socket = opened(&sockets, IpVersion::V6);
@@ -1151,8 +1221,9 @@ pub fn an_ipv6_source_goes_out<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Each path MTU discovery mode sends, with the don't-fragment bit on IPv4 only for the modes that set it.
+/// Checks that each path MTU discovery mode sends, with the don't-fragment bit on IPv4 only for the modes that set it.
 pub fn every_path_mtu_discovery_mode_sends<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let capture = Capture::on(DUMMY);
     for (mode, dont_fragment) in [
@@ -1200,7 +1271,7 @@ pub fn every_path_mtu_discovery_mode_sends<S: IcmpSockets>(sockets: S) {
     }
 }
 
-pub const PATH_MTU_MODES: [PathMtuDiscovery; 6] = [
+pub const PATH_MTU_MODES: &[PathMtuDiscovery] = &[
     PathMtuDiscovery::Dont,
     PathMtuDiscovery::Want,
     PathMtuDiscovery::Do,
@@ -1212,16 +1283,24 @@ pub const PATH_MTU_MODES: [PathMtuDiscovery; 6] = [
 pub const NARROW_ROUTES: &str = "link set ia mtu 1500
 route add 10.4.0.0/16 dev ia mtu 1300
 route add fd04::/64 dev ia mtu 1300";
+// https://www.rfc-editor.org/rfc/rfc1918#section-3
 pub const NARROW: Ipv4Addr = Ipv4Addr::new(10, 4, 0, 1);
+// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
 pub const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0xfd04, 0, 0, 0, 0, 0, 0, 1);
 /// The MTUs [`NARROW_ROUTES`] sets, of the routes and of the link.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const ROUTE_MTU: usize = 1300;
+// https://man7.org/linux/man-pages/man7/ip.7.html
 const NARROW_LINK_MTU: usize = 1500;
 /// IP packet lengths over the route's MTU alone, and over the link's too.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const OVER_THE_ROUTE: usize = 1400;
+// https://man7.org/linux/man-pages/man7/ip.7.html
 const OVER_THE_LINK: usize = 1600;
 
-/// What each path MTU discovery mode makes of an IP packet over its route's MTU, and of one over its link's too, as
+/// Returns what each path MTU discovery mode makes of an IP packet over its route's MTU, and of one over its link's too, as
 /// `send` sends one of the length given toward [`NARROW`] or [`NARROW_V6`]: fragments of the route's MTU (dont,
 /// want); too long for the route's (do); whole, then too long for the link's (probe, with the don't-fragment bit
 /// on IPv4, and interface); whole, then fragments of the link's MTU (omit).
@@ -1237,7 +1316,7 @@ pub fn path_mtu_modes_take_their_mtu(
     };
     for to in [IpAddr::V4(NARROW), IpAddr::V6(NARROW_V6)] {
         let toward = |packet: &[u8]| seen(packet).destination == to;
-        for mode in PATH_MTU_MODES {
+        for &mode in PATH_MTU_MODES {
             for length in [OVER_THE_ROUTE, OVER_THE_LINK] {
                 let sent = send(to, mode, length);
                 let context = format!("{to} {mode:?} {length}");
@@ -1284,8 +1363,9 @@ pub fn path_mtu_modes_take_their_mtu(
     }
 }
 
-/// Each path MTU discovery mode takes the MTU of the route or of the link, and fragments or refuses, as Linux does.
+/// Checks that each path MTU discovery mode takes the MTU of the route or of the link, and fragments or refuses, as Linux does.
 pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     path_mtu_modes_take_their_mtu(|to, mode, length| {
         let version = version_of(to);
@@ -1310,13 +1390,18 @@ pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: IcmpSockets>(sockets: S) {
 }
 
 /// A fragment MTU below the dummy link's MTU, which a long message does not fit.
+///
+/// https://man7.org/linux/man-pages/man7/ipv6.7.html
 const FRAGMENT_MTU: u32 = 1320;
 
-/// A message longer than the link or the fragment MTU is too long where fragmenting is forbidden, and is
+/// Checks that a message longer than the link or the fragment MTU is too long where fragmenting is forbidden, and is
 /// fragmented to the link where it is allowed.
 pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     /// The link's MTU at the end, which the commands below set.
+    ///
+    /// https://man7.org/linux/man-pages/man7/ip.7.html
     const LINK_MTU: u32 = 1360;
     const SMALL_LINK: &str = "link set ia mtu 1360";
     let long = vec![u8::MAX; LONG_MESSAGE];
@@ -1403,8 +1488,9 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
     assert!(fragment.len() <= LINK_MTU as usize, "{}", fragment.len());
 }
 
-/// A mark chooses the route a rule gives it.
+/// Checks that a mark chooses the route a rule gives it.
 pub fn mark_selects_the_route<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     ip(MARK_PROHIBITED);
     ip6(MARK_PROHIBITED);
@@ -1425,8 +1511,9 @@ pub fn mark_selects_the_route<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A socket's owner chooses the route a rule on its user gives it.
+/// Checks that a socket's owner chooses the route a rule on its user gives it.
 pub fn owner_selects_the_route<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     ip(OWNER_PROHIBITED);
     ip6(OWNER_PROHIBITED);
@@ -1444,8 +1531,9 @@ pub fn owner_selects_the_route<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A message's ICMP type and code choose the route a rule on them gives it; a selector other than the message's is refused or routed by.
+/// Checks that a message's ICMP type and code choose the route a rule on them gives it; a selector other than the message's is refused or routed by.
 pub fn icmp_type_and_code_select_the_route<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     ip(ECHO_PROHIBITED);
     ip6(ECHO_PROHIBITED_V6);
@@ -1473,8 +1561,9 @@ pub fn icmp_type_and_code_select_the_route<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// An interface chooses among routes to a destination the one out of that link.
+/// Checks that an interface chooses among routes to a destination the one out of that link.
 pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     ip(TWO_ROUTES);
     let second = index(SECOND);
@@ -1497,8 +1586,9 @@ pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A link-scope send takes a destination on the link and refuses one through a gateway.
+/// Checks that a link-scope send takes a destination on the link and refuses one through a gateway.
 pub fn link_scope_takes_only_the_link<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V4);
     for (to, on_link) in [(ON_LINK, true), (FAR, false)] {
@@ -1518,8 +1608,9 @@ pub fn link_scope_takes_only_the_link<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A broadcast destination is refused without the permission and sent with it.
+/// Checks that a broadcast destination is refused without the permission and sent with it.
 pub fn broadcast_needs_its_permission<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V4);
     let capture = Capture::on(DUMMY);
@@ -1546,9 +1637,11 @@ pub fn broadcast_needs_its_permission<S: IcmpSockets>(sockets: S) {
     );
 }
 
-/// A source the namespace lacks is refused when its check is required and sent from when it is waived.
+/// Checks that a source the namespace lacks is refused when its check is required and sent from when it is waived.
 pub fn a_waived_source_check_sends_from_an_absent_address<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
+    // https://www.rfc-editor.org/rfc/rfc1918#section-3
     const ABSENT: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 1);
     let socket = opened(&sockets, IpVersion::V4);
     let capture = Capture::on(DUMMY);
@@ -1599,8 +1692,9 @@ pub fn sources_by_preference() -> [(TemporaryAddressPreference, Ipv6Addr); 2] {
     ]
 }
 
-/// IPv6 source preferences choose between the link's public address and a temporary one.
+/// Checks that IPv6 source preferences choose between the link's public address and a temporary one.
 pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let sources = sources_by_preference();
     let socket = opened(&sockets, IpVersion::V6);
@@ -1630,9 +1724,10 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A confirmed send confirms its next hop's neighbour entry; over IPv6, whose ping sockets drop the flag, it may
+/// Checks that a confirmed send confirms its next hop's neighbour entry; over IPv6, whose ping sockets drop the flag, it may
 /// be refused instead.
 pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     ip(STALE_GATEWAYS);
     for (to, gateway) in [
@@ -1658,8 +1753,9 @@ pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A send's priority chooses its band of a priority queue.
+/// Checks that a send's priority chooses its band of a priority queue.
 pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     tc(PRIO_QUEUE);
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
@@ -1667,7 +1763,7 @@ pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
         let message = echo(version_of(to), PAYLOAD);
         let third_band = || {
             number_after(
-                &output(TRAFFIC_CONTROL, &[&SHOW_CLASSES[..], &[DUMMY]].concat()),
+                &output(TRAFFIC_CONTROL, &[SHOW_CLASSES, &[DUMMY]].concat()),
                 THIRD_BAND,
                 PACKETS,
             )
@@ -1686,9 +1782,11 @@ pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A send with a transmit time leaves no earlier than that time, on a queue that keeps departure times.
+/// Checks that a send with a transmit time leaves no earlier than that time, on a queue that keeps departure times.
 pub fn a_transmit_time_holds_the_send<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     tc(FAIR_QUEUE);
+    // https://man7.org/linux/man-pages/man8/tc-etf.8.html
     const HELD: Duration = Duration::from_millis(300);
     for to in [
         IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -1720,9 +1818,11 @@ pub fn a_transmit_time_holds_the_send<S: IcmpSockets>(sockets: S) {
 /// every time it holds (Linux's etf with a delta of 0).
 pub const MISSING_SCHEDULE: &str = "qdisc add dev ia root etf clockid CLOCK_TAI delta 0";
 /// How far a scheduled send is put ahead of now, and how much earlier a past one is.
+///
+/// https://man7.org/linux/man-pages/man8/tc-etf.8.html
 pub const SCHEDULED_AHEAD: Duration = Duration::from_millis(100);
 
-/// The sends a rejected transmit times check makes: each one's time, whether it asks for errors, and what is
+/// Returns the sends a rejected transmit times check makes: each one's time, whether it asks for errors, and what is
 /// reported; its key is its place.
 pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Tai);
@@ -1772,7 +1872,7 @@ pub fn rejected_sends() -> Vec<(TransmitTime, Option<TransmitTimeError>)> {
     ]
 }
 
-/// The send fields of a rejected transmit times check's send at its place: a missed time asks for the packet.
+/// Returns the send fields of a rejected transmit times check's send at its place: a missed time asks for the packet.
 pub fn rejected_send_fields(
     place: usize,
     time: TransmitTime,
@@ -1833,10 +1933,11 @@ pub fn check_rejections(
     assert_eq!(reported, expected);
 }
 
-/// A transmit time the link's schedule cannot keep is reported with the key of its send and why: a time already
+/// Checks that a transmit time the link's schedule cannot keep is reported with the key of its send and why: a time already
 /// past or a mode other than the schedule's is invalid, and a time the schedule misses is missed, with the packet
 /// as asked; a send that did not ask for errors gets no report.
 pub fn rejected_transmit_times_are_reported_with_their_keys<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     tc(MISSING_SCHEDULE);
     let to = IpAddr::V4(ON_LINK);
@@ -1853,8 +1954,9 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: IcmpSockets>(sock
     check_rejections(|into| sockets.receive(&socket, into), &sends);
 }
 
-/// Transmit reports come on the socket with the key of their send, with the packet or without it as asked.
+/// Checks that transmit reports come on the socket with the key of their send, with the packet or without it as asked.
 pub fn transmit_reports_carry_the_key_of_their_send<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     for to in [
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -1926,8 +2028,9 @@ pub fn check_loopback_reports(
     );
 }
 
-/// Receive timestamps come only when the setting asks for them; loopback has no hardware clock to bind to.
+/// Checks that receive timestamps come only when the setting asks for them; loopback has no hardware clock to bind to.
 pub fn receive_timestamps_come_only_when_set<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     for to in [
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -1960,7 +2063,7 @@ pub fn receive_timestamps_come_only_when_set<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error about a request arrives on its socket, written whole from its IP header as it was on the wire and
+/// Returns an ICMP error about a request arrives on its socket, written whole from its IP header as it was on the wire and
 /// quoting the request.
 fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     ip(NETWORK);
@@ -1994,9 +2097,10 @@ fn is_unreachable(version: IpVersion, packet: &[u8]) -> bool {
     seen.protocol == protocol(version) && seen.payload.get(..2) == Some(&unreachable(version)[..])
 }
 
-/// An ICMP error received into a buffer that cuts it in its outer header, its ICMP header or its quoted message
+/// Checks that an ICMP error received into a buffer that cuts it in its outer header, its ICMP header or its quoted message
 /// takes its start and tells its whole length.
 pub fn a_short_buffer_keeps_the_start_of_an_icmp_error<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     for (to, header, inner) in [
         (
@@ -2032,10 +2136,12 @@ pub fn a_short_buffer_keeps_the_start_of_an_icmp_error<S: IcmpSockets>(sockets: 
 }
 
 pub fn an_icmp_error_arrives_whole_over_ipv4<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     icmp_error_arrives_whole(sockets, IpAddr::V4(ON_LINK));
 }
 
 pub fn an_icmp_error_arrives_whole_over_ipv6<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     icmp_error_arrives_whole(sockets, IpAddr::V6(ON_LINK_V6));
 }
 
@@ -2068,8 +2174,11 @@ pub fn send_raw_icmp(version: IpVersion, to: IpAddr, message: &mut [u8]) {
 
 /// Messages held by a pacing rate wait in the send buffer and are counted unsent; a delivered send leaves none.
 pub fn pacing_holds_messages_in_the_send_buffer<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     tc(FAIR_QUEUE);
+    // https://man7.org/linux/man-pages/man7/socket.7.html
     const RATE: BytesPerSecond = BytesPerSecond(20_000);
+    // https://man7.org/linux/man-pages/man7/socket.7.html
     const MESSAGES: usize = 4;
     let long = vec![u8::MAX; PACED_MESSAGE];
     for to in [
@@ -2104,8 +2213,9 @@ pub fn pacing_holds_messages_in_the_send_buffer<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// The smallest send buffer makes a send that would wait behind paced ones would block.
+/// Checks that the smallest send buffer makes a send that would wait behind paced ones would block.
 pub fn a_full_send_buffer_would_block<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     tc(FAIR_QUEUE);
     let long = vec![u8::MAX; PACED_MESSAGE];
     let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -2125,8 +2235,10 @@ pub fn a_full_send_buffer_would_block<S: IcmpSockets>(sockets: S) {
     assert!(blocked);
 }
 
-/// A receive buffer too small for every reply drops some, and the next packet tells how many.
+/// Checks that a receive buffer too small for every reply drops some, and the next packet tells how many.
 pub fn a_small_receive_buffer_counts_its_drops<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    // https://man7.org/linux/man-pages/man7/socket.7.html
     const REQUESTS: usize = 64;
     let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let socket = opened(&sockets, IpVersion::V4);
@@ -2160,12 +2272,14 @@ pub fn a_small_receive_buffer_counts_its_drops<S: IcmpSockets>(sockets: S) {
 }
 
 /// The namespace's multicast source filters, IPv4's and IPv6's, as Linux lists them by link, group and source.
-pub const SOURCE_FILTERS: [&str; 2] = [
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
+pub const SOURCE_FILTERS: &[&str] = &[
     "/proc/thread-self/net/mcfilter",
     "/proc/thread-self/net/mcfilter6",
 ];
 
-/// How many of the namespace's sockets include and exclude the source for the group, if any names it.
+/// Counts how many of the namespace's sockets include and exclude the source for the group, if any names it.
 pub fn source_filter_counts(group: IpAddr, source: IpAddr) -> Option<(u64, u64)> {
     let (list, group, source) = match (group, source) {
         (IpAddr::V4(group), IpAddr::V4(source)) => (
@@ -2195,7 +2309,7 @@ pub fn source_filter_counts(group: IpAddr, source: IpAddr) -> Option<(u64, u64)>
         )
 }
 
-/// The setting that joins the group on the dummy link, including or excluding the sources.
+/// Returns the setting that joins the group on the dummy link, including or excluding the sources.
 pub fn filtered_membership(group: IpAddr, include: bool, sources: &[IpAddr]) -> FilteredMembership {
     FilteredMembership {
         group,
@@ -2264,7 +2378,9 @@ pub fn source_filters_are_written(
     sources: [IpAddr; 2],
     configure: impl Fn(IpSocketSetting<'_>),
 ) {
+    // https://man7.org/linux/man-pages/man7/ip.7.html
     const INCLUDED: Option<(u64, u64)> = Some((1, 0));
+    // https://man7.org/linux/man-pages/man7/ip.7.html
     const EXCLUDED: Option<(u64, u64)> = Some((0, 1));
     let [first, second] = sources;
     for (include, given, expected) in [
@@ -2298,10 +2414,13 @@ pub fn source_filters_are_written(
     configure(left);
 }
 
-/// A group's source filter, of either kind and any sources, is the host's as written.
+/// Checks that a group's source filter, of either kind and any sources, is the host's as written.
 pub fn multicast_source_filters_are_written<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
+    // https://www.rfc-editor.org/rfc/rfc2365#section-6
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 5);
+    // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x124);
     for (group, sources) in [
         (
@@ -2318,18 +2437,21 @@ pub fn multicast_source_filters_are_written<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// Joined groups and anycast addresses are the host's while joined, and multicast loopback brings a reply.
+/// Checks that joined groups and anycast addresses are the host's while joined, and multicast loopback brings a reply.
 pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     write_setting(ECHO_IGNORE_BROADCASTS, &u8::MIN.to_string());
+    // https://www.rfc-editor.org/rfc/rfc2365#section-6
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 3);
+    // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x123);
+    // https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const ANYCAST: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 0x99);
     let link = Some(index(DUMMY));
     let socket = opened(&sockets, IpVersion::V4);
-    let joined = |group: IpAddr| {
-        output(IP, &[&SHOW_GROUPS[..], &[DUMMY]].concat()).contains(&group.to_string())
-    };
+    let joined =
+        |group: IpAddr| output(IP, &[SHOW_GROUPS, &[DUMMY]].concat()).contains(&group.to_string());
     // An echo request to the group from the dummy link, which the namespace answers only if it takes the request.
     let replies_looped = |socket: &S::Socket, group: IpAddr| {
         for (looped, replied) in [(false, false), (true, true)] {
@@ -2431,9 +2553,11 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
 }
 
 /// How many waits [`wait_allocations`] counts, after as many that warm the socket.
+///
+/// https://doc.rust-lang.org/std/alloc/trait.GlobalAlloc.html
 pub const COUNTED_WAITS: usize = 100;
 
-/// The allocations counted in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
+/// Returns the allocations counted in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
 pub fn wait_allocations<F: Future<Output = Result<ReadyFor, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
@@ -2537,7 +2661,7 @@ impl Wakes {
         *self.count.lock().expect("the wakes")
     }
 
-    /// Whether the call has been woken `count` times before the patience of a check ends.
+    /// Tells whether the call has been woken `count` times before the patience of a check ends.
     pub fn reach(&self, count: usize) -> bool {
         let wakes = self.count.lock().expect("the wakes");
         let (wakes, _) = self
@@ -2566,7 +2690,7 @@ pub fn poll_with<F: Future>(call: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Ou
     call.poll(&mut Context::from_waker(&waker))
 }
 
-/// The facts a finished wait gave.
+/// Returns the facts a finished wait gave.
 pub fn finished(poll: Poll<Result<ReadyFor, HostError>>) -> ReadyFor {
     match poll {
         Poll::Ready(facts) => facts.expect("the wait succeeds"),
@@ -2574,7 +2698,7 @@ pub fn finished(poll: Poll<Result<ReadyFor, HostError>>) -> ReadyFor {
     }
 }
 
-/// The facts a wait gives at once or when it is next woken.
+/// Returns the facts a wait gives at once or when it is next woken.
 pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
     mut call: Pin<&mut F>,
     wakes: &Arc<Wakes>,
@@ -2588,8 +2712,9 @@ pub fn finished_soon<F: Future<Output = Result<ReadyFor, HostError>>>(
     }
 }
 
-/// A wait on each of many sockets at once is woken once when its reply arrives, however many more do.
+/// Checks that a wait on each of many sockets at once is woken once when its reply arrives, however many more do.
 pub fn waits_on_many_sockets_each_wake_once<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let watched: Vec<_> = (0..MANY_WAITS)
         .map(|_| opened(&sockets, IpVersion::V4))
@@ -2619,7 +2744,7 @@ pub fn waits_on_many_sockets_each_wake_once<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// The type and code of the ICMP error the checks send: the destination host is unreachable.
+/// Returns the type and code of the ICMP error the checks send: the destination host is unreachable.
 fn unreachable(version: IpVersion) -> [u8; 2] {
     match version {
         IpVersion::V4 => [icmpv4::TYPE_DEST_UNREACH, icmpv4::CODE_DST_UNREACH_HOST],
@@ -2663,10 +2788,13 @@ fn send_icmp_error_about(request: &[u8], quote: Quote) {
 }
 
 /// How many ICMP errors a check has arrive before it receives any.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 pub const QUEUED_ERRORS: usize = 3;
 
-/// ICMP errors that all arrive before a receive are each received, and then nothing more.
+/// Checks that ICMP errors that all arrive before a receive are each received, and then nothing more.
 pub fn icmp_errors_queued_together_each_arrive<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let version = version_of(to);
@@ -2692,8 +2820,9 @@ pub fn icmp_errors_queued_together_each_arrive<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error still arrives after a send that met it, which Linux fails with the error the ICMP error left.
+/// Checks that an ICMP error still arrives after a send that met it, which Linux fails with the error the ICMP error left.
 pub fn an_icmp_error_a_send_met_still_arrives<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let version = version_of(to);
@@ -2712,8 +2841,9 @@ pub fn an_icmp_error_a_send_met_still_arrives<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error that a too long send read off the host while looking for its own error still ends a wait at once.
+/// Checks that an ICMP error that a too long send read off the host while looking for its own error still ends a wait at once.
 pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let to = IpAddr::V6(ON_LINK_V6);
     let socket = opened(&sockets, IpVersion::V6);
@@ -2761,8 +2891,9 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
 pub const NEVER_ON_DATAGRAMS: [ReadyFor; 2] =
     [ReadyFor::URGENT_DATA, ReadyFor::PEER_FINISHED_SENDING];
 
-/// A wait for a fact no echo socket has waits on while it is readable and writable, until an ICMP error ends it.
+/// Checks that a wait for a fact no echo socket has waits on while it is readable and writable, until an ICMP error ends it.
 pub fn a_wait_for_a_fact_icmp_never_has_waits_on<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
     ip(NETWORK);
     let to = IpAddr::V4(ON_LINK);
     let socket = opened(&sockets, IpVersion::V4);
@@ -2803,10 +2934,11 @@ pub fn a_wait_for_a_fact_icmp_never_has_waits_on<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A socket waited on for data, made ready by the reply to an echo request it sends, for the readiness suite.
+/// Checks that a socket waited on for data, made ready by the reply to an echo request it sends, for the readiness suite.
 pub fn waiting_for_a_reply<S: IcmpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    enter_network_namespace();
     let socket = opened(&sockets, IpVersion::V4);
     Waiting {
         readiness: sockets,
@@ -2819,10 +2951,11 @@ pub fn waiting_for_a_reply<S: IcmpSockets>(
     }
 }
 
-/// A socket waited on for data, which an ICMP error about a request it sends fails, for the readiness suite.
+/// Checks that a socket waited on for data, which an ICMP error about a request it sends fails, for the readiness suite.
 pub fn waiting_for_data_until_an_icmp_error<S: IcmpSockets>(
     sockets: S,
 ) -> Waiting<S, S::Socket, impl FnOnce(&S, &S::Socket)> {
+    enter_network_namespace();
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V6);
     Waiting {
@@ -2835,18 +2968,18 @@ pub fn waiting_for_data_until_an_icmp_error<S: IcmpSockets>(
     }
 }
 
-/// Each setting set twice answers as it did once, by Configurable's own suite.
-pub fn configurable_value<S: IcmpSockets>(
-    sockets: S,
-    setting: IpSocketSetting<'static>,
-) -> (S, S::Socket, IpSocketSetting<'static>) {
+/// Checks that each setting set twice answers as it did once, by Configurable's own suite.
+/// Returns a socket of a namespace of its own with a membership of an IPv6 group, for Configurable's suite.
+pub fn configurable_value<S: IcmpSockets>(sockets: S) -> (S, S::Socket, IpSocketSetting<'static>) {
+    enter_network_namespace();
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V6);
-    (sockets, socket, setting)
+    (sockets, socket, multicast_setting())
 }
 
-/// A membership of an IPv6 group, which Linux would refuse to join a second time.
+/// Returns a membership of an IPv6 group, which Linux would refuse to join a second time.
 pub fn multicast_setting() -> IpSocketSetting<'static> {
+    // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x124);
     IpSocketSetting::MulticastV6(MulticastGroup {
         group: GROUP_V6,
@@ -2855,8 +2988,9 @@ pub fn multicast_setting() -> IpSocketSetting<'static> {
     })
 }
 
-/// An anycast address, which Linux would count twice.
+/// Returns an anycast address, which Linux would count twice.
 pub fn anycast_setting() -> IpSocketSetting<'static> {
+    // https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const ANYCAST: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 0x98);
     IpSocketSetting::Anycast(AnycastAddress {
         address: ANYCAST,
@@ -2877,105 +3011,253 @@ pub fn timestamping_setting() -> IpSocketSetting<'static> {
     })
 }
 
-/// Runs each suite function above as its own test on the value an implementation gives, made anew for every test in a network namespace of its own.
+/// Checks that every other kind of setting set twice answers as it did once, as Configurable's suite checks the first.
+pub fn other_settings_set_twice_answer_as_once<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    for setting in [
+        anycast_setting(),
+        send_buffer_setting(),
+        timestamping_setting(),
+    ] {
+        let socket = opened(&sockets, IpVersion::V6);
+        let once = sockets.configure(&socket, setting);
+        assert_eq!(sockets.configure(&socket, setting), once);
+    }
+}
+
+/// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
-        $crate::each_check!(
-            $value;
-            echo_reply_arrives_whole_over_ipv4,
-            echo_reply_arrives_whole_over_ipv6,
-            an_echo_reply_arrives_with_its_ipv4_options,
-            a_fragmented_reply_tells_its_largest_fragment,
-            the_request_carries_the_bound_identifier,
-            identifiers_are_shared_only_when_both_ask,
-            close_frees_the_identifier,
-            receive_with_nothing_queued_would_block,
-            a_short_buffer_keeps_the_whole_length,
-            ipv4_header_fields_go_out,
-            ipv6_header_fields_go_out,
-            ipv6_extension_headers_go_out,
-            an_ipv6_source_goes_out,
-            every_path_mtu_discovery_mode_sends,
-            each_path_mtu_discovery_mode_takes_its_mtu,
-            a_message_over_the_mtu_is_too_long_or_fragmented,
-            mark_selects_the_route,
-            owner_selects_the_route,
-            icmp_type_and_code_select_the_route,
-            interface_selects_the_link,
-            link_scope_takes_only_the_link,
-            broadcast_needs_its_permission,
-            a_waived_source_check_sends_from_an_absent_address,
-            source_preferences_are_taken,
-            a_confirmed_send_confirms_the_neighbour,
-            priority_chooses_the_band,
-            a_transmit_time_holds_the_send,
-            transmit_reports_carry_the_key_of_their_send,
-            receive_timestamps_come_only_when_set,
-            an_icmp_error_arrives_whole_over_ipv4,
-            an_icmp_error_arrives_whole_over_ipv6,
-            a_short_buffer_keeps_the_start_of_an_icmp_error,
-            icmp_errors_queued_together_each_arrive,
-            an_icmp_error_a_send_met_still_arrives,
-            pacing_holds_messages_in_the_send_buffer,
-            a_full_send_buffer_would_block,
-            a_small_receive_buffer_counts_its_drops,
-            memberships_are_taken,
-            multicast_source_filters_are_written,
-            waits_on_many_sockets_each_wake_once,
-            a_wait_sees_an_error_a_send_read_first,
-            a_wait_for_a_fact_icmp_never_has_waits_on,
-            rejected_transmit_times_are_reported_with_their_keys,
-        );
-        $crate::readiness_conformance::tests!(
-            readiness_contract,
-            ready: {
-                $crate::enter_network_namespace();
-                $crate::waiting_for_a_reply($value)
-            },
-            failing: {
-                $crate::enter_network_namespace();
-                $crate::waiting_for_data_until_an_icmp_error($value)
-            }
-        );
-        mod configurable_multicast {
-            $crate::configurable_suite::tests!({
-                $crate::enter_network_namespace();
-                $crate::configurable_value($value, $crate::multicast_setting())
-            });
+        #[test]
+        fn echo_reply_arrives_whole_over_ipv4() {
+            $crate::echo_reply_arrives_whole_over_ipv4($value);
         }
-        mod configurable_anycast {
-            $crate::configurable_suite::tests!({
-                $crate::enter_network_namespace();
-                $crate::configurable_value($value, $crate::anycast_setting())
-            });
-        }
-        mod configurable_send_buffer {
-            $crate::configurable_suite::tests!({
-                $crate::enter_network_namespace();
-                $crate::configurable_value($value, $crate::send_buffer_setting())
-            });
-        }
-        mod configurable_timestamping {
-            $crate::configurable_suite::tests!({
-                $crate::enter_network_namespace();
-                $crate::configurable_value($value, $crate::timestamping_setting())
-            });
-        }
-    };
-}
 
-/// One test per named check, each entering its own network namespace before the value is made.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! each_check {
-    ($value:expr; $($check:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $check() {
-                $crate::enter_network_namespace();
-                $crate::$check($value);
-            }
-        )*
+        #[test]
+        fn echo_reply_arrives_whole_over_ipv6() {
+            $crate::echo_reply_arrives_whole_over_ipv6($value);
+        }
+
+        #[test]
+        fn an_echo_reply_arrives_with_its_ipv4_options() {
+            $crate::an_echo_reply_arrives_with_its_ipv4_options($value);
+        }
+
+        #[test]
+        fn a_fragmented_reply_tells_its_largest_fragment() {
+            $crate::a_fragmented_reply_tells_its_largest_fragment($value);
+        }
+
+        #[test]
+        fn the_request_carries_the_bound_identifier() {
+            $crate::the_request_carries_the_bound_identifier($value);
+        }
+
+        #[test]
+        fn identifiers_are_shared_only_when_both_ask() {
+            $crate::identifiers_are_shared_only_when_both_ask($value);
+        }
+
+        #[test]
+        fn close_frees_the_identifier() {
+            $crate::close_frees_the_identifier($value);
+        }
+
+        #[test]
+        fn receive_with_nothing_queued_would_block() {
+            $crate::receive_with_nothing_queued_would_block($value);
+        }
+
+        #[test]
+        fn a_short_buffer_keeps_the_whole_length() {
+            $crate::a_short_buffer_keeps_the_whole_length($value);
+        }
+
+        #[test]
+        fn ipv4_header_fields_go_out() {
+            $crate::ipv4_header_fields_go_out($value);
+        }
+
+        #[test]
+        fn ipv6_header_fields_go_out() {
+            $crate::ipv6_header_fields_go_out($value);
+        }
+
+        #[test]
+        fn ipv6_extension_headers_go_out() {
+            $crate::ipv6_extension_headers_go_out($value);
+        }
+
+        #[test]
+        fn an_ipv6_source_goes_out() {
+            $crate::an_ipv6_source_goes_out($value);
+        }
+
+        #[test]
+        fn every_path_mtu_discovery_mode_sends() {
+            $crate::every_path_mtu_discovery_mode_sends($value);
+        }
+
+        #[test]
+        fn each_path_mtu_discovery_mode_takes_its_mtu() {
+            $crate::each_path_mtu_discovery_mode_takes_its_mtu($value);
+        }
+
+        #[test]
+        fn a_message_over_the_mtu_is_too_long_or_fragmented() {
+            $crate::a_message_over_the_mtu_is_too_long_or_fragmented($value);
+        }
+
+        #[test]
+        fn mark_selects_the_route() {
+            $crate::mark_selects_the_route($value);
+        }
+
+        #[test]
+        fn owner_selects_the_route() {
+            $crate::owner_selects_the_route($value);
+        }
+
+        #[test]
+        fn icmp_type_and_code_select_the_route() {
+            $crate::icmp_type_and_code_select_the_route($value);
+        }
+
+        #[test]
+        fn interface_selects_the_link() {
+            $crate::interface_selects_the_link($value);
+        }
+
+        #[test]
+        fn link_scope_takes_only_the_link() {
+            $crate::link_scope_takes_only_the_link($value);
+        }
+
+        #[test]
+        fn broadcast_needs_its_permission() {
+            $crate::broadcast_needs_its_permission($value);
+        }
+
+        #[test]
+        fn a_waived_source_check_sends_from_an_absent_address() {
+            $crate::a_waived_source_check_sends_from_an_absent_address($value);
+        }
+
+        #[test]
+        fn source_preferences_are_taken() {
+            $crate::source_preferences_are_taken($value);
+        }
+
+        #[test]
+        fn a_confirmed_send_confirms_the_neighbour() {
+            $crate::a_confirmed_send_confirms_the_neighbour($value);
+        }
+
+        #[test]
+        fn priority_chooses_the_band() {
+            $crate::priority_chooses_the_band($value);
+        }
+
+        #[test]
+        fn a_transmit_time_holds_the_send() {
+            $crate::a_transmit_time_holds_the_send($value);
+        }
+
+        #[test]
+        fn transmit_reports_carry_the_key_of_their_send() {
+            $crate::transmit_reports_carry_the_key_of_their_send($value);
+        }
+
+        #[test]
+        fn receive_timestamps_come_only_when_set() {
+            $crate::receive_timestamps_come_only_when_set($value);
+        }
+
+        #[test]
+        fn an_icmp_error_arrives_whole_over_ipv4() {
+            $crate::an_icmp_error_arrives_whole_over_ipv4($value);
+        }
+
+        #[test]
+        fn an_icmp_error_arrives_whole_over_ipv6() {
+            $crate::an_icmp_error_arrives_whole_over_ipv6($value);
+        }
+
+        #[test]
+        fn a_short_buffer_keeps_the_start_of_an_icmp_error() {
+            $crate::a_short_buffer_keeps_the_start_of_an_icmp_error($value);
+        }
+
+        #[test]
+        fn icmp_errors_queued_together_each_arrive() {
+            $crate::icmp_errors_queued_together_each_arrive($value);
+        }
+
+        #[test]
+        fn an_icmp_error_a_send_met_still_arrives() {
+            $crate::an_icmp_error_a_send_met_still_arrives($value);
+        }
+
+        #[test]
+        fn pacing_holds_messages_in_the_send_buffer() {
+            $crate::pacing_holds_messages_in_the_send_buffer($value);
+        }
+
+        #[test]
+        fn a_full_send_buffer_would_block() {
+            $crate::a_full_send_buffer_would_block($value);
+        }
+
+        #[test]
+        fn a_small_receive_buffer_counts_its_drops() {
+            $crate::a_small_receive_buffer_counts_its_drops($value);
+        }
+
+        #[test]
+        fn memberships_are_taken() {
+            $crate::memberships_are_taken($value);
+        }
+
+        #[test]
+        fn multicast_source_filters_are_written() {
+            $crate::multicast_source_filters_are_written($value);
+        }
+
+        #[test]
+        fn waits_on_many_sockets_each_wake_once() {
+            $crate::waits_on_many_sockets_each_wake_once($value);
+        }
+
+        #[test]
+        fn a_wait_sees_an_error_a_send_read_first() {
+            $crate::a_wait_sees_an_error_a_send_read_first($value);
+        }
+
+        #[test]
+        fn a_wait_for_a_fact_icmp_never_has_waits_on() {
+            $crate::a_wait_for_a_fact_icmp_never_has_waits_on($value);
+        }
+
+        #[test]
+        fn rejected_transmit_times_are_reported_with_their_keys() {
+            $crate::rejected_transmit_times_are_reported_with_their_keys($value);
+        }
+
+        #[test]
+        fn other_settings_set_twice_answer_as_once() {
+            $crate::other_settings_set_twice_answer_as_once($value);
+        }
+
+        $crate::wcontainers_readiness_conformance::tests!(
+            readiness,
+            ready: $crate::waiting_for_a_reply($value),
+            failing: $crate::waiting_for_data_until_an_icmp_error($value)
+        );
+
+        mod configurable {
+            $crate::wcontainers_configurable_conformance::tests!($crate::configurable_value($value));
+        }
     };
 }
