@@ -4,7 +4,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddr
 use std::io;
 use std::os::fd::AsFd;
 
-use etherparse::{IpDscp, IpEcn, Ipv4Options, Ipv6RawExtHeaderSlice};
+use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6RawExtHeaderSlice};
 use linux_raw_sys::net::{
     IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
 };
@@ -12,30 +12,30 @@ use linux_raw_sys::netlink::RTAX_MTU;
 use netlink_packet_core::{NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload};
 use netlink_packet_route::link::{AfSpecInet6, AfSpecUnspec, LinkAttribute, LinkMessage};
 use netlink_packet_route::route::{
-    RouteAddress, RouteAttribute, RouteMessage, RouteMetric, RouteType, RouteVia,
+    RouteAddress, RouteAttribute, RouteFlags, RouteMessage, RouteMetric, RouteType, RouteVia,
 };
 use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
 use netlink_sys::protocols::NETLINK_ROUTE;
 use netlink_sys::{Socket, SocketAddr as NetlinkAddress};
+use rustix::net::{SocketType, ipproto};
 use socket2::{Domain, SockAddr, Socket as DatagramSocket, Type};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, InterfaceIndex, IpPacketSetting, IpVersion, Ipv4RouteSelectors,
     Ipv6RouteSelectors, MaximumTransmissionUnit, MobileAddressPreference, NeighbourConfirmation,
-    Route, RouteKind, RouteScope, RouteSelectors, SourceAddressCheck, SourcePreferences,
-    TemporaryAddressPreference, UpperLayer, UpperLayerSelector,
+    PacketMark, Route, RouteKind, RouteScope, RouteSelectors, SourceAddressCheck,
+    SourcePreferences, TemporaryAddressPreference, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options::{
-    Shortfalls, io_host_error, set_packet_setting,
+    Shortfalls, io_host_error, open_socket, set_packet_setting,
 };
 use wcontainers_kernel::UserId;
 
 const LINK_SCOPE: &str = "route lookup: a link-scope IPv4 lookup the routing socket cannot ask for";
 const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IPv4 address the host lacks, which the routing socket always checks";
-const SOURCE_PREFERENCES: &str = "route lookup: IPv6 source preferences other than the default, which the routing socket cannot take";
 const UPPER_LAYER_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take (it takes TCP, UDP, ICMP and ICMPv6)";
 const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
-const ENCAPSULATION: &str = "route lookup: the path MTU of an encapsulating route, less a headroom the routing socket does not give";
+const PROBE: &str = "route lookup: a datagram socket connected out of the route's interface took another routing entry or none, so what it is told is not this route's";
 
 const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
     temporary: TemporaryAddressPreference::SystemDefault,
@@ -45,8 +45,13 @@ const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
 /// The port number that asks `bind` for any port.
 const ANY_PORT: u16 = u16::MIN;
 
-/// The destination port of a neighbour confirmation, which sends nothing but needs a port.
-const CONFIRMATION_PORT: u16 = u16::MAX;
+/// The destination port of a neighbour confirmation or a probe socket, which send nothing but need a port.
+const PROBE_PORT: u16 = u16::MAX;
+
+/// The most an IPv4 path MTU can be, the largest total length its header holds; Linux caps every IPv4 route's MTU at it.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/net/ip.h
+const IP_MAX_MTU: u32 = u16::MAX as u32;
 
 /// The send flags that confirm the neighbour and send nothing.
 const CONFIRMING_PROBE: libc::c_int = libc::MSG_CONFIRM | MSG_PROBE as libc::c_int;
@@ -209,7 +214,10 @@ impl Lookup<'_> {
             owner,
             route.upper_layer,
         )?;
-        let found = self.found(&self.exchange_route(request)?, IpAddr::V4(destination))?;
+        let found = self.found(
+            &self.exchange_route(request.clone())?,
+            IpAddr::V4(destination),
+        )?;
         if found.kind == RouteKind::Broadcast && route.broadcast == BroadcastPermission::Refused {
             return Err(HostError::Errno(libc::EACCES));
         }
@@ -219,10 +227,30 @@ impl Lookup<'_> {
             // A socket whose `IP_TTL` was never set gives the namespace's default.
             None => datagram_socket(IpVersion::V4)?.ttl_v4().map_err(io_error)?,
         };
-        let path_mtu = match found.mtu {
-            Some(mtu) => mtu,
-            None if found.mtu_locked && found.through_gateway => link.mtu.min(MINIMUM_REASSEMBLY),
-            None => link.mtu,
+        let path_mtu = if found.encapsulated {
+            self.probe(
+                &request,
+                &found,
+                &ProbeSelectors {
+                    destination: IpAddr::V4(destination),
+                    source: route.source.map(IpAddr::V4),
+                    owner,
+                    mark: route.mark,
+                    dscp: route.dscp,
+                    ecn: route.ecn,
+                    preferences: None,
+                },
+            )?
+            .path_mtu
+        } else {
+            match found.mtu {
+                Some(mtu) => mtu,
+                None if found.mtu_locked && found.through_gateway => {
+                    link.mtu.min(MINIMUM_REASSEMBLY)
+                }
+                None => link.mtu,
+            }
+            .min(IP_MAX_MTU)
         };
         let resolved = Route {
             kind: found.kind,
@@ -243,9 +271,6 @@ impl Lookup<'_> {
         route: &Ipv6RouteSelectors<'_>,
         owner: UserId,
     ) -> Result<(FoundRoute, Route), HostError> {
-        if route.source.is_none() && route.source_preferences != DEFAULT_SOURCE_PREFERENCES {
-            return Err(self.shortfalls.refuse(SOURCE_PREFERENCES));
-        }
         let destination = match &route.routing_header {
             None => route.destination,
             Some(header) => self.routing_header_first_hop(header, route.destination)?,
@@ -278,20 +303,47 @@ impl Lookup<'_> {
             owner,
             route.upper_layer,
         )?;
-        let found = self.found(&self.exchange_route(request)?, IpAddr::V6(destination))?;
+        let found = self.found(
+            &self.exchange_route(request.clone())?,
+            IpAddr::V6(destination),
+        )?;
         let link = self.read_link(found.interface)?;
-        let source = match route.source {
-            Some(source) => IpAddr::V6(source),
-            None => found.source.ok_or(HostError::Errno(libc::EPROTO))?,
+        // A source an address of the host's own routes from itself whatever the preferences, as the first rule of choosing a source says.
+        let preferences = (route.source.is_none()
+            && found.kind != RouteKind::Local
+            && route.source_preferences != DEFAULT_SOURCE_PREFERENCES)
+            .then_some(route.source_preferences);
+        let probe = if found.encapsulated || preferences.is_some() {
+            Some(self.probe(
+                &request,
+                &found,
+                &ProbeSelectors {
+                    destination: IpAddr::V6(destination),
+                    source: route.source.map(IpAddr::V6),
+                    owner,
+                    mark: route.mark,
+                    dscp: route.dscp,
+                    ecn: route.ecn,
+                    preferences,
+                },
+            )?)
+        } else {
+            None
+        };
+        let source = match (route.source, &probe) {
+            (Some(source), _) => IpAddr::V6(source),
+            (None, Some(probe)) if preferences.is_some() => probe.source,
+            (None, _) => found.source.ok_or(HostError::Errno(libc::EPROTO))?,
         };
         let conf = link.ipv6.ok_or(HostError::Errno(libc::EPROTO))?;
         let resolved = Route {
             kind: found.kind,
             source,
             interface: found.interface,
-            path_mtu: MaximumTransmissionUnit(match found.mtu {
-                Some(mtu) => mtu,
-                None => u32::try_from(conf.mtu).map_err(|_| HostError::Errno(libc::EPROTO))?,
+            path_mtu: MaximumTransmissionUnit(match (&probe, found.mtu) {
+                (Some(probe), _) if found.encapsulated => probe.path_mtu,
+                (_, Some(mtu)) => mtu,
+                (_, None) => u32::try_from(conf.mtu).map_err(|_| HostError::Errno(libc::EPROTO))?,
             }),
             device_mtu: MaximumTransmissionUnit(link.mtu),
             default_hop_limit: hop_limit(match found.hop_limit {
@@ -360,20 +412,9 @@ impl Lookup<'_> {
         next_hop: IpAddr,
         interface: InterfaceIndex,
     ) -> Result<(), HostError> {
-        let (version, peer) = match next_hop {
-            IpAddr::V4(address) => (
-                IpVersion::V4,
-                SocketAddr::V4(SocketAddrV4::new(address, CONFIRMATION_PORT)),
-            ),
-            IpAddr::V6(address) => (
-                IpVersion::V6,
-                SocketAddr::V6(SocketAddrV6::new(
-                    address,
-                    CONFIRMATION_PORT,
-                    u32::MIN,
-                    scope_of(address, Some(interface)),
-                )),
-            ),
+        let version = match next_hop {
+            IpAddr::V4(_) => IpVersion::V4,
+            IpAddr::V6(_) => IpVersion::V6,
         };
         let socket = datagram_socket(version)?;
         set_packet_setting(
@@ -383,7 +424,11 @@ impl Lookup<'_> {
             self.shortfalls,
         )?;
         socket
-            .send_to_with_flags(&[], &SockAddr::from(peer), CONFIRMING_PROBE)
+            .send_to_with_flags(
+                &[],
+                &socket_address(next_hop, PROBE_PORT, interface),
+                CONFIRMING_PROBE,
+            )
             .map_err(io_error)?;
         Ok(())
     }
@@ -418,6 +463,7 @@ impl Lookup<'_> {
         let mut mtu = None;
         let mut mtu_locked = false;
         let mut hop_limit = None;
+        let mut encapsulated = false;
         for attribute in &reply.attributes {
             match attribute {
                 RouteAttribute::PrefSource(address) => source = address_of(address),
@@ -434,9 +480,7 @@ impl Lookup<'_> {
                     next_hop = IpAddr::V6(*address);
                     through_gateway = true;
                 }
-                RouteAttribute::Encap(_) | RouteAttribute::EncapType(_) => {
-                    return Err(self.shortfalls.refuse(ENCAPSULATION));
-                }
+                RouteAttribute::Encap(_) | RouteAttribute::EncapType(_) => encapsulated = true,
                 RouteAttribute::Metrics(metrics) => {
                     for metric in metrics {
                         match metric {
@@ -461,7 +505,112 @@ impl Lookup<'_> {
             mtu,
             mtu_locked,
             hop_limit,
+            encapsulated,
         })
+    }
+
+    /// Reads what a datagram socket connected along the lookup's routing entry is told, once the routing socket confirms its connect took that entry.
+    fn probe(
+        &self,
+        request: &RouteMessage,
+        found: &FoundRoute,
+        selectors: &ProbeSelectors,
+    ) -> Result<Probe, HostError> {
+        let version = match selectors.destination {
+            IpAddr::V4(_) => IpVersion::V4,
+            IpAddr::V6(_) => IpVersion::V6,
+        };
+        // A socket's routing owner is the filesystem user that made it, which takes `CAP_SETUID` to be another.
+        let socket = DatagramSocket::from(
+            open_socket(version, SocketType::DGRAM, ipproto::UDP, selectors.owner)
+                .map_err(|_| self.shortfalls.refuse(PROBE))?,
+        );
+        let set = |setting: &IpPacketSetting<'_>| {
+            set_packet_setting(socket.as_fd(), version, setting, self.shortfalls)
+        };
+        set(&IpPacketSetting::UnicastInterface(Some(found.interface)))?;
+        set(&IpPacketSetting::TrafficClass {
+            version,
+            dscp: selectors.dscp,
+            ecn: selectors.ecn,
+        })?;
+        if selectors.mark != PacketMark(u32::MIN) {
+            // Setting a mark takes `CAP_NET_ADMIN`, which the routing socket does not need.
+            set(&IpPacketSetting::Mark(selectors.mark))
+                .map_err(|_| self.shortfalls.refuse(PROBE))?;
+        }
+        if let Some(preferences) = selectors.preferences {
+            set(&IpPacketSetting::SourcePreferences(preferences))?;
+        }
+        if found.kind == RouteKind::Broadcast {
+            socket.set_broadcast(true).map_err(io_error)?;
+        }
+        if let IpAddr::V6(destination) = selectors.destination
+            && destination.is_multicast()
+        {
+            socket
+                .set_multicast_if_v6(found.interface.0)
+                .map_err(io_error)?;
+        }
+        if let Some(source) = selectors.source {
+            socket
+                .bind(&socket_address(source, ANY_PORT, found.interface))
+                .map_err(|_| self.shortfalls.refuse(PROBE))?;
+        }
+        socket
+            .connect(&socket_address(
+                selectors.destination,
+                PROBE_PORT,
+                found.interface,
+            ))
+            .map_err(|_| self.shortfalls.refuse(PROBE))?;
+        let local = socket
+            .local_addr()
+            .map_err(io_error)?
+            .as_socket()
+            .ok_or(HostError::Errno(libc::EPROTO))?;
+        let path_mtu = match version {
+            IpVersion::V4 => rustix::net::sockopt::ip_mtu(&socket),
+            IpVersion::V6 => rustix::net::sockopt::ipv6_mtu(&socket),
+        }
+        .map_err(errno_error)?;
+        let mut taken = RouteMessage::default();
+        taken.header.address_family = request.header.address_family;
+        taken.header.destination_prefix_length = request.header.destination_prefix_length;
+        taken.header.tos = traffic_class(selectors.dscp, selectors.ecn);
+        let address = |address| match address {
+            IpAddr::V4(address) => RouteAddress::Inet(address),
+            IpAddr::V6(address) => RouteAddress::Inet6(address),
+        };
+        let attributes = &mut taken.attributes;
+        attributes.push(RouteAttribute::Destination(address(selectors.destination)));
+        if let Some(source) = selectors.source {
+            taken.header.source_prefix_length = request.header.source_prefix_length;
+            attributes.push(RouteAttribute::Source(address(source)));
+        }
+        attributes.push(RouteAttribute::Oif(found.interface.0));
+        attributes.push(RouteAttribute::Mark(selectors.mark.0));
+        attributes.push(RouteAttribute::Uid(selectors.owner.0));
+        attributes.push(RouteAttribute::IpProto(IpNumber::UDP.0));
+        attributes.push(RouteAttribute::Sport(local.port()));
+        attributes.push(RouteAttribute::Dport(PROBE_PORT));
+        if self.entry(request.clone())? != self.entry(taken)? {
+            return Err(self.shortfalls.refuse(PROBE));
+        }
+        Ok(Probe {
+            source: local.ip(),
+            path_mtu,
+        })
+    }
+
+    /// Returns the routing entry a lookup matches, without what changes from one asking to the next.
+    fn entry(&self, mut request: RouteMessage) -> Result<RouteMessage, HostError> {
+        request.header.flags |= RouteFlags::FibMatch;
+        let mut entry = self.exchange_route(request)?;
+        entry
+            .attributes
+            .retain(|attribute| !matches!(attribute, RouteAttribute::CacheInfo(_)));
+        Ok(entry)
     }
 
     fn read_link(&self, interface: InterfaceIndex) -> Result<Link, HostError> {
@@ -548,6 +697,24 @@ struct FoundRoute {
     mtu: Option<u32>,
     mtu_locked: bool,
     hop_limit: Option<u32>,
+    encapsulated: bool,
+}
+
+/// The selectors of a lookup a probe socket takes, besides the route's interface.
+struct ProbeSelectors {
+    destination: IpAddr,
+    source: Option<IpAddr>,
+    owner: UserId,
+    mark: PacketMark,
+    dscp: IpDscp,
+    ecn: IpEcn,
+    preferences: Option<SourcePreferences>,
+}
+
+/// What a datagram socket connected along a routing entry is told: the source Linux chose and the path MTU.
+struct Probe {
+    source: IpAddr,
+    path_mtu: u32,
 }
 
 struct Link {
@@ -606,6 +773,19 @@ fn has_address_v6(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> Resul
     socket.bind(&SockAddr::from(address)).map_err(io_error)
 }
 
+/// Returns the socket address of a port at the address, with the interface as its scope when it is link-local.
+fn socket_address(address: IpAddr, port: u16, interface: InterfaceIndex) -> SockAddr {
+    SockAddr::from(match address {
+        IpAddr::V4(address) => SocketAddr::V4(SocketAddrV4::new(address, port)),
+        IpAddr::V6(address) => SocketAddr::V6(SocketAddrV6::new(
+            address,
+            port,
+            u32::MIN,
+            scope_of(address, Some(interface)),
+        )),
+    })
+}
+
 /// Returns the scope a link-local address needs, the interface's; none for any other.
 fn scope_of(address: Ipv6Addr, interface: Option<InterfaceIndex>) -> u32 {
     match interface {
@@ -646,4 +826,8 @@ fn hop_limit(limit: u32) -> Result<HopLimit, HostError> {
 
 fn io_error(error: io::Error) -> HostError {
     io_host_error(&error)
+}
+
+fn errno_error(error: rustix::io::Errno) -> HostError {
+    io_error(error.into())
 }

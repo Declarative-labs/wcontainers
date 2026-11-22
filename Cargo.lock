@@ -4782,6 +4782,7 @@ dependencies = [
  "netlink-packet-core",
  "netlink-packet-route",
  "netlink-sys",
+ "rustix",
  "socket2",
  "wcontainers-abi",
  "wcontainers-internet-protocol",

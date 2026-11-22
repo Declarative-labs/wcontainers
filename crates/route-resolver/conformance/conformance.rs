@@ -46,12 +46,12 @@ const A_MTU: u32 = 1400;
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-5
 const B_MTU: u32 = 1300;
-/// Linux's loopback MTU, which the network sets again.
+/// The MTU Linux gives loopback in a new network namespace.
 ///
-/// https://github.com/torvalds/linux/blob/master/drivers/net/loopback.c
-const LOOPBACK_MTU: u32 = 65520;
+/// https://github.com/torvalds/linux/blob/v6.18/drivers/net/loopback.c
+const LOOPBACK_DEVICE_MTU: u32 = 64 * 1024;
 /// Two dummy links, da and db, with routes to `FAR` through a gateway on each: the main table's through da, table 100's through db.
-const NETWORK: &str = "link set lo up mtu 65520
+const NETWORK: &str = "link set lo up
 link add da type dummy
 link set da up mtu 1400
 address add 10.1.0.1/24 dev da
@@ -246,19 +246,32 @@ fn unless_refused(result: Result<Route, HostError>, check: impl FnOnce(Result<Ro
     }
 }
 
-/// Checks that an address of lo is a local route on lo from that address.
+/// Checks that an address of lo is a local route on lo from that address, with the path MTU a socket connected to it is told.
 pub fn loopback_route_is_local<R: RouteResolver>(resolver: R) {
     let network = network();
     let options = Ipv4Options::new();
-    let route = resolve4(&resolver, v4(&options, Ipv4Addr::LOCALHOST)).expect("loopback resolves");
-    assert_eq!(route.kind, RouteKind::Local);
-    assert!(![network.a, network.b].contains(&route.interface));
-    assert_eq!(route.source, IpAddr::V4(Ipv4Addr::LOCALHOST));
-    assert_eq!(route.device_mtu, MaximumTransmissionUnit(LOOPBACK_MTU));
-    let route = resolve6(&resolver, v6(Ipv6Addr::LOCALHOST)).expect("loopback resolves");
-    assert_eq!(route.kind, RouteKind::Local);
-    assert!(![network.a, network.b].contains(&route.interface));
-    assert_eq!(route.source, IpAddr::V6(Ipv6Addr::LOCALHOST));
+    let routes = [
+        resolve4(&resolver, v4(&options, Ipv4Addr::LOCALHOST)),
+        resolve6(&resolver, v6(Ipv6Addr::LOCALHOST)),
+    ];
+    for (route, address) in routes.into_iter().zip([
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ]) {
+        let route = route.expect("loopback resolves");
+        assert_eq!(route.kind, RouteKind::Local);
+        assert!(![network.a, network.b].contains(&route.interface));
+        assert_eq!(route.source, address);
+        assert_eq!(
+            route.device_mtu,
+            MaximumTransmissionUnit(LOOPBACK_DEVICE_MTU)
+        );
+        assert_eq!(
+            route.path_mtu,
+            MaximumTransmissionUnit(connected_path_mtu(address, DISCARD)),
+            "{address}"
+        );
+    }
 }
 
 /// The namespace's default IPv4 TTL.
@@ -410,12 +423,10 @@ pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolve
     ///
     /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const DESTINATION: Ipv6Addr = Ipv6Addr::new(0xfd05, 0, 0, 0, 0, 0, 0, 1);
-    /// The discard port ([RFC 863](https://www.rfc-editor.org/rfc/rfc863)); connecting sends nothing.
-    const DISCARD: u16 = 9;
     network();
     const ROUTE: &str = "route add fd05::/64 encap seg6 mode encap segs fd01::7 dev da";
     ip(IPV6, ROUTE);
-    let told = connected_path_mtu(DESTINATION, DISCARD);
+    let told = connected_path_mtu(IpAddr::V6(DESTINATION), DISCARD);
     unless_refused(resolve6(&resolver, v6(DESTINATION)), |route| {
         assert_eq!(
             route.expect("resolves").path_mtu,
@@ -424,13 +435,23 @@ pub fn encapsulating_route_leaves_room_for_its_headers<R: RouteResolver>(resolve
     });
 }
 
+/// The discard port ([RFC 863](https://www.rfc-editor.org/rfc/rfc863)); connecting sends nothing.
+const DISCARD: u16 = 9;
+
 /// Returns the path MTU Linux tells a datagram socket connected to the address.
-fn connected_path_mtu(address: Ipv6Addr, port: u16) -> u32 {
-    let socket =
-        std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, u16::MIN)).expect("a socket opens");
+fn connected_path_mtu(address: IpAddr, port: u16) -> u32 {
+    let any = match address {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    let socket = std::net::UdpSocket::bind((any, u16::MIN)).expect("a socket opens");
     socket.connect((address, port)).expect("connects");
     #[cfg(target_os = "linux")]
-    return rustix::net::sockopt::ipv6_mtu(&socket).expect("a connected socket's path MTU");
+    return match address {
+        IpAddr::V4(_) => rustix::net::sockopt::ip_mtu(&socket),
+        IpAddr::V6(_) => rustix::net::sockopt::ipv6_mtu(&socket),
+    }
+    .expect("a connected socket's path MTU");
     #[cfg(not(target_os = "linux"))]
     panic!("only Linux tells a connected socket's path MTU");
 }
@@ -907,7 +928,7 @@ const FORWARDING_V6: &[&str] = &[
 /// The subnet-router anycast address of da's prefix ([RFC 4291](https://www.rfc-editor.org/rfc/rfc4291#section-2.6.1)).
 const A_SUBNET_ROUTER: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 0);
 
-/// Checks that an anycast route, a kind the contract has no name for, is refused or given as the local delivery Linux makes of it.
+/// Checks that an anycast route, a kind the contract has no name for, is refused as not supported or given as the local delivery Linux makes of it.
 pub fn an_anycast_route_is_not_given_as_another_kind<R: RouteResolver>(resolver: R) {
     network();
     for path in FORWARDING_V6 {
@@ -915,9 +936,10 @@ pub fn an_anycast_route_is_not_given_as_another_kind<R: RouteResolver>(resolver:
     }
     let result = resolve6(&resolver, v6(A_SUBNET_ROUTER));
     assert!(
-        result
-            .as_ref()
-            .map_or(true, |route| route.kind == RouteKind::Local),
+        result.as_ref().map_or_else(
+            |error| *error == HostError::NotSupported,
+            |route| route.kind == RouteKind::Local
+        ),
         "{result:?}"
     );
 }
@@ -1188,9 +1210,13 @@ fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
     number_after(&text, FIELD, FIELD)
 }
 
-/// Makes da's address the source of temporary addresses, of which Linux makes one at once.
-const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/da/use_tempaddr";
-const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr";
+/// Makes da's and db's addresses the sources of temporary addresses, of which Linux makes one each at once.
+const TEMPORARY_ADDRESSES: &[&str] = &[
+    "/proc/sys/net/ipv6/conf/da/use_tempaddr",
+    "/proc/sys/net/ipv6/conf/db/use_tempaddr",
+];
+const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr
+address replace fd02::1/64 dev db nodad mngtmpaddr";
 
 /// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
 fn temporary_address(link: &str) -> Ipv6Addr {
@@ -1226,31 +1252,71 @@ const PATIENT_TRIES: u32 = 200;
 /// https://www.rfc-editor.org/rfc/rfc4861#section-10
 const PATIENT_TRY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Checks that a preference for temporary or public addresses chooses between da's address and the temporary one Linux made from it.
+/// Checks that a temporary or public preference chooses between a link's address and Linux's temporary one, also on a link a mark or owner selects.
 pub fn source_preferences_choose_among_the_link_addresses<R: RouteResolver>(resolver: R) {
+    /// A mark the rule selects.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-rule.8.html
+    const MARK: PacketMark = PacketMark(7);
+    /// A user the rule selects.
+    ///
+    /// https://man7.org/linux/man-pages/man8/ip-rule.8.html
+    const OWNER: UserId = UserId(4242);
+    const RULES: &str = "rule add fwmark 7 lookup 100
+rule add uidrange 4242-4242 lookup 100";
     let network = network();
-    write_setting(TEMPORARY_ADDRESSES, u8::from(true));
+    ip(IPV6, RULES);
+    for path in TEMPORARY_ADDRESSES {
+        write_setting(path, u8::from(true));
+    }
     ip(IPV6, MANAGED_TEMPORARY);
-    let temporary_address = temporary_address(A);
-    for (temporary, source) in [
-        (TemporaryAddressPreference::Temporary, temporary_address),
-        (TemporaryAddressPreference::Public, A_ADDRESS_V6),
+    let (a_temporary, b_temporary) = (temporary_address(A), temporary_address(B));
+    let unmarked = PacketMark(u32::MIN);
+    for (temporary, mark, owner, expected) in [
+        (
+            TemporaryAddressPreference::Temporary,
+            unmarked,
+            ROOT,
+            (network.a, a_temporary),
+        ),
+        (
+            TemporaryAddressPreference::Public,
+            unmarked,
+            ROOT,
+            (network.a, A_ADDRESS_V6),
+        ),
+        (
+            TemporaryAddressPreference::Temporary,
+            MARK,
+            ROOT,
+            (network.b, b_temporary),
+        ),
+        (
+            TemporaryAddressPreference::Public,
+            unmarked,
+            OWNER,
+            (network.b, B_ADDRESS_V6),
+        ),
     ] {
         let route = Ipv6RouteSelectors {
+            mark,
             source_preferences: SourcePreferences {
                 temporary,
                 mobile: MobileAddressPreference::Home,
             },
             ..v6(FAR_V6)
         };
-        unless_refused(resolve6(&resolver, route), |route| {
-            let route = route.expect("resolves");
-            assert_eq!(
-                (route.interface, route.source),
-                (network.a, IpAddr::V6(source)),
-                "{temporary:?}"
-            );
-        });
+        let route = resolver.resolve_route(
+            RouteSelectors::V6(route),
+            owner,
+            NeighbourConfirmation::Unconfirmed,
+        );
+        let route = route.expect("resolves");
+        assert_eq!(
+            (route.interface, route.source),
+            (expected.0, IpAddr::V6(expected.1)),
+            "{temporary:?} {mark:?} {owner:?}"
+        );
     }
 }
 

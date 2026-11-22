@@ -16,18 +16,28 @@ use wcontainers_kernel::UserId;
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_route_resolver_host::HostRouteResolver;
 
-/// A dummy link with an IPv6 prefix that forwards, so that the prefix's subnet-router anycast address is a route.
+/// A link whose prefix's subnet-router anycast address is a route, and one whose route a flow label selects over a wider one.
 const FORWARDING_LINK: &str = "link set lo up
 link add da type dummy
 link set da up
-address add fd01::1/64 dev da nodad";
+address add fd01::1/64 dev da nodad
+link add db type dummy
+link set db up
+address add fd02::1/64 dev db nodad
+route add fd09::/64 via fd02::2 dev db table 100
+route add fd09::/16 via fd02::3 dev db";
+/// Sends a flow label's lookups to the second link's route.
+const LABEL_RULE: &str = "rule add flowlabel 0x12345 lookup 100";
+const IPV4: &[&str] = &[];
+const IPV6: &[&str] = &["-6"];
 const FORWARDING: [&str; 2] = [
     "/proc/sys/net/ipv6/conf/all/forwarding",
     "/proc/sys/net/ipv6/conf/da/forwarding",
 ];
 
-fn ip(commands: &str) {
+fn ip(options: &[&str], commands: &str) {
     let mut child = Command::new("ip")
+        .args(options)
         .args(["-batch", "-"])
         .stdin(Stdio::piped())
         .spawn()
@@ -98,7 +108,8 @@ fn refusals_are_counted_under_their_reasons() {
         0,
         "a new network namespace needs root"
     );
-    ip(FORWARDING_LINK);
+    ip(IPV4, FORWARDING_LINK);
+    ip(IPV6, LABEL_RULE);
     for path in FORWARDING {
         std::fs::write(path, "1").expect(path);
     }
@@ -118,10 +129,20 @@ fn refusals_are_counted_under_their_reasons() {
         ..v6(Ipv6Addr::LOCALHOST)
     };
     let anycast = v6(Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 0));
+    // A probe socket takes no flow label, so it connects along the wider route and is told nothing of this one.
+    let labelled_with_preferences = Ipv6RouteSelectors {
+        flow_label: Ipv6FlowLabel::try_new(0x12345).expect("a flow label"),
+        source_preferences: SourcePreferences {
+            temporary: TemporaryAddressPreference::Public,
+            mobile: MobileAddressPreference::Home,
+        },
+        ..v6(Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1))
+    };
     for route in [
         RouteSelectors::V4(link_scope),
         RouteSelectors::V6(mobility),
         RouteSelectors::V6(anycast),
+        RouteSelectors::V6(labelled_with_preferences),
     ] {
         assert_eq!(
             resolve(&resolver, route.clone()),
@@ -133,7 +154,7 @@ fn refusals_are_counted_under_their_reasons() {
     let mut reasons: Vec<_> = counters.iter().map(|reading| reading.reason).collect();
     reasons.sort();
     reasons.dedup();
-    assert_eq!(reasons.len(), 3, "{counters:?}");
+    assert_eq!(reasons.len(), 4, "{counters:?}");
     assert!(
         counters.iter().all(|reading| reading.count == 1),
         "{counters:?}"
