@@ -484,7 +484,7 @@ pub const TIMESTAMPING_TIMES: usize = 3;
 
 /// The room for the control messages of one receive: timestamps, an extended error, packet information, statistics.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const CONTROL_ROOM: usize = 1024;
 
 /// The control messages of one `recvmsg`, in words so that they are aligned as `cmsghdr` needs.

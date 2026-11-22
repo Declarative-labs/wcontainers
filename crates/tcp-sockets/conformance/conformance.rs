@@ -80,27 +80,27 @@ pub use wcontainers_readiness_conformance;
 
 /// The byte the first fast open key is made of.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIRST_FAST_OPEN_KEY: u8 = 1;
 
 /// The byte the second fast open key is made of, unlike the first.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SECOND_FAST_OPEN_KEY: u8 = 2;
 
 /// The byte the third fast open key is made of, unlike the two before it.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const THIRD_FAST_OPEN_KEY: u8 = 3;
 
 /// Peers of the address sharing check: two for the sharing connections, one for the connection that does not share.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SHARING_PEERS: usize = 3;
 
 /// Connections the backlog check makes, more than the smallest backlog holds.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const BACKLOG_OVERFLOW: usize = 3;
 
 /// The names of the keep-alive check's two intervals, for its messages.
@@ -109,17 +109,17 @@ const RESET: &str = "the reset";
 
 /// How long a check waits for something the network does.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long data held back must stay unseen by the peer, well inside the 200 ms ceiling of a cork.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HELD_FOR: Duration = Duration::from_millis(30);
 
 /// How soon pushed data must arrive, under the cork's 200 ms ceiling so that the push and not the ceiling sent it.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PUSHED_WITHIN: Duration = Duration::from_millis(150);
 
 /// The owner of a container's first process, root.
@@ -129,7 +129,7 @@ const OWNER: UserId = UserId(0);
 
 /// The backlog of the listeners of most checks.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const BACKLOG: ListenBacklog = ListenBacklog(16);
 
 /// The bytes most checks send.
@@ -143,37 +143,37 @@ const URGENT: &[u8] = b"!";
 
 /// How far into the unread bytes a peek at an offset starts.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PEEK_OFFSET: usize = 2;
 
 /// How many bytes a read takes when the rest must stay unread.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const READ_PART: usize = 4;
 
 /// Room for the IP and TCP headers of a SYN.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HEADER_ROOM: usize = 256;
 
 /// The room a SYN's header is cut to.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CUT_HEADER: usize = 3;
 
 /// Room for the packet of an error queue entry.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const ENTRY_ROOM: usize = 64;
 
 /// Room for an ICMP error whole from its IP header, or a transmit report's packet from its link header.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACKET_ROOM: usize = 512;
 
 /// How long loopback takes at most to deliver what was sent.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTLE: Duration = Duration::from_millis(50);
 
 /// A loopback address that connections to it do not leave from, so that their two ends differ.
@@ -188,30 +188,30 @@ const QUOTED_HOP_LIMIT: u8 = 64;
 
 /// The bytes the order check sends one way.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TRANSFER: usize = 1 << 20;
 
 /// The key the transmit report checks name their sends by.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEY: TransmitReportKey = TransmitReportKey(7);
 
 /// A maximum segment size well below loopback's.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SEGMENT: MaximumSegmentSize = MaximumSegmentSize(1000);
 
 /// The first port of the range the exit node chooses ports from.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CHOICE_FIRST: Port = Port(41000);
 /// The last port of the reserved part at the range's start.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RESERVED_LAST: Port = Port(41010);
 /// The last port of the range the exit node chooses ports from.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CHOICE_LAST: Port = Port(41020);
 
 /// The first port of a range above Linux's default local port range, which ends at 60999.
@@ -220,33 +220,33 @@ const CHOICE_LAST: Port = Port(41020);
 const HIGH_CHOICE_FIRST: Port = Port(61000);
 /// The last port of the reserved part at the high range's start.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HIGH_RESERVED_LAST: Port = Port(61010);
 /// The last port of the high range.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const HIGH_CHOICE_LAST: Port = Port(61020);
 
 /// The fast open queue a listener takes.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FAST_OPEN_QUEUE: Option<NonZeroU32> = NonZeroU32::new(8);
 
 /// A time every setting of a time accepts.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTING_TIME: Duration = Duration::from_secs(10);
 /// A time under a second that the settings of a time in milliseconds accept.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SHORT_SETTING_TIME: Duration = Duration::from_millis(40);
 /// A count every setting of a count accepts.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTING_COUNT: u8 = 4;
 /// A size every setting of a size accepts.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SETTING_BYTES: usize = 1 << 16;
 
 /// A congestion control algorithm every Linux has.
@@ -273,74 +273,74 @@ static DROP_ALL: [FilterInstruction; 1] = [FilterInstruction {
 
 /// How long a fill waits for a send to take anything before it counts the connection full.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FILLED_AFTER: Duration = Duration::from_millis(100);
 
 /// How many times less a setting that bounds a buffer lets through than the default buffers.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const BOUND_RATIO: usize = 4;
 
 /// A receive low water mark that widens the receive buffer to hold it.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const WIDE_LOW_WATER: usize = 1 << 20;
 
 /// How far from its time a timer of a second or so may fire on a loaded machine.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TIMER_SLACK: Duration = Duration::from_millis(400);
 
 /// How long the keep-alive checks' connections stay idle before the first probe.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEEP_ALIVE_IDLE: Duration = Duration::from_secs(2);
 /// The probe counts the keep-alive check tries: the least, and one that shows each probe counted.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEEP_ALIVE_PROBE_COUNTS: &[u8] = &[1, 2];
 
 /// How long apart the keep-alive checks' probes go.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The longest a quick acknowledgement takes on loopback, below the shortest delay of a delayed one.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const QUICK_WITHIN: Duration = Duration::from_millis(20);
 
 /// The longest an acknowledgement may wait in the delayed acknowledgement check.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const DELAYED_ACKNOWLEDGEMENT_MAXIMUM: Duration = Duration::from_millis(5);
 
 /// The longest retransmission timeout of the check of the maximum.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RETRANSMISSION_CEILING: Duration = Duration::from_secs(1);
 /// How long the checks of retransmission timeouts watch retransmissions.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RETRANSMISSIONS_WATCHED: Duration = Duration::from_millis(3200);
 
 /// How many times a segment leaves within the given time when its timeouts do not grow, more than when they double.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LINEAR_TRANSMISSIONS: usize = 6;
 /// The time the linear transmissions are counted in.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LINEAR_TRANSMISSIONS_WITHIN: Duration = Duration::from_millis(1200);
 
 /// How long sent data may stay unacknowledged before the user timeout check's connection ends.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const USER_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How long the FIN_WAIT2 check's connection stays in that state.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIN_WAIT_2_LASTS: Duration = Duration::from_secs(1);
 
 /// A congestion control that marks what it sends as capable of explicit congestion notification.
@@ -348,20 +348,20 @@ const NOTIFYING_CONGESTION_CONTROL: &str = "dctcp";
 
 /// A pacing rate that spreads the paced bytes over more than the given time.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACING_RATE: BytesPerSecond = BytesPerSecond(1 << 20);
 /// The bytes the pacing check sends.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACED_BYTES: usize = 1 << 20;
 /// The least time the paced bytes take.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const PACED_AT_LEAST: Duration = Duration::from_millis(400);
 
 /// The delay the transmit delay check gives each segment.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TRANSMIT_DELAY: Duration = Duration::from_millis(50);
 
 /// An address of the documentation range, which no interface holds.
@@ -388,27 +388,27 @@ const FAST_OPEN_KEYS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 6);
 
 /// A TCP timestamp clock reading, in milliseconds.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CLOCK_READING: u32 = 1 << 30;
 
 /// How long a timestamp clock runs between being set and the segment that shows it.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CLOCK_RUNS: Duration = Duration::from_millis(50);
 
 /// A loopback address whose local route has the `tcp_usec_ts` feature: its connections' segments carry microseconds.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const MICROSECOND_CLOCK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 7);
 
 /// How long a check sleeps before it tries again a call that would block.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
 /// The count of a waker woken once.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const ONE_WAKE: usize = 1;
 
 /// The port that asks the host to choose one.
@@ -428,17 +428,17 @@ const NO_FLOW_LABEL: u32 = u32::MIN;
 
 /// The users of a group or address one socket joined, however often.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const ONE_MEMBER: usize = 1;
 
 /// The SYN retries of the check that a connect ends unanswered, the fewest that retry at all.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const ONE_SYNCHRONIZE_RETRY: RetryCount = RetryCount(1);
 
 /// How far a timestamp may stray: one tick of rounding, and the low bit the unit takes.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TIMESTAMP_SLACK: u128 = 2;
 
 /// The smallest receive low water mark, Linux's default: https://man7.org/linux/man-pages/man7/socket.7.html
@@ -926,12 +926,12 @@ fn packet_socket() -> OwnedFd {
 
 /// How long apart the two copies of one loopback packet may arrive at the packet socket.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const COPY_GAP: Duration = Duration::from_millis(5);
 
 /// The buffer of a capture's packet socket, large enough for every check's traffic at once.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CAPTURE_BUFFER: usize = 1 << 24;
 
 impl Capture {
@@ -3157,11 +3157,11 @@ pub fn header_settings_mark_each_segment<S: TcpSockets>(sockets: S) {
 
 /// A flow label a connection may carry for good: below 0x80000, which Linux keeps for the labels it makes itself.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIXED_FLOW_LABEL: u32 = 0x2468A;
 /// A second flow label a connection may carry for good, unlike the first.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const OTHER_FIXED_FLOW_LABEL: u32 = 0x13579;
 
 fn fixed_flow_label(label: u32) -> TcpSetting<'static> {
@@ -3490,19 +3490,19 @@ const AUTHENTICATION_SECRET: &[u8] = b"conformance secret";
 const OTHER_AUTHENTICATION_SECRET: &[u8] = b"another secret";
 /// A MAC length unlike Linux's default for the algorithm (12 bytes), so that the length given shows on the wire.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const AUTHENTICATION_MAC_LENGTH: TcpAuthenticationMacLength = TcpAuthenticationMacLength(16);
 /// The first key identifier of the authentication checks.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FIRST_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(1);
 /// The second key identifier of the authentication checks.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const SECOND_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(2);
 /// The third key identifier of the authentication checks.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const THIRD_AUTHENTICATION_KEY: TcpAuthenticationKeyIdentifier = TcpAuthenticationKeyIdentifier(3);
 
 /// Gives a key for the peers at 127.0.0.1 that sends and receives with the one identifier.
@@ -4317,12 +4317,12 @@ pub fn timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused<S: TcpSocket
 
 /// Rounds of one segment each that the statistics check sends.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const STATISTICS_ROUNDS: usize = 10;
 
 /// The hop limit of the peer's acknowledgements in the statistics check.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const STATISTICS_HOP_LIMIT: HopLimit = HopLimit(33);
 
 /// Checks that the statistics of each round's acknowledgement report agree with what the connection did.
@@ -4487,11 +4487,11 @@ pub fn accept_names_where_the_synchronize_arrived<S: TcpSockets>(sockets: S) {
 
 /// The owner of the connection of the owner check, other than [`OWNER`].
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const CONNECTION_OWNER: UserId = UserId(1001);
 /// The owner of the listener of the owner check, other than [`OWNER`].
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LISTENER_OWNER: UserId = UserId(1002);
 
 /// The host's tables of TCP sockets, a line for each.
@@ -4741,7 +4741,7 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
 
 /// Counters an authentication check sets, each unlike the others.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const AUTHENTICATION_COUNTERS: TcpAuthenticationCounters = TcpAuthenticationCounters {
     verified: SegmentCount(1),
     failed: SegmentCount(2),
@@ -4861,11 +4861,11 @@ const MULTICAST_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const ANYCAST_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
 /// A flow label of the setting checks.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const FLOW_LABEL: u32 = 0xABCDE;
 /// A packet mark of the setting checks.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const MARK: PacketMark = PacketMark(7);
 
 /// Gives the index of the host's loopback interface, the one that says it is loopback.
@@ -5422,7 +5422,7 @@ fn finish<F: Future>(mut future: Pin<&mut F>, counter: &CountingWaker, waker: &W
 
 /// How many connections the check of waits on many connections watches at once.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const WATCHED_CONNECTIONS: usize = 16;
 
 /// Gives a connection waited on for data, made ready by data its peer sends, for the readiness suite.

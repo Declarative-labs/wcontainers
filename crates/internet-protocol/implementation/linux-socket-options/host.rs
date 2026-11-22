@@ -91,7 +91,7 @@ fn linux_number(errno: Errno) -> i32 {
 
 /// How many different reasons one value counts apart, more than any host implementation names.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
+/// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const REASON_SLOTS: usize = 64;
 
 /// Where the reasons past [`REASON_SLOTS`] are counted, in the last slot.
