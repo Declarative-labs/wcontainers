@@ -9,13 +9,13 @@ use crate::StopFlag;
 
 /// What arrived from outside for the kernel.
 pub(crate) enum Arrival {
-    /// A socket can be read or written, or a connection finished connecting.
+    /// A socket can be read or written, or a connection finished connecting; `key` is its key in
+    /// the network's poller.
     Ready {
-        id: u32,
+        key: usize,
         readable: bool,
         writable: bool,
     },
-    Connected(u32, i32),
     /// A name lookup has its answer.
     Answered,
     /// Bytes read from the standard input, within the credit the kernel gave.

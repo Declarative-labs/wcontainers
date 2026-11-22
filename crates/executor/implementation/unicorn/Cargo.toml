@@ -29,6 +29,11 @@ wcontainers-docker = { path = "../../../wcontainers-docker" }
 # The seeded choices of a run, shared with the native back end's inside.
 wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
 wcontainers-system = { path = "../../../system" }
+wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
+wcontainers-readiness = { path = "../../../readiness" }
+wcontainers-internet-protocol = { path = "../../../internet-protocol" }
+wcontainers-configurable = { path = "../../../configurable" }
+wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
 wcontainers-executor = { path = "../.." }
 wcontainers-executor-wasmtime = { path = "../wasmtime", optional = true }
 wcontainers-arm64 = { path = "../../../wcontainers-arm64", optional = true }

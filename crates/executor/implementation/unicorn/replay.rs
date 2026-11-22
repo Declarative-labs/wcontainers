@@ -30,6 +30,11 @@ pub enum Entry {
     /// The backend's reply to a request a call of the kernel's waits on, by its number.
     BackendAnswered(u64, Vec<u8>),
     NameAnswered(u64, Vec<u8>),
+    /// What a TCP connection or listener a wait of the kernel's is on became ready for, by its
+    /// number.
+    TcpReady(u32, wcontainers_readiness::ReadyFor),
+    /// A TCP connect, listen or accept, and the number it gave.
+    TcpMade(Result<u32, HostError>),
     /// A signal the outside sent to the first process.
     Kill(wcontainers_kernel::signal::Signal),
     /// The ends of what the outside did at a point of the driver loop, with what it answered.
@@ -45,25 +50,11 @@ pub enum Entry {
 pub enum OwnedEvent {
     Timer,
     BackendNotice(Vec<u8>),
-    Connected {
-        connection: ConnectionId,
-        error: i32,
-    },
     ConnectionReady(ConnectionId),
-    StreamData {
-        end: End,
-        bytes: Vec<u8>,
-    },
-    StreamCredit {
-        end: End,
-        bytes: u64,
-    },
+    StreamData { end: End, bytes: Vec<u8> },
+    StreamCredit { end: End, bytes: u64 },
     StreamClosed(End),
-    TerminalResized {
-        end: End,
-        columns: u16,
-        rows: u16,
-    },
+    TerminalResized { end: End, columns: u16, rows: u16 },
 }
 
 impl OwnedEvent {
@@ -71,7 +62,6 @@ impl OwnedEvent {
         match *event {
             Event::Timer => Self::Timer,
             Event::BackendNotice { notice } => Self::BackendNotice(notice.to_vec()),
-            Event::Connected { connection, error } => Self::Connected { connection, error },
             Event::ConnectionReady { connection } => Self::ConnectionReady(connection),
             Event::StreamData { end, bytes } => Self::StreamData {
                 end,
@@ -89,10 +79,6 @@ impl OwnedEvent {
         match self {
             Self::Timer => Event::Timer,
             Self::BackendNotice(notice) => Event::BackendNotice { notice },
-            Self::Connected { connection, error } => Event::Connected {
-                connection: *connection,
-                error: *error,
-            },
             Self::ConnectionReady(connection) => Event::ConnectionReady {
                 connection: *connection,
             },

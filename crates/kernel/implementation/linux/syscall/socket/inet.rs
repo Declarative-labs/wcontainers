@@ -1513,7 +1513,7 @@ fn connect_outside<S: crate::System>(
     to: Endpoint,
     nonblocking: bool,
 ) -> Result<u64, Errno> {
-    let id = match super::outside::open(kernel, cx, socket, to, true) {
+    let id = match super::outside::open(kernel, cx, socket, to) {
         Ok(id) => id,
         Err(error) => {
             failed(kernel, cx, socket, error);
@@ -2018,7 +2018,7 @@ pub(super) fn shutdown<S: crate::System>(
                 match outside {
                     Some(id) => {
                         carry_outside(kernel, socket, 0, true, true);
-                        super::outside::finish(cx, id);
+                        super::outside::finish(kernel, cx, id);
                     }
                     None => send_fin(kernel, cx, socket),
                 }
@@ -3914,7 +3914,7 @@ pub(super) fn receive<S: crate::System>(
     }
     let outside = inet_ref(socket).outside;
     if let Some(id) = outside {
-        super::outside::pull(kernel, cx, socket, id);
+        super::outside::pull_and_wait(kernel, cx, socket, id);
     }
     // `sk_wait_data` keeps a waiting reader's data from sending its I/O signal.
     socket.borrow_mut().waiting_data = false;
@@ -3923,7 +3923,7 @@ pub(super) fn receive<S: crate::System>(
         socket.borrow_mut().waiting_data = true;
     }
     if let Some(id) = outside {
-        super::outside::pull(kernel, cx, socket, id);
+        super::outside::pull_and_wait(kernel, cx, socket, id);
     }
     let (copied, mut received) = result?;
     // A read of the end moves past the FIN (`tcp_recvmsg`'s `++*seq`).

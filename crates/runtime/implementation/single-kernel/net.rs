@@ -9,12 +9,14 @@ use std::net::{IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, U
 use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Poll, Waker};
 use std::thread::JoinHandle;
 
 use polling::{Event as Interest, Events, Poller};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
 use wcontainers_abi::{ConnectionId, Event, HostError};
 use wcontainers_kernel::errno::Errno;
+use wcontainers_readiness::ReadyFor;
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::errno;
@@ -22,44 +24,55 @@ use crate::errno;
 /// The names of the network's threads.
 const NETWORK_THREAD: &str = "wcontainers network";
 
-enum Socket {
-    Stream(TcpStream),
-    Datagram(UdpSocket),
-}
-
-impl Socket {
-    fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        match self {
-            Socket::Stream(stream) => stream.as_fd(),
-            Socket::Datagram(socket) => socket.as_fd(),
-        }
-    }
-}
-
-struct Connection {
-    socket: Socket,
-    /// Still connecting: the next change is the connection's result.
-    connecting: bool,
+/// A UDP flow, numbered by the kernel.
+struct Flow {
+    socket: UdpSocket,
     /// A receive or send answered "would block", so the next change is told.
     read_armed: bool,
     write_armed: bool,
 }
 
+/// A TCP connection, numbered here.
+struct Stream {
+    /// None when the connect failed at once.
+    socket: Option<TcpStream>,
+    /// Still connecting: the next change is the connection's result.
+    connecting: bool,
+    /// The error the connect failed with, given to the next receive.
+    error: Option<i32>,
+    /// What the poller said it is ready for, not yet given to a wait.
+    ready: ReadyFor,
+    waker: Option<Waker>,
+}
+
+/// A TCP listener, numbered here; one for a port not published has no socket and never accepts.
 struct Listener {
-    socket: TcpListener,
-    armed: bool,
+    socket: Option<TcpListener>,
+    ready: bool,
+    waker: Option<Waker>,
 }
 
 /// The network of one container.
 pub(crate) struct Network {
-    arrivals: Arc<Arrivals>,
     poller: Arc<Poller>,
     thread: Option<JoinHandle<()>>,
     gone: Arc<AtomicBool>,
-    connections: HashMap<u32, Connection>,
+    flows: HashMap<u32, Flow>,
+    streams: HashMap<u32, Stream>,
     listeners: HashMap<u32, Listener>,
+    /// The number of the last TCP connection or listener made.
+    last: u32,
     /// Where on the host each published container port is reached.
     published: HashMap<u16, SocketAddr>,
+}
+
+/// The poller's key of a UDP flow and of a TCP connection or listener.
+fn flow_key(id: u32) -> usize {
+    (id as usize) << 1
+}
+
+fn stream_key(id: u32) -> usize {
+    flow_key(id) | 1
 }
 
 /// Linux's number for a host error, or `otherwise` when Linux has none.
@@ -88,11 +101,18 @@ fn watch(poller: &Poller, arrivals: &Arrivals, gone: &AtomicBool) {
         }
         for event in events.iter() {
             arrivals.push(Arrival::Ready {
-                id: event.key as u32,
+                key: event.key,
                 readable: event.readable,
                 writable: event.writable,
             });
         }
+    }
+}
+
+/// Keeps the waker of a wait, made again only when it would wake another.
+fn keep_waker(kept: &mut Option<Waker>, waker: &Waker) {
+    if !kept.as_ref().is_some_and(|kept| kept.will_wake(waker)) {
+        *kept = Some(waker.clone());
     }
 }
 
@@ -101,19 +121,20 @@ impl Network {
         let poller = Arc::new(Poller::new().expect("the host's readiness poller"));
         let gone = Arc::new(AtomicBool::new(false));
         let thread = {
-            let (poller, arrivals, gone) = (poller.clone(), arrivals.clone(), gone.clone());
+            let (poller, gone) = (poller.clone(), gone.clone());
             std::thread::Builder::new()
                 .name(NETWORK_THREAD.to_string())
                 .spawn(move || watch(&poller, &arrivals, &gone))
                 .expect("a network thread")
         };
         Self {
-            arrivals,
             poller,
             thread: Some(thread),
             gone,
-            connections: HashMap::new(),
+            flows: HashMap::new(),
+            streams: HashMap::new(),
             listeners: HashMap::new(),
+            last: 0,
             published: HashMap::new(),
         }
     }
@@ -122,152 +143,55 @@ impl Network {
         self.published.insert(port, at);
     }
 
-    /// Asks the poller for the next change of a connection, as it is armed now.
-    fn arm(&self, id: u32) {
-        if let Some(connection) = self.connections.get(&id) {
-            let interest = Interest::new(
-                id as usize,
-                connection.read_armed,
-                connection.write_armed || connection.connecting,
-            );
-            let _ = self.poller.modify(connection.socket.fd(), interest);
-        } else if let Some(listener) = self.listeners.get(&id) {
-            let interest = Interest::new(id as usize, listener.armed, false);
-            let _ = self.poller.modify(&listener.socket, interest);
+    /// Asks the poller for the next change of a flow, as it is armed now.
+    fn arm_flow(&self, id: u32) {
+        if let Some(flow) = self.flows.get(&id) {
+            let interest = Interest::new(flow_key(id), flow.read_armed, flow.write_armed);
+            let _ = self.poller.modify(flow.socket.as_fd(), interest);
         }
     }
 
-    fn insert(&mut self, id: u32, connection: Connection) {
+    fn next_number(&mut self) -> u32 {
+        self.last = self.last.wrapping_add(1);
+        self.last
+    }
+
+    /// Starts a UDP flow to an outside address.
+    pub(crate) fn connect(&mut self, id: u32, bytes: &[u8], port: u16) -> Result<(), HostError> {
+        let to = address(bytes, port).ok_or(HostError::Errno(Errno::EINVAL as i32))?;
+        let socket = UdpSocket::bind(match to {
+            SocketAddr::V4(_) => SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), 0),
+            SocketAddr::V6(_) => SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
+        })
+        .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
+        .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
+        socket
+            .connect(to)
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNREFUSED as u32)))?;
         // SAFETY: the socket stays registered only while it is held here; `close` deletes it first.
         let _ = unsafe {
             self.poller
-                .add(&connection.socket.fd(), Interest::none(id as usize))
+                .add(&socket.as_fd(), Interest::none(flow_key(id)))
         };
-        self.connections.insert(id, connection);
-        self.arm(id);
-    }
-
-    pub(crate) fn connect(
-        &mut self,
-        id: u32,
-        bytes: &[u8],
-        port: u16,
-        stream: bool,
-    ) -> Result<(), HostError> {
-        let to = address(bytes, port).ok_or(HostError::Errno(Errno::EINVAL as i32))?;
-        let (kind, protocol) = if stream {
-            (Type::STREAM, Protocol::TCP)
-        } else {
-            (Type::DGRAM, Protocol::UDP)
-        };
-        let socket = RawSocket::new(Domain::for_address(to), kind, Some(protocol))
-            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
-        let connecting = match socket.connect(&to.into()) {
-            Ok(()) => false,
-            Err(error)
-                if stream
-                    && (error.kind() == ErrorKind::WouldBlock
-                        || rustix::io::Errno::from_io_error(&error)
-                            == Some(rustix::io::Errno::INPROGRESS)) =>
-            {
-                true
-            }
-            Err(error) => {
-                let number = linux_error(&error, Errno::ECONNREFUSED as u32);
-                if stream {
-                    self.arrivals.push(Arrival::Connected(id, number));
-                    return Ok(());
-                }
-                return Err(HostError::Errno(number));
-            }
-        };
-        let socket = if stream {
-            Socket::Stream(socket.into())
-        } else {
-            Socket::Datagram(socket.into())
-        };
-        self.insert(
+        self.flows.insert(
             id,
-            Connection {
+            Flow {
                 socket,
-                connecting,
-                read_armed: !connecting,
+                read_armed: true,
                 write_armed: false,
             },
         );
-        if !connecting {
-            self.arrivals.push(Arrival::Connected(id, 0));
-        }
+        self.arm_flow(id);
         Ok(())
-    }
-
-    pub(crate) fn listen(&mut self, id: u32, port: u16) -> Result<(), HostError> {
-        let Some(&at) = self.published.get(&port) else {
-            // Nothing outside reaches a port that is not published.
-            return Ok(());
-        };
-        let socket = TcpListener::bind(at)
-            .map_err(|e| HostError::Errno(linux_error(&e, Errno::EADDRINUSE as u32)))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| HostError::Errno(linux_error(&e, Errno::EADDRINUSE as u32)))?;
-        // SAFETY: as in `insert`.
-        let _ = unsafe { self.poller.add(&socket, Interest::none(id as usize)) };
-        self.listeners.insert(
-            id,
-            Listener {
-                socket,
-                armed: true,
-            },
-        );
-        self.arm(id);
-        Ok(())
-    }
-
-    pub(crate) fn accept(&mut self, listener: u32, id: u32) -> Result<(), HostError> {
-        let socket = self.listeners.get_mut(&listener).ok_or(HostError::Closed)?;
-        match socket.socket.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(true)
-                    .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNABORTED as u32)))?;
-                self.insert(
-                    id,
-                    Connection {
-                        socket: Socket::Stream(stream),
-                        connecting: false,
-                        read_armed: true,
-                        write_armed: false,
-                    },
-                );
-                Ok(())
-            }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                socket.armed = true;
-                self.arm(listener);
-                Err(HostError::WouldBlock)
-            }
-            Err(error) => Err(HostError::Errno(linux_error(
-                &error,
-                Errno::ECONNABORTED as u32,
-            ))),
-        }
     }
 
     pub(crate) fn send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
-        let connection = self.connections.get_mut(&id).ok_or(HostError::Closed)?;
-        let result = match &mut connection.socket {
-            Socket::Stream(stream) => stream.write(bytes),
-            Socket::Datagram(socket) => socket.send(bytes),
-        };
-        match result {
+        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
+        match flow.socket.send(bytes) {
             Ok(count) => Ok(count),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                connection.write_armed = true;
-                self.arm(id);
+                flow.write_armed = true;
+                self.arm_flow(id);
                 Err(HostError::WouldBlock)
             }
             Err(_) => Err(HostError::Closed),
@@ -275,87 +199,284 @@ impl Network {
     }
 
     pub(crate) fn receive(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
-        let connection = self.connections.get_mut(&id).ok_or(HostError::Closed)?;
-        let result = match &mut connection.socket {
-            Socket::Stream(stream) => stream.read(into),
-            Socket::Datagram(socket) => socket.recv(into),
-        };
-        match result {
+        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
+        match flow.socket.recv(into) {
             Ok(count) => Ok(count),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                connection.read_armed = true;
-                self.arm(id);
+                flow.read_armed = true;
+                self.arm_flow(id);
                 Err(HostError::WouldBlock)
             }
             Err(_) => Err(HostError::Closed),
         }
     }
 
-    pub(crate) fn finish(&mut self, id: u32) {
-        if let Some(Connection {
-            socket: Socket::Stream(stream),
-            ..
-        }) = self.connections.get(&id)
-        {
-            let _ = stream.shutdown(Shutdown::Write);
-        }
-    }
-
     pub(crate) fn close(&mut self, id: u32) {
-        if let Some(connection) = self.connections.remove(&id) {
-            let _ = self.poller.delete(connection.socket.fd());
-        }
-        if let Some(listener) = self.listeners.remove(&id) {
-            let _ = self.poller.delete(&listener.socket);
+        if let Some(flow) = self.flows.remove(&id) {
+            let _ = self.poller.delete(flow.socket.as_fd());
         }
     }
 
-    /// The event the kernel is told for one arrival; none when it tells nothing new.
+    /// Starts a TCP connection to `to`, without waiting; its number.
+    pub(crate) fn tcp_connect(&mut self, to: SocketAddr) -> Result<u32, HostError> {
+        let socket = RawSocket::new(Domain::for_address(to), Type::STREAM, Some(Protocol::TCP))
+            .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
+        let id = self.next_number();
+        let mut stream = Stream {
+            socket: None,
+            connecting: false,
+            error: None,
+            ready: ReadyFor::empty(),
+            waker: None,
+        };
+        match socket.connect(&to.into()) {
+            Ok(()) => stream.ready = ReadyFor::WRITABLE,
+            Err(error)
+                if error.kind() == ErrorKind::WouldBlock
+                    || rustix::io::Errno::from_io_error(&error)
+                        == Some(rustix::io::Errno::INPROGRESS) =>
+            {
+                stream.connecting = true;
+            }
+            Err(error) => {
+                stream.error = Some(linux_error(&error, Errno::ECONNREFUSED as u32));
+                stream.ready = ReadyFor::ERROR | ReadyFor::HANG_UP;
+                self.streams.insert(id, stream);
+                return Ok(id);
+            }
+        }
+        let socket: TcpStream = socket.into();
+        // SAFETY: as in `connect`.
+        let _ = unsafe {
+            self.poller
+                .add(&socket.as_fd(), Interest::none(stream_key(id)))
+        };
+        stream.socket = Some(socket);
+        self.streams.insert(id, stream);
+        Ok(id)
+    }
+
+    pub(crate) fn tcp_send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
+        let stream = self.streams.get_mut(&id).ok_or(HostError::Closed)?;
+        let socket = stream.socket.as_mut().ok_or(HostError::Closed)?;
+        match socket.write(bytes) {
+            Ok(count) => Ok(count),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
+            Err(_) => Err(HostError::Closed),
+        }
+    }
+
+    /// Receives or peeks; zero bytes is the end of the stream.
+    pub(crate) fn tcp_receive(
+        &mut self,
+        id: u32,
+        into: &mut [u8],
+        peek: bool,
+    ) -> Result<usize, HostError> {
+        let stream = self.streams.get_mut(&id).ok_or(HostError::Closed)?;
+        if let Some(error) = stream.error {
+            return Err(HostError::Errno(error));
+        }
+        let socket = stream.socket.as_mut().ok_or(HostError::Closed)?;
+        let result = if peek {
+            socket.peek(into)
+        } else {
+            socket.read(into)
+        };
+        match result {
+            Ok(count) => Ok(count),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
+            Err(_) => Err(HostError::Closed),
+        }
+    }
+
+    pub(crate) fn tcp_shut_down(&mut self, id: u32, how: Shutdown) -> Result<(), HostError> {
+        let stream = self.streams.get(&id).ok_or(HostError::Closed)?;
+        let socket = stream.socket.as_ref().ok_or(HostError::Closed)?;
+        socket
+            .shutdown(how)
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENOTCONN as u32)))
+    }
+
+    pub(crate) fn tcp_close(&mut self, id: u32) {
+        if let Some(socket) = self.streams.remove(&id).and_then(|stream| stream.socket) {
+            let _ = self.poller.delete(socket.as_fd());
+        }
+        if let Some(socket) = self
+            .listeners
+            .remove(&id)
+            .and_then(|listener| listener.socket)
+        {
+            let _ = self.poller.delete(&socket);
+        }
+    }
+
+    /// Accepts connections to a container's port where it is published; a listener for a port
+    /// not published is closed to an accept. Its number.
+    pub(crate) fn tcp_listen(&mut self, port: u16) -> Result<u32, HostError> {
+        let socket = match self.published.get(&port) {
+            Some(&at) => {
+                let socket = TcpListener::bind(at)
+                    .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
+                    .map_err(|e| HostError::Errno(linux_error(&e, Errno::EADDRINUSE as u32)))?;
+                Some(socket)
+            }
+            None => None,
+        };
+        let id = self.next_number();
+        if let Some(socket) = &socket {
+            // SAFETY: as in `connect`.
+            let _ = unsafe { self.poller.add(socket, Interest::none(stream_key(id))) };
+        }
+        let listener = Listener {
+            socket,
+            ready: false,
+            waker: None,
+        };
+        self.listeners.insert(id, listener);
+        Ok(id)
+    }
+
+    /// Takes one connection waiting on a listener; its number.
+    pub(crate) fn tcp_accept(&mut self, listener: u32) -> Result<u32, HostError> {
+        let socket = self
+            .listeners
+            .get(&listener)
+            .ok_or(HostError::Closed)?
+            .socket
+            .as_ref()
+            .ok_or(HostError::Closed)?;
+        let stream = match socket.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                return Err(HostError::WouldBlock);
+            }
+            Err(error) => {
+                return Err(HostError::Errno(linux_error(
+                    &error,
+                    Errno::ECONNABORTED as u32,
+                )));
+            }
+        };
+        stream
+            .set_nonblocking(true)
+            .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNABORTED as u32)))?;
+        let id = self.next_number();
+        // SAFETY: as in `connect`.
+        let _ = unsafe {
+            self.poller
+                .add(&stream.as_fd(), Interest::none(stream_key(id)))
+        };
+        self.streams.insert(
+            id,
+            Stream {
+                socket: Some(stream),
+                connecting: false,
+                error: None,
+                ready: ReadyFor::empty(),
+                waker: None,
+            },
+        );
+        Ok(id)
+    }
+
+    /// What a TCP connection or listener is ready for, once it is ready for something asked
+    /// (an error or a hang-up always counts); until then the poller is asked and `waker` kept.
+    pub(crate) fn poll_ready(
+        &mut self,
+        id: u32,
+        interest: ReadyFor,
+        waker: &Waker,
+    ) -> Poll<Result<ReadyFor, HostError>> {
+        let counted = interest | ReadyFor::ERROR | ReadyFor::HANG_UP;
+        if let Some(stream) = self.streams.get_mut(&id) {
+            if stream.ready.intersects(counted) {
+                return Poll::Ready(Ok(core::mem::replace(&mut stream.ready, ReadyFor::empty())));
+            }
+            keep_waker(&mut stream.waker, waker);
+            if let Some(socket) = &stream.socket {
+                let read = interest.contains(ReadyFor::READABLE);
+                let write = interest.contains(ReadyFor::WRITABLE) || stream.connecting;
+                let _ = self
+                    .poller
+                    .modify(socket.as_fd(), Interest::new(stream_key(id), read, write));
+            }
+            return Poll::Pending;
+        }
+        let Some(listener) = self.listeners.get_mut(&id) else {
+            return Poll::Ready(Err(HostError::Closed));
+        };
+        if listener.ready && interest.contains(ReadyFor::READABLE) {
+            listener.ready = false;
+            return Poll::Ready(Ok(ReadyFor::READABLE));
+        }
+        keep_waker(&mut listener.waker, waker);
+        if let Some(socket) = &listener.socket {
+            let interest = Interest::new(stream_key(id), true, false);
+            let _ = self.poller.modify(socket, interest);
+        }
+        Poll::Pending
+    }
+
+    /// Wakes the wait on a TCP connection or listener the poller says changed.
+    fn stream_ready(&mut self, id: u32, readable: bool, writable: bool) {
+        if let Some(listener) = self.listeners.get_mut(&id) {
+            listener.ready = true;
+            if let Some(waker) = listener.waker.take() {
+                waker.wake();
+            }
+            return;
+        }
+        let Some(stream) = self.streams.get_mut(&id) else {
+            return;
+        };
+        if readable {
+            stream.ready |= ReadyFor::READABLE;
+        }
+        if writable {
+            stream.ready |= ReadyFor::WRITABLE;
+        }
+        if core::mem::take(&mut stream.connecting)
+            && let Some(socket) = &stream.socket
+        {
+            let error = match socket.take_error() {
+                Ok(None) => None,
+                Ok(Some(error)) | Err(error) => {
+                    Some(linux_error(&error, Errno::ECONNREFUSED as u32))
+                }
+            };
+            if error.is_some() {
+                stream.error = error;
+                stream.ready |= ReadyFor::ERROR | ReadyFor::HANG_UP;
+            }
+        }
+        if let Some(waker) = stream.waker.take() {
+            waker.wake();
+        }
+    }
+
+    /// The event the kernel is told for one arrival; none when it tells nothing new, or when it
+    /// wakes a wait, whose answer the kernel takes when it next settles.
     pub(crate) fn event<'a>(&mut self, arrival: &'a Arrival) -> Option<Event<'a>> {
         match *arrival {
             // The standard input's, which the system hands over itself.
             Arrival::Input(_) | Arrival::InputEnded(_) => None,
-            Arrival::Connected(id, error) => Some(Event::Connected {
-                connection: ConnectionId(id),
-                error,
-            }),
-            // A name's answer is its waiting call's, which the kernel takes when it next settles.
             Arrival::Answered => None,
             Arrival::Ready {
-                id,
+                key,
                 readable,
                 writable,
             } => {
-                if let Some(listener) = self.listeners.get_mut(&id) {
-                    listener.armed = false;
-                    return Some(Event::ConnectionReady {
-                        connection: ConnectionId(id),
-                    });
+                let id = (key >> 1) as u32;
+                if key == stream_key(id) {
+                    self.stream_ready(id, readable, writable);
+                    return None;
                 }
-                let connection = self.connections.get_mut(&id)?;
-                if connection.connecting {
-                    connection.connecting = false;
-                    let error = match &connection.socket {
-                        Socket::Stream(stream) => stream.take_error(),
-                        Socket::Datagram(socket) => socket.take_error(),
-                    };
-                    let error = match error {
-                        Ok(None) => 0,
-                        Ok(Some(error)) | Err(error) => {
-                            linux_error(&error, Errno::ECONNREFUSED as u32)
-                        }
-                    };
-                    connection.read_armed = error == 0;
-                    self.arm(id);
-                    return Some(Event::Connected {
-                        connection: ConnectionId(id),
-                        error,
-                    });
-                }
-                // A hang-up or error reads as both.
-                connection.read_armed &= !readable;
-                connection.write_armed &= !writable;
-                self.arm(id);
+                let flow = self.flows.get_mut(&id)?;
+                flow.read_armed &= !readable;
+                flow.write_armed &= !writable;
+                self.arm_flow(id);
                 Some(Event::ConnectionReady {
                     connection: ConnectionId(id),
                 })

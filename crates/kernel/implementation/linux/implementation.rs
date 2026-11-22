@@ -554,7 +554,7 @@ impl Kernel {
                 self.settle(&mut cx);
                 return;
             }
-            Event::Connected { connection, .. } | Event::ConnectionReady { connection } => {
+            Event::ConnectionReady { connection } => {
                 self.entry_now = cx.monotonic();
                 if syscall::socket::outside_event(self, &mut cx, &event) {
                     self.settle(&mut cx);

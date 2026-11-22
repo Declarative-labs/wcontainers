@@ -15,6 +15,12 @@ path = "implementation.rs"
 wcontainers-abi.workspace = true
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-system = { path = "../.." }
+wcontainers-kernel = { path = "../../../kernel" }
+wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
+wcontainers-readiness = { path = "../../../readiness" }
+wcontainers-internet-protocol = { path = "../../../internet-protocol" }
+wcontainers-configurable = { path = "../../../configurable" }
+wcontainers-negative-route-advice = { path = "../../../negative-route-advice" }
 # The type of the resolver's answers it refuses to give.
 domain = { version = "0.12.3", default-features = false }
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }

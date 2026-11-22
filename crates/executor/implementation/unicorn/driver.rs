@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::{ControlFlow, Range};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -29,6 +29,10 @@ use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
 use crate::standin::Unsupported;
 use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
+
+#[path = "tcp.rs"]
+mod tcp;
+use tcp::Readied;
 
 /// Why a run on our kernel gave no outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,6 +267,10 @@ pub struct TestHost<H = NoHooks> {
     names: Mutex<Replies>,
     /// The number of the last name question.
     last_name: AtomicU64,
+    /// What the TCP connections and listeners became ready for, for the kernel's waits on them.
+    ready: Mutex<Readied>,
+    /// The number of the last TCP connection or listener.
+    last_tcp: AtomicU32,
     /// Connections to the outside and lookups.
     network: Mutex<crate::network::Network>,
     /// The CPU side's own slow paths.
@@ -337,6 +345,8 @@ impl TestHost {
             replies: Mutex::default(),
             names: Mutex::default(),
             last_name: AtomicU64::default(),
+            ready: Mutex::default(),
+            last_tcp: AtomicU32::default(),
             network: Default::default(),
             cpu_warnings: Mutex::default(),
             injecting: Mutex::default(),
@@ -375,6 +385,8 @@ impl TestHost {
             replies: self.replies,
             names: self.names,
             last_name: self.last_name,
+            ready: self.ready,
+            last_tcp: self.last_tcp,
             network: self.network,
             cpu_warnings: self.cpu_warnings,
             injecting: self.injecting,
@@ -415,6 +427,7 @@ impl<H: Send> TestHost<H> {
             let moved = network.moved();
             *network = moved;
         }
+        *lock(&self.ready) = tcp::Readied::default();
         self.wall_base.store(0, Ordering::Relaxed);
         let base = wall + wall_step - self.monotonic_nanoseconds();
         self.wall_base.store(base, Ordering::Relaxed);
@@ -647,6 +660,7 @@ where
                     Entry::Kill(signal) => kernel.kill(cpu, self, signal),
                     Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
                     Entry::NameAnswered(number, answer) => self.name_arrived(number, answer),
+                    Entry::TcpReady(number, ready) => self.tcp_ready(number, ready),
                     other => match ended(&other) {
                         Some(value) => return value,
                         None if other == Entry::Delivered => {}
@@ -797,7 +811,6 @@ impl<H: Send> Host for TestHost<H> {
         connection: ConnectionId,
         address: &[u8],
         port: u16,
-        stream: bool,
     ) -> Result<(), HostError> {
         self.answer(
             Entry::Connected,
@@ -805,7 +818,7 @@ impl<H: Send> Host for TestHost<H> {
                 Entry::Connected(result) => Ok(result),
                 other => Err(other),
             },
-            || lock(&self.network).connect(connection.0, address, port, stream),
+            || lock(&self.network).connect(connection.0, address, port),
         )
     }
 
@@ -838,38 +851,10 @@ impl<H: Send> Host for TestHost<H> {
         result
     }
 
-    fn finish(&self, connection: ConnectionId) {
-        if !self.replaying() {
-            lock(&self.network).finish(connection.0);
-        }
-    }
-
     fn close(&self, connection: ConnectionId) {
         if !self.replaying() {
             lock(&self.network).close(connection.0);
         }
-    }
-
-    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        self.answer(
-            Entry::Listened,
-            |entry| match entry {
-                Entry::Listened(result) => Ok(result),
-                other => Err(other),
-            },
-            || lock(&self.network).listen(listener.0, port),
-        )
-    }
-
-    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
-        self.answer(
-            Entry::Accepted,
-            |entry| match entry {
-                Entry::Accepted(result) => Ok(result),
-                other => Err(other),
-            },
-            || lock(&self.network).accept(listener.0, connection.0),
-        )
     }
 }
 
@@ -982,6 +967,19 @@ impl<H> TestHost<H> {
     /// The resolver's answer to question `number` arrived: the call waiting for it is woken.
     fn name_arrived(&self, number: u64, answer: Vec<u8>) {
         Replies::arrived(&self.names, number, answer);
+    }
+
+    /// TCP connection or listener `number` became ready: the wait on it is woken.
+    fn tcp_ready(&self, number: u32, ready: wcontainers_readiness::ReadyFor) {
+        let waiting = {
+            let mut readied = lock(&self.ready);
+            let arrived = readied.arrived.entry(number).or_insert(ready);
+            *arrived |= ready;
+            readied.waiting.remove(&number)
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
     }
 }
 
@@ -1277,23 +1275,20 @@ pub fn started_with_executor<State: Clone + 'static>(
 /// The id of a container's first process, as the kernel numbers it inside the container.
 pub const FIRST_PROCESS: wcontainers_kernel::TaskId = wcontainers_kernel::TaskId(1);
 
-/// A kernel on the stand-in with a container started with the `hello` guest, built into `out`, whose
-/// first process has not run; the kernel interface's suite takes it.
-pub fn hello_not_run(
-    out: &str,
+/// A kernel on the stand-in with a container started with the guest program `name`, built with
+/// `link_flags` into `out`, whose first process has not run; the kernel interface's suite takes it.
+pub fn program_not_run(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, ()> {
-    const PROGRAM: &str = "hello";
-    let program = crate::guest::build(
-        PROGRAM,
-        &["-nostdlib"],
-        &std::path::Path::new(out).join("guest"),
-    );
+    let program = crate::guest::build(name, link_flags, out);
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(
         program.parent().expect("a directory"),
         crate::guest_directory_entry(),
     ));
-    let path = reference::in_guest_directory(PROGRAM);
+    let path = reference::in_guest_directory(name);
     let arguments = [path.as_str()];
     let container = Container {
         files: &files,
@@ -1854,6 +1849,13 @@ where
                     host.kept_in_step(Entry::NameAnswered(*number, answer.clone()));
                 }
                 host.name_arrived(*number, answer.clone());
+                host.hand(kernel, cpu, Event::Timer);
+            }
+            crate::network::Owed::TcpReady(number, ready) => {
+                if host.taped_run() {
+                    host.kept_in_step(Entry::TcpReady(*number, *ready));
+                }
+                host.tcp_ready(*number, *ready);
                 host.hand(kernel, cpu, Event::Timer);
             }
             event => event.with(|event| host.hand(kernel, cpu, event)),

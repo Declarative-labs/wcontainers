@@ -65,7 +65,7 @@ pub struct LocalSystem {
 }
 
 /// What the local system changes as the kernel asks.
-struct LocalState {
+pub(crate) struct LocalState {
     started: Instant,
     output: Box<dyn Write + Send>,
     error: Box<dyn Write + Send>,
@@ -155,7 +155,7 @@ impl LocalSystem {
         self.state().warnings.clone()
     }
 
-    fn state(&self) -> MutexGuard<'_, LocalState> {
+    pub(crate) fn state(&self) -> MutexGuard<'_, LocalState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -279,7 +279,7 @@ impl LocalSystem {
 }
 
 impl LocalState {
-    fn network(&mut self) -> &mut Network {
+    pub(crate) fn network(&mut self) -> &mut Network {
         self.network.get_or_insert_with(|| {
             let mut network = Network::new(self.arrivals.clone());
             for &(port, at) in &self.published {
@@ -525,9 +525,8 @@ impl LocalState {
         connection: ConnectionId,
         address: &[u8],
         port: u16,
-        stream: bool,
     ) -> Result<(), HostError> {
-        self.network().connect(connection.0, address, port, stream)
+        self.network().connect(connection.0, address, port)
     }
 
     fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
@@ -538,24 +537,8 @@ impl LocalState {
         self.network().receive(connection.0, into)
     }
 
-    fn finish(&mut self, connection: ConnectionId) {
-        self.network().finish(connection.0);
-    }
-
     fn close(&mut self, connection: ConnectionId) {
         self.network().close(connection.0);
-    }
-
-    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        self.network().listen(listener.0, port)
-    }
-
-    fn accept(
-        &mut self,
-        listener: ConnectionId,
-        connection: ConnectionId,
-    ) -> Result<(), HostError> {
-        self.network().accept(listener.0, connection.0)
     }
 }
 
@@ -603,10 +586,9 @@ macro_rules! host_on_state {
                 connection: ConnectionId,
                 address: &[u8],
                 port: u16,
-                stream: bool,
             ) -> Result<(), HostError> {
                 let $this = self;
-                $state.connect(connection, address, port, stream)
+                $state.connect(connection, address, port)
             }
 
             fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
@@ -623,28 +605,9 @@ macro_rules! host_on_state {
                 $state.receive(connection, into)
             }
 
-            fn finish(&self, connection: ConnectionId) {
-                let $this = self;
-                $state.finish(connection);
-            }
-
             fn close(&self, connection: ConnectionId) {
                 let $this = self;
                 $state.close(connection);
-            }
-
-            fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-                let $this = self;
-                $state.listen(listener, port)
-            }
-
-            fn accept(
-                &self,
-                listener: ConnectionId,
-                connection: ConnectionId,
-            ) -> Result<(), HostError> {
-                let $this = self;
-                $state.accept(listener, connection)
             }
         }
 

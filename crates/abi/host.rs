@@ -6,7 +6,7 @@
 /// The host's clocks count nanoseconds: how many make a second.
 pub const NANOSECONDS_PER_SECOND: u64 = core::time::Duration::from_secs(1).as_nanos() as u64;
 
-/// One connection to the world outside the container.
+/// One UDP flow to the world outside the container.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(pub u32);
 
@@ -56,14 +56,8 @@ pub enum Event<'a> {
     Timer,
     /// The backend sent a FUSE notice that was not asked for, such as "this file changed".
     BackendNotice { notice: &'a [u8] },
-    /// A connection finished connecting, or failed with a Linux error number (such as ECONNREFUSED,
-    /// ETIMEDOUT or ENETUNREACH).
-    Connected {
-        connection: ConnectionId,
-        error: i32,
-    },
-    /// A connection has bytes to receive, room to send, or has closed: try again. Sent once after
-    /// a [`Host::receive`] or [`Host::send`] answered [`HostError::WouldBlock`], or after
+    /// A UDP flow has a datagram to receive or room to send: try again. Sent once after a
+    /// [`Host::receive`] or [`Host::send`] answered [`HostError::WouldBlock`], or after
     /// connecting, when that changes.
     ConnectionReady { connection: ConnectionId },
     /// Bytes for an end, never more than the credit the kernel gave on it.
@@ -95,32 +89,15 @@ pub trait Host: Sync {
     /// The kernel sends nothing more on an end, data or credit; the embedder frees it by closing it.
     fn close_stream(&self, end: End);
 
-    /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
-    /// [`Event::Connected`]. `stream` is true for TCP and false for UDP. A UDP connection may be
-    /// sent on and received from at once; each send is one datagram and each receive gives one
-    /// (what does not fit is lost).
-    fn connect(
-        &self,
-        connection: ConnectionId,
-        address: &[u8],
-        port: u16,
-        stream: bool,
-    ) -> Result<(), HostError>;
-    /// Send bytes; returns how many were taken.
+    /// Starts a UDP flow to an outside address (4 or 16 bytes) and port. It may be sent on and
+    /// received from at once; each send is one datagram and each receive gives one (what does not
+    /// fit is lost).
+    fn connect(&self, connection: ConnectionId, address: &[u8], port: u16)
+    -> Result<(), HostError>;
+    /// Send one datagram; returns how many bytes were taken.
     fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError>;
-    /// Receive bytes; returns how many arrived. Zero means the other end finished sending;
-    /// [`HostError::Closed`] means the connection was reset.
+    /// Receive one datagram; returns how many bytes arrived. [`HostError::Closed`] means the
+    /// destination refused.
     fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError>;
-    /// No more bytes will be sent on a TCP connection; the other end reads its end. Receiving
-    /// goes on.
-    fn finish(&self, connection: ConnectionId);
     fn close(&self, connection: ConnectionId);
-    /// Start accepting TCP connections from outside to the container's port `port`. While some
-    /// wait, [`Event::ConnectionReady`] comes on `listener` (once after this call, and again after
-    /// [`Host::accept`] answered [`HostError::WouldBlock`]); each is taken with [`Host::accept`].
-    /// [`Host::close`] on `listener` stops it.
-    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError>;
-    /// Take one waiting connection from a listener and give it the number `connection`, used then
-    /// as one made by [`Host::connect`]. [`HostError::WouldBlock`] when none waits.
-    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError>;
 }

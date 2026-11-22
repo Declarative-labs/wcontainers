@@ -5,6 +5,8 @@
 
 extern crate alloc;
 
+mod tcp;
+
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::convert::Infallible;
@@ -233,7 +235,6 @@ impl<H: Host> Host for TestPolicy<H> {
         connection: ConnectionId,
         _address: &[u8],
         _port: u16,
-        _stream: bool,
     ) -> Result<(), HostError> {
         self.refuse(connection.0.into())
     }
@@ -246,20 +247,8 @@ impl<H: Host> Host for TestPolicy<H> {
         self.services.receive(connection, into)
     }
 
-    fn finish(&self, connection: ConnectionId) {
-        self.services.finish(connection);
-    }
-
     fn close(&self, connection: ConnectionId) {
         self.services.close(connection);
-    }
-
-    fn listen(&self, listener: ConnectionId, _port: u16) -> Result<(), HostError> {
-        self.refuse(listener.0.into())
-    }
-
-    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
-        self.services.accept(listener, connection)
     }
 }
 

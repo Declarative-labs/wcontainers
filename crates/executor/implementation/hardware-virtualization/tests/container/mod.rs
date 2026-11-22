@@ -142,11 +142,8 @@ impl Host for Recording {
         connection: ConnectionId,
         address: &[u8],
         port: u16,
-        stream: bool,
     ) -> Result<(), HostError> {
-        self.absent(format!(
-            "connect {connection:?} {address:?} {port} {stream}"
-        ))
+        self.absent(format!("connect {connection:?} {address:?} {port}"))
     }
     fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
         self.absent(format!("send {connection:?} {bytes:02x?}"))
@@ -156,17 +153,8 @@ impl Host for Recording {
         self.absent(format!("receive {connection:?} {}", into.len()))
             .map(|()| 0)
     }
-    fn finish(&self, connection: ConnectionId) {
-        self.call(format!("finish {connection:?}"));
-    }
     fn close(&self, connection: ConnectionId) {
         self.call(format!("close {connection:?}"));
-    }
-    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        self.absent(format!("listen {listener:?} {port}"))
-    }
-    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
-        self.absent(format!("accept {listener:?} {connection:?}"))
     }
 }
 

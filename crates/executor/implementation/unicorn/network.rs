@@ -15,51 +15,47 @@ use std::time::Duration;
 use domain::base::{Name, Question};
 use wcontainers_abi::{ConnectionId, Event, HostError};
 use wcontainers_kernel::errno::Errno;
+use wcontainers_readiness::ReadyFor;
 
 /// Docker Desktop's name and address for the machine it runs on.
 pub const DOCKER_HOST_NAME: &str = "host.docker.internal";
 pub const DOCKER_HOST: Ipv4Addr = Ipv4Addr::new(192, 168, 65, 254);
 
-enum Socket {
-    Stream(TcpStream),
-    Datagram(UdpSocket),
-}
-
-impl Socket {
-    fn fd(&self) -> i32 {
-        match self {
-            Socket::Stream(stream) => stream.as_raw_fd(),
-            Socket::Datagram(socket) => socket.as_raw_fd(),
-        }
-    }
-}
-
-struct Connection {
-    socket: Socket,
+/// A UDP flow, by the kernel's number of it.
+struct Flow {
+    socket: UdpSocket,
     /// A receive or send answered "would block", so the next change is told.
     read_armed: bool,
     write_armed: bool,
 }
 
-/// An event owed to the kernel, or the answer to the name question of a number.
+/// A TCP connection, by this host's number of it.
+struct Stream {
+    /// None when the connect failed.
+    socket: Option<TcpStream>,
+    /// The error the connect failed with, given to the next receive.
+    error: Option<i32>,
+    /// A wait asks for this, so the next change is told.
+    read_armed: bool,
+    write_armed: bool,
+}
+
+/// An event owed to the kernel, the answer to the name question of a number, or what a TCP
+/// connection or listener of a number became ready for.
 pub enum Owed {
-    Connected(u32, i32),
     Ready(u32),
     Answered(u64, Vec<u8>),
+    TcpReady(u32, ReadyFor),
 }
 
 impl Owed {
     /// Hands the event to `deliver` in the boundary's form; none for an answer.
     pub fn with(&self, deliver: impl FnOnce(Event<'_>)) {
         match self {
-            Owed::Connected(id, error) => deliver(Event::Connected {
-                connection: ConnectionId(*id),
-                error: *error,
-            }),
             Owed::Ready(id) => deliver(Event::ConnectionReady {
                 connection: ConnectionId(*id),
             }),
-            Owed::Answered(..) => {}
+            Owed::Answered(..) | Owed::TcpReady(..) => {}
         }
     }
 }
@@ -69,13 +65,14 @@ struct Listener {
     socket: TcpListener,
     /// The container's port.
     port: u16,
-    /// An accept answered "would block", so the next connection is told.
+    /// A wait asks for a connection, so the next one is told.
     armed: bool,
 }
 
 #[derive(Default)]
 pub struct Network {
-    connections: BTreeMap<u32, Connection>,
+    flows: BTreeMap<u32, Flow>,
+    streams: BTreeMap<u32, Stream>,
     listeners: BTreeMap<u32, Listener>,
     owed: VecDeque<Owed>,
     /// Ports of this machine's loopback that reach the container's ports, by the container's
@@ -86,22 +83,25 @@ pub struct Network {
 }
 
 /// The address a guest names as this machine sees it.
-fn local(address: &[u8], port: u16) -> SocketAddr {
-    let ip = match address.len() {
-        4 => {
-            let v4 = Ipv4Addr::new(address[0], address[1], address[2], address[3]);
-            if v4 == DOCKER_HOST {
-                IpAddr::V4(Ipv4Addr::LOCALHOST)
-            } else {
-                IpAddr::V4(v4)
-            }
+fn seen_here(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V4(v4) if *v4.ip() == DOCKER_HOST => {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), v4.port())
         }
-        _ => {
-            let bytes: [u8; 16] = address.try_into().expect("16 bytes");
+        other => other,
+    }
+}
+
+/// The address a guest names as 4 or 16 bytes, as this machine sees it.
+fn local(address: &[u8], port: u16) -> SocketAddr {
+    let ip = match <[u8; size_of::<Ipv4Addr>()]>::try_from(address) {
+        Ok(v4) => IpAddr::V4(Ipv4Addr::from(v4)),
+        Err(_) => {
+            let bytes: [u8; size_of::<Ipv6Addr>()] = address.try_into().expect("16 bytes");
             IpAddr::V6(Ipv6Addr::from(bytes))
         }
     };
-    SocketAddr::new(ip, port)
+    seen_here(SocketAddr::new(ip, port))
 }
 
 fn errno(error: &std::io::Error) -> i32 {
@@ -113,6 +113,9 @@ fn errno(error: &std::io::Error) -> i32 {
         _ => Errno::ECONNREFUSED as i32,
     }
 }
+
+/// How long a connect to the outside may take.
+const CONNECT_PATIENCE: Duration = Duration::from_secs(10);
 
 impl Network {
     /// The network a host brought back from a save starts with: the same published ports, still
@@ -129,8 +132,9 @@ impl Network {
         }
     }
 
-    /// Accepts connections to a published port; nothing reaches a port not published.
-    pub fn listen(&mut self, id: u32, port: u16) -> Result<(), HostError> {
+    /// Accepts connections to a published port as listener `number`; nothing reaches a port not
+    /// published.
+    pub fn listen(&mut self, number: u32, port: u16) -> Result<(), HostError> {
         let Some(&outer) = self.published.get(&port) else {
             return Ok(());
         };
@@ -143,85 +147,139 @@ impl Network {
         let listener = Listener {
             socket,
             port,
-            armed: true,
+            armed: false,
         };
-        self.listeners.insert(id, listener);
+        self.listeners.insert(number, listener);
         Ok(())
     }
 
-    pub fn accept(&mut self, listener: u32, id: u32) -> Result<(), HostError> {
+    /// Takes a connection waiting on a listener as connection `number`.
+    pub fn accept(&mut self, listener: u32, number: u32) -> Result<(), HostError> {
         let listener = self.listeners.get_mut(&listener).ok_or(HostError::Closed)?;
         match listener.socket.accept() {
             Ok((stream, _)) => {
                 stream.set_nonblocking(true).expect("nonblocking");
-                let connection = Connection {
-                    socket: Socket::Stream(stream),
-                    read_armed: true,
+                let stream = Stream {
+                    socket: Some(stream),
+                    error: None,
+                    read_armed: false,
                     write_armed: false,
                 };
-                self.connections.insert(id, connection);
+                self.streams.insert(number, stream);
                 Ok(())
             }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                listener.armed = true;
-                Err(HostError::WouldBlock)
-            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
             Err(_) => Err(HostError::Errno(Errno::ECONNABORTED as i32)),
         }
     }
 
-    pub fn connect(
-        &mut self,
-        id: u32,
-        address: &[u8],
-        port: u16,
-        stream: bool,
-    ) -> Result<(), HostError> {
-        let to = local(address, port);
-        let socket = if stream {
-            match TcpStream::connect_timeout(&to, Duration::from_secs(10)) {
-                Ok(stream) => Socket::Stream(stream),
-                Err(error) => {
-                    self.owed.push_back(Owed::Connected(id, errno(&error)));
-                    return Ok(());
-                }
-            }
-        } else {
-            let bind = if to.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-            let socket =
-                UdpSocket::bind(bind).map_err(|_| HostError::Errno(Errno::ENETUNREACH as i32))?;
-            socket
-                .connect(to)
-                .map_err(|error| HostError::Errno(errno(&error)))?;
-            Socket::Datagram(socket)
+    /// Connects TCP connection `number` to `to`; its end is owed as its readiness.
+    pub fn tcp_connect(&mut self, number: u32, to: SocketAddr) {
+        let mut stream = Stream {
+            socket: None,
+            error: None,
+            read_armed: false,
+            write_armed: false,
         };
-        match &socket {
-            Socket::Stream(stream) => stream.set_nonblocking(true),
-            Socket::Datagram(socket) => socket.set_nonblocking(true),
+        let ready = match TcpStream::connect_timeout(&seen_here(to), CONNECT_PATIENCE) {
+            Ok(socket) => {
+                socket.set_nonblocking(true).expect("nonblocking");
+                stream.socket = Some(socket);
+                ReadyFor::WRITABLE
+            }
+            Err(error) => {
+                stream.error = Some(errno(&error));
+                ReadyFor::ERROR | ReadyFor::HANG_UP
+            }
+        };
+        self.streams.insert(number, stream);
+        self.owed.push_back(Owed::TcpReady(number, ready));
+    }
+
+    pub fn tcp_send(&mut self, number: u32, bytes: &[u8]) -> Result<usize, HostError> {
+        let stream = self.streams.get_mut(&number).ok_or(HostError::Closed)?;
+        let socket = stream.socket.as_mut().ok_or(HostError::Closed)?;
+        match socket.write(bytes) {
+            Ok(count) => Ok(count),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
+            Err(_) => Err(HostError::Closed),
         }
-        .expect("nonblocking");
-        self.connections.insert(
-            id,
-            Connection {
-                socket,
-                read_armed: true,
-                write_armed: false,
-            },
-        );
-        self.owed.push_back(Owed::Connected(id, 0));
+    }
+
+    /// Receives or peeks; zero bytes is the end of the stream.
+    pub fn tcp_receive(
+        &mut self,
+        number: u32,
+        into: &mut [u8],
+        peek: bool,
+    ) -> Result<usize, HostError> {
+        let stream = self.streams.get_mut(&number).ok_or(HostError::Closed)?;
+        if let Some(error) = stream.error {
+            return Err(HostError::Errno(error));
+        }
+        let socket = stream.socket.as_mut().ok_or(HostError::Closed)?;
+        let result = if peek {
+            socket.peek(into)
+        } else {
+            socket.read(into)
+        };
+        match result {
+            Ok(count) => Ok(count),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Err(HostError::WouldBlock),
+            Err(_) => Err(HostError::Closed),
+        }
+    }
+
+    pub fn tcp_finish(&mut self, number: u32) {
+        if let Some(socket) = self
+            .streams
+            .get(&number)
+            .and_then(|stream| stream.socket.as_ref())
+        {
+            let _ = socket.shutdown(Shutdown::Write);
+        }
+    }
+
+    pub fn tcp_close(&mut self, number: u32) {
+        self.streams.remove(&number);
+        self.listeners.remove(&number);
+    }
+
+    /// Tells the next change a wait on TCP connection or listener `number` asks for.
+    pub fn arm(&mut self, number: u32, interest: ReadyFor) {
+        if let Some(stream) = self.streams.get_mut(&number) {
+            stream.read_armed = interest.contains(ReadyFor::READABLE);
+            stream.write_armed = interest.contains(ReadyFor::WRITABLE);
+        } else if let Some(listener) = self.listeners.get_mut(&number) {
+            listener.armed = interest.contains(ReadyFor::READABLE);
+        }
+    }
+
+    /// Starts UDP flow `id` to an outside address.
+    pub fn connect(&mut self, id: u32, address: &[u8], port: u16) -> Result<(), HostError> {
+        let to = local(address, port);
+        let bind = if to.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let socket =
+            UdpSocket::bind(bind).map_err(|_| HostError::Errno(Errno::ENETUNREACH as i32))?;
+        socket
+            .connect(to)
+            .map_err(|error| HostError::Errno(errno(&error)))?;
+        socket.set_nonblocking(true).expect("nonblocking");
+        let flow = Flow {
+            socket,
+            read_armed: true,
+            write_armed: false,
+        };
+        self.flows.insert(id, flow);
         Ok(())
     }
 
     pub fn send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
-        let connection = self.connections.get_mut(&id).ok_or(HostError::Closed)?;
-        let result = match &mut connection.socket {
-            Socket::Stream(stream) => stream.write(bytes),
-            Socket::Datagram(socket) => socket.send(bytes),
-        };
-        match result {
+        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
+        match flow.socket.send(bytes) {
             Ok(count) => Ok(count),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                connection.write_armed = true;
+                flow.write_armed = true;
                 Err(HostError::WouldBlock)
             }
             Err(_) => Err(HostError::Closed),
@@ -229,34 +287,19 @@ impl Network {
     }
 
     pub fn receive(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
-        let connection = self.connections.get_mut(&id).ok_or(HostError::Closed)?;
-        let result = match &mut connection.socket {
-            Socket::Stream(stream) => stream.read(into),
-            Socket::Datagram(socket) => socket.recv(into),
-        };
-        match result {
+        let flow = self.flows.get_mut(&id).ok_or(HostError::Closed)?;
+        match flow.socket.recv(into) {
             Ok(count) => Ok(count),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                connection.read_armed = true;
+                flow.read_armed = true;
                 Err(HostError::WouldBlock)
             }
             Err(_) => Err(HostError::Closed),
         }
     }
 
-    pub fn finish(&mut self, id: u32) {
-        if let Some(Connection {
-            socket: Socket::Stream(stream),
-            ..
-        }) = self.connections.get(&id)
-        {
-            let _ = stream.shutdown(Shutdown::Write);
-        }
-    }
-
     pub fn close(&mut self, id: u32) {
-        self.connections.remove(&id);
-        self.listeners.remove(&id);
+        self.flows.remove(&id);
     }
 
     /// Looks up the name of question `number` with this machine's resolver; its answer is owed.
@@ -275,39 +318,62 @@ impl Network {
         self.owed.push_back(Owed::Answered(number, answer));
     }
 
-    /// Whether anything may still come: an event owed, or a connection or listener waiting for a
-    /// change.
+    /// Whether anything may still come: an event owed, or a flow, connection or listener waiting
+    /// for a change.
     pub fn waiting(&self) -> bool {
         !self.owed.is_empty()
             || self
-                .connections
+                .flows
                 .values()
-                .any(|connection| connection.read_armed || connection.write_armed)
+                .any(|flow| flow.read_armed || flow.write_armed)
+            || self
+                .streams
+                .values()
+                .any(|stream| stream.socket.is_some() && (stream.read_armed || stream.write_armed))
             || self.listeners.values().any(|listener| listener.armed)
     }
 
-    /// The events owed, after waiting up to `timeout` for a connection to change when none is.
+    /// The events owed, after waiting up to `timeout` for a socket to change when none is.
     pub fn take(&mut self, timeout: Duration) -> Vec<Owed> {
-        let mut armed: Vec<(u32, i32, i16)> = self
-            .connections
+        /// What a socket watched is.
+        #[derive(Clone, Copy)]
+        enum Watched {
+            Flow(u32),
+            Stream(u32),
+            Listener(u32),
+        }
+        let events = |read: bool, write: bool| {
+            let mut events = 0;
+            if read {
+                events |= libc::POLLIN;
+            }
+            if write {
+                events |= libc::POLLOUT;
+            }
+            events
+        };
+        let mut armed: Vec<(Watched, i32, i16)> = self
+            .flows
             .iter()
-            .filter(|(_, connection)| connection.read_armed || connection.write_armed)
-            .map(|(&id, connection)| {
-                let mut events = 0;
-                if connection.read_armed {
-                    events |= libc::POLLIN;
-                }
-                if connection.write_armed {
-                    events |= libc::POLLOUT;
-                }
-                (id, connection.socket.fd(), events)
+            .filter(|(_, flow)| flow.read_armed || flow.write_armed)
+            .map(|(&id, flow)| {
+                let wanted = events(flow.read_armed, flow.write_armed);
+                (Watched::Flow(id), flow.socket.as_raw_fd(), wanted)
             })
             .collect();
+        armed.extend(self.streams.iter().filter_map(|(&number, stream)| {
+            let socket = stream.socket.as_ref()?;
+            let wanted = events(stream.read_armed, stream.write_armed);
+            (wanted != 0).then(|| (Watched::Stream(number), socket.as_raw_fd(), wanted))
+        }));
         armed.extend(
             self.listeners
                 .iter()
                 .filter(|(_, listener)| listener.armed)
-                .map(|(&id, listener)| (id, listener.socket.as_raw_fd(), libc::POLLIN)),
+                .map(|(&number, listener)| {
+                    let watched = Watched::Listener(number);
+                    (watched, listener.socket.as_raw_fd(), libc::POLLIN)
+                }),
         );
         let mut fds: Vec<libc::pollfd> = armed
             .iter()
@@ -326,23 +392,47 @@ impl Network {
             // SAFETY: the descriptors are this host's own open sockets.
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, wait) };
         }
-        for (&(id, _, _), fd) in armed.iter().zip(&fds) {
-            if fd.revents == 0 {
+        for (&(watched, _, _), fd) in armed.iter().zip(&fds) {
+            let revents = fd.revents;
+            if revents == 0 {
                 continue;
             }
-            if let Some(listener) = self.listeners.get_mut(&id) {
-                listener.armed = false;
-                self.owed.push_back(Owed::Ready(id));
-                continue;
+            match watched {
+                Watched::Listener(number) => {
+                    if let Some(listener) = self.listeners.get_mut(&number) {
+                        listener.armed = false;
+                    }
+                    self.owed
+                        .push_back(Owed::TcpReady(number, ReadyFor::READABLE));
+                }
+                Watched::Stream(number) => {
+                    let stream = self.streams.get_mut(&number).expect("an armed connection");
+                    stream.read_armed = false;
+                    stream.write_armed = false;
+                    let mut ready = ReadyFor::empty();
+                    for (bit, flag) in [
+                        (libc::POLLIN, ReadyFor::READABLE),
+                        (libc::POLLOUT, ReadyFor::WRITABLE),
+                        (libc::POLLERR, ReadyFor::ERROR),
+                        (libc::POLLHUP, ReadyFor::HANG_UP),
+                    ] {
+                        if revents & bit != 0 {
+                            ready |= flag;
+                        }
+                    }
+                    self.owed.push_back(Owed::TcpReady(number, ready));
+                }
+                Watched::Flow(id) => {
+                    let flow = self.flows.get_mut(&id).expect("an armed flow");
+                    if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                        flow.read_armed = false;
+                    }
+                    if revents & (libc::POLLOUT | libc::POLLHUP | libc::POLLERR) != 0 {
+                        flow.write_armed = false;
+                    }
+                    self.owed.push_back(Owed::Ready(id));
+                }
             }
-            let connection = self.connections.get_mut(&id).expect("an armed connection");
-            if fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-                connection.read_armed = false;
-            }
-            if fd.revents & (libc::POLLOUT | libc::POLLHUP | libc::POLLERR) != 0 {
-                connection.write_armed = false;
-            }
-            self.owed.push_back(Owed::Ready(id));
         }
         self.owed.drain(..).collect()
     }

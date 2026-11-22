@@ -1,7 +1,7 @@
 //! A kernel's processes and tasks taken off it and put back, through the kernel interface's traits:
 //! a container on the stand-in started with a program that has not run.
 
-use wcontainers_executor_unicorn::driver::{FIRST_PROCESS, hello_not_run};
+use wcontainers_executor_unicorn::driver::{FIRST_PROCESS, program_not_run};
 use wcontainers_kernel::{
     ExecutionConfig, ExecutorOf, Kernel, ReplayDeterminism, TaskId, ThreadOrdering,
 };
@@ -71,15 +71,23 @@ fn suspended_tasks_come_back<K: Kernel>(mut kernel: K, process: TaskId) {
 
 #[test]
 fn a_copy_leaves_the_process() {
-    copy_leaves_the_process(hello_not_run(env!("CARGO_TARGET_TMPDIR")), FIRST_PROCESS);
+    copy_leaves_the_process(hello_not_run(), FIRST_PROCESS);
 }
 
 #[test]
 fn a_suspended_process_comes_back() {
-    suspended_process_comes_back(hello_not_run(env!("CARGO_TARGET_TMPDIR")), FIRST_PROCESS);
+    suspended_process_comes_back(hello_not_run(), FIRST_PROCESS);
 }
 
 #[test]
 fn suspended_tasks_come_back_and_are_taken_again() {
-    suspended_tasks_come_back(hello_not_run(env!("CARGO_TARGET_TMPDIR")), FIRST_PROCESS);
+    suspended_tasks_come_back(hello_not_run(), FIRST_PROCESS);
+}
+
+/// The kernel the round trips start from: `hello`, not run yet.
+fn hello_not_run()
+-> wcontainers_kernel_linux::KernelWithExecutor<wcontainers_executor_unicorn::standin::StandIn, ()>
+{
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    program_not_run("hello", &["-nostdlib"], &out)
 }

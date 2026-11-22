@@ -22,6 +22,8 @@ pub(crate) enum WaitFor {
     Backend(crate::fs::backend::Sent),
     /// A name query of the container's name server, by its number.
     Name(u64),
+    /// A TCP connection or listener to the outside becoming ready, by its number.
+    Ready(u32),
 }
 
 /// What a finished waiting call gives the kernel.
@@ -30,6 +32,8 @@ pub(crate) enum Answer {
     Backend(Result<(i32, alloc::rc::Rc<[u8]>), wcontainers_abi::HostError>),
     /// The resolver's answer, as the message's bytes.
     Name(Result<Vec<u8>, wcontainers_abi::HostError>),
+    /// What a connection or listener is ready for.
+    Ready(Result<wcontainers_readiness::ReadyFor, wcontainers_abi::HostError>),
 }
 
 /// The room a waiting call has in its cell; a larger one is kept on the heap (counted).
@@ -86,6 +90,9 @@ impl crate::Kernel {
             (WaitFor::Name(number), Answer::Name(answer)) => {
                 crate::syscall::socket::name_answered(self, cx, number, answer);
             }
+            (WaitFor::Ready(id), Answer::Ready(ready)) => {
+                crate::syscall::socket::outside_ready(self, cx, id, ready);
+            }
             (about, _) => {
                 debug_assert!(false, "{about:?} answered as another call");
             }
@@ -141,6 +148,15 @@ impl Waiting {
                 None
             }
         }
+    }
+
+    /// Starts waiting on `call` as if already woken, so that its first poll, and any answer it has
+    /// at once, comes when the kernel next settles.
+    pub fn start_woken(&mut self, about: WaitFor, call: Call) {
+        let mut cell = self.cell();
+        cell.call.set(Some(call));
+        cell.mark.wake_by_ref();
+        self.live.push((about, cell));
     }
 
     /// The answer of a woken call that has finished, and what it was for.

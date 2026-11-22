@@ -369,7 +369,7 @@ pub(crate) struct Names {
 
 /// Closes the host connections let go since the last flush.
 pub(crate) fn flush_outside<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
-    kernel.sockets.inet.outside.flush(cx.host);
+    outside::flush(kernel, cx);
 }
 
 /// Hands a network event to the socket or lookup it is for; false if none waits for it.
@@ -389,6 +389,16 @@ pub(crate) fn name_answered<S: crate::System>(
     answer: Result<Vec<u8>, wcontainers_abi::HostError>,
 ) {
     outside::answered(kernel, cx, number, answer);
+}
+
+/// The system's wait on the outside connection or listener `id` ended.
+pub(crate) fn outside_ready<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    id: u32,
+    ready: Result<wcontainers_readiness::ReadyFor, wcontainers_abi::HostError>,
+) {
+    outside::ready(kernel, cx, id, ready);
 }
 
 /// The bytes of a file of `/proc/net`.

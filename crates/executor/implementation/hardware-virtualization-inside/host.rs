@@ -19,15 +19,12 @@ crate::requests! {
     Warn { count, detail } -> ();
     /// The bytes the kernel sends on the end numbered `stream`.
     Output { stream } -> ();
-    /// The address in the bytes; `stream` is 1 for TCP.
-    Connect { connection, port, stream } -> Outcome;
+    /// A UDP flow to the address in the bytes.
+    Connect { connection, port } -> Outcome;
     SendBytes { connection } -> Outcome;
     /// Up to `length` bytes, in the answer's bytes.
     Receive { connection, length } -> Outcome;
-    Finish { connection } -> ();
     Close { connection } -> ();
-    Listen { listener, port } -> Outcome;
-    Accept { listener, connection } -> Outcome;
     /// The kernel may take `bytes` more on the end numbered `stream`.
     CreditStream { stream, bytes } -> ();
     /// The kernel let go of the end numbered `stream`.
@@ -166,12 +163,10 @@ impl<R: Ring + Send> Host for LinkHost<R> {
         connection: ConnectionId,
         address: &[u8],
         port: u16,
-        stream: bool,
     ) -> Result<(), HostError> {
         let message = Connect {
             connection: connection.0.into(),
             port: port.into(),
-            stream: stream.into(),
         };
         self.ring.lock().ask(&message, address).unit()
     }
@@ -195,15 +190,6 @@ impl<R: Ring + Send> Host for LinkHost<R> {
         Ok(received)
     }
 
-    fn finish(&self, connection: ConnectionId) {
-        self.ring.lock().ask(
-            &Finish {
-                connection: connection.0.into(),
-            },
-            &[],
-        );
-    }
-
     fn close(&self, connection: ConnectionId) {
         self.ring.lock().ask(
             &Close {
@@ -211,22 +197,6 @@ impl<R: Ring + Send> Host for LinkHost<R> {
             },
             &[],
         );
-    }
-
-    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        let message = Listen {
-            listener: listener.0.into(),
-            port: port.into(),
-        };
-        self.ring.lock().ask(&message, &[]).unit()
-    }
-
-    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
-        let message = Accept {
-            listener: listener.0.into(),
-            connection: connection.0.into(),
-        };
-        self.ring.lock().ask(&message, &[]).unit()
     }
 }
 
@@ -287,9 +257,8 @@ pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) 
             let Connect {
                 connection: id,
                 port,
-                stream,
             } = link.get();
-            let result = host.connect(connection(id), bytes, port as u16, stream != 0);
+            let result = host.connect(connection(id), bytes, port as u16);
             Some(result.map(|()| 0))
         }
         Request::SendBytes => {
@@ -306,29 +275,10 @@ pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &dyn Host) 
             answer.truncate(*result.as_ref().unwrap_or(&0));
             Some(result)
         }
-        Request::Finish => {
-            let Finish { connection: id } = link.get();
-            host.finish(connection(id));
-            None
-        }
         Request::Close => {
             let Close { connection: id } = link.get();
             host.close(connection(id));
             None
-        }
-        Request::Listen => {
-            let Listen { listener, port } = link.get();
-            Some(host.listen(connection(listener), port as u16).map(|()| 0))
-        }
-        Request::Accept => {
-            let Accept {
-                listener,
-                connection: id,
-            } = link.get();
-            Some(
-                host.accept(connection(listener), connection(id))
-                    .map(|()| 0),
-            )
         }
     };
     if let Some(result) = outcome {
@@ -387,10 +337,7 @@ mod tests {
     const CONNECT: &str = "connect";
     const SEND: &str = "send";
     const RECEIVE: &str = "receive";
-    const FINISH: &str = "finish";
     const CLOSE: &str = "close";
-    const LISTEN: &str = "listen";
-    const ACCEPT: &str = "accept";
 
     /// The clocks' readings.
     const MONOTONIC_NANOSECONDS: u64 = 123_456_789;
@@ -433,11 +380,9 @@ mod tests {
             connection: ConnectionId,
             address: &[u8],
             port: u16,
-            stream: bool,
         ) -> Result<(), HostError> {
             let mut bytes = connection.0.to_le_bytes().to_vec();
             bytes.extend_from_slice(&port.to_le_bytes());
-            bytes.push(stream.into());
             bytes.extend_from_slice(address);
             self.record(CONNECT, &bytes);
             self.outcome(0).map(drop)
@@ -454,27 +399,8 @@ mod tests {
             into[..count].copy_from_slice(&self.given[..count]);
             self.outcome(count)
         }
-        fn finish(&self, connection: ConnectionId) {
-            self.record(FINISH, &connection.0.to_le_bytes());
-        }
         fn close(&self, connection: ConnectionId) {
             self.record(CLOSE, &connection.0.to_le_bytes());
-        }
-        fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-            let mut bytes = listener.0.to_le_bytes().to_vec();
-            bytes.extend_from_slice(&port.to_le_bytes());
-            self.record(LISTEN, &bytes);
-            self.outcome(0).map(drop)
-        }
-        fn accept(
-            &self,
-            listener: ConnectionId,
-            connection: ConnectionId,
-        ) -> Result<(), HostError> {
-            let mut bytes = listener.0.to_le_bytes().to_vec();
-            bytes.extend_from_slice(&connection.0.to_le_bytes());
-            self.record(ACCEPT, &bytes);
-            self.outcome(0).map(drop)
         }
     }
 
@@ -580,19 +506,11 @@ mod tests {
         expected.extend_from_slice(&0x40_1000u64.to_le_bytes());
         assert_eq!(last(&host), (WARN.into(), expected));
         let address = [10, 0, 0, 1];
-        assert_eq!(host.connect(ConnectionId(3), &address, 8080, true), Ok(()));
+        assert_eq!(host.connect(ConnectionId(3), &address, 8080), Ok(()));
         let mut expected = 3u32.to_le_bytes().to_vec();
         expected.extend_from_slice(&8080u16.to_le_bytes());
-        expected.push(1);
         expected.extend_from_slice(&address);
         assert_eq!(last(&host), (CONNECT.into(), expected));
-        assert_eq!(host.listen(ConnectionId(4), 80), Ok(()));
-        assert_eq!(host.accept(ConnectionId(4), ConnectionId(5)), Ok(()));
-        let mut expected = 4u32.to_le_bytes().to_vec();
-        expected.extend_from_slice(&5u32.to_le_bytes());
-        assert_eq!(last(&host), (ACCEPT.into(), expected));
-        host.finish(ConnectionId(6));
-        assert_eq!(last(&host), (FINISH.into(), 6u32.to_le_bytes().to_vec()));
         host.close(ConnectionId(6));
         assert_eq!(last(&host), (CLOSE.into(), 6u32.to_le_bytes().to_vec()));
         host.credit_stream(ERROR_END, wcontainers_abi::PAGE_SIZE);
@@ -621,9 +539,7 @@ mod tests {
             let id = ConnectionId(1);
             assert_eq!(host.send(id, b"x"), Err(error));
             assert_eq!(host.receive(id, &mut [0; 4]), Err(error));
-            assert_eq!(host.connect(id, &[0; 16], 1, false), Err(error));
-            assert_eq!(host.listen(id, 1), Err(error));
-            assert_eq!(host.accept(id, id), Err(error));
+            assert_eq!(host.connect(id, &[0; 16], 1), Err(error));
         }
     }
 }
