@@ -1,9 +1,74 @@
 # Status: graphics, NIR route (G8) and OpenGL natively (G9)
 
-Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8,
-G9).
+Branch agents, worktree wcontainers-agents (since 2026-11-21; the track branches are gone). Plan:
+docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
+
+G9 run 13 (2026-11-22; the first run after the shaders track delivered `wcontainers_shaders::staged`,
+the public entry for geometry, hull and domain programs this track asked for).
+
+Done this run:
+- Route B makes a geometry program in the staged form: the bridge flattens a geometry stage
+  (`WC_FLAT_GEOMETRY`, its declarations in `struct wc_flat_geometry`: input and output primitive,
+  vertices in, most vertices out, instances, streams), per-vertex inputs (`load_per_vertex_input`,
+  an array of the slot's type, one element a vertex), each output's stream (from the IO
+  semantics' `gs_streams`), the built-ins layer, viewport index and primitive number, and the
+  intrinsics `load_primitive_id`, `load_invocation_id`, `emit_vertex` and `end_primitive` (and
+  their counter forms; `set_vertex_and_primitive_count` is dropped, the helper keeps its own
+  counts). `direct::route` then gives the program as a function (not an entry point) whose stage
+  values are private variables, emits and ends calling the empty functions the shaders crate
+  fills, and `Routed::geometry` (a `staged::GeometryProgram`); `direct::geometry` hands it to
+  `wcontainers_shaders::staged::geometry`. Positions: the vertex stage's arrive with y negated (route
+  B's return negates them), so the geometry program negates its position inputs back at its start and
+  its position output at each emit; `transform_position` now acts on geometry programs too (the last
+  stage before the rasterizer takes the viewport's flips and depth range).
+- Refused by name in the geometry form: clip distances and point sizes read from the input
+  vertices, a point size or primitive number written (the primitive number needs the shaders crate's
+  `PRIMITIVE_ID_FROM_STAGE` and `linked`), a value written to two streams or whose components go to
+  different streams, input or output primitives of other kinds.
+
+Not done yet (the order the next run takes):
+1. The driver's geometry stage (crates/wcontainers-opengl): `Stage::Geometry` with
+   `create_gs_state`, `bind_gs_state`, `delete_gs_state` (`to_common_form` with compute's set, as
+   the stage helper binds a geometry program's slots in set 0); the draw through
+   `Stages::new(vertex, Some(geometry), stream)`: the vertex program converted with every input
+   pulled and `streamed` (no position transform: the geometry program takes it), the geometry
+   program through `direct::geometry` with `VariantKey::output_interpolation` of the bound fragment
+   program, `Stages::run` outside the pass, then the final draw of `FinalDraw` through the
+   geometry's second module (the pass-through vertex program) with the bound fragment program,
+   `Stages::vertex_layout`, the output buffer as stream 0 and its u32 indices. The Direct3D 11
+   front's `context/geometry.rs` (`make_staged`, `run_staged`, `draw_made`) is the model. Stream
+   output from a geometry program is refused by name until it is built.
+2. Only then the screen reports the stage (`STAGES` with `MESA_SHADER_GEOMETRY`, its inputs and
+   outputs, `max_gs_invocations` 32, output vertices and components), which turns on
+   `OES_geometry_shader` on OpenGL ES 3.1 (st_extensions.c: ESSL 3.10, geometry instructions, 32
+   invocations): dEQP-GLES31's geometry_shading groups and KHR-GLES31's geometry cases then run.
+3. Tessellation the same way (`staged::hull`, `staged::domain`, `Stages::tessellated`); a TES's
+   input points and a TCS's input patch size are draw-time values (the bound control program's
+   output count, `glPatchParameteri`), so both are converted per draw's variant.
+4. Then the versions: ES 3.2 needs, beside both stages, OES_copy_image, OES_texture_buffer,
+   OES_texture_cube_map_array, OES_sample_variables, KHR_blend_equation_advanced, ASTC LDR (st/mesa
+   decodes it where the screen lacks it), robustness and fragment storage (version.c,
+   `compute_version_es2`); desktop 3.1 to 3.3 need GLSL 1.40 to 3.30, primitive restart at any index,
+   rectangles, 16 vertex texture units, multisampled textures (2D arrays among them), the 10-10-10-2
+   vertex formats with scaled and signed kinds (an interface request), dual-source blending and
+   timer queries (`compute_version`).
+
+Checked this run (x86-64 machine, a new one: Mesa built again by `mesa/build` first, 106 s with
+the first lint; load 0.1 at the start, 16 at the build's peak): `rustfmt --check` of direct.rs clean;
+clippy with warnings denied clean for wcontainers-nir and wcontainers-opengl with Mesa and without;
+with Mesa `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2,
+`route` 11 passed. The corpus run at b2fccaf2 (17,648 items: `corpus/cts-programs` and
+`godot-forward-plus` were not made on the new machine, 984 items fewer; 96 at once, load 2 to 6,
+791 s with the fetch): route B 11,342 match, 151 differ, 5 not compared of 11,764; against run 12's
+`nir-results-g9r12b.jsonl`, no item run by both changed its outcome (`scripts/outcome_changes.py`).
+Results: scratch `results/g9r13/nir-results-g9r13.jsonl`, logs `logs/g9r13-*.log`. Nothing of this run
+tests a geometry program yet: the GLSL corpus front compiles only vertex, fragment and compute
+programs, and the driver does not take the stage (item 1 below), so the first geometry program
+route B converts will be dEQP's, on the rig.
+
+The table of run 12 below is still the latest measure: nothing of this run reaches the driver yet.
 
 G9 run 12 (2026-11-20). G9 is still short of its bar, and cannot reach it from this track alone:
 the bar's lists for ES 3.2 and desktop 3.3 and 4.6 need geometry and tessellation stages, which
@@ -841,7 +906,9 @@ None.
   wgpu and loses the device ("R16Uint is not resolvable"); the driver now checks
   `FormatUse::RESOLVE` first, as every front must.
 
-- Shaders track (G9 run 12, the one item between G9 and its bar): a public entry point for the
+- Shaders track (G9 run 12; DELIVERED as `wcontainers_shaders::staged` in its runs 88 to 99, used
+  by route B's geometry form since G9 run 13; its 17-byte pulled inputs and 3D texel offsets also
+  lift this driver's refusals of those, still to be removed here): a public entry point for the
   stage helper's geometry and tessellation forms taken from a naga module, as `lower/geometry.rs`
   and `lower/hull.rs` already make them for the DXBC and DXIL routes (`pub(crate)` today, and fed
   from dxbc-spirv's IR). The NIR route would hand over the program as a naga module whose entry
