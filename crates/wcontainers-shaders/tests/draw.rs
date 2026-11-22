@@ -204,10 +204,7 @@ const CASES: [Case; 30] = [
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [None, None],
-        known_on_webgl: Some(
-            "the DXIL build's negated ordered comparisons (unordered ones) give the ordered result \
-             for a NaN through ANGLE (gap A26)",
-        ),
+        known_on_webgl: None,
         dxil: true,
         dxil_against_11: false,
     },

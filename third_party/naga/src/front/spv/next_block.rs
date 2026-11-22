@@ -1592,10 +1592,23 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     let o2_lexp = self.lookup_expression.lookup(o2_id)?;
                     let o2_handle = get_expr_handle!(o2_id, o2_lexp);
 
-                    let expr = crate::Expression::Select {
-                        condition: cond_handle,
-                        accept: o1_handle,
-                        reject: o2_handle,
+                    // A negated condition selects the other way round without its negation, which
+                    // a compiler without IEEE strictness (ANGLE's) would fold into the ordered
+                    // opposite of a comparison, wrong for a NaN.
+                    let expr = match ctx.expressions[cond_handle] {
+                        crate::Expression::Unary {
+                            op: crate::UnaryOperator::LogicalNot,
+                            expr,
+                        } => crate::Expression::Select {
+                            condition: expr,
+                            accept: o2_handle,
+                            reject: o1_handle,
+                        },
+                        _ => crate::Expression::Select {
+                            condition: cond_handle,
+                            accept: o1_handle,
+                            reject: o2_handle,
+                        },
                     };
                     self.lookup_expression.insert(
                         result_id,
