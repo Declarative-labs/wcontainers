@@ -4475,6 +4475,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-readiness",
 ]
 
 [[package]]
@@ -4680,6 +4681,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-readiness",
 ]
 
 [[package]]
@@ -4714,6 +4716,21 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-raw-sockets",
  "wcontainers-raw-sockets-conformance",
+]
+
+[[package]]
+name = "wcontainers-readiness"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "wcontainers-abi",
+]
+
+[[package]]
+name = "wcontainers-readiness-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-readiness",
 ]
 
 [[package]]
@@ -4839,6 +4856,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-random-source",
  "wcontainers-raw-sockets",
+ "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
@@ -4875,6 +4893,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-negative-route-advice",
+ "wcontainers-readiness",
 ]
 
 [[package]]
@@ -4970,6 +4989,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-negative-route-advice",
+ "wcontainers-readiness",
 ]
 
 [[package]]
