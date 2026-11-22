@@ -54,11 +54,11 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
-3080 through the queue, not alone, rigfix/wine.sh, agents run 1 at 05a2cff4 (logs/n1-wine*.log):
+3080 through the queue, not alone, rigfix/wine.sh, agents run 3 at 3b1cd4f3 (logs/a3b-wine*.log):
 - d3d11: 151 pass of 166, the same 15 failing as since round 4 run 3; the failing tests are in the
   Gap list. test_format_support's 7 checks are the B5 targets (6) and XR_BIAS's display (1).
 - d3d10core: 110 of 111: test_desktop_window (Gap list).
-- d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/n1-wine10gl.log): the 13 failing
+- d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/a3b-wine10gl.log): the 13 failing
   since round 2 run 12 and, since main run 3 reports no multisampling there,
   test_alpha_to_coverage and test_check_multisample_quality_levels; all are under the WebGL 2
   item of the Gap list.
@@ -206,7 +206,7 @@ not give real Direct3D's verdict on (agents run 1: Wine's d3d10core 96 of 111; t
 - Wine's d3d11 file through the WebGL 2 build (not on the bar): 78 of 166 at round 2 run 12.
 
 Real programs: the three of the pass bar (godot-platformer-3d-d3d11, chocolate-doom,
-atg-simplelightingpc) match real Direct3D on every compared frame (logs/r6z-programs.log, round 4 run 6), and so do
+atg-simplelightingpc) match real Direct3D on every compared frame (logs/a3b-programs.log, agents run 3), and so do
 atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
 to 07; of bgfx's six (logs/q2f-bgfx.log, round 4 run 2) five pass or run to their end. Outside
 the bar's three, three differ:
@@ -644,40 +644,37 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
-Agents run 1 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
-the queue, not alone except the load times; another track's display-reset hazard job held the
-queue about 17:46 to 18:06. Code: agents at 05a2cff4 (the bar, scratch main/q5-final.sh n1,
-logs/n1-*), which holds this track's code as at main run 3's last commit.
-- The literal check at 05a2cff4: 20 lines to act on, none this track's (Literals). Lint of both
-  builds clean (17:04 to 17:07).
-- Library (n1-lib, 17:18 to 17:20): com 15 pass, 1 ignored; programs 59 pass, 3 ignored. The
-  WebGL 2 build's 10_0 cases: 6 pass, 1 ignored (n1-webgllib). Front 60, unit 6, cache 1 on the
-  rented x86 machine (96 cores, load 9 to 21, n1-front, n1-front2).
-- Wine (17:19 to 17:24): d3d11 151 of 166, the same 15 failing tests as at main run 2; d3d10core
-  110 of 111 (test_desktop_window). Through the WebGL 2 build d3d10core 96 of 111 (n1-wine10gl,
-  18:20 to 18:29; the two new failures are the multisampling item's).
+Agents run 3 (2026-11-21, Pacific). Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through
+the queue, not alone except the load times; the shaders track's display-reset hazard jobs held the
+queue about 21:21 to 21:34 and 21:59 to 22:24. Code: agents at 3b1cd4f3, which holds this run's
+literal commits (scratch main/q5-final.sh a3b, logs/a3b-*; the library suite again as a3c, as its
+first try met a run left by the stopped agents run 2 sending another tree to the same desktop
+folder, which this run stopped).
+- The literal check at 3b1cd4f3: 107 lines to act on, none this track's. Lint of both builds clean
+  (21:35 to 21:37).
+- Library (a3c-lib, 23:03 to 23:20): com 15 pass, 1 ignored; programs 59 pass, 3 ignored. The
+  WebGL 2 build's 10_0 cases: 6 pass, 1 ignored (a3b-webgllib). Front 60, unit 6, cache 1 and
+  clippy clean on the rented x86 machine (96 cores, load 0 to 9, a3-front, a3-lit4).
+- Wine (21:44 to 21:48): d3d11 151 of 166, the same 15 failing tests as since round 4 run 3;
+  d3d10core 110 of 111 (test_desktop_window). Through the WebGL 2 build d3d10core 96 of 111
+  (a3b-wine10gl, 22:53 to 23:03), as at agents run 1.
 - Scenes through the library 135 pass, 0 fail, 4 absent; the WebGL 2 build's 95 pass, 17 fail,
   30 absent, as before.
-- Programs (n1-programs, 18:06 to 18:08): the bar's three (godot-platformer-3d-d3d11,
+- Programs (a3b-programs, 22:24 to 22:26): the bar's three (godot-platformer-3d-d3d11,
   chocolate-doom, atg-simplelightingpc) match real Direct3D on every compared frame, and so do
   atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
   to 07; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (frame 10: 8 pixels, 4 beyond
   their tiles' allowance) differ as before (Gap list).
-- Module sizes (section 10), release builds at 18:09 to 18:11 (n1-sizes): `wcontainers_directx.dll`
-  14,352,384 bytes on WebGPU and 9,926,656 bytes on WebGL 2; the Direct3D 12 track's
-  `wcontainers_d3d12.dll` 13,766,144 bytes. The family library itself is the joint step.
-- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (n1-load,
-  18:11): the system's d3d11.dll 1,170 us; ours on WebGPU 1,649 us; ours on WebGL 2 1,091 us;
-  `wcontainers_d3d12.dll` 1,648 us.
-- Building ahead (n1-warm, 18:11 to 18:15): Godot 3D's first run built 115 to 124 ahead and drew
-  none; its warm start built its 61 recorded combinations at start and drew all 61, built 124
-  ahead and drew none, 26 at their first draw. Godot 2D warm 3 built at start and drawn, 10 at
-  first draw.
-- At 13175969, which holds this run's literal commits (the helper block's writer, the named colour
-  and rectangle types; n2-*, 18:30 to 18:48): lint of both builds clean; library com 15 pass,
-  1 ignored, programs 59 pass, 3 ignored; the WebGL 2 build's 10_0 cases 6 pass, 1 ignored; the
-  front's 60, 6 and 1 on the x86 machine with the same code (n1-front2); the literal check finds
-  no line of this track's (run on the x86 machine, n1-lit2).
+- Module sizes (section 10), release builds at 22:30 to 22:32 (a3b-sizes): `wcontainers_directx.dll`
+  14,359,552 bytes on WebGPU and 9,930,240 bytes on WebGL 2; the Direct3D 12 track's
+  `wcontainers_d3d12.dll` 13,767,680 bytes. The family library itself is the joint step.
+- Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians (a3b-load,
+  22:32 to 22:35): the system's d3d11.dll 1,200 us; ours on WebGPU 1,674 us; ours on WebGL 2
+  1,150 us; `wcontainers_d3d12.dll` 1,684 us.
+- Building ahead (a3b-warm, 22:35 to 22:49): Godot 3D's first run built 54 to 115 ahead and drew
+  none; its warm starts built their 61 recorded combinations at start and drew 60 and 61, built
+  115 and 124 ahead and drew none, 25 and 26 at their first draw. sdk-tutorial07 and the others
+  warm: their recorded combinations built at start and all drawn.
 Earlier runs' measurements are in this file's git history.
 
 ## Known issues
