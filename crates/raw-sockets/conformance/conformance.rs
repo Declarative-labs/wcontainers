@@ -923,14 +923,14 @@ pub fn received_packets_carry_their_mark_and_priority<S: RawSockets>(sockets: S)
     }
 }
 
-/// Checks that a checksum offset makes Linux write the payload's checksum there, and none leaves it as written.
+/// Checks that a checksum offset makes Linux write the payload's checksum at that offset, and none leaves it as written.
 pub fn a_checksum_offset_is_written<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
     let capture = Capture::on(DUMMY);
     let zeros = [u8::MIN; etherparse::Icmpv6Header::MIN_LEN];
-    for (offset, written) in [(Some(CHECKSUM_OFFSET), true), (None, false)] {
+    for offset in [Some(CHECKSUM_OFFSET), None] {
         set(&sockets, &socket, RawSocketSetting::Checksum(offset));
         send(
             &sockets,
@@ -940,16 +940,12 @@ pub fn a_checksum_offset_is_written<S: RawSockets>(sockets: S) {
         .unwrap();
         let packet = capture.next(|packet| seen(packet).protocol == EXPERIMENT);
         let seen = seen(&packet);
-        assert_eq!(seen.payload != zeros, written, "{offset:?}");
-        if written {
-            let sum = etherparse::checksum::Sum16BitWords::new()
-                .add_16bytes(LOCAL_V6.octets())
-                .add_16bytes(ON_LINK_V6.octets())
-                .add_4bytes((zeros.len() as u32).to_be_bytes())
-                .add_2bytes([u8::MIN, EXPERIMENT.0])
-                .add_slice(seen.payload)
-                .ones_complement();
-            assert_eq!(sum, u16::MIN, "{packet:?}");
+        match offset {
+            Some(_) => assert!(
+                is_checksummed_at(LOCAL_V6, ON_LINK_V6, seen.payload),
+                "{packet:?}"
+            ),
+            None => assert_eq!(seen.payload, zeros, "{offset:?}"),
         }
     }
     let v4 = opened(&sockets, IpVersion::V4, EXPERIMENT);
@@ -958,6 +954,152 @@ pub fn a_checksum_offset_is_written<S: RawSockets>(sockets: S) {
             .configure(&v4, RawSocketSetting::Checksum(Some(CHECKSUM_OFFSET)))
             .is_err()
     );
+}
+
+/// Tells whether an all-zero payload of the protocol between the addresses carries its checksum at the offset alone.
+///
+/// The rest must still be zero and the two bytes there not, and the whole must sum to zero with the
+/// [pseudo-header](https://www.rfc-editor.org/rfc/rfc8200#section-8.1), which leaves one value for them.
+fn is_checksummed_at(source: Ipv6Addr, destination: Ipv6Addr, payload: &[u8]) -> bool {
+    let at = usize::try_from(CHECKSUM_OFFSET.0).expect("the offset fits");
+    let checksum = at..at + size_of::<u16>();
+    let rest_is_zero = payload
+        .iter()
+        .enumerate()
+        .all(|(index, &byte)| checksum.contains(&index) || byte == u8::MIN);
+    let sum = etherparse::checksum::Sum16BitWords::new()
+        .add_16bytes(source.octets())
+        .add_16bytes(destination.octets())
+        .add_4bytes(
+            u32::try_from(payload.len())
+                .expect("a short payload")
+                .to_be_bytes(),
+        )
+        .add_2bytes([u8::MIN, EXPERIMENT.0])
+        .add_slice(payload)
+        .ones_complement();
+    rest_is_zero
+        && payload
+            .get(checksum)
+            .is_some_and(|bytes| bytes.iter().any(|&byte| byte != u8::MIN))
+        && sum == u16::MIN
+}
+
+/// Checks that a socket with a checksum offset drops a received packet whose checksum is wrong, and takes a right one.
+pub fn a_checksum_offset_is_checked_on_receipt<S: RawSockets>(sockets: S) {
+    enter_network_namespace();
+    let checking = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    set(
+        &sockets,
+        &checking,
+        RawSocketSetting::Checksum(Some(CHECKSUM_OFFSET)),
+    );
+    let trusting = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    let sender = opened(&sockets, IpVersion::V6, EXPERIMENT);
+    let zeros = [u8::MIN; etherparse::Icmpv6Header::MIN_LEN];
+    let to = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    for offset in [None, Some(CHECKSUM_OFFSET)] {
+        set(&sockets, &sender, RawSocketSetting::Checksum(offset));
+        send(&sockets, &sender, payload_to(to, EXPERIMENT, &zeros)).expect("the payload is sent");
+    }
+    let mut into = buffer();
+    let fields = receive_packet(&sockets, &trusting, &mut into);
+    assert_eq!(
+        seen(&into[..fields.length]).payload,
+        zeros,
+        "the wrong checksum arrives where none is checked"
+    );
+    let fields = receive_packet(&sockets, &checking, &mut into);
+    let payload = seen(&into[..fields.length]).payload;
+    assert!(
+        is_checksummed_at(Ipv6Addr::LOCALHOST, Ipv6Addr::LOCALHOST, payload),
+        "the first packet taken is the right one: {payload:?}"
+    );
+    assert!(
+        nothing_arrives(&sockets, &checking),
+        "the wrong one is dropped"
+    );
+}
+
+/// Checks that a payload or a packet whose header is of the other version gets the error the host's own raw socket gives it.
+///
+/// The host's socket is sent the same bytes to the address in the form its family takes: IPv4-mapped for IPv6.
+pub fn a_header_of_the_other_version_gets_the_hosts_error<S: RawSockets>(sockets: S) {
+    enter_network_namespace();
+    let ipv4 = ipv4_packet(
+        Ipv4Addr::LOCALHOST,
+        Ipv4Addr::LOCALHOST,
+        EXPERIMENT,
+        &[],
+        false,
+        PAYLOAD,
+    );
+    let ipv6 = ipv6_packet(
+        Ipv6Addr::LOCALHOST,
+        Ipv6Addr::LOCALHOST,
+        EXPERIMENT,
+        &[],
+        PAYLOAD,
+    );
+    let route_v4 = v4_route(Ipv4Addr::LOCALHOST, under(EXPERIMENT));
+    let route_v6 = v6_route(Ipv6Addr::LOCALHOST, under(EXPERIMENT));
+    let cases = [
+        (
+            IpVersion::V6,
+            payload_to(IpAddr::V4(Ipv4Addr::LOCALHOST), EXPERIMENT, PAYLOAD),
+            PAYLOAD,
+        ),
+        (
+            IpVersion::V4,
+            payload_to(IpAddr::V6(Ipv6Addr::LOCALHOST), EXPERIMENT, PAYLOAD),
+            PAYLOAD,
+        ),
+        (
+            IpVersion::V6,
+            header_included_v4(route_v4, &ipv4),
+            &ipv4[..],
+        ),
+        (
+            IpVersion::V4,
+            header_included_v6(route_v6, &ipv6),
+            &ipv6[..],
+        ),
+    ];
+    for (version, packet, bytes) in cases {
+        let described = format!("{version:?} socket, {packet:?}");
+        let socket = opened(&sockets, version, EXPERIMENT);
+        let ours = sockets.send_to(&socket, packet, plain_fields());
+        let (family, address) = match version {
+            IpVersion::V6 => (
+                rustix::net::AddressFamily::INET6,
+                IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped()),
+            ),
+            IpVersion::V4 => (
+                rustix::net::AddressFamily::INET,
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ),
+        };
+        let host = rustix::net::socket(
+            family,
+            rustix::net::SocketType::RAW,
+            Some(rustix::net::Protocol::from_raw(
+                rustix::net::RawProtocol::new(EXPERIMENT.0.into()).expect("a protocol number"),
+            )),
+        )
+        .expect("the host's raw socket opens");
+        let error = rustix::net::sendto(
+            &host,
+            bytes,
+            rustix::net::SendFlags::DONTWAIT,
+            &std::net::SocketAddr::new(address, u16::MIN),
+        )
+        .expect_err("the host refuses the address");
+        assert_eq!(
+            ours,
+            Err(SendError::Host(HostError::Errno(error.raw_os_error()))),
+            "{described}"
+        );
+    }
 }
 
 /// Builds the pair of linked links that forward packets beyond them back out of the first, and their neighbours.
@@ -2512,6 +2654,16 @@ macro_rules! tests {
         #[test]
         fn a_checksum_offset_is_written() {
             $crate::a_checksum_offset_is_written($value);
+        }
+
+        #[test]
+        fn a_checksum_offset_is_checked_on_receipt() {
+            $crate::a_checksum_offset_is_checked_on_receipt($value);
+        }
+
+        #[test]
+        fn a_header_of_the_other_version_gets_the_hosts_error() {
+            $crate::a_header_of_the_other_version_gets_the_hosts_error($value);
         }
 
         #[test]

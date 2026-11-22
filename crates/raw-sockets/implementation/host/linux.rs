@@ -311,10 +311,36 @@ impl RawSockets for HostRawSockets {
         fields: IpSendFields,
     ) -> Result<(), SendError> {
         let fd = socket.fd();
+        // Linux answers an address of the other version by the address alone, which it is given as its family takes it.
+        let other_version = match &packet {
+            RawPacket::Payload {
+                header: IpHeaderFields::V4(header),
+                payload,
+            } if socket.ipv6 => Some((header.route.destination.to_ipv6_mapped(), *payload)),
+            RawPacket::Payload {
+                header: IpHeaderFields::V6(header),
+                payload,
+            } if !socket.ipv6 => Some((header.route.destination, *payload)),
+            RawPacket::HeaderIncluded(HeaderIncludedPacket::V4 { route, packet, .. })
+                if socket.ipv6 =>
+            {
+                Some((route.destination.to_ipv6_mapped(), *packet))
+            }
+            RawPacket::HeaderIncluded(HeaderIncludedPacket::V6 { route, packet })
+                if !socket.ipv6 =>
+            {
+                Some((route.destination, *packet))
+            }
+            _ => None,
+        };
+        if let Some((destination, bytes)) = other_version {
+            let flags = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
+            let destination = SocketAddr::new(IpAddr::V6(destination), u16::MIN);
+            return send_message(fd, Some(destination), bytes, &[], flags).map_err(SendError::Host);
+        }
         let mut state = socket.state.borrow_mut();
         let state = &mut *state;
         let mut control = Control::new();
-        let invalid = SendError::Host(HostError::Errno(libc::EINVAL));
         let (destination, bytes) = match packet {
             RawPacket::Payload { header, payload } => {
                 let upper_layer = match &header {
@@ -347,9 +373,6 @@ impl RawSockets for HostRawSockets {
                 reassembly,
                 packet,
             }) => {
-                if socket.ipv6 {
-                    return Err(invalid);
-                }
                 if route.upper_layer.selector.is_some() {
                     return Err(self.refuse(UPPER_LAYER));
                 }
@@ -384,9 +407,6 @@ impl RawSockets for HostRawSockets {
                 (destination, packet)
             }
             RawPacket::HeaderIncluded(HeaderIncludedPacket::V6 { route, packet }) => {
-                if !socket.ipv6 {
-                    return Err(invalid);
-                }
                 if route.upper_layer.selector.is_some() {
                     return Err(self.refuse(UPPER_LAYER));
                 }
