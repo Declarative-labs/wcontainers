@@ -19,7 +19,7 @@ use socket2::{MsgHdr, SockAddr, SockRef};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, HopLimit, InterfaceIndex,
+    ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, FrameLength, HopLimit, InterfaceIndex,
     IpPacketSetting, IpSocketSetting, IpVersion, LocalBinding, LocalPort, PacketMark,
     PacketPriority, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitEvent, TransmitReport,
     TransmitReportKey, TransmitReportRequest, WirelessAcknowledgement,
@@ -127,6 +127,9 @@ const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
 const ARRIVAL_INTERFACE_OF_THE_HANDSHAKE: &str = "Linux keeps for an IPv4 connection the interface of the segment that completed its handshake, which is given as its SYN's";
 const SYNCHRONIZE_FIELDS_OF_THE_SOCKET: &str = "Linux reports no priority, timestamps or drops for a SYN, and its mark only as the accepted socket's: the accepted socket's mark and priority are given, with no timestamps or drops";
+const NO_SYNCHRONIZE_FRAGMENT_SIZE: &str = "Linux keeps no largest fragment size for a SYN, which is given as a packet that was not reassembled";
+const NO_SYNCHRONIZE_FRAME: &str =
+    "no link header was found before a SYN's network header, so its frame length is not given";
 const LONG_SAVED_SYNCHRONIZE: &str = "a SYN's saved headers were longer than the room accept first reads them into, and were read again into a larger one";
 const NO_NETWORK_HEADER: &str =
     "no IP header from the peer to the local address was found in a SYN's saved headers";
@@ -1235,6 +1238,7 @@ impl HostTcpSockets {
         &self,
         socket: BorrowedFd<'_>,
         header: &[u8],
+        link_header: Option<usize>,
         local: SocketAddr,
         family: IpVersion,
         records: bool,
@@ -1259,13 +1263,21 @@ impl HostTcpSockets {
                 self.interfaces.holding(local)
             })
             .unwrap_or(NO_INTERFACE);
+        let link_layer_length = link_header
+            .filter(|_| length > usize::MIN)
+            .and_then(|link| u32::try_from(link + length).ok())
+            .map(FrameLength);
+        if link_layer_length.is_none() {
+            self.shortfalls.count(NO_SYNCHRONIZE_FRAME);
+        }
         self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET);
+        self.shortfalls.count(NO_SYNCHRONIZE_FRAGMENT_SIZE);
         Ok(ReceivedPacketFields {
             length,
             interface,
             specific_destination,
             largest_fragment: None,
-            link_layer_length: None,
+            link_layer_length,
             timestamps: ReceiveTimestamps {
                 software: None,
                 hardware: None,
@@ -1457,8 +1469,8 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 }
                 options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, &bytes)
             }
-            // Every TCP listener saves at least its SYNs' network headers, which accept gives; the setting decides
-            // whether the link header is saved too and whether the accepted connections keep them to be taken.
+            // Every TCP listener saves its SYNs' headers from the link header, which accept gives and measures the frame
+            // by; the setting decides which of them the accepted connections keep to be taken.
             TcpListenerSetting::SaveSynchronize(save) => {
                 let value = match save {
                     TcpSavedSynchronize::Off => SAVE_NONE,
@@ -1466,7 +1478,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     TcpSavedSynchronize::FromLinkHeader => SAVE_FROM_LINK_HEADER,
                 };
                 let saved = match listener.protocol {
-                    TcpProtocol::Tcp => value.max(SAVE_FROM_NETWORK_HEADER),
+                    TcpProtocol::Tcp => SAVE_FROM_LINK_HEADER,
                     TcpProtocol::Multipath => value,
                 };
                 set_int(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, saved)?;
@@ -2003,7 +2015,12 @@ impl TcpListeners for HostTcpSockets {
         let socket = listener.socket.fd();
         // Multipath sockets have no TCP_SAVE_SYN.
         if protocol == TcpProtocol::Tcp {
-            set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, true)?;
+            set_int(
+                socket,
+                uapi::SOL_TCP,
+                uapi::TCP_SAVE_SYN,
+                SAVE_FROM_LINK_HEADER,
+            )?;
             self.record_arrival_interfaces(socket, family)?;
         }
         let (backlogs, others): (Vec<_>, Vec<_>) = settings
@@ -2074,8 +2091,15 @@ impl TcpListeners for HostTcpSockets {
             *locked(&connection.saved_synchronize) = Some(kept.to_vec());
         }
         let records = listener.records_last_received.load(Ordering::Relaxed);
-        let synchronize =
-            self.synchronize_fields(socket, network, local, listener.family, records)?;
+        let link_header = (!network.is_empty()).then(|| saved.len() - network.len());
+        let synchronize = self.synchronize_fields(
+            socket,
+            network,
+            link_header,
+            local,
+            listener.family,
+            records,
+        )?;
         let length = network.len().min(synchronize_header.len());
         synchronize_header[..length].copy_from_slice(&network[..length]);
         Ok(TcpAccepted {

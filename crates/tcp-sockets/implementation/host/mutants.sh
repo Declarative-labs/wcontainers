@@ -159,6 +159,12 @@ for pattern in 'Backlog(..)' 'FastOpenQueue(..)' 'FastOpenKeys(..)' 'FlowLabelRe
     mutant "listener-setting-${pattern%%(*}-noop" "$implementation" '            TcpListenerSetting::Socket(setting) => self.configure_socket(' \
         "TcpListenerSetting::$pattern => Ok(()), TcpListenerSetting::Socket(setting) => self.configure_socket("
 done
+mutant listen-backlog-argument-ignored "$implementation" $'self.bind(socket, &local)?;\n        SockRef::from(&socket)\n            .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))' \
+    $'self.bind(socket, &local)?; let _ = backlog;\n        SockRef::from(&socket)\n            .listen(4096)'
+mutant clock-set-outside-repair "$implementation" 'set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)' \
+    'set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value).or(Ok(()))'
+mutant synchronize-frame-is-the-link-header "$implementation" '.and_then(|link| u32::try_from(link + length).ok())' \
+    '.and_then(|link| u32::try_from(link).ok())'
 status=0
 for index in "${!names[@]}"; do
     name=${names[$index]}

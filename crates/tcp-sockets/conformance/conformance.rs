@@ -1193,6 +1193,9 @@ pub fn connect_and_accept_name_both_ends<S: TcpSockets>(sockets: S) {
     assert_eq!(ipv4.protocol(), IpNumber::TCP);
     assert_eq!(IpAddr::V4(ipv4.source_addr()), connected.local.ip());
     assert_eq!(accepted.synchronize.length, usize::from(ipv4.total_len()));
+    if let Some(frame) = accepted.synchronize.link_layer_length {
+        assert!(usize::try_from(frame.0).is_ok_and(|frame| frame >= accepted.synchronize.length));
+    }
     let tcp = TcpHeaderSlice::from_slice(&accepted.synchronize_header[ipv4.slice().len()..])
         .expect("the SYN's TCP header");
     assert!(tcp.syn() && !tcp.ack());
@@ -1747,12 +1750,21 @@ pub fn record_end_starts_a_new_segment<S: TcpSockets>(sockets: S) {
         receive_up_to(&sockets, &pair.server, MESSAGE.len() + REPLY.len()),
         [MESSAGE, REPLY].concat()
     );
-    let lengths: Vec<usize> = capture
-        .since(start)
-        .iter()
-        .filter(|segment| segment.is_data_to_listener())
-        .map(|segment| segment.payload)
-        .collect();
+    // The capture thread may record the segments after the data was read, so this waits until it holds every byte.
+    let data_lengths = || -> Vec<usize> {
+        capture
+            .since(start)
+            .iter()
+            .filter(|segment| segment.is_data_to_listener())
+            .map(|segment| segment.payload)
+            .collect()
+    };
+    let mut lengths = data_lengths();
+    while lengths.iter().sum::<usize>() < MESSAGE.len() + REPLY.len() && start.elapsed() < DEADLINE
+    {
+        std::thread::sleep(RETRY_INTERVAL);
+        lengths = data_lengths();
+    }
     assert_eq!(lengths, [MESSAGE.len(), REPLY.len()]);
     close(&sockets, pair);
 }
@@ -3989,16 +4001,24 @@ pub fn nonlocal_addresses_are_bound_only_when_bindable<S: TcpSockets>(sockets: S
     }
 }
 
-/// Checks that a listener of backlog 0, from the listen or set later, holds one connection to accept, not the three waiting.
+/// Checks that a listener of backlog 0, given to listen, as its setting or set later, holds one connection, not three.
 pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
     let smallest = TcpListenerSetting::Backlog(SMALLEST_BACKLOG);
-    for later in [false, true] {
-        let settings = if later {
-            vec![]
-        } else {
-            vec![smallest.clone()]
-        };
-        let (listener, local) = listen(&sockets, ipv4_loopback(), &settings);
+    for (given, backlog, settings, later) in [
+        ("to listen", SMALLEST_BACKLOG, vec![], false),
+        ("as a setting", BACKLOG, vec![smallest.clone()], false),
+        ("later", BACKLOG, vec![], true),
+    ] {
+        let listening = sockets
+            .listen(
+                TcpProtocol::Tcp,
+                OWNER,
+                bind_any_port(ipv4_loopback()),
+                backlog,
+                &settings,
+            )
+            .expect("listen on loopback");
+        let (listener, local) = (listening.listener, listening.local);
         if later {
             sockets
                 .configure(&listener, smallest.clone())
@@ -4057,7 +4077,7 @@ pub fn listener_backlog_bounds_the_accept_queue<S: TcpSockets>(sockets: S) {
                 break;
             }
         }
-        assert_eq!(accepted.len(), 1, "later: {later}");
+        assert_eq!(accepted.len(), 1, "backlog given {given}");
         for connection in accepted.into_iter().chain(clients) {
             sockets.close(connection, TcpClose::Orderly);
         }
@@ -4282,13 +4302,12 @@ pub fn timestamp_clock_set_in_repair_mode_stamps_segments<S: TcpSockets>(sockets
         value: TcpTimestamp(CLOCK_READING),
         unit: TcpTimestampUnit::Milliseconds,
     };
-    assert_eq!(
-        sockets.set_timestamp_clock(&pair.client, clock),
-        Err(errno(Errno::EPERM))
-    );
-    assert_eq!(
-        sockets.set_listener_timestamp_clock(&pair.listener, clock),
-        Err(errno(Errno::EPERM))
+    // The contract names no error for a socket out of repair mode, so any refusal holds.
+    assert!(sockets.set_timestamp_clock(&pair.client, clock).is_err());
+    assert!(
+        sockets
+            .set_listener_timestamp_clock(&pair.listener, clock)
+            .is_err()
     );
     close(&sockets, pair);
     for (address, unit) in [
