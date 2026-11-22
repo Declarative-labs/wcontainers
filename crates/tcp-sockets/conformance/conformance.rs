@@ -441,10 +441,14 @@ const ONE_SYNCHRONIZE_RETRY: RetryCount = RetryCount(1);
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const TIMESTAMP_SLACK: u128 = 2;
 
-/// The smallest receive low water mark, Linux's default: https://man7.org/linux/man-pages/man7/socket.7.html
+/// The smallest receive low water mark, Linux's default.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const SMALLEST_LOW_WATER: ByteCount = ByteCount(1);
 
-/// The smallest minimum hop limit that turns the check on: https://man7.org/linux/man-pages/man7/ip.7.html
+/// The smallest minimum hop limit that turns the check on.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const SMALLEST_HOP_LIMIT: HopLimit = HopLimit(1);
 
 fn errno(errno: Errno) -> HostError {

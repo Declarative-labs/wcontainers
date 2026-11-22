@@ -91,7 +91,9 @@ const POLL_BITS: &[(ReadyFor, PollFlags)] = &[
     (ReadyFor::PEER_FINISHED_SENDING, PollFlags::RDHUP),
 ];
 
-/// A poll that answers at once: https://man7.org/linux/man-pages/man2/poll.2.html
+/// A poll that answers at once.
+///
+/// https://man7.org/linux/man-pages/man2/poll.2.html
 const NO_WAIT: Timespec = Timespec {
     tv_sec: 0,
     tv_nsec: 0,

@@ -81,7 +81,9 @@ const WITH_STATISTICS: u32 = uapi::SOF_TIMESTAMPING_OPT_STATS as u32;
 /// One more than the largest `TCP_NLA_*` attribute of transmit statistics.
 const STATISTICS_ATTRIBUTES: usize = uapi::TCP_NLA_REHASH as usize + 1;
 
-/// The interface index that names no interface, as `if_nametoindex` answers for none: https://man7.org/linux/man-pages/man3/if_nametoindex.3.html
+/// The interface index that names no interface, as `if_nametoindex` answers for none.
+///
+/// https://man7.org/linux/man-pages/man3/if_nametoindex.3.html
 const NO_INTERFACE_INDEX: c_int = 0;
 const NO_INTERFACE: InterfaceIndex = InterfaceIndex(NO_INTERFACE_INDEX.unsigned_abs());
 
@@ -90,11 +92,17 @@ const SAVED_SYNCHRONIZE_ROOM: usize = etherparse::Ethernet2Header::LEN
     + etherparse::Ipv4Header::MAX_LEN
     + etherparse::TcpHeader::MAX_LEN;
 
-/// `TCP_SAVE_SYN`'s value for saving no headers, which Linux does not name: https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
+/// `TCP_SAVE_SYN`'s value for saving no headers, which Linux does not name.
+///
+/// https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const SAVE_NONE: c_int = 0;
-/// `TCP_SAVE_SYN`'s value for saving from the network header: https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
+/// `TCP_SAVE_SYN`'s value for saving from the network header.
+///
+/// https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const SAVE_FROM_NETWORK_HEADER: c_int = 1;
-/// `TCP_SAVE_SYN`'s value for saving from the link header: https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
+/// `TCP_SAVE_SYN`'s value for saving from the link header.
+///
+/// https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const SAVE_FROM_LINK_HEADER: c_int = 2;
 
 /// The options whose records `IP_PKTOPTIONS` gives a TCP socket: packet information, TTL and TOS.
@@ -188,7 +196,7 @@ impl HostTcpSockets {
                 ))
             }
             libc::SO_EE_ORIGIN_TXSTATUS if wireless.is_some() => {
-                let acknowledged = if wireless.is_some_and(|status| status != 0) {
+                let acknowledged = if wireless.is_some_and(|value| value != 0) {
                     WirelessAcknowledgement::Acknowledged
                 } else {
                     WirelessAcknowledgement::NotAcknowledged
@@ -362,7 +370,9 @@ fn changed(changes: BorrowedFd<'_>) -> bool {
 /// https://man7.org/linux/man-pages/man7/netlink.7.html
 const NETLINK_MESSAGE_ROOM: usize = 4096;
 
-/// The port id a netlink socket binds to for the kernel to choose one: https://man7.org/linux/man-pages/man7/netlink.7.html
+/// The port id a netlink socket binds to for the kernel to choose one.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
 const KERNEL_CHOOSES_PORT_ID: u32 = 0;
 
 fn interface_addresses() -> Vec<HeldAddress> {
@@ -458,11 +468,17 @@ fn whole(duration: Duration, unit: Duration) -> Result<c_int, HostError> {
 /// https://github.com/torvalds/linux/blob/master/net/ipv4/tcp.c
 const QUICK_ACKNOWLEDGEMENT_THEN_DELAYING: c_int = 2;
 
-/// The units tcp(7) gives its times in: https://man7.org/linux/man-pages/man7/tcp.7.html
+/// The units tcp(7) gives its times in.
+///
+/// https://man7.org/linux/man-pages/man7/tcp.7.html
 const SECOND: Duration = Duration::from_secs(1);
-/// A millisecond, the unit of `TCP_USER_TIMEOUT` and `TCP_RTO_MAX_MS`: https://man7.org/linux/man-pages/man7/tcp.7.html
+/// A millisecond, the unit of `TCP_USER_TIMEOUT` and `TCP_RTO_MAX_MS`.
+///
+/// https://man7.org/linux/man-pages/man7/tcp.7.html
 const MILLISECOND: Duration = Duration::from_millis(1);
-/// A microsecond, the unit of `TCP_RTO_MIN_US`: https://docs.kernel.org/networking/ip-sysctl.html
+/// A microsecond, the unit of `TCP_RTO_MIN_US`.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
 const MICROSECOND: Duration = Duration::from_micros(1);
 
 /// The zero tcp(7) and ip(7) take for none or the system's choice: no clamp, timeout, deferral, minimum hop limit or segment size.
@@ -470,10 +486,14 @@ const MICROSECOND: Duration = Duration::from_micros(1);
 /// https://man7.org/linux/man-pages/man7/tcp.7.html
 const UNSET: c_int = 0;
 
-/// The `TCP_LINGER2` value that resets in place of `FIN_WAIT2`: https://man7.org/linux/man-pages/man7/tcp.7.html
+/// The `TCP_LINGER2` value that resets in place of `FIN_WAIT2`.
+///
+/// https://man7.org/linux/man-pages/man7/tcp.7.html
 const FIN_WAIT2_RESET: c_int = -1;
 
-/// The `SO_PEEK_OFF` value that turns peeking at an offset off: https://man7.org/linux/man-pages/man7/socket.7.html
+/// The `SO_PEEK_OFF` value that turns peeking at an offset off.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const NO_PEEK_OFFSET: c_int = -1;
 
 /// The low bit of `TCP_TIMESTAMP`'s value, which says that the clock counts microseconds.
@@ -484,7 +504,9 @@ const TIMESTAMP_IN_MICROSECONDS: u32 = 1;
 /// The `SO_TIMESTAMPING` flags of a socket that asked for no reports.
 const NO_REPORT_FLAGS: u32 = u32::MIN;
 
-/// How many keys `TCP_AO_GET_KEYS` is asked for to find one: https://docs.kernel.org/networking/tcp_ao.html
+/// How many keys `TCP_AO_GET_KEYS` is asked for to find one.
+///
+/// https://docs.kernel.org/networking/tcp_ao.html
 const ONE_KEY: u32 = 1;
 
 /// The receive timestamping flags of a socket that asked for none.

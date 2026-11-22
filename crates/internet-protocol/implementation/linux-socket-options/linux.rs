@@ -154,7 +154,9 @@ pub fn receive_timestamping_flags(timestamping: &Timestamping) -> u32 {
     flags
 }
 
-/// The `bind_phc` of `SO_TIMESTAMPING` when no hardware clock is bound: https://docs.kernel.org/networking/timestamping.html
+/// The `bind_phc` of `SO_TIMESTAMPING` when no hardware clock is bound.
+///
+/// https://docs.kernel.org/networking/timestamping.html
 const NO_HARDWARE_CLOCK: c_int = 0;
 
 /// Sets `SO_TIMESTAMPING` to the flags, bound to the hardware clock if one is given.
@@ -315,13 +317,19 @@ pub fn set_port_setting(
     }
 }
 
-/// The value a filter's detach takes, which Linux ignores: https://man7.org/linux/man-pages/man7/socket.7.html
+/// The value a filter's detach takes, which Linux ignores.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const DETACH_VALUE: c_int = 0;
 
-/// The `SO_INCOMING_CPU` value that ties the socket to no processor: https://man7.org/linux/man-pages/man7/socket.7.html
+/// The `SO_INCOMING_CPU` value that ties the socket to no processor.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const NO_PROCESSOR: c_int = -1;
 
-/// The hop limit value that takes the route's: https://man7.org/linux/man-pages/man7/ipv6.7.html
+/// The hop limit value that takes the route's.
+///
+/// https://man7.org/linux/man-pages/man7/ipv6.7.html
 const ROUTE_HOP_LIMIT: c_int = -1;
 
 fn path_mtu_discovery(mode: PathMtuDiscovery) -> u32 {
@@ -470,11 +478,17 @@ pub fn set_packet_setting(
 
 /// `SCM_TSTAMP_SND`, the stage of a transmit timestamp taken as the packet left, from [linux/errqueue.h](https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h), which neither libc nor linux-raw-sys carries.
 pub const TIMESTAMP_STAGE_SENT: u32 = 0;
-/// `SCM_TSTAMP_SCHED`, taken as the packet entered the queueing discipline: https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
+/// `SCM_TSTAMP_SCHED`, taken as the packet entered the queueing discipline.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMP_STAGE_SCHEDULED: u32 = 1;
-/// `SCM_TSTAMP_ACK`, taken as the peer acknowledged the data: https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
+/// `SCM_TSTAMP_ACK`, taken as the peer acknowledged the data.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMP_STAGE_ACKNOWLEDGED: u32 = 2;
-/// `SCM_TSTAMP_COMPLETION`, taken as the device completed the transmission: https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
+/// `SCM_TSTAMP_COMPLETION`, taken as the device completed the transmission.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 
 /// The times of an `SCM_TIMESTAMPING` message, `struct scm_timestamping`: software, deprecated, hardware.
@@ -722,7 +736,8 @@ pub fn in_port_ranges<T>(
     outcome
 }
 
-/// Binds the socket as the binding asks, returning the choice the exit node makes its port from, if it does;
+/// Binds the socket as the binding asks, returning the choice the exit node makes its port from, if it does.
+///
 /// `choose_now` chooses that port at once, as a listener or a datagram socket needs, not when connecting.
 pub fn bind<'a>(
     socket: BorrowedFd<'_>,
