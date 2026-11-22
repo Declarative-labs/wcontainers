@@ -121,21 +121,26 @@ struct Network {
 
 /// Runs each line of `commands` as one `ip` command with these options.
 fn ip(options: &[&str], commands: &str) {
-    let mut child = Command::new(IP)
+    batch(IP, options, commands);
+}
+
+/// Runs each line of `commands` as one command of the iproute2 tool, with these options.
+fn batch(tool: &str, options: &[&str], commands: &str) {
+    let mut child = Command::new(tool)
         .args(options)
         .args(BATCH)
         .stdin(Stdio::piped())
         .spawn()
-        .expect("iproute2's ip runs");
+        .unwrap_or_else(|error| panic!("{tool} runs: {error}"));
     child
         .stdin
         .take()
-        .expect("ip's input")
+        .expect("the tool's input")
         .write_all(commands.as_bytes())
-        .expect("ip reads its commands");
+        .expect("the tool reads its commands");
     assert!(
-        child.wait().expect("ip ends").success(),
-        "ip {options:?}: {commands}"
+        child.wait().expect("the tool ends").success(),
+        "{tool} {options:?}: {commands}"
     );
 }
 
@@ -1107,8 +1112,8 @@ pub fn link_scope_takes_only_routes_on_the_link<R: RouteResolver>(resolver: R) {
 
 /// Checks that only a confirmed lookup confirms the next hop's neighbour, both give one route, and neither sends.
 pub fn confirmed_neighbour_is_confirmed<R: RouteResolver>(resolver: R) {
-    /// The gateways of `FAR` on da as stale neighbours, on a link that resolves them and sends no reports of its own.
-    const NEIGHBOURS: &str = "link set da arp on multicast off
+    /// The gateways of `FAR` on da as stale neighbours, on a link that resolves them.
+    const NEIGHBOURS: &str = "link set da arp on
 neigh add 10.1.0.2 lladdr 02:00:00:00:00:02 dev da nud stale
 neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
     /// The gateway of `FAR` on da.
@@ -1119,15 +1124,19 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
     ///
     /// https://www.rfc-editor.org/rfc/rfc4193#section-3.1
     const GATEWAY_V6: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 2);
+    /// Counts what da sends to the gateways' link address, where anything a lookup sent would go.
+    const GATEWAY_COUNTER: &str = "qdisc add dev da clsact
+filter add dev da egress protocol all flower dst_mac 02:00:00:00:00:02 action pass";
     network();
     ip(IPV4, NEIGHBOURS);
+    batch(TRAFFIC_CONTROL, IPV4, GATEWAY_COUNTER);
     let options = Ipv4Options::new();
     let lookups = [
         (RouteSelectors::V4(v4(&options, FAR)), IpAddr::V4(GATEWAY)),
         (RouteSelectors::V6(v6(FAR_V6)), IpAddr::V6(GATEWAY_V6)),
     ];
     for (route, gateway) in lookups {
-        let sent = packets_sent(A);
+        let sent = sent_to_gateways();
         let unconfirmed =
             resolver.resolve_route(route.clone(), ROOT, NeighbourConfirmation::Unconfirmed);
         let age = seconds_since_confirmed(gateway, A);
@@ -1136,25 +1145,29 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
         assert_eq!(confirmed, unconfirmed);
         assert_eq!(seconds_since_confirmed(gateway, A), 0, "{gateway}");
         assert_eq!(
-            packets_sent(A),
+            sent_to_gateways(),
             sent,
             "a lookup towards {gateway} sent a packet"
         );
     }
 }
 
-/// Returns the number of packets a link has sent, from its statistics.
-fn packets_sent(link: &str) -> u64 {
-    /// Shows the link with its statistics, as JSON.
-    const SHOW: &[&str] = &["-s", "-j", "link", "show"];
-    const TRANSMITTED: &str = "\"tx\":{";
-    let output = Command::new(IP)
+/// The iproute2 tool that sets queues and filters.
+const TRAFFIC_CONTROL: &str = "tc";
+
+/// Returns the number of packets da has sent to the gateways' link address, from its egress filter's statistics.
+fn sent_to_gateways() -> u64 {
+    /// Shows da's egress filters with their statistics, as JSON.
+    const SHOW: &[&str] = &["-s", "-j", "filter", "show"];
+    const EGRESS: &str = "egress";
+    const STATISTICS: &str = "\"stats\":";
+    let output = Command::new(TRAFFIC_CONTROL)
         .args(SHOW)
-        .args([DEVICE, link])
+        .args([DEVICE, A, EGRESS])
         .output()
-        .expect("ip runs");
-    let text = String::from_utf8(output.stdout).expect("ip writes text");
-    number_after(&text, TRANSMITTED, PACKETS)
+        .expect("tc runs");
+    let text = String::from_utf8(output.stdout).expect("tc writes text");
+    number_after(&text, STATISTICS, PACKETS)
 }
 
 /// The word before a link's name in an `ip` command.
