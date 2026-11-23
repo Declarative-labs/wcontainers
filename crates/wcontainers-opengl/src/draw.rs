@@ -23,6 +23,7 @@ use wcontainers_shaders::stage::{
 
 use crate::context::Context;
 use crate::gallium::*;
+use crate::packed::Packed;
 use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse, refused};
@@ -74,6 +75,9 @@ pub(crate) struct Variant {
     border: u16,
     /// The blend constant's alpha given as the blend's second source (fragment programs).
     second_source: Option<u32>,
+    /// The inputs of packed formats the interface lacks, by location, which the program unpacks
+    /// from one word each (vertex programs).
+    packed: Vec<(u32, Packed)>,
 }
 
 impl Variant {
@@ -447,40 +451,41 @@ fn convert<B: Backend>(
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
         ..VariantKey::default()
     };
-    let (module, bindings, helpers, helper_size) = if rewrites == VariantKey::default() {
-        let mut module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
-        fit_stages(&mut module, variant)?;
-        let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
-        let entry_point = module
-            .entry_points
-            .first()
-            .map(|e| e.name.clone())
-            .ok_or("no entry point")?;
-        (
-            ShaderModule {
+    let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
+    fit_stages(&mut routed.module, variant)?;
+    crate::packed::unpack_inputs(&mut routed.module, &variant.packed)?;
+    let (module, bindings, helpers, helper_size) =
+        if rewrites == VariantKey::default() && routed.helpers.is_empty() {
+            let module = wcontainers_nir::direct::plain(routed).map_err(|e| e.to_string())?;
+            let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
+            let entry_point = module
+                .entry_points
+                .first()
+                .map(|e| e.name.clone())
+                .ok_or("no entry point")?;
+            (
+                ShaderModule {
+                    module,
+                    info,
+                    entry_point,
+                    stage: stage.shader_stage(),
+                    key,
+                },
+                bindings,
+                Vec::new(),
+                0,
+            )
+        } else {
+            let (module, reflection) =
+                wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
+                    .map_err(|e| e.to_string())?;
+            (
                 module,
-                info,
-                entry_point,
-                stage: stage.shader_stage(),
-                key,
-            },
-            bindings,
-            Vec::new(),
-            0,
-        )
-    } else {
-        let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
-        fit_stages(&mut routed.module, variant)?;
-        let (module, reflection) =
-            wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
-                .map_err(|e| e.to_string())?;
-        (
-            module,
-            reflection.bindings,
-            reflection.helpers,
-            reflection.helper_size,
-        )
-    };
+                reflection.bindings,
+                reflection.helpers,
+                reflection.helper_size,
+            )
+        };
     let converted = variant.streamed.then(|| Converted {
         modules: vec![module.clone()],
         reflection: Reflection {
@@ -703,7 +708,22 @@ fn second_source_alpha<B: Backend>(
         && reads([BlendFactor::Constant, BlendFactor::OneMinusConstant])
         && constant != [alpha; state::COLOR_CHANNELS];
     let one_target = framebuffer.nr_cbufs == 1;
-    (needed && one_target && caps.has(Features::DUAL_SOURCE_BLEND)).then_some(alpha)
+    // A block blending with the program's own second source leaves none to give the alpha.
+    let own_second = desc
+        .targets
+        .iter()
+        .filter_map(|t| t.blend)
+        .flat_map(|(c, a)| [c.src, c.dst, a.src, a.dst])
+        .any(|f| {
+            matches!(
+                f,
+                BlendFactor::Src1
+                    | BlendFactor::OneMinusSrc1
+                    | BlendFactor::Src1Alpha
+                    | BlendFactor::OneMinusSrc1Alpha
+            )
+        });
+    (needed && one_target && !own_second && caps.has(Features::DUAL_SOURCE_BLEND)).then_some(alpha)
 }
 
 /// The blend block of `desc` for the framebuffer's formats (no blending on targets that cannot
@@ -855,6 +875,26 @@ fn helper_block<B: Backend>(
                     .ok_or("a border colour without its texture")?;
                 // SAFETY: the slot holds a reference on a live view of this driver.
                 vec![unsafe { View::<B>::of(*view) }.components]
+            }
+            HelperValue::TexelBufferView { set, binding } => {
+                let unit = built
+                    .bindings
+                    .iter()
+                    .find(|b| b.set == set && b.binding == binding)
+                    .map(|b| b.register)
+                    .ok_or("a texel buffer's slot unbound")?;
+                let view = bound
+                    .views
+                    .get(unit as usize)
+                    .filter(|v| !v.is_null())
+                    .ok_or("a texel buffer the program reads is not bound")?;
+                // SAFETY: the slot holds a reference on a live view of this driver.
+                let texels = unsafe { View::<B>::of(*view) }
+                    .texels
+                    .as_ref()
+                    .ok_or("a texture bound where the program reads a texel buffer")?;
+                // The view starts the texture it is copied into.
+                vec![0, texels.length]
             }
             other => return Err(format!("the helper constant {other:?}")),
         };
@@ -1032,6 +1072,7 @@ pub(crate) fn binding_sets<B: Backend>(
                     }
                     // SAFETY: the slot holds a reference on a live view of this driver.
                     let view = unsafe { View::<B>::of(view) };
+                    view.copy_texels(backend)?;
                     // An integer cube map the program samples is loaded from its faces.
                     match view.faces() {
                         Some(faces) if built.layered.contains(&b.binding) => {
@@ -1363,6 +1404,7 @@ fn draw<B: Backend>(
         streamed: false,
         targets: Vec::new(),
         second_source: None,
+        packed: elements.packed.clone(),
     };
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
@@ -1386,6 +1428,9 @@ fn draw<B: Backend>(
     }
     if first_variant.border != 0 || fragment.border != 0 {
         backend.slow_paths().hit(SlowPath::BorderInShader);
+    }
+    if !vertex.packed.is_empty() {
+        backend.slow_paths().hit(SlowPath::VertexFormatConverted);
     }
     let made = if gs.is_null() {
         for path in paths {
@@ -1530,13 +1575,18 @@ fn draw<B: Backend>(
         Some(m) => m.out.index_offset.is_some(),
         None => info.primitive_restart(),
     };
+    // Restart at an index other than the largest, where the host restarts.
+    let other_restart = restart
+        && info.index_size > 0
+        && info.restart_index != index_format(info.index_size).restart_value();
     // Indices in a buffer the host cannot draw as they are (a fan or loop, flat values from the
-    // other vertex, restart in a list, 8-bit indices the back end lacks): read back now
-    // (`ReadBackWait`), then converted as the program's own.
+    // other vertex, restart in a list or at another index, 8-bit indices the back end lacks): read
+    // back now (`ReadBackWait`), then converted as the program's own.
     let rewritten_on_host = made.is_none()
         && (fan
             || provoking.is_some()
             || indices::restarts_otherwise(mode, restart)
+            || other_restart
             || needs_widening(backend, index_format(info.index_size)));
     let read = if rewritten_on_host && info.index_size > 0 && !info.has_user_indices() {
         Some(read_indices(&mut context.tracker, backend, info, draws)?)
@@ -1560,13 +1610,6 @@ fn draw<B: Backend>(
         (true, None) => scissors.push(scissor),
         (false, Some(area)) => scissors.push(area),
         (false, None) => {}
-    }
-    let index_size = info.index_size;
-    let format = index_format(index_size);
-    if made.is_none() && restart && index_size > 0 && info.restart_index != format.restart_value() {
-        return refused(format_args!(
-            "primitive restart at an index that is not the largest"
-        ));
     }
     let samples = context.framebuffer.samples.clamp(1, u32::BITS);
     let all = u32::MAX >> (u32::BITS - samples);
@@ -2357,8 +2400,13 @@ fn draw_ranges<B: Backend>(
             // Restart cut where the host would not, or made where OpenGL does not: lists never
             // restart there, and its strips always do at the largest value.
             // A rewritten draw is cut at every restart value: its primitives may become lists.
-            let cut = indices::restarts_otherwise(mode, restart);
-            let lists_only = !restart && strip && !restart_switch && holds_largest(indices, format);
+            // The host restarts only at the largest value.
+            let other_restart = restart && info.restart_index != format.restart_value();
+            let cut = indices::restarts_otherwise(mode, restart) || other_restart;
+            let lists_only = (!restart || other_restart)
+                && strip
+                && !restart_switch
+                && holds_largest(indices, format);
             if provoking.is_some() || cut || lists_only {
                 let paths = [
                     (provoking.is_some(), SlowPath::ProvokingRewrite),

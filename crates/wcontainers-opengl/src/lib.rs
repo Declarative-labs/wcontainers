@@ -22,6 +22,8 @@ mod indices;
 #[cfg(mesa)]
 mod outputs;
 #[cfg(mesa)]
+mod packed;
+#[cfg(mesa)]
 mod present;
 #[cfg(mesa)]
 mod query;

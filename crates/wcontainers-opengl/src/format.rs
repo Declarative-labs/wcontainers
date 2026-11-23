@@ -206,15 +206,26 @@ pub fn supported(
     bindings: u32,
 ) -> bool {
     if target == PIPE_BUFFER {
-        // Vertex streams of the formats the interface reads; texel buffers are not served yet.
+        // Vertex streams of the formats the interface reads; texel buffers of the formats the
+        // device samples, read through 2D textures of the format (`TexelBufferAsTexture`).
         let plain = PIPE_BIND_VERTEX_BUFFER
             | PIPE_BIND_INDEX_BUFFER
             | PIPE_BIND_CONSTANT_BUFFER
             | PIPE_BIND_STREAM_OUTPUT
             | PIPE_BIND_SHADER_BUFFER
-            | PIPE_BIND_COMMAND_ARGS_BUFFER;
+            | PIPE_BIND_COMMAND_ARGS_BUFFER
+            | PIPE_BIND_SAMPLER_VIEW;
+        let texel = bindings & PIPE_BIND_SAMPLER_VIEW == 0
+            || self::format(format).is_some_and(|f| {
+                matches!(f.block(), (1, 1, _))
+                    && !f.is_depth_stencil()
+                    && caps.get(f).contains(FormatUse::SAMPLE)
+            });
         return bindings & !plain == 0
-            && (bindings & PIPE_BIND_VERTEX_BUFFER == 0 || vertex_format(format).is_some());
+            && texel
+            && (bindings & PIPE_BIND_VERTEX_BUFFER == 0
+                || vertex_format(format).is_some()
+                || crate::packed::packed_format(format).is_some());
     }
     let sampled = samples.max(1);
     // A framebuffer without attachments: the pass tracker's empty pass, of the samples its own

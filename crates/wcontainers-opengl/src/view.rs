@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Format, FormatKind, MapIntent,
-    Object, Origin, STORAGE_WORD, SlowPath, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, ViewDimension,
+    Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
 };
 
 use naga::VectorSize;
@@ -32,6 +32,19 @@ pub struct View<B: Backend> {
     pub components: u32,
     /// For an integer cube map, a 2D array of its faces, which programs load from.
     faces: Option<Result<B::TextureView, &'static str>>,
+    /// For a texel buffer, the 2D texture its range is copied into, which `view` views.
+    pub texels: Option<TexelCopy<B>>,
+}
+
+/// A texel buffer view's 2D texture, rows of [`TEXEL_BUFFER_TEXTURE_WIDTH`] texels, which the
+/// buffer's range is copied into before each work that reads it (`TexelBufferAsTexture`).
+pub struct TexelCopy<B: Backend> {
+    texture: B::Texture,
+    /// Where the view starts in its buffer, in bytes.
+    offset: u64,
+    /// The view's elements, which programs read up to.
+    pub length: u32,
+    texel_bytes: u32,
 }
 
 /// The identity swizzle, which needs no change to a program.
@@ -60,6 +73,48 @@ impl<B: Backend> View<B> {
     /// The view a program samples, or why the driver could not make it.
     pub fn view(&self) -> Result<&B::TextureView, String> {
         self.view.as_ref().map_err(|why| (*why).to_owned())
+    }
+
+    /// Copies a texel buffer view's range into its texture, as it is now; nothing for another
+    /// view.
+    pub fn copy_texels(&self, backend: &mut B) -> Result<(), String> {
+        let Some(copy) = &self.texels else {
+            return Ok(());
+        };
+        // SAFETY: the view holds a reference on its buffer.
+        let resource = unsafe { Resource::<B>::of(self.base.texture) };
+        let buffer = resource
+            .buffer()
+            .ok_or("a texel buffer view of a texture")?;
+        backend.slow_paths().hit(SlowPath::TexelBufferAsTexture);
+        let row_pitch = TEXEL_BUFFER_TEXTURE_WIDTH * copy.texel_bytes;
+        let rows = copy.length / TEXEL_BUFFER_TEXTURE_WIDTH;
+        let last = copy.length % TEXEL_BUFFER_TEXTURE_WIDTH;
+        // The whole rows, then the last row's elements.
+        let parts = [(0, rows, TEXEL_BUFFER_TEXTURE_WIDTH), (rows, 1, last)];
+        for (row, height, width) in parts.into_iter().filter(|&(_, h, w)| h != 0 && w != 0) {
+            backend.copy_buffer_to_texture(
+                &CopyBufferTexture {
+                    buffer,
+                    offset: copy.offset + u64::from(row) * u64::from(row_pitch),
+                    row_pitch,
+                    rows_per_layer: height,
+                },
+                &TextureRegion {
+                    texture: &copy.texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin { x: 0, y: row, z: 0 },
+                    stencil: false,
+                },
+                Extent {
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// The 2D array of an integer cube map's faces, or none for another view.
@@ -366,6 +421,60 @@ fn texture_view<B: Backend>(
         .map_err(|_| "a view the device does not make")
 }
 
+/// A texel buffer view's texture and the interface's view of it, or why there are none.
+fn texel_buffer<B: Backend>(
+    backend: &mut B,
+    view: &pipe_sampler_view,
+) -> Result<(TexelCopy<B>, B::TextureView), &'static str> {
+    let format =
+        crate::format::format(view.format()).ok_or("a texel buffer format the device lacks")?;
+    let (_, _, texel_bytes) = format.block();
+    // SAFETY: the view of a buffer holds its buffer range.
+    let range = unsafe { view.u.buf };
+    let length = range.size / texel_bytes;
+    let rows = length.div_ceil(TEXEL_BUFFER_TEXTURE_WIDTH).max(1);
+    if rows > backend.caps().limits.max_texture_2d {
+        return Err("a texel buffer longer than its texture holds");
+    }
+    let texture = backend
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: TEXEL_BUFFER_TEXTURE_WIDTH,
+            height: rows,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .map_err(|_| "a texel buffer's texture the device does not make")?;
+    let viewed = backend
+        .create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .map_err(|_| "a texel buffer's view the device does not make")?;
+    Ok((
+        TexelCopy {
+            texture,
+            offset: u64::from(range.offset),
+            length,
+            texel_bytes,
+        },
+        viewed,
+    ))
+}
+
 /// `pipe_context::create_sampler_view`.
 pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     pipe: *mut pipe_context,
@@ -387,7 +496,17 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: as above; the view takes its own reference.
     unsafe { resource::reference(&mut base.texture, texture) };
     let mut backend = context.screen().backend();
-    let view = texture_view::<B>(&mut backend, resource, &base, false);
+    let (view, texels) = if resource.buffer().is_some() {
+        match texel_buffer::<B>(&mut backend, &base) {
+            Ok((texels, view)) => (Ok(view), Some(texels)),
+            Err(why) => (Err(why), None),
+        }
+    } else {
+        (
+            texture_view::<B>(&mut backend, resource, &base, false),
+            None,
+        )
+    };
     let mut swizzles = [0; naga::VectorSize::MAX];
     // SAFETY: a live view, and a place for one swizzle a component.
     unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
@@ -413,6 +532,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         integer,
         components,
         faces,
+        texels,
     }))
     .cast()
 }
@@ -435,6 +555,9 @@ pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
         .flatten()
     {
         context.screen().retire(Object::TextureView(made));
+    }
+    if let Some(texels) = view.texels {
+        context.screen().retire(Object::Texture(texels.texture));
     }
     // SAFETY: the view held one reference on its texture.
     unsafe { resource::release(view.base.texture) };

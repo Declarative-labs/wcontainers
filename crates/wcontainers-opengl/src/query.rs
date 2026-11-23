@@ -1,6 +1,7 @@
 //! Occlusion queries: whether any sample passed, from the pass tracker's queries, one an
-//! interface query a pass the guest query ran in; and counts of the primitives stream output
-//! wrote, from the stage helper's statistics.
+//! interface query a pass the guest query ran in; counts of the primitives stream output
+//! wrote, from the stage helper's statistics; and timestamps and times elapsed, from the
+//! interface's timestamps.
 
 use std::ffi::c_uint;
 use std::ops::Range;
@@ -88,6 +89,76 @@ pub struct Query<B: Backend> {
     paused: bool,
     /// For a count of primitives streamed, the count.
     emitted: Option<Emitted<B>>,
+    /// For a timestamp or a time elapsed, its timestamps.
+    timer: Option<Timer<B>>,
+}
+
+/// A timer's two timestamps, at its begin and its end (a timestamp query writes only the end's),
+/// read back once asked for.
+pub struct Timer<B: Backend> {
+    set: B::QuerySet,
+    elapsed: bool,
+    read: Option<B::Readback>,
+    known: Option<u64>,
+}
+
+/// Where a timer's timestamps are in its set.
+const TIMER_BEGIN: u32 = 0;
+const TIMER_END: u32 = 1;
+const TIMER_STAMPS: u32 = 2;
+
+/// Writes the GPU time into query `index` of `set`: timestamps are written between passes, so
+/// the open pass ends first.
+fn stamp<B: Backend>(
+    tracker: &mut PassTracker<B>,
+    backend: &mut B,
+    set: &B::QuerySet,
+    index: u32,
+) -> Result<(), String> {
+    tracker.close(backend).map_err(|e| format!("{e:?}"))?;
+    backend
+        .write_timestamp(set, index)
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// The timestamps of `set` from `first`, `count` of them in nanoseconds, waited for.
+fn stamps_now<B: Backend>(
+    backend: &mut B,
+    set: &B::QuerySet,
+    first: u32,
+    count: u32,
+) -> Result<Vec<u64>, String> {
+    let read = backend
+        .read_queries(set, first, count)
+        .map_err(|e| format!("{e:?}"))?;
+    backend.wait_read(&read);
+    Ok(finished_stamps(backend, read, count))
+}
+
+fn finished_stamps<B: Backend>(backend: &mut B, read: B::Readback, count: u32) -> Vec<u64> {
+    let mut bytes = vec![0; count as usize * size_of::<u64>()];
+    backend.finish_read(read, &mut bytes);
+    let (stamps, _) = bytes.as_chunks::<{ size_of::<u64>() }>();
+    stamps.iter().map(|&s| u64::from_le_bytes(s)).collect()
+}
+
+/// `pipe_context::get_timestamp`: the GPU time now, on the clock timer queries read, written after
+/// the work recorded so far and waited for.
+pub unsafe extern "C" fn get_timestamp<B: Backend>(pipe: *mut pipe_context) -> u64 {
+    // SAFETY: Mesa passes this driver's context.
+    let context = unsafe { Context::<B>::of(pipe) };
+    let screen = context.screen();
+    let mut backend = screen.backend();
+    let set = backend
+        .create_query_set(QueryKind::Timestamp, 1)
+        .unwrap_or_else(|e| refuse(format!("the GPU time: {e:?}")));
+    let now = stamp(&mut context.tracker, &mut *backend, &set, 0)
+        .and_then(|()| stamps_now(&mut *backend, &set, 0, 1));
+    screen.retire(Object::QuerySet(set));
+    match now {
+        Ok(stamps) => stamps.first().copied().unwrap_or_default(),
+        Err(reason) => refuse(format!("the GPU time: {reason}")),
+    }
 }
 
 /// Streamed draws whose counts a count keeps on the device before it reads them back and sums
@@ -167,14 +238,16 @@ pub unsafe extern "C" fn create_query<B: Backend>(
     kind: c_uint,
     _: c_uint,
 ) -> *mut pipe_query {
-    let query = |emitted| {
+    let made = |emitted, timer| {
         Box::into_raw(Box::new(Query::<B> {
             answer: None,
             paused: false,
             emitted,
+            timer,
         }))
         .cast()
     };
+    let query = |emitted| made(emitted, None);
     match kind as pipe_query_type {
         PIPE_QUERY_OCCLUSION_PREDICATE | PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE => query(None),
         PIPE_QUERY_PRIMITIVES_EMITTED => {
@@ -195,8 +268,27 @@ pub unsafe extern "C" fn create_query<B: Backend>(
                 sum: 0,
             }))
         }
+        PIPE_QUERY_TIMESTAMP | PIPE_QUERY_TIME_ELAPSED => {
+            // SAFETY: Mesa passes this driver's context.
+            let context = unsafe { Context::<B>::of(pipe) };
+            let set = context
+                .screen()
+                .backend()
+                .create_query_set(QueryKind::Timestamp, TIMER_STAMPS)
+                .unwrap_or_else(|e| refuse(format!("a timer: {e:?}")));
+            made(
+                None,
+                Some(Timer {
+                    set,
+                    elapsed: kind as pipe_query_type == PIPE_QUERY_TIME_ELAPSED,
+                    read: None,
+                    known: None,
+                }),
+            )
+        }
         _ => refuse(format!(
-            "a query of Gallium kind {kind} (only occlusion predicates are built)"
+            "a query of Gallium kind {kind} (occlusion predicates, counts of primitives \
+             streamed and timers are built)"
         )),
     }
 }
@@ -220,6 +312,9 @@ pub unsafe extern "C" fn destroy_query<B: Backend>(
     if let Some(emitted) = query.emitted {
         context.screen().retire(Object::Buffer(emitted.slots));
     }
+    if let Some(timer) = query.timer {
+        context.screen().retire(Object::QuerySet(timer.set));
+    }
 }
 
 pub unsafe extern "C" fn begin_query<B: Backend>(
@@ -231,6 +326,17 @@ pub unsafe extern "C" fn begin_query<B: Backend>(
     if let Some(emitted) = &mut query.emitted {
         (emitted.used, emitted.sum) = (0, 0);
         context.counting = Some(std::ptr::from_mut(query).cast());
+        return true;
+    }
+    if let Some(timer) = &mut query.timer {
+        (timer.read, timer.known) = (None, None);
+        if timer.elapsed {
+            let mut backend = context.screen().backend();
+            if let Err(reason) = stamp(&mut context.tracker, &mut backend, &timer.set, TIMER_BEGIN)
+            {
+                refuse(format!("a timer's begin: {reason}"));
+            }
+        }
         return true;
     }
     let screen = context.screen();
@@ -266,6 +372,14 @@ pub unsafe extern "C" fn end_query<B: Backend>(
     let (context, query) = unsafe { (Context::<B>::of(pipe), of::<B>(query)) };
     if query.emitted.is_some() {
         context.counting = None;
+        return true;
+    }
+    if let Some(timer) = &mut query.timer {
+        (timer.read, timer.known) = (None, None);
+        let mut backend = context.screen().backend();
+        if let Err(reason) = stamp(&mut context.tracker, &mut backend, &timer.set, TIMER_END) {
+            refuse(format!("a timer's end: {reason}"));
+        }
         return true;
     }
     let Some(Answer::Running { set, first }) = query.answer.take() else {
@@ -331,6 +445,17 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
         unsafe { (*result).u64_ = emitted.sum };
         return true;
     }
+    if let Some(timer) = &mut query.timer {
+        let mut backend = context.screen().backend();
+        let value = match timer_value(&mut context.tracker, &mut backend, timer, wait) {
+            Ok(Some(value)) => value,
+            Ok(None) => return false,
+            Err(reason) => refuse(format!("a timer's result: {reason}")),
+        };
+        // SAFETY: as above.
+        unsafe { (*result).u64_ = value };
+        return true;
+    }
     let passed = match answer(context, query, wait) {
         Ok(Some(passed)) => passed,
         Ok(None) => return false,
@@ -339,6 +464,44 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
     // SAFETY: as above.
     unsafe { (*result).b = passed };
     true
+}
+
+/// A timer's nanoseconds (a timestamp, or the time between its begin and end), once known
+/// (reading back, and waiting if asked to).
+fn timer_value<B: Backend>(
+    tracker: &mut PassTracker<B>,
+    backend: &mut B,
+    timer: &mut Timer<B>,
+    wait: bool,
+) -> Result<Option<u64>, String> {
+    if let Some(known) = timer.known {
+        return Ok(Some(known));
+    }
+    let read = match timer.read.take() {
+        Some(read) => read,
+        None => {
+            tracker.close(backend).map_err(|e| format!("{e:?}"))?;
+            backend
+                .read_queries(&timer.set, TIMER_BEGIN, TIMER_STAMPS)
+                .map_err(|e| format!("{e:?}"))?
+        }
+    };
+    if backend.read_state(&read) == ReadState::Pending {
+        if !wait {
+            timer.read = Some(read);
+            return Ok(None);
+        }
+        backend.wait_read(&read);
+    }
+    let stamps = finished_stamps(backend, read, TIMER_STAMPS);
+    let (begin, end) = (stamps[TIMER_BEGIN as usize], stamps[TIMER_END as usize]);
+    let value = if timer.elapsed {
+        end.saturating_sub(begin)
+    } else {
+        end
+    };
+    timer.known = Some(value);
+    Ok(Some(value))
 }
 
 /// Whether any sample passed, once known (reading back, and waiting if asked to).

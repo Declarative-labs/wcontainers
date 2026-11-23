@@ -16,6 +16,7 @@ use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
 
 use crate::context::{self, Context};
 use crate::gallium::*;
+use crate::packed::{Packed, packed_format};
 use crate::resource;
 use crate::screen::DRIVER_NAME;
 use crate::stream;
@@ -262,6 +263,9 @@ pub struct Elements<B: Backend> {
     /// The back end's layouts of the inputs it reads, by the inputs fetched in the program (a bit
     /// a location).
     pub blocks: RefCell<HashMap<u32, B::VertexLayout>>,
+    /// The inputs of packed formats the interface lacks, by location, read as one word each and
+    /// unpacked in the program (`VertexFormatConverted`).
+    pub packed: Vec<(u32, Packed)>,
 }
 
 impl<B: Backend> Elements<B> {
@@ -885,6 +889,7 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
     };
     let mut streams = 0;
     let mut pulled = Vec::new();
+    let mut packed = Vec::new();
     let backend = context.screen().backend();
     for (location, element) in elements.iter().enumerate() {
         if let Some(path) = pulled_because(&*backend, element) {
@@ -892,7 +897,12 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         }
         let format = pipe_format::from(element.src_format);
         let stream = element.vertex_buffer_index();
-        let Some(format) = crate::format::vertex_format(format) else {
+        let unpacked = packed_format(format);
+        if let Some(p) = unpacked {
+            packed.push((location as u32, p));
+        }
+        let host = unpacked.map(|_| VertexFormat::Uint32x1);
+        let Some(format) = host.or_else(|| crate::format::vertex_format(format)) else {
             // SAFETY: Mesa describes every format it names.
             let name = unsafe { std::ffi::CStr::from_ptr((*util_format_description(format)).name) };
             refuse(format_args!(
@@ -920,6 +930,7 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         streams,
         pulled,
         blocks: RefCell::new(HashMap::new()),
+        packed,
     })
 }
 

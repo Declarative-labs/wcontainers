@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard};
 
-use wcontainers_gpu::{Backend, Caps, Features, Format, FormatUse, Object, SlotKind};
+use wcontainers_gpu::{
+    Backend, Caps, Features, Format, FormatUse, Object, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
+};
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
 use crate::device::HostWindows;
@@ -107,9 +109,11 @@ pub fn deepest_level(ours: &Caps) -> u32 {
     ) - 1
 }
 
-/// The GLSL version st/mesa's GLSL compiler takes for this driver, and OpenGL ES's: the
-/// versions whose programs the NIR route converts and whose state the context draws with.
-const GLSL_VERSION: c_uint = 130;
+/// The GLSL versions st/mesa's GLSL compiler takes for this driver (the core profile's, the
+/// compatibility profile's) and OpenGL ES's: the versions whose programs the NIR route converts
+/// and whose state the context draws with.
+const GLSL_VERSION: c_uint = 330;
+const GLSL_COMPATIBILITY_VERSION: c_uint = 130;
 const ESSL_VERSION: c_uint = 310;
 
 /// A geometry program's limits, the least `OES_geometry_shader` allows:
@@ -155,7 +159,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_constant_buffer_size = limits.max_uniform_buffer_size;
     caps.max_varyings = limits.inter_stage_slots;
     caps.glsl_feature_level = GLSL_VERSION;
-    caps.glsl_feature_level_compatibility = GLSL_VERSION;
+    caps.glsl_feature_level_compatibility = GLSL_COMPATIBILITY_VERSION;
     caps.essl_feature_level = ESSL_VERSION;
     let filters = |format| ours.formats.get(format).contains(FormatUse::FILTER);
     caps.texture_half_float_linear = filters(Format::Rgba16Float);
@@ -164,6 +168,20 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // Strips restart at the largest index on the host; lists, where OpenGL drops the primitive
     // a restart cuts, and strips drawn without restart are rewritten (`RestartRewrite`).
     caps.primitive_restart_fixed_index = true;
+    // Restart at any other index is rewritten too.
+    caps.primitive_restart = true;
+    // Views' swizzles are applied in the programs that read them (`SwizzleInShader`).
+    caps.texture_swizzle = true;
+    caps.depth_clip_disable = ours.has(Features::DEPTH_CLAMP);
+    caps.max_dual_source_render_targets = c_uint::from(ours.has(Features::DUAL_SOURCE_BLEND));
+    let timestamps = ours.has(Features::TIMESTAMPS);
+    caps.query_timestamp = timestamps;
+    caps.query_time_elapsed = timestamps;
+    // Texel buffers, read through 2D textures the views are copied into
+    // (`TexelBufferAsTexture`), rows of `TEXEL_BUFFER_TEXTURE_WIDTH` texels.
+    caps.texture_buffer_objects = true;
+    caps.max_texel_buffer_elements =
+        TEXEL_BUFFER_TEXTURE_WIDTH.saturating_mul(limits.max_texture_2d);
     (
         caps.max_stream_output_buffers,
         caps.max_stream_output_interleaved_components,

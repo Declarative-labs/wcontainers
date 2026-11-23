@@ -163,6 +163,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.end_query = Some(query::end_query::<B>);
     c.get_query_result = Some(query::get_query_result::<B>);
     c.set_active_query_state = Some(query::set_active_query_state::<B>);
+    c.get_timestamp = Some(query::get_timestamp::<B>);
     c.set_polygon_stipple = Some(set_polygon_stipple);
     c.create_stream_output_target = Some(stream::create_stream_output_target::<B>);
     c.stream_output_target_destroy = Some(stream::stream_output_target_destroy::<B>);
