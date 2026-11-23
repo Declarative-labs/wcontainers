@@ -62,6 +62,8 @@ wcontainers-random-source = { path = "../../../random-source" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-executor-wasmtime = { path = "../wasmtime" }
 wcontainers-translator-test = { path = "../../../wcontainers-translator-test" }
+# The busybox test: the reference image, its commands, and the reference's outcome in Docker on this machine.
+wcontainers-executor-unicorn = { path = "../unicorn" }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 # Finding the host call a traced stub thread is about to make, in the step test.
@@ -114,6 +116,9 @@ name = "run"
 
 [[test]]
 name = "kernel"
+
+[[test]]
+name = "busybox"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]

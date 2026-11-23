@@ -3,21 +3,20 @@
 //! addresses, memory size and the count at every stop wait on the kernel's K2, so they are not compared here).
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
+mod kernel_host;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use kernel_host::{Output, Program, REALTIME_NANOSECONDS, run_container};
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
-use wcontainers_abi::{Host, HostError, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
-use wcontainers_kernel_linux::{
-    ARM64_ADDRESS_SPACE_BYTES, Attributes, NewFile, Start, StartOptions,
-};
-use wcontainers_runtime_single_kernel::{Ending, Execution, Kernel, System, drive};
-use wcontainers_system_seeded_test_policy::{ERROR, TestPolicy};
+use wcontainers_kernel_linux::{Attributes, NewFile};
+use wcontainers_runtime_single_kernel::{Execution, Kernel};
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{C_DRIVER, OUTPUT_FLAG, ZIG_TARGET_FLAG};
 
@@ -32,10 +31,6 @@ const SEED_VARIABLE: &str = "WCHP_KERNEL_SEED";
 const SEEDS_VARIABLE: &str = "WCHP_KERNEL_SEEDS";
 const DEFAULT_SEED: u64 = 1;
 
-/// The clocks the test host reads.
-const MONOTONIC_NANOSECONDS: u64 = 1_234_567;
-const REALTIME_NANOSECONDS: u64 = 1_763_500_000_000_000_000;
-
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -48,76 +43,6 @@ fn seeds() -> Vec<u64> {
     (0..setting(SEEDS_VARIABLE, 1))
         .map(|k| first.wrapping_add(k))
         .collect()
-}
-
-/// What the host was asked to write to each output end.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Output {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-/// A host with fixed clocks and seeded random bytes that keeps each output end's bytes, with no network or backend.
-struct Recording {
-    output: Mutex<Output>,
-    random: Mutex<fastrand::Rng>,
-}
-
-impl wcontainers_clock::Clock for Recording {
-    fn monotonic_nanoseconds(&self) -> u64 {
-        MONOTONIC_NANOSECONDS
-    }
-    fn realtime_nanoseconds(&self) -> u64 {
-        REALTIME_NANOSECONDS
-    }
-}
-
-impl wcontainers_random_source::RandomSource for Recording {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
-        self.random
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .fill(into);
-        Ok(())
-    }
-}
-
-impl Host for Recording {
-    fn warn(&self, _warning: Warning<'_>) {}
-}
-
-impl wcontainers_system::StreamTransport for Recording {
-    type Endpoint = u32;
-
-    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
-        let mut output = self.output.lock().unwrap_or_else(PoisonError::into_inner);
-        match *peer {
-            ERROR => &mut output.stderr,
-            _ => &mut output.stdout,
-        }
-        .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
-    }
-    fn close_stream(&self, _peer: &u32) {}
-}
-
-impl wcontainers_readiness::Readiness<u32> for Recording {
-    async fn wait_until_ready(
-        &self,
-        _peer: &u32,
-        interest: wcontainers_readiness::ReadyFor,
-    ) -> Result<wcontainers_readiness::ReadinessReport, HostError> {
-        if interest.contains(wcontainers_readiness::ReadyFor::WRITABLE) {
-            return Ok(wcontainers_readiness::ReadinessReport {
-                ready_for: wcontainers_readiness::ReadyFor::WRITABLE,
-                unconditional: wcontainers_readiness::UnconditionalEvents::empty(),
-            });
-        }
-        std::future::pending().await
-    }
 }
 
 /// How one side's run ended.
@@ -135,11 +60,6 @@ fn run<E: Execution<Failure = core::convert::Infallible>>(
     image: &[u8],
     arguments: &[&str],
 ) -> Outcome {
-    let recording = Recording {
-        output: Mutex::default(),
-        random: Mutex::new(fastrand::Rng::with_seed(seed)),
-    };
-    let policy = Arc::new(TestPolicy::new(recording, seed, REALTIME_NANOSECONDS));
     let mut kernel = Kernel::new();
     let path = format!("/{name}").into_bytes();
     kernel
@@ -157,36 +77,22 @@ fn run<E: Execution<Failure = core::convert::Infallible>>(
     let arguments: Vec<&[u8]> = std::iter::once(path.as_slice())
         .chain(arguments.iter().map(|a| a.as_bytes()))
         .collect();
-    let memory_bytes = cpu.address_space().end;
-    let start = Start {
+    let program = Program {
         path: &path,
         arguments: &arguments,
         environment: &[b"PATH=/"],
-        working_directory: b"/",
         hostname: b"wcontainers",
         groups: &[],
-        backend: None,
-        standard: policy.standard(None),
-        address_space_bytes: ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes,
-        ceiling: None,
-        options: StartOptions::default(),
     };
-    kernel.start(cpu, &policy, start);
-    policy.started(&mut kernel, cpu);
-    let status = match drive(&mut kernel, cpu, &policy) {
-        Ok(Ending::Finished { status }) => status,
-        Ok(Ending::Ended(never)) => match never {},
-        Err(never) => match never {},
-    };
-    drop(kernel);
-    let policy = Arc::into_inner(policy).expect("the kernel keeps no call on the policy");
-    let output = policy
-        .into_services()
-        .output
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
-    Outcome { status, output }
+    let ran = run_container(cpu, kernel, seed, REALTIME_NANOSECONDS, &program);
+    assert!(
+        ran.files.iter().any(|file| file.path == path),
+        "{name}: the program's file is gone from the root"
+    );
+    Outcome {
+        status: ran.status,
+        output: ran.output,
+    }
 }
 
 /// Builds the static ARM64 Linux program `directory/name.c` with zig's C compiler, linked with musl or with no C
