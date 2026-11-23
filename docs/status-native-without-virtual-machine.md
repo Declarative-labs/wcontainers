@@ -535,13 +535,20 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     here (the VM test does that through the Unicorn crate's reference).
   - Found by these tests: a last target made at the `blr` wrote its words over the out-of-line code (returns looped
     forever); an announcement resolved at the out-of-line `ldr` re-ran the announcing instruction forever.
-  - Verdicts (Graviton4, 22:47 UTC, load 18 to 25): kernel 7 of 7, run 4 of 4, every other test binary as before;
-    clippy with warnings denied clean on both machines; the Xeon builds and passes every binary (the new tests build
-    none there). Final three-round verdicts with /dev/kvm denied: below.
+  - Register isolation on translated threads (tests/run.rs, brief-native.md's last section): a thread holding its
+    own values in every general and vector register and `TPIDR_EL0` is stopped at a system call; a new thread of
+    the same process stores every register it has and finds zeros (but the x2 it was given); the first then goes on
+    and stores exactly its own. With the vectors not carried into the block (the remote copy changed), it fails.
+  - Final verdicts, every test binary 3 times with /dev/kvm denied (scratch w1/r3run2/both.sh and nokvm.sh, which now
+    keeps PATH and HOME across sudo so the kernel test finds zig): Graviton4 222 of 222 (17 binaries, 23:05 to
+    23:11 UTC, load 15 to 22, after the last code commit 1b7e9062), clippy with warnings denied clean; Xeon 156 of
+    156 (22:52 UTC, load 29 to 42, commit 15b49cf1; nothing x86 builds changed after it), clippy clean. The Xeon
+    then stopped answering SSH ("not set up", 23:05 UTC), so the second round there did not run. The first
+    Graviton4 round failed only the kernel test, whose zig sudo's PATH did not have.
   - No new unsafe code (the code area's one write is the same, moved into `write_file`).
 - Not built yet (W1's bar is not met): the trait of crates/executor/interface.rs (single instruction) and the
   executor conformance suite; busybox's text and files commands; the run inside Docker's profile and under gVisor
-  with translated code; the register-isolation tests on translated code; placement's remaining items; the copy unit
+  with translated code; placement's remaining items; the copy unit
   on translated code; the speed figures.
 
 ## Next
@@ -550,8 +557,7 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Next, in this order: the kernel test with busybox's text and files commands (the VM form's tests/busybox.rs);
   the same tests inside Docker's default profile and under gVisor (run 10's sandbox scripts); the executor trait
   of crates/executor/interface.rs (one instruction: translate it alone, run it in a stub, read the memory it
-  changed) and the executor conformance suite, in execution.rs's module; the register-isolation tests of
-  brief-native.md on translated threads; the speed figures (getppid round trip against the futex slot, a
+  changed) and the executor conformance suite, in execution.rs's module; the speed figures (getppid round trip against the futex slot, a
   memory-heavy program against wasmtime and the VM executor, the workload pairs); the copy unit on translated
   stores; placement's getppid item.
 - The process way's translations are never moved (`Translation::moved`): `Native::movable` is the machine way's
