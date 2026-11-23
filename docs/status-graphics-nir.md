@@ -5,6 +5,119 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 18 (2026-11-23, the sixth run of this batch): three refusals of run 17 are built (2b7a7407,
+ac20ec1c), and every list ran whole at 2b7a7407: the bar's measure is 96.94% with KHR-GLES32 counted
+as run and failed (98.31% without it), floor 92.9%. KHR-GLES32 and KHR-GL46 still start no context:
+ES 3.2 and 4.0 need the features listed under run 17 below, none of which this run built. No unsafe
+use was added (the driver's diff adds one `unsafe` line and removes one; `position.rs` has none);
+no dependency or licence was added.
+
+Done this run (2b7a7407, and the transform split after it):
+- Primitives counted through a geometry or tessellation stage without stream output: while any
+  count of primitives runs, the stage helper's stream stage runs without buffers (the program's
+  own declaration, or an empty one, `counted_only`), which counts what the draw made into the
+  helper's block (`stream::Bound::counted`, the block made at the first such draw); the count
+  takes it as it takes a streamed draw's. Run 17's refusal of these (KHR-GLES31 204) is gone.
+- A geometry program behind tessellation: `run_tessellated` takes it, the helper made by
+  `Stages::tessellated_with` with the geometry form, run through `run_after_domain` with the
+  evaluation and geometry programs' sets; the draw is the geometry pass-through's, from its
+  records' layout. A geometry program writing a layer or viewport there is refused by name, as
+  without tessellation.
+- Depth as written for what stream output reads: a geometry program's records, and an
+  evaluation program's compute form where stream output follows it, hold the position with the
+  y step but without the depth steps (`recorded_transform`); the geometry program's pass-through
+  applies the depth steps (`position::transform`, the half-depth and reversed-depth steps of the
+  bridge's NIR pass, applied to the naga module), as the evaluation program's drawn form does in
+  its NIR. An evaluation program before a geometry program is untransformed, as a vertex program
+  before one is. Before, stream output behind a geometry or evaluation program took the host's
+  depth. The pass-through's key is that of the program's NIR with the variant's whole transform,
+  so pass-throughs of different transforms do not share a key.
+- Not committed or changed: the remote copies. Another track's unfinished folder
+  (`crates/webassembly-engine/implementation/browser`, no manifest, untracked since 2026-11-22
+  22:35) stops every cargo command in the workspace; this run's scratch scripts leave out such a
+  folder from the rented machine's and the desktop's copies before building ("How to run").
+
+The group check of these changes (desktop, RTX 3080, one GPU job, 8 glcts at once, queued behind
+another track's hazard job), 22:49 to 22:53 (Pacific), tessellation and geometry groups of the two
+3.1 lists (`-Include KHR-GLES31.core.tessellation_shader.*,KHR-GLES31.core.geometry_shader.*,
+dEQP-GLES31.functional.tessellation.*,dEQP-GLES31.functional.tessellation_geometry_interaction.*`),
+against the same cases of run 17's a308cf39 check:
+- KHR-GLES31: 276 cases, Pass 192, Fail 10, Crash 61, Timeout 1, Skip 12 (192 of 264, 72.73%):
+  64 crashes now pass, one failure passes, one crash now fails and one times out.
+- dEQP-GLES31: 437 cases, Pass 366, Fail 11, Crash 35, Skip 25 (366 of 412, 88.83%): 5 crashes now
+  pass, 2 now fail. No case that passed before fails.
+- Refusals now met in these groups, each a process's: an evaluation program reading
+  `gl_in[].gl_PointSize` (72; `OES_tessellation_point_size` comes with `OES_tessellation_shader`
+  in Mesa's extension table; the stage helper's records carry no point size), the route's invalid
+  modules indexing past an array (Index 2 or 3 out of bounds, 64, in the geometry adjacency and
+  tessellation cases; not yet read: the route's dump on the desktop is needed), "a variable of
+  another mode" (20), a fragment input interpolated linearly behind a stage that writes it
+  perspective (wgpu's pipeline check, not yet read), a control program reading outputs after
+  `barrier()` (8), layered geometry output (10), flat values from a staged stage's last vertex.
+- Results scratch `results/g9r18/tess-1/`, log `logs/g9r18-tess-1.log`.
+
+The table, EVERY LIST WHOLE AT ONE COMMIT, 2b7a7407 (desktop, RTX 3080, one GPU job, 8 glcts at
+once, other tracks' jobs queued beside), 23:08:24 to 23:45:16 (Pacific):
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64% (as run 17).
+- dEQP-GLES3: 44,768; Pass 44,026, Warn 5, Fail 174, Crash 69, Flake 1, Skip 493: 44,031 of
+  44,275, 99.45% (the flake is `flush_finish.flush`, a timing case).
+- dEQP-GLES31: 37,802; Pass 18,601, Fail 189, Crash 636, Flake 3, Skip 18,373: 18,601 of 19,429,
+  95.74% (a308cf39: 95.62%; 23 crashes now pass, 24 crashes now fail).
+- KHR-GLES2: 473; Pass 438, Skip 35: 100.00%.
+- KHR-GLES3: 6,498; Pass 6,191, Fail 3, Crash 73, Skip 231: 6,191 of 6,267, 98.79%.
+- KHR-GLES31: 4,101; Pass 2,926, Fail 18, Crash 90, Skip 1,067: 2,926 of 3,034, 96.44% (a308cf39:
+  94.33%; 64 crashes now pass). One case that passed failed here,
+  `geometry_shader.qualifiers.flat_interpolation` (stream output of a geometry program's
+  position: the pass-through's y step had moved out of the records; fixed by the next commit,
+  which keeps y in the records and moves only the depth steps, and passes it in the check below).
+- KHR-GL33: 9,886; Pass 8,990, Fail 145, Crash 229, Skip 522: 8,990 of 9,364, 96.01% (run 16:
+  95.98%; `transform_feedback.capture_geometry_separate_test` and `discard_geometry_test` now pass).
+- KHR-GLES32 (1,405) and KHR-GL46 (19,714): still no context of their version.
+- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
+  run and failed: 98,146 of 101,242, 96.94%, above the 92.9% floor (without KHR-GLES32: 98,146 of
+  99,837, 98.31%). Still not the bar: not every failure has a reason, NotSupported is not checked
+  group by group, KHR-GLES32 does not start, and bgfx's and Godot's renderers, the RTX 3080's own
+  OpenGL and the independent check are not done; G9's second part (4.6) has not started.
+- Results scratch `results/g9r18/full/<list>/results.csv`, log `logs/g9r18-full.log`.
+
+The check of the transform split (geometry records keep the y step, the pass-through applies only
+the depth steps, an evaluation program before a geometry program is untransformed), the groups of
+the first check plus `KHR-GL33.transform_feedback.*` (desktop, RTX 3080, one GPU job, 8 glcts at
+once), 00:11:25 to 00:15:38 (Pacific), against the same cases of the whole run: dEQP-GLES31 437
+cases, the same results (an intermediate version failed its two
+`tessellate_*_passthrough_geometry_no_change` cases: the evaluation program's y step reached the
+geometry program twice); KHR-GLES31 276, `flat_interpolation` now passes and
+`tessellation_shader.vertex.vertex_ordering` timed out (failed in the whole run, crashed in run 17;
+not yet read); KHR-GL33 38, the same. Results `results/g9r18/check-3/`, log
+`logs/g9r18-check-3.log`.
+
+Next, in order:
+1. The route's invalid modules indexing past a vector (64 process refusals above, and
+   dEQP-GLES31's 30 of run 17). Read this run from one case's module (a temporary, uncommitted
+   print of the invalid module, `KHR-GLES31.core.geometry_shader.input.gl_in_array_contents`, log
+   `logs/g9r18-diag-1.log`): its vertex program writes only `vs_gs_a = vec2(gl_VertexID, 0)` and
+   `vs_gs_b = ivec4(0, gl_VertexID, 0, 1)`, no position. The module route B made stores a
+   two-component unsigned value, (`gl_VertexID`, the bits of `float(gl_VertexID)`), the one slot
+   left after Mesa's linker dropped the constant components and packed the rest, into the
+   position's x and y, and widens it to four components by reading components 2 and 3 of the
+   two-component value: the invalid expression. So two faults to fix in route B (or the bridge's
+   `clip_unpositioned`): a packed varying's store reaching the position (the position's store and
+   the varying's share a base, likely the `num_outputs++` base `clip_unpositioned` gives after
+   linking), and the kind change of a store widening by the variable's components instead of the
+   value's. Next: print the case's NIR (`nir_print_shader`) to see both stores' bases and
+   semantics, then fix and add a GLSL test of a vertex program without a position whose varyings
+   Mesa packs.
+2. Image buffers through `wcontainers_shaders::typed` on `TexelBufferRoute::Storage` (delivered by
+   the shaders track, "For the NIR track: typed buffers"): route B declares the image buffer as a
+   storage global and calls stand-ins for its loads, stores, size and atomics; the driver binds
+   the view's range as storage and writes its `HelperValue::TexelBufferView` (250 and 16).
+3. Point size read by a control or evaluation program, image atomics, `gl_HelperInvocation`, flat
+   values from a staged stage's last vertex (asked of the shaders track, "Requests"), layered
+   geometry output, then ES 3.2's and 4.0's requirements so that KHR-GLES32 and KHR-GL46 start.
+4. The NotSupported check, the comparison with the RTX 3080's own OpenGL, bgfx and Godot, the
+   independent check; then 4.6.
+
 G9 run 17 (2026-11-22, the fifth run of this batch): the driver has tessellation stages, run
 by the stage helper through route B's hull and domain forms (the shaders track's
 `wcontainers_shaders::staged`). OpenGL ES 3.1 contexts now report `OES_tessellation_shader`, so
@@ -607,6 +720,13 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 18's one-command scripts (scratch `scripts/`): `g9r18-group.sh <log> <lists> <regexes>`
+  builds Mesa with the driver on the desktop and runs those groups as one GPU job;
+  `g9r18-full.sh <log>` the same for every list. Both leave out of the desktop's copy any
+  workspace member folder without a manifest (another track's unfinished work, which stops cargo
+  loading the workspace); for the rented machine prefix the command with `for d in
+  crates/*/implementation/* crates/*/conformance; do if [ -d "$d" ] && [ ! -f "$d/Cargo.toml" ];
+  then rm -rf "$d"; fi; done;` (the copy only: the checkout is not touched).
 - One group alone (G9 run 7): add `-Include <regex>[,<regex>]` to `run-windows.ps1`, e.g.
   `-Lists gles2-main -Include dEQP-GLES2.functional.vertex_arrays.*`. The refusals of a whole
   run, from the Mac: `ssh -o BatchMode=yes tom@192.168.2.183 'findstr /C:"refused:" /C:"not
@@ -1299,9 +1419,17 @@ None.
   `VertexFormat` lacks: signed normalized, and signed and unsigned integers read as floats
   (Gallium's R10G10B10A2_SNORM, _SSCALED, _USCALED). Since G9 run 15 the driver unpacks them in
   the program (`VertexFormatConverted`); native formats would remove that.
-- Shaders track (G9 run 15): an entry that takes a common-form module's typed buffers (a global
-  named as one, with its format from the variant) through `variant::texel`'s storage route, so
-  route B's texel buffers need no copy into a texture.
+- Shaders track (G9 run 18): flat values from the last vertex of each primitive a geometry or
+  tessellation stage makes. OpenGL's provoking vertex is the last unless the program asks for the
+  first (`glProvokingVertex`), the host's the first; the driver rewrites its own draws' indices,
+  but the stage helper's final draw is made inside the helper. Asked: a choice of the provoking
+  vertex for the helper's final draw (each triangle it lists rotated to start at its last vertex,
+  which keeps its winding; each line reversed), so that no front copies the helper's records.
+  dEQP-GLES31 has 122 process refusals of this ("flat values from the last vertex ...").
+- Shaders track (G9 run 15; DELIVERED as `wcontainers_shaders::typed` in its run 104, not yet used
+  by route B): an entry that takes a common-form module's typed buffers (a global named as one,
+  with its format from the variant) through `variant::texel`'s storage route, so route B's texel
+  buffers need no copy into a texture.
 - WebGPU back end (G9 run 12, a finding): a multisampled resolve of an integer format reaches
   wgpu and loses the device ("R16Uint is not resolvable"); the driver now checks
   `FormatUse::RESOLVE` first, as every front must.
