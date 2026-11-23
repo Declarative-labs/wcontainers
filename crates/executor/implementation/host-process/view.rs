@@ -15,7 +15,7 @@ struct Mapping {
     block: Option<(SharedId, u64)>,
 }
 
-/// A stub's guest-area mappings, and its code area's.
+/// A stub's guest-area mappings, its code area's and its slot pages'.
 #[derive(Debug, Default)]
 pub struct View {
     mappings: RangeMap<u64, Mapping>,
@@ -46,6 +46,11 @@ impl View {
             Command::MapCode => {
                 self.count += usize::from(!self.code_mapped);
                 self.code_mapped = true;
+                return;
+            }
+            // A slot page merges with neighbours only where their file offsets happen to follow; counted alone.
+            Command::MapSlots { .. } => {
+                self.count += 1;
                 return;
             }
         };
@@ -100,7 +105,10 @@ impl View {
                 }
             }
             Command::Unmap { .. } => self.mappings.remove(range),
-            Command::Place { .. } | Command::NewThread { .. } | Command::MapCode => {}
+            Command::Place { .. }
+            | Command::NewThread { .. }
+            | Command::MapCode
+            | Command::MapSlots { .. } => {}
         }
         self.count = self.count + self.mappings.overlapping(around).count() - before;
     }

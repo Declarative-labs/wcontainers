@@ -25,6 +25,13 @@ use crate::stub::{Stub, TurnEnd};
 use crate::view::View;
 use crate::windows::FileKey;
 
+#[cfg(target_arch = "aarch64")]
+#[path = "execution.rs"]
+mod execution;
+#[cfg(target_arch = "aarch64")]
+#[path = "native.rs"]
+pub mod native;
+
 /// The guest's addresses.
 const GUEST: Range<u64> = LOWEST_ADDRESS..OUR_AREA as u64;
 
@@ -67,6 +74,14 @@ impl Memory {
             .apply(&command, block.as_ref().map(|(shared, _)| *shared));
         self.queue.push(command);
         self.queued_blocks.extend(block.map(|(_, file)| file));
+    }
+
+    /// Queues a mapping of the code area's memfd, which comes with it.
+    #[cfg(target_arch = "aarch64")]
+    fn push_code(&mut self, command: Command, file: Arc<OwnedFd>) {
+        self.view.apply(&command, None);
+        self.queue.push(command);
+        self.queued_blocks.push(file);
     }
 }
 
@@ -183,6 +198,20 @@ pub enum Touched {
     Forged,
 }
 
+/// What the last round of a turn does after its commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Then {
+    /// A touch or a ping, standing in for guest code.
+    Touch {
+        address: usize,
+        value: u64,
+        resume: Resume,
+    },
+    /// Translated code from this address in the code area.
+    #[cfg(target_arch = "aarch64")]
+    Enter(usize),
+}
+
 /// Form P's executor for one container, made from the process-wide host.
 pub struct HostProcessExecutor {
     host: Arc<HostProcessHost>,
@@ -190,6 +219,18 @@ pub struct HostProcessExecutor {
     threads: Vec<Option<Thread>>,
     blocks: Vec<Option<Block>>,
     counters: Counters,
+    /// Each memory's translated code, by memory.
+    #[cfg(target_arch = "aarch64")]
+    codes: Vec<Option<native::Code>>,
+    /// Each guest thread's own state, by thread.
+    #[cfg(target_arch = "aarch64")]
+    guests: Vec<Option<native::Guest>>,
+    #[cfg(target_arch = "aarch64")]
+    translations: native::Translations,
+    /// Each slow path's count and last detail.
+    slow: std::collections::BTreeMap<&'static str, (u64, u64)>,
+    /// The slow paths whose counts changed since they were last warned.
+    unsent: std::collections::BTreeMap<&'static str, (u64, u64)>,
     /// The calling thread's place, from its first turn.
     runner: Option<Runner>,
     /// Whether the CPU clocks can be read.
@@ -205,6 +246,14 @@ impl HostProcessExecutor {
             threads: Vec::new(),
             blocks: Vec::new(),
             counters: Counters::default(),
+            #[cfg(target_arch = "aarch64")]
+            codes: Vec::new(),
+            #[cfg(target_arch = "aarch64")]
+            guests: Vec::new(),
+            #[cfg(target_arch = "aarch64")]
+            translations: native::Translations::default(),
+            slow: std::collections::BTreeMap::new(),
+            unsent: std::collections::BTreeMap::new(),
             runner: None,
             sampling: true,
         }
@@ -244,34 +293,19 @@ impl HostProcessExecutor {
         touch: Touch,
         slice: Option<Duration>,
     ) -> Result<Touched, CpuError> {
-        let Thread { memory, index, .. } = self.thread(thread);
-        let cpu = self.place_runner();
-        let mut place = (self.thread(thread).cpu != Some(cpu)).then_some(Command::Place { cpu });
+        let Thread { memory, .. } = self.thread(thread);
         let (address, value, resume, access) = match touch {
             Touch::Load(address) => (address, 0, Resume::Load, Access::Read),
             Touch::Store(address, value) => (address, value, Resume::Store, Access::Write),
             Touch::Spin => (0, 0, Resume::Spin, Access::Read),
         };
         loop {
-            let (mut commands, blocks) = self.take_queue(memory);
-            commands.extend(place.take());
-            let stub = self.memory(memory).stub.process();
-            self.note_stub(stub);
-            let started = Instant::now();
-            let end = self.run_turn(
-                memory,
-                index,
-                &commands,
-                &blocks,
-                Some((address as usize, value, resume, slice)),
-            )?;
-            self.account(started.elapsed());
-            if !matches!(end, TurnEnd::CommandRefused { .. } | TurnEnd::StubEnded) {
-                self.threads[thread.0 as usize]
-                    .as_mut()
-                    .expect("a thread the kernel holds")
-                    .cpu = Some(cpu);
-            }
+            let then = Then::Touch {
+                address: address as usize,
+                value,
+                resume,
+            };
+            let end = self.turn_with(thread, then, slice)?;
             return Ok(match end {
                 TurnEnd::Loaded { value } if resume == Resume::Load => Touched::Loaded(value),
                 TurnEnd::Done { .. } if resume == Resume::Store => Touched::Stored,
@@ -292,6 +326,33 @@ impl HostProcessExecutor {
                 | TurnEnd::Forged => Touched::Forged,
             });
         }
+    }
+
+    /// Gives a thread a turn that applies its memory's queue and then does `then`, for at most `slice` before it is
+    /// stopped, its host thread placed on the runner's CPU first; how the turn ended.
+    fn turn_with(
+        &mut self,
+        thread: ThreadId,
+        then: Then,
+        slice: Option<Duration>,
+    ) -> Result<TurnEnd, CpuError> {
+        let Thread { memory, index, .. } = self.thread(thread);
+        let cpu = self.place_runner();
+        let place = (self.thread(thread).cpu != Some(cpu)).then_some(Command::Place { cpu });
+        let (mut commands, blocks) = self.take_queue(memory);
+        commands.extend(place);
+        let stub = self.memory(memory).stub.process();
+        self.note_stub(stub);
+        let started = Instant::now();
+        let end = self.run_turn(memory, index, &commands, &blocks, Some((then, slice)))?;
+        self.account(started.elapsed());
+        if !matches!(end, TurnEnd::CommandRefused { .. } | TurnEnd::StubEnded) {
+            self.threads[thread.0 as usize]
+                .as_mut()
+                .expect("a thread the kernel holds")
+                .cpu = Some(cpu);
+        }
+        Ok(end)
     }
 
     /// Settles a fault a thread of `id` reported, from the executor's own records alone, so a forged report does only
@@ -617,7 +678,7 @@ impl HostProcessExecutor {
         index: usize,
         commands: &[Command],
         blocks: &[Arc<OwnedFd>],
-        touch: Option<(usize, u64, Resume, Option<Duration>)>,
+        then: Option<(Then, Option<Duration>)>,
     ) -> Result<TurnEnd, CpuError> {
         let rounds = commands.len().div_ceil(MAX_COMMANDS).max(1);
         let mut blocks = blocks.iter();
@@ -626,19 +687,34 @@ impl HostProcessExecutor {
                 &commands[round * MAX_COMMANDS..commands.len().min((round + 1) * MAX_COMMANDS)];
             let stub = &self.memory(id).stub;
             for command in chunk {
-                if let Command::MapShared { .. } = command {
+                if matches!(
+                    command,
+                    Command::MapShared { .. } | Command::MapCode | Command::MapSlots { .. }
+                ) {
                     let block = blocks.next().expect("a memfd for every queued block");
                     stub.send_block(block.as_fd()).map_err(host_error)?;
                 }
             }
             let last = round + 1 == rounds;
-            let (address, value, resume, slice) = match touch {
-                Some(touch) if last => touch,
-                _ => (0, 0, Resume::Ping, None),
+            let ping = Then::Touch {
+                address: 0,
+                value: 0,
+                resume: Resume::Ping,
             };
-            let turn = stub
-                .begin_touch(index, chunk, address, value, resume)
-                .map_err(host_error)?;
+            let (then, slice) = match then {
+                Some(then) if last => then,
+                _ => (ping, None),
+            };
+            let turn = match then {
+                Then::Touch {
+                    address,
+                    value,
+                    resume,
+                } => stub.begin_touch(index, chunk, address, value, resume),
+                #[cfg(target_arch = "aarch64")]
+                Then::Enter(at) => stub.begin_enter(index, chunk, at),
+            }
+            .map_err(host_error)?;
             let mut stops = 0;
             let waited = stub
                 .wait_sliced(index, turn, slice, &mut stops)
@@ -776,6 +852,30 @@ impl HostProcessExecutor {
                 .map_err(host_error)?;
         }
         self.counters.pages_copied += (range.end - range.start) / PAGE_SIZE;
+        Ok(())
+    }
+
+    /// Reads guest memory as the kernel's `read` does, whoever owns its pages.
+    fn read_guest(&self, id: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
+        let range = checked(address, into.len() as u64)?;
+        for (piece, shared) in pieces(&self.memory(id).shared, range.clone()) {
+            let at = (piece.start - address) as usize..(piece.end - address) as usize;
+            match shared {
+                Some((block, delta)) => {
+                    let block = self.block(block);
+                    self.host
+                        .windows()
+                        .read(
+                            block.file.as_fd(),
+                            block.key,
+                            piece.start.wrapping_add(delta),
+                            &mut into[at],
+                        )
+                        .map_err(host_error)?;
+                }
+                None => self.read_private(id, piece, &mut into[at])?,
+            }
+        }
         Ok(())
     }
 
@@ -947,6 +1047,8 @@ impl Cpu for HostProcessExecutor {
 
     /// Ends a memory's stub; one that lends pages keeps its memfd until no page is borrowed from it.
     fn memory_drop(&mut self, id: MemoryId) {
+        #[cfg(target_arch = "aarch64")]
+        self.drop_code(id);
         let _ = self.unborrow(id, GUEST, false);
         let memory = self.memory_mut(id);
         memory.retired = true;
@@ -974,26 +1076,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     fn read(&mut self, id: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
-        let range = checked(address, into.len() as u64)?;
-        for (piece, shared) in pieces(&self.memory(id).shared, range.clone()) {
-            let at = (piece.start - address) as usize..(piece.end - address) as usize;
-            match shared {
-                Some((block, delta)) => {
-                    let block = self.block(block);
-                    self.host
-                        .windows()
-                        .read(
-                            block.file.as_fd(),
-                            block.key,
-                            piece.start.wrapping_add(delta),
-                            &mut into[at],
-                        )
-                        .map_err(host_error)?;
-                }
-                None => self.read_private(id, piece, &mut into[at])?,
-            }
-        }
-        Ok(())
+        self.read_guest(id, address, into)
     }
 
     /// Private pages are first made the memory's own and lent to none; shared ones are written in their block.
@@ -1064,7 +1147,13 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Nothing is translated here yet, so there is nothing to drop.
-    fn code_changed(&mut self, _memory: MemoryId, _address: u64, _length: u64, _starts: &[u64]) {}
+    /// Drops the pieces made from the range (ARM64; elsewhere nothing is translated yet).
+    fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
+        #[cfg(target_arch = "aarch64")]
+        self.forget_changed_code(memory, address, length);
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = (memory, address, length);
+    }
 
     fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
         let file = rustix::fs::memfd_create("wcontainers shared block", MemfdFlags::CLOEXEC)
@@ -1229,7 +1318,16 @@ impl Cpu for HostProcessExecutor {
             index,
             cpu: None,
         };
-        Ok(ThreadId(place(&mut self.threads, thread) as u32))
+        let thread = ThreadId(place(&mut self.threads, thread) as u32);
+        #[cfg(target_arch = "aarch64")]
+        {
+            let at = thread.0 as usize;
+            if self.guests.len() <= at {
+                self.guests.resize_with(at + 1, || None);
+            }
+            self.guests[at] = Some(native::Guest::new());
+        }
+        Ok(thread)
     }
 
     /// Ends a guest thread's host thread, or keeps it as its memory's spare if it has none.
@@ -1237,6 +1335,10 @@ impl Cpu for HostProcessExecutor {
         let Thread { memory, index, .. } = self.threads[thread.0 as usize]
             .take()
             .expect("a thread the kernel holds");
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.guests[thread.0 as usize] = None;
+        }
         let memory = self.memory_mut(memory);
         if memory.spare.is_none() {
             memory.spare = Some(index);
@@ -1246,8 +1348,13 @@ impl Cpu for HostProcessExecutor {
         }
     }
 
-    /// As its register page holds them.
+    /// The guest's own, as its last exit resolved them (ARM64), or as its register page holds them.
     fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(guest) = &self.guests[thread.0 as usize] {
+            guest.registers(into);
+            return;
+        }
         let Thread { memory, index, .. } = self.thread(thread);
         self.memory(memory)
             .stub
@@ -1255,6 +1362,10 @@ impl Cpu for HostProcessExecutor {
     }
 
     fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
+        #[cfg(target_arch = "aarch64")]
+        if let Some(guest) = &mut self.guests[thread.0 as usize] {
+            guest.set_registers(from);
+        }
         let Thread { memory, index, .. } = self.thread(thread);
         self.memory(memory)
             .stub

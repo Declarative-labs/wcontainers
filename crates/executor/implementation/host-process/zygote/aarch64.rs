@@ -22,7 +22,7 @@ use super::{
 use crate::layout::{
     CODE_AREA, CODE_AREA_SIZE, CONTROL_PAGES_SIZE, FLOOR_ENTRIES_ALIGN, FLOOR_ENTRY_COUNT,
     FLOOR_ENTRY_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACK_SIZE, SIGNAL_STACKS,
-    SIGNAL_STACKS_SIZE, THREAD_PAGE_SIZE, THREAD_PAGES, THREADS_PER_PROCESS, ZYGOTE,
+    SIGNAL_STACKS_SIZE, SLOT_TABLE, THREAD_PAGE_SIZE, THREAD_PAGES, THREADS_PER_PROCESS, ZYGOTE,
     ZYGOTE_CODE_SIZE, ZYGOTE_SIZE,
 };
 use crate::pages::{CommandKind, ExitKind, Resume, control, register};
@@ -41,6 +41,20 @@ struct FpsimdContext {
 
 /// `FPSIMD_MAGIC`, the same header's tag of that record.
 const FPSIMD_MAGIC: u32 = 0x4650_8001;
+
+/// The record a frame of a fault holds after the FP/SIMD one: Linux's `struct esr_context`, the same header's.
+#[repr(C)]
+struct EsrContext {
+    magic: u32,
+    size: u32,
+    esr: u64,
+}
+
+/// `ESR_MAGIC`, the same header's tag of that record.
+const ESR_MAGIC: u32 = 0x4553_5201;
+
+/// The bytes of a frame's extra space, which its records fill (`__reserved` in Linux's `struct sigcontext`).
+const RESERVED_SIZE: usize = 4096;
 
 /// Where a signal frame's general registers start, then sp, pc and pstate, as a register block holds them.
 const UC_REGS: usize =
@@ -70,6 +84,9 @@ const _: () = assert!(
         && (register::REGISTERS + offset_of!(RegisterBlock, v)).is_multiple_of(16)
         && UC_RESERVED + size_of::<FpsimdContext>()
             <= offset_of!(libc::ucontext_t, uc_mcontext) + size_of::<libc::mcontext_t>()
+        && UC_RESERVED + RESERVED_SIZE
+            <= offset_of!(libc::ucontext_t, uc_mcontext) + size_of::<libc::mcontext_t>()
+        && offset_of!(EsrContext, size) == offset_of!(EsrContext, magic) + size_of::<u32>()
 );
 
 // The stub's turn loop reads the answer word with `ldar`, which takes no offset.
@@ -967,6 +984,9 @@ core::arch::global_asm!(
     "wchp_mov64 x3, {code_area_size}",
     "cmp x17, x3",
     "b.lo .Lwchp_stop_in_guest",
+    "lsr x17, x16, #{slot_table_bits}",
+    "cmp x17, #1",
+    "b.eq .Lwchp_stop_in_guest",
     "adr x17, .Lwchp_called_end",
     "cmp x16, x17",
     "b.hs 7f",
@@ -1170,6 +1190,9 @@ core::arch::global_asm!(
     "wchp_mov64 x3, {code_area_size}",
     "cmp x17, x3",
     "b.lo .Lwchp_fault_in_guest",
+    "lsr x17, x16, #{slot_table_bits}",
+    "cmp x17, #1",
+    "b.eq .Lwchp_fault_in_guest",
     "wchp_handler_stack",
     "adr x17, .Lwchp_load_access",
     "cmp x16, x17",
@@ -1189,6 +1212,30 @@ core::arch::global_asm!(
     "ldr x27, [x2, #{uc_x28}]",
     "wchp_check_page",
     "wchp_save_frame",
+    "// The fault's syndrome from the frame's records, zero where it has none.",
+    "mov x6, #0",
+    "add x3, x2, #{uc_reserved}",
+    "mov x8, #{reserved_size}",
+    "movz w9, #{esr_magic_low}",
+    "movk w9, #{esr_magic_high}, lsl #16",
+    "1:",
+    "cmp x8, #{esr_record}",
+    "b.lo 3f",
+    "ldp w7, w17, [x3]",
+    "cbz w7, 3f",
+    "cmp w7, w9",
+    "b.ne 2f",
+    "ldr x6, [x3, #{esr_at}]",
+    "b 3f",
+    "2:",
+    "cbz w17, 3f",
+    "cmp x17, x8",
+    "b.hi 3f",
+    "add x3, x3, x17",
+    "sub x8, x8, x17",
+    "b 1b",
+    "3:",
+    "str x6, [x27, #{exit_syndrome}]",
     "wchp_handler_stack",
     "str x5, [x27, #{exit_detail}]",
     "mov x10, x4",
@@ -1340,6 +1387,13 @@ core::arch::global_asm!(
     exit_fault = const ExitKind::Fault as u64,
     exit_loaded = const ExitKind::Loaded as u64,
     exit_detail = const register::EXIT_DETAIL,
+    exit_syndrome = const register::EXIT_SYNDROME,
+    slot_table_bits = const SLOT_TABLE.trailing_zeros(),
+    reserved_size = const RESERVED_SIZE,
+    esr_magic_low = const ESR_MAGIC & 0xffff,
+    esr_magic_high = const ESR_MAGIC >> 16,
+    esr_record = const size_of::<EsrContext>(),
+    esr_at = const offset_of!(EsrContext, esr),
     taken = const register::TAKEN,
     resume_load = const Resume::Load as u64,
     resume_store = const Resume::Store as u64,

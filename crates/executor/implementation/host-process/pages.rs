@@ -75,11 +75,13 @@ pub mod register {
     pub const VECTORS_BY_RETURN: usize = REQUEST + 88;
     /// x23 as a floor entry found it, kept there before the entry names itself in x23.
     pub const CALL_SCRATCH: usize = REQUEST + 96;
+    /// The syndrome of a fault in translated code, from the signal frame's `esr_context`; zero where the frame has none.
+    pub const EXIT_SYNDROME: usize = REQUEST + 104;
     /// The thread's registers in the hardware, as a [`wcontainers_abi::RegisterBlock`], little endian: what a
     /// [`super::Resume::Enter`] loads and what an exit from translated code saves.
     pub const REGISTERS: usize = 256;
 
-    const _: () = assert!(CALL_SCRATCH < REGISTERS);
+    const _: () = assert!(EXIT_SYNDROME < REGISTERS);
     #[cfg(target_arch = "aarch64")]
     const _: () =
         assert!(size_of::<wcontainers_arm64::thread_state::RegisterPage>() <= TRANSLATED_SIZE);
@@ -155,6 +157,14 @@ pub enum Command {
     /// Maps the code area's memfd, which the stub receives first on its socket, execute-only over the whole code
     /// area, then closes it.
     MapCode,
+    /// Maps one page of the code area's memfd, which the stub receives first on its socket, execute-only as the slot
+    /// table's page at `address`, from the memfd's `offset`, then closes it.
+    MapSlots {
+        /// The slot table's page.
+        address: usize,
+        /// Where its bytes are in the code area's memfd.
+        offset: usize,
+    },
     /// Moves the thread applying it to one CPU, as its runner's.
     Place {
         /// The CPU's number.
@@ -231,6 +241,12 @@ impl Command {
                 CODE_AREA as u64,
                 CODE_AREA_SIZE as u64,
                 0,
+            ],
+            Self::MapSlots { address, offset } => [
+                with(CommandKind::MapShared, ProtFlags::EXEC),
+                address as u64,
+                crate::layout::THREAD_PAGE_SIZE as u64,
+                offset as u64,
             ],
             Self::Place { cpu } => [
                 with(CommandKind::Place, ProtFlags::empty()),

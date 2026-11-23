@@ -643,6 +643,14 @@ impl Stub {
         }
     }
 
+    /// The syndrome of a thread's last fault in translated code, as the host's signal frame gave it; zero where it gave
+    /// none (untrusted).
+    pub fn fault_syndrome(&self, thread: usize) -> u64 {
+        self.pages
+            .register64(thread, register::EXIT_SYNDROME)
+            .load(Ordering::Relaxed)
+    }
+
     /// Puts x23 as the floor entry found it back into the block, where the entry's save put its own number.
     #[cfg(target_arch = "aarch64")]
     fn put_back_call_scratch(&self, thread: usize) {

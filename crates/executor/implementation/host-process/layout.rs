@@ -30,6 +30,19 @@ pub const CODE_AREA: usize = ZYGOTE + ZYGOTE_SIZE;
 /// The code area's bytes.
 pub const CODE_AREA_SIZE: usize = ZYGOTE + BRANCH_REACH - CODE_AREA;
 
+/// Where the slot table starts in a stub: the entry slot of guest address g is at `SLOT_TABLE | g << 2`.
+pub const SLOT_TABLE: usize = 1 << 46;
+
+/// The slot table's bytes: a 16-byte slot for every 4 bytes of the guest area, rounded up to the table's alignment.
+pub const SLOT_TABLE_SIZE: usize = 1 << 46;
+
+/// The bytes of the code area's memfd that back slot pages, after the code area's own; a slot page takes the next free
+/// one when its first slot is filled.
+pub const SLOT_PAGES_SIZE: usize = 128 * (KIB * KIB) as usize;
+
+/// The code area's memfd: the code area, then the pages of the slot table in use.
+pub const CODE_FILE_SIZE: usize = CODE_AREA_SIZE + SLOT_PAGES_SIZE;
+
 /// The alignment of the floor's entries; the zygote's code starts with one branch to its start, padded up to it.
 #[cfg(target_arch = "aarch64")]
 pub const FLOOR_ENTRIES_ALIGN: usize = 16;
@@ -88,7 +101,11 @@ const _: () = assert!(
         && FLOOR_ENTRY_SIZE as u64 == wcontainers_arm64::way::PROCESS_ENTRY_BYTES
         && SIGNAL_STACKS + SIGNAL_STACKS_SIZE <= wcontainers_arm64::way::PROCESS_SLOTS as usize
         && OUR_AREA == 1 << wcontainers_arm64::way::PROCESS_REACH_BITS
+        && SLOT_TABLE as u64 == wcontainers_arm64::way::PROCESS_SLOTS
+        && (OUR_AREA as u64) << wcontainers_arm64::mirror::SLOT_SHIFT <= SLOT_TABLE_SIZE as u64
 );
+// The stubs' handlers tell a pc in the slot table by its bits above the table's size alone.
+const _: () = assert!(SLOT_TABLE == SLOT_TABLE_SIZE && SLOT_TABLE.is_power_of_two());
 #[cfg(target_arch = "aarch64")]
 const _: () =
     assert!(FLOOR_ENTRIES + FLOOR_ENTRY_COUNT * FLOOR_ENTRY_SIZE <= ZYGOTE + ZYGOTE_CODE_SIZE);

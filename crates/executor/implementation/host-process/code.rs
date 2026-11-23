@@ -1,18 +1,19 @@
-//! A stub's code area: one memfd the embedder writes through its own mapping and the stub runs, execute-only, after
-//! [`crate::pages::Command::MapCode`].
+//! A stub's code area and its slot table's pages: one memfd the embedder writes through its own mapping and the stub
+//! runs, execute-only, after [`crate::pages::Command::MapCode`] and [`crate::pages::Command::MapSlots`].
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::sync::Arc;
 
 use rustix::fs::MemfdFlags;
 use rustix::io::Errno;
 use rustix::mm::{MapFlags, ProtFlags};
 
-use crate::layout::{CODE_AREA, CODE_AREA_SIZE};
+use crate::layout::{CODE_AREA, CODE_AREA_SIZE, CODE_FILE_SIZE};
 use crate::probe::HostProbe;
 
 /// The code area of one guest memory.
 pub struct CodeArea {
-    file: OwnedFd,
+    file: Arc<OwnedFd>,
     /// The embedder's mapping, kept as a number so the value is `Send`; `Drop` unmaps it.
     base: usize,
 }
@@ -21,7 +22,7 @@ impl CodeArea {
     /// An empty code area.
     pub fn new() -> Result<Self, Errno> {
         let file = rustix::fs::memfd_create("wcontainers code area", MemfdFlags::CLOEXEC)?;
-        rustix::fs::ftruncate(&file, CODE_AREA_SIZE as u64)?;
+        rustix::fs::ftruncate(&file, CODE_FILE_SIZE as u64)?;
         #[expect(
             unsafe_code,
             reason = "maps the code area where the host chooses, which rustix leaves to the caller to keep sound"
@@ -30,7 +31,7 @@ impl CodeArea {
         let base = unsafe {
             rustix::mm::mmap(
                 core::ptr::null_mut(),
-                CODE_AREA_SIZE,
+                CODE_FILE_SIZE,
                 ProtFlags::READ | ProtFlags::WRITE,
                 MapFlags::SHARED,
                 &file,
@@ -38,7 +39,7 @@ impl CodeArea {
             )
         }?;
         Ok(Self {
-            file,
+            file: Arc::new(file),
             base: base as usize,
         })
     }
@@ -46,6 +47,11 @@ impl CodeArea {
     /// The memfd, for the stub's socket before its `MapCode`.
     pub fn file(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
+    }
+
+    /// The memfd, held for a command that sends it.
+    pub(crate) fn shared_file(&self) -> Arc<OwnedFd> {
+        Arc::clone(&self.file)
     }
 
     /// Writes `words` at the stub's address `at` and makes them what instruction fetch sees there; a stub thread runs
@@ -58,7 +64,21 @@ impl CodeArea {
                 && at - CODE_AREA + bytes <= CODE_AREA_SIZE,
             "code outside the code area"
         );
-        let offset = at - CODE_AREA;
+        self.write_file(probe, at - CODE_AREA, words);
+    }
+
+    /// Writes `words` at byte `offset` of the memfd, past the code area's own bytes where slot pages are, as
+    /// [`Self::write`] does.
+    pub fn write_slots(&mut self, probe: &HostProbe, offset: usize, words: &[u32]) {
+        assert!(
+            offset >= CODE_AREA_SIZE && offset + size_of_val(words) <= CODE_FILE_SIZE,
+            "slots outside the slot pages"
+        );
+        self.write_file(probe, offset, words);
+    }
+
+    fn write_file(&mut self, probe: &HostProbe, offset: usize, words: &[u32]) {
+        let bytes = size_of_val(words);
         #[expect(
             unsafe_code,
             reason = "writes the shared mapping, which only this value writes and a stub only runs"
@@ -84,7 +104,7 @@ impl Drop for CodeArea {
     fn drop(&mut self) {
         #[expect(unsafe_code, reason = "unmaps the mapping made by `new`")]
         // SAFETY: the mapping is this value's alone, and every reference into it borrowed `self`.
-        let _ = unsafe { rustix::mm::munmap(self.base as *mut core::ffi::c_void, CODE_AREA_SIZE) };
+        let _ = unsafe { rustix::mm::munmap(self.base as *mut core::ffi::c_void, CODE_FILE_SIZE) };
     }
 }
 
