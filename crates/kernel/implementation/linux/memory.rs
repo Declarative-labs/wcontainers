@@ -48,6 +48,9 @@ const SMALLEST_64_BIT_SPACE: u64 = 1 << 39;
 /// Linux's `MAX_GAP`, the most room left above the mapping base, as a share of the space.
 const MAX_GAP_SHARE: (u64, u64) = (5, 6);
 
+/// Linux's `TASK_UNMAPPED_BASE`, where its bottom-up search starts, as the space divided by it.
+const UNMAPPED_BASE_DIVISOR: u64 = 4;
+
 /// `CONFIG_ARCH_MMAP_RND_BITS` and `CONFIG_ARCH_MMAP_RND_COMPAT_BITS`, at ARM64's defaults for
 /// 4 KiB pages.
 const MMAP_RANDOM_BITS: u32 = 18;
@@ -1050,7 +1053,7 @@ impl AddressMap {
     /// lowest range, which takes the gap between the mmap base and the stack.
     fn fallback_range(&self) -> (u64, u64) {
         let top = first_tier_top(self.ceiling);
-        (page_up(top / 4), top)
+        (page_up(top / UNMAPPED_BASE_DIVISOR), top)
     }
 
     /// Whether a request for `length` bytes ending at `end` reaches past the ceiling; if so it is
