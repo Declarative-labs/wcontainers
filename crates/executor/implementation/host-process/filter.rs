@@ -203,10 +203,10 @@ impl Program {
     }
 }
 
-/// The stub's filter: `futex`, `exit` and `exit_group` as they come; `mmap` of the memory's memfd only, shared and
-/// fixed, inside the guest area, never executable, at the offset equal to the address; `mprotect` inside the guest
-/// area, never executable; `munmap` inside the guest area; `clone` of a thread of the stub only. Anything else kills
-/// the stub.
+/// The stub's filter: `futex`, `exit`, `exit_group`, `rt_sigprocmask` and `sigaltstack` as they come; `mmap` of the
+/// memory's memfd only, shared and fixed, inside the guest area, never executable, at the offset equal to the address;
+/// `mprotect` inside the guest area, never executable; `munmap` inside the guest area; `clone` of a thread of the stub
+/// only. Anything else kills the stub.
 pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mut program = Program {
         ops: Vec::new(),
@@ -230,6 +230,8 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
         (linux::__NR_futex, allow),
         (linux::__NR_exit, allow),
         (linux::__NR_exit_group, allow),
+        (linux::__NR_rt_sigprocmask, allow),
+        (linux::__NR_sigaltstack, allow),
         (linux::__NR_mmap, mmap),
         (linux::__NR_mprotect, mprotect),
         (linux::__NR_munmap, munmap),

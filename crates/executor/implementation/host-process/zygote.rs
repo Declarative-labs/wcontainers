@@ -37,6 +37,8 @@ mod x86_64;
 mod frame {
     use core::mem::{offset_of, size_of};
 
+    use linux_raw_sys::general as linux;
+
     /// A request, then the answer written over it: its kind.
     pub const BUFFER: usize = 0;
     /// Its value.
@@ -70,8 +72,16 @@ mod frame {
     /// The area registered to prove no restartable-sequences registration is left.
     pub const OWN_AREA: usize =
         (FILTER_PROGRAM + size_of::<libc::sock_fprog>()).next_multiple_of(super::RSEQ_AREA);
+    /// A stub's stop handler, as `rt_sigaction` reads it.
+    pub const ACTION: usize = OWN_AREA + super::RSEQ_AREA;
+    pub const ACTION_HANDLER: usize =
+        ACTION + offset_of!(linux::kernel_sigaction, sa_handler_kernel);
+    pub const ACTION_FLAGS: usize = ACTION + offset_of!(linux::kernel_sigaction, sa_flags);
+    pub const ACTION_RESTORER: usize = ACTION + offset_of!(linux::kernel_sigaction, sa_restorer);
+    pub const ACTION_MASK: usize = ACTION + offset_of!(linux::kernel_sigaction, sa_mask);
     /// The whole frame, from the stack's top.
-    pub const FRAME: usize = (OWN_AREA + super::RSEQ_AREA).next_multiple_of(super::RSEQ_AREA);
+    pub const FRAME: usize =
+        (ACTION + size_of::<linux::kernel_sigaction>()).next_multiple_of(super::RSEQ_AREA);
 
     // The assembly zeroes the header as seven words, and the stack's top is page-aligned.
     const _: () = assert!(size_of::<libc::msghdr>() == 7 * 8);
@@ -137,10 +147,12 @@ pub enum ZygoteEnd {
     DescriptorsNotPlaced = 9,
     /// A stub's filter was refused.
     FilterRefused = 10,
+    /// A stub's stop handler or one of its threads' signal stacks was refused.
+    SignalsRefused = 11,
 }
 
 impl ZygoteEnd {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::EmbedderGone,
         Self::PagesRefused,
         Self::RestartableSequencesNotUnregistered,
@@ -152,6 +164,7 @@ impl ZygoteEnd {
         Self::Orphaned,
         Self::DescriptorsNotPlaced,
         Self::FilterRefused,
+        Self::SignalsRefused,
     ];
 
     fn from_status(status: u32) -> Option<Self> {

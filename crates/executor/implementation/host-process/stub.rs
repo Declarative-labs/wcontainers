@@ -48,6 +48,13 @@ pub(crate) const THREAD_FLAGS: u32 = linux::CLONE_VM
     | linux::CLONE_PARENT_SETTID
     | linux::CLONE_CHILD_CLEARTID;
 
+/// The signal that stops a stub's thread: the kernel's first real-time signal, since a stub holds no C library
+/// that claims it.
+pub const STOP_SIGNAL: u32 = linux::SIGRTMIN;
+
+/// [`STOP_SIGNAL`] alone, as a kernel signal set.
+pub(crate) const STOP_SET: u64 = 1 << (STOP_SIGNAL - 1);
+
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnEnd {
@@ -65,6 +72,11 @@ pub enum TurnEnd {
     },
     /// The stub found the turn malformed.
     BadTurn,
+    /// The stop signal ended the turn, after its commands.
+    Stopped {
+        /// The commands applied.
+        commands_applied: u64,
+    },
     /// The stub reported an exit it has no name for.
     Forged,
     /// The stub's process ended: its socket hung up.
@@ -143,11 +155,7 @@ impl Stub {
             if left.is_zero() {
                 return Ok(false);
             }
-            let wait = Timespec {
-                tv_sec: left.as_secs() as i64,
-                tv_nsec: i64::from(left.subsec_nanos()),
-            };
-            match futex::wait(word, futex::Flags::empty(), seen, Some(&wait)) {
+            match futex::wait(word, futex::Flags::empty(), seen, Some(&timespec(left))) {
                 Ok(()) | Err(Errno::AGAIN | Errno::INTR | Errno::TIMEDOUT) => {}
                 Err(other) => return Err(other),
             }
@@ -209,25 +217,75 @@ impl Stub {
             .load(Ordering::Acquire)
     }
 
+    /// Where a thread's stops landed, as the stub counts them (untrusted).
+    pub fn stops_landed(&self, thread: usize) -> StopsLanded {
+        let count = |at| self.pages.register64(thread, at).load(Ordering::Relaxed);
+        StopsLanded {
+            in_turn: count(register::STOPS_IN_TURN),
+            in_publish: count(register::STOPS_IN_PUBLISH),
+            in_wait: count(register::STOPS_IN_WAIT),
+            in_end: count(register::STOPS_IN_END),
+        }
+    }
+
     /// Gives a thread a turn that applies `commands` in order and reports back, and waits for its end.
     pub fn turn(&self, thread: usize, commands: &[Command]) -> Result<TurnEnd, Errno> {
         let turn = self.give(thread, commands, Resume::Ping)?;
         self.wait(thread, turn)
     }
 
+    /// Gives a thread a turn without waiting for it; the turn's number, for [`Self::wait`].
+    pub fn begin(&self, thread: usize, commands: &[Command], resume: Resume) -> Result<u32, Errno> {
+        self.give(thread, commands, resume)
+    }
+
+    /// Where a thread's stop goes, by the host id the stub reported: a forged id reaches only another thread of the
+    /// same stub, which takes a stale stop.
+    pub fn stop_target(&self, thread: usize) -> StopTarget {
+        StopTarget {
+            process: self.process.as_raw_nonzero().get(),
+            thread: self.reported_thread_id(thread) as libc::pid_t,
+        }
+    }
+
+    /// Sends the stop signal to a thread; a thread not in a turn, or already leaving one, ignores it.
+    pub fn stop(&self, thread: usize) -> Result<(), Errno> {
+        self.stop_target(thread).stop()
+    }
+
     /// Waits for a thread to publish the end of `turn`, looking every 100 ms whether the stub has ended.
-    fn wait(&self, thread: usize, turn: u32) -> Result<TurnEnd, Errno> {
+    pub fn wait(&self, thread: usize, turn: u32) -> Result<TurnEnd, Errno> {
+        loop {
+            if let Some(end) = self.wait_within(thread, turn, LOOK_FOR_END)? {
+                return Ok(end);
+            }
+            if self.hung_up()? {
+                return Ok(TurnEnd::StubEnded);
+            }
+        }
+    }
+
+    /// Waits up to `limit` for a thread to publish the end of `turn`; `None` if it has not.
+    pub fn wait_within(
+        &self,
+        thread: usize,
+        turn: u32,
+        limit: Duration,
+    ) -> Result<Option<TurnEnd>, Errno> {
         let request = self.pages.register32(thread, register::REQUEST);
+        let until = std::time::Instant::now() + limit;
         loop {
             let seen = request.load(Ordering::Acquire);
             if seen == turn {
-                return Ok(self.exit(thread));
+                return Ok(Some(self.exit(thread)));
             }
-            if let Err(Errno::TIMEDOUT) =
-                futex::wait(request, futex::Flags::empty(), seen, Some(&timeout()))
-                && self.hung_up()?
-            {
-                return Ok(TurnEnd::StubEnded);
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            match futex::wait(request, futex::Flags::empty(), seen, Some(&timespec(left))) {
+                Ok(()) | Err(Errno::AGAIN | Errno::INTR | Errno::TIMEDOUT) => {}
+                Err(other) => return Err(other),
             }
         }
     }
@@ -289,6 +347,9 @@ impl Stub {
                 errno: Errno::from_raw_os_error(value as u32 as i32),
             },
             Some(ExitKind::BadTurn) => TurnEnd::BadTurn,
+            Some(ExitKind::Stopped) => TurnEnd::Stopped {
+                commands_applied: value,
+            },
             None => TurnEnd::Forged,
         }
     }
@@ -302,8 +363,49 @@ impl Stub {
 }
 
 fn timeout() -> Timespec {
+    timespec(LOOK_FOR_END)
+}
+
+fn timespec(duration: Duration) -> Timespec {
     Timespec {
-        tv_sec: 0,
-        tv_nsec: LOOK_FOR_END.as_nanos() as i64,
+        tv_sec: duration.as_secs() as i64,
+        tv_nsec: i64::from(duration.subsec_nanos()),
+    }
+}
+
+/// Where one thread's stops landed: those after a turn's commands ended it; the rest were stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopsLanded {
+    /// In a turn, after its commands.
+    pub in_turn: u64,
+    /// While the thread published an exit, which it then published again.
+    pub in_publish: u64,
+    /// While it waited for a turn, to which it went back.
+    pub in_wait: u64,
+    /// While it ended, which it went on with.
+    pub in_end: u64,
+}
+
+/// One stub thread's stop, to send from any thread.
+#[derive(Debug, Clone, Copy)]
+pub struct StopTarget {
+    process: libc::pid_t,
+    thread: libc::pid_t,
+}
+
+impl StopTarget {
+    /// Sends the stop signal.
+    pub fn stop(self) -> Result<(), Errno> {
+        #[expect(
+            unsafe_code,
+            reason = "glibc's tgkill takes only numbers; neither rustix nor nix sends a signal to one thread of another process"
+        )]
+        // SAFETY: plain integers in, an integer out.
+        let sent = unsafe { libc::tgkill(self.process, self.thread, STOP_SIGNAL as libc::c_int) };
+        if sent == 0 {
+            Ok(())
+        } else {
+            Err(Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL))
+        }
     }
 }

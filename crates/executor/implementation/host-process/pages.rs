@@ -47,6 +47,12 @@ pub mod register {
     pub const EXIT: usize = 16;
     /// What the exit reports.
     pub const EXIT_VALUE: usize = 24;
+    /// The stub's own count of the stops that landed in a turn after its commands (ending it), as four words: then
+    /// those that landed while it published an exit, waited for a turn, or ended.
+    pub const STOPS_IN_TURN: usize = 32;
+    pub const STOPS_IN_PUBLISH: usize = 40;
+    pub const STOPS_IN_WAIT: usize = 48;
+    pub const STOPS_IN_END: usize = 56;
 }
 
 /// What a turn does after its commands.
@@ -57,6 +63,8 @@ pub enum Resume {
     Ping = 1,
     /// Ends the thread (the process, for its last thread).
     ExitThread = 2,
+    /// Runs our own code until a stop ends the turn, standing in for guest code.
+    Spin = 3,
 }
 
 /// A change to a stub's view of its memory, applied by the thread taking the turn before anything else.
@@ -162,13 +170,20 @@ pub enum ExitKind {
     CommandRefused = 2,
     /// The control page named no resume the stub knows, or more commands than a page holds.
     BadTurn = 3,
+    /// The stop signal ended the turn after its commands; the value is the count of commands applied.
+    Stopped = 4,
 }
 
 impl ExitKind {
     pub(crate) fn from_word(word: u64) -> Option<Self> {
-        [Self::Done, Self::CommandRefused, Self::BadTurn]
-            .into_iter()
-            .find(|kind| *kind as u64 == word)
+        [
+            Self::Done,
+            Self::CommandRefused,
+            Self::BadTurn,
+            Self::Stopped,
+        ]
+        .into_iter()
+        .find(|kind| *kind as u64 == word)
     }
 }
 
