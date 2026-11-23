@@ -12,7 +12,7 @@ use rustix::io::Errno;
 use rustix::mm::ProtFlags;
 use rustix::process::Pid;
 use wcontainers_abi::{
-    Access, AddressSpace, Cpu, CpuError, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions,
+    Access, AddressSpace, Cpu, CpuError, KIB, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, SharedId, ThreadId,
 };
 use zerocopy::IntoBytes;
@@ -90,6 +90,9 @@ struct Thread {
 /// range of one permission (plan 3.5's 2^u).
 const COPY_UNIT: u64 = PAGE_SIZE;
 
+/// The bytes of zeros written at a time where the host refuses to punch a hole.
+const ZEROS: usize = 64 * KIB as usize;
+
 /// How much of a runner's busy time it samples its CPU's share over.
 const SAMPLE_EVERY: Duration = Duration::from_millis(10);
 
@@ -134,6 +137,8 @@ pub struct Counters {
     pub mappings_exhausted: u64,
     /// Forks that lent the whole guest area, the host not saying which pages hold data ("memory extents unknown").
     pub extents_unknown: u64,
+    /// Ranges zeroed by writing zeros, the host refusing to punch them out ("hole punch refused").
+    pub zeros_written: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -569,6 +574,31 @@ impl HostProcessExecutor {
             + memory.permissions.overlapping(range).count()
     }
 
+    /// Makes a range of a memory's own memfd read as zeros: punched out, or written with zeros where the host
+    /// refuses that (gVisor).
+    fn clear(&mut self, id: MemoryId, range: Range<u64>) -> Result<(), CpuError> {
+        match punch(self.memory(id).stub.memory(), range.clone()) {
+            Ok(()) => return Ok(()),
+            Err(Errno::OPNOTSUPP) => {}
+            Err(other) => return Err(host_error(other)),
+        }
+        self.counters.zeros_written += 1;
+        eprintln!(
+            "wcontainers warning: hole punch refused, zeros written, {} so far",
+            self.counters.zeros_written
+        );
+        let zeros = [0; ZEROS];
+        let stub = &self.memory(id).stub;
+        let mut windows = self.host.windows();
+        for at in range.clone().step_by(ZEROS) {
+            let length = (range.end - at).min(ZEROS as u64) as usize;
+            windows
+                .write(stub.memory(), stub.memory_key(), at, &zeros[..length])
+                .map_err(host_error)?;
+        }
+        Ok(())
+    }
+
     fn take_queue(&mut self, id: MemoryId) -> (Vec<Command>, Vec<Arc<OwnedFd>>) {
         let memory = self.memory_mut(id);
         (
@@ -849,10 +879,14 @@ impl Cpu for HostProcessExecutor {
             None => {
                 self.counters.extents_unknown += 1;
                 eprintln!(
-                    "wcontainers warning: memory extents unknown, a fork lends every page, {} so far",
+                    "wcontainers warning: memory extents unknown, a fork lends every private page, {} so far",
                     self.counters.extents_unknown
                 );
-                vec![GUEST]
+                pieces(&self.memory(source).shared, GUEST)
+                    .into_iter()
+                    .filter(|(_, shared)| shared.is_none())
+                    .map(|(piece, _)| piece)
+                    .collect()
             }
         };
         for extent in owned {
@@ -1003,7 +1037,7 @@ impl Cpu for HostProcessExecutor {
         }
         self.unborrow(id, range.clone(), false)?;
         self.unlend(id, range.clone())?;
-        punch(self.memory(id).stub.memory(), range).map_err(host_error)
+        self.clear(id, range)
     }
 
     /// Records what a range allows and queues its view's change, at most what the kernel allows.
@@ -1065,7 +1099,7 @@ impl Cpu for HostProcessExecutor {
         self.unshare(memory, range.clone());
         self.unborrow(memory, range.clone(), false)?;
         self.unlend(memory, range.clone())?;
-        punch(self.memory(memory).stub.memory(), range.clone()).map_err(host_error)?;
+        self.clear(memory, range.clone())?;
         let target = self.memory_mut(memory);
         target
             .shared

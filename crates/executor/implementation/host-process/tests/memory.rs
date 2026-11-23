@@ -538,6 +538,12 @@ fn a_queue_longer_than_a_page_is_applied_in_rounds() {
 fn a_change_past_the_host_s_mapping_limit_is_refused_up_front() {
     let mut cpu = executor();
     let limit = HOST.get().expect("the host").probe().mapping_limit();
+    // gVisor gives 2^31 - 1, which no test reaches in reasonable time (`WCHP_MAPPING_LIMIT_MAX`).
+    let reachable = knob("WCHP_MAPPING_LIMIT_MAX", 1 << 22);
+    if limit as u64 > reachable {
+        eprintln!("not run: the host's limit of {limit} mappings is past {reachable}");
+        return;
+    }
     let pages = limit as u64 + 8;
     let (memory, thread) = process(&mut cpu, pages);
     let _ = load(&mut cpu, thread, BASE);
