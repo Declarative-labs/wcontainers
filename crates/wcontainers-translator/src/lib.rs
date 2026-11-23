@@ -19,5 +19,5 @@ pub use code::{
 #[cfg(feature = "measure")]
 pub use code::{Omit, translate_in_modules, translate_omitting};
 #[cfg(feature = "native")]
-pub use native::translate_native;
+pub use native::{translate_native, translate_native_for};
 pub use thread::thread_module;

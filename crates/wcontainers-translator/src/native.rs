@@ -36,7 +36,7 @@ struct Held<I> {
 /// has its add placed by `count_placement` (section 4), or counted ahead by the parts it is entered from
 /// (`counted_ahead`), and every exit leaves the count the guest's, so it is exact wherever the piece is entered
 /// or left. The position map keeps the count ahead by the events still to come from the add to each event's
-/// commit point.
+/// commit point. The code is made for the guest's one way and target.
 ///
 /// A part that loops to its own start begins with the test of what one test can settle for all its turns
 /// (`Native::loop_invariant`); where it holds, the code goes to a copy of the part made with that settled, which
@@ -46,13 +46,37 @@ pub fn translate_native<G: Native>(
     address: u64,
     look_ahead: LookAhead,
     exact_replay: bool,
+) -> Option<HostCode>
+where
+    G::Way: Default,
+    G::Target: Default,
+{
+    translate_native_for::<G>(
+        code,
+        address,
+        look_ahead,
+        exact_replay,
+        &G::Way::default(),
+        &G::Target::default(),
+    )
+}
+
+/// [`translate_native`] for a guest with more than one way of running or target: the piece made for `way` and
+/// `target`.
+pub fn translate_native_for<G: Native>(
+    code: &[u8],
+    address: u64,
+    look_ahead: LookAhead,
+    exact_replay: bool,
+    way: &G::Way,
+    target: &G::Target,
 ) -> Option<HostCode> {
     let limit = match look_ahead {
         LookAhead::None => 1,
         LookAhead::Bounded(n) => usize::try_from(n).unwrap_or(usize::MAX).max(1),
         LookAhead::Full => usize::MAX,
     };
-    let held = reach::<G>(code, address, limit);
+    let held = reach::<G>(code, address, limit, way, target);
     if held.is_empty() {
         return None;
     }
@@ -177,6 +201,8 @@ pub fn translate_native<G: Native>(
             G::count(out, total);
         }
         G::carry(
+            way,
+            target,
             part,
             &h.instruction,
             &code[h.at..h.at + h.length],
@@ -208,7 +234,7 @@ pub fn translate_native<G: Native>(
         carry_one(&mut out, k, &mut part, &settled_nothing);
         let next = h.at + h.length;
         if h.goes_on && held.get(k + 1).is_none_or(|n| n.at != next) {
-            G::exit(&mut out, guest(next));
+            G::exit(way, &mut out, guest(next));
         }
     }
     out.finish();
@@ -231,7 +257,7 @@ pub fn translate_native<G: Native>(
         }
         let last = &held[end - 1];
         if last.goes_on {
-            G::exit(&mut out, guest(last.at + last.length));
+            G::exit(way, &mut out, guest(last.at + last.length));
         }
         out.finish();
         let test = DirectExit {
@@ -350,7 +376,13 @@ fn counted_ahead(
 
 /// The instructions of the piece at `address` whose bytes start `code`, in address order: at most `limit`, seen
 /// in the order the code runs, its next instruction first.
-fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Instruction>> {
+fn reach<G: Native>(
+    code: &[u8],
+    address: u64,
+    limit: usize,
+    way: &G::Way,
+    target: &G::Target,
+) -> Vec<Held<G::Instruction>> {
     let mut held = BTreeMap::new();
     let mut later = Vec::new();
     walk::<G>(
@@ -361,6 +393,7 @@ fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Inst
         &BTreeMap::new(),
         &mut held,
         &mut later,
+        (way, target),
     );
     // The code after a branch back is held when it comes back into the piece: the rest of a turn of a loop the
     // piece holds. Code that only leaves (a return after a loop's last turn) starts its own piece.
@@ -374,6 +407,7 @@ fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Inst
             &held,
             &mut more,
             &mut further,
+            (way, target),
         );
         let comes_back = more
             .values()
@@ -389,6 +423,7 @@ fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Inst
 /// Walks from `from` into `found`, at most `limit` instructions, past what `known` holds: fall-through and
 /// direct branch targets inside `code`, but not a call's next instruction; the next instruction of a branch back
 /// goes to `later`.
+#[allow(clippy::too_many_arguments)]
 fn walk<G: Native>(
     code: &[u8],
     address: u64,
@@ -397,6 +432,7 @@ fn walk<G: Native>(
     known: &BTreeMap<usize, Held<G::Instruction>>,
     found: &mut BTreeMap<usize, Held<G::Instruction>>,
     later: &mut Vec<usize>,
+    (way, made_for): (&G::Way, &G::Target),
 ) {
     let mut work = vec![from];
     while let Some(at) = work.pop() {
@@ -407,7 +443,7 @@ fn walk<G: Native>(
             continue;
         };
         let length = usize::from(length);
-        let route = G::route(&instruction);
+        let route = G::route(way, &instruction, made_for);
         let flow = G::flow(&instruction);
         let goes_on = match route {
             Route::Trap => false,

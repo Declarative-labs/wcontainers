@@ -59,8 +59,13 @@ pub enum NativeClass {
 
 /// A guest whose instructions the native output carries over to the same architecture.
 pub trait Native: Guest {
+    /// How translated code reaches guest memory, the thread area and the inside; part of the cache key.
+    type Way: Copy + Eq + core::hash::Hash;
+    /// What the code is made for besides the way: what the probe found of the host and the features the process
+    /// was told of; part of the cache key.
+    type Target;
     /// The route of one decoded instruction.
-    fn route(i: &Self::Instruction) -> Route;
+    fn route(way: &Self::Way, i: &Self::Instruction, target: &Self::Target) -> Route;
     /// The class of a hook, given the constant its meaning passes as the first argument where it passes one
     /// (the float hook's operation).
     fn hook_class(hook: Self::Hook, first: Option<i64>) -> NativeClass;
@@ -78,7 +83,10 @@ pub trait Native: Guest {
     /// instructions of its straight-line part before it (`before`, oldest first, with their guest addresses)
     /// and what a test before its loop settled (`invariant`). Its spans start at the instruction, before its
     /// commit point, with the count already placed.
+    #[allow(clippy::too_many_arguments)]
     fn carry(
+        way: &Self::Way,
+        target: &Self::Target,
         before: &[(u64, Self::Instruction)],
         i: &Self::Instruction,
         bytes: &[u8],
@@ -89,9 +97,9 @@ pub trait Native: Guest {
     /// Writes the count's add of `events` counted events.
     fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
-    fn call(code: &mut HostCode, call: InsideCall);
+    fn call(way: &Self::Way, code: &mut HostCode, call: InsideCall);
     /// Writes the exit to the direct guest `target` after the current instruction's commit point.
-    fn exit(code: &mut HostCode, target: u64);
+    fn exit(way: &Self::Way, code: &mut HostCode, target: u64);
     /// Points a direct exit of `code` at host offset `to` of the same code, as a loader links one; false where
     /// its branch cannot reach.
     fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool;

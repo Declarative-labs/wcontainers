@@ -312,7 +312,7 @@ mod hosted {
             left_out_cases += collided.len() as u64;
             // Every word routed for float status, with every register in its fields (words_of).
             let float_status = swept(form, &drawn, seed, |w| {
-                !left_out(form, w) && Arm64::route(&decode(w)) == Route::FloatStatus
+                !left_out(form, w) && Arm64::route(&(), &decode(w), &()) == Route::FloatStatus
             });
             float_status_cases += float_status.len() as u64;
             for c in &collided {

@@ -149,7 +149,7 @@ pub(crate) fn aligned_bases(part: &[(u64, I)]) -> AlignedBases {
         .fold(Registers::NONE, |w, (_, i)| w.union(touched(i).1));
     let mut bases: Vec<(Register, u32)> = Vec::new();
     for (_, i) in part {
-        if !matches!(Arm64::route(i), Route::Copy | Route::Split) || !one_element(i) {
+        if !matches!(Arm64::route(&(), i, &()), Route::Copy | Route::Split) || !one_element(i) {
             continue;
         }
         let Some(m) = i.memory_access() else {
@@ -244,7 +244,7 @@ impl Tail {
             code.push(&w.to_le_bytes());
         }
         if let Some(call) = self.call {
-            Arm64::call(code, call);
+            Arm64::call(&(), code, call);
         }
         if let Some(back) = self.back {
             let here = code.offset() as i64;
@@ -275,7 +275,7 @@ impl Out<'_> {
     }
 
     fn call(&mut self, call: InsideCall) {
-        Arm64::call(self.code, call);
+        Arm64::call(&(), self.code, call);
     }
 
     /// A branch to be pointed at code placed later: written with offset 0, patched by [`Self::land`].
@@ -402,7 +402,8 @@ fn substitute(word: u32, from: &[Register], to: &[Register]) -> u32 {
         })
         .find(|&w| {
             let i = decode(w);
-            Arm64::route(&i) == Arm64::route(&original) && touched(&i) == (swap(uses), swap(defs))
+            Arm64::route(&(), &i, &()) == Arm64::route(&(), &original, &())
+                && touched(&i) == (swap(uses), swap(defs))
         })
         .unwrap_or_else(|| panic!("no stand-in for x{from:?} in {word:#010x}"))
 }
@@ -416,7 +417,7 @@ struct StandIn {
 
 /// The host code of one guest instruction (docs/native.md section 3.4).
 pub(crate) fn carry(i: &I, word: u32, address: u64, aligned: &AlignedBases, code: &mut HostCode) {
-    let route = Arm64::route(i);
+    let route = Arm64::route(&(), i, &());
     let (uses, defs) = touched(i);
     let named = |r: Register| uses.union(defs).has_bit(bit(r));
     let mut out = Out {
@@ -943,7 +944,7 @@ pub(crate) fn exit(code: &mut HostCode, target: u64, commit: Option<Resume>) {
         if let Some(resume) = commit {
             code.after(resume);
         }
-        Arm64::call(code, InsideCall::Exit);
+        Arm64::call(&(), code, InsideCall::Exit);
         return;
     }
     let moves = address_words(SCRATCH, target, Holds::EntrySlot);

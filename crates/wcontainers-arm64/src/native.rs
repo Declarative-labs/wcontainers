@@ -53,7 +53,12 @@ fn structure_bytes(structure: u8, registers: u8, element: u8, whole: bool, singl
 }
 
 impl Native for Arm64 {
-    fn route(i: &I) -> Route {
+    /// One way: the code is the same in every way of running.
+    type Way = ();
+    /// Nothing beyond the instruction: no host's probe or process's offer changes a route.
+    type Target = ();
+
+    fn route(_: &(), i: &I, _: &()) -> Route {
         match *i {
             I::AddSub { .. }
             | I::AddSubCarry { .. }
@@ -215,6 +220,8 @@ impl Native for Arm64 {
     }
 
     fn carry(
+        _: &(),
+        _: &(),
         before: &[(u64, I)],
         i: &I,
         bytes: &[u8],
@@ -234,11 +241,11 @@ impl Native for Arm64 {
         code.count(&add.to_le_bytes(), events);
     }
 
-    fn call(code: &mut HostCode, call: InsideCall) {
+    fn call(_: &(), code: &mut HostCode, call: InsideCall) {
         code.push(&carry::call_word(call).to_le_bytes());
     }
 
-    fn exit(code: &mut HostCode, target: u64) {
+    fn exit(_: &(), code: &mut HostCode, target: u64) {
         carry::exit(code, target, None);
     }
 
@@ -332,7 +339,7 @@ impl Native for Arm64 {
                 register: SystemRegister::Fpsr,
                 ..
             } => Stopping::FloatStatusRead,
-            _ if Self::route(i) == Route::Trap => Stopping::Illegal,
+            _ if Self::route(&(), i, &()) == Route::Trap => Stopping::Illegal,
             _ => Stopping::Plain,
         }
     }

@@ -807,7 +807,11 @@ pub fn edge(case: &Case) -> Option<Case> {
         0 => crossing,
         1 => crossing | tag & !(1 << (TAG_LOW - 1)),
         2 => original | tag | 1 << (TAG_LOW - 1),
-        _ if matches!(Arm64::route(&i), Route::Aligned | Route::Exclusive) => {
+        _ if matches!(
+            Arm64::route(&(), &i, &()),
+            Route::Aligned | Route::Exclusive
+        ) =>
+        {
             original + within.max(1)
         }
         _ => crossing,

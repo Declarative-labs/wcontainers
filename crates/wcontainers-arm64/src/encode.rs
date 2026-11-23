@@ -906,7 +906,7 @@ fn moves_of_x0() -> FloatStatusMoves {
     } = *MSR_RT;
     let routed = |word| {
         let instruction = crate::decode_forms::decode(word, msr)?;
-        (<Arm64 as Native>::route(&instruction) == Route::FloatStatus)
+        (<Arm64 as Native>::route(&(), &instruction, &()) == Route::FloatStatus)
             .then(|| <Arm64 as Native>::stopping(&instruction, 0) == Stopping::FloatStatusWrite)
     };
     let (mut status, mut control) = (Vec::new(), Vec::new());
@@ -934,7 +934,7 @@ fn moves_of_x0() -> FloatStatusMoves {
         "the reads of the registers the writes name are presented"
     );
     let read_routed = crate::decode_forms::decode(read_fpsr, mrs)
-        .is_some_and(|i| <Arm64 as Native>::route(&i) == Route::FloatStatus);
+        .is_some_and(|i| <Arm64 as Native>::route(&(), &i, &()) == Route::FloatStatus);
     assert!(read_routed, "the read of the status register is routed");
     FloatStatusMoves {
         read_fpsr,

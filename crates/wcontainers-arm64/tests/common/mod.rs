@@ -29,7 +29,7 @@ pub fn words_of(form: &forms::Form, draws: u64, rng: &mut fastrand::Rng) -> Vec<
     let float_status: Vec<u32> = words
         .iter()
         .copied()
-        .filter(|&w| Arm64::route(&decode(w)) == Route::FloatStatus)
+        .filter(|&w| Arm64::route(&(), &decode(w), &()) == Route::FloatStatus)
         .collect();
     for word in float_status {
         for other in every_register(form, word) {

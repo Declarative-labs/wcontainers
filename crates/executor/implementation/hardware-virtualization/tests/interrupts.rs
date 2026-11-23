@@ -157,7 +157,7 @@ mod hosted {
             let carried = |state: &GuestState| {
                 look_ahead == LookAhead::None
                     || word_at(words, state.pc)
-                        .is_none_or(|&word| Arm64::route(&decode(word)) != Route::Nothing)
+                        .is_none_or(|&word| Arm64::route(&(), &decode(word), &()) != Route::Nothing)
             };
             if let Some(k) = (0..boundaries.len()).find(|&k| !reached[k] && carried(&boundaries[k]))
             {
