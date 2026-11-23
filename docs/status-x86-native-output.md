@@ -82,8 +82,7 @@ probes).
    descriptor reads, `wrfsbase`/`wrgsbase`, the reciprocals, the XSAVE family, the partial-write and
    undefined-result forms, each a `Question` with `native::question` giving it and native layer 1 comparing it with
    the meaning (the forms layer 1 leaves out by a test of their own, as run 6's for `cpuid`). Then x87_answer.rs
-   and the unmasked mode; the differential test of `Condition::holds` against the meaning's WebAssembly and P's
-   table.
+   and the unmasked mode, and P's flags table. (`Condition::holds` against the meaning: done in run 6.)
 4. The trait's `retarget` (plan 9) in place of `link`, with ARM64's; x86's is built (run 4) and used by the native
    blobs, and `link` writes its patch.
 5. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
@@ -131,6 +130,9 @@ probes).
   failures as runs 3 to 5; 88,693 cases answered by the inside, of which the 16,000 transcendental runs (8 forms,
   1,000 cases, uncounted and counted) had `answer`'s outcome equal to the meaning's; 547 s.
 - `the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64`: 154 cases, equal.
+- `a_condition_holds_as_the_meaning_says_x86_64` (new, tests/layer1.rs: `setcc al` under WebAssembly for the 16
+  conditions on all 32 combinations of CF, PF, ZF, SF and OF against `Condition::holds`): 512 cases, equal; with
+  `holds` reading ZF for parity in the remote copy it fails ("Parity with 0x4").
 - The literal check now reports 10,623 lines over the workspace, among them strings (error messages) in carry.rs and
   the test crate's native.rs that earlier runs wrote; none in a line this run wrote. Left for the run that takes
   the literal check up again.
