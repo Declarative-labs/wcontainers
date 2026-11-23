@@ -1332,12 +1332,31 @@ tessellation_of(const nir_shader *nir, uint32_t points_in)
    return t;
 }
 
+/* A read of a control point at a constant index past the input patch's points, which OpenGL
+ * leaves undefined (the program's arrays are as long as the most points a patch may have): zero,
+ * as the stage helper holds only the patch's own points. */
+static bool
+missing_point_reads_zero(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const uint32_t *points = data;
+   if (intr->intrinsic != nir_intrinsic_load_per_vertex_input)
+      return false;
+   nir_src *point = nir_get_io_arrayed_index_src(intr);
+   if (!nir_src_is_const(*point) || nir_src_as_uint(*point) < *points)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def_replace(&intr->def, nir_imm_zero(b, intr->def.num_components, intr->def.bit_size));
+   return true;
+}
+
 bool
 wc_nir_flatten(struct nir_shader *nir, uint32_t points_in, struct wc_flat *out)
 {
    memset(out, 0, sizeof(*out));
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
    wc_nir_lower_io(nir);
+   if (nir->info.stage == MESA_SHADER_TESS_CTRL || nir->info.stage == MESA_SHADER_TESS_EVAL)
+      nir_shader_intrinsics_pass(nir, missing_point_reads_zero, nir_metadata_control_flow, &points_in);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
    nir_rematerialize_derefs_in_use_blocks_impl(impl);
