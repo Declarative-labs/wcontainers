@@ -108,6 +108,7 @@ fn main() -> windows::core::Result<()> {
     };
     let (device, context): (ID3D11Device, ID3D11DeviceContext) =
         (device.unwrap(), context.unwrap());
+    let removed = || code(unsafe { device.GetDeviceRemovedReason() });
 
     struct Tex {
         w: u32,
@@ -1001,8 +1002,7 @@ fn main() -> windows::core::Result<()> {
             unsafe { context.Unmap(&s, 0) };
             unsafe { context.CopyResource(&t, &s) };
             print("written by the CPU", &t, texel);
-            let removed = unsafe { device.GetDeviceRemovedReason() };
-            println!("removed: {:#010x}", code(removed));
+            println!("removed: {:#010x}", removed());
         }
         "atomics" => {
             // Each texel gets four threads' operations, which commute, so the result is fixed.
@@ -1547,8 +1547,7 @@ fn main() -> windows::core::Result<()> {
                     );
                 }
             }
-            let removed = code(unsafe { device.GetDeviceRemovedReason() });
-            println!("clear view removed {removed:#010x}");
+            println!("clear view removed {:#010x}", removed());
         }
         "cs_min_lod" => {
             // An 8x8 chain of four levels; texel (x, y) of level l is (l * 60, x * 32, y * 32, 255).
@@ -2812,8 +2811,11 @@ fn main() -> windows::core::Result<()> {
                     ..Default::default()
                 })
                 .collect();
-            let mut layout = None;
-            let r = unsafe { device.CreateInputLayout(&elements, &bytecode, Some(&mut layout)) };
+            let (mut layout, mut shader) = (None, None);
+            let r = unsafe {
+                device.CreateVertexShader(&bytecode, None, Some(&mut shader))?;
+                device.CreateInputLayout(&elements, &bytecode, Some(&mut layout))
+            };
             println!("CreateInputLayout of 32 slots {:#010x}", code(r));
             let mut buffers = Vec::new();
             for i in 0..SLOTS {
@@ -2825,8 +2827,6 @@ fn main() -> windows::core::Result<()> {
             let mut strides = [size_of::<f32>() as u32; SLOTS as usize];
             strides[0] = 2 * size_of::<f32>() as u32;
             let offsets = [0; SLOTS as usize];
-            let mut shader = None;
-            unsafe { device.CreateVertexShader(&bytecode, None, Some(&mut shader))? };
             let passed = ps(
                 "float4 main(float4 p : SV_Position, float4 c : C) : SV_Target {
                     return c;
@@ -2851,8 +2851,10 @@ fn main() -> windows::core::Result<()> {
                 context.Draw(3, 0);
                 context.OMSetRenderTargets(None, None);
             }
-            let r = unsafe { device.GetDeviceRemovedReason() };
-            println!("no input layout: GetDeviceRemovedReason {:#010x}", code(r));
+            println!(
+                "no input layout: GetDeviceRemovedReason {:#010x}",
+                removed()
+            );
             print("no input layout", &t, 16);
             let t = target()?;
             let rt = rtv(&t);
@@ -2872,9 +2874,6 @@ fn main() -> windows::core::Result<()> {
                 context.PSSetShader(passed.as_ref(), None);
                 context.Draw(3, 0);
                 context.OMSetRenderTargets(None, None);
-            }
-            print("32 slots", &t, 16);
-            unsafe {
                 context.IASetInputLayout(None);
                 let none: [Option<ID3D11Buffer>; SLOTS as usize] = Default::default();
                 context.IASetVertexBuffers(
@@ -2885,6 +2884,7 @@ fn main() -> windows::core::Result<()> {
                     Some(offsets.as_ptr()),
                 );
             }
+            print("32 slots", &t, 16);
             for count in [15, 30, 31] {
                 let decl: String = (0..count)
                     .map(|i| format!("float4 v{i} : V{i}; "))
@@ -3464,10 +3464,7 @@ fn main() -> windows::core::Result<()> {
                     }
                 }
             }
-            println!(
-                "removed {:#010x}",
-                code(unsafe { device.GetDeviceRemovedReason() })
-            );
+            println!("removed {:#010x}", removed());
         }
         "compare_colour" => {
             // Comparisons and gathers with comparison through views of colour textures of the two
@@ -3615,10 +3612,7 @@ fn main() -> windows::core::Result<()> {
                     print(&format!("filtered {name} {round}"), &filtered, 16);
                     print(&format!("{name} {round} drawn"), &target, 4);
                 }
-                println!(
-                    "{name} removed {:#010x}",
-                    code(unsafe { device.GetDeviceRemovedReason() })
-                );
+                println!("{name} removed {:#010x}", removed());
             }
         }
         "deep" => {
@@ -4152,7 +4146,7 @@ fn main() -> windows::core::Result<()> {
                 None,
             )?;
             let rt = rtv(&target);
-            let mut raster = None;
+            let (mut raster, mut always) = (None, None);
             let desc = D3D11_RASTERIZER_DESC {
                 FillMode: D3D11_FILL_SOLID,
                 CullMode: D3D11_CULL_NONE,
@@ -4160,15 +4154,16 @@ fn main() -> windows::core::Result<()> {
                 DepthClipEnable: true.into(),
                 ..Default::default()
             };
-            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
-            let mut always = None;
             let dss = D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
                 DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
                 DepthFunc: D3D11_COMPARISON_ALWAYS,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            unsafe {
+                device.CreateRasterizerState(&desc, Some(&mut raster))?;
+                device.CreateDepthStencilState(&dss, Some(&mut always))?;
+            }
             let c = constants([0.25, 0.0, 0.0, 0.0]);
             for (name, typeless, format, texel) in [
                 ("d16", DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_D16_UNORM, 2),
@@ -4195,8 +4190,8 @@ fn main() -> windows::core::Result<()> {
                     ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
                     ..Default::default()
                 };
-                unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
                 unsafe {
+                    device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))?;
                     viewport(16, 4);
                     context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
                     context.ClearDepthStencilView(
@@ -4244,7 +4239,6 @@ fn main() -> windows::core::Result<()> {
                 ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
             let mut always = None;
             let dss = D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
@@ -4252,7 +4246,10 @@ fn main() -> windows::core::Result<()> {
                 DepthFunc: D3D11_COMPARISON_ALWAYS,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            unsafe {
+                device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))?;
+                device.CreateDepthStencilState(&dss, Some(&mut always))?;
+            }
             let raster = |clip: bool| {
                 let desc = D3D11_RASTERIZER_DESC {
                     FillMode: D3D11_FILL_SOLID,
@@ -4394,7 +4391,7 @@ fn main() -> windows::core::Result<()> {
                 None,
             )?;
             let rt = rtv(&target);
-            let mut raster = None;
+            let (mut raster, mut always) = (None, None);
             let desc = D3D11_RASTERIZER_DESC {
                 FillMode: D3D11_FILL_SOLID,
                 CullMode: D3D11_CULL_NONE,
@@ -4402,15 +4399,16 @@ fn main() -> windows::core::Result<()> {
                 DepthClipEnable: true.into(),
                 ..Default::default()
             };
-            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
-            let mut always = None;
             let dss = D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
                 DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
                 DepthFunc: D3D11_COMPARISON_ALWAYS,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            unsafe {
+                device.CreateRasterizerState(&desc, Some(&mut raster))?;
+                device.CreateDepthStencilState(&dss, Some(&mut always))?;
+            }
             for name in ["points", "lines", "patches", "outline"] {
                 let depth = make(
                     &Tex {
@@ -4428,8 +4426,8 @@ fn main() -> windows::core::Result<()> {
                     ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
                     ..Default::default()
                 };
-                unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
                 unsafe {
+                    device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))?;
                     viewport(16, 8);
                     context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
                     context.ClearDepthStencilView(
@@ -4523,7 +4521,6 @@ fn main() -> windows::core::Result<()> {
                 AntialiasedLineEnable: true.into(),
                 ..Default::default()
             };
-            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
             let mut blend_desc = D3D11_BLEND_DESC::default();
             blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
                 BlendEnable: true.into(),
@@ -4536,7 +4533,6 @@ fn main() -> windows::core::Result<()> {
                 RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
             };
             let mut blend = None;
-            unsafe { device.CreateBlendState(&blend_desc, Some(&mut blend))? };
             // Vertices 0 to 5, cut, then the strip's three; drawn from base vertex 0.
             let strip: [u16; 10] = [0, 1, 2, 3, 4, 5, u16::MAX, 8, 9, 10];
             let index_desc = D3D11_BUFFER_DESC {
@@ -4550,8 +4546,10 @@ fn main() -> windows::core::Result<()> {
                 ..Default::default()
             };
             let mut indices = None;
-            unsafe { device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))? };
             unsafe {
+                device.CreateRasterizerState(&desc, Some(&mut raster))?;
+                device.CreateBlendState(&blend_desc, Some(&mut blend))?;
+                device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))?;
                 context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                     TopLeftX: 6.0,
                     TopLeftY: 4.0,
@@ -4586,8 +4584,7 @@ fn main() -> windows::core::Result<()> {
         }
         _ => println!("no case {case:?}"),
     }
-    let r = unsafe { device.GetDeviceRemovedReason() };
-    println!("GetDeviceRemovedReason {:#010x}", code(r));
+    println!("GetDeviceRemovedReason {:#010x}", removed());
     Ok(())
 }
 
