@@ -6,7 +6,7 @@
 use std::process::ExitCode;
 
 /// A program for the conversion to run on, so that none of it is left out of the build.
-const PROGRAM: &[u8] = include_bytes!("../tests/own/cs_alpha.dxbc");
+const PROGRAM: &[u8] = include_bytes!("../tests/own/cs_atomics.dxbc");
 
 /// Converts `PROGRAM` with the default variant; fails when it did not convert.
 fn main() -> ExitCode {
