@@ -6093,10 +6093,13 @@ dependencies = [
 name = "wcontainers-webassembly-engine-wasmedge"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "thiserror 2.0.21",
  "wasm-encoder 0.263.0",
  "wasmedge-sdk",
  "wasmedge-sys",
+ "wasmparser 0.263.0",
+ "wat",
  "wcontainers-webassembly-engine",
  "wcontainers-webassembly-engine-conformance",
 ]
