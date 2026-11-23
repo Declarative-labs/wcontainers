@@ -248,11 +248,17 @@ fn main() -> windows::core::Result<()> {
         };
         v
     };
+    // The vertex and pixel shader models of the device's level.
+    let models = match level {
+        D3D_FEATURE_LEVEL_10_0 => (s!("vs_4_0"), s!("ps_4_0")),
+        D3D_FEATURE_LEVEL_10_1 => (s!("vs_4_1"), s!("ps_4_1")),
+        _ => (s!("vs_5_0"), s!("ps_5_0")),
+    };
     let vs = |src: &str| {
         let mut out = None;
         unsafe {
             device
-                .CreateVertexShader(&compile(src, s!("vs_5_0")), None, Some(&mut out))
+                .CreateVertexShader(&compile(src, models.0), None, Some(&mut out))
                 .unwrap()
         };
         out
@@ -261,7 +267,7 @@ fn main() -> windows::core::Result<()> {
         let mut out = None;
         unsafe {
             device
-                .CreatePixelShader(&compile(src, s!("ps_5_0")), None, Some(&mut out))
+                .CreatePixelShader(&compile(src, models.1), None, Some(&mut out))
                 .unwrap()
         };
         out
@@ -3671,7 +3677,11 @@ fn main() -> windows::core::Result<()> {
             let samples = ps("Texture2DMS<float4, 4> t : register(t0);
                 float4 main(float4 pos : SV_Position) : SV_Target {
                     uint2 p = uint2(pos.xy);
-                    return t.Load(int2(p.x / 4, p.y), p.x % 4);
+                    int2 q = int2(p.x / 4, p.y);
+                    uint s = p.x % 4;
+                    // Shader model 4.0 takes a sample index only as a literal.
+                    return s == 0 ? t.Load(q, 0) : s == 1 ? t.Load(q, 1)
+                        : s == 2 ? t.Load(q, 2) : t.Load(q, 3);
                 }");
             let out = make(
                 &Tex {
@@ -3683,7 +3693,21 @@ fn main() -> windows::core::Result<()> {
                 },
                 None,
             )?;
-            let (rt, rt_out) = (rtv(&drawn), rtv(&out));
+            // A 32-bit float target drawn with 4 samples and resolved (by a draw where the back end
+            // resolves no 32-bit float format): values whose averages are exact.
+            let float_at = |samples, bind| Tex {
+                w: 4,
+                h: 4,
+                format: DXGI_FORMAT_R32_FLOAT,
+                samples,
+                bind,
+            };
+            let floats = make(&float_at(4, D3D11_BIND_RENDER_TARGET), None)?;
+            let floats_resolved = make(&float_at(1, D3D11_BIND_SHADER_RESOURCE), None)?;
+            let float_value = ps("float4 main(float4 pos : SV_Position) : SV_Target {
+                    return float4(0.75 + pos.x, 0, 0, 1);
+                }");
+            let (rt, rt_out, rt_floats) = (rtv(&drawn), rtv(&out), rtv(&floats));
             unsafe {
                 viewport(4, 4);
                 context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0, 0.0, 0.125, 1.0]);
@@ -3694,7 +3718,24 @@ fn main() -> windows::core::Result<()> {
                 context.OMSetRenderTargets(None, None);
                 context.CopyResource(&copied, &drawn);
                 context.CopySubresourceRegion(&region, 0, 0, 0, 0, &drawn, 0, None);
+                context.ClearRenderTargetView(rt_floats.as_ref().unwrap(), &[-2.0, 0.0, 0.0, 0.0]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt_floats)), None);
+                context.PSSetShader(float_value.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+                context.ResolveSubresource(&floats_resolved, 0, &floats, 0, DXGI_FORMAT_R32_FLOAT);
             }
+            print_rows(
+                "resolved R32_FLOAT",
+                &floats_resolved,
+                4,
+                &|row: &[u8]| {
+                    row.chunks(4)
+                        .map(|c| format!("{:08x}", u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                },
+            );
             for (what, t) in [("drawn", &drawn), ("copied", &copied), ("region", &region)] {
                 unsafe {
                     viewport(16, 4);

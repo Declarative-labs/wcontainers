@@ -554,14 +554,29 @@ fn format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_short
     let off = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
     let env = [(FEATURES_OFF, off)];
     no_device_above(UNTIERED_LEVEL, "ours-no16", &env);
-    format_support_compared(UNTIERED_LEVEL, "ours-no16", &env, &[]);
+    format_support_compared(UNTIERED_LEVEL, "ours-no16", &env, &TWINS_UNBLENDED);
 }
 
 /// The highest level a back end without `texture-formats-tier1`, 16-bit norm or float32-filterable
-/// meets: 10_0 requires resolves of multisampled 32-bit float and normalised targets that it cannot
-/// draw (Gap list).
+/// meets: 10_1 requires 4-sample loads of normalised targets it holds as integer twins, which are not
+/// multisampled, and 8-sample targets, which WebGPU never draws (Gap list).
 #[cfg(not(feature = "webgl"))]
-const UNTIERED_LEVEL: &str = "9_3";
+const UNTIERED_LEVEL: &str = "10_0";
+
+/// The 16-bit unsigned normalised formats are blended by the RTX 3080 at `UNTIERED_LEVEL`, where
+/// the tables do not require it; held as their integer twins they are not (`BlendInShader` is not
+/// built for them).
+#[cfg(not(feature = "webgl"))]
+const TWINS_UNBLENDED: [(DXGI_FORMAT, i32, i32, &str); 3] = {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    let blend = D3D11_FORMAT_SUPPORT_BLENDABLE.0;
+    let why = "blending, optional at 10_0: not served for integer twins";
+    [
+        (DXGI_FORMAT_R16G16B16A16_UNORM, blend, 0, why),
+        (DXGI_FORMAT_R16G16_UNORM, blend, 0, why),
+        (DXGI_FORMAT_R16_UNORM, blend, 0, why),
+    ]
+};
 
 /// Ours makes no device of a level above `highest` with the features of `env` off, as it does not
 /// meet the level's requirements (`required::LEVEL_REQUIRED`).
@@ -593,14 +608,15 @@ fn untiered(more: &[wgpu::Features]) -> String {
 }
 
 /// The same without `texture-formats-tier1`: no level above `UNTIERED_LEVEL` is met, and there
-/// the formats are reported as real Direct3D reports them.
+/// the formats are reported as real Direct3D reports them, `R32_FLOAT`'s multisampled targets
+/// resolved by a draw (`ResolveByDraw`).
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn format_support_without_texture_formats_tier1_as_direct3d_reports_it_but_the_named_shortfalls() {
     let off = untiered(&[]);
     let env = [(FEATURES_OFF, off.as_str())];
     no_device_above(UNTIERED_LEVEL, "ours-untiered", &env);
-    format_support_compared(UNTIERED_LEVEL, "ours-untiered", &env, &[]);
+    format_support_compared(UNTIERED_LEVEL, "ours-untiered", &env, &TWINS_UNBLENDED);
 }
 
 /// The same where the back end cannot filter the 32-bit float formats either (a browser without
@@ -611,7 +627,7 @@ fn format_support_without_float32_filterable_as_direct3d_reports_it_but_the_name
     let off = untiered(&[wgpu::Features::FLOAT32_FILTERABLE]);
     let env = [(FEATURES_OFF, off.as_str())];
     no_device_above(UNTIERED_LEVEL, "ours-unfiltered", &env);
-    format_support_compared(UNTIERED_LEVEL, "ours-unfiltered", &env, &[]);
+    format_support_compared(UNTIERED_LEVEL, "ours-unfiltered", &env, &TWINS_UNBLENDED);
 }
 
 /// Gathers through point and linear samplers, samples and generated mips of the 32-bit float
@@ -909,6 +925,19 @@ fn a_depth_buffer_larger_than_its_target_as_direct3d_does() {
 #[test]
 fn copies_between_multisampled_textures_as_direct3d_does() {
     case("msaa_copy");
+}
+
+/// The same on a 10_0 device without `texture-formats-tier1`, where WebGPU resolves no 32-bit
+/// float target, so `R32_FLOAT`'s resolve is a draw averaging the samples (`ResolveByDraw`).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn copies_and_float_resolves_of_multisampled_textures_without_texture_formats_tier1_as_direct3d_does()
+ {
+    let off = untiered(&[]);
+    let env = [(FEATURES_OFF, off.as_str())];
+    let errors = case_args(&["msaa_copy", UNTIERED_LEVEL], "ours-untiered", &env);
+    let route = wcontainers_gpu::SlowPath::ResolveByDraw.reason();
+    assert!(errors.contains(route), "{errors}");
 }
 
 #[test]
