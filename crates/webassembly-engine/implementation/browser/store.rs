@@ -6,7 +6,7 @@ use std::sync::Arc;
 use js_sys::Function;
 use js_sys::WebAssembly::{Global, Instance, Memory, Module, Table};
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_encoder::ValType;
+use wasm_encoder::{RefType, ValType};
 use wcontainers_webassembly_engine::AddressType;
 use wcontainers_webassembly_engine::global::{
     GlobalStore, Mutability, ReadGlobalError, Value, WriteGlobalError,
@@ -20,7 +20,7 @@ use wcontainers_webassembly_engine::table::{
 
 use crate::adapter::{
     self, GLOBAL, GLOBAL_VALUE_TYPES, GUEST_MEMORY, GUEST_OFFSET, LENGTH, NAMESPACE, OWN_ADDRESS,
-    READ, SCRATCH_MEMORY, WRITE, set_slot, slot,
+    READ, SCRATCH_MEMORY, TABLE, WRITE, set_slot, slot,
 };
 use crate::{BrowserEngine, BrowserSharedMemory, glue, new_id};
 
@@ -128,7 +128,7 @@ impl<HostContext> MemoryStore for BrowserEngine<HostContext> {
     }
 
     fn grow_memory(&mut self, memory: &BrowserMemory, pages: u64) -> Result<(), GrowMemoryError> {
-        glue::grow_memory(&memory.memory, pages as f64)
+        glue::grow_memory(&memory.memory, pages as f64, memory.memory64)
             .then_some(())
             .ok_or(GrowMemoryError)
     }
@@ -174,7 +174,7 @@ impl<HostContext> MemoryStore for BrowserEngine<HostContext> {
     fn to_shared_memory(&self, memory: &BrowserMemory) -> Option<BrowserSharedMemory> {
         glue::is_shared(&memory.memory).then(|| {
             let registration = new_id(glue::forget_shared_memory);
-            glue::register_shared_memory(registration.id, &memory.memory);
+            glue::register_shared_memory(registration.registered.id, &memory.memory);
             BrowserSharedMemory {
                 registration: Arc::new(registration),
                 memory64: memory.memory64,
@@ -183,43 +183,90 @@ impl<HostContext> MemoryStore for BrowserEngine<HostContext> {
     }
 
     fn add_shared_memory(&mut self, memory: &BrowserSharedMemory) -> BrowserMemory {
-        let object = glue::registered_shared_memory(memory.registration.id)
+        let object = glue::registered_shared_memory(memory.registration.registered.id)
             .expect("a shared memory is added in a worker it was made in or posted to");
         memory_of(object, Some(memory.memory64))
     }
 }
 
+/// A table: the JavaScript API's object, its address type, and whether its elements are `funcref`.
+#[derive(Clone)]
+pub struct BrowserTable {
+    table: Table,
+    table64: bool,
+    functions: bool,
+}
+
+/// Returns the object the JavaScript API knows the table by.
+pub fn table_object(table: &BrowserTable) -> &Table {
+    &table.table
+}
+
+thread_local! {
+    /// A module for each address type that instantiates only with a `funcref` table of it, by whether 64-bit.
+    static FUNCTION_TABLE: [OnceCell<Module>; 2] = const { [const { OnceCell::new() }; 2] };
+}
+
+/// Describes a table, finding whether its elements are `funcref` by whether it instantiates a module importing one.
+pub fn table_of(table: Table) -> BrowserTable {
+    let table64 = glue::is_table64(&table);
+    let functions = FUNCTION_TABLE.with(|modules| {
+        let module = modules[usize::from(table64)].get_or_init(|| {
+            glue::compile(&adapter::function_table(table64))
+                .expect("a table access module is valid")
+        });
+        glue::instantiate_with(module, NAMESPACE, TABLE, &table).is_some()
+    });
+    BrowserTable {
+        table,
+        table64,
+        functions,
+    }
+}
+
 impl<HostContext> TableStore for BrowserEngine<HostContext> {
-    type TableAddress = Table;
+    type TableAddress = BrowserTable;
 
     type AllocateTableError = JsValue;
-    fn allocate_table(&mut self, table_type: TableType) -> Result<Table, JsValue> {
-        glue::new_table(
-            table_type.limits.minimum as f64,
-            table_type.limits.maximum.map(|maximum| maximum as f64),
-            table_type.address_type == AddressType::I64,
-        )
+    fn allocate_table(&mut self, table_type: TableType) -> Result<BrowserTable, JsValue> {
+        let table64 = table_type.address_type == AddressType::I64;
+        Ok(BrowserTable {
+            table: glue::new_table(
+                table_type.limits.minimum as f64,
+                table_type.limits.maximum.map(|maximum| maximum as f64),
+                table64,
+            )?,
+            table64,
+            functions: true,
+        })
     }
 
-    fn count_table_elements(&self, table: &Table) -> u64 {
-        glue::table_length(table) as u64
+    fn count_table_elements(&self, table: &BrowserTable) -> u64 {
+        glue::table_length(&table.table) as u64
     }
 
-    fn grow_table(&mut self, table: &Table, elements: u64) -> Result<(), GrowTableError> {
-        glue::grow_table(table, elements as f64)
+    fn grow_table(&mut self, table: &BrowserTable, elements: u64) -> Result<(), GrowTableError> {
+        glue::grow_table(&table.table, elements as f64, table.table64)
             .then_some(())
             .ok_or(GrowTableError)
     }
 
-    fn read_table(&self, table: &Table, index: u64) -> Result<Option<Function>, ReadTableError> {
-        if index >= self.count_table_elements(table) {
-            return Err(ReadTableError::IndexOutsideTable);
-        }
-        let element = glue::table_element(table, index as f64);
+    fn read_table(
+        &self,
+        table: &BrowserTable,
+        index: u64,
+    ) -> Result<Option<Function>, ReadTableError> {
+        let element = if table.functions {
+            glue::table_element(&table.table, index as f64, table.table64)
+        } else {
+            JsValue::UNDEFINED
+        };
         if element.is_null() {
             Ok(None)
         } else if glue::is_function(&element) {
             Ok(Some(element.unchecked_into()))
+        } else if index >= self.count_table_elements(table) {
+            Err(ReadTableError::IndexOutsideTable)
         } else {
             Err(ReadTableError::ElementNotFunction)
         }
@@ -227,17 +274,25 @@ impl<HostContext> TableStore for BrowserEngine<HostContext> {
 
     fn write_table(
         &mut self,
-        table: &Table,
+        table: &BrowserTable,
         index: u64,
         function: Option<&Function>,
     ) -> Result<(), WriteTableError> {
-        if index >= self.count_table_elements(table) {
-            return Err(WriteTableError::IndexOutsideTable);
-        }
         let null = JsValue::NULL;
-        glue::set_table_element(table, index as f64, function.map_or(&null, AsRef::as_ref))
-            .then_some(())
-            .ok_or(WriteTableError::ReferenceTypeMismatch)
+        if table.functions
+            && glue::set_table_element(
+                &table.table,
+                index as f64,
+                function.map_or(&null, AsRef::as_ref),
+                table.table64,
+            )
+        {
+            Ok(())
+        } else if index >= self.count_table_elements(table) {
+            Err(WriteTableError::IndexOutsideTable)
+        } else {
+            Err(WriteTableError::ReferenceTypeMismatch)
+        }
     }
 }
 
@@ -245,8 +300,9 @@ impl<HostContext> TableStore for BrowserEngine<HostContext> {
 #[derive(Clone)]
 pub struct BrowserGlobal {
     global: Global,
-    /// Nothing for a reference type other than `funcref`, which `Value` does not hold.
+    /// Nothing for a type this engine does not tell apart.
     value_type: Option<ValType>,
+    /// Not known, and not used, when the type is not.
     mutability: Mutability,
     through_slot: Option<SlotAccess>,
 }
@@ -285,46 +341,42 @@ fn access(module: &Module, value_type: ValType, global: &Global) -> Option<Insta
     }
 }
 
-/// Describes a global, finding its type by which access module it instantiates.
-pub fn global_of(global: Global) -> BrowserGlobal {
-    let found = GLOBAL_ACCESS.with(|modules| {
-        modules
-            .get_or_init(|| {
-                GLOBAL_VALUE_TYPES
-                    .into_iter()
-                    .flat_map(|value_type| {
-                        [Mutability::Constant, Mutability::Variable].map(|mutability| {
-                            let bytes = adapter::global_access(
-                                value_type,
-                                mutability == Mutability::Variable,
-                            );
-                            (
-                                value_type,
-                                mutability,
-                                glue::compile(&bytes).expect("an access module is valid"),
-                            )
-                        })
+/// Runs the operation on the access modules, one for each value type and mutability, which instantiate only with a
+/// global of that type.
+fn with_global_access<Returned>(
+    operation: impl FnOnce(&[(ValType, Mutability, Module)]) -> Returned,
+) -> Returned {
+    GLOBAL_ACCESS.with(|modules| {
+        operation(modules.get_or_init(|| {
+            GLOBAL_VALUE_TYPES
+                .into_iter()
+                .flat_map(|value_type| {
+                    [Mutability::Constant, Mutability::Variable].map(|mutability| {
+                        let bytes =
+                            adapter::global_access(value_type, mutability == Mutability::Variable);
+                        (
+                            value_type,
+                            mutability,
+                            glue::compile(&bytes).expect("an access module is valid"),
+                        )
                     })
-                    .collect()
-            })
-            .iter()
-            .find_map(|(value_type, mutability, module)| {
-                access(module, *value_type, &global)
-                    .map(|instance| (*value_type, *mutability, instance))
-            })
-    });
-    let Some((value_type, mutability, instance)) = found else {
-        return BrowserGlobal {
-            global,
-            value_type: None,
-            mutability: Mutability::Constant,
-            through_slot: None,
-        };
-    };
+                })
+                .collect()
+        }))
+    })
+}
+
+/// Describes a global of the type, with the access module's instance for it.
+fn described(
+    global: Global,
+    value_type: ValType,
+    mutability: Mutability,
+    instance: &Instance,
+) -> BrowserGlobal {
     let through_slot = adapter::global_through_slot(value_type).then(|| SlotAccess {
-        read: glue::instance_export(&instance, READ).unchecked_into(),
+        read: glue::instance_export(instance, READ).unchecked_into(),
         write: (mutability == Mutability::Variable)
-            .then(|| glue::instance_export(&instance, WRITE).unchecked_into()),
+            .then(|| glue::instance_export(instance, WRITE).unchecked_into()),
     });
     BrowserGlobal {
         global,
@@ -332,6 +384,41 @@ pub fn global_of(global: Global) -> BrowserGlobal {
         mutability,
         through_slot,
     }
+}
+
+/// Describes a global, finding its type by which access module it instantiates.
+pub fn global_of(global: Global) -> BrowserGlobal {
+    let found = with_global_access(|modules| {
+        modules.iter().find_map(|(value_type, mutability, module)| {
+            access(module, *value_type, &global)
+                .map(|instance| (*value_type, *mutability, instance))
+        })
+    });
+    match found {
+        Some((value_type, mutability, instance)) => {
+            described(global, value_type, mutability, &instance)
+        }
+        None => BrowserGlobal {
+            global,
+            value_type: None,
+            mutability: Mutability::Variable,
+            through_slot: None,
+        },
+    }
+}
+
+/// Describes a global of a type read through the slot that this engine made, whose type it knows.
+fn known_global(global: Global, value_type: ValType, mutability: Mutability) -> BrowserGlobal {
+    let instance = with_global_access(|modules| {
+        modules
+            .iter()
+            .find(|(known_type, known_mutability, _)| {
+                *known_type == value_type && *known_mutability == mutability
+            })
+            .and_then(|(_, _, module)| access(module, value_type, &global))
+    })
+    .expect("a global this engine made instantiates the access module of its type");
+    described(global, value_type, mutability, &instance)
 }
 
 /// Moves the global's value into the first slot.
@@ -370,18 +457,39 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
         value: Value<Function>,
     ) -> Result<BrowserGlobal, JsValue> {
         let mutable = mutability == Mutability::Variable;
-        let global = match value {
-            Value::I32(value) => glue::new_i32_global(mutable, value)?,
-            Value::I64(value) => glue::new_i64_global(mutable, value)?,
-            Value::F32(value) => defined_global(ValType::F32, mutable, value.to_bits().into())?,
-            Value::F64(value) => defined_global(ValType::F64, mutable, value.to_bits().into())?,
-            Value::V128(value) => defined_global(ValType::V128, mutable, value)?,
-            Value::FunctionReference(function) => glue::new_function_global(
-                mutable,
-                function.as_ref().map_or(&JsValue::NULL, AsRef::as_ref),
-            )?,
+        let (global, value_type) = match value {
+            Value::I32(value) => (glue::new_i32_global(mutable, value)?, ValType::I32),
+            Value::I64(value) => (glue::new_i64_global(mutable, value)?, ValType::I64),
+            Value::F32(value) => (
+                defined_global(ValType::F32, mutable, value.to_bits().into())?,
+                ValType::F32,
+            ),
+            Value::F64(value) => (
+                defined_global(ValType::F64, mutable, value.to_bits().into())?,
+                ValType::F64,
+            ),
+            Value::V128(value) => (
+                defined_global(ValType::V128, mutable, value)?,
+                ValType::V128,
+            ),
+            Value::FunctionReference(function) => (
+                glue::new_function_global(
+                    mutable,
+                    function.as_ref().map_or(&JsValue::NULL, AsRef::as_ref),
+                )?,
+                ValType::Ref(RefType::FUNCREF),
+            ),
         };
-        Ok(global_of(global))
+        Ok(if adapter::global_through_slot(value_type) {
+            known_global(global, value_type, mutability)
+        } else {
+            BrowserGlobal {
+                global,
+                value_type: Some(value_type),
+                mutability,
+                through_slot: None,
+            }
+        })
     }
 
     fn read_global(&self, global: &BrowserGlobal) -> Result<Value<Function>, ReadGlobalError> {
@@ -392,10 +500,11 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
             ValType::F32 => Value::F32(f32::from_bits(read_through_slot(global)? as u32)),
             ValType::F64 => Value::F64(f64::from_bits(read_through_slot(global)? as u64)),
             ValType::V128 => Value::V128(read_through_slot(global)?),
-            ValType::Ref(_) => {
+            ValType::Ref(RefType::FUNCREF) => {
                 let element = glue::reference_value(object);
                 Value::FunctionReference((!element.is_null()).then(|| element.unchecked_into()))
             }
+            ValType::Ref(_) => return Err(ReadGlobalError),
         })
     }
 
@@ -404,6 +513,9 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
         global: &BrowserGlobal,
         value: Value<Function>,
     ) -> Result<(), WriteGlobalError> {
+        if global.value_type.is_none() {
+            return Err(WriteGlobalError::ValueTypeMismatch);
+        }
         if global.mutability == Mutability::Constant {
             return Err(WriteGlobalError::Constant);
         }
@@ -420,7 +532,7 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
                 write_through_slot(global, value.to_bits().into())?;
             }
             (Some(ValType::V128), Value::V128(value)) => write_through_slot(global, value)?,
-            (Some(ValType::Ref(_)), Value::FunctionReference(function)) => {
+            (Some(ValType::Ref(RefType::FUNCREF)), Value::FunctionReference(function)) => {
                 glue::set_reference_value(
                     object,
                     function.as_ref().map_or(&JsValue::NULL, AsRef::as_ref),

@@ -239,7 +239,7 @@ where
     }
 }
 
-/// Takes the figure of writing a reference to a function into a table.
+/// Takes the figures of writing a reference to a function into a table and reading it back, for each address type.
 fn tables<E: WebAssemblyEngine<HostContext = i32> + FunctionTypeBinder<(), ()>>(mut engine: E) {
     let function =
         FunctionTypeBinder::<(), ()>::bind_host_function(&mut engine, |_: &mut i32, ()| {});
@@ -247,19 +247,25 @@ fn tables<E: WebAssemblyEngine<HostContext = i32> + FunctionTypeBinder<(), ()>>(
         minimum: 1,
         maximum: Some(1),
     };
-    let table = engine
-        .allocate_table(TableType {
-            address_type: AddressType::I32,
-            limits,
-        })
-        .ok()
-        .expect("the table");
-    report(
-        "write a function into a table",
-        time(COPIES, || {
-            consume(black_box(engine.write_table(&table, 0, Some(&function))))
-        }),
-    );
+    for (address_type, label) in [(AddressType::I32, "32-bit"), (AddressType::I64, "64-bit")] {
+        let table = engine
+            .allocate_table(TableType {
+                address_type,
+                limits,
+            })
+            .ok()
+            .expect("the table");
+        report(
+            &format!("write a function into a {label} table"),
+            time(COPIES, || {
+                consume(black_box(engine.write_table(&table, 0, Some(&function))))
+            }),
+        );
+        report(
+            &format!("read a function from a {label} table"),
+            time(COPIES, || consume(black_box(engine.read_table(&table, 0)))),
+        );
+    }
 }
 
 #[wasm_bindgen(inline_js = r#"

@@ -1,5 +1,6 @@
 //! What this engine does beyond the interface's suite: host functions live and die with their engine, an engine's
-//! code runs inside another's host function, a host function's panic goes on, and floats keep their bits.
+//! code runs inside another's host function, a host function's panic goes on, floats keep their bits, and tables,
+//! globals and memories of the types the browser cannot describe are told apart.
 #![cfg(target_arch = "wasm32")]
 
 use core::hint::black_box;
@@ -7,12 +8,19 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use wasm_bindgen_test::wasm_bindgen_test as test;
 use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, FunctionSection, ImportSection, Module,
-    TypeSection, ValType,
+    AbstractHeapType, CodeSection, ConstExpr, EntityType, ExportKind, ExportSection,
+    FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, Module, RefType,
+    TableSection, TableType, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::function::{BoundFunction, FunctionTypeBinder, InvokeError};
-use wcontainers_webassembly_engine::global::{GlobalStore, Mutability, Value};
-use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
+use wcontainers_webassembly_engine::global::{
+    GlobalStore, Mutability, ReadGlobalError, Value, WriteGlobalError,
+};
+use wcontainers_webassembly_engine::memory::{MemoryStore, MemoryType, PAGE_SIZE, Sharing};
+use wcontainers_webassembly_engine::table::{ReadTableError, TableStore, WriteTableError};
+use wcontainers_webassembly_engine::{
+    AddressType, ExternalAddress, Import, Limits, WebAssemblyEngine,
+};
 use wcontainers_webassembly_engine_browser::{BrowserEngine, BrowserFunction};
 
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
@@ -181,7 +189,10 @@ fn keeps_the_bits_of_a_nan_in_a_float_global() {
             let global = engine
                 .allocate_global(mutability, Value::F32(f32::from_bits(nan)))
                 .expect("the global");
-            assert_eq!(bits(engine.read_global(&global).expect("read")), u64::from(nan));
+            assert_eq!(
+                bits(engine.read_global(&global).expect("read")),
+                u64::from(nan)
+            );
         }
         for nan in F64_NANS {
             let global = engine
@@ -209,4 +220,164 @@ fn keeps_the_bits_of_a_nan_in_a_float_global() {
         );
         assert_eq!(bits(engine.read_global(&wide).expect("read")), wide_nan);
     }
+}
+
+#[test]
+fn lends_the_host_context_back_and_forth() {
+    let mut engine = new_engine(i32::default());
+    let hook =
+        FunctionTypeBinder::<(), ()>::bind_host_function(&mut engine, |count: &mut i32, ()| {
+            *count += 1;
+        });
+    let run = run_calling(&mut engine, hook);
+    assert_eq!(run.invoke(&mut engine, ()), Ok(()));
+    *engine.host_context() += 10;
+    assert_eq!(run.invoke(&mut engine, ()), Ok(()));
+    assert_eq!(run.invoke(&mut engine, ()), Ok(()));
+    assert_eq!(*engine.host_context(), 13);
+}
+
+const FUNCTION: &str = "f";
+const TABLE64: &str = "table64";
+const EXTERNAL_TABLE: &str = "externref_table";
+const EXTERNAL_GLOBAL: &str = "externref_global";
+
+/// A module exporting a function, a 64-bit `funcref` table, an `externref` table and a mutable `externref` global.
+fn references_module() -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function(NO_VALUES, NO_VALUES);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    let mut tables = TableSection::new();
+    for (element_type, table64) in [(RefType::FUNCREF, true), (RefType::EXTERNREF, false)] {
+        tables.table(TableType {
+            element_type,
+            table64,
+            minimum: 1,
+            maximum: Some(4),
+            shared: false,
+        });
+    }
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::Ref(RefType::EXTERNREF),
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::ref_null(HeapType::Abstract {
+            shared: false,
+            ty: AbstractHeapType::Extern,
+        }),
+    );
+    let mut exports = ExportSection::new();
+    exports.export(FUNCTION, ExportKind::Func, 0);
+    exports.export(TABLE64, ExportKind::Table, 0);
+    exports.export(EXTERNAL_TABLE, ExportKind::Table, 1);
+    exports.export(EXTERNAL_GLOBAL, ExportKind::Global, 0);
+    let mut body = wasm_encoder::Function::new_with_locals_types(NO_VALUES);
+    body.instructions().end();
+    let mut code = CodeSection::new();
+    code.function(&body);
+    let mut module = Module::new();
+    module
+        .section(&types)
+        .section(&functions)
+        .section(&tables)
+        .section(&globals)
+        .section(&exports)
+        .section(&code);
+    module.finish()
+}
+
+#[test]
+fn tells_the_tables_and_globals_of_a_module_apart() {
+    let mut engine = new_engine(i32::default());
+    let module = engine
+        .compile(&references_module())
+        .expect("the module compiles");
+    let instance = engine
+        .instantiate(&module, &[])
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, FUNCTION) else {
+        panic!("the module exports a function");
+    };
+    let Some(ExternalAddress::Table(table64)) = engine.find_export(&instance, TABLE64) else {
+        panic!("the module exports a 64-bit table");
+    };
+    assert_eq!(engine.read_table(&table64, 0), Ok(None));
+    assert_eq!(engine.write_table(&table64, 0, Some(&function)), Ok(()));
+    assert_eq!(engine.read_table(&table64, 0), Ok(Some(function.clone())));
+    assert_eq!(
+        engine.read_table(&table64, 1),
+        Err(ReadTableError::IndexOutsideTable)
+    );
+    assert!(engine.grow_table(&table64, 1).is_ok());
+    assert_eq!(engine.count_table_elements(&table64), 2);
+    assert_eq!(engine.write_table(&table64, 1, Some(&function)), Ok(()));
+    assert_eq!(
+        engine.write_table(&table64, 2, None),
+        Err(WriteTableError::IndexOutsideTable)
+    );
+
+    let Some(ExternalAddress::Table(external)) = engine.find_export(&instance, EXTERNAL_TABLE)
+    else {
+        panic!("the module exports an externref table");
+    };
+    assert_eq!(
+        engine.write_table(&external, 0, Some(&function)),
+        Err(WriteTableError::ReferenceTypeMismatch)
+    );
+    assert_eq!(
+        engine.read_table(&external, 0),
+        Err(ReadTableError::ElementNotFunction)
+    );
+    assert_eq!(
+        engine.read_table(&external, 1),
+        Err(ReadTableError::IndexOutsideTable)
+    );
+    assert!(engine.grow_table(&external, 1).is_ok());
+    assert_eq!(engine.count_table_elements(&external), 2);
+
+    let Some(ExternalAddress::Global(global)) = engine.find_export(&instance, EXTERNAL_GLOBAL)
+    else {
+        panic!("the module exports an externref global");
+    };
+    assert_eq!(engine.read_global(&global), Err(ReadGlobalError));
+    assert_eq!(
+        engine.write_global(&global, Value::FunctionReference(Some(function))),
+        Err(WriteGlobalError::ValueTypeMismatch)
+    );
+}
+
+#[test]
+fn reads_and_writes_a_shared_64_bit_memory() {
+    let mut engine = new_engine(i32::default());
+    let memory = engine
+        .allocate_memory(MemoryType {
+            address_type: AddressType::I64,
+            limits: Limits {
+                minimum: 1,
+                maximum: Some(2),
+            },
+            sharing: Sharing::Shared,
+        })
+        .expect("the memory");
+    let shared = engine
+        .to_shared_memory(&memory)
+        .expect("the memory is shared");
+    let added = engine.add_shared_memory(&shared);
+    let bytes = [1, 2, 3, 4];
+    assert_eq!(engine.write_memory(&memory, PAGE_SIZE - 4, &bytes), Ok(()));
+    let mut read = [0; 4];
+    assert_eq!(engine.read_memory(&added, PAGE_SIZE - 4, &mut read), Ok(()));
+    assert_eq!(read, bytes);
+    assert!(
+        engine
+            .read_memory(&added, PAGE_SIZE - 3, &mut read)
+            .is_err()
+    );
+    assert!(engine.grow_memory(&memory, 1).is_ok());
+    assert_eq!(engine.count_memory_pages(&added), 2);
+    assert!(engine.grow_memory(&memory, 1).is_err());
 }

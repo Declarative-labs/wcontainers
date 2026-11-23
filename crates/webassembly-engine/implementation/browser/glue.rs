@@ -71,7 +71,7 @@ extern "C" {
     #[wasm_bindgen(js_name = memoryBytes)]
     pub fn memory_bytes(memory: &Memory) -> f64;
     #[wasm_bindgen(js_name = growMemory)]
-    pub fn grow_memory(memory: &Memory, pages: f64) -> bool;
+    pub fn grow_memory(memory: &Memory, pages: f64, address64: bool) -> bool;
     #[wasm_bindgen(js_name = isShared)]
     pub fn is_shared(memory: &Memory) -> bool;
 
@@ -80,12 +80,14 @@ extern "C" {
     -> Result<Table, JsValue>;
     #[wasm_bindgen(js_name = tableLength)]
     pub fn table_length(table: &Table) -> f64;
+    #[wasm_bindgen(js_name = isTable64)]
+    pub fn is_table64(table: &Table) -> bool;
     #[wasm_bindgen(js_name = growTable)]
-    pub fn grow_table(table: &Table, elements: f64) -> bool;
+    pub fn grow_table(table: &Table, elements: f64, address64: bool) -> bool;
     #[wasm_bindgen(js_name = tableElement)]
-    pub fn table_element(table: &Table, index: f64) -> JsValue;
+    pub fn table_element(table: &Table, index: f64, address64: bool) -> JsValue;
     #[wasm_bindgen(js_name = setTableElement)]
-    pub fn set_table_element(table: &Table, index: f64, value: &JsValue) -> bool;
+    pub fn set_table_element(table: &Table, index: f64, value: &JsValue, address64: bool) -> bool;
 
     #[wasm_bindgen(js_name = newI32Global, catch)]
     pub fn new_i32_global(mutable: bool, value: i32) -> Result<Global, JsValue>;

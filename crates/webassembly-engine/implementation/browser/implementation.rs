@@ -9,24 +9,32 @@ use core::cell::Cell;
 use core::convert::Infallible;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::{self, ThreadId};
 
 use js_sys::WebAssembly::{Instance, Memory, Module};
 use wasm_bindgen::{JsCast, JsValue};
 use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
 
-use function::{HostFunction, Running};
-
 pub use function::BrowserFunction;
-pub use store::{BrowserGlobal, BrowserMemory};
+pub use store::{BrowserGlobal, BrowserMemory, BrowserTable};
 
-/// An engine of one thread: the host context and the host functions, which it lends to the thread while its code runs.
+/// An engine of one thread, with its host context and the host functions it keeps on the thread.
 pub struct BrowserEngine<HostContext> {
-    context: Option<Box<HostContext>>,
+    /// The host context once `host_context` has taken it from `lent`, until the engine's code runs again.
+    home: Option<Box<HostContext>>,
+    /// The host context where the engine's host functions take it from.
     lent: Rc<Cell<Option<Box<HostContext>>>>,
     /// Tells this engine's host modules from those of other engines.
     number: u64,
-    host_functions: Vec<HostFunction>,
+    /// The indices of this engine's host functions in its thread's list.
+    host_functions: Vec<u32>,
+}
+
+impl<HostContext> Drop for BrowserEngine<HostContext> {
+    fn drop(&mut self) {
+        function::forget(&self.host_functions);
+    }
 }
 
 /// A compiled module, which instantiates in any engine of a worker it was compiled in or posted to.
@@ -41,16 +49,49 @@ pub struct BrowserSharedMemory {
     memory64: bool,
 }
 
-/// What a module or a shared memory is known by in the registries of glue.js, which it leaves when dropped.
-struct Registration {
+/// What a module or a shared memory is known by in the registry of glue.js of the thread that made it.
+#[derive(Clone, Copy)]
+struct Registered {
     id: f64,
     forget: fn(f64),
+    thread: ThreadId,
 }
+
+/// A module's or a shared memory's place in a registry of glue.js, which it leaves when dropped.
+struct Registration {
+    registered: Registered,
+}
+
+/// Registrations dropped on a thread other than their own, which their own thread forgets at its next registration.
+static DROPPED_ELSEWHERE: Mutex<Vec<Registered>> = Mutex::new(Vec::new());
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        (self.forget)(self.id);
+        let registered = self.registered;
+        if thread::current().id() == registered.thread {
+            (registered.forget)(registered.id);
+        } else {
+            DROPPED_ELSEWHERE
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(registered);
+        }
     }
+}
+
+/// Forgets the registrations of this thread that were dropped on another.
+fn forget_dropped_elsewhere() {
+    let this = thread::current().id();
+    DROPPED_ELSEWHERE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|registered| {
+            let own = registered.thread == this;
+            if own {
+                (registered.forget)(registered.id);
+            }
+            !own
+        });
 }
 
 /// The last number given to an engine or a registration; in our own memory, so shared by every thread that shares it.
@@ -63,34 +104,38 @@ fn new_number() -> u64 {
 
 /// Returns a registration whose id no other has had, which a JavaScript number holds exactly.
 fn new_id(forget: fn(f64)) -> Registration {
+    forget_dropped_elsewhere();
     let number = new_number();
     assert!(
         number < 1 << f64::MANTISSA_DIGITS,
         "a JavaScript number holds every registration id exactly"
     );
     Registration {
-        id: number as f64,
-        forget,
+        registered: Registered {
+            id: number as f64,
+            forget,
+            thread: thread::current().id(),
+        },
     }
 }
 
 /// Returns the object to post to another worker, where `receive_module` makes the module known, or nothing when
 /// this worker does not know the module.
 pub fn module_to_post(module: &BrowserModule) -> Option<Module> {
-    glue::registered_module(module.registration.id)
+    glue::registered_module(module.registration.registered.id)
 }
 
 /// Makes a module another worker posted known to this worker's engines.
 pub fn receive_module(posted: &Module) -> BrowserModule {
     let registration = new_id(glue::forget_module);
-    glue::register_module(registration.id, posted);
+    glue::register_module(registration.registered.id, posted);
     BrowserModule { registration }
 }
 
 /// Returns the object to post to another worker, where `receive_shared_memory` makes the memory known, or nothing
 /// when this worker does not know the memory.
 pub fn shared_memory_to_post(memory: &BrowserSharedMemory) -> Option<Memory> {
-    glue::registered_shared_memory(memory.registration.id)
+    glue::registered_shared_memory(memory.registration.registered.id)
 }
 
 /// Makes a shared memory another worker posted known to this worker's engines, or answers nothing when the memory is
@@ -98,7 +143,7 @@ pub fn shared_memory_to_post(memory: &BrowserSharedMemory) -> Option<Memory> {
 pub fn receive_shared_memory(posted: &Memory) -> Option<BrowserSharedMemory> {
     glue::is_shared(posted).then(|| {
         let registration = new_id(glue::forget_shared_memory);
-        glue::register_shared_memory(registration.id, posted);
+        glue::register_shared_memory(registration.registered.id, posted);
         BrowserSharedMemory {
             registration: Arc::new(registration),
             memory64: store::memory64(&store::memory_of(posted.clone(), None)),
@@ -106,26 +151,30 @@ pub fn receive_shared_memory(posted: &Memory) -> Option<BrowserSharedMemory> {
     })
 }
 
-/// Lends the host context and the host functions to the thread for a call into the engine's code, returning the host
-/// functions of the call it is made inside, which `take_back` gives back.
-fn lend<HostContext>(engine: &mut BrowserEngine<HostContext>) -> Running {
-    engine.lent.set(engine.context.take());
-    function::run(Running::new(
-        engine.number,
-        core::mem::take(&mut engine.host_functions),
-    ))
-}
+impl<HostContext> BrowserEngine<HostContext> {
+    /// Runs the engine's code: its host functions run only inside, and find the host context where they take it from.
+    #[inline(always)]
+    fn run<Returned>(&mut self, code: impl FnOnce() -> Returned) -> Returned {
+        if self.home.is_some() {
+            self.lent.set(self.home.take());
+        }
+        let outer = function::run(self.number);
+        let returned = code();
+        function::run(outer);
+        returned
+    }
 
-/// Takes the host context and the host functions back after a call into the engine's code; a host function that
-/// panicked kept them, and its panic goes on from here, as it would have if the call could unwind.
-fn take_back<HostContext>(engine: &mut BrowserEngine<HostContext>, outer: Running) {
-    let running = function::run(outer);
-    engine.context = engine.lent.take();
-    assert!(
-        running.is(engine.number) && engine.context.is_some(),
-        "a host function panicked in a call into the engine's code"
-    );
-    engine.host_functions = running.into_functions();
+    /// Checks, after the engine's code did not return, that its host functions gave the host context back: a host
+    /// function that panicked kept it, and its panic goes on from here, as it would if the call could unwind.
+    #[cold]
+    fn check_context_returned(&self) {
+        let context = self.lent.take();
+        assert!(
+            context.is_some(),
+            "a host function panicked in a call into the engine's code"
+        );
+        self.lent.set(context);
+    }
 }
 
 impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
@@ -138,8 +187,8 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
     type NewError = Infallible;
     fn new(_: (), host_context: HostContext) -> Result<Self, Infallible> {
         Ok(Self {
-            context: Some(Box::new(host_context)),
-            lent: Rc::default(),
+            home: None,
+            lent: Rc::new(Cell::new(Some(Box::new(host_context)))),
             number: new_number(),
             host_functions: Vec::new(),
         })
@@ -149,7 +198,7 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
     fn compile(&self, bytes: &[u8]) -> Result<BrowserModule, JsValue> {
         let module = glue::compile(bytes)?;
         let registration = new_id(glue::forget_module);
-        glue::register_module(registration.id, &module);
+        glue::register_module(registration.registered.id, &module);
         Ok(BrowserModule { registration })
     }
 
@@ -159,25 +208,27 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
         module: &BrowserModule,
         imports: &[Import<'_, Self>],
     ) -> Result<Instance, JsValue> {
-        let module = glue::registered_module(module.registration.id).ok_or_else(|| {
-            js_sys::Error::new(
-                "the module was compiled in another worker and not posted to this one",
-            )
-        })?;
+        let module =
+            glue::registered_module(module.registration.registered.id).ok_or_else(|| {
+                js_sys::Error::new(
+                    "the module was compiled in another worker and not posted to this one",
+                )
+            })?;
         let object = glue::new_imports();
         for import in imports {
             let value: &JsValue = match &import.address {
                 ExternalAddress::Function(function) => function,
-                ExternalAddress::Table(table) => table,
+                ExternalAddress::Table(table) => store::table_object(table),
                 ExternalAddress::Memory(memory) => store::memory_object(memory),
                 ExternalAddress::Global(global) => store::global_object(global),
                 ExternalAddress::Tag(tag) => tag,
             };
             glue::add_import(&object, import.module_name, import.item_name, value);
         }
-        let outer = lend(self);
-        let instance = glue::instantiate(&module, &object);
-        take_back(self, outer);
+        let instance = self.run(|| glue::instantiate(&module, &object));
+        if instance.is_err() {
+            self.check_context_returned();
+        }
         instance
     }
 
@@ -188,7 +239,7 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
         } else if glue::is_function(&value) {
             ExternalAddress::Function(value.unchecked_into())
         } else if glue::is_table(&value) {
-            ExternalAddress::Table(value.unchecked_into())
+            ExternalAddress::Table(store::table_of(value.unchecked_into()))
         } else if glue::is_memory(&value) {
             ExternalAddress::Memory(store::memory_of(value.unchecked_into(), None))
         } else if glue::is_global(&value) {
@@ -199,8 +250,11 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
     }
 
     fn host_context(&mut self) -> &mut HostContext {
-        self.context
+        if self.home.is_none() {
+            self.home = self.lent.take();
+        }
+        self.home
             .as_mut()
-            .expect("the engine holds its host context whenever none of its code runs")
+            .expect("the host context is where the engine's host functions take it from whenever none of its code runs")
     }
 }

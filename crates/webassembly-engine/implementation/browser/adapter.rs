@@ -8,7 +8,7 @@ use core::mem::size_of;
 use wasm_encoder::{
     CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function, FunctionSection,
     GlobalSection, GlobalType, Ieee32, Ieee64, ImportSection, InstructionSink, MemArg,
-    MemArgTarget, MemoryType, Module, RefType, TypeSection, ValType,
+    MemArgTarget, MemoryType, Module, RefType, TableType, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::memory::PAGE_SIZE;
 
@@ -141,16 +141,19 @@ pub fn from_slot<T: 'static>(bits: u128) -> T {
     value.expect("binding a function checks that each of its types is a value type")
 }
 
+/// The most pages a 64-bit memory may have under the [JavaScript API's limits](https://webassembly.github.io/spec/js-api/#limits).
+const MEMORY64_PAGES: u64 = 262_144;
+
 /// Returns the type a memory is imported under that takes any memory of its address type and sharing.
 fn any_memory(memory64: bool, shared: bool) -> MemoryType {
-    let addresses = if memory64 {
-        u128::from(u64::MAX)
+    let pages = if memory64 {
+        MEMORY64_PAGES
     } else {
-        u128::from(u32::MAX)
-    } + 1;
+        (u64::from(u32::MAX) + 1) / PAGE_SIZE
+    };
     MemoryType {
         minimum: u64::MIN,
-        maximum: shared.then_some((addresses / u128::from(PAGE_SIZE)) as u64),
+        maximum: shared.then_some(pages),
         memory64,
         shared,
         page_size_log2: None,
@@ -288,15 +291,39 @@ pub fn host(
     assemble(&types, &imports, &functions, &exports, &[body])
 }
 
-/// The value types a global may have that `Value` can hold, in the order a global's type is looked for.
-pub const GLOBAL_VALUE_TYPES: [ValType; 6] = [
+/// The value types a global may have that this engine tells apart, in the order a global's type is looked for: those
+/// `Value` can hold, and `externref`, which it cannot.
+pub const GLOBAL_VALUE_TYPES: [ValType; 7] = [
     ValType::I32,
     ValType::I64,
     ValType::F32,
     ValType::F64,
     ValType::V128,
     ValType::Ref(RefType::FUNCREF),
+    ValType::Ref(RefType::EXTERNREF),
 ];
+
+/// The name of a table a table access module imports.
+pub const TABLE: &str = "t";
+
+/// A module that imports a `funcref` table of the address type, so that it instantiates only with such a table.
+pub fn function_table(table64: bool) -> Vec<u8> {
+    let mut imports = ImportSection::new();
+    imports.import(
+        NAMESPACE,
+        TABLE,
+        TableType {
+            element_type: RefType::FUNCREF,
+            table64,
+            minimum: u64::MIN,
+            maximum: None,
+            shared: false,
+        },
+    );
+    let mut module = Module::new();
+    module.section(&imports);
+    module.finish()
+}
 
 /// Answers whether a global of the value type is read and written through the first slot: a float, whose NaN's bits a
 /// JavaScript number does not keep, or a vector, which JavaScript cannot hold.

@@ -1,7 +1,8 @@
 //! Functions bound to Rust signatures: each call moves its values through the scratch slots and a small module.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
+use std::rc::Rc;
 
 use js_sys::Function;
 use js_sys::WebAssembly::Table;
@@ -15,7 +16,7 @@ use crate::adapter::{
     self, CALLEE, ENTRY, NAMESPACE, SCRATCH_MEMORY, from_slot, result_types, set_slot, slot,
     to_slot, value_type,
 };
-use crate::{BrowserEngine, glue, lend, take_back};
+use crate::{BrowserEngine, glue};
 
 /// A function of the engine bound to a Rust signature: the export of a caller module that imports it.
 pub struct BrowserFunction<Parameters, Results> {
@@ -23,54 +24,69 @@ pub struct BrowserFunction<Parameters, Results> {
     signature: PhantomData<fn(Parameters) -> Results>,
 }
 
-/// A host function as its engine keeps it: it takes its arguments from the slots and leaves its result there.
-pub type HostFunction = Box<dyn Fn()>;
+/// A host function as its thread keeps it: it takes its arguments from the slots and leaves its result there.
+type HostFunction = Rc<dyn Fn()>;
 
-/// The number of the engine whose code runs on this thread, and its host functions by the index its host modules pass.
-#[derive(Default)]
-pub struct Running {
-    engine: u64,
-    functions: Vec<HostFunction>,
+/// The host functions of this thread's engines, by the index their host modules pass, and the indices of removed ones.
+struct HostFunctions {
+    entries: Vec<Option<HostFunction>>,
+    free: Vec<u32>,
 }
 
-impl Running {
-    pub fn new(engine: u64, functions: Vec<HostFunction>) -> Self {
-        Self { engine, functions }
-    }
-
-    /// Answers whether these are the host functions of the engine with the number.
-    pub fn is(&self, engine: u64) -> bool {
-        self.engine == engine
-    }
-
-    pub fn into_functions(self) -> Vec<HostFunction> {
-        self.functions
-    }
-}
-
-/// The number no engine has, which `Running` holds while no engine's code runs.
+/// The number no engine has, which `RUNNING` holds while no engine's code runs.
 const NO_ENGINE: u64 = u64::MIN;
 
 thread_local! {
-    /// The host functions of the engine whose code runs on this thread; a host function takes them while it runs.
-    static RUNNING: Cell<Running> = const { Cell::new(Running { engine: NO_ENGINE, functions: Vec::new() }) };
+    /// The number of the engine whose code runs on this thread.
+    static RUNNING: Cell<u64> = const { Cell::new(NO_ENGINE) };
+    static HOST_FUNCTIONS: RefCell<HostFunctions> =
+        const { RefCell::new(HostFunctions { entries: Vec::new(), free: Vec::new() }) };
 }
 
-/// Gives the thread the host functions of the engine whose code is to run, returning those it held.
-pub fn run(running: Running) -> Running {
-    RUNNING.replace(running)
+/// Makes the engine with the number the one whose code runs on this thread, returning the one it replaces.
+#[inline(always)]
+pub fn run(engine: u64) -> u64 {
+    RUNNING.replace(engine)
 }
 
-/// Runs the host function of the engine with the number and the index, whose arguments are in the slots and which
-/// leaves its result there.
+/// Keeps the host function for this thread, returning the index its host module passes.
+fn keep(function: HostFunction) -> u32 {
+    HOST_FUNCTIONS.with_borrow_mut(|functions| match functions.free.pop() {
+        Some(index) => {
+            functions.entries[index as usize] = Some(function);
+            index
+        }
+        None => {
+            functions.entries.push(Some(function));
+            u32::try_from(functions.entries.len() - 1)
+                .expect("a thread has fewer host functions than a 32-bit index counts")
+        }
+    })
+}
+
+/// Removes the host functions of a dropped engine, dropping each after this thread's list is free again.
+pub fn forget(indices: &[u32]) {
+    let removed: Vec<Option<HostFunction>> = HOST_FUNCTIONS.with_borrow_mut(|functions| {
+        functions.free.extend_from_slice(indices);
+        indices
+            .iter()
+            .map(|index| functions.entries[*index as usize].take())
+            .collect()
+    });
+    drop(removed);
+}
+
+/// Runs the host function with the index, which belongs to the engine with the number, whose arguments are in the
+/// slots and which leaves its result there.
 extern "C" fn run_host_function(engine: u64, index: u32) {
-    let running = RUNNING.take();
-    if !running.is(engine) {
-        RUNNING.set(running);
-        panic!("a host function runs only inside a call into its own engine's code");
-    }
-    running.functions[index as usize]();
-    RUNNING.set(running);
+    assert!(
+        RUNNING.get() == engine,
+        "a host function runs only inside a call into its own engine's code"
+    );
+    let function = HOST_FUNCTIONS
+        .with_borrow(|functions| functions.entries[index as usize].clone())
+        .expect("a host function lives as long as its engine");
+    function();
 }
 
 impl<HostContext> FunctionStore for BrowserEngine<HostContext> {
@@ -106,22 +122,22 @@ fn bind_caller(
     Ok(glue::instance_export(&instance, ENTRY).unchecked_into())
 }
 
-/// Returns the entry of a host module that runs the host function, which the engine keeps from now on.
+/// Returns the entry of a host module that runs the host function, which lives as long as the engine from now on.
 fn bind_host<HostContext>(
     engine: &mut BrowserEngine<HostContext>,
     parameters: &[ValType],
     results: &[ValType],
     function: HostFunction,
 ) -> Function {
-    let index = u32::try_from(engine.host_functions.len())
-        .expect("an engine has fewer host functions than a 32-bit index counts");
-    engine.host_functions.push(function);
+    let index = keep(function);
+    engine.host_functions.push(index);
     let module = glue::compile(&adapter::host(parameters, results, engine.number, index))
         .expect("a host module is valid");
     let table: Table = wasm_bindgen::function_table().unchecked_into();
     let runner = glue::table_element(
         &table,
         f64::from(run_host_function as extern "C" fn(u64, u32) as usize as u32),
+        false,
     );
     let instance = glue::instantiate_with_two(
         &module,
@@ -137,10 +153,14 @@ fn bind_host<HostContext>(
 
 /// Returns the result a call left in the slots, or what it threw.
 #[inline(always)]
-fn finish<Results: 'static>(returned: bool) -> Result<Results, InvokeError<JsValue>> {
+fn finish<HostContext, Results: 'static>(
+    engine: &BrowserEngine<HostContext>,
+    returned: bool,
+) -> Result<Results, InvokeError<JsValue>> {
     if returned {
         Ok(from_slot(slot(0)))
     } else {
+        engine.check_context_returned();
         let thrown = glue::take_thrown();
         Err(if glue::is_exception(&thrown) {
             InvokeError::Exception
@@ -175,7 +195,7 @@ macro_rules! binders {
                     function_types(&[$(value_type::<$parameter>()),*], result_types::<Results>())
                         .expect("a host function takes and returns value types");
                 let context = self.lent.clone();
-                bind_host(self, &parameters, &results, Box::new(move || {
+                bind_host(self, &parameters, &results, Rc::new(move || {
                     let arguments = ($(from_slot::<$parameter>(slot($index)),)*);
                     let mut lent = context.take().expect("a host function runs inside a call into its engine's code");
                     let returned = function(&mut *lent, arguments);
@@ -196,10 +216,8 @@ macro_rules! binders {
                 ($($argument,)*): ($($parameter,)*),
             ) -> Result<Results, InvokeError<JsValue>> {
                 $(set_slot($index, to_slot($argument));)*
-                let outer = lend(engine);
-                let returned = glue::call(&self.caller);
-                take_back(engine, outer);
-                finish(returned)
+                let returned = engine.run(|| glue::call(&self.caller));
+                finish(engine, returned)
             }
         }
     )*};

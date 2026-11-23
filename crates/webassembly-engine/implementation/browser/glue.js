@@ -103,16 +103,6 @@ function address(value, address64) {
   return address64 ? BigInt(value) : value;
 }
 
-// Runs the operation with a Number, and again with a BigInt when the memory or table is a 64-bit one.
-function withAddress(value, operation) {
-  try {
-    return operation(value);
-  } catch (error) {
-    if (error instanceof TypeError) return operation(BigInt(value));
-    throw error;
-  }
-}
-
 export function newMemory(initial, maximum, shared, address64) {
   const descriptor = { initial: address(initial, address64), shared };
   if (maximum !== undefined) descriptor.maximum = address(maximum, address64);
@@ -124,9 +114,9 @@ export function memoryBytes(memory) {
   return memory.buffer.byteLength;
 }
 
-export function growMemory(memory, pages) {
+export function growMemory(memory, pages, address64) {
   try {
-    withAddress(pages, (delta) => memory.grow(delta));
+    memory.grow(address(pages, address64));
     return true;
   } catch {
     return false;
@@ -148,22 +138,32 @@ export function tableLength(table) {
   return Number(table.length);
 }
 
-export function growTable(table, elements) {
+// A 64-bit table gives its length as BigInt.
+export function isTable64(table) {
+  return typeof table.length === "bigint";
+}
+
+export function growTable(table, elements, address64) {
   try {
-    withAddress(elements, (delta) => table.grow(delta));
+    table.grow(address(elements, address64));
     return true;
   } catch {
     return false;
   }
 }
 
-export function tableElement(table, index) {
-  return withAddress(index, (at) => table.get(at));
+// Returns the element at the index, or undefined, which no element of a funcref table is, when there is none.
+export function tableElement(table, index, address64) {
+  try {
+    return table.get(address(index, address64));
+  } catch {
+    return undefined;
+  }
 }
 
-export function setTableElement(table, index, value) {
+export function setTableElement(table, index, value, address64) {
   try {
-    withAddress(index, (at) => table.set(at, value));
+    table.set(address(index, address64), value);
     return true;
   } catch {
     return false;
