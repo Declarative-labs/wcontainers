@@ -691,9 +691,10 @@ struct Builder<'a> {
     /// atomics take the operation's signedness from the word's type.
     signed_atomic_fields: Vec<(u32, u32)>,
     signed_atomic_vars: Vec<u32>,
-    /// Images of textures atomics act on, read and written through a buffer of their texels
-    /// (`VariantKey::texels_through_buffer`'s layout): the common form has no image atomic giving
-    /// its old value.
+    /// Images atomics act on. Where there are any, every image of a texture is read and written
+    /// through a buffer of its texels (`VariantKey::texels_through_buffer`'s layout): the common
+    /// form has no image atomic giving its old value, and images bound to one texture then share
+    /// one buffer.
     atomic_images: Vec<u32>,
     /// The derefs into those signed words, whose loads, stores and atomics take signed values.
     signed_derefs: std::collections::HashSet<u32>,
@@ -1940,7 +1941,12 @@ impl Builder<'_> {
                     if atomic_image && flat.kind == TypeKind::Array {
                         return Err(unsupported(format_args!("an atomic on an array of images")));
                     }
-                    let texels = atomic_image && flat.dim != Dim::Buffer;
+                    // Every image of a texture of a program with atomics on images, so that
+                    // images bound to one texture share its texels.
+                    let texels = is_image
+                        && !self.atomic_images.is_empty()
+                        && flat.kind == TypeKind::Image
+                        && flat.dim != Dim::Buffer;
                     let buffer = is_image && flat.dim == Dim::Buffer;
                     let (space, ty) = if buffer || texels {
                         self.image_buffer(var, texels)?

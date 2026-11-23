@@ -436,7 +436,7 @@ void main() {
 ";
 
 #[test]
-fn images_of_textures_under_atomics_are_storage_words_laid_out_by_helper_constants() {
+fn images_of_textures_beside_atomics_are_storage_words_laid_out_by_helper_constants() {
     let mut stage = Nir::from_glsl(&[(Stage::Compute, IMAGE_ATOMICS)])
         .unwrap()
         .pop()
@@ -444,8 +444,9 @@ fn images_of_textures_under_atomics_are_storage_words_laid_out_by_helper_constan
     let key = stage.nir.key().unwrap();
     let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
     let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
-    let atomic_images = 3;
-    assert_eq!(routed.typed.buffers.len(), atomic_images);
+    // The image without atomics too, as images bound to one texture share its texels.
+    let images = 4;
+    assert_eq!(routed.typed.buffers.len(), images);
     let (module, reflection) = wcontainers_nir::direct::rewrite(
         routed,
         bindings,
@@ -465,8 +466,8 @@ fn images_of_textures_under_atomics_are_storage_words_laid_out_by_helper_constan
             })
             .count()
     };
-    assert_eq!(count(true), atomic_images);
-    assert_eq!(count(false), atomic_images);
+    assert_eq!(count(true), images);
+    assert_eq!(count(false), images);
     let globals = |storage: bool| {
         module
             .module
@@ -478,7 +479,6 @@ fn images_of_textures_under_atomics_are_storage_words_laid_out_by_helper_constan
             })
             .count()
     };
-    assert_eq!(globals(true), atomic_images);
-    // The image without atomics stays a storage texture.
-    assert_eq!(globals(false), 1);
+    assert_eq!(globals(true), images);
+    assert_eq!(globals(false), 0);
 }
