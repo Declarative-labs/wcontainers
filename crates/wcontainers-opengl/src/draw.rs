@@ -674,6 +674,11 @@ fn convert_evaluation<B: Backend>(
         .ok_or("an evaluation program without a tessellator")?;
     let mut converted = wcontainers_nir::direct::domain(routed, bindings, &rewrites, key)
         .map_err(|e| e.to_string())?;
+    // Its outputs, which the shaders crate keeps as given, are its vertex form's, as a vertex
+    // program's are.
+    if let Some(drawn) = converted.modules.first() {
+        converted.reflection.outputs = stream::outputs(&drawn.module);
+    }
     stream::name_outputs(&mut converted.reflection.outputs);
     let drawn = converted
         .modules
