@@ -4,10 +4,36 @@ The WebAssembly engine interface (crates/webassembly-engine) run on a browser's 
 WebAssembly JavaScript API, from our Rust code compiled to wasm32-unknown-unknown and running in a worker.
 Crate: crates/webassembly-engine/implementation/browser, package wcontainers-webassembly-engine-browser.
 
-## Where it stands (milestone E1, run 4, 2026-11-23)
+## Where it stands (milestone E1f, run 1, 2026-11-23)
 
-- Done: the crate; the whole suite (29 tests) passing in headless Chrome 158 and headless Firefox 160 in a
-  dedicated worker; 10 tests of this engine's own behaviour (behaviour.rs 9, panic.rs 1); a two-worker test where
+- E1f fixed the three findings of the fourth check that needed no ruling, each with tests that failed before the
+  fix and pass after, in Chrome and Firefox (run5/before.log and run5/clean.log in the scratch folder):
+  - Names from a guest module meet JavaScript objects only as own properties: the import object and each
+    namespace have no prototype (`Object.create(null)`, namespaces found with `Object.hasOwn`), exports are read
+    with `Object.hasOwn`, and the types kept for exports are in a `Map`. hostile_names.rs (7 tests) imports and
+    exports under every name `Object.prototype` and `Function.prototype` have, numeric-looking names, an empty
+    name, a name with a null character, a 65535-byte name and `then` (also through `compile_streaming`), and
+    checks that no builtin gains the import and that a second engine refuses a module missing it. Before the fix
+    two of them failed in both browsers (an import under `__proto__` planted `callback` on `Object.prototype`; a
+    missing `imports.constructor` was satisfied by `Object`).
+  - Exported tables and globals of a typed function reference, `(ref null $t)` or `(ref $t)`, hold function
+    references: typed_references.rs (4 tests: null reads as `Ok(None)`, a function of the type is written and
+    read back, one of another type is refused, a non-null table refuses null, a global reads as a function
+    reference, a struct reference table and global are not function references, and the same through a module
+    that imports and exports them again). Before the fix three of the four failed in both browsers.
+  - The status file's statement on futures-core (Dependencies).
+  - Checked on a clean build on the rented x86 machine (load up to 10 from other jobs): clippy for wasm32 with
+    warnings denied clean; every target passes in Chrome 158 and Firefox 160 (suite 29, behaviour 9,
+    hostile_names 7, typed_references 4, panic 1, workers 1, benchmark 1); the literal check gives no line for
+    this crate; no interface or suite file differs from main. The four findings that wait on the owner are
+    unchanged under "For the owner" (1, 2, 4, 5).
+  - Audit of where a guest's name meets a JavaScript object: import names (fixed above), `find_export` (own
+    properties of the exports object, which has no prototype by the standard, and a `Map`), the export types
+    (`Map`). Every other property name glue.js and the Rust side use is one of this crate's constants. Nothing
+    of this crate resolves a JavaScript promise or awaits a JavaScript value made from a guest's module, so no
+    `then` is looked up on one; `compile_streaming` is the interface's own Rust future.
+- Done before (E1): the crate; the whole suite (29 tests) passing in headless Chrome 158 and headless Firefox 160
+  in a dedicated worker; 10 tests of this engine's own behaviour (behaviour.rs 9, panic.rs 1); a two-worker test where
   an engine of ours in a second worker uses a module and a shared memory posted from the first; the benchmark and
   its figures for both browsers; the safe routes measured against unsafe replacements built in scratch, all on run
   4's code (For the owner 4). No unsafe in the crate; `[lints] workspace = true`; clippy for wasm32 with warnings
@@ -38,8 +64,9 @@ Crate: crates/webassembly-engine/implementation/browser, package wcontainers-web
   pyro-parked/wcontainers-scratch/engine-browser/setup-tools.sh installs ChromeDriver 158.0.8127.36, Firefox
   160.0.1, geckodriver 0.37.1 and wasm-bindgen-cli 0.2.130 (the version wasm-bindgen is pinned to).
 - `x86-run <checkout> --name engine-browser -- 'WASM_BINDGEN_TEST_TIMEOUT=900 WC_BROWSER_TOOLS=/work/engine-browser
-  bash crates/webassembly-engine/implementation/browser/run-in-browsers.sh'` runs every test target (the suite,
-  behaviour, panic, workers and the benchmark in debug) in Chrome, then Firefox. For the figures: `...
+  bash crates/webassembly-engine/implementation/browser/run-in-browsers.sh --no-fail-fast'` runs every test target
+  (the suite, behaviour, hostile_names, typed_references, panic, workers and the benchmark in debug) in Chrome,
+  then Firefox; without `--no-fail-fast` cargo stops at the first target that fails. For the figures: `...
   run-in-browsers.sh --release --test benchmark -- --nocapture`. The timeout is the seconds the runner waits for
   one target; the runner's own default is too short for the benchmark.
 - The literal check, on a copy with a fresh git (the copy has no `.git`): `x86-run <checkout> --name
@@ -82,18 +109,23 @@ Crate: crates/webassembly-engine/implementation/browser, package wcontainers-web
     host function panicked (a panic is an abort on this target, it cannot unwind) and the call panics in turn.
 - Memory reads and writes: an access module per memory that imports it and our own memory and runs
   `memory.copy` (multi-memory). Out of bounds traps, which is answered with the interface's error.
-- Tables: the address type from `typeof table.length`, and whether the elements are `funcref` from whether one
-  small module importing a `funcref` table instantiates with it, both found once when an exported table is
-  described (an allocated table's type is known).
-- Globals: JavaScript cannot tell a global's type, so the engine finds an exported global's type by which of 14
-  small modules (7 value types, constant or variable) instantiates with the global; an allocated global's type
-  is known. Floats and vectors are read, written and
+- Types of exports: the JavaScript API tells no table's element type and no global's type, so `compile` reads
+  the types the module declares (wasmparser, every proposal it knows enabled) for each exported table and global,
+  imported ones included, and glue.js keeps them in a `Map` by export name beside the module; each instance
+  made from it finds them in a `WeakMap`. A reference refers to functions when its heap type is `func`, `nofunc`
+  or a type index of a function type. An allocated table's or global's type is known.
+- Tables: the address type from `typeof table.length`; whether the elements refer to functions from the declared
+  type. Writing a function of another type, or null into a non-null table, throws, which is
+  `ReferenceTypeMismatch`.
+- Globals: a global of a function reference type of any kind is read and written as `funcref`; one of another
+  reference type is not read (`ReadGlobalError`, `ValueTypeMismatch`). Floats and vectors are read, written and
   created through a module and the first slot: a JavaScript number does not keep a NaN's bits, and JavaScript
   cannot hold a vector at all.
 - `Module: Send + Sync` and `SharedMemory: Clone + Send + Sync` hold only a registration id (a number from one
   atomic counter in our own memory, so unique across every thread that shares it). The JavaScript object stays
   in a per-worker registry in glue.js and leaves it when the handle is dropped. Another worker learns the object
-  when it is posted: `module_to_post`/`receive_module` and `shared_memory_to_post`/`receive_shared_memory`.
+  when it is posted: `module_to_post`/`receive_module` (a `JsValue` holding the module and its export types) and
+  `shared_memory_to_post`/`receive_shared_memory`.
   Instantiating a module this worker does not know returns an error saying so. Nothing claims thread safety a
   JavaScript object lacks.
 - `compile_streaming` keeps the interface's default: the stream it is given is a Rust stream of chunks, which can
@@ -109,7 +141,7 @@ Crate: crates/webassembly-engine/implementation/browser, package wcontainers-web
   Firefox; js-sys's `Function::call0` on the export 35.7 and 52.8 ns.
 - A 64-byte read: js-sys's typed-array route 221.5 / 208.6 ns; hand-written glue with typed-array views
   76.9 / 113.2 ns; the access module 23.4 / 22.0 ns.
-- Chosen: hand-written glue (39 imported functions, each one call of the JavaScript API) and the access module.
+- Chosen: hand-written glue (43 imported functions, each one call of the JavaScript API) and the access module.
 
 ## Measurements
 
@@ -136,6 +168,14 @@ other tracks' jobs); Chrome; Firefox, the second run in brackets:
   host call is 0.7 to 0.9 ns slower in Chrome and 0.2 to 0.5 ns in Firefox; the flag the host module tests is one
   compare and branch, and the load was higher, so how much is the flag is not measured apart.
 
+E1f's code (compile now also reads the export types with wasmparser; find_export no longer probes), same machine,
+one run, release, load 8.3 to 10.0 from other tracks' jobs; Chrome; Firefox:
+- compile a small module: 15.0 µs; 37.5 µs (run 4 at load 4.6 to 4.9: 11.2; 35.1). How much of the difference is
+  the parse and how much the load is not measured apart.
+- instantiate it: 4.5; 2.9 µs. Empty call 17.2; 14.1 ns. Empty host call 10.4; 10.9 ns. Read / write 64 B
+  unshared 24.9 / 23.1; 20.8 / 20.0 ns. 64 KiB unshared 973.2 / 1304.4; 1546.6 / 1784.8 ns. Table write / read,
+  32-bit, 80.6 / 93.8; 44.8 / 68.2 ns. Within the spread of run 4's figures; the hot paths did not change.
+
 Places where an engine-specific path, chosen by a probe, would pay (none built):
 - Firefox, 64 KiB reads and writes of an unshared memory: typed-array views beat memory.copy by about 15 to 25%
   (1197.8 against 1547.4 ns read, 1512.0 against 1756.8 ns write, run 4). Not for a shared memory, and not in Chrome.
@@ -158,7 +198,8 @@ Places where an engine-specific path, chosen by a probe, would pay (none built):
    worker. Example: a `BrowserSharedMemory` sent through a Rust channel to a thread whose worker never received
    the object panics there. Smallest change: `-> Result<Self::MemoryAddress, Self::AddSharedMemoryError>`.
 3. Posting between workers is outside the interface: four public functions (`module_to_post`,
-   `receive_module`, `shared_memory_to_post`, `receive_shared_memory`). Whatever starts a worker must post the
+   `receive_module`, `shared_memory_to_post`, `receive_shared_memory`; a module is posted as a `JsValue` that
+   holds it and its export types, since a posted `WebAssembly.Module` cannot tell them). Whatever starts a worker must post the
    objects with its first message. The linter will report them as public outside the interface. A small
    coupled trait would hold them if he wants it in the contract.
 4. The zero-cost condition is not fully met by the safe routes. What of ours is left on each hot path, and the
@@ -195,7 +236,7 @@ Places where an engine-specific path, chosen by a probe, would pay (none built):
      then; 64 KiB unchanged. Needs our table to be growable.
    No vetted library covers these: each turns an integer from outside Rust into a reference or a function.
 5. The workspace's `forbid(unsafe_code)` does not see macro output. glue.rs's `#[wasm_bindgen] extern` block
-   expands to wasm-bindgen's generated code for each of its 39 functions, unsafe included, the same code js-sys
+   expands to wasm-bindgen's generated code for each of its 43 functions, unsafe included, the same code js-sys
    holds for its own imports.
 6. The suite's crate fails `cargo clippy -D warnings` (`ok().expect()` at conformance.rs lines 259, 309, 463).
    It is his file, so I left it alone. Clippy of this crate alone uses `--no-deps`.
@@ -218,8 +259,12 @@ What `cargo tree -e normal --target wasm32-unknown-unknown` shows for the librar
   wasm-bindgen-macro-support 0.2.130: 60 (in the code it generates), wasm-bindgen-shared 0.2.130: 0, bumpalo
   3.20.4 (MIT OR Apache-2.0): 236, syn 3.0.10: 103, quote 1.0.47: 0, proc-macro2 1.0.107: 6, unicode-ident
   1.0.27: 2 (each MIT OR Apache-2.0; unicode-ident also Unicode-3.0).
-- js-sys 0.3.107 (MIT OR Apache-2.0), without default features: 37. It still brings futures-core 0.3.34 (MIT
-  OR Apache-2.0): 8.
+- js-sys 0.3.107 (MIT OR Apache-2.0), without default features: 37. It brings only cfg-if and wasm-bindgen.
+- futures-core 0.3.34 (MIT OR Apache-2.0): 8, through the interface crate (its `Stream`); also a direct
+  dev-dependency of the tests, for a stream to `compile_streaming`.
+- wasmparser 0.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), without default features, with
+  `features`: 0. It brings bitflags 2.13.2 (MIT OR Apache-2.0): 4 lines, all for its `bytemuck` feature, which is
+  off; the crate is otherwise `forbid(unsafe_code)`. The workspace already uses wasmparser.
 - cfg-if 1.0.5 (MIT OR Apache-2.0): 0.
 - wasm-encoder 0.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT): 0; it brings leb128fmt 0.1.0
   (MIT OR Apache-2.0): 0. The workspace already uses wasm-encoder.
@@ -229,6 +274,11 @@ What `cargo tree -e normal --target wasm32-unknown-unknown` shows for the librar
   test runner's own crates (serde, serde_json, oorandom, nu-ansi-term and others).
 
 ## Departures from the plan
+
+- The types of exported tables and globals come from the module's own declarations (wasmparser), not from
+  probe modules: a table's or a mutable global's import type must equal its type, so no probe can match a typed
+  function reference without knowing the type. This replaced the `funcref` table probe and the 14 global probes;
+  memories are still probed (both access modules), since a shared memory posted alone has no module.
 
 - Memory copies use an access module (memory.copy between the guest's memory and ours) instead of typed-array
   views: 3 to 6 times faster at 64 bytes in both browsers.
