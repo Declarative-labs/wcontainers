@@ -58,6 +58,11 @@ probes).
   most search 1.395); layers 1 (2008 forms, 1,000 a form), 2 (10,000) and 3 (1,000) pass again with it; the sweep
   now follows every reachable host instruction's moves against the position map (results below). Left: the replay
   check, `answer` and the core moves, the pool, the trait's `retarget`, and what waits on an x86 executor.
+  Run 6: the x87 unit, transcendental.rs and root.rs are in the x86 core (plan 9), which builds for
+  `x86_64-unknown-none`; `answer` (x86/answer.rs, core) answers `cpuid`, `xgetbv` and the eight transcendental
+  instructions, each checked equal to the meaning's WebAssembly case by case (native layer 1 for the
+  transcendentals, a new test for `cpuid` and `xgetbv`, which layer 1 leaves out as the CPU's own table differs).
+  The rest of the Kernel route's answers (plan 3.5) are not built yet.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -72,9 +77,13 @@ probes).
    `translate_native_for`; ARM64 has no replay check yet, so the trait method needs ARM64's form or a ruling
    (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it. Native layer 2's blob can carry the
    replay test once the check exists (a stop word in the area, the Stop entry recording the position).
-3. `answer` and the core moves (the x87 unit, transcendental.rs, root.rs, the lazy_static line), then
-   x87_answer.rs and the unmasked mode; the differential test of `Condition::holds` against the meaning's
-   WebAssembly (through the translator test crate's runner) and P's table.
+3. `answer` for the rest of the Kernel route (plan 3.5; run 6 built `cpuid`, `xgetbv` and the transcendentals):
+   `rdtsc`/`rdtscp`/`rdpid` (the clock), `popf`/`iretq`, the segment reads, writes and far transfers, the
+   descriptor reads, `wrfsbase`/`wrgsbase`, the reciprocals, the XSAVE family, the partial-write and
+   undefined-result forms, each a `Question` with `native::question` giving it and native layer 1 comparing it with
+   the meaning (the forms layer 1 leaves out by a test of their own, as run 6's for `cpuid`). Then x87_answer.rs
+   and the unmasked mode; the differential test of `Condition::holds` against the meaning's WebAssembly and P's
+   table.
 4. The trait's `retarget` (plan 9) in place of `link`, with ARM64's; x86's is built (run 4) and used by the native
    blobs, and `link` writes its patch.
 5. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
@@ -85,6 +94,46 @@ probes).
 7. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
    before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
    area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+
+## What XN1 run 6 changed
+
+- Core moves (plan 9; commits 28efa220, 1a84b81c): rustc_apfloat and astro-float-num are dependencies of the core,
+  and lazy_static 1.5 with `spin_no_std` (already in the lock, its spin 0.9.9 too); x87.rs, transcendental.rs and
+  root.rs build without `translate`; `x87::transcendental` and `above_exact` (they take iced's `Mnemonic`) and
+  `inexact_power_product` (only `above_exact` uses it) stay behind it. `Unit::new` takes `&mut Consts` and the
+  transcendental functions take it; the translate half keeps the per-thread cache (`with_constants`) around the x87
+  hook and `above_exact`. The core builds for `x86_64-unknown-none` (cargo build, no error). The general register
+  numbers `RAX` to `R15` moved from operand.rs (translate) to the core's lib.rs; operand.rs re-exports those it uses.
+- `answer` (x86/answer.rs, core): `answer(Question, &mut X86Block, Offer, &mut Consts) -> Result<Note, Fault>`;
+  `Question::{Cpuid, Xgetbv, X87(Code)}`, `Fault::{GeneralProtection, FloatException(raised)}`,
+  `Note::AvxAskedAndToldNo` (the meaning's warning, for the inside to count). The translate half's
+  `native::question(&Instruction)` gives the question; fpu.rs's `code` and `transcendental_code` build the unit's
+  code once for the meaning and the question. Rip is the caller's to move on `Ok`.
+- Tests: native layer 1 computes every answered case's outcome by `answer` where it has a question and requires it
+  equal to the meaning's (`ANSWERS_CHECKED` in the summary line); tests/layer1.rs
+  `the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64` (every leaf with each sub-leaf of its table and two
+  past, leaves above the highest, `xgetbv` of four registers, upper halves set): 154 cases. Controls (remote copy
+  only): the sub-leaf echo left out: the cpuid test fails; the pending exception check left out: native layer 1 of
+  `fsin` and `fpatan` fails ("the inside's answer ... differs from the meaning's FloatException").
+
+## XN1 run 6 results (rented x86 machine, Xeon 8488C, 5-level paging)
+
+- Commits 1a84b81c to e034c9ef (other tracks' edits in the tree), 17:44 to 18:09 UTC: clippy with warnings denied on
+  wcontainers-x86 (with and without `translate`) and -translator-test, all targets, `--no-deps`: clean;
+  `cargo build -p wcontainers-x86 --no-default-features --target x86_64-unknown-none`: builds; the x86 crate's
+  tests: all pass (the transcendental ones with the constants passed in).
+- WebAssembly layer 1, 2008 forms, 300 a form, seed 5150, 32 at once (load 1.3 before, 23 after): 1587 forms fail
+  on this machine, the same list after the core move and after the code's sharing (scratch run11-wasm-failing-
+  before.txt and -after.txt); none is an x87 register form, and the x87 memory forms fail by 5-level paging (e.g.
+  `fld dword [r13]`: the reference a page fault at 0xffff7ffffffffff3, the meaning general protection), as
+  cloud/x86/x86-machine.md says layer 1 does here.
+- Native layer 1, 2008 forms, 1,000 a form, seed 5150, 32 at once (load up to 23): 0 failing, the same 2,594 known
+  failures as runs 3 to 5; 88,693 cases answered by the inside, of which the 16,000 transcendental runs (8 forms,
+  1,000 cases, uncounted and counted) had `answer`'s outcome equal to the meaning's; 547 s.
+- `the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64`: 154 cases, equal.
+- The literal check now reports 10,623 lines over the workspace, among them strings (error messages) in carry.rs and
+  the test crate's native.rs that earlier runs wrote; none in a line this run wrote. Left for the run that takes
+  the literal check up again.
 
 ## What XN1 run 5 changed
 
@@ -328,6 +377,14 @@ entry and exits (a loop inside the piece pays once); that is the next speed step
   5,705,008 spans, before the fldcw and call-map checks), seed 0x51 4,000,000 cases (16,000,000 pieces, 45,570,238
   spans, release, all checks): 0 broken. native_routes seed 0x51, 2,000,000 cases: 0 broken. native_carry seed 11,
   1,000,000 cases: 0 differences.
+
+## Departures from the plan (XN1 run 6)
+
+- `answer` takes a `Question` (plan 1 and 3.5 give no signature): the inside learns the instruction from the
+  position map's guest pc, and the translate half's `native::question` turns a decoded instruction into one, so the
+  core needs no decoder. `Unit::new` takes the constants as a fourth argument (plan 9 says the transcendental
+  functions take them; the unit is how they are reached).
+- The general register numbers moved into the core (not in plan 9's list): `answer` needs them without `translate`.
 
 ## Departures from the plan (XN1 run 4)
 
@@ -880,6 +937,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Licences
 
+XN1 run 6 made rustc_apfloat 0.2.3 (Apache-2.0 WITH LLVM-exception) and astro-float-num 0.3.7 (MIT) dependencies of
+the x86 core, and added lazy_static 1.5.1 (MIT OR Apache-2.0) with `spin_no_std`, which brings spin 0.9.9 (MIT);
+all three were in the lock already.
+
 XN1 run 3 made libc 0.2.191 (MIT OR Apache-2.0, already in the lock) a dependency of wcontainers-translator-test on
 Linux x86-64 only (the signal frame's layout and system call numbers of native layer 1's blob), and turned on the
 translator's `native` feature there. No new crate.
@@ -896,6 +957,10 @@ dependencies, into the x86 core and adds `lazy_static` 1.5 (MIT OR Apache-2.0) f
 brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
+
+- XN1 run 6's core moves and `answer` (answer.rs, x87.rs, transcendental.rs, fpu.rs, native.rs, lib.rs, operand.rs,
+  and the test crate's native.rs and layer1.rs): no unsafe code; no new crate (lazy_static and spin were in the
+  lock already). `answer` writes only the guest's own block and reads nothing outside it.
 
 - XN1 run 5's loop homes (carry.rs, area.rs, native.rs, the shared native.rs files and native_output.rs): no
   unsafe code, no new import. The register area's home words hold only guest register values, like the withheld

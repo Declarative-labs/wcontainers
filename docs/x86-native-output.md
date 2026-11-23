@@ -450,6 +450,12 @@ through the meaning's astro-float-num function (in the core once moved, section 
 meaning's image. Pure answers (all but the clock, the system call and the far transfers' kernel part) need no
 kernel; whether P answers them in the guest's host process is P's choice. Where an answer is WebAssembly logic in
 the meaning and Rust logic here, the differential test (section 7) proves them equal case by case.
+`answer(question, block, offer, constants) -> Result<Note, Fault>` (x86/answer.rs) takes a `Question`, which the
+translate half's `native::question` gives for a decoded instruction (the inside finds the instruction by the
+position map's guest pc), so the core needs no decoder; on `Ok` the caller moves rip past the instruction, on a
+`Fault` nothing has changed, and a `Note` names what the meaning warns of (`cpuid` asking for AVX while told no).
+Native layer 1 requires every answered case's outcome by `answer` equal to the meaning's; forms layer 1 leaves out
+(`cpuid`, `xgetbv`, whose table is ours, not the CPU's) have a test of their own against the meaning.
 
 ### 3.6 System calls, faults, the count
 
@@ -1159,7 +1165,7 @@ suites passing:
 - x86/x87.rs's unit (`Unit`, `Code`, `Operation`, `Format`, `Arithmetic`, `Extended`, `Wide` and what they use),
   x86/transcendental.rs and x86/root.rs move into the core; the two functions of x87.rs that take
   `iced_x86::Mnemonic` (`transcendental`, `above_exact`) stay behind `translate`. transcendental.rs's
-  `thread_local!` cache of astro-float's `Consts` becomes a `&mut Consts` its functions take: the translate half
+  `thread_local!` cache of astro-float's `Consts` becomes a `&mut Consts` its functions and `Unit::new` take: the translate half
   keeps today's per-thread cache around them, and the floor and I's inside keep one per virtual processor or
   runner.
 - x86/x87_answer.rs (new, core): the plain-Rust twin of x86/fpu.rs's instruction-level part for the unmasked x87
