@@ -4694,7 +4694,20 @@ impl<B: Backend> Device<B> {
             });
             return Ok(());
         }
-        if self.ctx.sample_mask & 1 == 0 || instances == 0 {
+        // Direct3D uses the mask's bits up to the targets' sample count, bit 0 alone without
+        // multisampling; a draw it leaves no sample of writes nothing.
+        let samples = self
+            .ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .flatten()
+            .map(|v| v.texture.desc.sample_count)
+            .max()
+            .unwrap_or(1);
+        let all = u32::MAX >> (32 - samples.min(32));
+        let mask = self.ctx.sample_mask & all;
+        if mask == 0 || instances == 0 {
             return Ok(());
         }
         let early = match self.early_tests(self.ctx.ps.as_ref())? {
@@ -4710,17 +4723,6 @@ impl<B: Backend> Device<B> {
         self.fit_depth_stencil()?;
         // A mask leaving out samples of multisampled targets draws through a twin of the raster
         // block made with it.
-        let samples = self
-            .ctx
-            .targets
-            .iter()
-            .chain([&self.ctx.depth])
-            .flatten()
-            .map(|v| v.texture.desc.sample_count)
-            .max()
-            .unwrap_or(1);
-        let all = u32::MAX >> (32 - samples.min(32));
-        let mask = self.ctx.sample_mask & all;
         let masks = samples > 1 && mask != all;
         if masks && !self.backend.caps().has(Features::SAMPLE_MASK) {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
