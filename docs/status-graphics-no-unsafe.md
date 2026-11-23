@@ -10,14 +10,14 @@ Every use left in these crates sits at one of five boundaries. For each: what it
 safe library does it, what removing it would cost.
 
 1. Calling real Direct3D 11 and 12, DXGI and Win32 (graphics-test all 342; gpu-webgpu
-   tests/direct3d.rs 19 and the Windows half of tests/host 4; direct3d-12 examples/check 169 and
+   tests/direct3d.rs 19; direct3d-12 examples/check 169 and
    tests/gpu.rs 1, `D3DCompile`). The `windows` crate (Microsoft, 0.62.2) declares every function
    and every COM method `unsafe fn`. No maintained safe wrapper of Direct3D 11 or 12 exists (gfx-rs
    `d3d12` was retired into wgpu-hal, whose API is unsafe; nothing for Direct3D 11). These crates
    exist to draw the reference pictures with real Direct3D, so wgpu cannot stand in. Removing it
    means a safe Direct3D wrapper crate, which the rules forbid us to write as a helper. Asked: may
    the reference crates call real Direct3D (the comparison's yardstick, never shipped)?
-2. Being a Direct3D 12 library for C programs (direct3d-12 examples/directx, about 330): DLL
+2. Being a Direct3D 12 library for C programs (direct3d-12 examples/directx, 326): DLL
    exports need `#[unsafe(no_mangle)]`, which the lint counts as unsafe code; COM objects through
    `windows-core`'s `implement` macro do not compile under `forbid(unsafe_code)` at all (measured,
    below); and every method receives raw pointers from the program (descriptions, out-pointers,
