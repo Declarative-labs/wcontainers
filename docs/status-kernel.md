@@ -63,6 +63,24 @@ linux_extra.rs (89be397e, 2b12892c); the baseline went from 27628 to 27626 lines
 check at 2b12892c (kf6/lit4*) exits 1, on other tracks' files and the interfaces', and in this
 track's files only on the lines For the orchestrator names (the fifth run's four and the sixth's).
 
+Measured on the ARM64 machine during the run (load 3 to 58, other tracks' jobs beside): kernel
+unit tests 21 pass at b49c49e5 (20 at 3dc17db7); startoptions 16 of 16, placement 1, machine 2,
+layout, linux_layouts, memory 2, privatemap, sharedmap 2, faults, bigargs, execveat, unixsock 4
+pass; mapflags 1 of 2, procwrite 3 of 5, schedattr 0 of 1, priorities 0 of 1, every failure on
+the ARM list.
+
+The whole suite at 3dc17db7 (16:21 to 19:30 UTC, load 3 to 48, 8 test threads; kf6/whole.sh,
+log kf6/suite6.log, job kernel/20261123-162017-413346): clippy with warnings denied status 0, fmt
+no diff; 411 passed, 36 failed, 8 ignored over every result line (the fifth run's same count: 406,
+35, 8). The failures are the ARM list (kf6/fails6.txt) and one more, backend
+`mapped_pages_read_when_touched_match_reference`, whose reference run hung: on Linux, guest
+backendmaps.c sat 98 minutes in `anon_pipe_write` on a pipe of its own under the cached test
+server, and the container was killed by hand at 18:05 to let the suite go on. Alone it passes 3
+times of 3 (kf6/a8.log, 15 to 38 s). Recorded under Known issues. The five more passing are the
+new tests (two of startoptions, placement's one, machine's two); the kernel's unit tests one
+more. The later commits (89be397e to b49c49e5: somaxconn's name, the range-by-range alignment)
+ran with the tests they touch above, not with the whole suite.
+
 ## KF, fifth run: the check's findings, and the literal fix list's time and size units
 
 Started about 10:30 UTC on 2026-11-23 at 4f59ef13's code (nothing to merge: main's last merge,
@@ -7424,6 +7442,11 @@ gaps (and Departures) so that K6c's gap list could be final. An answer that diff
 Earlier: none open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- KF, sixth run: backend `mapped_pages_read_when_touched_match_reference` once hung on the
+  reference side in a whole-suite run (guest backendmaps.c blocked in Linux's `anon_pipe_write` on
+  its own pipe under the test server with `--cached`, 98 minutes, until killed); alone it passed 3
+  of 3. Its cause on Linux is not found; a test hang limit for reference runs would bound it.
 
 - Settled in the seventeenth run (Departures): terminal `splice_holds_the_pipe` (guest/ttylock.c, `cat /dev/tty | cat`) failed 1 time in the
   fifteenth run's whole suite on the ARM machine and 2 times in 9 run alone there, as before in
