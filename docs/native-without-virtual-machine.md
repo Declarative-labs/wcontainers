@@ -1,7 +1,7 @@
 # Native without a virtual machine: the plan for both forms
 
-Status: plan (W0), 2026-11-23, run 5 (every finding of the first, second and third checks answered, and of the
-track's own fourth reading in run 5).
+Status: plan (W0), 2026-11-23, run 6 (every finding of the first, second and third checks answered, and of the
+track's own readings in runs 5 and 6).
 Brief: the owner's ruling of 2026-11-23 and brief-native.md (including its section on register groups). It builds on docs/native.md (the
 virtual-machine form, "the VM form" below) and reuses its native output, count, position map and replay check; where
 this plan says "as native.md", that section holds. The x86-64 native output's own plan, docs/x86-native-output.md
@@ -572,7 +572,9 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   (3.6). Placement never uses it (4.3). The command names the new thread's index, which the embedder chose free;
   `clone` gets `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
   CLONE_CHILD_CLEARTID`, with the exit-clear word of the new thread's register page as the word to clear (the
-  stub's first thread, index 0, names its own with `set_tid_address` before its filter). The new
+  stub's first thread, index 0, names its own with `set_tid_address` before its filter), and the top of the new
+  index's signal stack as its stack, so the new thread's sp is never the maker's guest sp (a signal frame for a fault
+  of ours before its `sigaltstack` lands in our area, not in guest memory). The new
   host thread starts with the signal mask its maker had while applying commands (the stop blocked) and with no
   alternate signal stack (Linux clears it for a thread that shares the memory), so its first acts are
   `sigaltstack` onto its own stack, writing its id, unblocking the stop, and the wait on its answer word; a stop
@@ -1188,10 +1190,10 @@ them.
   instructions +60.3 / +60.4%; per program within run 2's ranges (sort +34.0 / +34.4%, matrix +76.1 / +70.5%).
   So f = 0.211 to 0.214 for X32-p.
 - So by section 7's arithmetic, with f = 0.214 (X32-p, 8 programs): Graviton4 c = 2.29 to 2.37 µs on one CPU gives
-  90,000 to 94,000 kernel entries per second back to back, 81,000 to 82,000 with work between calls, and 69,000 to
-  70,000 when every CPU is contended (run 4, I's work slowed as P's); the Xeon 8488C (Granite Rapids's f, 0.110 to
-  0.152) 56,000 to 80,000 at c = 1.89 to 1.96 µs, 25,000 to 52,000 with work between calls, 38,000 to 66,000 with
-  every CPU contended. The X32 variants' access is `[base, wA, uxtw]`, the speculation-safe one of 3.2, so f needs no
+  90,000 to 94,000 kernel entries per second back to back, 81,000 to 86,000 with work between calls (runs 4 and 5),
+  and 69,000 to 70,000 when every CPU is contended (run 4, I's work slowed as P's); the Xeon 8488C (Granite Rapids's
+  f, 0.110 to 0.152) 56,000 to 80,000 at c = 1.89 to 1.96 µs, with work between calls 50,000 to 75,000 idle (run 5)
+  and 25,000 to 52,000 at a load rising to 10 (run 4), 38,000 to 66,000 with every CPU contended. The X32 variants' access is `[base, wA, uxtw]`, the speculation-safe one of 3.2, so f needs no
   further instruction for it.
 
 ## 12. Decisions for the owner

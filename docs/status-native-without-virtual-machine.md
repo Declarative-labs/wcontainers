@@ -7,7 +7,11 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 - W0 (the plan for both forms): written in run 1, revised in run 2 for the first independent check, in run 3 for
   the second check's eleven findings, in run 4 for the third check's twelve, and in run 5 (2026-11-23) for what this
-  track's own fresh reading found when it tried to break the plan (no check report was waiting). Run 5:
+  track's own fresh reading found when it tried to break the plan (no check report was waiting). Run 6 (2026-11-23)
+  read the whole plan again and fixed three small things: `clone` gets the new index's signal-stack top as its
+  stack, so a new thread's sp is never the maker's guest sp before its `sigaltstack` (plan 4.1); section 11's
+  crossover summary now carries run 5's figures as section 7 does; the plan's status line. The independent check
+  runs only after a build run reports W0 complete, so run 6 reports it complete. Run 5:
   - Per-thread pages in P (blocking): the filter refuses any mapping in our area after start, so a new thread's
     control and register pages could not have been mapped, and the window cache could evict a page a runner waits
     on. Now each stub has a thread-pages memfd mapped whole at start (control read-only, register read-write, for
@@ -104,8 +108,8 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 ## Next
 
-- W0 waits only for the orchestrator's independent check of the run 5 plan (no check report existed at run 5's
-  start; run 5's reading was this track's own). Then any fixes it asks for.
+- W0 is reported complete by run 6; next is the orchestrator's independent check of the plan, then any fixes it
+  asks for.
 - After the check: W1 (form P on ARM64 Linux), plan section 13. It needs the translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter first (below, "Asked of other tracks"); until they exist,
   W1 can build everything of plan sections 3 and 4 that does not run translated code (layout and reservations,
