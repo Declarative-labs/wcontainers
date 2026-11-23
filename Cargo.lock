@@ -5311,6 +5311,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-webassembly-engine"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+]
+
+[[package]]
+name = "wcontainers-webassembly-engine-conformance"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "wcontainers-webassembly-engine",
+]
+
+[[package]]
 name = "wcontainers-x86"
 version = "0.1.0"
 dependencies = [

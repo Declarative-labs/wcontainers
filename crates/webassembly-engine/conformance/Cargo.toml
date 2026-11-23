@@ -1,0 +1,12 @@
+[package]
+name = "wcontainers-webassembly-engine-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-webassembly-engine = { path = ".." }
+futures-core = { version = "0.3.34", default-features = false }

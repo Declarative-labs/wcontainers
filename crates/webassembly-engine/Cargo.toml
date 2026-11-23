@@ -1,0 +1,10 @@
+[package]
+name = "wcontainers-webassembly-engine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+futures-core = { version = "0.3.34", default-features = false }
