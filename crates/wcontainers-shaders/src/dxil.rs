@@ -291,11 +291,18 @@ fn declared_sizes(
     Ok(())
 }
 
+/// Why the DXIL route refuses a container: it holds no whole `DXIL` chunk.
+const NO_DXIL_CHUNK: &str = "a container holding no DXIL program";
+
 /// Converts DXIL into a naga module and its reflection.
 pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
+    // dxil-spirv would take a DXBC program through its own copy of dxbc-spirv.
+    if !container::holds_dxil(dxil) {
+        return Err(ConvertError::Rejected(NO_DXIL_CHUNK.into()));
+    }
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
     if let Some(name) = absent_extension(&spirv) {
         return Err(ConvertError::Unsupported(name));

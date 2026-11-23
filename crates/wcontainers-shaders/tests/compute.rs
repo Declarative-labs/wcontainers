@@ -49,6 +49,26 @@ fn atomics_and_counters_declare_their_bindings() {
     }
 }
 
+/// A DXBC program handed to the DXIL route is refused by a reason naming the input, in every
+/// round, and the routes give the same bytes afterwards as before.
+#[test]
+fn a_dxbc_program_through_the_dxil_route_is_refused_by_name() {
+    let (dxbc, dxil) = (own("cs_atomics.dxbc"), own("cs_atomics.dxil"));
+    let encoded = |source| {
+        let c = convert(source, &VariantKey::default(), None).expect("converts");
+        format!("{:?}", c.modules[0].module)
+    };
+    let before = [encoded(Source::Dxbc(&dxbc)), encoded(Source::Dxil(&dxil))];
+    for round in 0..3 {
+        match convert(Source::Dxil(&dxbc), &VariantKey::default(), None) {
+            Err(ConvertError::Rejected(reason)) if reason.contains("no DXIL program") => {}
+            other => panic!("round {round}: {other:?}"),
+        }
+    }
+    let after = [encoded(Source::Dxbc(&dxbc)), encoded(Source::Dxil(&dxil))];
+    assert_eq!(before, after);
+}
+
 fn reads_back(file: &str, m: &wcontainers_gpu::ShaderModule) {
     let text =
         naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())

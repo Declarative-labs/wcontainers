@@ -679,6 +679,11 @@ pub struct DxilViews {
     pub storage: Option<alloc::vec::Vec<DxilView>>,
 }
 
+/// Whether `container` holds a whole `DXIL` chunk, which the DXIL route takes its program from.
+pub(crate) fn holds_dxil(container: &[u8]) -> bool {
+    is_container(container) && chunks(container, DXIL).next().is_some()
+}
+
 /// The views `container`'s DXIL module declares, read by dxil-spirv's reader in one pass over the
 /// module; `None` where it holds no `DXIL` chunk, its checksum does not match, or its module does not
 /// parse.
