@@ -6,6 +6,7 @@
 //! integers absent.
 
 use wcontainers_directx_graphics_infrastructure::required::{self, Required};
+use wcontainers_directx_graphics_infrastructure::stage_registers::{INPUT_SLOTS, OUTPUT_REGISTERS};
 use wcontainers_directx_graphics_infrastructure::{
     FormatSupport, atomic_operations, dxgi, dxgi_format, dxgi_vertex_format,
     format_support as shared_format_support, storage_viewed, support1, support2, takes_samples,
@@ -50,7 +51,8 @@ pub fn unmet_format_requirements(caps: &Caps) -> Vec<(u32, Required)> {
 }
 
 /// Whether the back end has 11_0's abilities but its formats': compute, storage writes in pixel
-/// programs, 11_0's sizes, `D32_FLOAT_S8X24_UINT` depth targets and `LEVEL_11_0_FIXED_FUNCTION`.
+/// programs, 11_0's sizes, its input slots and stage registers ([`serves_stage_registers`]),
+/// `D32_FLOAT_S8X24_UINT` depth targets and `LEVEL_11_0_FIXED_FUNCTION`.
 pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
     let l = &caps.limits;
     let sizes = l.max_texture_2d >= LEVEL_11_0_TEXTURE_2D
@@ -67,7 +69,17 @@ pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
     let fixed = caps.has(LEVEL_11_0_FIXED_FUNCTION);
     // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`
     // capability promises.
-    sizes && depth_stencil && stages && fixed
+    sizes && depth_stencil && stages && fixed && serves_stage_registers(l)
+}
+
+/// Whether `limits` serve Direct3D's 32 input slots and elements, fetched as laid out up to the
+/// back end's streams and attribute locations and in the vertex program past them, a storage
+/// buffer each (`VertexPulledInShader`); and its 32 registers from the vertex to the pixel stage,
+/// one the position, the rest moved onto the back end's inter-stage locations (`StageMoves`).
+pub fn serves_stage_registers(limits: &wcontainers_gpu::Limits) -> bool {
+    let fetched =
+        limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;
+    fetched >= INPUT_SLOTS && limits.inter_stage_slots + 1 >= OUTPUT_REGISTERS
 }
 
 /// `D3D12_FORMAT_SUPPORT1_BUFFER` and `D3D12_FORMAT_SUPPORT1_SHADER_LOAD`, which typed buffer

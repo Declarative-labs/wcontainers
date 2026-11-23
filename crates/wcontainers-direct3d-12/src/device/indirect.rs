@@ -156,7 +156,7 @@ impl<B: Backend> Replay<B> {
             .render
             .as_ref()
             .is_some_and(|r| {
-                let pulled = super::pull::pulled_streams(&r.inputs, &strides, rates);
+                let pulled = super::pull::pulled_streams(&r.inputs, &strides, caps);
                 r.reads_bases && (r.arguments.is_none() || self.counted.is_some())
                     || r.inputs.iter().any(|(e, _)| {
                         e.per_instance

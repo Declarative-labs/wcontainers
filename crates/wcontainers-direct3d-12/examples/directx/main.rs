@@ -187,6 +187,13 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
     }
     let level = gpu::call(|d| {
         let caps = d.backend().caps();
+        if !features::has_abilities_of_11_0(caps) {
+            eprintln!(
+                "wcontainers: no feature level 11_0 device: the back end lacks one of its \
+                 abilities (compute, storage writes in pixel shaders, its sizes, 32 input slots \
+                 and stage registers, D32_FLOAT_S8X24_UINT targets, its raster and blend state)"
+            );
+        }
         for (format, lacks) in features::unmet_format_requirements(caps) {
             eprintln!(
                 "wcontainers: no feature level 11_0 device: format {format} lacks {lacks:x?} \

@@ -291,6 +291,9 @@ struct Render<B: Backend> {
     instances_step_by_one: bool,
     /// The geometry stage, for pipelines with a geometry shader.
     geometry: Option<geometry::Geometry<B>>,
+    /// Where the values between its vertex and pixel programs move, which every program made for
+    /// it later follows.
+    moves: pull::StageMoves,
 }
 
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
@@ -1457,6 +1460,14 @@ impl<B: Backend> Device<B> {
                 *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
             }
         }
+        let moves = self.stage_moves(
+            &vs,
+            ps.as_ref(),
+            made.is_some(),
+            vs_key.linked != LinkedValues::default(),
+        )?;
+        vs = pull::moved(vs, &moves.outputs)?;
+        let ps = ps.map(|p| pull::moved(p, &moves.inputs)).transpose()?;
         let vs_shader = match made.as_ref().filter(|m| m.shader.is_some() || vertex_alone) {
             Some(geometry::Made {
                 domain: Some(domain),
@@ -1517,7 +1528,7 @@ impl<B: Backend> Device<B> {
                 draw_base: DrawBaseSource::Arguments,
                 ..vs_typed.clone()
             };
-            self.vertex_program(desc.vs, key, fragment.as_ref())
+            self.vertex_program(desc.vs, key, fragment.as_ref(), &moves.outputs)
                 .ok()
                 .filter(|p| {
                     p.helpers
@@ -1594,11 +1605,11 @@ impl<B: Backend> Device<B> {
             linked,
             instances_step_by_one,
             geometry: made.map(|m| m.geometry),
+            moves,
         };
         // Built ahead with the strides of packed elements, where the back end fetches them so.
         let packed = packed_strides(&render.inputs);
-        let rates = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
-        let fetched = pull::pulled_streams(&render.inputs, &packed, rates)
+        let fetched = pull::pulled_streams(&render.inputs, &packed, self.backend.caps())
             .iter()
             .all(Option::is_none);
         if let Some(topology) = topology
@@ -1868,6 +1879,7 @@ impl<B: Backend> Device<B> {
             return Ok(p.clone());
         }
         let (vertex, pixel) = (render.vertex.clone(), render.pixel.clone());
+        let moves = render.moves.inputs.clone();
         let root = render.root.clone();
         let samples = render.targets.samples.clamp(1, 32) as u8;
         let linked = render.linked;
@@ -1886,7 +1898,7 @@ impl<B: Backend> Device<B> {
                 ..formats::typed_key(&pixel, self.texel_route(), &root, bind::PIXEL).0
             };
             linked.apply(&mut key);
-            self.convert(&pixel, ShaderStage::Fragment, key)?
+            pull::moved(self.convert(&pixel, ShaderStage::Fragment, key)?, &moves)?
                 .modules
                 .swap_remove(0)
         };
@@ -3959,13 +3971,12 @@ impl<B: Backend> Replay<B> {
             (None, range) => range,
         };
         // Inputs the back end cannot fetch as laid out are fetched in the program.
-        let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
         let inputs = std::mem::take(&mut d.render_mut(pid).inputs);
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
             *s = v.stride;
         }
-        let pulled = pull::pulled_streams(&inputs, &strides, rates);
+        let pulled = pull::pulled_streams(&inputs, &strides, d.backend.caps());
         let fetch = d.fetch(&inputs, &self.vertex_buffers, &pulled, first_instance);
         let mut used = [false; MAX_VERTEX_STREAMS];
         // Streams that never step, bound at the first instance's element (see `vertex_layout`).

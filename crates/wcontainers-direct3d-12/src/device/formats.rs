@@ -349,10 +349,13 @@ impl<B: Backend> Device<B> {
         };
         let own_fragment = r.fragment.clone();
         let own_helpers = p.helpers.clone();
+        let moves = r.moves.clone();
         let vs = self.convert(&vertex_code, ShaderStage::Vertex, vertex_key)?;
+        let vs = super::pull::moved(vs, &moves.outputs)?;
         let (fragment, helpers) = match fragment {
             Some((code, key)) => {
                 let ps = self.convert(&code, ShaderStage::Fragment, key)?;
+                let ps = super::pull::moved(ps, &moves.inputs)?;
                 (Some(ps.modules[0].clone()), Helpers::of(&ps))
             }
             None => (own_fragment, own_helpers),
@@ -525,13 +528,12 @@ impl<B: Backend> Device<B> {
             self.backend.destroy(Object::Shader(shader));
             return Ok((program?, Helpers::of(&cs)));
         }
-        let ps = self.convert(code, ShaderStage::Fragment, key)?;
-        let vertex = self.pipelines[pid.0 as usize]
+        let r = self.pipelines[pid.0 as usize]
             .render
             .as_ref()
-            .expect("a graphics pipeline")
-            .vertex
-            .clone();
+            .expect("a graphics pipeline");
+        let (vertex, moves) = (r.vertex.clone(), r.moves.inputs.clone());
+        let ps = super::pull::moved(self.convert(code, ShaderStage::Fragment, key)?, &moves)?;
         let vertex = self.backend.create_shader(&vertex)?;
         let fragment = match self.backend.create_shader(&ps.modules[0]) {
             Ok(f) => f,
