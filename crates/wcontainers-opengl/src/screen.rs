@@ -223,9 +223,6 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // cube arrays.
     caps.seamless_cube_map = true;
     caps.cube_map_array = true;
-    // The interface copies between a block-compressed format and a plain one of the same block
-    // size (`copy_texture`).
-    caps.copy_between_compressed_and_plain_formats = true;
     // Every back end bounds a program's buffer accesses: one past a binding's end reads zero or
     // a value inside it and writes nothing outside it.
     caps.robust_buffer_access_behavior = true;
