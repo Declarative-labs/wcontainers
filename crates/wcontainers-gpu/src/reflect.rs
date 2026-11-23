@@ -483,6 +483,12 @@ bitflags! {
         /// texture and writes the one vertex its slot keeps, which is captured in turn and drawn by the
         /// geometry stage's pass-through ([`crate::SlowPath::GeometryAsReplay`]).
         const GEOMETRY_REPLAY = 1 << 16;
+        /// The pixel shader keeps only the pixels Direct3D's aliased line rule (the diamond exit)
+        /// picks for the line whose window-space ends the stage helper's rectangle passes in after
+        /// the [`VariantKey::linked`] values, and discards the others; the rectangle covers every
+        /// sample of each pixel it keeps. For aliased lines into a multisampled target
+        /// ([`crate::SlowPath::AliasedLinesAsQuads`]).
+        const LINE_DIAMOND = 1 << 17;
     }
 }
 
@@ -606,7 +612,8 @@ pub struct TargetInShader {
 /// [`VariantFlags::CLIP_DISTANCE`], zero without), then its unclamped clip z (with
 /// [`VariantFlags::DEPTH_CLAMP`]), then the layer a geometry stage names (one flat u32, with
 /// [`VariantFlags::LAYER_FROM_STAGE`]), then the line coverage values (four f32 interpolated without
-/// perspective, with [`VariantFlags::LINE_COVERAGE`]), then the primitive's number (one flat u32,
+/// perspective, with [`VariantFlags::LINE_COVERAGE`]) or the line's ends (four flat f32, with
+/// [`VariantFlags::LINE_DIAMOND`]), then the primitive's number (one flat u32,
 /// with [`VariantFlags::PRIMITIVE_ID_FROM_STAGE`]). `location` is one past every location either
 /// program's reflection lists.
 #[derive(

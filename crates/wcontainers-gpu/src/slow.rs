@@ -33,6 +33,10 @@ const PACKED_TARGET_READ_BY_BLEND: &str =
 const STORAGE_READ_WRITE_THROUGH_BUFFER: &str =
     "storage texture loaded and stored by one program through a buffer of its texels";
 
+/// The reason [`SlowPath::AliasedLinesAsQuads`] shows.
+const ALIASED_LINES_AS_QUADS: &str =
+    "aliased lines drawn as rectangles keeping the pixels of their rule";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -336,11 +340,15 @@ pub enum SlowPath {
     /// load and store in one program (WebGPU: all but `r32float`, `r32uint` and `r32sint`), read
     /// and written through a buffer of its texels copied around each use.
     StorageReadWriteThroughBuffer,
+    /// Aliased lines into a multisampled target drawn as rectangles whose program keeps the pixels
+    /// Direct3D's line rule picks (every sample of each), where the back end draws lines there by
+    /// its own multisampled rule.
+    AliasedLinesAsQuads,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 115] = [
+    pub const ALL: [SlowPath; 116] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -456,6 +464,7 @@ impl SlowPath {
         SlowPath::PackedTargetQuantised,
         SlowPath::PackedTargetReadByBlend,
         SlowPath::StorageReadWriteThroughBuffer,
+        SlowPath::AliasedLinesAsQuads,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -596,6 +605,7 @@ impl SlowPath {
             SlowPath::PackedTargetQuantised => PACKED_TARGET_QUANTISED,
             SlowPath::PackedTargetReadByBlend => PACKED_TARGET_READ_BY_BLEND,
             SlowPath::StorageReadWriteThroughBuffer => STORAGE_READ_WRITE_THROUGH_BUFFER,
+            SlowPath::AliasedLinesAsQuads => ALIASED_LINES_AS_QUADS,
         }
     }
 }
@@ -683,7 +693,7 @@ mod tests {
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
             StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched \
             SharedThroughHost QuerySetSplitPass PackedTargetQuantised PackedTargetReadByBlend \
-            StorageReadWriteThroughBuffer";
+            StorageReadWriteThroughBuffer AliasedLinesAsQuads";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {

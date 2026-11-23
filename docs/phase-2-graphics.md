@@ -1563,6 +1563,12 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   and GLES likewise; neither lets a program choose, so the raster block has no field for it. Lines are
   drawn by the back end's rule: a listed loss, at most the pixels at a line's ends and along its edges
   (compared with the reference at G4 with the tolerance Microsoft's own conformance allows lines).
+  Aliased lines into a multisampled target are the exception: Direct3D covers every sample of each
+  pixel the rule picks, where the back ends cover the samples their own multisampled rule picks, a
+  difference along the whole line. The front hands such draws to the stage helper, which draws each
+  line as a rectangle covering every pixel the rule may pick and passes the line's window-space ends;
+  the pixel program variant `VariantFlags::LINE_DIAMOND` keeps the pixels the diamond-exit rule picks
+  and discards the rest (`AliasedLinesAsQuads`), exact.
 - **Fractional constant depth bias.** OpenGL's `glPolygonOffset` units, Vulkan's
   `depthBiasConstantFactor` and Direct3D 12's `D3D12_RASTERIZER_DESC1::DepthBias` are floats;
   Direct3D 9 to 11's are integers. `RasterDesc::depth_bias` is a float; WebGPU's `depthBias` is an
@@ -1674,7 +1680,8 @@ and `420_OPAQUE` textures are built from ordinary ones, `R8G8_B8G8_UNORM` and `G
 `BlockDecoded`; `ID3D11VideoDevice` is not offered (4.12). `CopyResource` between multisampled
 textures: native on WebGPU, `MultisampleCopyResolved` on WebGL 2 (a listed loss, 4.12). A rasterizer
 state with `AntialiasedLineEnable` and `MultisampleEnable` off, on line draws:
-`AntialiasedLinesAsQuads` (4.12). `MultisampleEnable`'s choice between quadrilateral and aliased line
+`AntialiasedLinesAsQuads` (4.12). Line draws with both off into a multisampled
+target: `AliasedLinesAsQuads` (4.12). `MultisampleEnable`'s choice between quadrilateral and aliased line
 rasterisation for other line draws is a listed loss (4.12). A pixel shader's storage view read by a
 later draw of the same targets as a shader resource, vertex or constant buffer: `UsageScopeSplit` (4.7). A staging copy of a depth texture read back: `DepthReadByDraw` on both
 back ends (4.12).
