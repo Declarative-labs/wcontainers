@@ -5078,6 +5078,7 @@ dependencies = [
  "rangemap",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-arm64",
  "zerocopy",
 ]
 
