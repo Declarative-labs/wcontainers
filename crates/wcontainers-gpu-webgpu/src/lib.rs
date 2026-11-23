@@ -104,6 +104,8 @@ pub struct WebGpu {
     counters: Counters,
     /// The texture usages each format allows on this device, by [`Format::index`].
     usages: [wgpu::TextureUsages; Format::COUNT],
+    /// Whether a resolve of each format is a draw averaging its samples, by [`Format::index`].
+    resolved_by_draw: [bool; Format::COUNT],
 }
 
 #[derive(Debug)]
@@ -575,7 +577,13 @@ impl WebGpu {
             on_lost.lock().unwrap().get_or_insert(reason);
             wait::wake();
         });
-        let (mut caps, usages) = caps(adapter, &device);
+        let (
+            mut caps,
+            FormatTables {
+                usages,
+                resolved_by_draw,
+            },
+        ) = caps(adapter, &device);
         let depth24 = probe::run(&device, &queue);
         if let Depth24::Unorm(_) = depth24 {
             caps.features |= Features::DEPTH24_UNORM;
@@ -624,6 +632,7 @@ impl WebGpu {
             windows: HashMap::new(),
             counters: Counters::default(),
             usages,
+            resolved_by_draw,
             depth24,
         }
     }
@@ -738,10 +747,7 @@ fn raw_views(
 
 /// What the device can do, in the interface's words (plan section 4.11). Only what this back end
 /// carries out is declared.
-fn caps(
-    adapter: &wgpu::Adapter,
-    device: &wgpu::Device,
-) -> (Caps, [wgpu::TextureUsages; Format::COUNT]) {
+fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> (Caps, FormatTables) {
     let f = device.features();
     let l = device.limits();
     let mut features = Features::COMPUTE
@@ -801,6 +807,7 @@ fn caps(
         samples: [0; Format::COUNT],
     };
     let mut usages = [wgpu::TextureUsages::empty(); Format::COUNT];
+    let mut resolved_by_draw = [false; Format::COUNT];
     for (i, allowed) in usages.iter_mut().enumerate() {
         let format = format_at(i);
         // Without native BC, a BC format is held decoded (`BlockDecoded`): sampled, filtered and
@@ -827,6 +834,26 @@ fn caps(
         let flags = ff.flags;
         let mut uses = FormatUse::empty();
         let depth = format.is_depth_stencil();
+        // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
+        // the adapter's own flags allow. A float format drawn multisampled that WebGPU does not
+        // resolve (`r32float` without float32 resolves) is resolved by a draw averaging its samples.
+        let averaged = matches!(
+            raw.sample_type(None, None),
+            Some(wgpu::TextureSampleType::Float { .. })
+        );
+        let native_resolve =
+            averaged && flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
+        let drawn_resolve = averaged
+            && !native_resolve
+            && !depth
+            && u.contains(
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+            && flags
+                .supported_sample_counts()
+                .iter()
+                .any(|&count| count > 1);
+        resolved_by_draw[i] = drawn_resolve;
         let pairs = [
             (
                 u.contains(wgpu::TextureUsages::TEXTURE_BINDING),
@@ -847,16 +874,7 @@ fn caps(
                     && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
-            // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
-            // the adapter's own flags allow.
-            (
-                flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
-                    && matches!(
-                        raw.sample_type(None, None),
-                        Some(wgpu::TextureSampleType::Float { .. })
-                    ),
-                FormatUse::RESOLVE,
-            ),
+            (native_resolve || drawn_resolve, FormatUse::RESOLVE),
             (
                 flags.contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_ONLY),
                 FormatUse::STORAGE_READ,
@@ -975,7 +993,21 @@ fn caps(
         limits,
         formats,
     };
-    (caps, usages)
+    (
+        caps,
+        FormatTables {
+            usages,
+            resolved_by_draw,
+        },
+    )
+}
+
+/// What the device does with each format beside its [`Caps`], by [`Format::index`].
+struct FormatTables {
+    /// The texture usages each format allows.
+    usages: [wgpu::TextureUsages; Format::COUNT],
+    /// Whether a resolve of the format is a draw averaging its samples (`ResolveByDraw`).
+    resolved_by_draw: [bool; Format::COUNT],
 }
 
 /// The format at position `i` of [`Format`]'s list.
@@ -1218,8 +1250,12 @@ impl Backend for WebGpu {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb_twin = convert::srgb_twin(format);
-        // In the browser a resolve in the other twin is drawn from the samples (`ResolveByDraw`).
-        if cfg!(target_arch = "wasm32") && desc.samples > 1 && srgb_twin.is_some() {
+        // In the browser a resolve in the other twin is drawn from the samples, and so is every
+        // resolve of a format WebGPU does not resolve (`ResolveByDraw`).
+        if desc.samples > 1
+            && (cfg!(target_arch = "wasm32") && srgb_twin.is_some()
+                || self.resolved_by_draw[desc.format.index()])
+        {
             usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
         }
         let raw = self.device.create_texture(&wgpu::TextureDescriptor {

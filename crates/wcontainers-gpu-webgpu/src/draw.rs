@@ -1586,10 +1586,12 @@ impl WebGpu {
         }
         // Both views in the resolve format, so an sRGB twin averages in linear light. Chrome
         // (Dawn on Direct3D 12) averages the stored values whatever the views' format, so in the
-        // browser a resolve in the other twin is a draw averaging the samples read through it.
+        // browser a resolve in the other twin is a draw averaging the samples read through it. So
+        // is a resolve of a format WebGPU does not resolve.
         let stored = src.texture.0.held;
         let format = crate::packed::held(format).unwrap_or(format);
-        let by_draw = cfg!(target_arch = "wasm32") && format != stored;
+        let by_draw = cfg!(target_arch = "wasm32") && format != stored
+            || self.resolved_by_draw[format.index()];
         let Some(format) = convert::texture_format(format) else {
             self.fail("resolve in a format this back end does not hold");
             return;
@@ -1614,7 +1616,7 @@ impl WebGpu {
                 .usage()
                 .contains(wgpu::TextureUsages::TEXTURE_BINDING)
             {
-                self.fail("a resolve in the other sRGB twin of a texture that cannot be sampled");
+                self.fail("a resolve by a draw of a texture that cannot be sampled");
                 return;
             }
             let (s, d) = (view(src), view(dst));
