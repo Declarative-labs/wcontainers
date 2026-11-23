@@ -37,7 +37,7 @@ G4h round 6 run 1 (2026-11-23, from about 08:50 Pacific), the orchestrator's two
 - Tests at 3fe49ed3 (main/q5-final.sh r6c-suite lint lib webgllib, logs/r6c-suite-*): lint of both
   builds clean; library com 15 pass (1 ignored), programs 68 pass (8 ignored, the known failures),
   as at run 10; the front's unit, front.rs (60) and cache tests and clippy pass on a rented machine
-  at the same code (logs/r6c-t1-front.log). The WebGL 2 build's 10_0 cases: queued behind another track's run when this was written.
+  at the same code (logs/r6c-t1-front.log). The WebGL 2 build's 10_0 cases 7 pass (1 ignored).
 
 G4h run 10 (2026-11-23, from about 05:45 Pacific), the ninth check's findings:
 - Packed targets blended within one draw: a draw of several primitives whose blend reads a
