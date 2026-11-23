@@ -5092,10 +5092,18 @@ dependencies = [
  "rustix",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-clock",
  "wcontainers-executor-arm64-stop",
+ "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
+ "wcontainers-kernel-linux",
+ "wcontainers-random-source",
+ "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
+ "wcontainers-system",
+ "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
+ "wcontainers-translator-test",
  "zerocopy",
 ]
 
