@@ -236,7 +236,14 @@ impl Traced {
 
     /// Runs one instruction, taking the thread to be blocked when it has not stopped within `limit`.
     fn step(&self, limit: Duration) -> Stepped {
-        ptrace::step(self.thread, None).expect("step");
+        self.step_sending(None, limit)
+    }
+
+    /// [`Traced::step`] with `signal` sent at the instruction the thread is stopped at: one the thread blocks
+    /// waits until it unblocks it, and one it does not runs its handler, the step ending at the handler's first
+    /// instruction.
+    fn step_sending(&self, signal: Option<Signal>, limit: Duration) -> Stepped {
+        ptrace::step(self.thread, signal).expect("step");
         let until = Instant::now() + limit;
         loop {
             match waitpid(
@@ -248,6 +255,11 @@ impl Traced {
                 WaitStatus::StillAlive => {}
                 WaitStatus::Stopped(_, Signal::SIGTRAP) => return Stepped::At(pc(self.thread)),
                 WaitStatus::Exited(..) => return Stepped::Ended,
+                // A stop sent while the thread blocked it, taken now that it unblocks: the step goes on into
+                // its handler.
+                WaitStatus::Stopped(_, STOP) => {
+                    ptrace::step(self.thread, Some(STOP)).expect("step")
+                }
                 other => panic!("a step ended as {other:?}"),
             }
             if Instant::now() >= until {
@@ -276,6 +288,14 @@ impl Traced {
             && is_host_call(self.thread, pc(self.thread))
     }
 
+    /// Whether the thread's next instruction is a host call that changes its signal mask: in the stop's handler,
+    /// the unblock it leaves by.
+    fn about_to_change_mask(&self) -> bool {
+        let registers = ptrace::getregs(self.thread).expect("registers");
+        call_and_operation(&registers).0 == u64::from(linux_raw_sys::general::__NR_rt_sigprocmask)
+            && is_host_call(self.thread, pc(self.thread))
+    }
+
     /// Lets the thread go on untraced, delivering `signal` at the instruction it is stopped at.
     fn detach(self, signal: Option<Signal>) {
         ptrace::detach(self.thread, signal).expect("detach");
@@ -300,43 +320,55 @@ trait Scenario {
         seen: usize,
         waits: bool,
     ) -> bool;
-    /// Checks how the turn ended after a stop at step `step`, and puts right what it made; the name of where the
-    /// stop landed.
+    /// Checks how the turn ended after the stops sent at step `step`, and puts right what it made; where the
+    /// thread's stops have landed by then.
     fn check(
         &mut self,
         stub: &mut Stub,
         turn: u32,
         step: usize,
         before: StopsLanded,
-    ) -> &'static str;
+    ) -> StopsLanded;
 }
 
-/// Where a stop landed, by the counter it raised.
+/// How many stops landed in each window between two counts, the windows none landed in left out.
+fn windows(before: StopsLanded, after: StopsLanded) -> BTreeMap<&'static str, u64> {
+    [
+        ("turn", after.in_turn - before.in_turn),
+        ("publish", after.in_publish - before.in_publish),
+        ("wait", after.in_wait - before.in_wait),
+        ("end", after.in_end - before.in_end),
+        ("call", after.in_call - before.in_call),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count != 0)
+    .collect()
+}
+
+/// Where the one stop sent landed, by the counter it raised.
 fn landed(before: StopsLanded, after: StopsLanded) -> &'static str {
+    let landed = windows(before, after);
     assert_eq!(
-        total(after),
-        total(before) + 1,
+        landed.values().sum::<u64>(),
+        1,
         "one stop sent, {after:?} after {before:?}"
     );
-    if after.in_turn > before.in_turn {
-        "turn"
-    } else if after.in_publish > before.in_publish {
-        "publish"
-    } else if after.in_wait > before.in_wait {
-        "wait"
-    } else if after.in_end > before.in_end {
-        "end"
-    } else {
-        "call"
+    landed.into_keys().next().expect("one window")
+}
+
+/// Where a second stop, sent while the handler of a first that landed in `first` runs, must land: just after the
+/// handler's unblock, in the window it chose. A thread whose handler takes its end ends with the second pending.
+fn second_window(first: &str) -> Option<&'static str> {
+    match first {
+        "wait" => Some("wait"),
+        "end" => None,
+        _ => Some("publish"),
     }
 }
 
-/// Runs a scenario's turn once traced to find its path, then once for every `stride`-th instruction of it with the
-/// stop sent there; how many stops landed in each window.
-fn every_instruction(
-    scenario: &mut impl Scenario,
-    stub: &mut Stub,
-) -> BTreeMap<&'static str, usize> {
+/// Runs a scenario's turn once traced, stepping it from its wait until the scenario says its path is complete; the
+/// pc after each step.
+fn path_of(scenario: &mut impl Scenario, stub: &mut Stub) -> Vec<u64> {
     scenario.reset(stub);
     let traced = Traced::attach(stub, scenario.thread());
     let turn = scenario.begin(stub);
@@ -372,32 +404,167 @@ fn every_instruction(
     }
     let before = stub.stops_landed(scenario.thread());
     scenario.check(stub, turn, 0, before);
+    path
+}
+
+/// Begins the scenario's turn traced and steps it along the first `steps` instructions of `path`; the thread, the
+/// turn and where its stops had landed before.
+fn along(
+    scenario: &mut impl Scenario,
+    stub: &mut Stub,
+    path: &[u64],
+    steps: usize,
+) -> (Traced, u32, StopsLanded) {
+    scenario.reset(stub);
+    let traced = Traced::attach(stub, scenario.thread());
+    let before = stub.stops_landed(scenario.thread());
+    let turn = scenario.begin(stub);
+    for (taken, expected) in path[..steps].iter().enumerate() {
+        assert_eq!(
+            traced.step(TURN_LIMIT),
+            Stepped::At(*expected),
+            "step {} of the path to {steps}",
+            taken + 1
+        );
+    }
+    (traced, turn, before)
+}
+
+/// Runs a scenario's turn once traced to find its path, then once for every `stride`-th instruction of it with the
+/// stop sent there; how many stops landed in each window.
+fn every_instruction(
+    scenario: &mut impl Scenario,
+    stub: &mut Stub,
+) -> BTreeMap<&'static str, usize> {
+    let path = path_of(scenario, stub);
     let stride = knob("WCHP_STEP_STRIDE", 1).max(1);
     let mut windows = BTreeMap::new();
     for step in (1..=path.len()).step_by(stride) {
-        scenario.reset(stub);
-        let thread = scenario.thread();
-        let traced = Traced::attach(stub, thread);
-        let turn = scenario.begin(stub);
-        for (taken, expected) in path[..step].iter().enumerate() {
-            assert_eq!(
-                traced.step(TURN_LIMIT),
-                Stepped::At(*expected),
-                "step {} of the path to {step}",
-                taken + 1
-            );
-        }
-        let before = stub.stops_landed(thread);
+        let (traced, turn, before) = along(scenario, stub, &path, step);
         traced.detach(Some(STOP));
-        *windows
-            .entry(scenario.check(stub, turn, step, before))
-            .or_default() += 1;
+        let after = scenario.check(stub, turn, step, before);
+        *windows.entry(landed(before, after)).or_default() += 1;
     }
     eprintln!(
         "{} steps, every {stride}th stopped: {windows:?}",
         path.len()
     );
     windows
+}
+
+/// Sends the stop at the instruction a traced thread is stopped at and steps it until its handler's first
+/// instruction, `handler` once known (the first instruction a stop the thread does not block leads to, not the
+/// path's next); the instructions it ran before.
+fn into_handler(traced: &Traced, path: &[u64], step: usize, handler: &mut Option<u64>) -> Vec<u64> {
+    let mut before_handler = Vec::new();
+    let mut sending = Some(STOP);
+    loop {
+        let stepped = traced.step_sending(sending.take(), TURN_LIMIT);
+        let Stepped::At(at) = stepped else {
+            panic!("the thread {stepped:?} before the handler of a stop at step {step}")
+        };
+        if handler.is_none() && before_handler.is_empty() && path.get(step) != Some(&at) {
+            *handler = Some(at);
+        }
+        if *handler == Some(at) {
+            return before_handler;
+        }
+        before_handler.push(at);
+        assert!(
+            before_handler.len() < MOST_STEPS,
+            "a stop at step {step} was never handled"
+        );
+    }
+}
+
+/// For every instruction of a scenario's path, a stop sent there and then, for each different way its handler
+/// runs (for every one with `WCHP_TAIL_EVERY=1`), a second sent at every instruction the handler runs, from its
+/// first to the one after the unblock it leaves by: the second must land there, in the window the handler chose.
+/// How many first stops landed in each window.
+fn every_handler_instruction(
+    scenario: &mut impl Scenario,
+    stub: &mut Stub,
+) -> BTreeMap<&'static str, usize> {
+    let path = path_of(scenario, stub);
+    let every = knob("WCHP_TAIL_EVERY", 0) != 0;
+    let mut ways = std::collections::BTreeSet::new();
+    let mut handler = None;
+    let mut firsts = BTreeMap::new();
+    let mut seconds = 0;
+    for step in 1..=path.len() {
+        // The handler's path, with the first stop alone.
+        let (traced, turn, before) = along(scenario, stub, &path, step);
+        let before_handler = into_handler(&traced, &path, step, &mut handler);
+        let mut tail = vec![handler.expect("the handler is known")];
+        let ended = loop {
+            let unblocks = traced.about_to_change_mask();
+            match traced.step(TURN_LIMIT) {
+                Stepped::At(at) => {
+                    tail.push(at);
+                    if unblocks {
+                        break false;
+                    }
+                }
+                Stepped::Ended => break true,
+                Stepped::Blocked => panic!("the handler of a stop at step {step} blocked"),
+            }
+            assert!(
+                tail.len() < MOST_STEPS,
+                "the handler of a stop at step {step} never left"
+            );
+        };
+        if !ended {
+            traced.detach(None);
+        }
+        let first = landed(before, scenario.check(stub, turn, step, before));
+        assert_eq!(
+            ended,
+            first == "end",
+            "a stop at step {step} landed in {first}"
+        );
+        *firsts.entry(first).or_default() += 1;
+        if !ways.insert(tail.clone()) && !every {
+            continue;
+        }
+        let mut expected = BTreeMap::from([(first, 1)]);
+        if let Some(second) = second_window(first) {
+            *expected.entry(second).or_default() += 1;
+        }
+        // From the handler's first instruction to the one after its unblock, or to the host call that ends it.
+        for at in 0..tail.len() {
+            let (traced, turn, before) = along(scenario, stub, &path, step);
+            assert_eq!(
+                into_handler(&traced, &path, step, &mut handler),
+                before_handler,
+                "the way to the handler of a stop at step {step}"
+            );
+            for (taken, expected) in tail[1..=at].iter().enumerate() {
+                assert_eq!(
+                    traced.step(TURN_LIMIT),
+                    Stepped::At(*expected),
+                    "instruction {} of the handler of a stop at step {step}",
+                    taken + 1
+                );
+            }
+            // Sent as the runner sends it, not given at the thread's let-go: the stop at the handler's first
+            // instruction reports a step, at whose end the host drops a signal given.
+            stub.stop(scenario.thread()).expect("stop");
+            traced.detach(None);
+            let after = scenario.check(stub, turn, step, before);
+            assert_eq!(
+                windows(before, after),
+                expected,
+                "a second stop at instruction {at} of the handler of a stop at step {step}"
+            );
+            seconds += 1;
+        }
+    }
+    eprintln!(
+        "{} steps stopped, {} ways through the handler, {seconds} second stops in it: {firsts:?}",
+        path.len(),
+        ways.len()
+    );
+    firsts
 }
 
 fn wait(stub: &Stub, thread: usize, turn: u32, step: usize) -> TurnEnd {
@@ -450,13 +617,7 @@ impl Scenario for Commands {
                 .is_some()
     }
 
-    fn check(
-        &mut self,
-        stub: &mut Stub,
-        turn: u32,
-        step: usize,
-        before: StopsLanded,
-    ) -> &'static str {
+    fn check(&mut self, stub: &mut Stub, turn: u32, step: usize, _: StopsLanded) -> StopsLanded {
         let all = self.commands().len() as u64;
         let applied = match wait(stub, 0, turn, step) {
             TurnEnd::Done { commands_applied } if commands_applied == all => all,
@@ -482,11 +643,7 @@ impl Scenario for Commands {
             if applied == all { 2 } else { 1 },
             "step {step}"
         );
-        let where_ = if step == 0 {
-            ""
-        } else {
-            landed(before, settled(stub, 0))
-        };
+        let after = settled(stub, 0);
         if applied == all {
             assert_ne!(stub.reported_thread_id(made), 0, "step {step}");
             assert_eq!(
@@ -512,7 +669,7 @@ impl Scenario for Commands {
             }),
             "the thread answers after step {step}"
         );
-        where_
+        after
     }
 }
 
@@ -548,15 +705,20 @@ impl Scenario for Spin {
         turn: u32,
         step: usize,
         before: StopsLanded,
-    ) -> &'static str {
+    ) -> StopsLanded {
         let mut end = stub.wait_within(0, turn, SPIN_LIMIT).expect("wait");
-        let mut where_ = "";
+        let mut after = None;
         if end.is_none() {
             // A stop in the wait, before the turn is taken, changes nothing: the runner sends stops until one ends
             // the spin, as here. The dry run left the thread spinning untraced.
             if step != 0 {
-                where_ = landed(before, stub.stops_landed(0));
-                assert_eq!(where_, "wait", "a stop at step {step} lost");
+                let landed = stub.stops_landed(0);
+                assert!(
+                    total(landed) > total(before)
+                        && landed.in_wait - before.in_wait == total(landed) - total(before),
+                    "the stops at step {step} lost: {landed:?} after {before:?}"
+                );
+                after = Some(landed);
             }
             end = Some(stop_spin(stub, turn, step));
         }
@@ -570,9 +732,7 @@ impl Scenario for Spin {
         };
         let expected = (applied == 2).then(|| "r--s".to_owned());
         assert_eq!(permissions_at(stub, GUEST_START), expected, "step {step}");
-        if step != 0 && where_.is_empty() {
-            where_ = landed(before, settled(stub, 0));
-        }
+        let after = after.unwrap_or_else(|| settled(stub, 0));
         assert_eq!(
             stub.turn(0, &[]),
             Ok(TurnEnd::Done {
@@ -580,7 +740,7 @@ impl Scenario for Spin {
             }),
             "the thread answers after step {step}"
         );
-        where_
+        after
     }
 }
 
@@ -634,13 +794,7 @@ impl Scenario for End {
         *stepped == Stepped::Ended
     }
 
-    fn check(
-        &mut self,
-        stub: &mut Stub,
-        turn: u32,
-        step: usize,
-        before: StopsLanded,
-    ) -> &'static str {
+    fn check(&mut self, stub: &mut Stub, turn: u32, step: usize, _: StopsLanded) -> StopsLanded {
         let thread = self.thread.take().expect("made");
         let until = Instant::now() + TURN_LIMIT;
         // A stop before the thread took its end ends the turn instead, and the end is given again.
@@ -672,37 +826,53 @@ impl Scenario for End {
                 "the thread did not end after a stop at step {step}"
             );
         }
+        let after = stub.stops_landed(thread);
         stub.release_thread(thread);
         assert_eq!(host_threads(stub, 1), 1, "step {step}");
-        if step == 0 {
-            ""
-        } else {
-            landed(before, stub.stops_landed(thread))
-        }
+        after
     }
 }
 
-/// Runs a scenario on a new stub; if it fails, how the stub ended is reported too.
-fn run(scenario: &mut impl Scenario) -> BTreeMap<&'static str, usize> {
+/// Drives a scenario on a new stub, as [`every_instruction`] or [`every_handler_instruction`] do; if it fails, how
+/// the stub ended is reported too.
+fn run<S: Scenario>(
+    scenario: &mut S,
+    drive: fn(&mut S, &mut Stub) -> BTreeMap<&'static str, usize>,
+) -> BTreeMap<&'static str, usize> {
     let zygote = zygote();
     let mut stub = zygote.fork_stub().expect("fork");
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        every_instruction(scenario, &mut stub)
-    })) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drive(scenario, &mut stub))) {
         Ok(windows) => windows,
         Err(failure) => {
-            // A stub that ended by itself keeps its own end; a live one is killed.
+            // A stub that ended by itself keeps its own end; a live one is killed. A thread the failure left
+            // traced must be waited for by the test before the zygote can reap the stub.
+            let threads: Vec<Pid> =
+                std::fs::read_dir(format!("/proc/{}/task", stub.process().as_raw_nonzero()))
+                    .map(|tasks| {
+                        tasks
+                            .filter_map(|task| task.ok()?.file_name().to_str()?.parse().ok())
+                            .map(Pid::from_raw)
+                            .collect()
+                    })
+                    .unwrap_or_default();
             let _ = zygote.kill(stub.process());
+            let until = Instant::now() + Duration::from_secs(1);
+            for thread in threads {
+                while Instant::now() < until
+                    && waitpid(thread, Some(WaitPidFlag::__WALL | WaitPidFlag::WNOHANG))
+                        == Ok(WaitStatus::StillAlive)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
             eprintln!("the stub: {:?}", zygote.reap(stub.process()));
             std::panic::resume_unwind(failure)
         }
     }
 }
 
-#[test]
-fn a_stop_at_every_instruction_of_a_turn_of_commands_changes_only_when_it_ends() {
-    let windows = run(&mut Commands { made: None });
-    for window in ["turn", "publish", "wait"] {
+fn landed_in(windows: &BTreeMap<&'static str, usize>, expected: &[&str]) {
+    for window in expected {
         assert!(
             windows.contains_key(window),
             "no stop landed in the {window} window: {windows:?}"
@@ -711,15 +881,39 @@ fn a_stop_at_every_instruction_of_a_turn_of_commands_changes_only_when_it_ends()
 }
 
 #[test]
+fn a_stop_at_every_instruction_of_a_turn_of_commands_changes_only_when_it_ends() {
+    let windows = run(&mut Commands { made: None }, every_instruction);
+    landed_in(&windows, &["turn", "publish", "wait"]);
+}
+
+#[test]
+fn a_second_stop_in_the_handler_of_a_turn_of_commands_lands_after_its_unblock() {
+    let windows = run(&mut Commands { made: None }, every_handler_instruction);
+    landed_in(&windows, &["turn", "publish", "wait"]);
+}
+
+#[test]
 fn a_stop_at_every_instruction_before_a_spin_ends_it_after_its_commands() {
-    let windows = run(&mut Spin);
-    assert!(windows.contains_key("turn"), "{windows:?}");
+    let windows = run(&mut Spin, every_instruction);
+    landed_in(&windows, &["turn"]);
+}
+
+#[test]
+fn a_second_stop_in_the_handler_before_a_spin_lands_after_its_unblock() {
+    let windows = run(&mut Spin, every_handler_instruction);
+    landed_in(&windows, &["turn", "wait"]);
 }
 
 #[test]
 fn a_thread_told_to_end_ends_with_a_stop_at_any_instruction() {
-    let windows = run(&mut End { thread: None });
-    assert!(windows.contains_key("end"), "{windows:?}");
+    let windows = run(&mut End { thread: None }, every_instruction);
+    landed_in(&windows, &["end"]);
+}
+
+#[test]
+fn a_thread_told_to_end_ends_with_a_second_stop_anywhere_in_the_first_ones_handler() {
+    let windows = run(&mut End { thread: None }, every_handler_instruction);
+    landed_in(&windows, &["turn", "wait", "end"]);
 }
 
 /// A turn that enters a piece of code calling a floor entry: the enter's loads, the piece, the entry and its save.
@@ -797,13 +991,7 @@ impl Scenario for Enter {
                 .is_some()
     }
 
-    fn check(
-        &mut self,
-        stub: &mut Stub,
-        turn: u32,
-        step: usize,
-        before: StopsLanded,
-    ) -> &'static str {
+    fn check(&mut self, stub: &mut Stub, turn: u32, step: usize, _: StopsLanded) -> StopsLanded {
         let call = enter::CALL as u64;
         let expected = match wait(stub, 0, turn, step) {
             TurnEnd::Stopped {
@@ -823,11 +1011,7 @@ impl Scenario for Enter {
             expected,
             "the block after a stop at step {step}"
         );
-        let where_ = if step == 0 {
-            ""
-        } else {
-            landed(before, settled(stub, 0))
-        };
+        let after = settled(stub, 0);
         assert_eq!(
             stub.turn(0, &[]),
             Ok(TurnEnd::Done {
@@ -835,13 +1019,39 @@ impl Scenario for Enter {
             }),
             "the thread answers after step {step}"
         );
-        where_
+        after
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn a_stop_at_every_instruction_of_an_enter_and_a_call_saves_what_the_code_held() {
+    let windows = run(
+        &mut Enter {
+            code: None,
+            loaded: entered_block(),
+        },
+        every_instruction,
+    );
+    landed_in(&windows, &["turn", "call", "publish", "wait"]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn a_second_stop_in_the_handler_of_an_enter_and_a_call_lands_after_its_unblock() {
+    let windows = run(
+        &mut Enter {
+            code: None,
+            loaded: entered_block(),
+        },
+        every_handler_instruction,
+    );
+    landed_in(&windows, &["turn", "call", "publish", "wait"]);
+}
+
+/// The seeded block an enter loads: every register a random value.
+#[cfg(target_arch = "aarch64")]
+fn entered_block() -> wcontainers_abi::RegisterBlock {
     let mut rng = fastrand::Rng::with_seed(knob("WCHP_SEED", 1) as u64);
     let mut loaded = wcontainers_abi::RegisterBlock::ZERO;
     loaded.x.iter_mut().for_each(|x| *x = rng.u64(..));
@@ -854,11 +1064,5 @@ fn a_stop_at_every_instruction_of_an_enter_and_a_call_saves_what_the_code_held()
     loaded.fpsr = rng.u32(..) & wcontainers_arm64::FPSR_BITS;
     loaded.fpcr = rng.u32(..) & wcontainers_arm64::FPCR_BITS;
     loaded.tpidr_el0 = rng.u64(..);
-    let windows = run(&mut Enter { code: None, loaded });
-    for window in ["turn", "call", "publish", "wait"] {
-        assert!(
-            windows.contains_key(window),
-            "no stop landed in the {window} window: {windows:?}"
-        );
-    }
+    loaded
 }
