@@ -82,7 +82,10 @@ dxil-spirv patch), A13's DXIL part closed (dxc's geometry shaders taking patches
 a carried dxil-spirv patch) and A16 closed (naga's handle check made to catch what its validator
 indexed unchecked; the damage tests pass natively and in WebAssembly, no longer known failures):
 pass bar items 1 and 6 met. Run 19 (run 106, the section below): A7's cull distances written by
-domain shaders, drawn equal to real Direct3D 11. Not complete: the gap list below.
+domain shaders, drawn equal to real Direct3D 11. Run 20 (run 107, the section below): centroid
+positions moved to Direct3D's centroid on the DXIL route and refused by name in programs run per
+sample (the Direct3D 12 runner's `eval-attrib-3`), A7's indirect draws found served by the fronts.
+Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -193,6 +196,47 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 20 (run 107): centroid positions on both routes; A7's indirect draws are the fronts'
+
+Logs and scripts in scratch `graphics-shaders/g6-r107` (the clone `tip` moved there from g6-r106;
+`compile.log`, `arm1.log` to `arm5.log`, `gpu1.log`, `gpu2-mutant.log`, `mutant.sh`). Nothing built
+on the Mac (rustfmt of single files only).
+- Chosen from the Direct3D 12 front's runner items (its status, "Asked of other tracks"): the
+  runner's `eval-attrib-3` (lines 105 to 108, shader models 5.0 and 6.0) gave other values than
+  Direct3D without a refusal, against "never fake". Read: a pixel shader declaring `centroid` on
+  `SV_Position`. The DXBC route moved it to Direct3D's centroid from the coverage
+  (`lower/evaluate.rs`), but in a program run per sample the coverage input holds only that
+  sample's bit, so it gave the sample; the DXIL route did not move it at all (naga's reader keeps
+  no sampling for a built-in), so it gave where the hardware took it.
+- Built (b944f2ba): the DXIL route reads dxil-spirv's `Centroid` decoration of the `FragCoord`
+  input from the SPIR-V words (`dxil/evaluate.rs` `position_sampling`) and moves the reader's copy
+  of the position to Direct3D's centroid by its slopes, as the DXBC route does (the centroid rule
+  now one function shared with the evaluations). On both routes, a centroid position in a program
+  run per sample into several samples is refused by name (`CentroidPositionPerSample`), and one in
+  a key without a sample count is `SampleCount`, as evaluations are.
+- Test: own `ps_position_centroid` and `ps_position_centroid_sampled` (tests/own/evaluate.hlsl, fxc
+  ps_5_0 and dxc ps_6_0 `-Gis`). CPU test
+  `centroid_positions_move_or_are_refused_by_name_on_both_routes` (tests/variants.rs). Drawn on the
+  RTX 3080, `centroid_positions_match_direct3d` (tests/variant_draw.rs; WebGPU against real
+  Direct3D 11 drawing fxc's build, vs_evaluate's grid, 1 and 4 samples): both builds 0 of 4,096
+  texels apart at 1 sample, 1 of 4,096 by 1 at 4 samples (allowance 2, the filtering one; gpu1.log).
+  With the DXIL move taken out (`mutant.sh`) dxc's build at 4 samples is 503 texels apart, largest
+  192 (gpu2-mutant.log). `inputs_evaluated_elsewhere_match_direct3d` unchanged (3 and 4 texels by 1).
+- Records changed: own (four new files, `SampleCount` under the corpus's key without a count), the
+  rig's `depth.ps_greater` and `depth.ps_less` (both builds, conservative depth reading a centroid
+  position: were `ok`, now `SampleCount`), the runner's `eval-attrib-3` (both builds, now
+  `SampleCount`; refused by name with the count given). Every other verdict holds.
+- A7's indirect draws through the stages: read in both fronts, which read the arguments back for
+  any draw through the stage helper (`IndirectReadBack`); recorded under A7, nothing built.
+- Runs: ARM64 machine (load 9 to 19): rustfmt and clippy of this crate with warnings denied clean;
+  `--test variants` (45 passed) and `--test corpus --include-ignored` with every corpus (13 passed;
+  arm4.log, arm5.log); every CPU test binary with every corpus (arm3.log, before the records were
+  updated: all passed but the three corpus tests the records then fixed). Desktop (RTX 3080, one
+  GPU job, 3 cargo jobs): Windows clippy clean (gpu1.log). The literal check prints no line of this
+  crate (arm3.log; its findings name other crates).
+- Not run: WebAssembly, glslang, Chrome (no corpus file gained a written module), the rest of the
+  GPU suite (no module of an existing shader changed but the refused ones).
 
 ## G6 run 19 (run 106): cull distances written by domain shaders (A7)
 
@@ -2114,9 +2158,15 @@ The gap list (every item of the pass bar not met):
   15.1's loss); copying the RTX 3080's order is not proposed (one GPU's choice, undocumented).
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
   which Direct3D does not allow; several streams of points convert since run 49); indexed strips
-  and triangle strips with adjacency run since run 50; indirect draws through the stages, and a
-  pixel shader reading `SV_PrimitiveID` behind a geometry shader that does not write it (no file
-  of any corpus; what Direct3D gives there is not measured). A geometry shader writing
+  and triangle strips with adjacency run since run 50; a pixel shader reading `SV_PrimitiveID`
+  behind a geometry shader that does not write it (no file of any corpus; what Direct3D gives
+  there is not measured). Indirect draws through the stages (`StageIndirect`, the helper sizes its
+  dispatches and buffers from the draw's counts) are served by both fronts as plan 4.12's
+  `IndirectReadBack` (read in run 107: the Direct3D 11 front reads the arguments back whenever a
+  geometry shader or a culled vertex program is bound, src/context.rs `read_indirect`; the Direct3D
+  12 front for every pipeline that goes through the stage helper, src/device/indirect.rs), so
+  nothing of the converter waits on it; GPU-side counts would take indirect dispatches sized by a
+  small program, built only if a measurement shows the read back costing a real program. A geometry shader writing
   `SV_PrimitiveID` converts and passes it on since run 97 (its section; the runner's
   `primitive-id-2-gs`, both builds; `PRIMITIVE_ID_FROM_STAGE` in both keys). Typed buffers in
   geometry shaders convert and run since run 86 (`TypedBufferInGeometry` gone; drawn equal to
@@ -2749,8 +2799,10 @@ The gap list (every item of the pass bar not met):
   pixel shader (a clip distance read converts with `CLIP_DISTANCE` since run 102; a cull distance
   needs `LinkedValues` to carry them, an interface field), a DXIL pixel shader's layer and
   viewport index, and values that differ without a
-  refusal (a centroid `SV_Position` per sample, `min16float` constants, subnormals not flushed,
-  DXIL `frexp` of a NaN), and the shader model 4.0 multisampled load in a loop that its front reads at
+  refusal (`min16float` constants, subnormals not flushed; DXIL `frexp` of a NaN, whose `x != 0`
+  is dxc's unordered comparison, expected right on WebGPU since A26's run 98 but not run on the
+  runner; a centroid `SV_Position` in a program run per sample is refused by name since run 107,
+  `CentroidPositionPerSample`), and the shader model 4.0 multisampled load in a loop that its front reads at
 swapped coordinates (runner texture-load; this track's run 32 found fxc's build of that shader
 converts right, test `shader_model_4_multisampled_loads_keep_their_coordinates`, so the bytecode
 the runner compiles needs dumping by the front). Its list also names `TypedBufferFormatKind`, gone
@@ -2806,7 +2858,9 @@ G6a run 5's tip):
    `clip-cull-distance-1-6-ps` and `-1-8-ps`), a geometry shader reading clip distances as input
    (`-1-16-gs`); A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
-   (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages;
+   (its typed buffers in geometry shaders done in run 86; indirect draws through the stages are
+   the fronts' read back, run 107; left: a pixel shader reading `SV_PrimitiveID` behind a geometry
+   shader that does not write it, measured first on the RTX 3080 and WARP;
    a geometry shader's written primitive number done in run 97, cull distances from domain shaders
    in run 106), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87; the runner file waits on what real Direct3D 12 stores for it, run 100), A33 (rspirv), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
@@ -2826,6 +2880,18 @@ G6a run 5's tip):
 
 ## Asked of other tracks
 
+- For both Direct3D fronts (run 107): a pixel shader declaring `centroid` on `SV_Position` now
+  needs the targets' sample count in its key (`SampleCount` without one, as for evaluations; the
+  Direct3D 11 front's retry at one sample and per-draw count already serve it; the Direct3D 12
+  front gives the pipeline's count). Into several samples its position is Direct3D's centroid on
+  both routes (the DXIL route left it where the hardware took it, the centre, until now); in a
+  program run per sample it is refused by name, `CentroidPositionPerSample` (the runner's
+  `eval-attrib-3`, both builds, lines 105 to 108: refused where it gave other values; such a
+  program sees only its own sample's coverage). The rig's `depth.ps_greater` and `ps_less`
+  (conservative depth) declare it: drawn into several samples their depth now moves to the
+  centroid at partly covered pixels, as Direct3D's does. For the Direct3D 12 front's runner too:
+  `frexp` line 52 (DXIL, a NaN) is expected to pass since run 98 (dxc writes `x != 0` as an
+  unordered comparison, which the carried reader keeps since then); please run it again.
 - For the Direct3D 12 front (run 105, its runner): `patch-syntax-12-gs.dxil` converts now (a
   geometry shader taking patches, drawn through `Stages::new` with `InputTopology::PatchList(n)`
   and no hull stage, as fxc's build since run 89); `distance-4-ps.dxil` is refused by name,
@@ -4418,6 +4484,11 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 107's scripts in scratch `graphics-shaders/g6-r107` are run 106's with its folder. New own
+  shaders: a temporary `centroid.cmd` (compile.cmd's first five lines and the new lines) in the
+  clone, run by `tools/graphics-rig/remote` in the background without a `timeout` wrapper (it may
+  wait over ten minutes behind a display-reset job, and a killed one keeps its desktop lock until it
+  ends), then `rig_scp` of the files from `C:/wc/src/shaders-tip/crates/wcontainers-shaders/tests/own/`.
 - Run 106's scripts in scratch `graphics-shaders/g6-r106` are run 105's with its folder, plus
   `quick-cmd.txt` and `lit-cmd.txt` (clippy, a few test binaries and the literal check, through
   `arm-run <worktree> --name graphics-shaders`; `lit-cmd.txt` first deletes, in the copy, other
