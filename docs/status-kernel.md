@@ -81,6 +81,14 @@ new tests (two of startoptions, placement's one, machine's two); the kernel's un
 more. The later commits (89be397e to b49c49e5: somaxconn's name, the range-by-range alignment)
 ran with the tests they touch above, not with the whole suite.
 
+The whole LTP comparison at 3dc17db7 (same job, 19:30 to 20:59 UTC, load 6 to 22, LTP_JOBS 8,
+LTP_LIMIT 900; verdicts ltp/ours-20260930-3dc17db7.tsv): 4169 of 4226 match the reference and 57
+differ, the K6c bar's count, and all 4226 match ba9f009e's verdicts. So neither the affinity nor
+the PMD alignment changed any verdict (sched_setaffinity01, thp02 and thp03 as before).
+
+Verdicts changed on purpose: none of the old tests; new are startoptions' two affinity tests,
+placement's one, machine's two and the kernel's two unit tests.
+
 ## KF, fifth run: the check's findings, and the literal fix list's time and size units
 
 Started about 10:30 UTC on 2026-11-23 at 4f59ef13's code (nothing to merge: main's last merge,
@@ -888,6 +896,14 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, sixth run: every finding of the second check is fixed or recorded (see "KF, sixth run"):
+`execCPUAffinity` is built, placement is compared with the reference and anonymous memory of
+whole PMDs lands on a PMD's boundary as on Linux, a given memory size and widths have tests, a
+width past 2^48 is counted and warned of, `MAX_ARG_STRLEN` uses the page size, and placement
+independent of the executor is the next milestone (Departures). The whole suite at 3dc17db7
+fails only the ARM list and one hung reference run that passes alone; the whole LTP comparison
+matches the K6c bar with every verdict as before. KF goes to its independent check.
 
 KF, fifth run: every finding of the check is fixed or recorded (see "KF, fifth run"): the test
 server lists `.` and `..`, an opened name taken away shows as deleted, the LTP watchdog waits
