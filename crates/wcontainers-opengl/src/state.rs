@@ -224,6 +224,9 @@ pub struct Blend {
 pub struct DepthStencil<B: Backend> {
     pub block: B::DepthStencil,
     pub stencil: bool,
+    /// Whether back faces have a stencil state of their own; without one they take the front
+    /// face's reference too, as Gallium's `pipe_stencil_ref` says.
+    pub two_sided: bool,
     /// One block a face, each with that face's masks on both, where the faces' masks differ and
     /// the back end has one of each per draw: the draw is then split by face.
     pub faces: Option<[B::DepthStencil; 2]>,
@@ -359,6 +362,8 @@ pub struct Shader {
     pub streamed: Result<Option<StreamOutput>, &'static str>,
     /// A fragment program that reads where its samples are, converted for the targets' count.
     pub reads_sample_positions: bool,
+    /// A fragment program that writes `gl_SampleMask`, converted for the targets' count.
+    pub writes_sample_mask: bool,
     /// A fragment program that reads its first target's texels, from a copy of it each draw.
     pub fetches_target: bool,
     /// The image units it declares images at without a format, a bit each, converted for the
@@ -584,6 +589,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
     object(DepthStencil::<B> {
         block,
         stencil,
+        two_sided: back_on,
         faces,
     })
 }
@@ -1016,6 +1022,7 @@ fn create_shader(
         };
     }
     let reads_sample_positions = nir.reads_sample_positions();
+    let writes_sample_mask = nir.writes_sample_mask();
     let fetches_target = nir.fetches_target();
     let formatless_images = nir.formatless_images();
     object(Shader {
@@ -1023,6 +1030,7 @@ fn create_shader(
         nir,
         streamed,
         reads_sample_positions,
+        writes_sample_mask,
         fetches_target,
         formatless_images,
     })

@@ -118,6 +118,9 @@ pub(crate) struct Variant {
     /// The targets' samples, for a fragment program that reads where its samples are or its
     /// target's texels; zero otherwise.
     samples: u32,
+    /// A fragment program writing `gl_SampleMask` for targets OpenGL counts as single-sampled,
+    /// where it ignores the mask.
+    single_sampled: bool,
     /// The formats of the images bound where the program declares images without a format, by
     /// unit.
     image_formats: Vec<(u32, Format)>,
@@ -571,6 +574,7 @@ fn convert<B: Backend>(
     if shader.fetches_target {
         nir.fetch_from_texture(FETCHED_UNIT, variant.samples > 1);
     }
+    nir.fit_sample_masks(variant.single_sampled);
     if !nir.interpolate_elsewhere(variant.samples) {
         return refused(format_args!(
             "where the samples of targets of {} samples are (not known)",
@@ -711,6 +715,7 @@ fn convert_geometry<B: Backend>(
     let mut converted = wcontainers_nir::direct::geometry(routed, bindings, &rewrites, key)
         .map_err(|e| e.to_string())?;
     stream::name_outputs(&mut converted.reflection.outputs);
+    split_arrays(&mut converted);
     let [compute, passthrough] = converted.modules.as_slice() else {
         return refused(format_args!(
             "a geometry program's forms other than compute work and its pass-through"
@@ -760,8 +765,10 @@ fn convert_control<B: Backend>(
     };
     let routed = wcontainers_nir::direct::route_patches(nir, variant.points_in)
         .map_err(|e| e.to_string())?;
-    let converted = wcontainers_nir::direct::hull(routed, bindings, tessellator, &rewrites, key)
-        .map_err(|e| e.to_string())?;
+    let mut converted =
+        wcontainers_nir::direct::hull(routed, bindings, tessellator, &rewrites, key)
+            .map_err(|e| e.to_string())?;
+    split_arrays(&mut converted);
     let compute = converted
         .modules
         .first()
@@ -818,6 +825,7 @@ fn convert_evaluation<B: Backend>(
         converted.reflection.outputs = stream::outputs(&drawn.module);
     }
     stream::name_outputs(&mut converted.reflection.outputs);
+    split_arrays(&mut converted);
     let drawn = converted
         .modules
         .first()
@@ -1943,6 +1951,9 @@ fn draw<B: Backend>(
             &context.framebuffer.state,
             bound.blend_color,
         ),
+        // OpenGL's single-sampled targets, which a host counts as one sample.
+        single_sampled: fragment_shader.writes_sample_mask
+            && context.framebuffer.state.samples == 0,
         samples: if fragment_shader.reads_sample_positions || fragment_shader.fetches_target {
             context.framebuffer.samples.max(1)
         } else {
@@ -1986,6 +1997,7 @@ fn draw<B: Backend>(
         points_in: 0,
         tessellator: None,
         samples: 0,
+        single_sampled: false,
         image_formats: Vec::new(),
     };
     // SAFETY: as above.
@@ -3242,6 +3254,13 @@ fn face_passes<'a, B: Backend>(
     triangles: bool,
     reference: [u8; 2],
 ) -> Result<Vec<FacePass<'a, B>>, String> {
+    // Mesa sets the back face's reference only for a two-sided test (st/mesa's clear by a quad
+    // leaves it zero).
+    let reference = if depth_stencil.two_sided {
+        reference
+    } else {
+        [reference[0]; 2]
+    };
     let split = depth_stencil.stencil
         && (depth_stencil.faces.is_some() || reference[0] != reference[1])
         && !backend.caps().has(Features::STENCIL_PER_FACE);
@@ -3615,6 +3634,12 @@ fn elements(bindings: Vec<ReflectedBinding>) -> Vec<ReflectedBinding> {
             })
         })
         .collect()
+}
+
+/// A staged program's bindings as its forms bind them: the shaders crate's staged forms split
+/// every array of resources as its rewrite does.
+fn split_arrays(converted: &mut Converted) {
+    converted.reflection.bindings = elements(std::mem::take(&mut converted.reflection.bindings));
 }
 
 /// `formats`, by image unit, by the storage slots the route binds those units at.

@@ -209,6 +209,8 @@ unsafe extern "C" {
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
     fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
+    fn wc_nir_fit_sample_masks(nir: *mut NirShader, single_sampled: bool);
+    fn wc_nir_writes_sample_mask(nir: *mut NirShader) -> bool;
     fn wc_nir_fetches_target(nir: *mut NirShader) -> bool;
     fn wc_nir_formatless_images(nir: *mut NirShader) -> u64;
     fn wc_nir_fetch_from_texture(nir: *mut NirShader, unit: u32, multisampled: bool);
@@ -469,6 +471,22 @@ impl Nir {
     pub fn interpolate_elsewhere(&mut self, samples: u32) -> bool {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_interpolate_elsewhere(self.0, samples) }
+    }
+
+    /// A fragment program's sample masks as OpenGL defines them: `gl_SampleMaskIn` of a program
+    /// run per sample holds only that sample's bit (a host may give every covered sample's), and
+    /// with `single_sampled` targets its writes of `gl_SampleMask` are dropped (OpenGL applies
+    /// the mask only as a multisample operation; a host applies its first bit).
+    pub fn fit_sample_masks(&mut self, single_sampled: bool) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fit_sample_masks(self.0, single_sampled) }
+    }
+
+    /// Whether a fragment program writes `gl_SampleMask`, which depends on the targets' sample
+    /// count.
+    pub fn writes_sample_mask(&mut self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_writes_sample_mask(self.0) }
     }
 
     /// Whether a fragment program reads its first target's texels (framebuffer fetch, which

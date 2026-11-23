@@ -15,6 +15,7 @@
 #include "util/bitset.h"
 #include "util/blob.h"
 #include "util/ralloc.h"
+#include "util/u_dynarray.h"
 
 /* What the routes take: NIR with the operations the common form lacks lowered by NIR itself (the
  * drivers report the same, so the NIR they hand over has this shape). */
@@ -791,6 +792,48 @@ wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples)
 }
 
 static bool
+fit_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const bool *single = data;
+   if (intr->intrinsic == nir_intrinsic_load_sample_mask_in &&
+       b->shader->info.fs.uses_sample_shading) {
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *own = nir_ishl(b, nir_imm_int(b, 1), nir_load_sample_id(b));
+      nir_def_rewrite_uses_after(&intr->def, nir_iand(b, &intr->def, own));
+      return true;
+   }
+   if (*single && intr->intrinsic == nir_intrinsic_store_output &&
+       nir_intrinsic_io_semantics(intr).location == FRAG_RESULT_SAMPLE_MASK) {
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   return false;
+}
+
+bool
+wc_nir_writes_sample_mask(struct nir_shader *nir)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return false;
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   return nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
+}
+
+void
+wc_nir_fit_sample_masks(struct nir_shader *nir, bool single_sampled)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return;
+   wc_nir_lower_io(nir);
+   if (nir_shader_intrinsics_pass(nir, fit_sample_mask, nir_metadata_control_flow,
+                                  &single_sampled)) {
+      NIR_PASS(_, nir, nir_opt_dce);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
+}
+
+static bool
 fetches(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    return intr->intrinsic == nir_intrinsic_load_output &&
@@ -1559,12 +1602,64 @@ workgroup_words(nir_shader *nir)
    nir_shader_intrinsics_pass(nir, shared_words, nir_metadata_control_flow, var);
 }
 
+/* `intr` as a load of the block among `first` and the blocks after it, up to `end`, that its index
+ * names at run time. */
+static nir_def *
+load_named_block(nir_builder *b, nir_intrinsic_instr *intr, uint32_t first, uint32_t end)
+{
+   nir_intrinsic_instr *copy = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   /* Not yet inserted, so its sources are on no use list. */
+   copy->src[0] = nir_src_for_ssa(nir_imm_int(b, first));
+   copy->src[1] = nir_src_for_ssa(intr->src[1].ssa);
+   if (first + 1 >= end) {
+      nir_builder_instr_insert(b, &copy->instr);
+      return &copy->def;
+   }
+   nir_if *named = nir_push_if(b, nir_ieq_imm(b, intr->src[0].ssa, first));
+   nir_builder_instr_insert(b, &copy->instr);
+   nir_push_else(b, named);
+   nir_def *later = load_named_block(b, intr, first + 1, end);
+   nir_pop_if(b, named);
+   return nir_if_phi(b, &copy->def, later);
+}
+
+/* Loads of uniform blocks whose index is known only at run time (an array of blocks), each as
+ * the load of every one of the `uniforms` blocks the index may name, since the common form binds
+ * each block on its own. */
+static void
+name_uniform_blocks(nir_shader *nir, uint32_t uniforms)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   struct util_dynarray loads;
+   util_dynarray_init(&loads, NULL);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_load_ubo && !nir_src_is_const(intr->src[0]))
+            util_dynarray_append(&loads, intr);
+      }
+   }
+   bool progress = loads.size && uniforms;
+   if (progress) {
+      nir_builder b = nir_builder_create(impl);
+      util_dynarray_foreach(&loads, nir_intrinsic_instr *, at) {
+         b.cursor = nir_before_instr(&(*at)->instr);
+         nir_def_replace(&(*at)->def, load_named_block(&b, *at, 0, uniforms));
+      }
+   }
+   util_dynarray_fini(&loads);
+   nir_progress(progress, impl, nir_metadata_none);
+}
+
 void
 wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms,
                         uint32_t storage_base)
 {
    /* Block indices that are constants show as constants. */
    wc_optimize(nir);
+   name_uniform_blocks(nir, uniforms);
    struct storage_use use = {0};
    nir_shader_intrinsics_pass(nir, note_storage, nir_metadata_all, &use);
    nir_variable **vars = calloc(uniforms + use.blocks + 1, sizeof(*vars));

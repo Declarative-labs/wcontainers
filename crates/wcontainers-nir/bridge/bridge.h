@@ -236,6 +236,15 @@ bool wc_nir_reads_sample_positions(struct nir_shader *nir);
  * eight and sixteen, are). */
 bool wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples);
 
+/* A fragment program's sample masks as OpenGL defines them: gl_SampleMaskIn of a program run per
+ * sample holds only that sample's bit (a host may give every covered sample's), and with targets
+ * of one sample its writes of gl_SampleMask are dropped (OpenGL applies the mask only as a
+ * multisample operation; a host applies its first bit). */
+void wc_nir_fit_sample_masks(struct nir_shader *nir, bool single_sampled);
+
+/* Whether a fragment program writes gl_SampleMask, which depends on the targets' sample count. */
+bool wc_nir_writes_sample_mask(struct nir_shader *nir);
+
 /* Whether a fragment program reads its first target's texels (framebuffer fetch, which Mesa's
  * lowering of KHR_blend_equation_advanced writes). */
 bool wc_nir_fetches_target(struct nir_shader *nir);
