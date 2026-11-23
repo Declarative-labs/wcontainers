@@ -4,90 +4,163 @@ The WebAssembly engine interface (crates/webassembly-engine) implemented on Wasm
 of time by its LLVM compiler. Crate: crates/webassembly-engine/implementation/wasmedge, package
 wcontainers-webassembly-engine-wasmedge.
 
-## Where things stand (2026-11-23, run 1 of milestone E1)
+## Where things stand (2026-11-23, run 2 of milestone E1)
 
-- Done: every trait of the interface; the suite's 29 tests, the 6 proposal checks and the crate's own 7 checks pass on
-  the rented ARM64 machine against the stock WasmEdge 0.18.1 release; clippy with warnings denied is clean; the
-  crate inherits the workspace lints (unsafe forbidden), has no unsafe and no exemption. The interface and suite
-  files are the same as on main (ea9d491e).
-- Against the release the bindings pin, 0.17.1: the suite passes, and the exception-handling proposal check fails
-  (see "Proposals").
-- The same tests pass on the rented x86-64 machine (0.18.1). The whole check (scratch engine-wasmedge/check.sh) ran
-  on ARM at ec93a63d's tree: clean build of the three crates, 42 tests pass, clippy clean, no unsafe or allow in
-  the crate, adding `unsafe {}` fails to compile ("usage of an `unsafe` block").
-- Not done: the suite on the Mac (the notice of 2026-11-22 keeps builds off it).
+- Done: every trait of the interface. On the rented ARM64 and x86-64 machines, against the stock WasmEdge 0.18.1
+  release: the suite's 29 tests, the 6 proposal checks and the crate's own 13 checks pass; clippy with warnings
+  denied is clean. The crate inherits the workspace lints (unsafe forbidden), has no unsafe and no exemption. The
+  interface and suite files are the same as on main.
+- Run 2 fixed every finding of the independent check of run 1 (details under "Fixed in run 2"). The checker's own
+  15 cases (scratch engine-wasmedge/independent-check/independent.rs) pass on both WasmEdge and wasmtime (30 of 30,
+  ARM, 2026-11-23 10:11 UTC).
+- Against 0.17.1, the release the bindings pin: the suite and the crate's 13 checks pass, and the
+  exception-handling proposal check fails (see "Proposals").
+- Not done: the suite on the Mac (the notice of 2026-11-22 keeps builds off it). Slow paths have named reasons and
+  measured costs here, but no counter and no warning in the code (see "Departures").
+
+## Fixed in run 2 (the independent check's findings)
+
+- Writing a global, or writing or growing an unshared memory, of an instance that also exports a shared memory
+  panicked. Now a global setter helper (imports the global, `global.set`) and a copier for the unshared memory do
+  it. Tested: `the_items_beside_an_exported_shared_memory_are_written`.
+- `find_export` panicked on an exported shared 64-bit memory. The copier now comes in four shapes (shared or not,
+  32 or 64 bits); a helper that cannot be made makes `find_export` answer nothing (absent), never a panic.
+  Tested: `a_shared_64_bit_memory_is_found_shared_and_imported`.
+- Importing a 64-bit memory or a table of typed function references failed. Each module's declarations are now
+  read with wasmparser, and the module that passes imports on declares each one with the importing module's own
+  type and type section. Tested: `a_64_bit_memory_is_imported_and_allocated`,
+  `typed_function_references_are_written_into_tables_and_globals`.
+- Writing a typed function table answered a false `ReferenceTypeMismatch`, and growing it failed. The table writer
+  now imports the table with its exact element type and casts. Writing a function of another type answers
+  `ReferenceTypeMismatch`; writing past the end answers `IndexOutsideTable`.
+- Each compiled library went to a predictable path in the shared temporary folder. Now it goes into a new private
+  folder (tempfile, mode 0700), removed after loading.
+- Host-made 64-bit memories and tables, and bytes beyond the first 4 GiB of a memory, were answered as absent or
+  panicked. Now a host memory or table is a small module of ours that defines it. Bytes beyond 4 GiB go through the
+  64-bit copier. Tested: `bytes_beyond_4_gib_of_a_64_bit_memory_are_read_and_written` (65537 pages, at
+  4 GiB - 4 and 4 GiB + 8), and `a_64_bit_table_is_allocated_written_and_grown`.
+- The dependency list was incomplete. It is now complete, with licences and unsafe counts (see "Dependencies").
+- The wasmtime track's point 6 was unchecked. It is confirmed (see "For the owner" 9).
 
 ## How to run
 
 The bindings find the library where `WASMEDGE_DIR` points (or WasmEdge's usual install folders); nothing is
-downloaded at build time. On the ARM machine the releases are unpacked in /work/scratch-engine-wasmedge/<version>
-(the stock manylinux_2_28_aarch64 archives from WasmEdge's GitHub releases; 0.17.1's sha256 is the one the bindings
-pin). Under the Nix loader the library's libz and libstdc++ are not found, so
-/work/scratch-engine-wasmedge/system-libraries holds links to the system's two and goes on `LD_LIBRARY_PATH`.
+downloaded at build time. On both rented machines the releases are unpacked in /work/scratch-engine-wasmedge/<version>
+(the stock manylinux_2_28 archives from WasmEdge's GitHub releases; 0.17.1's sha256 is the one the bindings pin).
+Under the Nix loader the library's libz and libstdc++ are not found, so /work/scratch-engine-wasmedge/system-libraries
+holds links to the system's two and goes on `LD_LIBRARY_PATH`.
 
-- Tests: scratch engine-wasmedge/run-tests.sh defines `run <version> [cargo test arguments]`:
-  `arm-run <checkout> --name engine-wasmedge -- "$(cat run-tests.sh)
-  run 0.18.1"`
-- Whole check (clean build, tests, clippy, unsafe grep, unsafe probe): `arm-run <checkout> --name engine-wasmedge
-  -- "$(cat check.sh)"` (scratch engine-wasmedge/check.sh; `WASMEDGE_VERSION=0.17.1` for the older release).
-- Benchmark: `cargo bench -p wcontainers-webassembly-engine-wasmedge` (benchmark.rs is the wasmtime crate's, only
-  `main` names another type); scratch engine-wasmedge/bench.sh runs it and the wasmtime crate's in one job.
-- Direct comparison (outside the repository, has unsafe): scratch engine-wasmedge/direct-bench, the C interface used
-  directly against the same operations through the interface.
+- Clippy and tests: scratch engine-wasmedge/run2-job.sh, sent after the exports of WASMEDGE_DIR, LD_LIBRARY_PATH
+  and CARGO_TARGET_DIR. An example is the top of x86-run2.log in that folder. run-tests.sh defines
+  `run <version> [cargo test arguments]`.
+- Verification (the suite crate's clippy, the checker's 15 cases on both engines, then 0.17.1):
+  `arm-run <checkout> --name engine-wasmedge -- "$(cat run2-verify.sh)"`.
+- Whole clean check (clean build, tests, clippy, unsafe grep, unsafe probe): check.sh, `WASMEDGE_VERSION=0.17.1`
+  for the older release.
+- Benchmark: `cargo bench -p wcontainers-webassembly-engine-wasmedge`. `measure` in benchmark.rs is the wasmtime
+  crate's, unchanged; `measure_helpers` adds the helper routes. bench.sh runs both crates' benchmarks in one job.
+- Dependencies with licences and unsafe counts: deps.sh (output deps-run2-clean.txt).
+- Direct comparison (outside the repository, has unsafe): scratch engine-wasmedge/direct-bench.
 
 ## Design
 
 - Bindings: wasmedge-sdk 0.17.1 over wasmedge-sys 0.21.1, their safe layer only. wasmedge-sys runs bindgen over the
   installed headers, so the same bindings build against 0.18.1.
-- `Config`: two WasmEdge configurations (one for compiled modules, run mode AOT; one for the modules that only pass
-  on imports, which hold no code) and the two helper modules, compiled once on first use. `Default` sets every
-  proposal the translated modules use.
-- `compile` writes a native shared library (output format Native) to the system's temporary folder, loads it and
-  removes the file. WasmEdge loads a native library as native code or not at all: the loader's silent fall-back to
-  the interpreter only applies to universal wasm files, so no module this crate compiles is ever interpreted.
-- WasmEdge links imports only by module and item name, through a store. `instantiate` makes a store of its own,
-  registers in it every instance that owns an import, and under each module name the module imports from, a
-  generated module that imports each item from its owner and exports it under the name asked for. A function
-  known only by a reference that no instance exports cannot be linked (`InstantiateError::FunctionNotExported`).
-- Addresses: a function is WasmEdge's reference value (Copy, no lifetime) plus where it is exported; memories, tables
-  and globals are their owner (an index into the engine value's instances) and export name, looked up on each
-  access, because the bindings' handles to them borrow their instance. Instances live as long as the engine value;
-  when it is dropped, function addresses still held keep them alive.
-- Calls: `FunctionTypeBinder<(A1..An), R>` for n from 0 to 17 and results that are one bare value or a tuple of 0 to
-  17, value types i32, i64, f32, f64, i128 (v128): one macro, bounded by the bindings' own `WasmValType` and
-  `WasmVal` and `From<Received>` (the conversion back, which the bindings lack). A call goes through
-  `Executor::call_func_ref` with the parameters in an array.
-- Host functions: one module per host function, its data the closure and a shared slot where the host context is
-  lent during a call (moved in before the call, back after). The bindings give a host function only a `fn` pointer
-  and its module's data, so the host context cannot sit in the engine value and also be reached from the function.
-- Shared memories: the bindings give shared ownership only, and write a memory only through `&mut`. As for wasmtime,
-  each engine value reaches a shared memory's bytes through a copier instance (load, store, grow through an unshared
-  scratch memory). An instance that exports a shared memory is held shared too; writing its unshared memories or
-  its globals then panics (the bindings cannot write through shared ownership).
-- Tables: the bindings have no mutable access to an instance's table, so writes and growth go through a table
-  writer instance (`set`, `grow`); reads use the table directly.
-- Traps are `Box<WasmEdgeError>`; an uncaught exception is WasmEdge's error code UncaughtException, answered
+- `Config`: two WasmEdge configurations, sharing a cache of compiled helper modules keyed by their bytes:
+  - one for compiled modules, in AOT run mode;
+  - one for our modules that hold no code (forwarders, host-made memories and tables, retypers).
+  `Default` turns on every proposal the translated modules use. It also raises WasmEdge's memory cap from 65536
+  pages to the most the bindings can set (see "For the owner" 13).
+- `compile` writes a native shared library into a private folder, loads it, validates it, and reads the module's
+  declarations with wasmparser. The declarations are its type section (re-encoded with wasm-encoder) and the exact
+  type of each import and export. WasmEdge loads a native library as native code or not at all: the loader falls
+  back to the interpreter only for universal wasm files, so no module this crate compiles is ever interpreted.
+- Linking: WasmEdge links imports only by module and item name, through a store. `instantiate` makes a store of its
+  own and registers in it every instance that owns an import. Under each module name the module imports from, it
+  registers a generated forwarder. The forwarder holds the importing module's type section, imports each item from
+  its owner with the type the importing module declares, and exports it under the name asked for. A function known
+  only by a reference that no instance exports cannot be linked (`InstantiateError::FunctionNotExported`).
+- Addresses: a function is WasmEdge's reference value plus where it is exported. Memories, tables and globals are
+  their owner (an index into the engine value's instances) and export name, with how this engine value reaches
+  them; the name is looked up on each access, because the bindings' handles borrow their instance. Instances live as
+  long as the engine value; when it is dropped, function addresses still held keep them alive.
+- Calls: `FunctionTypeBinder<(A1..An), R>` covers n from 0 to 17, and results that are one bare value or a tuple of
+  0 to 17. Value types: i32, i64, f32, f64, i128 (v128). One macro generates it, bounded by the bindings' own
+  `WasmValType` and `WasmVal` and by `From<Received>`, the conversion back, which the bindings lack. A call goes
+  through `Executor::call_func_ref` with the parameters in an array.
+- Host functions: one module per host function. Its data is the closure and a shared slot where the host context is
+  lent during a call.
+- Helpers, each a module of ours compiled once per Config and linked to one item per engine value. They reach what
+  the bindings' safe layer cannot:
+  - the copier (`load`, `store`, `grow` through an unshared scratch memory), for shared memories, for unshared
+    memories of a shared owner, and for bytes beyond 4 GiB;
+  - the table writer (`set`, and `grow` when elements may be null), for every table of function references;
+  - the global setter, for globals of a shared owner and globals of typed function references;
+  - the retyper, which holds a code-free table filled by `ref.func`, for writing a function into a typed slot (see
+    "For the owner" 12).
+  A helper never makes the hot paths of unshared memories, calls or host calls slower: those are unchanged.
+- An instance that exports a shared memory is held shared (`Arc`), so that other engine values can add the memory.
+  Its unshared memories are still read directly. They are written and grown through their copier, and its globals
+  are written through their setter.
+- Traps are `Box<WasmEdgeError>`. An uncaught exception is WasmEdge's error code UncaughtException, answered
   `InvokeError::Exception`.
 
 ## Proposals (each its own module in proposals.rs, compiled ahead of time through the interface)
 
-On the ARM machine, released libraries, 2026-11-23:
-- 0.18.1: tail calls (return_call ten million deep), typed function references (call_ref, return_call_ref,
-  ref.as_non_null), exception handling (try_table, throw, catch_ref, throw_ref, an uncaught exception), threads
-  (atomic add, wait, notify, fence on a shared memory) and shared memory across two threads, 64-bit memories (loads,
-  stores, size, grow, an out-of-bounds trap), multiple memories (memory.copy between two): all pass.
-- 0.17.1 (the release the bindings pin): all pass except exception handling, which does not compile ahead of time
-  (`Core(UnknownError(14))` from the compiler), as the survey's first reader said.
-- Not checked: the legacy exception opcodes (try, catch, rethrow); WasmEdge reserves them and the survey says it
+On the ARM machine, released libraries, 2026-11-23 (rechecked in run 2):
+- 0.18.1: every check passes:
+  - tail calls: return_call ten million deep;
+  - typed function references: call_ref, return_call_ref, ref.as_non_null;
+  - exception handling: try_table, throw, catch_ref, throw_ref, an uncaught exception;
+  - threads: atomic add, wait, notify and fence on a shared memory, and a shared memory across two threads;
+  - 64-bit memories: loads, stores, size, grow, an out-of-bounds trap;
+  - multiple memories: memory.copy between two.
+  The checker's cases add return_call_indirect, br_on_null, catch_all_ref and wait/notify across two engine
+  values; all pass. Beyond 4 GiB of a 64-bit memory works once the memory cap is raised.
+- 0.17.1, the release the bindings pin: everything passes except exception handling, which does not compile ahead
+  of time (`Core(UnknownError(14))` from the compiler), as the survey's first reader said.
+- Not checked: the legacy exception opcodes (try, catch, rethrow). WasmEdge reserves them, and the survey says it
   rejects them.
 
 ## Measurements
 
-Crate benchmark, through the interface, release builds, the WasmEdge crate and the wasmtime crate run in turn in one
-job, two rounds each; each figure is the lower of the two rounds (each round is the best of 5).
+Crate benchmark, through the interface, release builds. The WasmEdge crate and the wasmtime crate run in turn in one
+job, two rounds each; each figure is the lower of the two rounds, and each round is the best of 5.
 
-Rented ARM64 machine (Graviton4, 96 cores), load average 17 to 22 (other tracks' jobs), 2026-11-23 09:02 to 09:13 UTC,
-WasmEdge 0.18.1, then wasmtime 50.0.1 (same binary set, same job):
+Run 2, rented ARM64 machine, load average 8.5 to 15 (other tracks' jobs), 2026-11-23 10:12 to 10:23 UTC, tree
+8d8794d5, WasmEdge 0.18.1, then wasmtime 50.0.1 in the same job:
+- compile the benchmark module: WasmEdge 6.38 ms, wasmtime 198 µs
+- instantiate it (one import): WasmEdge 6.50 µs, wasmtime 491 ns. Run 1 gave 5.42 µs; reading the forwarder's
+  declarations and loading each forwarder with its own loader account for about 1 µs.
+- an empty call into the module: WasmEdge 1051 ns, wasmtime 18.2 ns
+- an empty host function called from a module loop: WasmEdge 395 ns per call, wasmtime 4.39 ns
+- unshared memory, write / read 64 B: WasmEdge 72.5 / 66.0 ns, wasmtime 7.3 / 6.9 ns. Run 1 gave 69.4 / 61.5 at a
+  higher load; the path gained one test of a flag.
+- unshared memory, write / read 64 KiB: WasmEdge 831 / 818 ns, wasmtime 760 / 763 ns
+- shared memory, write / read 64 B: WasmEdge 1443 / 1425 ns, wasmtime 42.1 / 54.6 ns (both through a copier)
+- shared memory, write / read 64 KiB: WasmEdge 3320 / 3268 ns, wasmtime 1810 / 1798 ns
+- table write: WasmEdge 1219 ns, wasmtime 17.3 ns
+
+Run 2, rented x86-64 machine (Xeon Platinum 8488C, 96 cores), load average 0.8 to 5.2, 2026-11-23 10:15 to 10:25
+UTC, tree 6067f76a (adds `measure_helpers`), same job shape:
+- compile: WasmEdge 6.12 ms, wasmtime 245 µs
+- instantiate: WasmEdge 6.31 µs, wasmtime 387 ns
+- empty call: WasmEdge 862 ns, wasmtime 12.7 ns
+- host call: WasmEdge 303 ns per call, wasmtime 4.00 ns
+- unshared write / read 64 B: WasmEdge 64.9 / 57.3 ns, wasmtime 4.1 / 4.2 ns
+- unshared write / read 64 KiB: WasmEdge 1337 / 1334 ns, wasmtime 1294 / 1293 ns
+- shared write / read 64 B: WasmEdge 1159 / 1141 ns, wasmtime 36.9 / 37.9 ns
+- shared write / read 64 KiB: WasmEdge 3772 / 3797 ns, wasmtime 2622 / 2683 ns
+- table write: WasmEdge 970 ns, wasmtime 12.6 ns
+- WasmEdge only, the helper routes:
+  - write a global of an instance that exports a shared memory (setter): 946 ns;
+  - write / read 64 B of an unshared memory of such an instance: 1161 ns (copier) / 61.0 ns (direct);
+  - write a function into a typed table (retyper, then writer): 1095 ns, so about 125 ns more than a plain table
+    write once the retyper exists.
+  wasmtime has no such figures: it writes all four directly.
+
+Run 1 (tree ec93a63d), rented ARM64 machine (Graviton4, 96 cores), load average 17 to 22 (other tracks' jobs),
+2026-11-23 09:02 to 09:13 UTC, WasmEdge 0.18.1, then wasmtime 50.0.1 in the same job:
 - compile the benchmark module: WasmEdge 6.37 ms, wasmtime 207 µs
 - instantiate it (one import): WasmEdge 5.42 µs, wasmtime 489 ns
 - an empty call into the module: WasmEdge 1047 ns, wasmtime 18.2 ns
@@ -98,8 +171,8 @@ WasmEdge 0.18.1, then wasmtime 50.0.1 (same binary set, same job):
 - shared memory, write / read 64 KiB: WasmEdge 3269 / 3232 ns, wasmtime 1813 / 1789 ns
 - table write: WasmEdge 1209 ns, wasmtime 17.3 ns
 
-Rented x86-64 machine (Xeon Platinum 8488C, 96 cores), load average 1.0 to 3.0 (10 at the start, from the build),
-2026-11-23 09:23 to 09:32 UTC, same job shape:
+Run 1, rented x86-64 machine (Xeon Platinum 8488C, 96 cores), load average 1.0 to 3.0 (10 at the start, from the
+build), 2026-11-23 09:23 to 09:32 UTC, same job shape:
 - compile: WasmEdge 5.99 ms, wasmtime 244 µs
 - instantiate: WasmEdge 5.18 µs, wasmtime 386 ns
 - empty call: WasmEdge 863 ns, wasmtime 12.7 ns
@@ -110,17 +183,24 @@ Rented x86-64 machine (Xeon Platinum 8488C, 96 cores), load average 1.0 to 3.0 (
 - shared write / read 64 KiB: WasmEdge 3770 / 3831 ns, wasmtime 2584 / 2561 ns
 - table write: WasmEdge 966 ns, wasmtime 12.6 ns
 
+The checker's `instantiates_many_times` (instantiate with one import, then find a table, 4000 times), ARM, load 19
+to 24, 2026-11-23 10:11 UTC: WasmEdge 26.9 µs for the first 500 and 17.2 µs for the last 500; wasmtime 941 / 809 ns.
+The run-1 tree gave 37.8 / 15.1 µs in the checker's job.
+
 Direct comparison (scratch direct-bench: WasmEdge's C interface called directly, unsafe, against the interface, same
-binary), ARM machine, load 18 to 20, 2026-11-23 09:14 to 09:20 UTC, best of 7 rounds:
+binary), ARM machine, load 18 to 20, 2026-11-23 09:14 to 09:20 UTC, best of 7 rounds (run 1; those paths are
+unchanged):
 - empty call: raw `WasmEdge_ExecutorInvoke` with arrays on the stack 1085 ns, the bindings' `call_func_ref` 1103 ns,
   the interface 1105 ns. The engine's own entry is what costs; the bindings and the interface add about 20 ns.
-- 1000 host calls: a raw host function on an executor without hooks 76.4 µs (76 ns per call); the same raw host
-  function on an executor with the two signal-mask hooks the bindings register 391 µs; the interface 398 µs. The
-  hooks (two `pthread_sigmask` system calls per host call, for the bindings' call timeouts) cost about 315 ns per
-  call; the bindings' value lists and the interface add about 7 ns.
+- 1000 host calls:
+  - a raw host function on an executor without hooks: 76.4 µs (76 ns per call);
+  - the same raw host function on an executor with the two signal-mask hooks the bindings register: 391 µs;
+  - the interface: 398 µs.
+  The hooks (two `pthread_sigmask` system calls per host call, for the bindings' call timeouts) cost about 315 ns
+  per call; the bindings' value lists and the interface add about 7 ns.
 - unshared memory 64 B: raw `WasmEdge_MemoryInstanceGetData` / `SetData` on a held pointer 3.6 / 4.7 ns, the
   interface 62 / 71 ns (the name lookup, below); 64 KiB: raw 756 / 760 ns, the interface 842 / 857 ns.
-- shared memory 64 B: raw 3.6 / 4.7 ns, the interface (copier) 1437 / 1441 ns; 64 KiB raw 755 / 759 ns, the
+- shared memory 64 B: raw 3.6 / 4.7 ns, the interface (copier) 1437 / 1441 ns; 64 KiB: raw 755 / 759 ns, the
   interface 3264 / 3293 ns.
 - table write: raw `WasmEdge_TableInstanceSetData` 4.2 ns, the interface (table writer) 1219 ns.
 
@@ -128,77 +208,186 @@ binary), ARM machine, load 18 to 20, 2026-11-23 09:14 to 09:20 UTC, best of 7 ro
 
 1. Condition (1) cannot hold on WasmEdge through its bindings' safe layer, and mostly not even through its C
    interface. Measured above (ARM): an empty call costs 1085 ns in the engine itself (raw C call) against wasmtime's
-   18 ns; a host call costs 76 ns raw, 398 ns through the bindings' executor. Every call and every host call through
-   the safe layer allocates: `call_func_ref` collects the parameters into a `Vec`, reads the function type (two more
-   `Vec`s), and returns a `Vec`; a host function receives a `Vec` and must return one (`SyncFn`). The bindings have
-   no typed call. Nothing of ours is in those paths beyond an array of the parameters, a move of the host context in
-   and out of a `Cell`, and converting each value.
-2. The bindings' `Executor::create` registers, on Linux, a pre and post host-function hook that each make a
-   `pthread_sigmask` system call (for their call-timeout feature): about 315 ns of the 398 ns per host call. Without
-   unsafe they cannot be avoided. The unsafe lines that would: `let executor = unsafe {
-   ffi::WasmEdge_ExecutorCreate(config.as_ptr(), core::ptr::null_mut()) };` (the `ffi` feature), and invoking with
-   `unsafe { ffi::WasmEdge_ExecutorInvoke(executor, function.get_func_raw(), parameters.as_ptr(), n,
-   results.as_mut_ptr(), m) }` with stack arrays; host functions made with `ffi::WasmEdge_FunctionInstanceCreate`
-   and an `extern "C"` trampoline that reads its closure and the host context from the data pointer. Measured gain:
-   398 to 76 ns per host call; calls into a module gain about 20 ns of 1100.
-3. The safe layer's handles to memories, tables and globals borrow the instance that owns them, so an address is the
+   18 ns. A host call costs 76 ns raw and 398 ns through the bindings' executor. Every call and every host call
+   through the safe layer allocates:
+   - `call_func_ref` collects the parameters into a `Vec`, reads the function type (two more `Vec`s), and returns a
+     `Vec`;
+   - a host function receives a `Vec` and must return one (`SyncFn`).
+   The bindings have no typed call. Nothing of ours is in those paths beyond an array of the parameters, a move of
+   the host context in and out of a `Cell`, and converting each value.
+2. On Linux, the bindings' `Executor::create` registers a pre and a post host-function hook. Each makes a
+   `pthread_sigmask` system call, for the bindings' call-timeout feature. Together they cost about 315 ns of the
+   398 ns per host call, and without unsafe they cannot be avoided. The unsafe lines that would avoid them:
+   - `let executor = unsafe { ffi::WasmEdge_ExecutorCreate(config.as_ptr(), core::ptr::null_mut()) };` (the `ffi`
+     feature);
+   - invoking with `unsafe { ffi::WasmEdge_ExecutorInvoke(executor, function.get_func_raw(), parameters.as_ptr(), n,
+     results.as_mut_ptr(), m) }` and arrays on the stack;
+   - host functions made with `ffi::WasmEdge_FunctionInstanceCreate` and an `extern "C"` trampoline that reads its
+     closure and the host context from the data pointer.
+   Measured gain: 398 to 76 ns per host call; calls into a module gain about 20 ns of 1100.
+3. The safe layer's handles to memories, tables and globals borrow the instance that owns them. So an address is the
    owner and the export name, and every access looks the name up (a C string is made, then a map is searched):
-   about 58 ns of the 62 ns of a 64-byte read. The unsafe line that would remove it: hold `unsafe {
-   memory.as_ptr() }` in the address and call `unsafe { ffi::WasmEdge_MemoryInstanceGetData(pointer,
-   into.as_mut_ptr(), offset, length) }` (and `SetData`); measured 3.6 against 62 ns for a 64-byte read.
-4. Shared memories: the bindings hand a memory out mutably only through `&mut` of its owner, and a shared memory's
+   about 58 ns of the 62 ns of a 64-byte read. The unsafe lines that would remove the lookup: hold
+   `unsafe { memory.as_ptr() }` in the address and call `unsafe { ffi::WasmEdge_MemoryInstanceGetData(pointer,
+   into.as_mut_ptr(), offset, length) }` (and `SetData`). Measured: 3.6 ns against 62 ns for a 64-byte read.
+4. Shared owners. The bindings hand out a memory mutably only through `&mut` of its owner, and a shared memory's
    owner is shared, so writes go through a copier, as for wasmtime. Reads could use `Memory::slice`, but a `&[u8]`
    over a memory other threads write is a data race, so they go through the copier too. The bindings also offer
-   `Memory::mut_slice(&self) -> &mut [T]`, a safe function that hands out `&mut` from `&`; I do not use it. Unsafe
-   route: the `GetData` / `SetData` lines of point 3, 3.6 against 1437 ns for 64 bytes. An instance that exports a
-   shared memory is shared the same way, and writing its unshared memories or globals panics.
-5. Tables: the safe layer has no mutable access to an instance's table (`AsInstance` has `get_table` only), so every
+   `Memory::mut_slice(&self) -> &mut [T]`, a safe function that hands out `&mut` from `&`; I do not use it.
+   Because the interface gives `read_memory` `&self` while the copier needs the executor mutably, the copier read
+   borrows the executor from a `RefCell`. That is a run-time borrow check of ours on the shared-memory read path,
+   negligible next to the 1.4 µs copier call, and `read_memory(&mut self)` would remove it.
+   An instance that exports a shared memory is held shared the same way. Its unshared memories' writes and growth
+   go through their own copier, and its globals' writes through a setter (figures in "Measurements", run 2). The
+   unsafe route for all of them is the `GetData` / `SetData` lines of point 3 and `ffi::WasmEdge_GlobalInstanceSetValue`
+   on a held pointer: 3.6 against 1437 ns for 64 bytes.
+5. Tables: the safe layer has no mutable access to an instance's table (`AsInstance` has `get_table` only). So every
    table write and growth is a call into a table-writer module: 1219 ns against 4.2 ns for
    `unsafe { ffi::WasmEdge_TableInstanceSetData(table.as_ptr().cast_mut(), value.as_raw(), index) }`.
-6. Imports are linked by name only. Each instantiation makes a store and one generated module per imported module
-   name that re-exports each item from its owner (5.4 µs for the benchmark's one import, against wasmtime's 0.5 µs).
-   A function known only by a reference that no instance exports (an element of a module's table that points at an
-   unexported function) cannot be imported at all: `InstantiateError::FunctionNotExported`.
-7. Not reachable through the bindings at all, answered as absent: tags (no type in the bindings, so `TagAddress` is
-   uninhabited, `find_export` never answers a tag, a module that imports one cannot be instantiated); 64-bit host
-   memories and tables (`allocate_*` answer `AllocateError::AddressTypeOutsideBindings`); bytes beyond the first
-   4 GiB of a 64-bit memory (the bindings take 32-bit offsets): `read_memory` and `write_memory` panic there,
-   because the interface's errors say "outside the memory", which would be false. One concrete fix for the last: an
-   `Unsupported` variant of `ReadMemoryError` and `WriteMemoryError`, or a binding with 64-bit offsets.
+6. Imports are linked by name only. Each instantiation makes a store and one forwarder per imported module name, and
+   reads the module's declarations, which the bindings' types cannot describe exactly (no 64-bit flag, no typed
+   reference): 5.4 µs for the benchmark's one import (run 1), against wasmtime's 0.5 µs. A function known only by a
+   reference that no instance exports (for example a table element that points at an unexported function) cannot
+   be imported at all: `InstantiateError::FunctionNotExported`.
+7. Not reachable through the bindings at all:
+   - Tags: the bindings have no type for them. `TagAddress` is uninhabited, `find_export` never answers a tag, and a
+     module that imports one cannot be instantiated.
+   - 64-bit memories and tables: no longer missing. Host-made ones are modules of ours, and bytes beyond 4 GiB go
+     through the 64-bit copier.
 8. Version: the only released bindings (wasmedge-sys 0.21.1) pin engine 0.17.1, whose compiler refuses exception
-   handling; 0.18.1, with the same bindings unchanged, passes everything. The crate takes the library
-   `WASMEDGE_DIR` points at, so nothing is pinned in the code. The bindings' build script fails without an installed
-   library, so a workspace-wide build on a machine without WasmEdge fails at wasmedge-sys (builds with `-p` of other
-   packages are unaffected).
-9. The wasmtime track's seven points, from WasmEdge's side: (1) `&self` reads: WasmEdge's tables, globals and
-   unshared memories read fine through `&self`; only the shared-memory copier needs the executor, which sits in a
-   `RefCell` borrowed only there; `read_memory(&mut self)` would remove it. (2) shared memory bytes: confirmed, same
-   copier, see point 4. (3) fresh `Config::default()` in the suite: does not bite here, WasmEdge memories belong to
-   no engine, so no process-wide config was needed; cloning in the suite would still be the clean form. (4) a host
-   function cannot trap: confirmed; WasmEdge's host functions return a result already (`Result<_, CoreError>`), so a
-   trapping closure would cost nothing. (5) nothing frees an instance: confirmed (no cap like wasmtime's 10000 here,
-   but each instantiation with imports also keeps its generated linking modules). (6) the suite's crate fails
-   `clippy -D warnings`: not checked again here (`--no-deps`). (7) inference and tuple parameters: confirmed, same
-   shape.
-10. Places where an engine-specific fast path would pay, none built: held raw pointers for memories and tables
-    (points 3 to 5), an executor without the signal hooks and host functions on the C interface (point 2). The
-    engine's own call entry (about 1.1 µs) is beyond any embedding.
-11. WasmEdge logs at info level to standard error (each compilation) and logs every trap as an error; the crate does
-    not change the process-wide log level.
+   handling. 0.18.1, with the same bindings unchanged, passes everything. The crate takes the library
+   `WASMEDGE_DIR` points at, so nothing is pinned in the code.
+   The bindings' build script panics without an installed library, and the crate is a workspace member through the
+   glob `crates/*/implementation/*`. So `cargo build/test/clippy --workspace`, and any whole-project tool such as
+   `cargo reviewable check`, fail on a machine without WasmEdge, the Mac included. For the orchestrator to rule
+   before the linter is turned back on:
+   - (a) whole-workspace commands `--exclude wcontainers-webassembly-engine-wasmedge` where WasmEdge is absent;
+   - (b) a feature of this crate (off by default) that brings in the bindings, so that the crate builds to nothing
+     without it;
+   - (c) the root `exclude` list. This would cost the crate its `[lints] workspace = true`, which the brief requires,
+     so I advise against it.
+   I have changed none of them.
+9. The wasmtime track's seven points, from WasmEdge's side:
+   - (1) `&self` reads: tables, globals and unshared memories read fine through `&self`. Only the copier needs the
+     executor (point 4).
+   - (2) the bytes of a shared memory: confirmed, the same copier (point 4).
+   - (3) a fresh `Config::default()` in the suite: it does not bite here, because WasmEdge memories belong to no
+     engine. Cloning in the suite would still be the clean form.
+   - (4) a host function cannot trap: confirmed. WasmEdge's host functions already return a result
+     (`Result<_, CoreError>`), so a trapping closure would cost nothing.
+   - (5) nothing frees an instance: confirmed. There is no cap here like wasmtime's 10000, but each instantiation
+     with imports also keeps its forwarders, and each helper keeps its instance.
+   - (6) the suite's crate fails `clippy -D warnings`: confirmed on ARM in run 2. There are three `clippy::ok_expect`
+     errors ("called `ok().expect()` on a `Result` value"), at crates/webassembly-engine/conformance/conformance.rs
+     lines 259, 309 and 463.
+   - (7) inference and tuple parameters: confirmed, the same shape.
+10. Places where an engine-specific fast path would pay, none built:
+    - held raw pointers for memories, tables and globals (points 3 to 5);
+    - an executor without the signal hooks, and host functions on the C interface (point 2).
+    The engine's own call entry (about 1.1 µs) is beyond any embedding.
+11. Logging. WasmEdge logs at info level to standard error (each compilation) and logs every trap as an error. The
+    crate does not change the process-wide log level.
+12. Typed function references. WasmEdge casts a reference by the type the reference carries, not by the function's
+    type. It drops that type to `funcref` both in a reference the C interface makes (`WasmEdge_ValueGenFuncRef`)
+    and in any reference a call returns to the host. Its executor says why: type indices are opaque to the host.
+    So a function from `find_export` cannot be written into a `(ref null $t)` table or global by a cast alone.
+    The safe route: a retyper, a code-free module of ours. It imports the function from where it is exported, with
+    its declared type, and holds one table element filled by `ref.func`; a reference read from a table keeps its
+    type. Then the writer's or setter's `ref.cast` passes.
+    A function nobody exports, or a host function, still cannot go into a typed slot: such a write answers
+    `ReferenceTypeMismatch`.
+    The nulls WasmEdge gives the host carry `funcref` too, so a helper writes the slot's own `ref.null` for a null.
+    The fix that would remove all of this belongs in WasmEdge: references the host makes or receives should keep
+    the function's type, or casts should check the function instance's type.
+13. Memory cap. By default WasmEdge caps every memory at 65536 pages (4 GiB). A 64-bit module memory declared larger
+    then instantiates with fewer pages than it declares, and only logs an error; I saw this in run 2 before raising
+    the cap. The bindings' `set_max_memory_pages` takes a `u32`, so the most it can set is 2^32 - 1 pages. WasmEdge
+    then logs a false error, "Limited 4294967295 page larger than the 32-bit page upper bound 65536", for every
+    32-bit memory it makes; the memory is made correctly. Its own 64-bit default (2^48 pages, which logs nothing)
+    is out of the bindings' reach. Correct by the standard came first: the cap is raised and the noise remains.
 
 ## Departures from the plan
 
-- Tests and clippy ran on the rented ARM machine only (the notice of 2026-11-22), not on the Mac.
+- Tests and clippy ran on the rented machines only (the notice of 2026-11-22), not on the Mac.
 - Engine 0.18.1 is used with bindings made for 0.17.1: the only released bindings pin 0.17.1, whose compiler lacks
   exception handling. Nothing is patched; the bindings' build script runs bindgen over 0.18.1's own headers.
+- Slow paths (copier, table writer, global setter, retyper, forwarders) are named here with measured costs. There is
+  no counter and no warning in the code: the interface has no channel to report them, and the wasmtime crate's
+  copier has none either. If the owner wants them, a per-engine counter per reason is a few lines.
 
-## Dependencies (licence; occurrences of the word `unsafe` in its src/)
+## Dependencies
 
-- wasmedge-sys 0.21.1 (Apache-2.0; 389), FFI to the C library; build dependencies bindgen, cmake, and reqwest with
-  rustls (used only by its `standalone` feature, which this crate leaves off, but built anyway)
+Each entry gives the licence, then the number of occurrences of the word `unsafe` in the package's `.rs` files
+(tests, benches and examples left out; comments count too). Taken with `cargo tree -p
+wcontainers-webassembly-engine-wasmedge` on ARM, 2026-11-23 (scratch deps.sh, full list in deps-run2-clean.txt).
+Run 2 added wasmparser 0.263.0, tempfile 3.27.0, and the `wasmparser` feature of wasm-encoder; all three were already
+in the lock file for other crates.
+
+Direct dependencies:
+- wasmedge-sys 0.21.1 (Apache-2.0; 395), the FFI to the C library
 - wasmedge-sdk 0.17.1 (Apache-2.0; 2), wasmedge-types 0.6.1 (Apache-2.0; 2), wasmedge-macro 0.6.1 (Apache-2.0; 3)
-- the WasmEdge library itself, 0.18.1 (Apache-2.0), C++ with LLVM linked in; not a Cargo dependency
-- wasm-encoder 0.263.0, already in the workspace, writes the helper and linking modules (Apache-2.0 WITH
-  LLVM-exception OR Apache-2.0 OR MIT; 0)
-- thiserror 2.0.21, already in the workspace (MIT OR Apache-2.0; 0)
-- wat 1.263.0, tests only, already in the lock file through wasmedge-sys (Apache-2.0 WITH LLVM-exception)
+- wasm-encoder 0.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 0)
+- wasmparser 0.263.0 (same licence; 0)
+- tempfile 3.27.0 (MIT OR Apache-2.0; 4)
+- thiserror 2.0.21 (MIT OR Apache-2.0; 0)
+- dev only: wat 1.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 0)
+- the WasmEdge library itself, 0.18.1 (Apache-2.0): C++ with LLVM linked in, not a Cargo dependency
+
+Shipped, through those (normal dependencies):
+- anyhow 1.0.104 (MIT OR Apache-2.0; 106)
+- bitflags 2.13.2 (MIT OR Apache-2.0; 3)
+- bumpalo 3.20.4 (MIT OR Apache-2.0; 239)
+- cfg-if 1.0.5 (MIT OR Apache-2.0; 0)
+- fastrand 2.5.0 (Apache-2.0 OR MIT; 0)
+- futures-core 0.3.34 (MIT OR Apache-2.0; 8)
+- getrandom 0.2.17 (MIT OR Apache-2.0; 58), getrandom 0.4.3 (MIT OR Apache-2.0; 114)
+- lazy_static 1.5.1 (MIT OR Apache-2.0; 2)
+- leb128fmt 0.1.0 (MIT OR Apache-2.0; 0)
+- libc 0.2.191 (MIT OR Apache-2.0; 810)
+- linux-raw-sys 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 6932)
+- lock_api 0.4.14 (MIT OR Apache-2.0; 302)
+- log 0.4.35 (MIT OR Apache-2.0; 8)
+- memchr 2.8.3 (Unlicense OR MIT; 340)
+- num-derive 0.3.3 (MIT OR Apache-2.0; 0)
+- num-traits 0.2.19 (MIT OR Apache-2.0; 1)
+- once_cell 1.21.4 (MIT OR Apache-2.0; 51)
+- parking_lot 0.12.5 (MIT OR Apache-2.0; 88), parking_lot_core 0.9.12 (MIT OR Apache-2.0; 149)
+- paste 1.0.15 (MIT OR Apache-2.0; 0)
+- ppv-lite86 0.2.21 (MIT OR Apache-2.0; 168)
+- proc-macro2 1.0.107 (MIT OR Apache-2.0; 6)
+- quote 1.0.47 (MIT OR Apache-2.0; 0)
+- rand 0.8.8 (MIT OR Apache-2.0; 14), rand_chacha 0.3.1 (MIT OR Apache-2.0; 1), rand_core 0.6.4 (MIT OR Apache-2.0; 2)
+- rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 1673)
+- scoped-tls 1.0.1 (MIT/Apache-2.0; 2)
+- scopeguard 1.2.0 (MIT OR Apache-2.0; 4)
+- semver 1.0.28 (MIT OR Apache-2.0; 48)
+- setjmp 0.1.0 (PostgreSQL OR MIT; 0), a Linux-only dependency of wasmedge-sys
+- smallvec 1.16.5 (MIT OR Apache-2.0; 83)
+- syn 1.0.109 (MIT OR Apache-2.0; 62), syn 2.0.119 (MIT OR Apache-2.0; 78), syn 3.0.10 (MIT OR Apache-2.0; 97)
+- thiserror 1.0.69 (MIT OR Apache-2.0; 0)
+- thiserror-impl 1.0.69 (MIT OR Apache-2.0; 1), thiserror-impl 2.0.21 (MIT OR Apache-2.0; 1)
+- unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0; 2)
+- unicode-width 0.2.3 (MIT OR Apache-2.0; 0)
+- wast 263.0.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 0)
+- wat 1.263.0, also a normal dependency of wasmedge-sys (same licence; 0)
+- zerocopy 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT; 554)
+
+Build only (wasmedge-sys's build script: bindgen, cmake, and a download stack for its `standalone` feature, which
+this crate leaves off but which is built anyway). Not shipped. Licences that need a look:
+- webpki-roots 0.25.4: MPL-2.0, a file-level copyleft
+- ring 0.17.14: Apache-2.0 AND ISC
+- bindgen 0.69.5: BSD-3-Clause
+- encoding_rs 0.8.44: (Apache-2.0 OR MIT) AND BSD-3-Clause
+- libloading 0.8.9, rustls-webpki 0.101.7, untrusted 0.9.0: ISC
+- the icu_*, litemap, potential_utf, tinystr, writeable, yoke, zerofrom, zerotrie and zerovec crates: Unicode-3.0
+
+The rest are MIT, Apache-2.0 or both: adler2, async-trait, autocfg, base64, block-buffer, bytes, cc, cexpr,
+clang-sys, cmake, cpufeatures, crc32fast, crypto-common, digest, displaydoc, either, equivalent, filetime,
+find-msvc-tools, flate2, fnv, form_urlencoded, futures-channel/io/sink/task/util, generic-array, glob, h2,
+hashbrown, hex, http, http-body, httparse, httpdate, hyper, hyper-rustls, idna, idna_adapter, indexmap, ipnet,
+itertools, itoa, lazycell, mime, minimal-lexical, miniz_oxide, mio, multiversion_no_op, nom, percent-encoding,
+phf (four crates), pin-project-lite, regex (three crates), reqwest, rustc-hash, rustls, rustls-pemfile, rustversion,
+ryu, sct, serde, serde_core, serde_urlencoded, sha2, sha256, shlex (two), simd-adler32, simdutf8, siphasher, slab,
+socket2 (two), stable_deref_trait, sync_wrapper, synstructure, tar, tokio, tokio-rustls, tokio-util, tower-service,
+tracing, tracing-core, try-lock, typenum, url, utf8_iter, utf_types, version_check, want, xattr. Their unsafe counts
+are in deps-run2-clean.txt.
