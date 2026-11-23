@@ -427,7 +427,12 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     equal to the model, but it fails its own coverage check, "no stop landed in the save, the enter or the code":
     of 42,391,328 stops sent, 41,340,295 landed in the wait, 1,412 in the publish, 6 in the code and none in the
     enter or the save. Under gVisor a stop takes far longer to arrive than the piece runs, so stops land where the
-    thread waits. Left failing there; a 12,000-round run is below if it finished.
+    thread waits. Left failing there.
+  - Sandboxes on Graviton4 after the code commit (19:50 to 20:10 UTC, scratch w1/run10/sb-arm.out, load 12 to 18):
+    inside Docker's default profile every test binary passes. Under gVisor: run 5's four known failures and the
+    step test's /proc read, as in run 9; the floor binary as a whole passed its 900 s limit (the full 20,000-round
+    stop flood), so its verdicts under gVisor are the separate runs above (calls, stops, faults and register
+    isolation pass; the code-area read and the flood's coverage fail).
   - Final verdicts after the last code commit, each test binary 3 times with /dev/kvm denied, clippy with warnings
     denied clean on both: Graviton4 (scratch w1/run10/final-arm.log, load 15) 180 of 180; Xeon (19:42 UTC,
     final-x86.log, load 5.9 to 2.8) 156 of 156 (the x86 machine did not answer SSH at 19:40).

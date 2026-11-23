@@ -981,7 +981,9 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   On ARM64 (W1 run 10, scratch w1/run10): a signal frame holds no FP/SIMD record and the handler starts with those
   registers zeroed, so P returns through the frame for them (3.6, decision 14); an execute-only mapping can be read
   (not written), so translated code can read its code area there, which Linux refuses
-  (`translated_code_can_neither_read_nor_write_the_code_area` fails under gVisor for that read).
+  (`translated_code_can_neither_read_nor_write_the_code_area` fails under gVisor for that read). On x86-64 its frames
+  hold the FP state as Linux's do (`fpregs` set, the interrupted xmm0 there; scratch w1/run10/gframe-x86.c), so
+  x86-64's floor (3.10) needs no return route.
 - P makes one host process per guest process, so a host limit on processes (a pids cgroup, `--pids-limit`) is also
   the guest's; I makes none.
 - Host pages larger than 4 KiB (16 KiB on Apple silicon, 64 KiB on ARM64 Linux kernels built so, such as RHEL's
