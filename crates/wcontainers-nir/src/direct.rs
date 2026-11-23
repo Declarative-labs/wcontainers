@@ -16,7 +16,7 @@ use naga::{
 use std::ffi::{CStr, c_char};
 use wcontainers_gpu::Format as GpuFormat;
 use wcontainers_gpu::{
-    HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
+    CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
     ShaderStage as GpuStage, SlotKind, SourceStage, StageExtras, TEXEL_BUFFER_TEXTURE_WIDTH,
     TexelBufferRoute, VariantKey, helper_binding,
 };
@@ -3830,7 +3830,7 @@ impl Builder<'_> {
             image,
             query: naga::ImageQuery::NumLayers,
         });
-        let faces = self.add(Expression::Literal(Literal::U32(crate::CUBE_FACES)));
+        let faces = self.add(Expression::Literal(Literal::U32(CUBE_FACES)));
         let cubes = self.add(Expression::Binary {
             op: BinaryOperator::Divide,
             left: layers,
@@ -4372,7 +4372,7 @@ impl Builder<'_> {
         parts.truncate(size_components(dim) as usize);
         if t.arrayed != 0 || dim == ImageDimension::D3 {
             parts.push(if dim == ImageDimension::Cube {
-                let faces = self.add(Expression::Literal(Literal::U32(crate::CUBE_FACES)));
+                let faces = self.add(Expression::Literal(Literal::U32(CUBE_FACES)));
                 self.add(Expression::Binary {
                     op: BinaryOperator::Divide,
                     left: layers,
