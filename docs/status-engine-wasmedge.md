@@ -4,19 +4,51 @@ The WebAssembly engine interface (crates/webassembly-engine) implemented on Wasm
 of time by its LLVM compiler. Crate: crates/webassembly-engine/implementation/wasmedge, package
 wcontainers-webassembly-engine-wasmedge.
 
-## Where things stand (2026-11-23, run 2 of milestone E1)
+## Where things stand (2026-11-23, run 3 of milestone E1)
 
-- Done: every trait of the interface. On the rented ARM64 and x86-64 machines, against the stock WasmEdge 0.18.1
-  release: the suite's 29 tests, the 6 proposal checks and the crate's own 13 checks pass; clippy with warnings
-  denied is clean. The crate inherits the workspace lints (unsafe forbidden), has no unsafe and no exemption. The
-  interface and suite files are the same as on main.
-- Run 2 fixed every finding of the independent check of run 1 (details under "Fixed in run 2"). The checker's own
-  15 cases (scratch engine-wasmedge/independent-check/independent.rs) pass on both WasmEdge and wasmtime (30 of 30,
-  ARM, 2026-11-23 10:11 UTC).
-- Against 0.17.1, the release the bindings pin: the suite and the crate's 13 checks pass, and the
+- Done: every trait of the interface. On the rented ARM64 and x86-64 machines (tree ef9fb9fc, 11:28 and 11:42
+  UTC), against the stock WasmEdge 0.18.1 release: the suite's 29 tests, the 6 proposal checks and the crate's own
+  15 checks pass; clippy with warnings denied is clean.
+  The crate inherits the workspace lints (unsafe forbidden), has no unsafe and no exemption. The interface and
+  suite files are the same as on main.
+- The repository's literal check has no finding in this crate (run 3, ARM, on a clone of the branch with this
+  run's changes applied; scratch engine-wasmedge/run3/lit.sh). The literal lines left under
+  crates/webassembly-engine are in the wasmtime crate, the interface and the suite, none of them mine. The check as a
+  whole still fails on the branch, with about 5000 lines in other tracks' crates (tree ef9fb9fc, 11:42 UTC).
+- Run 3 fixed the findings of the independent check of run 2 (see "Fixed in run 3"). Run 2 fixed those of run 1.
+  The checker's five cases of run 2 (scratch engine-wasmedge/check2/check3.rs) pass on both WasmEdge and
+  wasmtime (10 of 10, ARM, 2026-11-23 11:28 UTC, load 4.9 to 11; job run3/job-and-check3.sh, log run3/job4.log).
+- Against 0.17.1, the release the bindings pin: the suite and the crate's checks pass (run 2), and the
   exception-handling proposal check fails (see "Proposals").
-- Not done: the suite on the Mac (the notice of 2026-11-22 keeps builds off it). Slow paths have named reasons and
-  measured costs here, but no counter and no warning in the code (see "Departures").
+- Not done: the suite on the Mac (the notice of 2026-11-22 keeps builds off it). For the orchestrator: how
+  whole-workspace commands treat this crate where no WasmEdge is installed ("For the owner" 8).
+
+## Fixed in run 3 (the independent check's findings)
+
+- A function the host wrote into a plain funcref table or global, or gave `allocate_global`, carried only
+  `funcref`, so a guest's `ref.test` and `ref.cast` to its type failed. Now every function reference the host
+  writes, plain slots included, goes through the retyper first. Tested:
+  `every_function_the_host_writes_carries_its_own_type` (a module's function and a host function, into a plain
+  table, a typed table, a plain global and an allocated global, then `ref.test`, `ref.cast` + `call_ref` by the
+  guest; a reference read back from a global keeps its type).
+- A host function could not go into a typed slot. The retyper of a host function now takes its type from the
+  function's own value types, which are numbers only; the slot's writer then casts. Tested in the same check.
+- A function no instance exports (read from a table) could not be imported. Now a pass-on helper holds it in a
+  typed table and exports a function of the import's type that calls it with `call_indirect`. A function of
+  another type fails the helper's cast, answered `InstantiateError::FunctionTypeMismatch`. Tested:
+  `a_function_read_from_a_table_is_imported`.
+- Slow paths had no counter and no warning. Now each has a named reason (`SlowPath`, with `reason()`), a counter
+  per engine value (`WasmEdgeEngine::slow_path_count`), and a `log::warn!` the first time the process takes it.
+  The paths: shared memory copied, unshared memory of a shared owner copied, bytes beyond the bindings' 32-bit
+  reach copied, table written by a module, global set by a module, function retyped, function not retyped (no
+  module describes its type), imports forwarded, function passed on. Tested: `slow_paths_are_counted`, and the
+  counts in the two checks above.
+- The crate added 53 lines to the literal check. Now none: the folder prefix and helper names come from
+  `env!("CARGO_PKG_NAME")`, the folder mode from `rustix::fs::Mode::RWXU`, the compiled file's name is a constant,
+  the helpers' item names no longer equal the wasmtime crate's or the translator's constants, and the tests use
+  names no constant holds and the interface's `PAGE_SIZE`.
+- The unsafe count of wasmedge-sys: 388, counted as stated under "Dependencies" (395 came from the copy under the
+  rented machine's Cargo home, which I did not trace further).
 
 ## Fixed in run 2 (the independent check's findings)
 
@@ -50,9 +82,13 @@ downloaded at build time. On both rented machines the releases are unpacked in /
 Under the Nix loader the library's libz and libstdc++ are not found, so /work/scratch-engine-wasmedge/system-libraries
 holds links to the system's two and goes on `LD_LIBRARY_PATH`.
 
-- Clippy and tests: scratch engine-wasmedge/run2-job.sh, sent after the exports of WASMEDGE_DIR, LD_LIBRARY_PATH
-  and CARGO_TARGET_DIR. An example is the top of x86-run2.log in that folder. run-tests.sh defines
-  `run <version> [cargo test arguments]`.
+- Clippy and tests: `arm-run <checkout> --name engine-wasmedge -- "$(cat run3/job.sh)"` from scratch
+  engine-wasmedge (the exports of WASMEDGE_DIR, LD_LIBRARY_PATH and CARGO_TARGET_DIR are its first lines).
+  run-tests.sh defines `run <version> [cargo test arguments]`.
+- Literal check (needs the git history, which arm-run does not copy): run3/lit.sh. Commit, then send a bundle of
+  the new commits since the rented machine's clone (`git bundle create head.bundle HEAD ^<its commit>`) and the
+  patch of uncommitted changes to /work/scratch-engine-wasmedge with `arm-run --ssh 'cat > ...'`, then
+  `arm-run --ssh 'bash -s' < run3/lit.sh`.
 - Verification (the suite crate's clippy, the checker's 15 cases on both engines, then 0.17.1):
   `arm-run <checkout> --name engine-wasmedge -- "$(cat run2-verify.sh)"`.
 - Whole clean check (clean build, tests, clippy, unsafe grep, unsafe probe): check.sh, `WASMEDGE_VERSION=0.17.1`
@@ -78,8 +114,8 @@ holds links to the system's two and goes on `LD_LIBRARY_PATH`.
 - Linking: WasmEdge links imports only by module and item name, through a store. `instantiate` makes a store of its
   own and registers in it every instance that owns an import. Under each module name the module imports from, it
   registers a generated forwarder. The forwarder holds the importing module's type section, imports each item from
-  its owner with the type the importing module declares, and exports it under the name asked for. A function known
-  only by a reference that no instance exports cannot be linked (`InstantiateError::FunctionNotExported`).
+  its owner with the type the importing module declares, and exports it under the name asked for. A function no
+  instance exports (one read from a table) is linked through a pass-on helper (below).
 - Addresses: a function is WasmEdge's reference value plus where it is exported. Memories, tables and globals are
   their owner (an index into the engine value's instances) and export name, with how this engine value reaches
   them; the name is looked up on each access, because the bindings' handles borrow their instance. Instances live as
@@ -92,12 +128,17 @@ holds links to the system's two and goes on `LD_LIBRARY_PATH`.
   lent during a call.
 - Helpers, each a module of ours compiled once per Config and linked to one item per engine value. They reach what
   the bindings' safe layer cannot:
-  - the copier (`load`, `store`, `grow` through an unshared scratch memory), for shared memories, for unshared
+  - the copier (`copy_out`, `copy_in`, `grow_item` through an unshared scratch memory), for shared memories, for unshared
     memories of a shared owner, and for bytes beyond 4 GiB;
-  - the table writer (`set`, and `grow` when elements may be null), for every table of function references;
+  - the table writer (`set_item`, and `grow_item` when elements may be null), for every table of function references;
   - the global setter, for globals of a shared owner and globals of typed function references;
-  - the retyper, which holds a code-free table filled by `ref.func`, for writing a function into a typed slot (see
-    "For the owner" 12).
+  - the retyper, which holds a code-free table filled by `ref.func`, for every function reference the host writes
+    (see "For the owner" 12);
+  - the pass-on helper, a compiled module whose typed table holds a function no instance exports and whose
+    exported function of the import's type calls it through `call_indirect` (see "For the owner" 6).
+  Each is a `SlowPath` with a reason, a counter per engine value (`slow_path_count`) and a `log` warning the
+  first time the process takes it. The crate installs no logger: the program that uses it chooses where warnings
+  go.
   A helper never makes the hot paths of unshared memories, calls or host calls slower: those are unchanged.
 - An instance that exports a shared memory is held shared (`Arc`), so that other engine values can add the memory.
   Its unshared memories are still read directly. They are written and grown through their copier, and its globals
@@ -126,6 +167,29 @@ On the ARM machine, released libraries, 2026-11-23 (rechecked in run 2):
 
 Crate benchmark, through the interface, release builds. The WasmEdge crate and the wasmtime crate run in turn in one
 job, two rounds each; each figure is the lower of the two rounds, and each round is the best of 5.
+
+Run 3, rented ARM64 machine, load average 4.8 to 7.9 (other tracks' jobs), 2026-11-23 11:29 to 11:41 UTC, tree
+ef9fb9fc, WasmEdge 0.18.1, then wasmtime 50.0.1 in the same job (log scratch run3/bench-arm2.log):
+- compile the benchmark module: WasmEdge 5.72 ms, wasmtime 202 µs
+- instantiate it (one import): WasmEdge 6.54 µs, wasmtime 489 ns
+- an empty call into the module: WasmEdge 1095 ns, wasmtime 18.2 ns
+- an empty host function called from a module loop: WasmEdge 395 ns per call, wasmtime 4.31 ns
+- unshared memory, write / read 64 B: WasmEdge 78.6 / 71.7 ns, wasmtime 7.4 / 6.9 ns. Run 2 gave 72.5 / 66.0; no
+  code on this path changed in run 3, and I did not find the cause of the 6 ns.
+- unshared memory, write / read 64 KiB: WasmEdge 833 / 827 ns, wasmtime 765 / 762 ns
+- shared memory, write / read 64 B: WasmEdge 1442 / 1456 ns, wasmtime 41.9 / 54.7 ns (both through a copier)
+- shared memory, write / read 64 KiB: WasmEdge 3299 / 3265 ns, wasmtime 1806 / 1804 ns
+- table write: WasmEdge 1214 ns, wasmtime 17.2 ns. The write now goes through the retyper too, whose reference
+  each address keeps after its first write, so it costs what run 2's did.
+- WasmEdge only, the helper routes:
+  - write a global of an instance that exports a shared memory (setter): 1193 ns;
+  - write / read 64 B of an unshared memory of such an instance: 1458 ns (copier) / 68.6 ns (direct);
+  - write a function into a typed table: 1258 ns; the same with a function read from a table, which needs no
+    retyper: 1260 ns;
+  - call an import of an exported function: 1260 ns; call an import passed on to a function no instance exports:
+    1261 ns, so the pass-on's indirect call costs about 2 ns.
+- Before each address kept its retyped reference, the first run-3 tree took 1969 ns for a table write: making the
+  retyper's bytes on every write cost about 750 ns.
 
 Run 2, rented ARM64 machine, load average 8.5 to 15 (other tracks' jobs), 2026-11-23 10:12 to 10:23 UTC, tree
 8d8794d5, WasmEdge 0.18.1, then wasmtime 50.0.1 in the same job:
@@ -246,9 +310,12 @@ unchanged):
    `unsafe { ffi::WasmEdge_TableInstanceSetData(table.as_ptr().cast_mut(), value.as_raw(), index) }`.
 6. Imports are linked by name only. Each instantiation makes a store and one forwarder per imported module name, and
    reads the module's declarations, which the bindings' types cannot describe exactly (no 64-bit flag, no typed
-   reference): 5.4 µs for the benchmark's one import (run 1), against wasmtime's 0.5 µs. A function known only by a
-   reference that no instance exports (for example a table element that points at an unexported function) cannot
-   be imported at all: `InstantiateError::FunctionNotExported`.
+   reference): 5.4 µs for the benchmark's one import (run 1), against wasmtime's 0.5 µs. A function no instance
+   exports (a table element that points at an unexported function) is imported through a pass-on helper: a
+   compiled module of ours holds it in a typed table and exports a function of the import's type that calls it
+   with `call_indirect`. The cost is one instantiation of that helper per such import and one indirect call per
+   call (measured under "Measurements", run 3). A function of another type fails the helper's cast:
+   `InstantiateError::FunctionTypeMismatch`, where the standard gives a link error.
 7. Not reachable through the bindings at all:
    - Tags: the bindings have no type for them. `TagAddress` is uninhabited, `find_export` never answers a tag, and a
      module that imports one cannot be instantiated.
@@ -266,7 +333,8 @@ unchanged):
      without it;
    - (c) the root `exclude` list. This would cost the crate its `[lints] workspace = true`, which the brief requires,
      so I advise against it.
-   I have changed none of them.
+   I have changed none of them. Every build and test of this crate so far ran with `-p` on the rented machines, so
+   nothing broke yet; it must be settled before the linter is turned back on.
 9. The wasmtime track's seven points, from WasmEdge's side:
    - (1) `&self` reads: tables, globals and unshared memories read fine through `&self`. Only the copier needs the
      executor (point 4).
@@ -290,12 +358,25 @@ unchanged):
 12. Typed function references. WasmEdge casts a reference by the type the reference carries, not by the function's
     type. It drops that type to `funcref` both in a reference the C interface makes (`WasmEdge_ValueGenFuncRef`)
     and in any reference a call returns to the host. Its executor says why: type indices are opaque to the host.
-    So a function from `find_export` cannot be written into a `(ref null $t)` table or global by a cast alone.
-    The safe route: a retyper, a code-free module of ours. It imports the function from where it is exported, with
-    its declared type, and holds one table element filled by `ref.func`; a reference read from a table keeps its
-    type. Then the writer's or setter's `ref.cast` passes.
-    A function nobody exports, or a host function, still cannot go into a typed slot: such a write answers
-    `ReferenceTypeMismatch`.
+    So a function from `find_export` or `bind_host_function`, written as it is, fails a guest's `ref.test` and
+    `ref.cast` even in a plain funcref table, and cannot go into a `(ref null $t)` slot by a cast alone.
+    The safe route: every function reference the host writes, into any table or global or through
+    `allocate_global`, first goes through a retyper, a code-free module of ours. It imports the function from where
+    it is exported, with the type its module declares (for a host function, the type of its values, which are
+    numbers only), and holds one table element filled by `ref.func`; a reference read from a table or a global keeps
+    its type, so such references need no retyper. Then a typed slot's writer or setter casts it.
+    Cost (ARM, run 2): about 125 ns on a write once the retyper exists, and one helper instantiation per function
+    the first time. A function whose module nobody describes and whose type has references would be written with
+    only `funcref` and counted as `SlowPath::FunctionNotRetyped`; no function the interface can name is such a one
+    today.
+    A reference the host reads from a typed slot has a second problem: WasmEdge gives it the slot's type as its
+    outer type, a type index of the slot's module, and then refuses it as a `funcref` parameter of any call (the
+    writer's, the setter's, the pass-on helper's), so writing it on answered `ReferenceTypeMismatch`. The crate now
+    re-wraps every reference it reads from a table or a global as a `WasmEdge_Value` of the outer type `funcref`
+    (taken from a null funcref WasmEdge made) with the same 128 bits, which carry the function's own type. This is
+    the bindings' safe `From<ffi::WasmEdge_Value> for WasmValue`, which accepts any bits: a soundness gap of the
+    bindings for the owner's vetting (safe code could forge a reference with it). The crate passes only bits
+    WasmEdge itself returned. Tested: `every_function_the_host_writes_carries_its_own_type`.
     The nulls WasmEdge gives the host carry `funcref` too, so a helper writes the slot's own `ref.null` for a null.
     The fix that would remove all of this belongs in WasmEdge: references the host makes or receives should keep
     the function's type, or casts should check the function instance's type.
@@ -311,25 +392,31 @@ unchanged):
 - Tests and clippy ran on the rented machines only (the notice of 2026-11-22), not on the Mac.
 - Engine 0.18.1 is used with bindings made for 0.17.1: the only released bindings pin 0.17.1, whose compiler lacks
   exception handling. Nothing is patched; the bindings' build script runs bindgen over 0.18.1's own headers.
-- Slow paths (copier, table writer, global setter, retyper, forwarders) are named here with measured costs. There is
-  no counter and no warning in the code: the interface has no channel to report them, and the wasmtime crate's
-  copier has none either. If the owner wants them, a per-engine counter per reason is a few lines.
+- Slow paths report through an inherent method, `WasmEdgeEngine::slow_path_count`, and the `log` crate: the
+  interface has no channel for them. The wasmtime crate's copier has neither yet.
 
 ## Dependencies
 
 Each entry gives the licence, then the number of occurrences of the word `unsafe` in the package's `.rs` files
 (tests, benches and examples left out; comments count too). Taken with `cargo tree -p
 wcontainers-webassembly-engine-wasmedge` on ARM, 2026-11-23 (scratch deps.sh, full list in deps-run2-clean.txt).
+The count is whole words: `find <crate> -name '*.rs' -not -path '*/tests/*' -not -path '*/examples/*' -not -path
+'*/benches/*' | xargs grep -ow unsafe | wc -l` over the crate as published (run 3 recounted wasmedge-sys, -sdk,
+-types, log and rustix this way on the Mac's copies; only wasmedge-sys changed, from 395 to 388).
+Run 3 added log 0.4.35 and rustix 1.1.6 (unix only, features fs and std) as direct dependencies; both were already
+shipped through wasmedge-sys and tempfile.
 Run 2 added wasmparser 0.263.0, tempfile 3.27.0, and the `wasmparser` feature of wasm-encoder; all three were already
 in the lock file for other crates.
 
 Direct dependencies:
-- wasmedge-sys 0.21.1 (Apache-2.0; 395), the FFI to the C library
+- wasmedge-sys 0.21.1 (Apache-2.0; 388), the FFI to the C library
 - wasmedge-sdk 0.17.1 (Apache-2.0; 2), wasmedge-types 0.6.1 (Apache-2.0; 2), wasmedge-macro 0.6.1 (Apache-2.0; 3)
 - wasm-encoder 0.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 0)
 - wasmparser 0.263.0 (same licence; 0)
 - tempfile 3.27.0 (MIT OR Apache-2.0; 4)
 - thiserror 2.0.21 (MIT OR Apache-2.0; 0)
+- log 0.4.35 (MIT OR Apache-2.0; 8), for the warnings
+- rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 1673), for the folder's mode bits
 - dev only: wat 1.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; 0)
 - the WasmEdge library itself, 0.18.1 (Apache-2.0): C++ with LLVM linked in, not a Cargo dependency
 
