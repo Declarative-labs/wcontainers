@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, geometry_rows.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, tessellation_values.hlsl, domain_rows.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl, geometry_typed.hlsl, geometry_patch.hlsl, compare.hlsl (IEEE-strict in both), hull_none.hlsl (fxc only) and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, geometry_rows.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, tessellation_values.hlsl, domain_rows.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl, geometry_typed.hlsl, geometry_patch.hlsl, compare.hlsl (IEEE-strict in both), precision.hlsl, frexp.hlsl, hull_none.hlsl (fxc only) and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -243,4 +243,8 @@ for %%e in (vs_store_texture vs_store_typed vs_store_raw) do (
 "%DXC%" -nologo -T cs_6_0 -E cs_compare -Gis -Fo cs_compare.dxil compare.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_compare /Gis /Fo ps_compare.dxbc compare.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_compare -Gis -Fo ps_compare.dxil compare.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_min16 /Fo cs_min16.dxbc precision.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_min16 -Fo cs_min16.dxil precision.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_frexp /Fo cs_frexp.dxbc frexp.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_frexp -Fo cs_frexp.dxil frexp.hlsl || exit /b 1
 echo %FXC% %DXC%

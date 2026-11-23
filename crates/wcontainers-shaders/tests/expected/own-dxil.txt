@@ -5,8 +5,10 @@ cs_compare.dxil	ok ; glsl absent compute
 cs_decrement.dxil	ok ; glsl absent compute
 cs_divide.dxil	ok ; glsl absent compute
 cs_escape.dxil	ok ; glsl absent compute
+cs_frexp.dxil	ok ; glsl absent compute
 cs_image_array.dxil	ok views:R32Float ; glsl absent compute
 cs_images.dxil	ok views:R32Float ; glsl absent compute
+cs_min16.dxil	ok ; glsl absent compute
 cs_one_d.dxil	ok views:R32Float ; glsl absent compute
 cs_readonly.dxil	ok ; glsl absent compute
 cs_shared.dxil	ok ; glsl absent compute
