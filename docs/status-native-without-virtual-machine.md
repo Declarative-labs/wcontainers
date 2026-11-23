@@ -345,16 +345,67 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     168 of 168 (load 5.0 to 5.8), Xeon 147 of 147 (load 0.5 at the start, 38 at the end from other tracks), clippy
     with warnings denied clean on both. Not rerun inside Docker's profile or gVisor this run.
   - No new unsafe code (the step test has none).
+- W1, run 9 (2026-11-23, 18:25 UTC on):
+  - Still nothing from the translator's form or the stop crate. Since run 8 nobody has touched the translator, the
+    ARM64 crate or the VM inside. The native output's trait now takes a way of running (`Native::Way`, commit
+    0b3267fc, before run 6), but ARM64's is `()`, with one way only. The `HostProcess` way of plan 3.2 is still
+    to be written there.
+  - Built the handler's own instructions (tests/step.rs, 4 more tests on ARM64, 3 on x86-64). The test sends a
+    stop at every instruction of the turn's path. It steps the thread into that stop's handler and on to the
+    instruction after the unblock the handler leaves by, or to the `exit` it ends by. Then, for each different way
+    through the handler, it runs the turn again once per handler instruction, sending a second stop there the way
+    the runner sends it (`Stub::stop`, the thread stopped by the tracer). With `WCHP_TAIL_EVERY=1` it does this
+    for every first stop's handler, not just one per way. The second stop must land just after the unblock, in the
+    window the handler chose:
+    - a first stop in the wait leaves a second in the wait;
+    - a first stop in a turn, a publish or a call leaves a second in the publish;
+    - a first stop in the thread's end goes on to its `exit` with the second still pending, and the thread ends.
+    Every turn still ends as the single-stop test requires.
+  - A test-tool fact: a signal given at the tracer's let-go while the thread sits at its handler's first
+    instruction is dropped by the host. That stop reports the step into the handler, and its restart signal is
+    ignored. So the second stop is sent by `tgkill`, as the runner sends it, not given at detach.
+  - A second test-tool fact: a first stop given while the thread blocks it is taken at the unblock as a stop of
+    the tracer's own, so the tool gives it again there.
+  - A third: a failing test left its thread traced, and the zygote's reap then waited forever for the stub. The
+    test now waits for its traced threads after the kill.
+  - Graviton4 (19:00 UTC, load 4.7 to 6.3, scratch w1/run9/step5-arm.out): all 8 step tests passed in 25 s, and
+    clippy with warnings denied was clean. Second stops sent:
+    - turn of commands: 4 ways through the handler, 224 second stops;
+    - spin: 3 ways, 175;
+    - end: 3 ways, 172;
+    - enter and call: 10 ways, 1,515.
+  - The tests see the fault (scratch w1/run9/mutate-tail.sh, mutate-tail-arm.out). With the stop unblocked at the
+    handler's start, before it chooses a window, all 4 new tests fail (a second stop counted in the turn).
+  - Final verdicts (about 19:02 to 19:05 UTC, scratch w1/run9/final-arm.log and final-x86.log, after the last code
+    commit). All 14 test binaries ran 3 times with /dev/kvm denied, each run first proving the device cannot be
+    opened. Clippy with warnings denied was clean on both machines.
+    - Graviton4: 180 of 180 passed (load about 5).
+    - Xeon: 156 of 156 passed (load 0.9 to 9.7).
+    - Not rerun inside the sandboxes after the change: the run above used run 8's code.
+  - No new unsafe code.
+  - Sandboxes rerun on run 8's committed code (18:26 to 18:31 UTC, scratch w1/run9/sb-arm.out and sb-x86.out, run
+    6's sandbox.sh; Graviton4 load 4.5 to 6.0). These are the first sandbox runs of the floor (run 7) and step
+    (run 8) tests.
+    - Docker's default profile: every test binary passes on both machines, the floor's 6 and the step test's
+      included.
+    - gVisor: run 5's four known failures again.
+    - gVisor: all of tests/step.rs fails on both machines. That is the test tool's own read of /proc's per-thread
+      `syscall` file, which gVisor lacks (as in run 5), not the product.
+    - gVisor, new: 4 of the 6 floor tests fail on Graviton4. These are every test with a stop or a fault in the code
+      area: a fault there ends the stub as `StubFault` (exit 12), and a spin there "ignored 10,000 stops", ending
+      `Stopped` each time and never `Interrupted`.
+    - gVisor: calls from code into the floor's entries pass (1,000 of each kind), so the code area is mapped and
+      runs.
+    - Both symptoms fit the signal frame's pc not pointing into the code area under gVisor's systrap. That is not
+      yet checked. P under gVisor on ARM64 therefore cannot run translated code until this is settled (Next).
 - Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- The handler tails' own instructions: after a first stop, trace the thread on through its handler and send a
-  second stop at each instruction there (a stop is blocked in the handler, so each must land just after its
-  unblock, in the window the handler chose; `.Lwchp_wait_resumed` is reached only that way). tests/step.rs's
-  `Traced` does the stepping.
+- Under gVisor on ARM64, find out why a signal in the code area is not handled as on Linux (run 9, below), with
+  gtrace.sh and a frame dump, and fix it or record gVisor's limit in plan 6.
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
 - When the translator's `HostProcess` form lands: match the stand-ins to it (x28's page is the stub's register
   page and the block the hardware's state here; the translator's `RegisterPage` and its saved link must sit where
@@ -392,6 +443,9 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
   fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
   lines; the fetched log does not).
+- Since run 9: tests/step.rs's `a_second_stop_*` tests and the end one's second-stop twin. Knob `WCHP_TAIL_EVERY=1`
+  sends second stops in every first stop's handler, not one per way through it (a long run). Scratch
+  w1/run9/both.sh and sandbox-both.sh are run 8's and run 6's, writing into run9.
 - Since run 8: `cargo test -p wcontainers-executor-host-process --test step` (knob `WCHP_STEP_STRIDE`, default 1: every
   instruction; `--nocapture` prints each path's length and where its stops landed); scratch w1/run8/both.sh is run
   7's writing into run8, mutate-step.sh (sent inline through `arm-run`) breaks the stop handler three ways and runs
@@ -474,7 +528,7 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Asked of other tracks
 
-- For the orchestrator (run 8): the two tracks W1 waits on look stopped. docs/status-translator.md was last changed
+- For the orchestrator (asked in run 8, still open in run 9): the two tracks W1 waits on look stopped. docs/status-translator.md was last changed
   on 2026-11-20 and docs/status-native.md on 2026-11-21, and no commit has touched the translator, the ARM64 crate
   or the VM inside's `stop` since run 6. Either start them on the two asks below, or let this track write the ARM64
   `HostProcess` form itself (the four places of plan 3.2, in crates/wcontainers-arm64 and the translator) and the
