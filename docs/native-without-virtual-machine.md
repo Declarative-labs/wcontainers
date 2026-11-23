@@ -350,8 +350,12 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   The copy source is always write-protected in every view of its owner (it is lent), so every copy is of the page as
   it was at the fork's instant, as on Linux. Copies are made in units of 2^u pages (u by measurement in W1, from 0
   to 9, against the number of host mappings it creates: mprotect splits a mapping at the unit's edges, and the host's
-  vm.max_map_count is 65530 by default, 1048576 on the Ubuntu machines here); built with u = 0 (one page) until
-  that measurement.
+  vm.max_map_count is 65530 by default, 1048576 on the Ubuntu machines here); built as `COPY_UNIT` with u = 0 (one
+  page). Measured in W1 run 5 with stores standing in for guest code (each store a turn, about 5.3 µs alone; section
+  11): a child storing to all 16,384 written pages in order pays 20 µs a store at u = 0, 7.8 at u = 3, 5.4 at u = 6;
+  storing to every 16th page in a seeded order, 25 µs at u = 0, 36 at u = 3, 31 at u = 9; that child holds 2,054
+  host mappings at u up to 3 and 8 from u = 4. u stays 0 until translated code, whose stores cost no turn, is
+  measured the same way; u = 3 is the candidate.
 - **Written marks and watches are the kernel's** (`Process::take_dirty_memory`, `Process::watch_memory`): the
   kernel keeps both itself and makes them with `Cpu::set_permissions` (write taken away until the first write,
   which comes back as a fault exit; crates/kernel/implementation/linux/memory.rs `take_dirty` and `reapply`), and
@@ -598,7 +602,8 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   and signature the embedder's C library registered (glibc's `__rseq_offset` from the thread pointer and
   `__rseq_size`, read before the fork; none where the C library registers none), then proves that none is left
   by registering an area of its own stack (a registration left over refuses it with EBUSY: the zygote then exits,
-  and the form is unavailable, named "restartable sequences left registered") and unregistering that again. The
+  and the form is unavailable, named "restartable sequences left registered") and unregistering that again; a host
+  that answers that registration ENOSYS (gVisor) has no restartable sequences, so none can be left. The
   robust-futex list and the exit-clear word are read and written by the host kernel only at a thread's end, with
   failures ignored; they are cleared all the same (`set_robust_list` with none, `set_tid_address` with none). The
   alternate signal stack goes with the memory, harmless while every signal is blocked; each stub sets its own.
@@ -686,7 +691,13 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   maps or protects costs no extra round trip, and the effect is in place when the call returns, as on Linux. A
   command on a memory none of whose threads is in a kernel entry rides on the resume of one of its threads, which the
   kernel's side first stops (3.6). The kernel's side counts the host mappings each command creates, so
-  `CpuError::OutOfMemory` is returned up front instead of a host failure. A control page holds the commands that
+  `CpuError::OutOfMemory` is returned up front instead of a host failure: it keeps each stub's guest-area mappings as
+  the queue leaves them (neighbours of equal permission and backing, the memory's own memfd or one block at
+  contiguous offsets, are one, as the host merges them), adds the stub's five own mappings, and refuses a change of c
+  commands unless the count plus 2c stays within the host's `vm.max_map_count` (read once at start; Linux's default
+  of 65,530, warned, where it cannot be read), since a host call splits at most two mappings and the host refuses a
+  split at its limit. Counted "host mappings exhausted"; tested against /proc's count after every applied queue of the
+  seeded model and up to a million mappings. A control page holds the commands that
   fit beside the `Resume` and its words; a longer queue (a fork's protection of many mappings, a large unmapping)
   goes in rounds: the stub applies a page of commands and exits with "applied" instead of running guest code, and
   the runner writes the next page, one round trip per page, the `Resume` only with the last (counted "mapping
@@ -915,11 +926,17 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
 - I adds: `timer_create`, `timer_settime` and `timer_delete` for slices, `rt_sigreturn`; `arch_prctl` on x86-64
   hosts without FSGSBASE. No process is ever made, so I runs where `fork` is refused.
 - Neither needs: ptrace, user namespaces, mount, chroot, capabilities, `process_vm_readv/writev`, `userfaultfd`,
-  `perf_event_open`, /proc (nothing is read from it), `execve`. Docker's default seccomp profile allows every call
+  `perf_event_open`, /proc (only /proc/sys/vm/max_map_count is read, once, 4.2), `execve`. Docker's default seccomp profile allows every call
   listed (it withholds only namespace flags of `clone`, which are not used; it allows `process_vm_readv` too, which
-  is simply not needed); gVisor implements each of them, expected and not yet checked. W1 and W2 run their suites
-  inside a container started with Docker's default profile, and under gVisor's runsc where it can be installed on
-  the rented machine (if not, named as unchecked).
+  is simply not needed); W1 and W2 run their suites inside a container started with
+  Docker's default profile, and under gVisor's runsc (`runsc do`, systrap platform). Found under gVisor (release
+  20261109.0, W1 run 5): `rseq` answers ENOSYS (the zygote then has no registration to drop, 4.1); `lseek`'s
+  `SEEK_DATA` on a memfd answers EINVAL (a fork then lends the whole guest area, a slow path counted "memory extents
+  unknown"); on x86-64 gVisor maps its own `[usertrap]` page at 0x63000, inside the guest area, which it refuses to
+  unmap, so the zygote reports `UnmapRefused` and P is unavailable unless runsc runs with
+  `--systrap-disable-syscall-patching` (which x86's use of the GS base needs too, 3.10); the systrap platform kills a
+  process past about 4,096 threads (measured: SIGKILL at the 4,097th), so under gVisor a guest process holds at most
+  that many threads; gVisor accepts `sched_setaffinity` but does not pin, so placement (4.3) has no effect there.
 - P makes one host process per guest process, so a host limit on processes (a pids cgroup, `--pids-limit`) is also
   the guest's; I makes none.
 - Host pages larger than 4 KiB (16 KiB on Apple silicon, 64 KiB on ARM64 Linux kernels built so, such as RHEL's
@@ -1271,6 +1288,14 @@ them.
   f, 0.110 to 0.152) 56,000 to 80,000 at c = 1.89 to 1.96 µs, with work between calls 50,000 to 75,000 idle (run 5)
   and 25,000 to 52,000 at a load rising to 10 (run 4), 38,000 to 66,000 with every CPU contended. The X32 variants' access is `[base, wA, uxtw]`, the speculation-safe one of 3.2, so f needs no
   further instruction for it.
+- W1 run 5 (2026-11-23 16:00 UTC, Graviton4 at load 18 to 19, runner and stub pinned to CPUs 40 and 41; ignored
+  test `copy_unit_cost`, scratch w1/run5/unit.sh, outputs unit-arm.out and unit2-arm.out, 3 rounds each): a parent
+  writes 16,384 pages and forks; the child stores once to each page in order, then a new child to every 16th page in
+  a seeded order. Microseconds per store, in order / scattered: u = 0 19.6 to 23.8 / 24.1 to 26.2; u = 1 11.9 to
+  13.6 / 26.3 to 27.7; u = 2 9.0 to 10.8 / 29.4 to 33.8; u = 3 7.7 to 8.0 / 35.0 to 38.6; u = 4 6.6 to 6.8 / 50.6 to
+  52.7; u = 5 5.6 to 6.1 / 39.5 to 42.7; u = 6 5.4 to 5.5 / 35.5 to 35.9; u = 9 5.2 to 5.3 / 30.7 to 31.0. The
+  scattered child holds 2,054 host mappings for u up to 3, 8 from u = 4. Each store is a turn here, so the
+  figures carry a round trip that translated code will not.
 
 ## 12. Decisions for the owner
 
