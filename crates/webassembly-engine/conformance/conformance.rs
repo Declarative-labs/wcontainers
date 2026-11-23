@@ -6,7 +6,9 @@ use core::pin::{Pin, pin};
 use core::task::{Context, Poll, Waker};
 
 use futures_core::Stream;
-use wcontainers_webassembly_engine::{Import, WebAssemblyEngine};
+use wcontainers_webassembly_engine::{
+    BindFunctionError, BoundFunction, FunctionTypeBinder, Import, WebAssemblyEngine,
+};
 
 /// A [module](https://webassembly.github.io/spec/core/binary/modules.html#binary-module) with nothing in it.
 const EMPTY: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
@@ -24,6 +26,18 @@ const IMPORTS_MEMORY: &[u8] = &[
     0x02, 0x0f, 0x01, 0x03, b'e', b'n', b'v', 0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00,
     0x01, // import section
 ];
+
+/// A module whose [code section](https://webassembly.github.io/spec/core/binary/modules.html#code-section) holds one function that takes nothing and returns `i32::MAX`, exported.
+const EXPORTS_FUNCTION: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type section: no parameters, one i32 result
+    0x03, 0x02, 0x01, 0x00, // function section: one function of that type
+    0x07, 0x0a, 0x01, 0x06, b'a', b'n', b's', b'w', b'e', b'r', 0x00, 0x00, // export section
+    0x0a, 0x0a, 0x01, 0x08, 0x00, 0x41, 0xff, 0xff, 0xff, 0xff, 0x07, 0x0b, // code section
+];
+
+/// The name the function is exported under.
+const FUNCTION_NAME: &str = "answer";
 
 /// The name the memory is exported and imported under.
 const MEMORY_NAME: &str = "memory";
@@ -112,6 +126,31 @@ pub fn refuses_a_missing_import<T: WebAssemblyEngine>(mut subject: T) {
     assert!(subject.instantiate(&module, &[]).is_err());
 }
 
+/// Checks that an exported function, bound to its function type, returns its result when invoked.
+pub fn invokes_a_bound_function<T: FunctionTypeBinder<(), i32>>(mut subject: T) {
+    let module = subject.compile(EXPORTS_FUNCTION).ok().expect("the module compiles");
+    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
+    let address = subject.find_export(&instance, FUNCTION_NAME).expect("the export");
+    let function = subject.bind_function(address).ok().expect("the function has the function type");
+    assert_eq!(function.invoke(&mut subject, ()).ok(), Some(i32::MAX));
+}
+
+/// Checks that a function is not bound to a function type with other results.
+pub fn refuses_to_bind_another_function_type<T: FunctionTypeBinder<(), i64>>(mut subject: T) {
+    let module = subject.compile(EXPORTS_FUNCTION).ok().expect("the module compiles");
+    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
+    let address = subject.find_export(&instance, FUNCTION_NAME).expect("the export");
+    assert!(matches!(subject.bind_function(address), Err(BindFunctionError::OtherFunctionType)));
+}
+
+/// Checks that an address that holds a memory is not bound as a function.
+pub fn refuses_to_bind_a_memory<T: FunctionTypeBinder<(), i32>>(mut subject: T) {
+    let module = subject.compile(EXPORTS_MEMORY).ok().expect("the module compiles");
+    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
+    let address = subject.find_export(&instance, MEMORY_NAME).expect("the export");
+    assert!(matches!(subject.bind_function(address), Err(BindFunctionError::NotFunction)));
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 ///
 /// List every suite function here, in the order above, and nothing else.
@@ -151,6 +190,21 @@ macro_rules! tests {
         #[test]
         fn refuses_a_missing_import() {
             $crate::refuses_a_missing_import($value);
+        }
+
+        #[test]
+        fn invokes_a_bound_function() {
+            $crate::invokes_a_bound_function($value);
+        }
+
+        #[test]
+        fn refuses_to_bind_another_function_type() {
+            $crate::refuses_to_bind_another_function_type($value);
+        }
+
+        #[test]
+        fn refuses_to_bind_a_memory() {
+            $crate::refuses_to_bind_a_memory($value);
         }
     };
 }

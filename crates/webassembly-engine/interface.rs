@@ -56,6 +56,27 @@ pub struct Import<'name, ExternalAddress> {
     pub address: ExternalAddress,
 }
 
+/// An engine that binds functions of one [function type](https://webassembly.github.io/spec/core/syntax/types.html#syntax-functype) to a Rust signature.
+pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
+    type Function: BoundFunction<Self, Parameters, Results>;
+
+    /// Returns the function at the address after checking that it has the function type.
+    fn bind_function(
+        &mut self,
+        address: Self::ExternalAddress,
+    ) -> Result<Self::Function, BindFunctionError>;
+}
+
+pub trait BoundFunction<Engine: WebAssemblyEngine + ?Sized, Parameters, Results> {
+    /// Runs the [invocation](https://webassembly.github.io/spec/core/exec/modules.html#invocation) of the function.
+    fn invoke(&self, engine: &mut Engine, parameters: Parameters) -> Result<Results, Engine::Error>;
+}
+
+pub enum BindFunctionError {
+    NotFunction,
+    OtherFunctionType,
+}
+
 pub enum CompileStreamingError<StreamError, CompileError> {
     Stream(StreamError),
     Compile(CompileError),
