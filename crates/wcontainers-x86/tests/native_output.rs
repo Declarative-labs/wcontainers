@@ -121,6 +121,35 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
             return Some(format!("RIP-relative host access at {offset}"));
         }
     }
+    // At every call into the inside and its return point, the guest's state is its registers and the register
+    // area alone: nothing relocated, and no fix-up pending where the guest goes on.
+    for (offset, i) in &decoded {
+        let call = match way {
+            Way::Machine => i.mnemonic() == Mnemonic::Int,
+            _ => {
+                i.mnemonic() == Mnemonic::Jmp
+                    && i.memory_segment() == Register::GS
+                    && i.memory_base() == Register::None
+            }
+        };
+        if !call {
+            continue;
+        }
+        let at = piece.span(*offset as u32)?;
+        if !at.relocated.is_empty() {
+            return Some(format!(
+                "call at {offset} with {:?} relocated",
+                at.relocated
+            ));
+        }
+        let back = offset + i.len();
+        if let Some(span) = piece.span(back as u32).filter(|_| back < piece.bytes.len()) {
+            let stays = span.guest == at.guest;
+            if stays && (!span.relocated.is_empty() || !span.fixups.is_empty()) {
+                return Some(format!("return point {back} holds {span:?}"));
+            }
+        }
+    }
     // Each guest instruction's commit point: the last host instruction before its first span after it.
     for (k, span) in piece.spans.iter().enumerate() {
         let commit = piece
