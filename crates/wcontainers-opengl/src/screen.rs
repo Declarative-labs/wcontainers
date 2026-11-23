@@ -197,6 +197,8 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
         caps.max_geometry_total_output_components = GEOMETRY_OUTPUT_COMPONENTS;
         caps.max_gs_invocations = GEOMETRY_INVOCATIONS;
         caps.max_shader_patch_varyings = PATCH_VARYINGS;
+        // An evaluation program reads the levels as patch inputs, which the stage helper fills.
+        caps.glsl_tess_levels_as_inputs = true;
     }
     // Compute work, storage buffers and images (in compute programs), indirect draws (their
     // arguments read back), multisampled textures, gathers, stencil texturing and framebuffers
