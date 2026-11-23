@@ -2635,7 +2635,6 @@ code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"cgroups"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"cmdline"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"config.gz"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"core\n"
-code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime {}\n\\n                         processes {}\nprocs_running 1\nprocs_blocked 0\nsofti… #a6709b4f91b9103d
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"cpu"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"cpuacct"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"cpuinfo"
@@ -2652,7 +2651,6 @@ code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"net_prio"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"nodev\tsysfs\nnodev\ttmpfs\nnodev\tproc\nnodev\tsockfs\nnodev\tpipefs\n\\n                     nodev\tdevpts\nnodev\tfuse\nnodev\tmqueue\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"perf_event"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"pids"
-code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\\n                         CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t:… #23c8c1c779312a23
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"rdma"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"stat"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"swaps"
@@ -4149,10 +4147,6 @@ code	crates/kernel/implementation/linux/syscall/system.rs	int	ioprio_get	5
 code	crates/kernel/implementation/linux/syscall/system.rs	int	ioprio_set	7
 code	crates/kernel/implementation/linux/syscall/system.rs	int	ioprio_set	7
 code	crates/kernel/implementation/linux/syscall/system.rs	int	sched_get_priority_max	99
-code	crates/kernel/implementation/linux/syscall/system.rs	int	sched_getaffinity	8
-code	crates/kernel/implementation/linux/syscall/system.rs	int	sched_getaffinity	8
-code	crates/kernel/implementation/linux/syscall/system.rs	int	sched_getaffinity	8
-code	crates/kernel/implementation/linux/syscall/system.rs	int	sched_setaffinity	8
 code	crates/kernel/implementation/linux/syscall/system.rs	int	setpriority	20
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	6
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
@@ -22603,7 +22597,6 @@ restated	crates/kernel/implementation/linux/seccomp.rs	int	tests::MEASURED	384
 restated	crates/kernel/implementation/linux/seccomp.rs	int	tests::MEASURED	387
 restated	crates/kernel/implementation/linux/seccomp.rs	int	tests::MEASURED	400
 restated	crates/kernel/implementation/linux/seccomp.rs	int	tests::MEASURED	432
-restated	crates/kernel/implementation/linux/tty.rs	int	ECHO_BLOCK	256
 restated	crates/runtime/implementation/single-kernel/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/runtime/implementation/single-kernel/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/runtime/implementation/single-kernel/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576
