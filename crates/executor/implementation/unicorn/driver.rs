@@ -923,10 +923,12 @@ impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
     ) -> Result<Vec<u8>, HostError> {
         let held = std::mem::take(&mut lock(&self.notices).held);
         if held != applied.is_some() {
-            lock(&self.streams).broken.push(format!(
-                "a notice's wait told {applied:?} where it was given {}",
-                if held { "a notice" } else { "none" }
-            ));
+            let broken = if held {
+                format!("a notice's wait told {applied:?} where it was given a notice")
+            } else {
+                format!("a notice's wait told {applied:?} where it was given none")
+            };
+            lock(&self.streams).broken.push(broken);
         }
         if held {
             Replies::notice_applied(&self.replies);

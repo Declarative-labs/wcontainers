@@ -21,6 +21,25 @@ use crate::sysctl::{
     SHMMNI_PATH, SYSCTL_ROOT, VALUE_SEPARATOR,
 };
 
+/// What /proc/cpuinfo says of each processor before its number, and after it.
+const CPUINFO_PROCESSOR: &str = "processor\t: ";
+const CPUINFO_FIELDS: &str = "\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
+CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\n\
+CPU revision\t: 0\n\n";
+
+/// The name of /proc/stat's line of all processors' times, and of one processor's before its
+/// number.
+const STAT_ALL_PROCESSORS: &str = "cpu ";
+const STAT_PROCESSOR: &str = "cpu";
+/// The times /proc/stat gives a processor after its name, or all of them: none is counted.
+const STAT_TIMES: &str = " 0 0 0 0 0 0 0 0 0 0\n";
+/// /proc/stat after the processors' lines: no interrupt or switch counted, then the boot time.
+const STAT_BOOT: &str = "intr 0\nctxt 0\nbtime ";
+/// /proc/stat between the boot time and the processes made.
+const STAT_PROCESSES: &str = "\nprocesses ";
+/// /proc/stat's last lines: one task running, the reader, and no soft interrupt counted.
+const STAT_TASKS: &str = "\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n";
+
 /// Parts a `status` field's name from its value.
 const STATUS_SEPARATOR: char = '\t';
 
@@ -1796,12 +1815,9 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 "cpuinfo" => {
                     for processor in 0..machine.processors.get() {
-                        let _ = write!(
-                            out,
-                            "processor\t: {processor}\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
-                             CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\n\
-                             CPU part\t: 0x000\nCPU revision\t: 0\n\n"
-                        );
+                        out.push_str(CPUINFO_PROCESSOR);
+                        out.push_str(&processor.to_string());
+                        out.push_str(CPUINFO_FIELDS);
                     }
                 }
                 // The registered file systems that are built, in Linux's order of registration.
@@ -1834,16 +1850,18 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "stat" => {
-                    out.push_str("cpu  0 0 0 0 0 0 0 0 0 0\n");
+                    out.push_str(STAT_ALL_PROCESSORS);
+                    out.push_str(STAT_TIMES);
                     for processor in 0..machine.processors.get() {
-                        let _ = writeln!(out, "cpu{processor} 0 0 0 0 0 0 0 0 0 0");
+                        out.push_str(STAT_PROCESSOR);
+                        out.push_str(&processor.to_string());
+                        out.push_str(STAT_TIMES);
                     }
-                    let _ = write!(
-                        out,
-                        "intr 0\nctxt 0\nbtime {}\n\
-                         processes {}\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n",
-                        source.view.boot.seconds, source.last_pid
-                    );
+                    out.push_str(STAT_BOOT);
+                    out.push_str(&source.view.boot.seconds.to_string());
+                    out.push_str(STAT_PROCESSES);
+                    out.push_str(&source.last_pid.to_string());
+                    out.push_str(STAT_TASKS);
                 }
                 "uptime" => {
                     let up = source.uptime_nanoseconds;
