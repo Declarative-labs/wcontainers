@@ -51,15 +51,15 @@ probes).
   instruction naming one now reads or writes its slot directly where the memory form acts the same (plan 3.4),
   which native layer 1 checked (it found two classes where it does not, kept out and named in a test). Of the
   bar: layers 1 (2008 forms, 1,000 a form), 2 (10,000 programs) and 3 (1,000 Csmith programs) pass natively against
-  the CPU, the count after every system call equal to the WebAssembly output's; speed fails (1.41 against 1.25,
-  matrix 3.8, search 2.0); the X9 programs, replay, register groups and hostile guests wait on an x86 executor.
+  the CPU, the count after every system call equal to the WebAssembly output's; speed fails (1.27 against 1.25,
+  matrix 2.8 against 1.6); the X9 programs, replay, register groups and hostile guests wait on an x86 executor.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
 
 ## Next, in order (XN1)
 
-1. Speed (the bar is 1.25 geometric mean, none above 1.6; now 1.41 uncounted, matrix 3.8, search 2.0, run 4 results):
+1. Speed (the bar is 1.25 geometric mean, none above 1.6; now 1.27 uncounted, matrix 2.8, run 4 results):
    no fixed withheld set meets it (run 4's experiment over five sets, "Withheld sets" below), so a piece's own
    homes for c, t and u (below), measured with native layers 1 to 3 checking it; then what is left: returns and jumps through a register go through the
    mirror's indirect jump where the host's `ret` is predicted by its return stack (fib 1.25, sort 1.24, interpret
@@ -107,6 +107,9 @@ probes).
   forms on the reference) and `pextrb`/`pextrw`/`extractps` and their VEX forms (memory of one byte, the register
   written whole). Both are kept out (undefined-result forms, and memory of another size than the register), and
   named in tests/native_output.rs `a_withheld_operand_is_its_slot`; the sweep accepts the slot form.
+- A stand-in is loaded only where the guest reads the withheld register and stored back only where it writes it
+  (carry.rs `reads_writes`); checked by native layer 1 (200 a form, 0 failing) and layer 2 (1,000 cases, 0
+  failing), and the named tests count the moves.
 - The withheld registers are named once: the stand-ins and both native blobs follow `COUNT`, `T`, `U` and
   `WITHHELD` (no hard-coded r10, r11 or r15 left in carry.rs).
 
@@ -132,7 +135,10 @@ probes).
   host's plain run (uncounted, counted): before the slot form fib 1.24, 1.16; sieve 1.01, 0.98; hash 1.02, 1.01;
   sort 1.28, 1.27; interpret 1.23, 1.66; matrix 6.20, 6.20; walk 1.04, 1.07; search 4.13, 4.08; geometric mean
   1.643, 1.687. With it: fib 1.25, 1.38; sieve 1.01, 0.99; hash 1.00, 1.00; sort 1.24, 1.27; interpret 1.23, 1.65;
-  matrix 3.83, 3.81; walk 1.06, 1.04; search 1.98, 2.10; geometric mean 1.408, 1.489. The bar (1.25, none above
+  matrix 3.83, 3.81; walk 1.06, 1.04; search 1.98, 2.10; geometric mean 1.408, 1.489. With stand-ins loaded only
+  where read and stored only where written (bench-run4c.out, 16:13 UTC, load 7.4 falling to 2.0): fib 1.25, 1.38;
+  sieve 1.01, 0.99; hash 1.00, 1.00; sort 1.21, 1.24; interpret 1.22, 1.66; matrix 2.80, 2.87; walk 0.92, 1.02 (the
+  host's own walk varies from 2.4 to 2.6 s); search 1.44, 1.49; geometric mean 1.274, 1.365. The bar (1.25, none above
   1.6) is not met. The blob times its run as the reference times a blob (from before the process is made to its
   end), so the prologue's few system calls and each guest system call's record are inside the time.
 
@@ -140,7 +146,8 @@ probes).
 
 Each set (c, t, u) put into the rented machine's copy, checked by native layer 1 (30 cases a form, seed 5150) and
 layer 2 (32 cases), all 0 failing, then the benchmark set at full uncounted, best of 3 (load 1.3 to 3.1), times the
-host's: fib, sieve, hash, sort, interpret, matrix, walk, search; geometric mean (counted in brackets).
+host's: fib, sieve, hash, sort, interpret, matrix, walk, search; geometric mean (counted in brackets). Made with
+the slot form but before stand-ins skipped their needless loads and stores.
 - r10, r11, r15 (today's): 1.25, 1.01, 1.01, 1.23, 1.22, 3.82, 1.04, 1.86; 1.392 (1.476).
 - r13, r14, r15: 2.26, 1.00, 1.00, 1.42, 1.23, 1.06, 1.04, 1.04; 1.208 (1.188).
 - r12, r13, r15: 1.24, 1.01, 1.00, 1.50, 1.22, 2.85, 1.06, 1.05; 1.280 (1.313).

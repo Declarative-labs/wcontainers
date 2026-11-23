@@ -14,9 +14,6 @@ use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, names_withheld};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use wcontainers_x86::{Offer, V3, X86_64, decode, general_register};
 
-/// Bytes of a word of the thread area.
-const WORD: usize = wcontainers_abi::WORD as usize;
-
 /// The ways this output is built for so far: no memory check.
 const WAYS: [Way; 2] = [Way::Machine, Way::Process];
 /// Where the sweep's pieces start.
@@ -215,7 +212,8 @@ fn on_slot(guest: &Iced, host: &Iced, way: Way) -> bool {
         && host.memory_segment() == way.area_segment()
         && host.memory_base() == Register::None
         && host.memory_index() == Register::None
-        && host.memory_displacement64() == (WITHHELD_VALUES + k * WORD) as u64
+        && host.memory_displacement64()
+            == (WITHHELD_VALUES + k * wcontainers_abi::WORD as usize) as u64
         && others_same
 }
 
@@ -417,7 +415,7 @@ fn a_withheld_register_takes_a_stand_in() {
 /// unless the memory form would act otherwise.
 #[test]
 fn a_withheld_operand_is_its_slot() {
-    let slot = |k: usize| (WITHHELD_VALUES + k * WORD) as u64;
+    let slot = |k: usize| (WITHHELD_VALUES + k * wcontainers_abi::WORD as usize) as u64;
     for way in WAYS {
         // mov r9d, r11d: the load form, from t's slot.
         let code = decoded("45 89 d9", way);

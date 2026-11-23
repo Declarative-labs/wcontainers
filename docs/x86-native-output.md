@@ -421,9 +421,10 @@ iced's opcode tables): one host instruction, no stand-in. Not where the memory f
 (which zero-extends only in a register), memory of another size than the register (`pextrb r32/m8`), `xchg`
 (which locks memory), a bit test with a register offset (which reaches past its operand in memory), or a form
 whose results Intel leaves undefined (the probe's match covers the register form only: native layer 1 found
-`rol r/m, imm8`'s OF differing between the two forms on the reference). Measured (XN1 run 4, the benchmark set at
-full on the Xeon): matrix from 6.2 to 3.8 times the host's, search from 4.1 to 2.0, the geometric mean from 1.64
-to 1.41.
+`rol r/m, imm8`'s OF differing between the two forms on the reference). A stand-in is loaded only where the guest reads the register
+(a write of fewer than 32 bits keeps the rest, so reads it) and stored back only where it writes it. Measured
+(XN1 run 4, the benchmark set at full on the Xeon): matrix from 6.2 to 3.8 times the host's with the slot form and
+to 2.8 with the lighter stand-ins, search from 4.1 to 2.0 and 1.4, the geometric mean from 1.64 to 1.41 and 1.27.
 
 ### 3.5 The Kernel route: who answers
 
