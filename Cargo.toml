@@ -41,7 +41,7 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/wcontainers-opengl (349, counted on 2026-11-23)
 #   crates/wcontainers-graphics-test-forward (197)
 #   crates/wcontainers-gpu-webgl (167)
-#   crates/wcontainers-nir (105, counted on 2026-11-23)
+#   crates/wcontainers-nir (107, counted on 2026-11-23)
 #   crates/wcontainers-shaders (94)
 #   crates/executor/implementation/hardware-virtualization (72, an executor)
 #   crates/executor/implementation/hardware-virtualization-inside (57, an executor)
