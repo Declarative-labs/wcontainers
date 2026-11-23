@@ -4,7 +4,7 @@
 //! pages' tables
 //! ([10_0](https://learn.microsoft.com/windows/win32/direct3ddxgi/format-support-for-direct3d-feature-level-10-0-hardware),
 //! [10_1](https://learn.microsoft.com/windows/win32/direct3ddxgi/format-support-for-direct3d-feature-level-10-1-hardware),
-//! [11_0](https://learn.microsoft.com/windows/win32/direct3ddxgi/format-support-for-direct3d-feature-level-11-0-hardware)),
+//! [11_0](https://learn.microsoft.com/windows/win32/direct3ddxgi/format-support-for-direct3d-11-0-feature-level-hardware)),
 //! every row the pages give a required ability. Their video columns are not rows here: video is
 //! reported through the video devices, which a feature level does not require. The rows hold
 //! Direct3D 11's words, of which Direct3D 12's lack [`DIRECT3D_11_ONLY`].

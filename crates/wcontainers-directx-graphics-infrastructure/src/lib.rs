@@ -8,6 +8,7 @@ pub mod d3d;
 mod format;
 mod output;
 pub mod required;
+pub mod stage_registers;
 mod support;
 mod swapchain;
 
