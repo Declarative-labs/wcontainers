@@ -12,6 +12,7 @@ pub mod signal_information;
 pub mod x86_64_features;
 
 use alloc::vec::Vec;
+use core::num::NonZeroUsize;
 use core::ops::Range;
 use core::time::Duration;
 
@@ -28,12 +29,15 @@ pub trait Kernel: Sync + Sized {
     /// A slow or incomplete path that the kernel can take.
     type Fallback;
     type Config;
+    type Runner: Runner<Self::Executor>;
     type SuspendedTask;
     type ProcessContext;
 
-    fn new(config: Self::Config) -> Self;
-    /// Runs what the kernel decides is next, using the calling host thread's executor.
-    fn run(&self, executor: &mut Self::Executor) -> StopReason;
+    /// Makes a kernel that executes at most the given number of threads at the same time, and one runner for each.
+    fn new(
+        config: Self::Config,
+        parallelism: NonZeroUsize,
+    ) -> (Self, impl Iterator<Item = Self::Runner>);
     /// Takes the given tasks out of this kernel instance atomically, whichever processes they belong to, returning each one that is still executing on it.
     fn suspend_tasks(
         &self,
@@ -57,6 +61,12 @@ pub trait Kernel: Sync + Sized {
         &self,
         tasks: impl IntoIterator<Item = Self::SuspendedTask>,
     ) -> impl Iterator<Item = Self::SuspendedTask>;
+}
+
+
+pub trait Runner<E: Executor>: Send {
+    /// Runs what the kernel decides is next, using the given executor.
+    fn run(&mut self, executor: &mut E) -> StopReason;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
