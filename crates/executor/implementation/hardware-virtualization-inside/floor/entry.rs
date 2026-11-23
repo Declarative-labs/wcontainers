@@ -31,7 +31,7 @@ pub enum Taken {
 }
 
 /// Bytes saved for each pair of registers on the floor's stack.
-const PAIR: usize = 2 * size_of::<u64>();
+const SAVED_PAIR: usize = 2 * size_of::<u64>();
 
 unsafe extern "C" {
     /// Runs the guest's level from `registers` until an exception brings it back, saving its state there.
@@ -158,7 +158,7 @@ floor_from_user:
 "#,
     vectors_bytes = const VECTOR_TABLE_BYTES,
     entry = const VECTOR_BYTES,
-    pair = const PAIR,
+    pair = const SAVED_PAIR,
     word = const size_of::<u64>(),
     synchronous = const Taken::Synchronous as u64,
     interrupt = const Taken::Interrupt as u64,
