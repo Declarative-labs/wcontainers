@@ -19,6 +19,10 @@ rustix = { version = "1.1.6", features = ["event", "fs", "mm", "net", "param", "
 libc = "0.2.191"
 # Linux's numbers for the zygote's and the stubs' own host calls and filter.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "net", "prctl", "ptrace", "no_std"] }
+# Each memory's permissions and its borrowed and lent pages, by range.
+rangemap = { version = "1.8.0", default-features = false }
+# A register block as the words of its register page.
+zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
@@ -46,6 +50,9 @@ name = "stop"
 
 [[test]]
 name = "touch"
+
+[[test]]
+name = "memory"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]

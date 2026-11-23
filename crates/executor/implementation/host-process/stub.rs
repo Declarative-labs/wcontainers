@@ -250,17 +250,20 @@ impl Stub {
 
     /// Gives a thread a turn that loads the word at `address`, as guest code would, and waits for its end.
     pub fn load(&self, thread: usize, address: usize) -> Result<TurnEnd, Errno> {
-        self.touch(thread, address, 0, Resume::Load)
+        self.touch(thread, &[], address, 0, Resume::Load)
     }
 
     /// Gives a thread a turn that stores `value` at `address`, as guest code would, and waits for its end.
     pub fn store(&self, thread: usize, address: usize, value: u64) -> Result<TurnEnd, Errno> {
-        self.touch(thread, address, value, Resume::Store)
+        self.touch(thread, &[], address, value, Resume::Store)
     }
 
-    fn touch(
+    /// Gives a thread a turn that applies `commands`, then does a [`Resume::Load`] or [`Resume::Store`] of `value` at
+    /// `address`, and waits for its end.
+    pub fn touch(
         &self,
         thread: usize,
+        commands: &[Command],
         address: usize,
         value: u64,
         resume: Resume,
@@ -271,8 +274,31 @@ impl Stub {
         self.pages
             .control64(thread, control::TOUCH_VALUE)
             .store(value, Ordering::Relaxed);
-        let turn = self.give(thread, &[], resume)?;
+        let turn = self.give(thread, commands, resume)?;
         self.wait(thread, turn)
+    }
+
+    /// Reads a thread's register block, word by word, as the stub left it (untrusted).
+    pub fn read_registers(&self, thread: usize, into: &mut [u8]) {
+        let (words, _) = into.as_chunks_mut::<{ size_of::<u64>() }>();
+        for (index, word) in words.iter_mut().enumerate() {
+            let value = self
+                .pages
+                .register64(thread, register::REGISTERS + index * size_of::<u64>())
+                .load(Ordering::Relaxed);
+            *word = value.to_le_bytes();
+        }
+    }
+
+    /// Replaces a thread's register block, word by word.
+    pub fn write_registers(&self, thread: usize, from: &[u8]) {
+        let (words, _) = from.as_chunks::<{ size_of::<u64>() }>();
+        for (index, word) in words.iter().enumerate() {
+            let value = u64::from_le_bytes(*word);
+            self.pages
+                .register64(thread, register::REGISTERS + index * size_of::<u64>())
+                .store(value, Ordering::Relaxed);
+        }
     }
 
     /// Gives a thread a turn without waiting for it; the turn's number, for [`Self::wait`].

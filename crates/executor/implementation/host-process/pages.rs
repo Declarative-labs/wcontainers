@@ -59,6 +59,15 @@ pub mod register {
     pub const STOPS_IN_END: usize = 56;
     /// More of what the exit reports, where its kind says so.
     pub const EXIT_DETAIL: usize = 64;
+    /// The thread's registers: a [`wcontainers_abi::RegisterBlock`], little endian.
+    pub const REGISTERS: usize = 128;
+
+    const _: () = assert!(
+        REGISTERS.is_multiple_of(size_of::<u64>())
+            && size_of::<wcontainers_abi::RegisterBlock>().is_multiple_of(size_of::<u64>())
+            && REGISTERS + size_of::<wcontainers_abi::RegisterBlock>()
+                <= crate::layout::THREAD_PAGE_SIZE
+    );
 }
 
 /// What a turn does after its commands.
