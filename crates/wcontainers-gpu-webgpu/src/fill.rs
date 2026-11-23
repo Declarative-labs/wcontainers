@@ -44,8 +44,10 @@ const COVER_WGSL: &str = "
 pub enum DepthSource {
     /// Read as a float: `r32float`, or a depth format's depth.
     Float,
-    /// The bits of a 32-bit float in an `r32uint` or `r32sint` texture.
+    /// The bits of a 32-bit float in an `r32uint` texture.
     FloatBits,
+    /// The bits of a 32-bit float in an `r32sint` texture.
+    FloatBitsSigned,
     /// 24-bit unorm depth in the low bits of an `r32uint` texture.
     Unorm24,
     /// 16-bit unorm depth as the integers of an `r16uint` texture.
@@ -61,9 +63,8 @@ impl DepthSource {
                 Depth32Float | Depth32FloatStencil8,
                 R32Float | Depth32Float | Depth32FloatStencil8,
             ) => Some(DepthSource::Float),
-            (Depth32Float | Depth32FloatStencil8, R32Uint | R32Sint) => {
-                Some(DepthSource::FloatBits)
-            }
+            (Depth32Float | Depth32FloatStencil8, R32Uint) => Some(DepthSource::FloatBits),
+            (Depth32Float | Depth32FloatStencil8, R32Sint) => Some(DepthSource::FloatBitsSigned),
             (Depth24Plus | Depth24PlusStencil8, Depth24Plus | Depth24PlusStencil8)
             | (Depth16Unorm, Depth16Unorm | R16Unorm) => Some(DepthSource::Float),
             (Depth16Unorm, R16Uint) => Some(DepthSource::Unorm16),
@@ -971,6 +972,7 @@ impl WebGpu {
         let (texture, depth) = match how {
             DepthSource::Float => ("texture_2d<f32>", "v.x".into()),
             DepthSource::FloatBits => ("texture_2d<u32>", "bitcast<f32>(v.x)".into()),
+            DepthSource::FloatBitsSigned => ("texture_2d<i32>", "bitcast<f32>(v.x)".into()),
             DepthSource::Unorm24 => (
                 "texture_2d<u32>",
                 format!("f32(v.x & {UNORM24_MAX}u) / {UNORM24_MAX}.0"),
@@ -993,6 +995,7 @@ impl WebGpu {
             });
         let sample_type = match how {
             DepthSource::Float => wgpu::TextureSampleType::Float { filterable: false },
+            DepthSource::FloatBitsSigned => wgpu::TextureSampleType::Sint,
             _ => wgpu::TextureSampleType::Uint,
         };
         let (layout, pipeline_layout) = loader_layout(&self.device, sample_type);
