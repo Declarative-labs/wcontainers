@@ -24,6 +24,8 @@ pub struct RegisterArea {
     pub x87_ip: u64,
     /// The x87 control word the hardware holds, stored there by the check after a copied `fldcw`.
     pub x87_control: u64,
+    /// The guest's values of the registers that hold withheld ones throughout a loop, in the order they are taken.
+    pub homes: [u64; WITHHELD],
 }
 
 /// The words of the thread area's second page, which only the way writes: read-only to guest code.
@@ -47,6 +49,8 @@ pub const STAND_IN_VALUES: usize = core::mem::offset_of!(RegisterArea, stand_ins
 pub const X87_IP: usize = core::mem::offset_of!(RegisterArea, x87_ip);
 /// The word the check after a copied `fldcw` reads back.
 pub const X87_CONTROL: usize = core::mem::offset_of!(RegisterArea, x87_control);
+/// The guest value of the k-th register holding a withheld one throughout a loop is at `HOME_VALUES + 8 * k`.
+pub const HOME_VALUES: usize = core::mem::offset_of!(RegisterArea, homes);
 /// The fixed part's offset from the segment base.
 pub const FIXED: usize = PAGE_SIZE as usize;
 /// The inside's routine for call code k is at `ENTRIES + 8 * k`.

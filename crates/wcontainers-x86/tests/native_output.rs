@@ -7,15 +7,17 @@ use iced_x86::{
     OpKind, Register,
 };
 use wcontainers_guest_cpu::position::Side;
-use wcontainers_guest_cpu::{HostCode, Native, Route};
+use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route};
 use wcontainers_translator::{LookAhead, translate_native_for};
-use wcontainers_x86::area::WITHHELD_VALUES;
+use wcontainers_x86::area::{ENTRIES, FIRST_CALL_VECTOR, WITHHELD_VALUES};
 use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, names_withheld};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use wcontainers_x86::{Offer, V3, X86_64, decode, general_register};
 
 /// The ways this output is built for so far: no memory check.
 const WAYS: [Way; 2] = [Way::Machine, Way::Process];
+/// Bytes of a word of the thread area.
+const WORD: usize = wcontainers_abi::WORD as usize;
 /// Where the sweep's pieces start.
 const AT: u64 = 0x40_1000;
 
@@ -143,7 +145,20 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
                 at.relocated
             ));
         }
+        // An exit's call never comes back: the code after it is another way's.
+        let exit_call = match way {
+            Way::Machine => {
+                u16::from(i.immediate8()) == u16::from(FIRST_CALL_VECTOR) + InsideCall::Exit.code()
+            }
+            _ => {
+                i.memory_displacement64()
+                    == (ENTRIES + WORD * usize::from(InsideCall::Exit.code())) as u64
+            }
+        };
         let back = offset + i.len();
+        if exit_call {
+            continue;
+        }
         if let Some(span) = piece.span(back as u32).filter(|_| back < piece.bytes.len()) {
             let stays = span.guest == at.guest;
             if stays && (!span.relocated.is_empty() || !span.fixups.is_empty()) {
@@ -384,6 +399,62 @@ fn a_loop_is_linked_inside_the_piece() {
         "the jcc goes to the piece's start:\n{}",
         listing(&piece.bytes)
     );
+}
+
+/// A loop naming withheld registers runs its turns with them in registers it never names: the copy it loops in
+/// names none of them, reaches no area word, and its map holds each in its home; the moves are before and after.
+#[test]
+fn a_loop_holds_its_withheld_registers_at_home() {
+    use wcontainers_guest_cpu::position::Held;
+    // l: add r10, r11; dec r11; jnz l
+    let guest = bytes("4d 01 da 49 ff cb 75 f8");
+    for way in WAYS {
+        for exact in [false, true] {
+            let piece = translate(&guest, AT, way, exact).expect("a piece");
+            let code = host(&piece.bytes);
+            let text = listing(&piece.bytes);
+            let (back_at, back) = code
+                .iter()
+                .filter(|(at, i)| i.is_jcc_near() && (i.near_branch64() as usize) < *at)
+                .max_by_key(|(_, i)| i.near_branch64())
+                .expect("a branch back");
+            let head = back.near_branch64() as usize;
+            assert!(head > 0, "the loop's copy is after the moves:\n{text}");
+            let body: Vec<&Iced> = code
+                .iter()
+                .filter(|(at, _)| (head..=*back_at).contains(at))
+                .map(|(_, i)| i)
+                .collect();
+            for i in &body {
+                let count = i.mnemonic() == Mnemonic::Lea && i.op0_register() == COUNT;
+                assert!(
+                    count || !names_withheld(i),
+                    "{i} names a withheld register:\n{text}"
+                );
+                assert_ne!(
+                    i.memory_segment(),
+                    way.area_segment(),
+                    "{i} reaches the area:\n{text}"
+                );
+            }
+            for span in piece
+                .spans
+                .iter()
+                .filter(|s| (head..=*back_at).contains(&(s.start as usize)))
+            {
+                for w in [WITHHELD[0], WITHHELD[1]] {
+                    let held = span.relocated.iter().find(|r| r.guest == w);
+                    assert!(
+                        held.is_some_and(|r| matches!(r.held, Held::Register(_))),
+                        "guest {w} at home in {span:?}:\n{text}"
+                    );
+                }
+            }
+            if let Some(what) = broken(&piece, &guest, AT, way, exact) {
+                panic!("{what}\n{text}");
+            }
+        }
+    }
 }
 
 /// A guest instruction naming a withheld register runs on a stand-in loaded from and stored to the area.

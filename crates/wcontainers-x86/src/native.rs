@@ -121,12 +121,15 @@ impl Native for X86_64 {
         }
     }
 
-    type LoopInvariant = ();
+    /// A loop's homes: what is settled for its turns is where the withheld registers it names are held.
+    type LoopInvariant = carry::Homes;
 
-    fn loop_invariant(_: &[(u64, Instruction)]) {}
+    fn loop_invariant(part: &[(u64, Instruction)]) -> carry::Homes {
+        carry::Homes::of(part)
+    }
 
-    fn test_loop_invariant(_: &mut HostCode, _: &()) -> Option<usize> {
-        None
+    fn test_loop_invariant(way: &Way, code: &mut HostCode, homes: &carry::Homes) -> Option<usize> {
+        carry::enter_homes(*way, code, homes)
     }
 
     fn carry(
@@ -136,11 +139,11 @@ impl Native for X86_64 {
         i: &Instruction,
         bytes: &[u8],
         address: u64,
-        _: &(),
+        homes: &carry::Homes,
         code: &mut HostCode,
     ) {
         let route = route(*way, i, &target.host, &target.offer);
-        carry::carry(*way, route, i, bytes, address, code);
+        carry::carry(*way, route, i, bytes, address, homes, code);
     }
 
     fn count(code: &mut HostCode, events: u32) {
@@ -152,7 +155,7 @@ impl Native for X86_64 {
     }
 
     fn exit(way: &Way, code: &mut HostCode, target: u64) {
-        carry::exit(*way, code, target, None);
+        carry::exit(*way, code, target, None, &carry::Homes::default());
     }
 
     fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {

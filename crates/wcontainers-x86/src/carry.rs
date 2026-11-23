@@ -10,8 +10,8 @@ use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, PATCH_BYTES, Pat
 
 use crate::USER_END;
 use crate::area::{
-    ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_GS_BASE, STAND_IN_VALUES, WITHHELD_VALUES,
-    X87_CONTROL, X87_IP,
+    ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_GS_BASE, HOME_VALUES, STAND_IN_VALUES,
+    WITHHELD_VALUES, X87_CONTROL, X87_IP,
 };
 use crate::decode::Instruction;
 use crate::native::Way;
@@ -250,6 +250,115 @@ fn stand_ins_out(way: Way, code: &mut HostCode, guest: &Iced, swaps: &[(u8, u8)]
         put(code, &load_area(way, full(s), STAND_IN_VALUES + k * WORD));
         code.home(s);
     }
+}
+
+/// The registers that hold the withheld registers a loop names throughout its copy (section 3.4): each withheld
+/// register's number with the one holding it, the k-th keeping its own guest value at `HOME_VALUES + 8 * k`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Homes {
+    pairs: Vec<(u8, u8)>,
+}
+
+impl Homes {
+    /// Each withheld register named by the part with a register the part never uses, most named first.
+    pub fn of(part: &[(u64, Instruction)]) -> Self {
+        let mut info = InstructionInfoFactory::new();
+        let mut used = [false; crate::operand::R15 as usize + 1];
+        let mut named = [0usize; crate::operand::R15 as usize + 1];
+        for (_, i) in part {
+            for u in info.info(&i.iced).used_registers() {
+                if let Some(g) = general(u.register()) {
+                    used[usize::from(g.number)] = true;
+                    named[usize::from(g.number)] += 1;
+                }
+            }
+        }
+        let mut wanted: Vec<u8> = WITHHELD
+            .iter()
+            .copied()
+            .filter(|&w| used[usize::from(w)])
+            .collect();
+        wanted.sort_by_key(|&w| core::cmp::Reverse(named[usize::from(w)]));
+        // Never one of the first eight, which the address of an instruction naming a high byte may take.
+        let free = stand_ins().filter(|&n| n >= R8 && !used[usize::from(n)]);
+        Self {
+            pairs: wanted.into_iter().zip(free).collect(),
+        }
+    }
+
+    /// The register holding `r`'s general register throughout, at `r`'s width, or `r`.
+    fn of_register(&self, r: Register) -> Register {
+        general(r)
+            .and_then(|g| {
+                self.pairs
+                    .iter()
+                    .find(|(w, _)| *w == g.number)
+                    .map(|&(_, s)| sized(s, g.width))
+            })
+            .unwrap_or(r)
+    }
+
+    /// The guest instruction naming the holding registers in place of the withheld ones.
+    fn renamed(&self, i: &Instruction) -> Instruction {
+        let mut out = *i;
+        out.iced
+            .set_memory_base(self.of_register(i.iced.memory_base()));
+        out.iced
+            .set_memory_index(self.of_register(i.iced.memory_index()));
+        for n in 0..i.iced.op_count() {
+            if i.iced.op_kind(n) == OpKind::Register {
+                out.iced
+                    .set_op_register(n, self.of_register(i.iced.op_register(n)));
+            }
+        }
+        out
+    }
+
+    /// The map throughout the current instruction: each withheld register in its holder, the holder's own value
+    /// in the area.
+    fn throughout(&self, code: &mut HostCode) {
+        for (k, &(w, s)) in self.pairs.iter().enumerate() {
+            code.relocate_throughout(s, page(HOME_VALUES + k * WORD));
+            code.relocate_throughout(w, Held::Register(s));
+        }
+    }
+
+    /// The moves into the holders: each holder's own value to the area, the withheld register's into it.
+    fn enter(&self, way: Way, code: &mut HostCode) {
+        for (k, &(w, s)) in self.pairs.iter().enumerate() {
+            let own = HOME_VALUES + k * WORD;
+            put(code, &store_area(way, own, full(s)));
+            code.relocate(s, page(own));
+            put(code, &load_area(way, full(s), withheld_slot(w)));
+            code.relocate(w, Held::Register(s));
+        }
+    }
+
+    /// The moves back: each withheld register's value to its slot, each holder's own back.
+    fn leave(&self, way: Way, code: &mut HostCode) {
+        for (k, &(w, s)) in self.pairs.iter().enumerate() {
+            put(code, &store_area(way, withheld_slot(w), full(s)));
+            code.home(w);
+            put(code, &load_area(way, full(s), HOME_VALUES + k * WORD));
+            code.home(s);
+        }
+    }
+}
+
+/// Before a loop's copy (`Native::test_loop_invariant`): the moves into the homes and a `jmp rel32` to the copy,
+/// linked later; gives the offset of its rel32, or none where the loop names no withheld register.
+pub fn enter_homes(way: Way, code: &mut HostCode, homes: &Homes) -> Option<usize> {
+    if homes.pairs.is_empty() {
+        return None;
+    }
+    homes.enter(way, code);
+    let at = code.offset();
+    code.push(&jump(at, at + jump_length()));
+    for &(w, s) in &homes.pairs {
+        code.home(w);
+        code.home(s);
+    }
+    Some(at + jump_length() - REL32)
 }
 
 /// The instruction with the one withheld register it names, as a whole operand and nothing else, read or written
@@ -621,13 +730,59 @@ fn on_legacy(way: Way, code: &mut HostCode, access: &Iced) -> (Iced, u8) {
     (on, legacy)
 }
 
-/// Writes the host code of one guest instruction, `bytes` at guest `address`, as `route` says.
+/// Writes the host code of one guest instruction, `bytes` at guest `address`, as `route` says, in a loop's copy
+/// with the withheld registers it names in their `homes`.
 pub fn carry(
     way: Way,
     route: Route,
     i: &Instruction,
     bytes: &[u8],
     address: u64,
+    homes: &Homes,
+    code: &mut HostCode,
+) {
+    if homes.pairs.is_empty() {
+        return carry_plain(way, route, i, bytes, address, homes, code);
+    }
+    homes.throughout(code);
+    let m = i.iced.mnemonic();
+    let repeated =
+        crate::meaning::is_string(i) && (i.iced.has_rep_prefix() || i.iced.has_repne_prefix());
+    let stays = matches!(
+        route,
+        Route::Copy | Route::Rebase | Route::Nothing | Route::Transfer
+    ) && !repeated
+        && m != Mnemonic::Fldcw;
+    if !stays {
+        // The inside reads and writes the guest's registers where they are between loops.
+        homes.leave(way, code);
+        carry_plain(way, route, i, bytes, address, &Homes::default(), code);
+        homes.enter(way, code);
+        return;
+    }
+    let renamed = homes.renamed(i);
+    let encoded;
+    let bytes = if renamed.iced == i.iced {
+        bytes
+    } else {
+        encoded = bytes_of(&renamed.iced, address);
+        &encoded[..]
+    };
+    carry_plain(way, route, &renamed, bytes, address, homes, code);
+    if route == Route::Transfer && i.iced.flow_control() == iced_x86::FlowControl::ConditionalBranch
+    {
+        // The copy's way out where its branch back is not taken.
+        homes.leave(way, code);
+    }
+}
+
+fn carry_plain(
+    way: Way,
+    route: Route,
+    i: &Instruction,
+    bytes: &[u8],
+    address: u64,
+    homes: &Homes,
     code: &mut HostCode,
 ) {
     assert!(
@@ -670,7 +825,7 @@ pub fn carry(
             call(way, code, InsideCall::FloatAfter);
             code.fixed();
         }
-        Route::Transfer => transfer(way, code, i, address, next),
+        Route::Transfer => transfer(way, code, i, address, next, homes),
         Route::Split | Route::Collision | Route::Aligned | Route::Constant | Route::Exclusive => {
             unreachable!("x86-64 gives no {route:?} route")
         }
@@ -817,12 +972,13 @@ pub fn call(way: Way, code: &mut HostCode, kind: InsideCall) {
 }
 
 /// Writes the exit to direct guest `target`: a `jmp rel32`, first pointed at the call into the inside after it,
-/// after an add that brings the count back to the guest's where it is ahead.
-pub fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Resume>) {
+/// after an add that brings the count back to the guest's where it is ahead; the call leaves a loop's `homes`.
+pub fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Resume>, homes: &Homes) {
     if target >= USER_END {
         if let Some(resume) = commit {
             code.after(resume);
         }
+        homes.leave(way, code);
         call(way, code, InsideCall::Exit);
         return;
     }
@@ -840,6 +996,7 @@ pub fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Resume>) 
         let at = code.offset();
         code.exit(&jump(at, at + jump_length()), target, commit);
     }
+    homes.leave(way, code);
     call(way, code, InsideCall::Exit);
 }
 
@@ -905,7 +1062,14 @@ pub fn write_place(code: &mut [u8], place: &AddressPlace) {
 }
 
 /// A branch, call, return or jump.
-fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: u64) {
+fn transfer(
+    way: Way,
+    code: &mut HostCode,
+    i: &Instruction,
+    address: u64,
+    next: u64,
+    homes: &Homes,
+) {
     use Mnemonic::*;
     let ins = &i.iced;
     let direct = |offset: u64| address.wrapping_add(offset);
@@ -920,9 +1084,9 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
                 place_address(code, T, next);
                 put(code, &Iced::with1(Code::Push_r64, T).expect("a push"));
                 code.after(Resume::At(target));
-                exit(way, code, target, None);
+                exit(way, code, target, None, homes);
             } else {
-                exit(way, code, target, Some(Resume::At(target)));
+                exit(way, code, target, Some(Resume::At(target)), homes);
             }
         }
         Jmp | Call => {
@@ -988,6 +1152,7 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
                 code.branch_exit(at, target, field, Some(condition));
             }
             let after = code.snapshot();
+            let homes = homes.clone();
             code.defer(move |code: &mut HostCode| {
                 let to = code.offset();
                 let field = at + length - REL32;
@@ -996,9 +1161,10 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
                 code.restore(after);
                 code.after(Resume::At(target));
                 if linkable {
+                    homes.leave(way, code);
                     call(way, code, InsideCall::Exit);
                 } else {
-                    exit(way, code, target, None);
+                    exit(way, code, target, None, &homes);
                 }
             });
         }
@@ -1024,7 +1190,7 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
                 Iced::with_branch(Code::Jmp_rel8_64, (over + short_length) as u64).expect("a jump");
             code.push(&bytes_of(&short, over as u64));
             code.after(Resume::At(target));
-            exit(way, code, target, None);
+            exit(way, code, target, None, homes);
             let to = code.offset();
             let rel = i8::try_from(to - (over + short_length)).expect("the exit is short");
             code.patch(over + short_length - 1, &rel.to_le_bytes());
