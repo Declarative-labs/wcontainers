@@ -310,6 +310,14 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
         && !in_process
         && ins.memory_segment() == way.area_segment()
         && i.address32;
+    // Under 0x67 a bit test's register offset is added to its operand's address modulo 2^32 too, which the
+    // 64-bit sum on the guest's base no longer wraps.
+    let bit_offset_on_area = matches!(m, Bt | Bts | Btr | Btc)
+        && ins.op1_kind() == OpKind::Register
+        && ins.op0_kind() == OpKind::Memory
+        && !in_process
+        && ins.memory_segment() == way.area_segment()
+        && i.address32;
     let gather = matches!(
         m,
         Vgatherdpd
@@ -328,6 +336,7 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
         || far
         || implicit_on_area
         || vector_index_on_area
+        || bit_offset_on_area
         || matches!(
             m,
             Cpuid

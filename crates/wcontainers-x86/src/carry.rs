@@ -15,7 +15,7 @@ use crate::area::{
 };
 use crate::decode::Instruction;
 use crate::native::Way;
-use crate::operand::{General, R8, R10, R11, R15, RAX, RSP, SLOT, W64, general};
+use crate::operand::{General, R8, R10, R11, R15, RAX, RBP, RSP, SLOT, W64, general};
 
 /// The withheld registers: the count c, and the scratch registers t and u (section 3.4's first guess).
 pub const COUNT: Register = Register::R10;
@@ -157,16 +157,24 @@ fn stand_in(i: &Iced) -> (Iced, Vec<(u8, u8)>) {
         .iter()
         .filter_map(|u| general(u.register()).map(|g| g.number))
         .collect();
-    let mut free = STAND_INS.into_iter().filter(|n| !used.contains(n));
+    let mut free: Vec<u8> = STAND_INS
+        .into_iter()
+        .filter(|n| !used.contains(n))
+        .collect();
     let mut swaps: Vec<(u8, u8)> = Vec::new();
-    let mut swapped = |r: Register, swaps: &mut Vec<(u8, u8)>| -> Register {
+    // A stand-in for the base is never rbp, whose accesses take the stack segment's fault.
+    let mut swapped = |r: Register, base: bool, swaps: &mut Vec<(u8, u8)>| -> Register {
         let Some(g) = general(r).filter(|g| WITHHELD.contains(&g.number)) else {
             return r;
         };
         let s = match swaps.iter().find(|(w, _)| *w == g.number) {
             Some(&(_, s)) => s,
             None => {
-                let s = free.next().expect("an instruction leaves a register free");
+                let at = free
+                    .iter()
+                    .position(|&n| !(base && n == RBP))
+                    .expect("an instruction leaves a register free");
+                let s = free.remove(at);
                 swaps.push((g.number, s));
                 s
             }
@@ -174,13 +182,13 @@ fn stand_in(i: &Iced) -> (Iced, Vec<(u8, u8)>) {
         sized(s, g.width)
     };
     let mut out = *i;
+    out.set_memory_base(swapped(i.memory_base(), true, &mut swaps));
     for n in 0..i.op_count() {
         if i.op_kind(n) == OpKind::Register {
-            out.set_op_register(n, swapped(i.op_register(n), &mut swaps));
+            out.set_op_register(n, swapped(i.op_register(n), false, &mut swaps));
         }
     }
-    out.set_memory_base(swapped(i.memory_base(), &mut swaps));
-    out.set_memory_index(swapped(i.memory_index(), &mut swaps));
+    out.set_memory_index(swapped(i.memory_index(), false, &mut swaps));
     (out, swaps)
 }
 
@@ -265,6 +273,13 @@ fn reach_operand(
             put(code, &load_area(way, T, GUEST_GS_BASE));
             access.set_segment_prefix(Register::None);
             let (base, index) = (i.memory_base(), i.memory_index());
+            // A `pop` whose operand is based on rsp forms its address after the pop (Intel SDM Vol. 2B, POP).
+            let popped =
+                if i.mnemonic() == Mnemonic::Pop && matches!(base, Register::RSP | Register::ESP) {
+                    i64::from(i.stack_pointer_increment())
+                } else {
+                    0
+                };
             if i.is_ip_rel_memory_operand() {
                 place_address(code, U, guest);
                 if address32 {
@@ -275,12 +290,13 @@ fn reach_operand(
                 }
                 set_t_plus_u(&mut access);
             } else if address32 {
+                let displacement = i64::from(i.memory_displacement32() as i32) + popped;
                 let part = MemoryOperand::new(
                     base,
                     index,
                     i.memory_index_scale(),
-                    i64::from(i.memory_displacement32() as i32),
-                    i.memory_displ_size(),
+                    displacement,
+                    i.memory_displ_size().max(displacement_size(displacement)),
                     false,
                     Register::None,
                 );
@@ -299,11 +315,19 @@ fn reach_operand(
                 set_t_plus_u(&mut access);
             } else if base == Register::None {
                 access.set_memory_base(T);
-            } else if index == Register::None {
+            } else if index == Register::None && !stack_based(base) {
                 access.set_memory_index(T);
                 access.set_memory_index_scale(1);
             } else {
-                let add = MemoryOperand::with_base_index(base, T);
+                // t is the base, so the access stays on the default data segment: one based on rsp or rbp
+                // would take the stack segment's fault (#SS, not #GP) at a non-canonical address.
+                let add = MemoryOperand::with_base_index_scale_displ_size(
+                    base,
+                    T,
+                    1,
+                    popped,
+                    displacement_size(popped),
+                );
                 put(
                     code,
                     &Iced::with2(Code::Lea_r64_m, T, add).expect("t plus the operand's base"),
@@ -315,12 +339,32 @@ fn reach_operand(
     access
 }
 
+/// Based on rsp or rbp, whose accesses take the stack segment.
+fn stack_based(base: Register) -> bool {
+    matches!(base, Register::RSP | Register::RBP)
+}
+
+/// The bytes of a displacement field holding `displacement`: none for zero, else as wide as it needs.
+fn displacement_size(displacement: i64) -> u32 {
+    if displacement == 0 {
+        0
+    } else if i8::try_from(displacement).is_ok() {
+        size_of::<i8>() as u32
+    } else {
+        size_of::<i32>() as u32
+    }
+}
+
 fn set_t_plus_u(access: &mut Iced) {
     access.set_memory_base(T);
     access.set_memory_index(U);
     access.set_memory_index_scale(1);
     access.set_memory_displacement64(0);
     access.set_memory_displ_size(0);
+}
+
+fn has_memory_operand(i: &Iced) -> bool {
+    (0..i.op_count()).any(|n| i.op_kind(n) == OpKind::Memory)
 }
 
 /// The guest address a RIP-relative operand names, as the meaning forms it.
@@ -390,7 +434,8 @@ fn names_high_byte(i: &Iced) -> bool {
 }
 
 /// An instruction naming ah, ch, dh or bh cannot take a REX prefix, so its rebuilt operand cannot name t or
-/// u: the address goes to a register of the first eight, kept in the area meanwhile. It names no withheld
+/// u: the address goes to a register of the first eight but rbp (whose accesses take the stack segment), kept in
+/// the area meanwhile. It names no withheld
 /// register, which would need REX itself, so the first stand-in slot is free.
 fn on_legacy(way: Way, code: &mut HostCode, access: &Iced) -> (Iced, u8) {
     let mut info = InstructionInfoFactory::new();
@@ -402,7 +447,7 @@ fn on_legacy(way: Way, code: &mut HostCode, access: &Iced) -> (Iced, u8) {
         .collect();
     let legacy = STAND_INS
         .into_iter()
-        .find(|n| *n < R8 && !used.contains(n))
+        .find(|n| *n < R8 && *n != RBP && !used.contains(n))
         .expect("a byte instruction leaves a legacy register free");
     put(code, &store_area(way, STAND_IN_VALUES, full(legacy)));
     code.relocate(legacy, page(STAND_IN_VALUES));
@@ -464,11 +509,14 @@ pub fn carry(
         Route::Trap => call(way, code, InsideCall::Trap),
         Route::FloatStatus => {
             call(way, code, InsideCall::FloatBefore);
-            let reach = if i.iced.is_ip_rel_memory_operand() {
-                Reach::Rebase
-            } else {
-                Reach::Plain
-            };
+            let reach =
+                if has_memory_operand(&i.iced) && i.iced.memory_segment() == way.area_segment() {
+                    Reach::Area
+                } else if i.iced.is_ip_rel_memory_operand() {
+                    Reach::Rebase
+                } else {
+                    Reach::Plain
+                };
             rewritten(way, code, i, &i.iced, address, reach);
             code.fixup(Fixup::FloatStatus);
             call(way, code, InsideCall::FloatAfter);
