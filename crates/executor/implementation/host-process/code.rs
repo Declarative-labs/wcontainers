@@ -50,6 +50,7 @@ impl CodeArea {
     }
 
     /// The memfd, held for a command that sends it.
+    #[cfg(target_arch = "aarch64")]
     pub(crate) fn shared_file(&self) -> Arc<OwnedFd> {
         Arc::clone(&self.file)
     }

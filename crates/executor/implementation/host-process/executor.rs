@@ -227,8 +227,10 @@ pub struct HostProcessExecutor {
     guests: Vec<Option<native::Guest>>,
     #[cfg(target_arch = "aarch64")]
     translations: native::Translations,
+    #[cfg(target_arch = "aarch64")]
     /// Each slow path's count and last detail.
     slow: std::collections::BTreeMap<&'static str, (u64, u64)>,
+    #[cfg(target_arch = "aarch64")]
     /// The slow paths whose counts changed since they were last warned.
     unsent: std::collections::BTreeMap<&'static str, (u64, u64)>,
     /// The calling thread's place, from its first turn.
@@ -252,7 +254,9 @@ impl HostProcessExecutor {
             guests: Vec::new(),
             #[cfg(target_arch = "aarch64")]
             translations: native::Translations::default(),
+            #[cfg(target_arch = "aarch64")]
             slow: std::collections::BTreeMap::new(),
+            #[cfg(target_arch = "aarch64")]
             unsent: std::collections::BTreeMap::new(),
             runner: None,
             sampling: true,
