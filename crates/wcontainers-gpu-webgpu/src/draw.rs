@@ -330,6 +330,9 @@ impl Caches {
 /// Entries a table may hold before it is first pruned.
 const PRUNE_LEAST: usize = 64;
 
+/// Why a resolve by a draw fails: its multisampled source was not made to be sampled.
+const RESOLVE_UNSAMPLED: &str = "a resolve by a draw of a texture that cannot be sampled";
+
 /// Immediates padded to whole words, as WebGPU sets them.
 fn words(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let align = wgpu::IMMEDIATE_DATA_ALIGNMENT as usize;
@@ -1616,7 +1619,7 @@ impl WebGpu {
                 .usage()
                 .contains(wgpu::TextureUsages::TEXTURE_BINDING)
             {
-                self.fail("a resolve by a draw of a texture that cannot be sampled");
+                self.fail(RESOLVE_UNSAMPLED);
                 return;
             }
             let (s, d) = (view(src), view(dst));
