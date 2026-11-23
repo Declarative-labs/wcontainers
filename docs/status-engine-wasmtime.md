@@ -3,14 +3,18 @@
 The WebAssembly engine interface (crates/webassembly-engine) implemented on wasmtime.
 Crate: crates/webassembly-engine/implementation/wasmtime, package wcontainers-webassembly-engine-wasmtime.
 
-## Where things stand (2026-11-22, run 1 of milestone E1)
+## Where things stand (2026-11-23, run 2 of milestone E1)
 
 - Done: the crate implements every trait of the interface; the suite's 29 tests and the crate's own 24
-  pass on the rented ARM64 machine; clippy with warnings denied is clean on the crate; the crate inherits
-  the workspace lints (unsafe forbidden) and has no unsafe and no exemption; adding `unsafe {}` fails to
-  compile ("usage of an `unsafe` block", checked on the ARM copy).
+  pass on the rented ARM64 machine and on the rented x86-64 machine (run 2, after cleaning the three
+  crates, and on x86 from an empty build folder); clippy with warnings denied is clean on the crate on
+  both; the crate inherits the workspace lints (unsafe forbidden) and has no unsafe and no exemption;
+  adding `unsafe {}` fails to compile on both ("usage of an `unsafe` block"). The interface and suite
+  files are the same as on main (ea9d491e). The whole check is one script:
+  pyro-parked/wcontainers-scratch/engine-wasmtime/check.sh, run as `arm-run <checkout> --name
+  engine-wasmtime -- "$(cat check.sh)"` (or x86-run).
 - Not done: the suite on this Mac. The notice of 2026-11-22 moves every build and test off the Mac, so it
-  was not run there; the x86 machine was not set up ("no /work, Docker or Nix") when tried.
+  was not run there.
 - Waiting on the owner: the two points under "For the owner" that keep condition (1) from holding fully
   (a borrow check on `read_memory`, and the safe slow route for shared memories).
 
@@ -73,6 +77,13 @@ Direct wasmtime against the interface, same binary, same run (run 2 of 2):
 - shared 64 KiB: unsafe copy read 2550 ns, write 752 ns; copier read 3392 ns, write 1821 ns
 - table write: direct 17.16 ns, interface 17.72 ns (bounds are checked only when the write fails)
 
+Crate benchmark on the rented x86-64 machine (Xeon Platinum 8488C, 96 cores), load average 2.0 to 3.8,
+2026-11-23 06:50 to 06:52 UTC, best of 5 rounds (no direct comparison taken there):
+- compile 248 µs; instantiate 418 ns; empty call 12.3 ns; empty host call 4.00 ns per call
+- unshared memory: write 64 B 4.3 ns, read 64 B 4.3 ns, write 64 KiB 1271 ns, read 64 KiB 1283 ns
+- shared memory (copier): write 64 B 37.1 ns, read 64 B 38.9 ns, write 64 KiB 2596 ns, read 64 KiB 2690 ns
+- table write: 12.6 ns
+
 ## For the owner
 
 1. `&self` on reads cannot be served by wasmtime without interior mutability. `Table::get` and
@@ -116,7 +127,7 @@ caller's buffer, which the interface does not offer.
 ## Departures from the plan
 
 - `Config::default()` is one process-wide engine (point 3), not a new engine per call.
-- Tests and clippy ran on the ARM machine only (the notice of 2026-11-22), not on the Mac.
+- Tests and clippy ran on the two rented machines (the notice of 2026-11-22), not on the Mac.
 
 ## Dependencies (licence; occurrences of the word `unsafe` in its src/)
 
