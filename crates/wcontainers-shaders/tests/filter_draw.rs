@@ -734,6 +734,11 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                             &plain,
                             Some(native),
                         );
+                        keep(
+                            &format!("{prefix}_{case_seed}_{format:?}_{name}_{route}_own"),
+                            &own,
+                            Format::Rgba32Float,
+                        );
                         let native = differences(&webgpu_texels, &own);
                         let soft = differences(&software, &webgpu_texels);
                         let (apart, largest) = count(&native, FILTER_ALLOWANCE);

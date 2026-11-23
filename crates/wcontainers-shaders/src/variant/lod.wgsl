@@ -27,8 +27,11 @@ fn level_of_detail(size: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>, levels: u32, s
 // level of detail (adding the sampler's bias `bias` itself) is the larger of the sample's and the
 // clamp: the coordinate's derivatives or the sample's gradients `dx` and `dy` in a texture of `size`
 // texels through a sampler of anisotropy `s1.z` (as `level_of_detail`), scaled by two to the sample's
-// own bias `shift` and to the distance from its level of detail up to the clamp where that is below.
-// Where they are too short to scale (zero), one texel of the clamp's level along x and y.
+// own bias `shift`. Where its level of detail is below the clamp: one texel of the clamp's level
+// along x and y, which every device takes at the clamp's level exactly (scaled gradients land at the
+// clamp only by this function's measure of a level, which a device's own may differ from by a
+// fraction of a level); through an anisotropic sampler, the gradients scaled up to the clamp, which
+// keeps the footprint's shape, unless they are too short to scale (zero).
 fn clamped_gradients(size: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>, s1: vec4<u32>, bias: f32, shift: f32, clamp: f32) -> mat2x3<f32> {
     let px = length(dx * size);
     let py = length(dy * size);
@@ -40,7 +43,7 @@ fn clamped_gradients(size: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>, s1: vec4<u32
     }
     let up = max(clamp - (lod + bias + shift), 0.0);
     // Two to this power still scales a nonzero gradient within the floats.
-    if up <= 64.0 {
+    if up == 0.0 || (s1.z > 1u && up <= 64.0) {
         let scale = exp2(shift + up);
         return mat2x3<f32>(dx * scale, dy * scale);
     }
