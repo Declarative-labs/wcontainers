@@ -1019,22 +1019,38 @@ impl AddressMap {
             .is_none_or(|mapping| mapping.start_gap() >= end)
     }
 
-    /// Bytes new mappings with no address can still take: the gaps below the mmap base.
+    /// Bytes new mappings with no address can still take in the lowest range: the gaps below the
+    /// mmap base and those the search falls back to above it.
     pub fn placeable(&self) -> u64 {
+        let (fallback_floor, top) = self.fallback_range();
+        self.free_in(LOWEST_ADDRESS, self.mmap_base)
+            + self.free_in(fallback_floor.max(self.mmap_base), top)
+    }
+
+    /// The free bytes in `[floor, top)`, the guard gap below a mapping that grows down not free.
+    fn free_in(&self, floor: u64, top: u64) -> u64 {
         let mut free = 0;
-        let mut at = LOWEST_ADDRESS;
+        let mut at = floor;
         for mapping in self
             .mappings
-            .range(..self.mmap_base)
+            .range(..top.saturating_add(STACK_GUARD_GAP))
             .map(|(_, mapping)| mapping)
         {
             if mapping.end <= at {
                 continue;
             }
-            free += mapping.start_gap().min(self.mmap_base).saturating_sub(at);
+            free += mapping.start_gap().min(top).saturating_sub(at);
             at = mapping.end;
         }
-        free + self.mmap_base.saturating_sub(at)
+        free + top.saturating_sub(at)
+    }
+
+    /// The range Linux's top-down search falls back to searching bottom-up when there is no room
+    /// below the mmap base: from `TASK_UNMAPPED_BASE`, a quarter of the way up, to the top of the
+    /// lowest range, which takes the gap between the mmap base and the stack.
+    fn fallback_range(&self) -> (u64, u64) {
+        let top = first_tier_top(self.ceiling);
+        (page_up(top / 4), top)
     }
 
     /// Whether a request for `length` bytes ending at `end` reaches past the ceiling; if so it is
@@ -1048,8 +1064,9 @@ impl AddressMap {
     }
 
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search,
-    /// which goes on below the program and its heap down to the lowest address, then in each
-    /// higher tier in turn, top-down from its top.
+    /// which goes on below the program and its heap down to the lowest address, then bottom-up
+    /// above the mmap base as Linux falls back to, then in each higher tier in turn, top-down from
+    /// its top.
     pub fn find_free(&self, length: u64) -> Option<u64> {
         self.find_free_beside(length, &[])
     }
@@ -1084,18 +1101,28 @@ impl AddressMap {
                 floor = top;
             }
         }
-        for (floor, top) in ranges {
+        for (index, (floor, top)) in ranges.into_iter().enumerate() {
             // A range the executor cannot give is never filled in part, so that placement is the
             // same on every executor.
             if top > self.ceiling {
                 break;
             }
-            // Linux's top-down search for one PMD more, then the boundary in that space, or one
-            // PMD higher when the space starts on one.
+            // Linux's search: top-down, and in the lowest range, which holds the stack, bottom-up
+            // above the mmap base when that finds nothing.
+            let find = |length: u64| {
+                self.find_free_between(floor, top, length, taken)
+                    .or_else(|| {
+                        let (floor, top) = self.fallback_range();
+                        let lowest = index == 0;
+                        lowest
+                            .then(|| self.find_lowest_free_between(floor, top, length, taken))
+                            .flatten()
+                    })
+            };
+            // Linux's search for one PMD more, then the boundary in that space, or one PMD higher
+            // when the space starts on one, as its layout is top-down.
             let padded = length.checked_add(PMD_SIZE).filter(|_| on_boundary);
-            if let Some(start) =
-                padded.and_then(|padded| self.find_free_between(floor, top, padded, taken))
-            {
+            if let Some(start) = padded.and_then(find) {
                 let to_boundary = start.wrapping_neg() & (PMD_SIZE - 1);
                 return Some(if to_boundary == 0 {
                     start + PMD_SIZE
@@ -1103,7 +1130,7 @@ impl AddressMap {
                     start + to_boundary
                 });
             }
-            if let Some(start) = self.find_free_between(floor, top, length, taken) {
+            if let Some(start) = find(length) {
                 return Some(start);
             }
         }
@@ -1143,6 +1170,39 @@ impl AddressMap {
                 .max();
             match mapped.max(reserved) {
                 Some(below) => ceiling = below,
+                None => return Some(start),
+            }
+        }
+    }
+
+    /// The lowest free space for `length` bytes in `[floor, top)`, with `taken` in use too.
+    fn find_lowest_free_between(
+        &self,
+        floor: u64,
+        top: u64,
+        length: u64,
+        taken: &[core::ops::Range<u64>],
+    ) -> Option<u64> {
+        let mut start = floor;
+        loop {
+            let end = start.checked_add(length).filter(|end| *end <= top)?;
+            // The highest mapping that, with the guard gap below one that grows down, overlaps
+            // [start, end): nothing below its end is free for the length.
+            let mapped = self
+                .mappings
+                .range(..end.saturating_add(STACK_GUARD_GAP))
+                .rev()
+                .map(|(_, mapping)| mapping)
+                .find(|mapping| mapping.start_gap() < end)
+                .filter(|mapping| mapping.end > start)
+                .map(|mapping| mapping.end);
+            let reserved = taken
+                .iter()
+                .filter(|range| range.start < end && range.end > start)
+                .map(|range| range.end)
+                .max();
+            match mapped.max(reserved) {
+                Some(above) => start = above,
                 None => return Some(start),
             }
         }
@@ -1883,12 +1943,45 @@ mod tests {
                 LOWEST_ADDRESS + hole,
                 base - LOWEST_ADDRESS - hole,
             );
+            let top = first_tier_top(ceiling);
+            place(&mut map, base, top - base);
             let start = map.find_free_anonymous(PMD_SIZE);
             assert_eq!(
                 start,
                 Some(LOWEST_ADDRESS + hole - PMD_SIZE),
                 "{ceiling:#x}"
             );
+        }
+    }
+
+    /// With no room below the mmap base, placement goes bottom-up in the lowest range above it,
+    /// the gap Linux leaves for the stack, before any higher range; and Linux's search there for a
+    /// PMD more gives a boundary.
+    #[test]
+    fn a_full_space_below_the_mmap_base_falls_back_to_the_gap_above_it() {
+        for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1]] {
+            let notes = Rc::new(MapNotes::default());
+            let mut map = AddressMap::new(PLACEMENT_TIERS[1], ceiling, notes);
+            let base = map.mmap_base;
+            let top = first_tier_top(ceiling);
+            place(&mut map, LOWEST_ADDRESS, base - LOWEST_ADDRESS);
+            let stack = top - STACK_LIMIT;
+            place(&mut map, stack, STACK_LIMIT);
+            map.mappings.get_mut(&stack).unwrap().grows_down = true;
+            let before = map.placeable();
+            assert_eq!(before, stack - STACK_GUARD_GAP - base, "{ceiling:#x}");
+            assert_eq!(map.find_free(PAGE_SIZE), Some(base), "{ceiling:#x}");
+            let aligned = (base + PMD_SIZE) & !(PMD_SIZE - 1);
+            assert_eq!(
+                map.find_free_anonymous(PMD_SIZE),
+                Some(aligned),
+                "{ceiling:#x}"
+            );
+            // The gap below the stack's guard gap is filled to its end, never into it.
+            let room = before & !(PAGE_SIZE - 1);
+            assert_eq!(map.find_free(room), Some(base), "{ceiling:#x}");
+            let higher = (ceiling > top).then_some(PLACEMENT_TIERS[1] - room - PAGE_SIZE);
+            assert_eq!(map.find_free(room + PAGE_SIZE), higher, "{ceiling:#x}");
         }
     }
 
