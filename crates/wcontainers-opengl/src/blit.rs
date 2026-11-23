@@ -31,6 +31,11 @@ fn save_constants<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_co
 
 /// Everything the blitter changes, saved in it so that it puts it back after its draws.
 fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
+    // The render condition, which the blitter lifts for a blit that ignores it; every mode waits.
+    let (query, condition) = context.condition.unwrap_or((std::ptr::null_mut(), false));
+    blitter.saved_render_cond_query = query;
+    blitter.saved_render_cond_cond = condition;
+    blitter.saved_render_cond_mode = PIPE_RENDER_COND_WAIT;
     let bound = &context.bound;
     blitter.saved_blend_state = bound.blend.cast_mut().cast();
     blitter.saved_dsa_state = bound.depth_stencil.cast_mut().cast();
@@ -161,6 +166,10 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
     if context.blitter.is_null() {
         // SAFETY: the context is complete; the blitter keeps a pointer to it.
         context.blitter = unsafe { util_blitter_create(pipe) };
+    }
+    // SAFETY: as above.
+    if unsafe { (*info).render_condition_enable } && !crate::query::condition_holds(context) {
+        return;
     }
     // SAFETY: as above.
     if whole_resolve(context, unsafe { &*info }) {

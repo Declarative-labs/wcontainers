@@ -1189,6 +1189,9 @@ pub unsafe extern "C" fn draw_vbo<B: Backend>(
 ) {
     // SAFETY: Mesa passes this driver's context and the draw.
     let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
+    if !query::condition_holds(context) {
+        return;
+    }
     let result = if indirect.is_null() {
         // SAFETY: a direct draw comes with `count` ranges.
         draw(context, info, unsafe {

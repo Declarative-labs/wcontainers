@@ -219,6 +219,8 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // Occlusion predicates (every back end answers whether any sample passed); an exact count is
     // refused by name where the back end lacks it.
     caps.occlusion_query = true;
+    // Draws and clears under a render condition wait for its answer (`PredicationWait`).
+    caps.conditional_render = true;
     // Steps other than one a back end lacks are fetched in the vertex program.
     caps.vertex_element_instance_divisor = true;
     // Maps are copies the driver writes back, never the device's own memory.

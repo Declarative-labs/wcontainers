@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, MapIntent, Object, PassTracker, QueryKind, ReadSource,
-    ReadState, STORAGE_WORD,
+    ReadState, STORAGE_WORD, SlowPath,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
@@ -536,6 +536,45 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
     // SAFETY: as above.
     unsafe { (*result).b = passed };
     true
+}
+
+/// `pipe_context::render_condition`: draws and clears from now on are skipped while `query`'s
+/// answer equals `condition`; no query lifts it. Every mode waits for the answer (the waiting
+/// modes as they ask; the others may draw before it is known and are given it).
+pub unsafe extern "C" fn render_condition<B: Backend>(
+    pipe: *mut pipe_context,
+    query: *mut pipe_query,
+    condition: bool,
+    _: pipe_render_cond_flag,
+) {
+    // SAFETY: Mesa passes this driver's context.
+    let context = unsafe { Context::<B>::of(pipe) };
+    context.condition = (!query.is_null()).then_some((query, condition));
+}
+
+/// Whether the render condition lets the next draw or clear through, its occlusion answer waited
+/// for (`PredicationWait`).
+pub fn condition_holds<B: Backend>(context: &mut Context<B>) -> bool {
+    let Some((query, condition)) = context.condition else {
+        return true;
+    };
+    // SAFETY: a query st/mesa conditions on lives while the condition is set.
+    let query = unsafe { of::<B>(query) };
+    if query.emitted.is_some() || query.timer.is_some() {
+        refuse(format_args!(
+            "a render condition on a query other than an occlusion query"
+        ));
+    }
+    context
+        .screen()
+        .backend()
+        .slow_paths()
+        .hit(SlowPath::PredicationWait);
+    match answer(context, query, true) {
+        Ok(Some(passed)) => passed != condition,
+        Ok(None) => true,
+        Err(reason) => refuse(format!("a render condition's answer: {reason}")),
+    }
 }
 
 /// A timer's nanoseconds (a timestamp, or the time between its begin and end), once known

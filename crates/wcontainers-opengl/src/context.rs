@@ -77,6 +77,9 @@ pub struct Context<B: Backend> {
     pub unread: Vec<*mut pipe_query>,
     /// The count of primitives streamed that is running.
     pub counting: Vec<*mut pipe_query>,
+    /// The render condition: draws and clears are skipped while the query's answer equals the
+    /// value.
+    pub condition: Option<(*mut pipe_query, bool)>,
     pub streams: stream::Bound<B>,
 }
 
@@ -122,6 +125,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         running: None,
         unread: Vec::new(),
         counting: Vec::new(),
+        condition: None,
         streams: stream::Bound::default(),
     });
     let base = &mut context.base;
@@ -164,6 +168,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.get_query_result = Some(query::get_query_result::<B>);
     c.set_active_query_state = Some(query::set_active_query_state::<B>);
     c.get_timestamp = Some(query::get_timestamp::<B>);
+    c.render_condition = Some(query::render_condition::<B>);
     c.set_polygon_stipple = Some(set_polygon_stipple);
     c.create_stream_output_target = Some(stream::create_stream_output_target::<B>);
     c.stream_output_target_destroy = Some(stream::stream_output_target_destroy::<B>);
@@ -185,7 +190,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     unbuilt!(
         c,
         get_query_result_resource,
-        render_condition,
         create_tcs_state,
         bind_tcs_state,
         delete_tcs_state,
@@ -328,6 +332,9 @@ unsafe extern "C" fn clear<B: Backend>(
 ) {
     // SAFETY: Mesa passes this driver's context and a colour.
     let (context, color) = unsafe { (Context::<B>::of(pipe), (*color).ui) };
+    if !query::condition_holds(context) {
+        return;
+    }
     if !scissor.is_null() {
         eprintln!(
             "{}: refused: a scissored clear (the screen reports none)",
@@ -403,10 +410,13 @@ unsafe extern "C" fn clear_render_target<B: Backend>(
     y: c_uint,
     width: c_uint,
     height: c_uint,
-    _: bool,
+    conditional: bool,
 ) {
     // SAFETY: Mesa passes this driver's context, a surface and a colour.
     let (context, surface, color) = unsafe { (Context::<B>::of(pipe), &*surface, (*color).ui) };
+    if conditional && !query::condition_holds(context) {
+        return;
+    }
     clear_surface(
         context,
         surface,
@@ -429,10 +439,13 @@ unsafe extern "C" fn clear_depth_stencil<B: Backend>(
     y: c_uint,
     width: c_uint,
     height: c_uint,
-    _: bool,
+    conditional: bool,
 ) {
     // SAFETY: Mesa passes this driver's context and a surface.
     let (context, surface) = unsafe { (Context::<B>::of(pipe), &*surface) };
+    if conditional && !query::condition_holds(context) {
+        return;
+    }
     let value = ClearValue::DepthStencil {
         depth: (flags & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth)),
         stencil: (flags & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil)),
