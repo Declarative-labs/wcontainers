@@ -8,6 +8,56 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, fourth run: the third check's findings
+
+- The kernel keeps a wait on `FuseServer::receive_notice` (fs/backend.rs `wait_for_notice`,
+  `notice_came`, `apply_notice`; waiting.rs `WaitFor::Notice`): one per file server, started with
+  the backend's first request, `None` the first time, then each notice applied at once and the
+  next asked for with its result (Linux's answer to the server's write: EINVAL for a body of the
+  wrong size or an unknown code, ENAMETOOLONG, ENOTDIR, ENOENT as before). A system that answers
+  `NotSupported` sends no notices and the wait ends; any other failure ends it counted, "backend
+  notices ended". A restore on another system drops the wait and asks the new one afresh. The
+  notice comes back in a kept buffer: new unit test
+  `a_notice_waited_for_tells_how_the_one_before_went_and_allocates_nothing` (100 rounds, no
+  allocation after the first). A notice beats a reply to a request sent before it for a mapped
+  file's pages too: an INVAL_INODE bumps the pages' change count, and pages a read brings back
+  under an older count are not taken (shared.rs `pages_came`, checked, unchanged).
+- The abi's `Event::BackendNotice` is gone (no system hands notices that way any more); the
+  stand-in's record keeps the abi's `Event` itself, its `OwnedEvent` copy is gone.
+- The stand-in's test host sends every notice through `receive_notice` (injected ones and the
+  real server's) and keeps the interface's rule, which its seed-chosen order used to break: each
+  reply arrives with the count of notices sent before it and completes only once the kernel has
+  applied that many (driver.rs `Replies`, `Notices`), and the backend's held messages keep the
+  server's order, so a reply is never handed before a notice the server sent ahead of it
+  (backend.rs `next`). A wait that tells a result for no notice, or none after one, is listed in
+  the run's `broken`. `backend_notices_are_handled` (400 notices) now goes through the wait.
+- Programs are told that `parallelism` processors are online on a kernel made with
+  `Kernel::new(config, parallelism)`: `sched_getaffinity` (a mask of that many bits, EINVAL for a
+  size too small for it, as Linux), `sched_setaffinity` (refused only for a mask naming none of
+  them), /proc/cpuinfo and /proc/stat. A kernel made with the inherent `start` (every driver
+  compared with Docker) is told 1, as before. New test tests/processors.rs with
+  guest/processors.c: parallelism 1, 4 and 65 each give that count from all three sources. The
+  stand-in's kernels for the interface tests are now made through `KernelConfig::new` and
+  `Kernel::new` (the start's strings leaked for the test's life), and `KernelConfig` is exported,
+  which it was not, so no embedder could make one.
+- The unsafe code written in KC is reported in the ruling's form under For the owner (each use,
+  why no vetted library does it, what removing it costs); the stand-in's two KC uses carry
+  `#[expect(unsafe_code, reason)]`.
+- `Runner::run`: For the owner now says why the executor's single-instruction call is not used
+  yet (its memory form), and names a run on it as the slow path still to build.
+- Measured on the ARM64 machine at 60cb4fe1 (05:30 to 05:35 UTC, load 2 to 9): clippy with all
+  targets on the abi, the kernel, its suite, the stand-in, the runtime's single kernel, the test
+  policy and both hardware crates gives nothing in their files (the kernel interface's two and
+  tcp-sockets' one are not this track's); kernel unit tests 19 and the kernel suite 16 pass; the
+  stand-in's round_trips 6, processors 1, saving 1 and its conformance 1 pass; backend 19 passed
+  and 2 failed, rootbackend 1 passed and 2 failed, all four on the known ARM list
+  (file_capabilities, special_files, root_files, core_dumps); `backend_notices_are_handled`
+  passed.
+- Not fixed, with its reason: the suite's check that another process's thread is not suspended
+  through a handle stays in round_trips (`a_handle_takes_no_thread_of_another_process`): no
+  suite function can hold both a handle and its kernel through the interface (For the owner, KA,
+  fourth run).
+
 ## KC, third run: the kernel's runners, and the second check's findings
 
 - [blocking] The owner's runner interface (2b546ee0, merged at 1750855e) is implemented
@@ -149,7 +199,8 @@ crates/runtime/implementation/single-kernel.
 - `FuseServer::receive_notice`: the test host and the runtime answer `NotSupported` (they still
   hand notices as the abi's `Event::BackendNotice`); the policy refuses it, counted, as every
   other outside request; the kernel's own test server never sends one. The kernel does not yet
-  keep a wait on `receive_notice` (next work).
+  keep a wait on `receive_notice` (next work). (Built in the fourth run; the stand-in's test
+  host now sends its notices through it.)
 - TCP: connect and listen pass `TcpLocalEnd::Unbound`, as they did before the change; a socket
   given back in an error is released. The kernel does not bind at the system at a guest's `bind`:
   a container has its own network namespace and its sockets reach the outside through the exit
@@ -221,10 +272,20 @@ crates/runtime/implementation/single-kernel.
   guest still gets -41. The same holds for 515 to 4095 (515 is ENOIOCTLCMD, which `Errno` does not
   name; 512, 513, 514 and 516 are named and come back `WellKnown`): the hook gets `Ok` of the raw
   value, and the guest the error.
-- KC, third run: `Runner::run(&mut self, executor)` is not built, for the reason the entry on
-  `Kernel::run` below gives (no executor call runs a thread; the kernel reads registers from its
-  own executor when it suspends or copies). `Kernel::new` makes `parallelism` runners, each
-  panicking as not built; the kernel runs one thread at a time, within any parallelism.
+- KC, third run: `Runner::run(&mut self, executor)` is not built. `Kernel::new` makes
+  `parallelism` runners, each panicking as not built; the kernel runs one thread at a time,
+  within any parallelism, and from the fourth run tells its programs that `parallelism`
+  processors are online. Corrected in the fourth run: the executor interface does have a call
+  that runs, `execute_single_instruction(_in_place)`, so a run is possible in principle as a
+  slow path, still to be built. It is not built yet because each step takes the guest's memory
+  as a list of `MemoryDelta`s (the whole memory as changes from zero, or every value the
+  instruction might read, which the caller cannot know before the instruction is decoded) and
+  gives the threads' registers as the interface's `Processor`, while this kernel keeps both in
+  its own executor (the abi's `Cpu`, memories by id, shared blocks). Built on it, every guest
+  instruction would hand the executor every mapped page: a hello world runs about a million
+  instructions over a few hundred pages (expected, not measured). Example: `run` stepping a
+  thread whose next instruction is a load through a register: which bytes to pass as deltas is
+  known only after the instruction is decoded.
 - KC, third run: the kernel's lock (`spin::Mutex`, executing.rs) spins without bound, and a
   process handle holds it while it lasts, so a second host thread calling `suspend_tasks` or
   `copy_process_context` while a handle or a `with_parts` drive is alive spins a whole core until
@@ -237,6 +298,37 @@ crates/runtime/implementation/single-kernel.
   it in types. This kernel asks it of whoever starts it: `KernelWithExecutor::start` and
   `KernelConfig::new` are `unsafe`, with that condition, and the stand-in checks its own waits at
   build time. A `Send` bound on those futures in the interface would make both safe.
+- KC, fourth run: the unsafe code this track wrote in KC, in the form of the owner's ruling of
+  2026-11-22, for him to rule on (the kernel stays on the root Cargo.toml's list until then).
+  Because `KernelConfig::new` is unsafe, no embedder can make this kernel through the interface's
+  `Kernel::new` without writing unsafe itself, and the runtime, once under `forbid(unsafe_code)`,
+  could not.
+  - executing.rs `unsafe impl Sync for KernelWithExecutor` and `unsafe impl Send for
+    KernelRunner`. The use: the interface asks `Kernel: Sync` and `Runner: Send`, and the kernel's
+    state is `Rc`, `RefCell` and `Cell` throughout, which are neither, so a lock around it
+    (`spin::Mutex`, which is `Sync` only for `Send` contents) does not make it so. Why no vetted
+    safe library does it: what would be needed is a lock that makes state that is not `Send`
+    shareable, which no sound library offers (`send_wrapper` checks the thread at run time and
+    panics, `fragile` likewise; neither lets a second thread in). What removing it costs: the
+    kernel's shared records made `Send` (`Rc` to `Arc`, `RefCell` and `Cell` to locks or
+    atomics: 552 mentions of `Rc`, `Weak`, `RefCell` and `Cell` in the crate, a count, not a
+    measure of work), with an atomic count on every clone and drop of a shared record (cost not
+    measured), which is the owner's parallel
+    design (each process's state behind its own lock) and so planned work; until then the
+    `unsafe impl`s say what the lock-plus-`Held` scheme guarantees.
+  - executing.rs `pub unsafe fn KernelConfig::new` and `pub unsafe fn KernelWithExecutor::start`
+    (and the `unsafe` block in `Kernel::new` that calls `start`). The use: their condition is
+    that each future the system's `async fn`s return may be polled and dropped on another host
+    thread. Why no vetted safe library does it: the condition is about the system interface's
+    anonymous future types, which only return-type notation (unstable Rust) can name in a bound;
+    `trait-variant` makes a `Send` variant of a trait, which would be the interface's change, not
+    a library the kernel can use on an interface it does not own. What removing it costs: a
+    `Send` bound on those futures in crates/system/interface.rs (the owner's file; then both
+    become safe at no run-time cost), or a trait of the kernel's own that every system implements
+    to return each future as `impl Future + Send` (one forwarding method per waiting call in
+    every system: the runtime, the test policy, the hardware embedders, the stand-in).
+  - The stand-in (an executor) now marks its two KC uses with `#[expect(unsafe_code, reason)]`:
+    standin.rs `unsafe impl Send for StandIn` and driver.rs's call of `KernelConfig::new`.
 
 - KC (first run; the second run's entry above replaces it): the system's `async fn`s carry no
   `Send` bound. Example: a browser system whose `send_request` future holds a JavaScript value
@@ -264,11 +356,11 @@ side of each is worked around without changing the interface.
   them must own its executor (this one's `KernelWithExecutor` does, KA, third run), and how a
   driver then runs threads on that executor is undefined (here, `parts` hands both out). Example: `ProcessController::suspend_tasks(&mut self, tasks)`
   must read each task's registers from the executor, which it is not given.
-- With the async ruling, answers come back as the results of the system's `async` calls, but three
-  things a system tells the kernel unasked still have no call: a FUSE notice (Linux's
-  `fuse_notify`, such as INVAL_INODE when a file changed on the backend), a terminal's new size,
-  and a new connection waiting on a listener that is not being waited on. Example: the test
-  backend's INVAL_INODE notice still reaches the kernel as the abi's `Event::BackendNotice`.
+- With the async ruling, answers come back as the results of the system's `async` calls, but
+  things a system tells the kernel unasked had no call: a FUSE notice (settled by
+  `FuseServer::receive_notice`, which the kernel waits on from KC's fourth run), a terminal's new
+  size (ruled out of the interface), and a new connection waiting on a listener that is not being
+  waited on.
 - `FuseServer` has only `send_request`, which returns a reply, but FUSE has messages with no
   reply (FORGET, BATCH_FORGET, NOTIFY_REPLY). The kernel keeps such a message's call until the
   system finishes it, so a system must finish it once sent (the test host does, with an empty
@@ -429,6 +521,12 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KC, fourth run: the abi's `Event` lost its `BackendNotice` variant and with it its lifetime, so
+  this track changed one line of the runtime track's crate to build (single-kernel net.rs,
+  `fn event(&mut self, arrival: &Arrival) -> Option<Event>`) and corrected that crate's
+  `receive_notice` comment (system.rs: its file server sends no notices), in a commit of their
+  own.
+
 - KC: should a guest's TCP `bind` bind at the system (networking-fixes/tcp/for-implementers.md),
   though the container has its own network namespace and its connects leave through the exit
   node's NAT? Example: a client that binds port 5000 and connects to a server outside would then
@@ -580,6 +678,14 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KC, fourth run: every finding of KC's third check is fixed or answered (see "KC, fourth run"):
+the kernel waits on the file server's notices through `receive_notice` and the test host keeps
+the reply rule, programs are told the kernel's parallelism as the processors online, the unsafe
+code of KC is reported in the ruling's form, and `Runner::run`'s reason is corrected. Next, in
+order: the kernel's fallbacks as `Kernel::Fallback` through `FallbackObserver`, and its hooks as
+`ProcessTracer` (both answered by the owner on 2026-11-22); the kernel's state made shareable
+between host threads; a run on the executor's single-instruction call as a slow path.
 
 KC, third run: the kernel builds again against the owner's runner interface (2b546ee0), and every
 finding of KC's second check is fixed or recorded (see "KC, third run"). The whole suite fails
