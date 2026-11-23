@@ -30,7 +30,7 @@ use crate::packed::Packed;
 use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse, refused};
-use crate::view::{IDENTITY, Images, View};
+use crate::view::{FETCHED_UNIT, IDENTITY, Images, View};
 use crate::{indices, outputs, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
@@ -111,8 +111,8 @@ pub(crate) struct Variant {
     points_in: u32,
     /// The tessellator a control program's evaluation program declares.
     tessellator: Option<Tessellator>,
-    /// The targets' samples, for a fragment program that reads where its samples are; zero
-    /// otherwise.
+    /// The targets' samples, for a fragment program that reads where its samples are or its
+    /// target's texels; zero otherwise.
     samples: u32,
 }
 
@@ -498,6 +498,9 @@ fn convert<B: Backend>(
     }
     if !variant.swizzles.is_empty() {
         nir.swizzle_textures(&variant.swizzles);
+    }
+    if shader.fetches_target {
+        nir.fetch_from_texture(FETCHED_UNIT, variant.samples > 1);
     }
     if !nir.interpolate_elsewhere(variant.samples) {
         return refused(format_args!(
@@ -1321,6 +1324,13 @@ pub(crate) fn binding_sets<B: Backend>(
         for b in built.bindings.iter().filter(|b| b.added.is_none()) {
             let resource = match b.kind {
                 SlotKind::Uniform => continue,
+                SlotKind::Texture if b.register == FETCHED_UNIT => {
+                    let (_, view) = made
+                        .fetched
+                        .as_ref()
+                        .ok_or("a fetched target without its copy")?;
+                    BindingResource::Texture(view)
+                }
                 SlotKind::Texture => {
                     let view = bound.views[b.register as usize];
                     if view.is_null() {
@@ -1750,7 +1760,7 @@ fn draw<B: Backend>(
             bound.blend_color,
         ),
         // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-        samples: if unsafe { &*fs }.reads_sample_positions {
+        samples: if unsafe { &*fs }.reads_sample_positions || unsafe { &*fs }.fetches_target {
             context.framebuffer.samples.max(1)
         } else {
             0
@@ -1977,6 +1987,10 @@ fn draw<B: Backend>(
         ),
     };
     let mut images = Images::default();
+    // SAFETY: as above.
+    if unsafe { &*fs }.fetches_target {
+        images.fetch_target(backend, &context.framebuffer.state.cbufs[0])?;
+    }
     let mut sets = binding_sets(
         backend,
         &context.stages,

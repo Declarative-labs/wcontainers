@@ -403,7 +403,14 @@ pub struct Images<B: Backend> {
     /// Samplers bound beside texel buffers, which programs load and never sample: Gallium binds
     /// none there, the converted program declares one.
     pub samplers: Vec<B::Sampler>,
+    /// A copy of the first target and its view, which a fragment program that fetches its
+    /// target's texels reads at [`FETCHED_UNIT`].
+    pub fetched: Option<(B::Texture, B::TextureView)>,
 }
+
+/// The texture unit a fragment program reads its first target's copy at: one Mesa never binds
+/// (its units are fewer than `PIPE_MAX_SAMPLERS`).
+pub const FETCHED_UNIT: u32 = PIPE_MAX_SHADER_SAMPLER_VIEWS - 1;
 
 impl<B: Backend> Default for Images<B> {
     fn default() -> Self {
@@ -413,6 +420,7 @@ impl<B: Backend> Default for Images<B> {
             texels: Vec::new(),
             buffers: Vec::new(),
             samplers: Vec::new(),
+            fetched: None,
         }
     }
 }
@@ -423,9 +431,80 @@ impl<B: Backend> Images<B> {
         &self.texels[index].buffer
     }
 
+    /// A copy of the texels of `surface`, the first target, for a fragment program that reads
+    /// them (framebuffer fetch, as OpenGL's advanced blending is made: its non-coherent form
+    /// leaves a texel drawn twice in one draw undefined, so one copy a draw is OpenGL's).
+    pub fn fetch_target(&mut self, backend: &mut B, surface: &pipe_surface) -> Result<(), String> {
+        if surface.texture.is_null() {
+            return refused(format_args!(
+                "a program fetching a target that is not bound"
+            ));
+        }
+        // SAFETY: a bound surface holds a live texture.
+        let resource = unsafe { Resource::<B>::of(surface.texture) };
+        let (source, desc) = resource.texture().ok_or("a target of a buffer")?;
+        let format = desc.format;
+        if crate::format::format(surface.format()) != Some(format) {
+            return refused(format_args!(
+                "a fetched target viewed in another format than its texture's (not built)"
+            ));
+        }
+        let side = |n: u32| (n >> surface.level).max(1);
+        let extent = Extent {
+            width: side(desc.width),
+            height: side(desc.height),
+            depth_or_layers: 1,
+        };
+        let texture = backend
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: desc.samples,
+                usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .map_err(|_| "a copy of a fetched target the device does not make")?;
+        let three_d = desc.dimension == TextureDimension::D3;
+        backend.slow_paths().hit(SlowPath::BlendInShader);
+        backend.copy_texture(
+            &corner::<B>(source, three_d, surface.level, 0, 0, surface.first_layer()),
+            &corner::<B>(&texture, false, 0, 0, 0, 0),
+            extent,
+        );
+        let view = backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        );
+        let Ok(view) = view else {
+            backend.destroy(Object::Texture(texture));
+            return refused(format_args!(
+                "a view of a fetched target the device does not make"
+            ));
+        };
+        self.fetched = Some((texture, view));
+        Ok(())
+    }
+
     /// Copies each twin and buffer of texels the program wrote back into its texture, then
     /// destroys what was made.
     pub fn finish(self, backend: &mut B) {
+        if let Some((texture, view)) = self.fetched {
+            backend.destroy(Object::TextureView(view));
+            backend.destroy(Object::Texture(texture));
+        }
         for t in self.texels {
             if t.writable {
                 backend.copy_buffer_to_texture(

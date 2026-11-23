@@ -235,6 +235,15 @@ bool wc_nir_reads_sample_positions(struct nir_shader *nir);
  * that count's positions are needed and not known (one and four are). */
 bool wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples);
 
+/* Whether a fragment program reads its first target's texels (framebuffer fetch, which Mesa's
+ * lowering of KHR_blend_equation_advanced writes). */
+bool wc_nir_fetches_target(struct nir_shader *nir);
+
+/* A fragment program's reads of its first target's texels made loads of the texture at `unit`,
+ * a copy of the target the driver binds there (multisampled where the target is, each sample
+ * reading its own). */
+void wc_nir_fetch_from_texture(struct nir_shader *nir, unsigned unit, bool multisampled);
+
 /* What one component of a texture's result is made of: one of its components, zero or one. */
 enum wc_swizzle {
    WC_SWIZZLE_X,

@@ -359,6 +359,8 @@ pub struct Shader {
     pub streamed: Result<Option<StreamOutput>, &'static str>,
     /// A fragment program that reads where its samples are, converted for the targets' count.
     pub reads_sample_positions: bool,
+    /// A fragment program that reads its first target's texels, from a copy of it each draw.
+    pub fetches_target: bool,
 }
 
 fn factor(f: pipe_blendfactor) -> BlendFactor {
@@ -1011,11 +1013,13 @@ fn create_shader(
         };
     }
     let reads_sample_positions = nir.reads_sample_positions();
+    let fetches_target = nir.fetches_target();
     object(Shader {
         stage,
         nir,
         streamed,
         reads_sample_positions,
+        fetches_target,
     })
 }
 

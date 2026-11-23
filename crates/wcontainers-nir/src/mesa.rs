@@ -209,6 +209,8 @@ unsafe extern "C" {
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
     fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
+    fn wc_nir_fetches_target(nir: *mut NirShader) -> bool;
+    fn wc_nir_fetch_from_texture(nir: *mut NirShader, unit: u32, multisampled: bool);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
     fn wc_nir_nearest_integer_textures(
         nir: *mut NirShader,
@@ -466,6 +468,20 @@ impl Nir {
     pub fn interpolate_elsewhere(&mut self, samples: u32) -> bool {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_interpolate_elsewhere(self.0, samples) }
+    }
+
+    /// Whether a fragment program reads its first target's texels (framebuffer fetch, which
+    /// Mesa's lowering of `KHR_blend_equation_advanced` writes).
+    pub fn fetches_target(&mut self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fetches_target(self.0) }
+    }
+
+    /// A fragment program's reads of its first target's texels made loads of the texture at
+    /// `unit`, a copy of the target the driver binds there, multisampled where the target is.
+    pub fn fetch_from_texture(&mut self, unit: u32, multisampled: bool) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fetch_from_texture(self.0, unit, multisampled) }
     }
 
     /// A vertex, geometry or tessellation evaluation program's position changed by `transform`.

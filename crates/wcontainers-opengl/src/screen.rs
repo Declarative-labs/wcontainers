@@ -215,6 +215,10 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // and the NIR route takes inputs at an offset or a sample and the sample positions from the
     // values the host interpolates (`interpolate_elsewhere`).
     caps.sample_shading = ours.has(Features::SAMPLE_SHADING);
+    // The first target's texels read in fragment programs, from a copy of it each draw bound at
+    // `FETCHED_UNIT` (multisampled where the target is), as st/mesa makes advanced blending:
+    // `KHR_blend_equation_advanced`, not its coherent form.
+    caps.fbfetch = c_uint::from(ours.has(Features::MULTISAMPLE_READ));
     caps.max_texture_gather_components = naga::VectorSize::Quad as c_uint;
     caps.framebuffer_no_attachment = true;
     caps.npot_textures = true;

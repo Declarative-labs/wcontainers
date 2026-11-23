@@ -755,6 +755,54 @@ wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples)
    return !e.refused;
 }
 
+static bool
+fetches(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   return intr->intrinsic == nir_intrinsic_load_output &&
+          nir_intrinsic_io_semantics(intr).fb_fetch_output;
+}
+
+bool
+wc_nir_fetches_target(struct nir_shader *nir)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return false;
+   wc_nir_lower_io(nir);
+   return nir_shader_intrinsics_pass(nir, fetches, nir_metadata_all, NULL);
+}
+
+/* The texture a fragment program reads its target's texels from. */
+static bool
+fetch_from_texture(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (!fetches(b, intr, NULL) || nir_intrinsic_io_semantics(intr).location != FRAG_RESULT_DATA0)
+      return false;
+   nir_variable *fetched = data;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *at = nir_f2i32(b, nir_trim_vector(b, nir_load_frag_coord(b), 2));
+   nir_deref_instr *deref = nir_build_deref_var(b, fetched);
+   nir_def *texel = glsl_get_sampler_dim(fetched->type) == GLSL_SAMPLER_DIM_MS
+                       ? nir_txf_ms(b, at, nir_load_sample_id(b), .texture_deref = deref)
+                       : nir_txf(b, at, .texture_deref = deref);
+   const unsigned first = nir_intrinsic_component(intr);
+   nir_def_replace(&intr->def,
+                   nir_channels(b, texel, BITFIELD_RANGE(first, intr->def.num_components)));
+   return true;
+}
+
+void
+wc_nir_fetch_from_texture(struct nir_shader *nir, unsigned unit, bool multisampled)
+{
+   if (!wc_nir_fetches_target(nir))
+      return;
+   const struct glsl_type *type = glsl_texture_type(
+      multisampled ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D, false, GLSL_TYPE_FLOAT);
+   nir_variable *fetched = nir_variable_create(nir, nir_var_uniform, type, "fetched_target");
+   fetched->data.binding = unit;
+   nir_shader_intrinsics_pass(nir, fetch_from_texture, nir_metadata_control_flow, fetched);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+}
+
 /* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
 static bool
 texture_unit(nir_tex_instr *tex, uint32_t *unit)
