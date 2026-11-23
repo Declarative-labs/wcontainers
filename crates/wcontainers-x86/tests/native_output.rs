@@ -503,3 +503,24 @@ fn fldcw_is_checked_without_flags() {
         }
     }
 }
+
+/// A `jcc` exit records its condition by the low four bits of its opcode, for the `int3` hit of a link.
+#[test]
+fn a_jcc_exit_records_its_condition() {
+    for (hex, condition) in [("75 10", 5), ("0f 8c 00 01 00 00", 0xc), ("70 10", 0)] {
+        let piece = translate(&bytes(hex), AT, Way::Process, false).expect("a piece");
+        let exit = piece
+            .exits
+            .iter()
+            .find(|e| e.retarget.is_some())
+            .expect("the jcc's exit");
+        assert_eq!(exit.condition, Some(condition), "{hex}");
+        assert!(
+            piece
+                .exits
+                .iter()
+                .filter(|e| e.retarget.is_none())
+                .all(|e| e.condition.is_none())
+        );
+    }
+}

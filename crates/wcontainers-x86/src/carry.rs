@@ -2,8 +2,8 @@
 //! encoder (docs/x86-native-output.md sections 3 and 4), for the machine and a host process.
 
 use iced_x86::{
-    Code, Encoder, Instruction as Iced, InstructionInfoFactory, MemoryOperand, Mnemonic, OpKind,
-    Register,
+    Code, ConditionCode, Encoder, Instruction as Iced, InstructionInfoFactory, MemoryOperand,
+    Mnemonic, OpKind, Register,
 };
 use wcontainers_guest_cpu::position::{AddressPlace, DirectExit, Fixup, Held, Holds, Resume};
 use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, Route};
@@ -765,7 +765,10 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
             let linkable = code.lead_after_commit() == 0;
             code.commit(&bytes, Resume::At(next));
             if linkable {
-                code.branch_exit(at, target, u32::try_from(length - REL32).expect("small"));
+                // iced numbers the conditions from 1 in the order of a `jcc`'s low four bits.
+                let condition = ins.condition_code() as u8 - ConditionCode::o as u8;
+                let field = u32::try_from(length - REL32).expect("small");
+                code.branch_exit(at, target, field, Some(condition));
             }
             let after = code.snapshot();
             code.defer(move |code: &mut HostCode| {
