@@ -175,11 +175,14 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     };
     let m = &converted.modules[0];
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-    // A vertex shader writing cull distances or storage reaches WebGPU through the stage helper: the
-    // WGSL written is its compute form's, converted with every input pulled.
+    // A vertex shader writing cull distances or storage, and a domain shader writing cull distances,
+    // reach WebGPU through the stage helper: the WGSL written is the compute form's, converted with
+    // every input pulled.
     let drawn = |converted: &Converted| -> Result<ShaderModule, String> {
         let (route, programs): (_, fn(&Converted) -> _) = if stage::writes_storage(converted) {
             (" (storage route)", stage::stored_programs)
+        } else if writes_cull_distances(converted) && is_domain(converted) {
+            (" (domain cull route)", stage::domain_cull_programs)
         } else if writes_cull_distances(converted) {
             (" (cull route)", stage::cull_programs)
         } else {
@@ -589,6 +592,13 @@ fn writes_cull_distances(converted: &Converted) -> bool {
             .outputs
             .iter()
             .any(|v| v.system == Some(SystemValue::CullDistance))
+}
+
+fn is_domain(converted: &Converted) -> bool {
+    matches!(
+        converted.reflection.extras,
+        wcontainers_gpu::StageExtras::Domain { .. }
+    )
 }
 
 /// Every vertex input pulled, in the format its reflection gives.

@@ -144,7 +144,9 @@ for %%m in (integer pow2 odd even) do for %%o in (point line) do (
   "%DXC%" -nologo -T hs_6_0 -E hs_line_%%m_%%o -Gis -Fo hs_line_%%m_%%o.dxil tessellation.hlsl || exit /b 1
 )
 "%FXC%" /nologo /T hs_5_0 /E hs_tri_none /Fo hs_tri_none.dxbc hull_none.hlsl || exit /b 1
-for %%e in (ds_tri ds_quad ds_line ds_tri_none) do (
+"%FXC%" /nologo /T ps_5_0 /E ps_cull /Fo ps_cull.dxbc tessellation.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_cull -Gis -Fo ps_cull.dxil tessellation.hlsl || exit /b 1
+for %%e in (ds_tri ds_quad ds_line ds_tri_none ds_tri_cull ds_quad_cull ds_line_cull) do (
   "%FXC%" /nologo /T ds_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
   "%DXC%" -nologo -T ds_6_0 -E %%e -Gis -Fo %%e.dxil tessellation.hlsl || exit /b 1
 )

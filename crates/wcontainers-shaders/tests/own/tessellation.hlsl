@@ -174,3 +174,43 @@ void gs_tess_tri(triangle Streamed p[3], inout TriangleStream<Streamed> stream) 
     stream.Append(midpoint(p[1], p[2]));
     stream.Append(midpoint(p[2], p[0]));
 }
+
+// Domain shaders writing cull distances, drawn: patch p fills cell (p % 4, p / 4) of a 4 by 2 grid,
+// coloured by its domain location. A primitive is dropped where all its points lie left of the line
+// u = (1 + p % 4) / 8, or all past v = 5 / 8; the thresholds and the grid's scale are exact in binary,
+// so each distance's sign is too.
+struct Culled {
+    float4 position : SV_Position;
+    float4 color : COLOR;
+    float2 cull : SV_CullDistance;
+};
+
+Culled culled(float3 l, uint p) {
+    Culled s;
+    s.position = float4((l.x + p % 4) * 0.5 - 1.0, l.y + p / 4 % 2 - 1.0, 0.5, 1.0);
+    s.color = float4(l, 1.0);
+    s.cull = float2(l.x - (1 + p % 4) * 0.125, 0.625 - l.y);
+    return s;
+}
+
+[domain("tri")]
+Culled ds_tri_cull(TriFactors f, float3 uvw : SV_DomainLocation, uint p : SV_PrimitiveID,
+                   const OutputPatch<ControlPoint, 1> c) {
+    return culled(uvw, p);
+}
+
+[domain("quad")]
+Culled ds_quad_cull(QuadFactors f, float2 uv : SV_DomainLocation, uint p : SV_PrimitiveID,
+                    const OutputPatch<ControlPoint, 1> c) {
+    return culled(float3(uv, 0.0), p);
+}
+
+[domain("isoline")]
+Culled ds_line_cull(LineFactors f, float2 uv : SV_DomainLocation, uint p : SV_PrimitiveID,
+                    const OutputPatch<ControlPoint, 1> c) {
+    return culled(float3(uv, 0.0), p);
+}
+
+float4 ps_cull(float4 position : SV_Position, float4 color : COLOR) : SV_Target {
+    return color;
+}

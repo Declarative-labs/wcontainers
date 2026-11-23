@@ -181,6 +181,59 @@ fn geometry_shaders_write_cull_distances() {
     wgsl(&wcontainers_shaders::stage::geometry_cull_program().unwrap());
 }
 
+/// Domain shaders writing cull distances (tessellation.hlsl's, every domain, both builds) convert with
+/// their two cull distances reflected; the cull route's programs of them are a compute form writing
+/// the distances' slots after the position and colour, and a pass-through drawing the first two
+/// slots; the cull program is valid WGSL.
+#[test]
+fn domain_shaders_write_cull_distances() {
+    for name in ["ds_tri_cull", "ds_quad_cull", "ds_line_cull"] {
+        for ext in ["dxbc", "dxil"] {
+            let bytes = own(&format!("{name}.{ext}"));
+            let source = match ext {
+                "dxbc" => Source::Dxbc(&bytes),
+                _ => Source::Dxil(&bytes),
+            };
+            let c = convert(source, &VariantKey::default(), None)
+                .unwrap_or_else(|e| panic!("{name}.{ext}: {e}"));
+            assert!(
+                matches!(c.reflection.extras, StageExtras::Domain { .. }),
+                "{name}.{ext}: {:?}",
+                c.reflection.extras
+            );
+            let culled: u32 = c
+                .reflection
+                .outputs
+                .iter()
+                .filter(|v| v.system == Some(SystemValue::CullDistance))
+                .map(|v| v.mask.count_ones())
+                .sum();
+            assert_eq!(culled, 2, "{name}.{ext}");
+            assert!(stage::writes_cull_distances(&c), "{name}.{ext}");
+            let programs = stage::domain_cull_programs(&c).unwrap();
+            assert_eq!(
+                (
+                    programs.locations.len(),
+                    programs.clip_distances,
+                    programs.cull_distances
+                ),
+                (1, 0, 2),
+                "{name}.{ext}"
+            );
+            wgsl(&programs.compute);
+            wgsl(&programs.passthrough);
+        }
+    }
+    let plain = convert(
+        Source::Dxbc(&own("ds_tri.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!stage::writes_cull_distances(&plain));
+    wgsl(&stage::cull_program().unwrap());
+}
+
 /// The replay form (`GEOMETRY_REPLAY`, for back ends without compute) is a vertex program writing a
 /// record a slot per location, the same records the compute form writes, which the same pass-through
 /// draws; WebGL 2's back end writes it and the vertex program it captures.

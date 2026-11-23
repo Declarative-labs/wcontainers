@@ -1305,9 +1305,13 @@ impl<'a> Lowering<'a> {
                 false,
                 builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX | builtin::PRIMITIVE_ID,
             ) => true,
-            // Drawn through the stage helper ([`crate::stage::Stages::culled`], and its geometry
-            // stage's cull program).
-            (SourceStage::Vertex | SourceStage::Geometry, false, builtin::CULL_DISTANCE) => true,
+            // Drawn through the stage helper ([`crate::stage::Stages::culled`], its geometry stage's
+            // cull program, and its domain stage's).
+            (
+                SourceStage::Vertex | SourceStage::Domain | SourceStage::Geometry,
+                false,
+                builtin::CULL_DISTANCE,
+            ) => true,
             // Read from the linked values the vertex program passes them in.
             (SourceStage::Pixel, true, builtin::CLIP_DISTANCE) => {
                 self.variant

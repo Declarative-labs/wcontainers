@@ -203,6 +203,12 @@ pub(crate) fn domain_program_for(
     inputs: &[u32],
 ) -> Result<wcontainers_gpu::ShaderModule> {
     let source = &domain.modules[0];
+    compute_form(source, &domain_module(source), inputs, DOMAIN_RECORDS)
+}
+
+/// The module of a domain program (converted) reading the patches and points from the helper's own
+/// set.
+fn domain_module(source: &wcontainers_gpu::ShaderModule) -> Module {
     let mut module = source.module.clone();
     for (_, g) in module.global_variables.iter_mut() {
         let Some(rb) = &mut g.binding else { continue };
@@ -215,7 +221,26 @@ pub(crate) fn domain_program_for(
             _ => {}
         }
     }
-    compute_form(source, &module, inputs, DOMAIN_RECORDS)
+    module
+}
+
+/// Whether `domain` (converted) writes cull distances. Without a geometry stage after it, the stage
+/// helper then runs it as compute and drops the tessellator's primitives they drop
+/// ([`Stages::tessellated_with`], [`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]).
+pub fn writes_cull_distances(domain: &crate::Converted) -> bool {
+    cull_distances(&domain.reflection) != 0
+}
+
+/// The programs of a domain program (converted) writing cull distances, as [`cull_programs`] makes a
+/// vertex program's: its compute form writing a record per tessellator point (point `i` is record
+/// `i`), reading the patches and points as [`domain_program_for`]'s does, and the pass-through.
+pub fn domain_cull_programs(domain: &crate::Converted) -> Result<CullPrograms> {
+    let source = &domain.modules[0];
+    let programs = record_programs_of(source, &domain_module(source), DOMAIN_CULL_RECORDS)?;
+    if programs.cull_distances == 0 {
+        return Err(ConvertError::Malformed(NO_CULL_DISTANCES.into()));
+    }
+    Ok(programs)
 }
 
 fn compute_form(
@@ -515,8 +540,10 @@ pub fn strip_program() -> Result<wcontainers_gpu::ShaderModule> {
 const CULL_PROGRAM: &str = r#"// Cull distances (Direct3D drops a primitive when all its vertices are below zero on one of them): one
 // invocation per API primitive writes its vertices' record numbers into the index list, in the API's
 // order, or the empty record's number for each when the primitive is dropped. Triangles of a strip
-// are listed with their first vertex leading and their winding kept. Invocation 0 also writes the
-// empty record: a position outside every clip volume and zeros.
+// are listed with their first vertex leading and their winding kept. After a tessellation stage the
+// primitives are those `list` lists (the tessellator's: its index total, then from word LIST_HEADER
+// record numbers), and the places past them hold the empty record. Invocation 0 also writes the empty
+// record: a position outside every clip volume and zeros.
 
 struct Values {
     // API primitives times API instances.
@@ -538,14 +565,17 @@ struct Values {
     index_base: u32,
     // The empty record's number.
     empty: u32,
-    pad0: u32,
-    pad1: u32,
+    // 1 when the primitives are those `list` lists.
+    listed: u32,
+    pad: u32,
 }
 
 // The records, then the index list.
 @group(1) @binding(0) var<uniform> values: Values;
 @group(1) @binding(1) var<storage, read_write> data: array<u32>;
+@group(1) @binding(2) var<storage, read> list: array<u32>;
 
+const LIST_HEADER: u32 = 4u;
 const MOST_VERTICES: u32 = 3u;
 // The position's w, which no clip volume holds.
 const OUTSIDE_W: f32 = -1.0;
@@ -582,6 +612,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         records[k] = instance * values.count + v;
     }
     var dropped = false;
+    if values.listed != 0u {
+        dropped = unit >= list[0] / n;
+        for (var k = 0u; k < n && !dropped; k++) {
+            records[k] = list[LIST_HEADER + unit * n + k];
+        }
+    }
     for (var d = 0u; d < values.cull_count; d++) {
         var below = true;
         for (var k = 0u; k < n; k++) {
@@ -700,8 +736,9 @@ const NOT_A_VERTEX_PROGRAM: &str = "not a vertex program";
 const VERTEX_WITHOUT_OUTPUTS: &str = "a vertex program without outputs";
 const UNBOUND_OUTPUT: &str = "an unbound output";
 const VERTEX_OUTPUTS: &str = "vertex outputs";
-/// What [`CullPrograms::compute`] is, in its key.
+/// What [`CullPrograms::compute`] is, in its key: of a vertex program, and of a domain program.
 const CULL_RECORDS: &[u8] = b"cull records";
+const DOMAIN_CULL_RECORDS: &[u8] = b"domain cull records";
 /// What [`CullPrograms::passthrough`] is, in its key.
 const CULL_PASSTHROUGH: &[u8] = b"cull pass-through";
 const VERTEX_OUTPUT_SHAPE: &str = "VertexOutputShape";
@@ -746,12 +783,22 @@ pub fn stored_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
 /// records, and the pass-through drawing them.
 fn record_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
     let source = &vertex.modules[0];
+    record_programs_of(source, &source.module, CULL_RECORDS)
+}
+
+/// The cull route's programs of `source` as `module` (its bindings as the compute form reads them),
+/// its compute form keyed by `what`.
+fn record_programs_of(
+    source: &wcontainers_gpu::ShaderModule,
+    module: &Module,
+    what: &[u8],
+) -> Result<CullPrograms> {
     let drawn = drawn_outputs(source)?;
     let compute = compute_module(
         source,
-        vertex_as_compute(&source.module, &drawn.locations, true)?,
+        vertex_as_compute(module, &drawn.locations, true)?,
         &drawn.locations,
-        CULL_RECORDS,
+        what,
     )?;
     let slots = drawn.passthrough_values();
     let passthrough = passthrough_of(&slots, false, drawn.clip, None, None)?;
