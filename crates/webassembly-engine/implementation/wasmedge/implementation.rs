@@ -1,5 +1,7 @@
 //! The WebAssembly engine interface run by WasmEdge, every module compiled ahead of time by its LLVM compiler.
 
+#![cfg(feature = "wasmedge")]
+
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use std::rc::Rc;
@@ -161,6 +163,20 @@ fn unique_name() -> String {
     ]
     .concat()
 }
+
+/// Which engine value of the process made an address, so that another engine value refuses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Identity(u64);
+
+impl Identity {
+    fn new() -> Self {
+        static MADE: AtomicU64 = AtomicU64::new(0);
+        Self(MADE.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// What an engine value does with an address another engine value made.
+const FOREIGN_ADDRESS: &str = "an address is used only by the engine value that made it";
 
 /// The module and item name under which a helper imports what it reaches.
 const HELPED: &str = "helped";
@@ -874,6 +890,7 @@ struct Graveyard(RefCell<Vec<Owner>>);
 
 /// One thread's WasmEdge executor and the instances it made, with the host context.
 pub struct WasmEdgeEngine<HostContext: 'static> {
+    identity: Identity,
     config: Config,
     /// Borrowed at run time only by the methods the interface gives `&self` that call into a helper.
     executor: RefCell<Executor>,
@@ -903,9 +920,10 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
     }
 }
 
-/// An instance's export, by its owner and its name.
+/// An instance's export, by the engine value that holds its owner, the owner and its name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Export {
+    engine: Identity,
     owner: usize,
     name: Rc<str>,
 }
@@ -913,6 +931,7 @@ struct Export {
 /// A function: WasmEdge's reference to it, where it is exported when that is known, and what keeps it alive.
 #[derive(Clone)]
 pub struct FunctionAddress {
+    engine: Identity,
     reference: WasmValue,
     /// Where the function is exported, for a reference the bindings made, which carries only `funcref`. Missing for
     /// a reference read from a table or a global, which carries the function's own type.
@@ -1050,12 +1069,17 @@ impl Slot {
     }
 }
 
-/// The bindings give no access to tags, so no address of one exists.
-#[derive(Clone, Copy, Debug)]
-pub enum TagAddress {}
+/// A tag, by where it is exported.
+#[derive(Clone)]
+pub struct TagAddress {
+    export: Export,
+}
 
 /// An instance of a module, made by one engine value.
-pub struct Instance(usize);
+pub struct Instance {
+    engine: Identity,
+    owner: usize,
+}
 
 /// A shared memory and what owns it, which any engine value can add.
 #[derive(Clone)]
@@ -1080,6 +1104,13 @@ pub enum CompileError {
 pub enum InstantiateError {
     #[error("no address was given for the import {module_name}.{item_name}")]
     MissingImport {
+        module_name: String,
+        item_name: String,
+    },
+    #[error(
+        "the address given for the import {module_name}.{item_name} was made by another engine value"
+    )]
+    ForeignAddress {
         module_name: String,
         item_name: String,
     },
@@ -1180,6 +1211,30 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         self.owners.len() - 1
     }
 
+    /// The owner's export under the name.
+    fn export(&self, owner: usize, name: Rc<str>) -> Export {
+        Export {
+            engine: self.identity,
+            owner,
+            name,
+        }
+    }
+
+    /// Panics on an address another engine value made: its owner index means nothing here.
+    fn check(&self, engine: Identity) {
+        assert!(engine == self.identity, "{FOREIGN_ADDRESS}");
+    }
+
+    fn owner(&self, export: &Export) -> &Owner {
+        self.check(export.engine);
+        &self.owners[export.owner]
+    }
+
+    fn owner_mut(&mut self, export: &Export) -> &mut Owner {
+        self.check(export.engine);
+        &mut self.owners[export.owner]
+    }
+
     fn description(&self, owner: usize) -> Option<Arc<Description>> {
         match &self.owners[owner] {
             Owner::Instance(_, description) => Some(Arc::clone(description)),
@@ -1190,6 +1245,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
 
     fn function_address(&self, reference: WasmValue, origin: Option<Export>) -> FunctionAddress {
         FunctionAddress {
+            engine: self.identity,
             reference,
             origin,
             retyped: Cell::default(),
@@ -1207,6 +1263,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
 
     /// Finds where a function is exported, among every instance of this engine value.
     fn origin(&self, function: &FunctionAddress) -> Option<Export> {
+        self.check(function.engine);
         if let Some(origin) = &function.origin {
             return Some(origin.clone());
         }
@@ -1219,10 +1276,8 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             let instance = found.as_instance();
             instance.func_names()?.into_iter().find_map(|name| {
                 let exported = instance.get_func(&name).ok()?;
-                (WasmValue::from_func_ref(&*exported).as_raw().Value == wanted).then(|| Export {
-                    owner,
-                    name: name.into(),
-                })
+                (WasmValue::from_func_ref(&*exported).as_raw().Value == wanted)
+                    .then(|| self.export(owner, name.into()))
             })
         })
     }
@@ -1234,6 +1289,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         let mut registered = Vec::new();
         let mut forwarders: Vec<(&str, Vec<Forwarded<'_>>)> = Vec::new();
         for link in links {
+            self.check(link.export.engine);
             let owner = link.export.owner;
             if !registered.contains(&owner) {
                 self.executor
@@ -1332,7 +1388,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         export: Export,
         memory_type: wasm_encoder::MemoryType,
     ) -> Option<MemoryAddress> {
-        let alone = !matches!(self.owners[export.owner], Owner::Shared(_));
+        let alone = !matches!(self.owner(&export), Owner::Shared(_));
         let direct_reads = !memory_type.shared;
         let direct_writes = direct_reads && alone;
         let copier = if direct_writes && !memory_type.memory64 {
@@ -1393,7 +1449,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
     ) -> Option<GlobalAddress> {
         let slot = Slot::of(global_type.val_type, description);
         let typed = matches!(global_type.val_type, wasm_encoder::ValType::Ref(reference) if reference != wasm_encoder::RefType::FUNCREF);
-        let shared_owner = matches!(self.owners[export.owner], Owner::Shared(_));
+        let shared_owner = matches!(self.owner(&export), Owner::Shared(_));
         let setter = if global_type.mutable && slot != Slot::Other && (shared_owner || typed) {
             let reference = match global_type.val_type {
                 wasm_encoder::ValType::Ref(reference) => Some(reference),
@@ -1422,6 +1478,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
     /// function from where it is exported, with the type its module declares, or for a host function the type its
     /// values have.
     fn typed_reference(&mut self, function: &FunctionAddress) -> WasmValue {
+        self.check(function.engine);
         let Some(origin) = &function.origin else {
             return function.reference;
         };
@@ -1497,10 +1554,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         Self::call_helper(self.executor.get_mut(), set, [function.reference])
             .map_err(|_| InstantiateError::FunctionTypeMismatch)?;
         self.slow_paths.took(SlowPath::FunctionPassedOn);
-        Ok(Export {
-            owner,
-            name: PASS_ON.into(),
-        })
+        Ok(self.export(owner, PASS_ON.into()))
     }
 
     /// The retyper module for the function exported there.
@@ -1553,13 +1607,8 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
                 .expect("the host function's module holds it"),
         );
         let owner = self.add_owner(Owner::Function(Box::new(module)));
-        self.function_address(
-            reference,
-            Some(Export {
-                owner,
-                name: HOST_FUNCTION.into(),
-            }),
-        )
+        let origin = self.export(owner, HOST_FUNCTION.into());
+        self.function_address(reference, Some(origin))
     }
 
     /// Calls a function with the values and returns what it returns.
@@ -1599,6 +1648,7 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
         ))?
         .get_data(0)?;
         Ok(Self {
+            identity: Identity::new(),
             config,
             executor: RefCell::new(executor),
             context: Some(host_context),
@@ -1631,6 +1681,19 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
                     module_name: module_name.clone(),
                     item_name: item_name.clone(),
                 })?;
+            let engine = match &given.address {
+                ExternalAddress::Function(function) => function.engine,
+                ExternalAddress::Memory(memory) => memory.export.engine,
+                ExternalAddress::Table(table) => table.export.engine,
+                ExternalAddress::Global(global) => global.export.engine,
+                ExternalAddress::Tag(tag) => tag.export.engine,
+            };
+            if engine != self.identity {
+                return Err(InstantiateError::ForeignAddress {
+                    module_name: module_name.clone(),
+                    item_name: item_name.clone(),
+                });
+            }
             let export = match &given.address {
                 ExternalAddress::Function(function) => match self.origin(function) {
                     Some(export) => export,
@@ -1639,7 +1702,7 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
                 ExternalAddress::Memory(memory) => memory.export.clone(),
                 ExternalAddress::Table(table) => table.export.clone(),
                 ExternalAddress::Global(global) => global.export.clone(),
-                ExternalAddress::Tag(tag) => match *tag {},
+                ExternalAddress::Tag(tag) => tag.export.clone(),
             };
             links.push(Link {
                 module_name,
@@ -1650,16 +1713,18 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
         if !links.is_empty() {
             self.slow_paths.took(SlowPath::ImportsForwarded);
         }
-        self.link(module, &links).map(Instance)
+        let owner = self.link(module, &links)?;
+        Ok(Instance {
+            engine: self.identity,
+            owner,
+        })
     }
 
     fn find_export(&mut self, instance: &Instance, name: &str) -> Option<ExternalAddress<Self>> {
-        let owner = instance.0;
-        let export = Export {
-            owner,
-            name: name.into(),
-        };
-        if let Ok(function) = self.owners[owner].as_instance().get_func(name) {
+        self.check(instance.engine);
+        let owner = instance.owner;
+        let export = self.export(owner, name.into());
+        if let Ok(function) = self.owner(&export).as_instance().get_func(name) {
             let reference = WasmValue::from_func_ref(&*function);
             return Some(ExternalAddress::Function(
                 self.function_address(reference, Some(export)),
@@ -1676,7 +1741,8 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
             EntityType::Global(global_type) => self
                 .global_address(export, global_type, &description)
                 .map(ExternalAddress::Global),
-            EntityType::Function(_) | EntityType::FunctionExact(_) | EntityType::Tag(_) => None,
+            EntityType::Tag(_) => Some(ExternalAddress::Tag(TagAddress { export })),
+            EntityType::Function(_) | EntityType::FunctionExact(_) => None,
         }
     }
 
@@ -1802,6 +1868,7 @@ macro_rules! bind_function_type {
                 &mut self,
                 address: FunctionAddress,
             ) -> Result<Self::Function, BindFunctionError> {
+                self.check(address.engine);
                 let function_type = address
                     .reference
                     .func_ref()
@@ -1865,6 +1932,7 @@ macro_rules! bind_function_type {
                 engine: &mut WasmEdgeEngine<HostContext>,
                 parameters: ($($parameter,)*),
             ) -> Result<result_type!($shape $($result)*), InvokeError<Error>> {
+                engine.check(self.address.engine);
                 let function = self.address.reference;
                 let ($($argument,)*) = parameters;
                 let returned = engine
@@ -1943,10 +2011,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
             page_size_log2: None,
         };
         let owner = self.define(EntityType::Memory(declared))?;
-        let export = Export {
-            owner,
-            name: DEFINED_MEMORY.into(),
-        };
+        let export = self.export(owner, DEFINED_MEMORY.into());
         self.memory_address(export, declared)
             .ok_or(AllocateError::HelperRefused)
     }
@@ -1958,10 +2023,11 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
 
     fn grow_memory(&mut self, memory: &MemoryAddress, pages: u64) -> Result<(), GrowMemoryError> {
         let export = &memory.export;
+        self.check(export.engine);
         if memory.direct_writes {
             let pages = u32::try_from(pages).map_err(|_| GrowMemoryError)?;
             return writable!(
-                &mut self.owners[export.owner],
+                self.owner_mut(export),
                 instance => instance.get_memory_mut(&*export.name).ok().map(|mut memory| memory.grow(pages)),
                 None
             )
@@ -1992,7 +2058,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         let export = &memory.export;
         if memory.direct_reads && within_reach(offset, into.len()) {
             return readable!(
-                &self.owners[export.owner],
+                self.owner(export),
                 instance => instance.get_memory_ref(&*export.name).ok().map(|memory| read_unshared(&memory, offset, into)),
                 None
             )
@@ -2040,7 +2106,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         let export = &memory.export;
         if memory.direct_writes && within_reach(offset, bytes.len()) {
             return writable!(
-                &mut self.owners[export.owner],
+                self.owner_mut(export),
                 instance => instance.get_memory_mut(&*export.name).ok().map(|mut memory| write_unshared(&mut memory, offset, bytes)),
                 None
             )
@@ -2083,7 +2149,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         if memory.direct_reads {
             return None;
         }
-        match &self.owners[memory.export.owner] {
+        match self.owner(&memory.export) {
             Owner::Shared(owner) => Some(SharedMemory {
                 owner: Arc::clone(owner),
                 name: Arc::from(&*memory.export.name),
@@ -2102,10 +2168,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         else {
             panic!("a shared memory is a memory its owner exports");
         };
-        let export = Export {
-            owner,
-            name: Rc::from(&*memory.name),
-        };
+        let export = self.export(owner, Rc::from(&*memory.name));
         self.memory_address(export, memory_type)
             .expect("WasmEdge links a copier to any shared memory")
     }
@@ -2115,7 +2178,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
     /// The pages the memory holds.
     fn pages(&self, export: &Export) -> Option<u64> {
         readable!(
-            &self.owners[export.owner],
+            self.owner(export),
             instance => instance.get_memory_ref(&*export.name).ok().map(|memory| u64::from(memory.size())),
             None
         )
@@ -2154,10 +2217,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
             shared: false,
         };
         let owner = self.define(EntityType::Table(declared))?;
-        let export = Export {
-            owner,
-            name: DEFINED_TABLE.into(),
-        };
+        let export = self.export(owner, DEFINED_TABLE.into());
         self.table_address(export, declared, &Description::default())
             .ok_or(AllocateError::HelperRefused)
     }
@@ -2165,7 +2225,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
     fn count_table_elements(&self, table: &TableAddress) -> u64 {
         let export = &table.export;
         readable!(
-            &self.owners[export.owner],
+            self.owner(export),
             instance => instance.get_table(&*export.name).ok().map(|table| u64::try_from(table.capacity()).unwrap_or(u64::MAX)),
             None
         )
@@ -2173,6 +2233,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
     }
 
     fn grow_table(&mut self, table: &TableAddress, elements: u64) -> Result<(), GrowTableError> {
+        self.check(table.export.engine);
         let writer = table.writer.ok_or(GrowTableError)?;
         let grow = writer.grow.ok_or(GrowTableError)?;
         self.slow_paths.took(SlowPath::TableWrittenByModule);
@@ -2204,7 +2265,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
     ) -> Result<Option<FunctionAddress>, ReadTableError> {
         let export = &table.export;
         let element = readable!(
-            &self.owners[export.owner],
+            self.owner(export),
             instance => instance.get_table(&*export.name).ok().map(|table| {
                 let index = u32::try_from(index).ok().filter(|index| usize::try_from(*index).is_ok_and(|index| index < table.capacity()));
                 index.map(|index| table.get_data(index))
@@ -2227,6 +2288,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
         index: u64,
         function: Option<&FunctionAddress>,
     ) -> Result<(), WriteTableError> {
+        self.check(table.export.engine);
         let outside = |engine: &Self| index >= engine.count_table_elements(table);
         let Some(writer) = table.writer else {
             return Err(if outside(self) {
@@ -2311,10 +2373,7 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
         let module = Self::host_module(|module| module.add_global(DEFINED_GLOBAL, global))?;
         let owner = self.add_owner(Owner::Global(module));
         Ok(GlobalAddress {
-            export: Export {
-                owner,
-                name: DEFINED_GLOBAL.into(),
-            },
+            export: self.export(owner, DEFINED_GLOBAL.into()),
             slot,
             mutable,
             setter: None,
@@ -2327,7 +2386,7 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
     ) -> Result<Value<FunctionAddress>, ReadGlobalError> {
         let export = &global.export;
         let value = readable!(
-            &self.owners[export.owner],
+            self.owner(export),
             instance => instance.get_global(&*export.name).ok().map(|global| global.get_value()),
             None
         )
@@ -2350,6 +2409,7 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
         global: &GlobalAddress,
         value: Value<FunctionAddress>,
     ) -> Result<(), WriteGlobalError> {
+        self.check(global.export.engine);
         if !global.mutable {
             return Err(WriteGlobalError::Constant);
         }
@@ -2366,7 +2426,7 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
         }
         let export = &global.export;
         writable!(
-            &mut self.owners[export.owner],
+            self.owner_mut(export),
             instance => instance.get_global_mut(&*export.name).ok().map(|mut global| {
                 global.set_value(value).map_err(|_| WriteGlobalError::ValueTypeMismatch)
             }),

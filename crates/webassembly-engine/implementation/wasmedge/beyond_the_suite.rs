@@ -811,3 +811,153 @@ fn a_64_bit_table_is_allocated_written_and_grown() {
     assert_eq!(engine.grow_table(&allocated, 1), Err(GrowTableError));
     assert_eq!(engine.count_table_elements(&allocated), 2);
 }
+
+/// Exports a tag and a function that throws its parameter with it.
+const THROWS: &str = r#"(module
+    (tag $failure (export "failure") (param i32))
+    (func (export "throw") (param i32) (throw $failure (local.get 0))))"#;
+
+/// Imports a tag and a function that throws, exports the tag again, and exports a function that calls the thrower
+/// and returns what it caught with the tag, or -1.
+const CATCHES: &str = r#"(module
+    (import "host" "failure" (tag $failure (param i32)))
+    (import "host" "throw" (func $throw (param i32)))
+    (export "failure" (tag $failure))
+    (func (export "catch") (param i32) (result i32)
+        (block $caught (result i32)
+            (try_table (catch $failure $caught) (call $throw (local.get 0)))
+            (i32.const -1))))"#;
+
+fn tag(engine: &mut Engine, instance: &Instance, name: &str) -> ExternalAddress<Engine> {
+    let found = engine.find_export(instance, name);
+    assert!(
+        matches!(found, Some(ExternalAddress::Tag(_))),
+        "{name} is an exported tag"
+    );
+    found.expect("the tag")
+}
+
+#[test]
+fn tags_link_between_modules_as_the_tag_they_are() {
+    let mut engine = engine(Config::default());
+    let throws = compile(&engine, THROWS);
+    let catches = compile(&engine, CATCHES);
+    let first = engine.instantiate(&throws, &[]).expect("the thrower");
+    let second = engine.instantiate(&throws, &[]).expect("another thrower");
+    let throw = function(&mut engine, &first, "throw");
+    let catcher = |engine: &mut Engine, failure| {
+        let imports = [
+            import("failure", failure),
+            import("throw", ExternalAddress::Function(throw.clone())),
+        ];
+        let instance = engine
+            .instantiate(&catches, &imports)
+            .expect("the catcher instantiates with the tag");
+        let address = function(engine, &instance, "catch");
+        (bind::<(i32,), i32>(engine, address), instance)
+    };
+    let first_tag = tag(&mut engine, &first, "failure");
+    let (catch, catching) = catcher(&mut engine, first_tag);
+    assert_eq!(catch.invoke(&mut engine, (77,)).ok(), Some(77));
+    // The tag the catcher imported and exports again is the thrower's.
+    let passed_on = tag(&mut engine, &catching, "failure");
+    let (catch_again, _) = catcher(&mut engine, passed_on);
+    assert_eq!(catch_again.invoke(&mut engine, (78,)).ok(), Some(78));
+    // Another instance of the same module has another tag, which does not catch the first one's exception.
+    let other_tag = tag(&mut engine, &second, "failure");
+    let (catch_other, _) = catcher(&mut engine, other_tag);
+    assert!(matches!(
+        catch_other.invoke(&mut engine, (79,)),
+        Err(InvokeError::Exception)
+    ));
+}
+
+/// Exports a function that returns one, and a memory.
+const ANSWERS_ONE: &str = r#"(module
+    (memory (export "bytes") 1)
+    (func (export "answer") (result i32) (i32.const 1)))"#;
+
+/// Imports a function and a memory.
+const IMPORTS_AN_ANSWER: &str = r#"(module
+    (import "host" "answer" (func (result i32)))
+    (import "host" "bytes" (memory 1)))"#;
+
+#[test]
+fn an_address_another_engine_value_made_is_refused_at_instantiation() {
+    let config = Config::default();
+    let mut first = engine(config.clone());
+    let mut second = engine(config);
+    let answers = compile(&first, ANSWERS_ONE);
+    let made_by_first = first
+        .instantiate(&answers, &[])
+        .expect("the module instantiates");
+    // The second engine value holds an instance at the same place among its own.
+    let made_by_second = second
+        .instantiate(&answers, &[])
+        .expect("the module instantiates");
+    let importer = compile(&second, IMPORTS_AN_ANSWER);
+    let foreign = function(&mut first, &made_by_first, "answer");
+    let own_memory = second
+        .find_export(&made_by_second, "bytes")
+        .expect("the memory");
+    let refused = second.instantiate(
+        &importer,
+        &[
+            import("answer", ExternalAddress::Function(foreign)),
+            import("bytes", own_memory),
+        ],
+    );
+    assert!(matches!(
+        refused,
+        Err(InstantiateError::ForeignAddress { .. })
+    ));
+    let foreign_memory = first
+        .find_export(&made_by_first, "bytes")
+        .expect("the memory");
+    let own_answer = function(&mut second, &made_by_second, "answer");
+    let refused = second.instantiate(
+        &importer,
+        &[
+            import("answer", ExternalAddress::Function(own_answer)),
+            import("bytes", foreign_memory),
+        ],
+    );
+    assert!(matches!(
+        refused,
+        Err(InstantiateError::ForeignAddress { .. })
+    ));
+}
+
+#[test]
+#[should_panic(expected = "engine value that made it")]
+fn a_memory_another_engine_value_made_is_refused() {
+    let config = Config::default();
+    let mut first = engine(config.clone());
+    let mut second = engine(config);
+    let pages = 1;
+    let foreign = first
+        .allocate_memory(memory_type(AddressType::I32, pages, Sharing::Unshared))
+        .expect("the memory");
+    second
+        .allocate_memory(memory_type(AddressType::I32, pages, Sharing::Unshared))
+        .expect("the memory");
+    let mut byte = [0];
+    let _ = second.read_memory(&foreign, 0, &mut byte);
+}
+
+#[test]
+#[should_panic(expected = "engine value that made it")]
+fn a_function_another_engine_value_made_is_refused_when_bound() {
+    let config = Config::default();
+    let mut first = engine(config.clone());
+    let mut second = engine(config);
+    let answers = compile(&first, ANSWERS_ONE);
+    let made_by_first = first
+        .instantiate(&answers, &[])
+        .expect("the module instantiates");
+    second
+        .instantiate(&answers, &[])
+        .expect("the module instantiates");
+    let foreign = function(&mut first, &made_by_first, "answer");
+    let _ = <Engine as FunctionTypeBinder<(), i32>>::bind_engine_function(&mut second, foreign);
+}
