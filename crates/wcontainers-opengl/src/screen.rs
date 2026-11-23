@@ -28,6 +28,9 @@ pub struct Screen<B: Backend> {
     caps: Caps,
     name: CString,
     pub windows: Mutex<HashMap<usize, Window<B>>>,
+    /// The driver's own maps, under Mesa's transfer helper (`pipe_screen::transfer_helper`), which
+    /// maps a multisampled texture through a single-sampled one and blits between them.
+    transfers: Box<u_transfer_vtbl>,
 }
 
 impl<B: Backend> Screen<B> {
@@ -60,7 +63,10 @@ impl<B: Backend> Screen<B> {
 
 unsafe extern "C" fn destroy<B: Backend>(screen: *mut pipe_screen) {
     // SAFETY: Mesa destroys the screen it was given once.
-    drop(unsafe { Box::from_raw(screen.cast::<Screen<B>>()) });
+    let screen = unsafe { Box::from_raw(screen.cast::<Screen<B>>()) };
+    // SAFETY: the helper was made with the screen and outlives every context of it.
+    unsafe { u_transfer_helper_destroy(screen.base.transfer_helper) };
+    drop(screen);
 }
 
 unsafe extern "C" fn name(_: *mut pipe_screen) -> *const c_char {
@@ -374,9 +380,22 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
         caps,
         name: gpu,
         windows: Mutex::new(HashMap::new()),
+        transfers: Box::new(u_transfer_vtbl {
+            resource_create: Some(crate::resource::resource_create::<B>),
+            resource_destroy: Some(crate::resource::resource_destroy::<B>),
+            transfer_map: Some(crate::resource::texture_map::<B>),
+            transfer_flush_region: Some(crate::resource::transfer_flush_region::<B>),
+            transfer_unmap: Some(crate::resource::texture_unmap::<B>),
+            ..Default::default()
+        }),
     });
     let ours = screen.caps.clone();
+    let transfers: *const u_transfer_vtbl = &*screen.transfers;
     let base = &mut screen.base;
+    // SAFETY: the table lives in its own box as long as the screen, whose `destroy` frees the
+    // helper first.
+    base.transfer_helper =
+        unsafe { u_transfer_helper_create(transfers, U_TRANSFER_HELPER_MSAA_MAP) };
     base.destroy = Some(destroy::<B>);
     base.get_name = Some(name);
     base.get_vendor = Some(name);

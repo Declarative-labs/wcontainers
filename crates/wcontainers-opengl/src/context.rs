@@ -225,9 +225,11 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.resource_release = Some(resource::resource_release);
     c.buffer_map = Some(resource::buffer_map::<B>);
     c.buffer_unmap = Some(resource::buffer_unmap::<B>);
-    c.texture_map = Some(resource::texture_map::<B>);
-    c.texture_unmap = Some(resource::texture_unmap::<B>);
-    c.transfer_flush_region = Some(resource::transfer_flush_region::<B>);
+    // Mesa's transfer helper takes the maps of multisampled textures and gives the screen's own
+    // maps the rest.
+    c.texture_map = Some(u_transfer_helper_transfer_map);
+    c.texture_unmap = Some(u_transfer_helper_transfer_unmap);
+    c.transfer_flush_region = Some(u_transfer_helper_transfer_flush_region);
     c.buffer_subdata = Some(resource::buffer_subdata::<B>);
     c.texture_subdata = Some(resource::texture_subdata::<B>);
     state::fill::<B>(c);

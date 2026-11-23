@@ -11,5 +11,7 @@
 #include "util/u_prim_restart.h"
 #include "util/u_sample_positions.h"
 #include "util/u_screen.h"
+#include "util/u_transfer.h"
+#include "util/u_transfer_helper.h"
 #include "util/u_upload_mgr.h"
 #include "fields.h"

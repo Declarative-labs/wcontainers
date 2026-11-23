@@ -388,12 +388,42 @@ pub unsafe extern "C" fn transfer_flush_region<B: Backend>(
         )
     };
     // SAFETY: as above.
-    let target = unsafe { (*transfer.base.resource).target() };
-    if target != PIPE_BUFFER {
+    let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
+    let Some((texture, desc)) = resource.texture() else {
+        let start = area.x as usize;
+        write_mapped_buffer(context, transfer, start..start + area.width as usize);
         return;
+    };
+    // The part of the map flushed, written now (the transfer helper copies a multisampled
+    // texture's single-sampled map into it before unmapping that).
+    let format = resource.base.format();
+    let mapped = transfer.base.box_;
+    let (width, height, bytes) = block(format);
+    let (rows, stride) = box_layout(format, &mapped);
+    let start = area.z as usize * rows as usize * stride as usize
+        + (area.y as u32 / height) as usize * stride as usize
+        + (area.x as u32 / width * bytes) as usize;
+    let part = pipe_box {
+        x: mapped.x + area.x,
+        y: mapped.y + area.y,
+        z: mapped.z + area.z,
+        ..area
+    };
+    let (level, mode) = (transfer.base.level(), transfer.mode);
+    write_texels(
+        context,
+        texture,
+        desc,
+        level,
+        &part,
+        &transfer.bytes()[start..],
+        stride,
+        rows,
+        mode,
+    );
+    if mode == WriteMode::Discard {
+        transfer.mode = WriteMode::NoOverwrite;
     }
-    let start = area.x as usize;
-    write_mapped_buffer(context, transfer, start..start + area.width as usize);
 }
 
 /// `pipe_context::buffer_unmap`: writes what was mapped for writing, unless the caller flushed
@@ -552,7 +582,8 @@ fn split_depth_stencil(format: Format, texels: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (depth, stencil)
 }
 
-/// `pipe_context::texture_map`.
+/// `pipe_context::texture_map` of a single-sampled texture (the screen's transfer helper maps
+/// multisampled ones through one).
 pub unsafe extern "C" fn texture_map<B: Backend>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
@@ -567,13 +598,6 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
     let Some((texture, desc)) = ours.texture() else {
         return std::ptr::null_mut();
     };
-    if desc.samples > 1 {
-        eprintln!(
-            "{}: refused: a map of a multisampled texture",
-            screen_name()
-        );
-        return std::ptr::null_mut();
-    }
     let (rows, stride) = box_layout(ours.base.format(), &area);
     let layer_stride = rows as usize * stride as usize;
     let size = layer_stride * area.depth as usize;
@@ -725,7 +749,8 @@ fn write_aspect<B: Backend>(
     screen.retire(Object::Buffer(staged));
 }
 
-/// `pipe_context::texture_unmap`: writes what was mapped for writing.
+/// `pipe_context::texture_unmap`: writes what was mapped for writing, unless the caller flushed
+/// its parts itself.
 pub unsafe extern "C" fn texture_unmap<B: Backend>(
     pipe: *mut pipe_context,
     transfer: *mut pipe_transfer,
@@ -737,7 +762,8 @@ pub unsafe extern "C" fn texture_unmap<B: Backend>(
             Box::from_raw(transfer.cast::<Transfer>()),
         )
     };
-    if has(transfer.base.usage() as c_uint, PIPE_MAP_WRITE) {
+    let usage = transfer.base.usage() as c_uint;
+    if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
         // SAFETY: the transfer holds a reference on its resource.
         let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
         if let Some((texture, desc)) = resource.texture() {
@@ -778,6 +804,23 @@ pub unsafe extern "C" fn texture_subdata<B: Backend>(
     let Some((texture, desc)) = ours.texture() else {
         return;
     };
+    if desc.samples > 1 {
+        // SAFETY: as above; Mesa's default writes through the context's maps, whose transfer
+        // helper maps a multisampled texture.
+        unsafe {
+            u_default_texture_subdata(
+                pipe,
+                resource,
+                level,
+                usage,
+                &area,
+                data,
+                stride,
+                layer_stride,
+            )
+        };
+        return;
+    }
     let (rows, row) = box_layout(ours.base.format(), &area);
     let stride = if stride == 0 { row } else { stride };
     let rows_per_layer = if layer_stride == 0 {
