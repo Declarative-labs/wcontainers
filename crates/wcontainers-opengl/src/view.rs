@@ -1165,7 +1165,11 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     let mut swizzles = [0; naga::VectorSize::MAX];
     // SAFETY: a live view, and a place for one swizzle a component.
     unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
-    let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
+    let opaque = crate::format::opaque_in_alpha(base.format());
+    let swizzle = swizzles.map(|s| match swizzle(s as pipe_swizzle) {
+        Swizzle::W if opaque => Swizzle::One,
+        s => s,
+    });
     let stencil = crate::format::stencil_view(base.format());
     let format = stencil.or_else(|| crate::format::format(base.format()));
     // A stencil view's texels are unsigned integers, as a stencil texture's are.

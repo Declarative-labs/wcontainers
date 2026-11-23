@@ -71,6 +71,9 @@ const FORMATS: &[(pipe_format, Format)] = &[
     ),
     (PIPE_FORMAT_DXT1_RGBA, Format::Bc1RgbaUnorm),
     (PIPE_FORMAT_DXT1_SRGBA, Format::Bc1RgbaUnormSrgb),
+    // Read with alpha one (`OPAQUE_IN_ALPHA`).
+    (PIPE_FORMAT_DXT1_RGB, Format::Bc1RgbaUnorm),
+    (PIPE_FORMAT_DXT1_SRGB, Format::Bc1RgbaUnormSrgb),
     (PIPE_FORMAT_DXT3_RGBA, Format::Bc2RgbaUnorm),
     (PIPE_FORMAT_DXT3_SRGBA, Format::Bc2RgbaUnormSrgb),
     (PIPE_FORMAT_DXT5_RGBA, Format::Bc3RgbaUnorm),
@@ -90,6 +93,16 @@ const FORMATS: &[(pipe_format, Format)] = &[
     (PIPE_FORMAT_ASTC_4x4, Format::Astc4x4Unorm),
     (PIPE_FORMAT_ASTC_4x4_SRGB, Format::Astc4x4UnormSrgb),
 ];
+
+/// Formats held in an interface format that has alpha where they have none, read with alpha one:
+/// BC1 without alpha decodes as BC1 with it but for the alpha of its three-colour blocks' fourth
+/// colour, which is one without alpha and zero with it.
+const OPAQUE_IN_ALPHA: &[pipe_format] = &[PIPE_FORMAT_DXT1_RGB, PIPE_FORMAT_DXT1_SRGB];
+
+/// Whether views of `format` read alpha one in place of the alpha of its interface format.
+pub fn opaque_in_alpha(format: pipe_format) -> bool {
+    OPAQUE_IN_ALPHA.contains(&format)
+}
 
 /// The interface's format of a Gallium format, if it holds it.
 /// The stencil of a depth-stencil format, as a sampler view names it (OpenGL's stencil texturing):
