@@ -3,8 +3,8 @@
 // (strips ended by the restart index) and lists each primitive's vertices in the strip's order, or
 // the empty record's number for each when the primitive is dropped; its list slots past its
 // primitives hold the empty record's. Triangles of a strip are listed with their first vertex leading
-// and their winding kept. Invocation 0 also writes the empty record: a position outside every clip
-// volume and zeros.
+// and their winding kept, or turned by `rotate`. Invocation 0 also writes the empty record: a position
+// outside every clip volume and zeros.
 
 struct Values {
     // Geometry invocations.
@@ -25,8 +25,10 @@ struct Values {
     list_base: u32,
     // The empty record's number.
     empty: u32,
-    pad0: u32,
-    pad1: u32,
+    // Each primitive kept (0), turned so the strip's last vertex leads (1), or so its first trails
+    // (2): the vertex the API takes flat values from moved to where the draw takes them.
+    rotate: u32,
+    pad: u32,
 }
 
 // The records, the index slots, then the list.
@@ -38,6 +40,8 @@ const MOST_VERTICES: u32 = 3u;
 // The position's w, which no clip volume holds.
 const OUTSIDE_W: f32 = -1.0;
 const W_COMPONENT: u32 = 3u;
+const ROTATE_NONE: u32 = 0u;
+const ROTATE_LAST_FIRST: u32 = 1u;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -81,6 +85,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             let second = records[1];
             records[1] = records[2];
             records[2] = second;
+        }
+        if values.rotate != ROTATE_NONE {
+            // Where the API's vertex is listed (the strip's last is an odd triangle's second), and
+            // where it goes.
+            let odd = n == MOST_VERTICES && ((run - n) & 1u) == 1u;
+            var place = 0u;
+            var new_place = n - 1u;
+            if values.rotate == ROTATE_LAST_FIRST {
+                place = select(n - 1u, 1u, odd);
+                new_place = 0u;
+            }
+            let listed_order = records;
+            for (var k = 0u; k < n; k++) {
+                records[(k + new_place + n - place) % n] = listed_order[k];
+            }
         }
         var dropped = false;
         for (var d = 0u; d < values.cull_count; d++) {

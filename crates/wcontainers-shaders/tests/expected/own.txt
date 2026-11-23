@@ -39,6 +39,8 @@ gs_numbered.dxbc	ok ; glsl absent compute
 gs_numbered_layer.dxbc	ok ; glsl absent compute
 gs_patch.dxbc	ok ; glsl absent compute
 gs_points.dxbc	ok ; glsl absent compute
+gs_provoking.dxbc	ok ; glsl absent compute
+gs_provoking_last.dxbc	ok ; glsl absent compute
 gs_quads.dxbc	ok ; glsl absent compute
 gs_rows_lines.dxbc	ok ; glsl absent compute
 gs_rows_out.dxbc	ok ; glsl absent compute

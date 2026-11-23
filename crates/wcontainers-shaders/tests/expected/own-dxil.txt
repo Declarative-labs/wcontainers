@@ -38,6 +38,8 @@ gs_numbered.dxil	ok ; glsl absent compute
 gs_numbered_layer.dxil	ok ; glsl absent compute
 gs_patch.dxil	ok ; glsl absent compute
 gs_points.dxil	ok ; glsl absent compute
+gs_provoking.dxil	ok ; glsl absent compute
+gs_provoking_last.dxil	ok ; glsl absent compute
 gs_quads.dxil	ok ; glsl absent compute
 gs_rows_lines.dxil	ok ; glsl absent compute
 gs_rows_out.dxil	ok ; glsl absent compute

@@ -374,3 +374,40 @@ void gs_streams(point GsIn p[1], uint primitive : SV_PrimitiveID,
         s3.Append(o);
     }
 }
+
+#ifndef PROVOKING_SHIFT
+#define PROVOKING_SHIFT 0
+#endif
+
+// Each triangle becomes a strip of five vertices across it and, after a cut, a strip of four about
+// its centre (even and odd triangles both), each vertex's flat value its place in its strip plus
+// PROVOKING_SHIFT: built with 2 (gs_provoking_last), each triangle's first vertex carries its last's.
+[maxvertexcount(9)]
+void gs_provoking(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                  inout TriangleStream<GsOut> stream) {
+    GsIn m02 = t[0];
+    m02.position = (t[0].position + t[2].position) * 0.5;
+    m02.colour = (t[0].colour + t[2].colour) * 0.5;
+    GsIn m12 = t[1];
+    m12.position = (t[1].position + t[2].position) * 0.5;
+    m12.colour = (t[1].colour + t[2].colour) * 0.5;
+    GsIn across[5] = { t[0], t[1], m02, m12, t[2] };
+    for (uint i = 0; i < 5; i++) {
+        GsOut o;
+        o.position = across[i].position;
+        o.colour = across[i].colour;
+        o.ids = uint4(i + PROVOKING_SHIFT, primitive, 0, 0);
+        stream.Append(o);
+    }
+    stream.RestartStrip();
+    float4 centre = (t[0].position + t[1].position + t[2].position) / 3.0;
+    float4 about[4] = { lerp(centre, t[0].position, 0.5), lerp(centre, t[1].position, 0.5), centre,
+                        lerp(centre, t[2].position, 0.5) };
+    for (uint k = 0; k < 4; k++) {
+        GsOut o;
+        o.position = about[k];
+        o.colour = t[k % 3].colour;
+        o.ids = uint4(k + PROVOKING_SHIFT, primitive, 1, 0);
+        stream.Append(o);
+    }
+}

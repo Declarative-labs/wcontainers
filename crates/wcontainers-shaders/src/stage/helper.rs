@@ -16,8 +16,8 @@ use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
     DispatchGroups, DrawRange, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
-    RingKind, ShaderModule, SlowPath, StageExtras, StageSet, StageValue, StepMode, SystemValue,
-    Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
+    ProvokingVertex, RingKind, ShaderModule, SlowPath, StageExtras, StageSet, StageValue, StepMode,
+    SystemValue, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
 };
 
 /// The API's primitive topology, adjacency included (it reaches only the geometry stage).
@@ -224,7 +224,8 @@ struct GeometryCullValues {
     index_base: u32,
     list_base: u32,
     empty: u32,
-    pad: [u32; 2],
+    rotate: u32,
+    pad: u32,
 }
 
 /// The hull stage's compute program, the tessellator, and the patch records between them.
@@ -446,6 +447,15 @@ const VERTEX_STORAGE_ADJACENCY: &str = "VertexStorageAdjacency";
 /// Stream output from a vertex stage writing cull distances whose records do not hold its reflected
 /// locations first.
 const CULL_DISTANCE_STREAM_LOCATIONS: &str = "CullDistanceStreamLocations";
+/// Flat values from another vertex than the front draws them from, for a draw through a vertex stage
+/// alone, whose records the front lists itself.
+const PROVOKING_WITHOUT_STAGES: &str = "ProvokingWithoutStages";
+
+/// How the final draw's primitives are turned (`geometry_cull.wgsl`'s and `tessellator.wgsl`'s
+/// `rotate`): kept, the last vertex leading, or the first trailing.
+const ROTATE_NONE: u32 = 0;
+const ROTATE_LAST_FIRST: u32 = 1;
+const ROTATE_FIRST_LAST: u32 = 2;
 
 /// The stream output program and its declaration's elements.
 struct Stream<B: Backend> {
@@ -576,6 +586,8 @@ pub struct Stages<B: Backend> {
     unused: B::Buffer,
     /// Bytes between its ranges.
     unused_stride: u64,
+    /// How the final draw's primitives are turned ([`Self::provoking`]).
+    rotate: u32,
 }
 
 impl<B: Backend> Stages<B> {
@@ -642,6 +654,7 @@ impl<B: Backend> Stages<B> {
             out: None,
             unused,
             unused_stride,
+            rotate: ROTATE_NONE,
         })
     }
 
@@ -722,6 +735,7 @@ impl<B: Backend> Stages<B> {
             out: None,
             unused,
             unused_stride,
+            rotate: ROTATE_NONE,
         })
     }
 
@@ -773,6 +787,7 @@ impl<B: Backend> Stages<B> {
             out: None,
             unused,
             unused_stride,
+            rotate: ROTATE_NONE,
         })
     }
 
@@ -820,6 +835,7 @@ impl<B: Backend> Stages<B> {
             out: None,
             unused,
             unused_stride,
+            rotate: ROTATE_NONE,
         })
     }
 
@@ -978,6 +994,7 @@ impl<B: Backend> Stages<B> {
             out: None,
             unused,
             unused_stride,
+            rotate: ROTATE_NONE,
         })
     }
 
@@ -1026,6 +1043,45 @@ impl<B: Backend> Stages<B> {
             backend.destroy(Object::Buffer(owned.buffer));
         }
         backend.destroy(Object::Buffer(self.unused));
+    }
+
+    /// Gives the final draw's flat values from the vertex `api` names of each primitive the geometry
+    /// or tessellation stage makes (a strip's triangle `i` has vertices `i` to `i + 2` in the strip's
+    /// order, the tessellator's are as it lists them), for a final draw that takes them from `drawn`
+    /// (its [`wcontainers_gpu::RasterDesc::provoking`]). Where the two differ each primitive is
+    /// listed turned, its winding kept and a line reversed, and a geometry stage's strips are drawn as
+    /// lists ([`SlowPath::ProvokingRewrite`]). Stream output keeps a geometry stage's order and
+    /// takes the tessellator's turned one, the list it reads. Both start as
+    /// [`ProvokingVertex::First`], Direct3D's. Without either stage the front lists the records
+    /// itself, and a difference is refused by name.
+    pub fn provoking(
+        &mut self,
+        backend: &mut B,
+        api: ProvokingVertex,
+        drawn: ProvokingVertex,
+    ) -> Result<(), StageError> {
+        let rotate = match (api, drawn) {
+            (ProvokingVertex::Last, ProvokingVertex::First) => ROTATE_LAST_FIRST,
+            (ProvokingVertex::First, ProvokingVertex::Last) => ROTATE_FIRST_LAST,
+            _ => ROTATE_NONE,
+        };
+        if rotate != ROTATE_NONE && self.geometry.is_none() && self.hull.is_none() {
+            return Err(StageError::Unsupported(PROVOKING_WITHOUT_STAGES));
+        }
+        if let Some(g) = &mut self.geometry
+            && rotate != ROTATE_NONE
+            && g.output > 1
+            && g.cull.is_none()
+        {
+            let shader = backend.create_shader(&super::geometry_cull_program()?)?;
+            g.cull = Some(GeometryCull {
+                program: backend.create_program(&Program::Compute(&shader))?,
+                cull_word: 0,
+                distances: 0,
+            });
+        }
+        self.rotate = rotate;
+        Ok(())
     }
 
     /// The vertex program of the draw after a geometry stage or the cull program, for the front's
@@ -1562,8 +1618,16 @@ impl<B: Backend> Stages<B> {
                 tessellated: None,
             });
         }
+        // The tessellator's primitives are turned when they are the ones drawn.
+        let rotate = match self.geometry {
+            None => self.rotate,
+            Some(_) => ROTATE_NONE,
+        };
         if let Some(h) = &mut self.hull {
             backend.slow_paths().hit(SlowPath::TessellationAsCompute);
+            if rotate != ROTATE_NONE {
+                backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+            }
             let patch_bytes = (u64::from(tess::HEADER_WORDS)
                 + u64::from(patch_total) * u64::from(h.patch_words))
                 * u64::from(WORD);
@@ -1594,6 +1658,7 @@ impl<B: Backend> Stages<B> {
                 hull_range,
                 patch_total,
                 primitives,
+                rotate,
             )?;
             let (_, per_indices) = tess::patch_bounds(h.tessellation.max_factor);
             let (arguments, points, indices) = h.tessellator.owned();
@@ -1813,10 +1878,20 @@ impl<B: Backend> Stages<B> {
                 count: if strips { 2 * total } else { total },
                 tessellated: None,
             });
-            if let Some(c) = &g.cull {
-                // The drawn stream's primitives its cull distances keep, listed; stream output still
-                // takes every primitive from the index slots.
-                backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+            let listing = g
+                .cull
+                .as_ref()
+                .filter(|c| c.distances > 0 || self.rotate != ROTATE_NONE);
+            if let Some(c) = listing {
+                // The drawn stream's primitives its cull distances keep, listed and turned as the
+                // provoking vertex needs; stream output still takes every primitive from the index
+                // slots.
+                if c.distances > 0 {
+                    backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+                }
+                if self.rotate != ROTATE_NONE {
+                    backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+                }
                 let units = u32::try_from(invocations).map_err(|_| GpuError::OutOfMemory)?;
                 let index_slots = 2 * g.max_vertices;
                 let primitives = super::replay_slots(g.max_vertices, g.output);
@@ -1837,6 +1912,7 @@ impl<B: Backend> Stages<B> {
                 cv[at(offset_of!(GeometryCullValues, index_base))] = index_base;
                 cv[at(offset_of!(GeometryCullValues, list_base))] = list_base;
                 cv[at(offset_of!(GeometryCullValues, empty))] = slots;
+                cv[at(offset_of!(GeometryCullValues, rotate))] = self.rotate;
                 let bytes = words_as_bytes(&cv);
                 let mut offsets = [0u64];
                 let ring = backend.write_buffer_ring(

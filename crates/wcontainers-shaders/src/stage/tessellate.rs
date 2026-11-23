@@ -43,7 +43,8 @@ struct Values {
     partitioning: u32,
     output: u32,
     primitives: u32,
-    pad: [u32; 2],
+    rotate: u32,
+    pad: u32,
 }
 
 /// The program's passes in order, chosen by `Values::mode`: counting each patch's points and indices,
@@ -71,7 +72,8 @@ impl<B: Backend> Tessellator<B> {
     }
 
     /// Records the passes for `patches` patches (`primitives` per API instance) whose records are in
-    /// `hull` (header first). Afterwards [`Self::counts`] holds the indexed indirect draw of
+    /// `hull` (header first), each primitive's indices turned by `rotate` (`tessellator.wgsl`'s
+    /// `Values::rotate`; 0 writes them as made). Afterwards [`Self::counts`] holds the indexed indirect draw of
     /// [`Self::indices`] (u32 point numbers) at offset 0, and [`Self::points`] the points.
     pub fn run(
         &mut self,
@@ -80,6 +82,7 @@ impl<B: Backend> Tessellator<B> {
         hull: BufferRange<&B::Buffer>,
         patches: u32,
         primitives: u32,
+        rotate: u32,
     ) -> Result<(), StageError> {
         if t.domain > 2 || t.partitioning > 3 || t.output > 3 || (t.domain == 2 && t.output > 1) {
             return Err(StageError::Declaration);
@@ -114,6 +117,7 @@ impl<B: Backend> Tessellator<B> {
                 t.partitioning.into(),
                 t.output.into(),
                 primitives.max(1),
+                rotate,
             ];
             let mut bytes = [0; size_of::<Values>()];
             for (b, w) in bytes.chunks_mut(size_of::<u32>()).zip(words) {

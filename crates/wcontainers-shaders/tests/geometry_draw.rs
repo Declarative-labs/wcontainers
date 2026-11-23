@@ -909,14 +909,26 @@ fn ours<B: Backend>(
     stream: Option<(&StreamOutput, &Bound)>,
     clamped: Clamped,
 ) -> Made {
-    ours_made(b, case, None, vertices, indices, stream, clamped)
+    let how = Making {
+        made: None,
+        provoking: ProvokingVertex::First,
+    };
+    ours_made(b, case, how, vertices, indices, stream, clamped)
 }
 
-/// [`ours`] with the geometry program `made` makes, where given.
+/// How [`ours_made`] makes and draws the geometry stage: its program by `made` where given, and flat
+/// values from the vertex `provoking` names (`Stages::provoking`; the final draw takes the first).
+#[derive(Clone, Copy)]
+struct Making {
+    made: Option<GeometryMade>,
+    provoking: ProvokingVertex,
+}
+
+/// [`ours`] made and drawn as `how` says.
 fn ours_made<B: Backend>(
     b: &mut B,
     case: &Case,
-    made: Option<GeometryMade>,
+    how: Making,
     vertices: &[f32],
     indices: &[u8],
     stream: Option<(&StreamOutput, &Bound)>,
@@ -928,12 +940,15 @@ fn ours_made<B: Backend>(
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
-    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped, made);
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped, how.made);
     // Without a geometry stage or stream output, the vertex stage writes cull distances.
     let mut stages = match (&gs, stream) {
         (None, None) => Stages::culled(b, &vs, None).unwrap(),
         _ => Stages::new(b, &vs, gs.as_ref(), stream).unwrap(),
     };
+    stages
+        .provoking(b, how.provoking, ProvokingVertex::First)
+        .unwrap();
 
     // The vertex stage's sets: the pulled streams in set 0, their layout in its helper block.
     let vertex_buffer = buffer(
@@ -3768,7 +3783,10 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
                     let made = ours_made(
                         &mut backend,
                         case,
-                        Some(made),
+                        Making {
+                            made: Some(made),
+                            provoking: ProvokingVertex::First,
+                        },
                         &vertices,
                         indices,
                         None,
@@ -3783,7 +3801,10 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
             let Made::Picture(picture) = ours_made(
                 &mut backend,
                 case,
-                Some(made),
+                Making {
+                    made: Some(made),
+                    provoking: ProvokingVertex::First,
+                },
                 &vertices,
                 &indices,
                 None,
@@ -3799,6 +3820,113 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
                 drawn_texels(&reference)
             );
             if drawn_texels(&reference) == 0 || largest > allowed {
+                failures.push(name);
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Flat values from each triangle's last vertex (`Stages::provoking` with `ProvokingVertex::Last`,
+/// OpenGL's rule: a strip's triangle `i` takes vertex `i + 2`'s) for `gs_provoking`, whose strips
+/// number each vertex by its place in a flat value, draw as Direct3D 11 draws `gs_provoking_last`,
+/// the same shader numbering each vertex two places on (so Direct3D's first vertex of each triangle
+/// carries its last's number), in the cases `gs_cut` draws, both routes; drawn from the first
+/// vertex, they differ from it.
+#[test]
+fn flat_values_from_the_last_vertex_draw_as_its_place_names() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let cases: Vec<Case> = CASES
+        .iter()
+        .filter(|c| c.gs == "gs_cut" && c.route == Route::Dxbc)
+        .map(|c| Case {
+            gs: "gs_provoking",
+            ..*c
+        })
+        .collect();
+    let cases = on_both_routes(&cases);
+    assert!(!cases.is_empty());
+    let drawn = |provoking| Making {
+        made: None,
+        provoking,
+    };
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &cases {
+            let reference_case = Case {
+                gs: "gs_provoking_last",
+                ..*case
+            };
+            let name = format!(
+                "seed {seed} {:?} {:?} {} from {}{}",
+                case.route,
+                case.topology,
+                case.count,
+                case.first,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let Ok((indices, reference)) = scene(
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
+                |indices| direct3d(&gpu, &reference_case, &vertices, indices, None),
+                |reference| drawn_texels(reference) != 0,
+                |indices, _| {
+                    let made = ours_made(
+                        &mut backend,
+                        case,
+                        drawn(ProvokingVertex::Last),
+                        &vertices,
+                        indices,
+                        None,
+                        None,
+                    );
+                    matches!(made, Made::Picture(picture) if drawn_texels(&picture) == 0)
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
+            let [last, first] = [ProvokingVertex::Last, ProvokingVertex::First].map(|provoking| {
+                match ours_made(
+                    &mut backend,
+                    case,
+                    drawn(provoking),
+                    &vertices,
+                    &indices,
+                    None,
+                    None,
+                ) {
+                    Made::Picture(picture) => picture,
+                    _ => unreachable!(),
+                }
+            });
+            let (count, ends, largest, allowed) = compared_clipped(case, &reference, &last);
+            let (first_count, ..) = compared_clipped(case, &reference, &first);
+            compared += 1;
+            eprintln!(
+                "{name}: {} texels drawn by direct3d, {count} differ ({ends} at a clipped line end; \
+                 largest of the others {largest}, allowed {allowed}); from the first vertex \
+                 {first_count} differ",
+                drawn_texels(&reference)
+            );
+            if drawn_texels(&reference) == 0 || largest > allowed || first_count == 0 {
                 failures.push(name);
             }
         }

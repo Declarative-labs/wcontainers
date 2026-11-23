@@ -193,12 +193,14 @@ fn direct3d(
     (vertices, statistics.NumPrimitivesWritten)
 }
 
-/// Our tessellator's points and indices for the same patches, as the vertices a draw of them makes.
+/// Our tessellator's points and indices for the same patches, as the vertices a draw of them makes,
+/// each primitive turned by `rotate` (`Tessellator::run`'s).
 fn ours<B: Backend>(
     b: &mut B,
     tessellator: &mut Tessellator<B>,
     t: &Tessellation,
     factors: &[[f32; 8]],
+    rotate: u32,
 ) -> Vec<Vertex> {
     let mut words = vec![tess::NO_SLOT; tess::HEADER_WORDS as usize];
     words[tess::PATCH_WORDS as usize] = 8;
@@ -222,6 +224,7 @@ fn ours<B: Backend>(
             },
             n,
             n,
+            rotate,
         )
         .unwrap();
     let read = |b: &mut B, buffer: &B::Buffer, words: usize| -> Vec<u32> {
@@ -351,7 +354,8 @@ fn compare(reference: &[Vertex], ours: &[Vertex], per: usize) -> Result<String, 
 
 /// Our tessellator against real Direct3D 11's on the GPU and on WARP, every topology: each patch's
 /// primitives equal to the GPU's (whose order within a patch is the device's), and every point and
-/// index equal to WARP's in order (WARP's order is the reference tessellator's, which ours follows).
+/// index equal to WARP's in order (WARP's order is the reference tessellator's, which ours follows);
+/// and, turned for another provoking vertex, every primitive of ours turned.
 #[test]
 fn tessellator_matches_direct3d() {
     let mut backend = webgpu();
@@ -406,7 +410,29 @@ fn tessellator_matches_direct3d() {
                 _ => 3,
             };
             let bound = PATCHES * tess::patch_bounds(t.max_factor).1 as usize;
-            let streamed = ours(&mut backend, &mut tessellator, t, &factors);
+            let streamed = ours(&mut backend, &mut tessellator, t, &factors, 0);
+            // Turned for another provoking vertex (`Stages::provoking`): the last vertex leading
+            // (1) or the first trailing (2), each triangle's winding kept and each line reversed.
+            for rotate in [1, 2] {
+                let turned = ours(&mut backend, &mut tessellator, t, &factors, rotate);
+                let expected: Vec<Vertex> = streamed
+                    .chunks(per)
+                    .flat_map(|p| {
+                        let mut p = p.to_vec();
+                        match (p.len(), rotate) {
+                            (1, _) => {}
+                            (2, _) => p.reverse(),
+                            (_, 1) => p.rotate_right(1),
+                            _ => p.rotate_left(1),
+                        }
+                        p
+                    })
+                    .collect();
+                if turned != expected {
+                    eprintln!("seed {seed} {hs} turned {rotate}: not each primitive turned");
+                    failures.push(format!("seed {seed} {hs} turned {rotate}"));
+                }
+            }
             for (driver, gpu) in &gpus {
                 let (reference, written) = direct3d(gpu, hs, ds, None, 1, bound, &factors);
                 let reference = &reference[..written as usize * per];
