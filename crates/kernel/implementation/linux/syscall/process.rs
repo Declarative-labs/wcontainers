@@ -52,7 +52,7 @@ pub(super) fn exit_group<S: crate::System>(
 const MAX_ARG_STRINGS: usize = 0x7fff_ffff;
 
 /// The longest one argument or variable may be (`MAX_ARG_STRLEN`).
-pub(crate) const MAX_ARG_STRLEN: u64 = 32 * 4096;
+pub(crate) const MAX_ARG_STRLEN: u64 = wcontainers_abi::PAGE_SIZE * 32;
 
 /// Reads a null-terminated list of string pointers, as `execve`'s `count` does.
 fn read_pointers(guest: &mut crate::user::Guest<'_>, mut address: u64) -> Result<Vec<u64>, Errno> {
