@@ -25,6 +25,8 @@ const LOOK_FOR_END: Duration = Duration::from_millis(100);
 /// its memory before dropping it.
 pub struct Stub {
     process: Pid,
+    /// The number of the zygote that forked it.
+    zygote: u64,
     socket: OwnedFd,
     pages: ThreadPages,
     memory: OwnedFd,
@@ -55,9 +57,16 @@ pub enum TurnEnd {
 }
 
 impl Stub {
-    pub(crate) fn new(process: Pid, socket: OwnedFd, pages: ThreadPages, memory: OwnedFd) -> Self {
+    pub(crate) fn new(
+        process: Pid,
+        zygote: u64,
+        socket: OwnedFd,
+        pages: ThreadPages,
+        memory: OwnedFd,
+    ) -> Self {
         Self {
             process,
+            zygote,
             socket,
             pages,
             memory,
@@ -102,6 +111,10 @@ impl Stub {
     /// The memory's memfd: guest address `a` is its offset `a`.
     pub fn memory(&self) -> BorrowedFd<'_> {
         self.memory.as_fd()
+    }
+
+    pub(crate) fn zygote(&self) -> u64 {
+        self.zygote
     }
 
     /// The memory memfd's key in the window cache.

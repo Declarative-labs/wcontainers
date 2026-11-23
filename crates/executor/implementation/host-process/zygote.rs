@@ -184,6 +184,8 @@ impl Ended {
 pub struct Zygote {
     socket: Mutex<OwnedFd>,
     process: Pid,
+    /// A number no other zygote of this process has, which its stubs carry.
+    number: u64,
     reaped: bool,
 }
 
@@ -283,9 +285,11 @@ impl Zygote {
         })
         .map_err(Unavailable::Host)?;
         drop((memfd, theirs, reservation));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let zygote = Self {
             socket: Mutex::new(ours),
             process: child,
+            number: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             reaped: false,
         };
         match zygote.ask(Request::Ping, 0, &[]) {
@@ -302,6 +306,11 @@ impl Zygote {
     /// The zygote's process id.
     pub fn process(&self) -> Pid {
         self.process
+    }
+
+    /// Whether this zygote forked `stub`.
+    pub fn forked(&self, stub: &Stub) -> bool {
+        stub.zygote() == self.number
     }
 
     /// Checks that the zygote still answers.
@@ -335,7 +344,7 @@ impl Zygote {
             .and_then(Pid::from_raw)
             .ok_or(Unavailable::Host(Errno::PROTO))?;
         drop(theirs);
-        let stub = Stub::new(process, ours, pages, memory);
+        let stub = Stub::new(process, self.number, ours, pages, memory);
         match stub.started() {
             Ok(crate::stub::TurnEnd::Done { .. }) => Ok(stub),
             Ok(crate::stub::TurnEnd::StubEnded) => match self.reap(process) {
