@@ -30,7 +30,8 @@ use zerocopy::{FromBytes, IntoBytes};
 const RSP: usize = 4;
 /// The field of rip in the reference's state.
 pub const RIP: usize = 16;
-const RFLAGS: usize = 17;
+/// The field of rflags in the reference's state.
+pub const RFLAGS: usize = 17;
 const FS: usize = 18;
 const GS: usize = 19;
 const MXCSR: usize = 20;

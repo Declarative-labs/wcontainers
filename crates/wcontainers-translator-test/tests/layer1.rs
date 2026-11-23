@@ -480,6 +480,45 @@ fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
     eprintln!("the inside's cpuid and xgetbv equal to the meaning's in {checked} cases");
 }
 
+/// `Condition::holds`, by which the inside takes a `jcc` exit's `int3` hit (docs/x86-native-output.md 3.2), is the
+/// meaning's: `setcc al` under WebAssembly for each of the sixteen conditions on every combination of the five
+/// flags conditions read.
+#[test]
+fn a_condition_holds_as_the_meaning_says_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::{RFLAGS, plain};
+    use wcontainers_translator_test::layer1::translated;
+    use wcontainers_x86::{CF, Condition, OF, PF, RAX, SF, ZF};
+    /// `setcc al`: the two-byte opcode 0x0f 0x90 plus the condition's code, and ModRM naming al.
+    const SETCC: [u8; 2] = [0x0f, 0x90];
+    const AL: u8 = 0xc0;
+    let flags = [CF, PF, ZF, SF, OF];
+    let rax = usize::from(RAX);
+    let mut checked = 0;
+    for combination in 0..1u32 << flags.len() {
+        let rflags: u64 = flags
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| combination & 1 << k != 0)
+            .map(|(_, f)| f)
+            .sum();
+        for (code, condition) in Condition::ALL.into_iter().enumerate() {
+            let bytes = [SETCC[0], SETCC[1] + code as u8, AL];
+            let mut case = plain(&bytes);
+            case.state.0[RFLAGS] |= u128::from(rflags);
+            let outcome = translated::<X86_64>(&case);
+            let set = outcome.state.0[rax] & u128::from(u8::MAX);
+            assert_eq!(
+                set != 0,
+                condition.holds(case.state.0[RFLAGS] as u64),
+                "{condition:?} with {rflags:#x}: {:?}",
+                outcome.stop
+            );
+            checked += 1;
+        }
+    }
+    eprintln!("a condition holds as the meaning says in {checked} cases");
+}
+
 #[test]
 fn unoffered_forms_are_illegal_x86_64() {
     unoffered_forms_are_illegal::<X86_64>();
