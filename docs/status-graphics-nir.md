@@ -5,9 +5,14 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
-G9 run 22 (2026-11-23, the tenth run of this batch): ES 3.2's last two requirements are built,
-`OES_sample_variables` (f3b13e46) and `KHR_blend_equation_advanced` (5497f92f), so Mesa can now
-report OpenGL ES 3.2 and KHR-GLES32 can start. Unsafe code: wcontainers-nir four uses more (the
+G9 run 22 (2026-11-23, the tenth run of this batch): the two ES 3.2 extensions run 21 named are
+built and reported, `OES_sample_variables` (f3b13e46, d8bb7a2e) and `KHR_blend_equation_advanced`
+(5497f92f), but KHR-GLES32 still starts no context ("Failed to create WGL context"): every ES 3.2
+extension is now reported (`dEQP-GLES31.info.extensions`, log `logs/g9r22-ext.log`), and what
+is left is a requirement with no extension string of its own: Mesa's ES 3.2 needs
+`ARB_shader_image_load_store`, which st/mesa turns on only with the screen's
+`image_store_formatted` (stores to images declared without a format, converted to the bound
+image's format), which the driver does not report. That is next (below). Unsafe code: wcontainers-nir four uses more (the
 four new bridge calls in mesa.rs, the C boundary), wcontainers-opengl none more (the bound
 fragment program is read once in `draw` where it was read before). No dependency or licence was
 added.
@@ -45,13 +50,74 @@ Built this run:
   (tests/route.rs): converts for one and four samples, every input stays at the centre, two
   samples refused. Route tests 15 of 15 pass (x86-64 machine, Mesa build kept there).
 
-RESULTS: see "The checks of run 22" below.
+The checks of run 22:
+- Both ES 3.1 lists whole at 5497f92f's driver (desktop, RTX 3080, one GPU job, 8 glcts at once,
+  08:01 to 08:32 Pacific), against run 21's whole run: dEQP-GLES31 37,802 cases, Pass 32,550,
+  Fail 373, Crash 865, Flake 2, Skip 4,012: 32,550 of 33,790 run, 96.33% (run 21: 31,820 of
+  32,620, 97.55%); KHR-GLES31 4,101, Pass 3,255, Fail 40, Crash 215, Timeout 1, Skip 590: 3,255 of
+  3,511, 92.71% (run 21: 2,996 of 3,088). 1,594 cases that were NotSupported run: 963 pass
+  (`texture.gather` 198, `sample_variables` 136 and KHR's `sample_variables.mask` 72,
+  `multisample_interpolation` 102 and KHR's `render` 74, `builtin_functions` 84, KHR's
+  `blend_equation_advanced` groups 15 each, ...), 573 crash, 57 fail. Of cases that ran before,
+  26 `primitive_bounding_box` failures pass and 14 crash; one passing case fails
+  (`image_load_store.2d_array`, the intermittent coherence family). Results scratch
+  `results/g9r22/es31/<list>/results.csv`, compared by `scripts/g9r22-compare.py`.
+- The new process refusals: a gather offset known only at run time 410 (`texture.gather.offset_dynamic`,
+  `EXT_gpu_shader5`'s; the 15.4 rewrite), arrays of textures indexed at run time 110 (wgpu's
+  "Capability TEXTURE_AND_SAMPLER_BINDING_ARRAY is not supported": the WebGPU back end lacks
+  binding arrays; `opaque_type_indexing`'s dynamically uniform cases, `EXT_gpu_shader5`'s),
+  targets of two samples 136 (the back end makes them; now built in d8bb7a2e with the standard
+  patterns, not yet checked), the stage helper's "Gpu(Invalid(" 92 and maps of multisampled
+  textures 76 (not yet read).
+- So `EXT_gpu_shader5` is reported with two of its features refused by name: indexing arrays of
+  samplers at run time and gathers with offsets known only at run time. Both are next: a ladder
+  over the array's elements (the index is dynamically uniform, so each lane takes one branch),
+  and a gather at a run-time offset as one at the coordinate moved by the offset over the level's
+  size (the same four texels, wrapped by the same sampler).
+
+The table, EVERY LIST WHOLE AT ONE COMMIT, d8bb7a2e's driver (desktop, RTX 3080, one GPU job, 8
+glcts at once, about 09:33 to 09:40 Pacific after 30 minutes queued behind other tracks' jobs),
+against run 21's whole run at 9d7d1173:
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64% (the same).
+- dEQP-GLES3: 44,768; Pass 44,039, Warn 5, Fail 174, Crash 69, Skip 481: 44,044 of 44,287, 99.45%
+  (12 more run and pass; `flush_finish.flush` passed).
+- dEQP-GLES31: 37,802; Pass 32,597, Fail 372, Crash 817, Flake 4, Skip 4,012: 32,597 of 33,790,
+  96.47% (run 21: 31,820 of 32,620, 97.55%). 1,170 cases that were NotSupported run; the new
+  crashes are `texture.gather` 198 and `opaque_type_indexing` 160 (`EXT_gpu_shader5`'s two
+  refused features), `blend_equation_advanced.msaa` 15, `multisample_interpolation` 11; 34 new
+  failures (`sample_variables` 27, `tessellation.common_edge` 6). No case that passed fails but
+  three of the intermittent coherence family that flaked.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,194, Fail 3, Crash 73, Skip 228: 98.79% (the same).
+- KHR-GLES31: 4,101; Pass 3,288, Fail 45, Crash 177, Timeout 1, Skip 590: 3,288 of 3,511, 93.65%
+  (run 21: 2,996 of 3,088, 97.02%); new crashes `sample_variables.mask` 90 (not yet read), new
+  failures 27. One passing case fails, `texture_cube_map_array.image_op_compute_sh` (not yet
+  read); `tessellation_shader.vertex` went from fail to timeout.
+- KHR-GL33: 9,886; Pass 8,991, Fail 144, Crash 229, Skip 522: 8,991 of 9,364, 96.02%.
+- KHR-GLES32 (1,405) and KHR-GL46 (19,714): still no context of their version.
+- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
+  run and failed: 112,521 of 116,095, 96.92%, above the 92.9% floor (run 21: 111,438 of 114,490,
+  97.33%; 1,083 more passes, the share lower because the newly reported extensions' groups run
+  with failures). Without KHR-GLES32: 112,521 of 114,690, 98.11%. Still not the bar.
+- The run's process refusals, most first: device lost 782 (run 21: 572; not yet read), a gather
+  offset known only at run time 410, sampling an integer texture 288, blits the blitter does not
+  make 138, targets in another format 496, arrays of textures indexed at run time 110, the stage
+  helper's "Gpu(Invalid(" 92, maps of multisampled textures 76, an evaluation program reading the
+  point size 72. Two-sample targets are gone (d8bb7a2e).
+- Results scratch `results/g9r22/full/<list>/results.csv`, log `logs/g9r22-full.log`.
 
 Next, in order:
-1. The whole run of every list with KHR-GLES32 and the table; read `EXT_gpu_shader5`'s,
-   `sample_shading`'s, `sample_variables`', `multisample_interpolation`'s and
-   `blend_equation_advanced`'s groups.
-2. As run 21's list: targets in another format through a twin drawn into and copied back, the
+1. `image_store_formatted`: stores to images declared without a format (the 15.4 formatless
+   storage), so that Mesa reports `ARB_shader_image_load_store` and ES 3.2, and KHR-GLES32
+   starts. The driver knows each bound image's format at the draw: a variant keyed by the bound
+   images' formats whose route B declares each such image in its bound format.
+2. `EXT_gpu_shader5`'s two refused features, now reported and refused by name: arrays of samplers
+   indexed at run time (a ladder over the array's elements; the index is dynamically uniform)
+   and gathers at a run-time offset (the coordinate moved by the offset over the level's size).
+3. Read `sample_variables.mask`'s crashes, `blend_equation_advanced.msaa`'s, the 76 maps of
+   multisampled textures, the stage helper's invalid calls and the device losses' growth.
+4. As run 21's list: targets in another format through a twin drawn into and copied back, the
    96-bit and ASTC copy failures, device losses, layered geometry output, point size read by an
    evaluation program, border colors on comparison samplers, blits the blitter does not make;
    the NotSupported check, the comparison with the RTX 3080's own OpenGL, bgfx and Godot, the
