@@ -5112,6 +5112,7 @@ dependencies = [
  "wcontainers-graphics-test",
  "wgpu",
  "windows",
+ "zerocopy",
 ]
 
 [[package]]
