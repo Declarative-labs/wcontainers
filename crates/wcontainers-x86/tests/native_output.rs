@@ -3,8 +3,8 @@
 //! copied bytes unchanged, and each route's sequence as the plan writes it.
 
 use iced_x86::{
-    Code, Decoder, DecoderOptions, Formatter, Instruction as Iced, IntelFormatter, Mnemonic,
-    OpKind, Register,
+    Code, Decoder, DecoderOptions, Formatter, Instruction as Iced, InstructionInfoFactory,
+    IntelFormatter, Mnemonic, OpAccess, OpKind, Register,
 };
 use wcontainers_guest_cpu::position::Side;
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route};
@@ -195,6 +195,166 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
             }
         } else if piece.bytes.get(last..last + own.len()) != Some(own) {
             return Some(format!("copy of {own:02x?} at {last} differs"));
+        }
+    }
+    map_follows_the_moves(piece, way)
+}
+
+/// Whose guest value each host register and each word of the register area holds, by guest register number.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Holders {
+    registers: [Option<u8>; 16],
+    area: std::collections::BTreeMap<u64, u8>,
+}
+
+/// Every host instruction reachable from the piece's start, along its branches and links, finds each guest register
+/// where the position map says: the moves between host registers and the register area are followed from the
+/// start (every guest register in its own, the withheld ones in their slots); a register or area word any other
+/// instruction writes holds afterwards the guest value the map gives it there, every other copy of that value now
+/// stale. So a move left out or a copy read after the guest wrote the register is found, and a map wrong only where
+/// an instruction writes is not.
+fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
+    use wcontainers_guest_cpu::position::Held;
+    let decoded: std::collections::BTreeMap<usize, Iced> = host(&piece.bytes).into_iter().collect();
+    let slot = |k: usize| (WITHHELD_VALUES + k * WORD) as u64;
+    let number = |r: Register| general_register(r).map(|g| g.number);
+    let on_area = |i: &Iced, n: u32| {
+        i.op_kind(n) == OpKind::Memory
+            && i.memory_segment() == way.area_segment()
+            && i.memory_base() == Register::None
+            && i.memory_index() == Register::None
+    };
+    let mut start = Holders {
+        registers: [None; 16],
+        area: WITHHELD
+            .iter()
+            .enumerate()
+            .map(|(k, &w)| (slot(k), w))
+            .collect(),
+    };
+    for n in 0..16u8 {
+        if !WITHHELD.contains(&n) {
+            start.registers[usize::from(n)] = Some(n);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut work = vec![(0usize, start)];
+    while let Some((at, mut holders)) = work.pop() {
+        let Some(i) = decoded.get(&at) else {
+            continue;
+        };
+        if !seen.insert((at, holders.clone())) {
+            continue;
+        }
+        let span = piece.span(at as u32)?;
+        for g in 0..16u8 {
+            let held = span.relocated.iter().find(|r| r.guest == g).map(|r| r.held);
+            let found = match held {
+                Some(Held::Register(h)) => holders.registers[usize::from(h)],
+                Some(Held::Page(p)) => holders.area.get(&u64::from(p)).copied(),
+                None => match WITHHELD.iter().position(|&w| w == g) {
+                    Some(k) => holders.area.get(&slot(k)).copied(),
+                    None => holders.registers[usize::from(g)],
+                },
+            };
+            if found != Some(g) {
+                return Some(format!(
+                    "at {at} guest {g} is {held:?} by the map, which holds {found:?}"
+                ));
+            }
+        }
+        let next = piece
+            .span((at + i.len()) as u32)
+            .filter(|_| at + i.len() < piece.bytes.len());
+        // The guest instruction itself, the slot form's move among them, writes (the last host instruction before
+        // its commit point); the carrying code's moves move.
+        let guest_own = span.side == Side::Before
+            && next.is_none_or(|n| n.guest != span.guest || n.side == Side::After);
+        if !guest_own && i.code() == Code::Mov_rm64_r64 && on_area(i, 0) {
+            let from = number(i.op1_register()).expect("a general register");
+            match holders.registers[usize::from(from)] {
+                Some(g) => holders.area.insert(i.memory_displacement64(), g),
+                None => holders.area.remove(&i.memory_displacement64()),
+            };
+        } else if !guest_own && i.code() == Code::Mov_r64_rm64 && on_area(i, 1) {
+            let to = number(i.op0_register()).expect("a general register");
+            holders.registers[usize::from(to)] =
+                holders.area.get(&i.memory_displacement64()).copied();
+        } else {
+            let after = next.unwrap_or(span);
+            let held_at = |held: Held| {
+                (0..16u8).find(|&g| {
+                    let mapped = after
+                        .relocated
+                        .iter()
+                        .find(|r| r.guest == g)
+                        .map(|r| r.held);
+                    mapped.unwrap_or_else(|| match WITHHELD.iter().position(|&w| w == g) {
+                        Some(k) => Held::Page(slot(k) as u16),
+                        None => Held::Register(g),
+                    }) == held
+                })
+            };
+            let mut written = Vec::new();
+            let mut info = InstructionInfoFactory::new();
+            let facts = info.info(i);
+            for u in facts.used_registers() {
+                if matches!(
+                    u.access(),
+                    OpAccess::Read | OpAccess::CondRead | OpAccess::None
+                ) {
+                    continue;
+                }
+                if let Some(n) = number(u.register()) {
+                    written.push(Held::Register(n));
+                }
+            }
+            for m in facts.used_memory() {
+                let area = m.segment() == way.area_segment()
+                    && m.base() == Register::None
+                    && m.index() == Register::None;
+                if area
+                    && !matches!(
+                        m.access(),
+                        OpAccess::Read | OpAccess::CondRead | OpAccess::None
+                    )
+                {
+                    written.push(Held::Page(m.displacement() as u16));
+                }
+            }
+            for held in written {
+                let now = held_at(held);
+                if let Some(g) = now {
+                    holders
+                        .registers
+                        .iter_mut()
+                        .filter(|r| **r == Some(g))
+                        .for_each(|r| *r = None);
+                    holders.area.retain(|_, v| *v != g);
+                }
+                match (held, now) {
+                    (Held::Register(n), _) => holders.registers[usize::from(n)] = now,
+                    (Held::Page(p), Some(g)) => {
+                        holders.area.insert(u64::from(p), g);
+                    }
+                    (Held::Page(p), None) => {
+                        holders.area.remove(&u64::from(p));
+                    }
+                }
+            }
+        }
+        let next = at + i.len();
+        let target = i.near_branch_target() as usize;
+        let ways: Vec<usize> = match i.flow_control() {
+            iced_x86::FlowControl::UnconditionalBranch => vec![target],
+            iced_x86::FlowControl::ConditionalBranch => vec![target, next],
+            iced_x86::FlowControl::IndirectBranch
+            | iced_x86::FlowControl::Interrupt
+            | iced_x86::FlowControl::Exception => vec![],
+            _ => vec![next],
+        };
+        for to in ways {
+            work.push((to, holders.clone()));
         }
     }
     None
