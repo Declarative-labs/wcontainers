@@ -77,6 +77,7 @@ sha2 = "0.10.9"
 name = "conformance"
 path = "conformance.rs"
 
-# Not under the workspace's ban on unsafe code: an executor runs generated code and maps guest memory.
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
+# TODO: of this crate's 52 uses, remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

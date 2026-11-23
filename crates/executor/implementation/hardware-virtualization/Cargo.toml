@@ -124,6 +124,7 @@ harness = false
 name = "registers"
 harness = false
 
-# Not under the workspace's ban on unsafe code: an executor calls the hypervisor and maps guest memory.
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
+# TODO: of this crate's 72 uses, remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

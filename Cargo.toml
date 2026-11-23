@@ -28,14 +28,12 @@ naga = { path = "third_party/naga" }
 # wgpu 30.0.2 with its browser back end passing a render pass's occlusion query set to WebGPU.
 wgpu = { path = "third_party/wgpu" }
 
-# No crate of ours writes unsafe code, except where a crate cannot do its job without it. Every crate inherits
-# these lints with `[lints]` `workspace = true`; a crate that does not has its own `[lints.rust]` table and says why.
-# Allowed to write it (the executors: they run generated code, map guest memory and call a hypervisor):
-#   crates/executor/implementation/hardware-virtualization
-#   crates/executor/implementation/hardware-virtualization-inside
-#   crates/executor/implementation/unicorn
-#   crates/executor/implementation/wasmtime
-# TODO: not yet free of it (uses counted on 2026-11-22); each inherits these lints once it is:
+# No crate of ours writes unsafe code. Every crate inherits these lints with `[lints]` `workspace = true`, which forbids it
+# outright. The four executors cannot do their job without some (they run generated code, map guest memory and call a
+# hypervisor): they have their own `[lints.rust]` table that denies it instead, so that each use must carry its own
+# `#[expect(unsafe_code, reason = "..")]` on the smallest item that needs it, and every use is a marked point to review.
+# TODO: not yet done (uses counted on 2026-11-22); each inherits these lints once it is free of it, or, for an executor,
+# denies it once every use left is marked:
 #   crates/wcontainers-directx (1091)
 #   crates/wcontainers-direct3d-12 (504)
 #   crates/wcontainers-graphics-test (342)
@@ -45,7 +43,11 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/wcontainers-gpu-webgl (167)
 #   crates/wcontainers-nir (98)
 #   crates/wcontainers-shaders (95)
+#   crates/executor/implementation/hardware-virtualization (72, an executor)
+#   crates/executor/implementation/hardware-virtualization-inside (57, an executor)
+#   crates/executor/implementation/wasmtime (52, an executor)
 #   crates/internet-protocol/implementation/linux-socket-options (40)
+#   crates/executor/implementation/unicorn (37, an executor)
 #   crates/wcontainers-gpu-webgpu (30)
 #   crates/tcp-sockets/implementation/host (23)
 #   crates/wcontainers-translator-test (16)
