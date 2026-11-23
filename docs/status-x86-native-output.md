@@ -2,8 +2,8 @@
 
 Plan: docs/x86-native-output.md. Brief: pyro-parked/wcontainers-scratch/orchestrator/relaunch-agents/
 x86-native-output.js. Scratch: pyro-parked/wcontainers-scratch/x86-native-output (probes/, results/, check-xn0/,
-check-xn0b/ to check-xn0e/, the five independent checks' probes and outputs, and run4/ to run6/, those runs'
-probes, check-xn0f/ the sixth check's, run7/ run 7's).
+check-xn0b/ to check-xn0g/, the independent checks' probes and outputs, and run4/ to run8/, those runs'
+probes).
 
 ## Where things stand
 
@@ -13,9 +13,42 @@ probes, check-xn0f/ the sixth check's, run7/ run 7's).
   nine minor, fixed by run 4 (scratch run4/). The fourth (scratch check-xn0d/) found two blocking and six minor,
   fixed by run 5 (scratch run5/). The fifth (scratch check-xn0e/) found three blocking and six minor; run 6 fixed
   all nine (list below), measured in scratch run6/. The sixth (scratch check-xn0f/) found two blocking and nine
-  minor; run 7 fixed all eleven (list below), measured in scratch run7/. The run-7 fixes have not had a check of
-  their own. Nothing is built; no code of this track exists yet.
+  minor; run 7 fixed all eleven (list below), measured in scratch run7/. The seventh (scratch check-xn0g/) found two
+  blocking and seven minor (one of them no defect, a measurement to record); run 8 fixed all nine (list below),
+  measured in scratch run8/. The run-8 fixes have not had a check of their own. Nothing is built; no code of this
+  track exists yet.
 - XN1 and XN2: not started. XN1 starts with the reconciliation points under Coordination.
+
+## What run 8 changed (seventh check), finding by finding
+
+- Speculation in way I (blocking): the exact form's access is now the wrapping form's, cut to the window by its
+  addressing mode (address-size prefix, `gs:[t32]`), after either check; the bit tests are re-encoded the same way
+  (the hardware wraps t32 plus the offset's part, which is the checked A); strings cut rsi and rdi with `mov esi,
+  esi` and `mov edi, edi` after the probe and before the rebase; `maskmovdqu` and `xlat` take the address-size
+  prefix in both forms; `pushf` reads the flags on the count stack and pushes them through `access`, so no rsp
+  rebase remains. A new Speculation item says what this covers and why, the routing test fails on an uncut access,
+  section 7 has the bounds-check-bypass test for every access shape and XN2's bar includes it. Measured
+  (run8/specx3.c, two seeds, 100,000 rounds each): the uncut live-flags forms read the secret 99,997 to 99,999
+  times, the uncut dead-flags forms 4 to 7, every cut form 0 (plan 4, 7, 8).
+- The no_std core (blocking): `Condition`, the x87 unit and the transcendental answers are translate-only today and
+  transcendental.rs uses std; section 9 now lists their move into the core as shared-code changes (a new
+  condition.rs, the x87 unit, transcendental.rs and root.rs moved, the `Mnemonic` helpers left behind `translate`,
+  the `thread_local!` cache passed in as `&mut Consts`). Measured (run8/nostd): rustc_apfloat 0.2.3 and
+  astro-float-num 0.3.7 build for `x86_64-unknown-none` only with lazy_static's `spin_no_std` feature, so the core
+  gains that dependency line (plan 1, 3.1, 3.2, 3.5, 9).
+- SA_RESTORER (minor): P's handlers are installed with it and a never-reached restorer; why (raw `rt_sigaction`, the
+  check's bt16.c) and that this track's probes went through glibc (plan 3.7).
+- The unmasked x87 mode across saves (minor): saves in that mode take the control and status words from the block,
+  loads put them back there and keep the hardware's masked, the thread or child stays in the mode; new shapes for
+  a switch, a returning handler and `clone` (plan 3.1, 7).
+- X87Control's two positions (minor): before an MMX instruction it resumes at that instruction, after a `fldcw` at
+  the next; the map records per position and XN1's map test checks both (plan 3.7, 7).
+- The guest's address-size prefix on a bit test (minor): A is formed with a 32-bit `lea`, wrapping as the meaning
+  does; the check's case (`67 0f a3 08`, eax 0xfffffff0, ecx 0x100, reaching 0x10) is a way I test and was run in
+  run8/btcut.c (plan 4, 7).
+- c from the frame's copy in P (minor): named as P's difference, changing only that process's counts (plan 3.7, 5).
+- The stale coordination item (minor): removed; the P/I plan's 3.10 already takes the mirror with no slot table.
+- The 16-bit bit-test sequences (no defect): the check's measurement recorded in plan 4.
 
 ## What run 7 changed (sixth check), finding by finding
 
@@ -293,6 +326,23 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
     r11, 3 runs: 8 to 10 taken in guest code, 54,952 to 57,568 in the tail, deepest frame 3 KiB, the guest loop's
     flags, r12..r14 and ymm7 kept, exit 0; round trip 924 to 931 ns against 1,069 to 1,079 with `rt_sigreturn` (3
     rounds of 200,000 in each of 3 runs).
+- Run 8 (scratch run8/, btcut-specx3.out; load 0.1 to 0.8 before and after each, processor 5):
+  - btcut.c (`gcc -O2 -mno-red-zone -mbmi2 -mfsgsbase`): 2,000,000 cases with seed 0x5eed and 2,000,000 with
+    0x2b17 (16, 32, 64-bit offsets, A in a 1 MiB buffer at B, t at or above 2^32 in 625,255 and 625,142): `lock
+    bts` on `gs:[t32]` with the offset register missed exactly B + A's bit 0 times; the 32-bit `lea` A against the
+    meaning's wrapped A 0 wrong, flags changed 0 times; `67 0f a3 08`'s case reached bit 0 of B + 0x10; exit 0.
+  - specx3.c (`gcc -O2 -mbmi2 -mfsgsbase`), 100,000 rounds each, seeds 0x1234567 (secret 0xc7) and 0xbeef01 (0xc1),
+    rounds where the secret's byte (or bit) was read: `cmp; jae; gs:[t]` 4 and 7, `gs:[t32]` 0 and 0; probe then
+    `gs:[t]` 99,999 and 99,999, then `gs:[t32]` 0 and 0 (the window's byte 99,999 and 99,996); `bt r, gs:[t]` 7 and
+    5, `bt r, gs:[t32]` 0 and 0; probe then `lods gs:[rsi]` 99,997 and 99,997, with `mov esi, esi` first 0 and 0;
+    exit 0.
+  - nostd/ (a no_std crate using astro-float-num 0.3.7 without default features and rustc_apfloat 0.2.3, built in
+    the checkout's Nix shell, Rust 1.99.0, `cargo build --release --target x86_64-unknown-none`): fails in
+    lazy_static (E0463, no std) as the x86 crate takes them today; builds with `lazy_static` and its
+    `spin_no_std` feature added (tree: either, itertools 0.10.5, lazy_static 1.5.1, spin 0.9.9, smallvec, bitflags).
+- Measured by the seventh check (check-xn0g/): specx.c, specx2.out (the uncut forms leaking, the cut one not; the
+  figures are in plan 4); bt16.c, bt16.out (the 16-bit sequences, 10,000,000 cases, 0 wrong; raw `rt_sigaction`
+  without `SA_RESTORER` killed by signal 11).
 - Measured by the fifth check (check-xn0e/run.out): UMIP emulation of all five of sgdt, sidt, sldt, str, smsw in a
   64-bit process (none raised a signal); a `popfq` of the guest's word with TF set gave 10 steps over ten `nop`s,
   of a flags-table word 0.
@@ -333,8 +383,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 - native-without-virtual-machine (docs/native-without-virtual-machine.md, the P/I plan, written the same day as
   this one). Asked of it, to reconcile before XN1 or its W1:
-  - x86-64 has no slot table and no lookup cache: the mirror's first level per thread area and second levels per
-    code region live in its "our area" [2^44, ~2^47) (its 3.1 still says x86 uses a lookup cache).
+  - Way I's guarantee against speculation (its 3.2, 9 and W2's test, which its 3.10 takes for x86 "as it stands"):
+    holds for x86 since run 8, every access in both forms being cut to 32 bits (plan 4, Speculation; measured).
+    Before run 8 the exact form's access was on 64-bit `gs:[t]` and leaked (the seventh check's specx.c).
+  - `SA_RESTORER` on x86-64: its 3.6 now says it; plan 3.7 says the same for P's stub.
   - I on x86: the thread area is on FS (its 3.8's `wrfsbase` swap at entry and exit stays, but the value during guest
     code is our area, not the guest's FS base) and GS is the process's window base; one area per runner, the
     process's first level mapped in at a process switch. The x86 window (2^32 plus 2^35 and two pages below, one
@@ -393,7 +445,9 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   `AT_SYSINFO_EHDR`; an x86-64 guest needs either no vDSO (glibc's `clock_gettime` then a system call, as the P/I
   plan assumes) or an x86-64 one (plan 3.7).
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
-  shared code changes (plan section 9) go in small commits that keep ARM64's suites passing.
+  shared code changes (plan section 9) go in small commits that keep ARM64's suites passing. The x86 crate's core
+  gains `Condition`, the x87 unit, the transcendental answers and their dependencies (plan 9), so the kernel,
+  which depends on the core, compiles them too.
 - instruction design: the x86-64 `ProcessorArchitecture` and precise instruction sets do not exist yet; the route of
   undefined-result and partial-write forms takes the host's match from them once they do.
 
@@ -408,7 +462,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Licences
 
-No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT, already a dependency).
+No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT, already a dependency). Plan
+section 9 moves rustc_apfloat 0.2.3 (Apache-2.0 WITH LLVM-exception) and astro-float-num 0.3.7 (MIT), both already
+dependencies, into the x86 core and adds `lazy_static` 1.5 (MIT OR Apache-2.0) for its `spin_no_std` feature, which
+brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
 
@@ -433,14 +490,17 @@ No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT
   copy's r10 and r11, run7/presume7.c); an `int3` hit on a `jcc` exit chooses only between two host addresses of
   the map (measured: 0 wrong arrivals over 16 conditions); way I's exact form checks the address a bit test
   reaches, not its operand's (checking the operand alone let the check's probe set a host byte 1 GiB away; the new
-  sequence measured over 4,000,000 seeded cases);
+  sequence measured over 4,000,000 seeded cases); every way I access in both forms is cut to the window by its
+  addressing mode, so a speculative access past either check reaches nothing outside it (measured: the uncut
+  live-flags forms read a byte outside 99,997 to 99,999 times in 100,000, every cut form 0, run8/specx3.c);
+  P's handlers carry `SA_RESTORER`, without which the host kernel kills the stub at its first signal;
   no thread resumes at a host address in a piece dropped since its call (plan 3.7, tests in plan 7);
   no code is changed while another processor may run it except by the `int3` protocol
   (measured over 20,000 links with 64 threads running the exit); the code area is never read as data, so it may be
   execute-only; the machine maps each processor's area only for that processor; I's handler restores the host's FS
   before Rust code. Points it hands to
   P: writable pages of the guest's host process, the signal frame and other threads' register areas included, are
-  the guest's.
+  the guest's (so a sibling can change a stopped thread's count c, named in plan 5).
 - Tests for these: plan section 7 (shapes, way I, routing).
 
 ## How to run the probes
@@ -459,4 +519,7 @@ workers, seed; exit 1 on any wrong arrival), `gcc -O2 -pthread -fno-stack-protec
 ./presume 200000 200000` (stops, round trips). Run 7's, in /work/probes/xn0r7: `gcc -O2 -mno-red-zone -mbmi2
 -mfsgsbase -o btseq btseq.c && taskset -c 5 ./btseq 2000000 0x5eed` (cases, seed; exit 1 on any difference), `gcc
 -O2 -o altdelta altdelta.c && ./altdelta`, `gcc -O2 -pthread -fno-stack-protector -mfsgsbase -o presume7
-presume7.c && ./presume7 200000 200000`.
+presume7.c && ./presume7 200000 200000`. Run 8's, in /work/probes/xn0r8: `gcc -O2 -mno-red-zone -mbmi2 -mfsgsbase -o
+btcut btcut.c && taskset -c 5 ./btcut 2000000 0x5eed` (cases, seed; exit 1 on any difference), `gcc -O2 -mbmi2
+-mfsgsbase -o specx3 specx3.c && taskset -c 5 ./specx3 100000 0x1234567` (rounds, seed), and in nostd/ `nix develop
+<a checkout copy on the machine> -c cargo build --release --target x86_64-unknown-none`.
