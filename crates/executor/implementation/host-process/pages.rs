@@ -59,6 +59,8 @@ pub mod register {
     pub const STOPS_IN_END: usize = 56;
     /// More of what the exit reports, where its kind says so.
     pub const EXIT_DETAIL: usize = 64;
+    /// The turn the thread last took, written as it takes it (untrusted).
+    pub const TAKEN: usize = 72;
     /// The thread's registers: a [`wcontainers_abi::RegisterBlock`], little endian.
     pub const REGISTERS: usize = 128;
 
@@ -128,6 +130,11 @@ pub enum Command {
         /// The block's offset.
         offset: usize,
     },
+    /// Moves the thread applying it to one CPU, as its runner's.
+    Place {
+        /// The CPU's number.
+        cpu: usize,
+    },
     /// Makes a host thread for a free index, which then waits for turns after `last_turn` (from
     /// [`crate::stub::Stub::new_thread`]).
     NewThread {
@@ -146,6 +153,7 @@ pub(crate) enum CommandKind {
     Unmap = 3,
     NewThread = 4,
     MapShared = 5,
+    Place = 6,
 }
 
 impl Command {
@@ -191,6 +199,12 @@ impl Command {
                 with(CommandKind::Unmap, ProtFlags::empty()),
                 address as u64,
                 length as u64,
+                0,
+            ],
+            Self::Place { cpu } => [
+                with(CommandKind::Place, ProtFlags::empty()),
+                cpu as u64,
+                0,
                 0,
             ],
             Self::NewThread { thread, last_turn } => [

@@ -14,18 +14,14 @@ use wcontainers_executor_host_process::executor::{HostProcessExecutor, Touch, To
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_host_process::stub::STOP_IGNORED;
 
-/// One embedder process has one zygote place, so tests running at once start theirs one at a time.
-static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// One host for the whole test process, as an embedder has, so the runners of tests running at once spread over CPUs.
+static HOST: std::sync::OnceLock<Arc<HostProcessHost>> = std::sync::OnceLock::new();
 
 fn process() -> (HostProcessExecutor, MemoryId, ThreadId) {
-    let mut cpu = {
-        let _one_at_a_time = STARTING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        HostProcessExecutor::new(Arc::new(
-            HostProcessHost::new().expect("the host is refused"),
-        ))
-    };
+    let mut cpu = HostProcessExecutor::new(
+        HOST.get_or_init(|| Arc::new(HostProcessHost::new().expect("the host is refused")))
+            .clone(),
+    );
     let memory = cpu.memory_new().expect("memory");
     let thread = cpu.thread_new(memory).expect("thread");
     (cpu, memory, thread)

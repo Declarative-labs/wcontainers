@@ -4,7 +4,7 @@
 use std::ops::Range;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rangemap::RangeMap;
 use rustix::fs::{FallocateFlags, MemfdFlags, SeekFrom};
@@ -69,6 +69,25 @@ struct Block {
 struct Thread {
     memory: MemoryId,
     index: usize,
+    /// The CPU its host thread was last moved to.
+    cpu: Option<usize>,
+}
+
+/// How much of a runner's busy time it samples its CPU's share over.
+const SAMPLE_EVERY: Duration = Duration::from_millis(10);
+
+/// A CPU whose share falls below this fraction of the busy time (as numerator over denominator) is contended.
+const CONTENDED_BELOW: (u128, u128) = (3, 4);
+
+/// The CPU the runner thread holds, and its sampling window (plan 4.3).
+struct Runner {
+    cpu: usize,
+    /// Time inside turns since the window began.
+    busy: Duration,
+    /// The runner thread's CPU clock when the window began.
+    own: Duration,
+    /// Each stub given a turn in the window, with its process's CPU clock before its first.
+    stubs: Vec<(Pid, Duration)>,
 }
 
 /// The executor's counts of its slow and notable paths.
@@ -90,6 +109,10 @@ pub struct Counters {
     pub stops_sent: u64,
     /// Stubs killed because a thread did not come back 10 s after its stop ("thread ignored its stop").
     pub stops_ignored: u64,
+    /// Moves of the runner to another CPU after its own was found contended.
+    pub placement_moves: u64,
+    /// Runners that place without samples, the CPU clocks being refused ("placement without samples").
+    pub placement_without_samples: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -141,6 +164,10 @@ pub struct HostProcessExecutor {
     threads: Vec<Option<Thread>>,
     blocks: Vec<Option<Block>>,
     counters: Counters,
+    /// The calling thread's place, from its first turn.
+    runner: Option<Runner>,
+    /// Whether the CPU clocks can be read.
+    sampling: bool,
 }
 
 impl HostProcessExecutor {
@@ -152,7 +179,14 @@ impl HostProcessExecutor {
             threads: Vec::new(),
             blocks: Vec::new(),
             counters: Counters::default(),
+            runner: None,
+            sampling: true,
         }
+    }
+
+    /// The CPU the runner holds, once it has run a turn.
+    pub fn runner_cpu(&self) -> Option<usize> {
+        self.runner.as_ref().map(|runner| runner.cpu)
     }
 
     /// The counts so far.
@@ -167,7 +201,7 @@ impl HostProcessExecutor {
 
     /// Where a thread's stops landed, as its stub counts them (untrusted).
     pub fn stops_landed(&self, thread: ThreadId) -> crate::stub::StopsLanded {
-        let Thread { memory, index } = self.thread(thread);
+        let Thread { memory, index, .. } = self.thread(thread);
         self.memory(memory).stub.stops_landed(index)
     }
 
@@ -179,14 +213,20 @@ impl HostProcessExecutor {
         touch: Touch,
         slice: Option<Duration>,
     ) -> Result<Touched, CpuError> {
-        let Thread { memory, index } = self.thread(thread);
+        let Thread { memory, index, .. } = self.thread(thread);
+        let cpu = self.place_runner();
+        let mut place = (self.thread(thread).cpu != Some(cpu)).then_some(Command::Place { cpu });
         let (address, value, resume, access) = match touch {
             Touch::Load(address) => (address, 0, Resume::Load, Access::Read),
             Touch::Store(address, value) => (address, value, Resume::Store, Access::Write),
             Touch::Spin => (0, 0, Resume::Spin, Access::Read),
         };
         loop {
-            let (commands, blocks) = self.take_queue(memory);
+            let (mut commands, blocks) = self.take_queue(memory);
+            commands.extend(place.take());
+            let stub = self.memory(memory).stub.process();
+            self.note_stub(stub);
+            let started = Instant::now();
             let end = self.run_turn(
                 memory,
                 index,
@@ -194,6 +234,13 @@ impl HostProcessExecutor {
                 &blocks,
                 Some((address as usize, value, resume, slice)),
             )?;
+            self.account(started.elapsed());
+            if !matches!(end, TurnEnd::CommandRefused { .. } | TurnEnd::StubEnded) {
+                self.threads[thread.0 as usize]
+                    .as_mut()
+                    .expect("a thread the kernel holds")
+                    .cpu = Some(cpu);
+            }
             return Ok(match end {
                 TurnEnd::Loaded { value } if resume == Resume::Load => Touched::Loaded(value),
                 TurnEnd::Done { .. } if resume == Resume::Store => Touched::Stored,
@@ -282,6 +329,112 @@ impl HostProcessExecutor {
         self.memory_mut(id).queue.push(protect(run, view));
         self.counters.faults_resolved += 1;
         Ok(FaultOwner::Executor)
+    }
+
+    /// The runner's CPU: on its first turn the host's choice, to which it pins itself.
+    fn place_runner(&mut self) -> usize {
+        if let Some(runner) = &self.runner {
+            return runner.cpu;
+        }
+        let cpu = self.pin(self.host.take_cpu());
+        self.runner = Some(Runner {
+            cpu,
+            busy: Duration::ZERO,
+            own: Duration::ZERO,
+            stubs: Vec::new(),
+        });
+        self.start_window();
+        cpu
+    }
+
+    /// Pins the calling thread to a CPU the host gave; if the process may no longer use it, reads its CPUs again and
+    /// takes another. The CPU it holds.
+    fn pin(&mut self, cpu: usize) -> usize {
+        let pinned = |cpu: usize| {
+            let mut set = rustix::thread::CpuSet::new();
+            set.set(cpu);
+            rustix::thread::sched_setaffinity(None, &set)
+        };
+        if pinned(cpu).is_ok() || self.host.reread_cpus().is_err() {
+            return cpu;
+        }
+        self.host.release_cpu(cpu);
+        let again = self.host.take_cpu();
+        // Refused again, the thread runs where the host puts it, its CPU still counted as held.
+        let _ = pinned(again);
+        again
+    }
+
+    fn start_window(&mut self) {
+        let own = thread_clock();
+        if let Some(runner) = &mut self.runner {
+            runner.busy = Duration::ZERO;
+            runner.own = own.unwrap_or_default();
+            runner.stubs.clear();
+        }
+        if own.is_err() {
+            self.no_samples();
+        }
+    }
+
+    fn no_samples(&mut self) {
+        if self.sampling {
+            self.sampling = false;
+            self.counters.placement_without_samples += 1;
+            eprintln!("wcontainers warning: placement without samples, the CPU clocks are refused");
+        }
+    }
+
+    /// Reads a stub's CPU clock before its first turn in the window.
+    fn note_stub(&mut self, stub: Pid) {
+        let Some(runner) = &mut self.runner else {
+            return;
+        };
+        if !self.sampling || runner.stubs.iter().any(|(held, _)| *held == stub) {
+            return;
+        }
+        match process_clock(stub) {
+            Ok(at) => runner.stubs.push((stub, at)),
+            Err(_) => self.no_samples(),
+        }
+    }
+
+    /// Adds a turn's time to the window; past 10 ms of it, the CPU's share (the runner's and its stubs' CPU time over
+    /// the busy time) decides whether the runner moves to the CPU the host would give now.
+    fn account(&mut self, turn: Duration) {
+        let Some(runner) = &mut self.runner else {
+            return;
+        };
+        runner.busy += turn;
+        if !self.sampling || runner.busy < SAMPLE_EVERY {
+            return;
+        }
+        let (Ok(own), Ok(stubs)) = (
+            thread_clock(),
+            runner
+                .stubs
+                .iter()
+                .map(|(stub, at)| process_clock(*stub).map(|now| now.saturating_sub(*at)))
+                .sum::<Result<Duration, Errno>>(),
+        ) else {
+            // A stub that ended has no clock: this window decides nothing.
+            self.start_window();
+            return;
+        };
+        let used = own.saturating_sub(runner.own) + stubs;
+        let (part, whole) = CONTENDED_BELOW;
+        let cpu = runner.cpu;
+        if used.as_nanos() * whole < runner.busy.as_nanos() * part {
+            self.host.mark_contended(cpu);
+            let new = self.host.take_cpu();
+            self.host.release_cpu(if new == cpu { new } else { cpu });
+            if new != cpu {
+                let new = self.pin(new);
+                self.runner.as_mut().expect("placed").cpu = new;
+                self.counters.placement_moves += 1;
+            }
+        }
+        self.start_window();
     }
 
     fn memory(&self, id: MemoryId) -> &Memory {
@@ -923,13 +1076,17 @@ impl Cpu for HostProcessExecutor {
         self.memory(id)
             .stub
             .write_registers(index, RegisterBlock::ZERO.as_bytes());
-        let thread = Thread { memory: id, index };
+        let thread = Thread {
+            memory: id,
+            index,
+            cpu: None,
+        };
         Ok(ThreadId(place(&mut self.threads, thread) as u32))
     }
 
     /// Ends a guest thread's host thread, or keeps it as its memory's spare if it has none.
     fn thread_drop(&mut self, thread: ThreadId) {
-        let Thread { memory, index } = self.threads[thread.0 as usize]
+        let Thread { memory, index, .. } = self.threads[thread.0 as usize]
             .take()
             .expect("a thread the kernel holds");
         let memory = self.memory_mut(memory);
@@ -943,14 +1100,14 @@ impl Cpu for HostProcessExecutor {
 
     /// As its register page holds them.
     fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
-        let Thread { memory, index } = self.thread(thread);
+        let Thread { memory, index, .. } = self.thread(thread);
         self.memory(memory)
             .stub
             .read_registers(index, into.as_mut_bytes());
     }
 
     fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
-        let Thread { memory, index } = self.thread(thread);
+        let Thread { memory, index, .. } = self.thread(thread);
         self.memory(memory)
             .stub
             .write_registers(index, from.as_bytes());
@@ -959,6 +1116,9 @@ impl Cpu for HostProcessExecutor {
 
 impl Drop for HostProcessExecutor {
     fn drop(&mut self) {
+        if let Some(runner) = self.runner.take() {
+            self.host.release_cpu(runner.cpu);
+        }
         for slot in 0..self.threads.len() {
             if self.threads[slot].is_some() {
                 self.thread_drop(ThreadId(slot as u32));
@@ -983,6 +1143,21 @@ impl Drop for HostProcessExecutor {
             }
         }
     }
+}
+
+/// The calling thread's CPU time.
+fn thread_clock() -> Result<Duration, Errno> {
+    let at = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Ok(Duration::new(at.tv_sec as u64, at.tv_nsec as u32))
+}
+
+/// A process's CPU time, through its CPU clock, which any process may read.
+fn process_clock(process: Pid) -> Result<Duration, Errno> {
+    let process = nix::unistd::Pid::from_raw(process.as_raw_nonzero().get());
+    let at = nix::time::clock_getcpuclockid(process)
+        .and_then(nix::time::clock_gettime)
+        .map_err(|errno| Errno::from_raw_os_error(errno as i32))?;
+    Ok(Duration::new(at.tv_sec() as u64, at.tv_nsec() as u32))
 }
 
 /// Puts a value in the first free slot; its index.

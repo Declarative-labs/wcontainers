@@ -206,8 +206,8 @@ impl Program {
 /// The stub's filter: `futex`, `exit`, `exit_group`, `rt_sigprocmask` and `sigaltstack` as they come; `mmap` shared and
 /// fixed, inside the guest area, never executable, of the memory's memfd at the offset equal to the address or of a
 /// shared block's received memfd; `mprotect` inside the guest area, never executable; `munmap` inside the guest area;
-/// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block. Anything
-/// else kills the stub.
+/// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block;
+/// `sched_setaffinity` of the calling thread only. Anything else kills the stub.
 pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mut program = Program {
         ops: Vec::new(),
@@ -221,6 +221,7 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let clone = program.label();
     let recvmsg = program.label();
     let close = program.label();
+    let place = program.label();
     program.load(offset_of!(seccomp_data, arch));
     program.jump(
         BPF_JEQ | BPF_K,
@@ -241,6 +242,7 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
         (linux::__NR_clone, clone),
         (linux::__NR_recvmsg, recvmsg),
         (linux::__NR_close, close),
+        (linux::__NR_sched_setaffinity, place),
     ] {
         program.jump(BPF_JEQ | BPF_K, number, Target::Label(to), Target::Next);
     }
@@ -292,6 +294,11 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
 
     program.place(close);
     program.argument_is(0, u64::from(BLOCK_FD), kill);
+    program.always(allow);
+
+    program.place(place);
+    program.argument_is(0, 0, kill);
+    program.argument_is(1, size_of::<libc::cpu_set_t>() as u64, kill);
     program.always(allow);
 
     // Last, since a filter's jumps go only forward.

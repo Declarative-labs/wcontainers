@@ -16,16 +16,14 @@ use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_host_process::layout::OUR_AREA;
 use wcontainers_executor_host_process::pages::control::MAX_COMMANDS;
 
-/// One embedder process has one zygote place, so tests running at once start theirs one at a time.
-static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// One host for the whole test process, as an embedder has, so the runners of tests running at once spread over CPUs.
+static HOST: std::sync::OnceLock<Arc<HostProcessHost>> = std::sync::OnceLock::new();
 
 fn executor() -> HostProcessExecutor {
-    let _one_at_a_time = STARTING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    HostProcessExecutor::new(Arc::new(
-        HostProcessHost::new().expect("the host is refused"),
-    ))
+    HostProcessExecutor::new(
+        HOST.get_or_init(|| Arc::new(HostProcessHost::new().expect("the host is refused")))
+            .clone(),
+    )
 }
 
 const PAGE: u64 = 4096;

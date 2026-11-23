@@ -1,9 +1,11 @@
-//! The process-wide part of form P: the start-up probe, one zygote, forked anew when it ends, and the window cache.
+//! The process-wide part of form P: the start-up probe, one zygote, forked anew when it ends, the window cache and the
+//! table of CPUs its runners hold.
 //!
 //! A private stand-in for the process-wide host the owner is asked for (plan 8.5); his ruling changes this one place.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use rustix::io::Errno;
 
@@ -20,6 +22,32 @@ pub struct HostProcessHost {
     zygote_ends: AtomicU64,
     /// Every view of every stub's memory that the embedder's process has.
     windows: Mutex<WindowCache>,
+    cpus: Mutex<CpuTable>,
+}
+
+/// How long a CPU found contended is passed over.
+const CONTENDED_FOR: Duration = Duration::from_secs(1);
+
+/// The CPUs the process may use: for each, how many runners hold it and when it was last found contended.
+struct CpuTable {
+    allowed: Vec<usize>,
+    held: Vec<u32>,
+    contended: Vec<Option<Instant>>,
+}
+
+impl CpuTable {
+    fn new() -> Result<Self, Errno> {
+        let set = rustix::thread::sched_getaffinity(None)?;
+        let allowed: Vec<usize> = (0..rustix::thread::CpuSet::MAX_CPU)
+            .filter(|cpu| set.is_set(*cpu))
+            .collect();
+        let size = allowed.last().map_or(0, |last| last + 1);
+        Ok(Self {
+            allowed,
+            held: vec![0; size],
+            contended: vec![None; size],
+        })
+    }
 }
 
 impl HostProcessHost {
@@ -28,12 +56,73 @@ impl HostProcessHost {
         let probe = HostProbe::new()?;
         let zygote = Zygote::start(&probe)?;
         let windows = WindowCache::new(WINDOWS).map_err(Unavailable::Host)?;
+        let cpus = CpuTable::new().map_err(Unavailable::Host)?;
         Ok(Self {
             probe,
             zygote: Mutex::new(Ok(zygote)),
             zygote_ends: AtomicU64::new(0),
             windows: Mutex::new(windows),
+            cpus: Mutex::new(cpus),
         })
+    }
+
+    /// Holds a CPU for a runner: the one held by the fewest runners and not found contended in the last second (the
+    /// lowest number on a tie), or, when every one was, the one held by the fewest.
+    pub fn take_cpu(&self) -> usize {
+        let mut table = self
+            .cpus
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        let fewest = |fresh_only: bool| {
+            table
+                .allowed
+                .iter()
+                .copied()
+                .filter(|cpu| {
+                    !fresh_only
+                        || table.contended[*cpu]
+                            .is_none_or(|at| now.duration_since(at) >= CONTENDED_FOR)
+                })
+                .min_by_key(|cpu| (table.held[*cpu], *cpu))
+        };
+        let cpu = fewest(true)
+            .or_else(|| fewest(false))
+            .expect("a process may use at least one CPU");
+        table.held[cpu] += 1;
+        cpu
+    }
+
+    /// Lets a runner's CPU go.
+    pub fn release_cpu(&self, cpu: usize) {
+        let mut table = self
+            .cpus
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.held[cpu] = table.held[cpu].saturating_sub(1);
+    }
+
+    /// Marks a CPU found contended now.
+    pub fn mark_contended(&self, cpu: usize) {
+        let mut table = self
+            .cpus
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.contended[cpu] = Some(Instant::now());
+    }
+
+    /// Reads the CPUs the process may use again, after a pin was refused; the counts of CPUs still allowed stay.
+    pub fn reread_cpus(&self) -> Result<(), Errno> {
+        let fresh = CpuTable::new()?;
+        let mut table = self
+            .cpus
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let size = fresh.held.len().max(table.held.len());
+        table.held.resize(size, 0);
+        table.contended.resize(size, None);
+        table.allowed = fresh.allowed;
+        Ok(())
     }
 
     /// The window cache, for one executor call's copies.

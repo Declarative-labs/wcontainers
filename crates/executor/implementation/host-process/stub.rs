@@ -29,6 +29,10 @@ pub const BLOCK_FD: u32 = 0;
 /// may take to come back before it is sent its stop again.
 const LOOK_FOR_END: Duration = Duration::from_millis(100);
 
+/// How often a runner looks again whether a thread whose slice has passed has taken its turn yet, so the stop is not
+/// spent before the turn begins.
+const TAKEN_POLL: Duration = Duration::from_millis(1);
+
 /// How long after its first stop a thread that has not come back has its stub killed: only a compromised stub can
 /// hold the stop off.
 pub const STOP_IGNORED: Duration = Duration::from_secs(10);
@@ -300,8 +304,9 @@ impl Stub {
         self.give(thread, commands, resume)
     }
 
-    /// Waits for the end of `turn`, sending the stop when `slice` has passed and again every 100 ms after; `None` if
-    /// the thread has not come back [`STOP_IGNORED`] after its first stop. Counts the stops sent in `stops`.
+    /// Waits for the end of `turn`, sending the stop once `slice` has passed and the thread has taken the turn (or 100
+    /// ms after the slice at most), and again every 100 ms after; `None` if the thread has not come back
+    /// [`STOP_IGNORED`] after its first stop. Counts the stops sent in `stops`.
     pub fn wait_sliced(
         &self,
         thread: usize,
@@ -309,7 +314,8 @@ impl Stub {
         slice: Option<Duration>,
         stops: &mut u64,
     ) -> Result<Option<TurnEnd>, Errno> {
-        let mut stop_at = slice.map(|slice| Instant::now() + slice);
+        let slice_end = slice.map(|slice| Instant::now() + slice);
+        let mut stop_at = slice_end;
         let mut first_stop = None;
         loop {
             let limit = stop_at.map_or(LOOK_FOR_END, |at| {
@@ -323,6 +329,15 @@ impl Stub {
                 return Ok(Some(TurnEnd::StubEnded));
             }
             let now = Instant::now();
+            if let (Some(slice_end), None) = (slice_end, first_stop)
+                && stop_at.is_some_and(|at| now >= at)
+                && now.duration_since(slice_end) < LOOK_FOR_END
+                && self.taken(thread) != turn
+            {
+                // A stop before the turn is taken would land in the wait, where it changes nothing.
+                stop_at = Some(now + TAKEN_POLL);
+                continue;
+            }
             if stop_at.is_some_and(|at| now >= at) {
                 if first_stop.is_some_and(|first| now.duration_since(first) >= STOP_IGNORED) {
                     return Ok(None);
@@ -351,6 +366,14 @@ impl Stub {
             SendFlags::DONTWAIT,
         )?;
         if sent == 1 { Ok(()) } else { Err(Errno::PROTO) }
+    }
+
+    /// The turn a thread last took, as it reports it (untrusted: a forged value only delays its own stop, by at most
+    /// 100 ms).
+    fn taken(&self, thread: usize) -> u32 {
+        self.pages
+            .register32(thread, register::TAKEN)
+            .load(Ordering::Acquire)
     }
 
     /// Reads a thread's register block, word by word, as the stub left it (untrusted).
