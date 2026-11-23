@@ -7,7 +7,9 @@ use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand, Segment};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
-use crate::answer::{DescriptorRead, Place, Question, Reciprocal, SegmentName, VectorEncoding};
+use crate::answer::{
+    DescriptorRead, FloatStatus, Place, Question, Reciprocal, SegmentName, VectorEncoding,
+};
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
@@ -371,6 +373,28 @@ pub fn question(i: &Instruction) -> Option<Question> {
             length: ins.len() as u8,
         },
         _ => crate::fpu::transcendental_code(i).map(Question::X87)?,
+    })
+}
+
+/// What the inside's second call is told of an instruction of the Float status route.
+pub fn float_status(i: &Instruction) -> Option<FloatStatus> {
+    use Mnemonic::*;
+    let m = i.iced.mnemonic();
+    Some(match m {
+        Ldmxcsr | Vldmxcsr => FloatStatus::LoadMxcsr,
+        Stmxcsr | Vstmxcsr => FloatStatus::StoreMxcsr,
+        Fxsave | Fxsave64 | Fxrstor | Fxrstor64 => FloatStatus::Image {
+            restore: matches!(m, Fxrstor | Fxrstor64),
+            wide: matches!(m, Fxsave64 | Fxrstor64),
+            at: operand(i)?,
+        },
+        Fnstenv | Fnsave | Fldenv | Frstor => FloatStatus::Environment {
+            restore: matches!(m, Fldenv | Frstor),
+            registers: matches!(m, Fnsave | Frstor),
+            wide: crate::x87::Environment::of(i).wide(),
+            at: operand(i)?,
+        },
+        _ => return None,
     })
 }
 

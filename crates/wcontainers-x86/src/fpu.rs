@@ -8,8 +8,9 @@ use crate::guest::{Control, Hook, Trap};
 use crate::meaning::{checked, each_with};
 use crate::operand::*;
 use crate::x87::{
-    Arithmetic, Code, ENVIRONMENT_WORDS, EXCEPTIONS, FOP_SHIFT, Format, NOT_STORED, OPCODE_BITS,
-    Operation, REGISTER_MASK, REGISTERS, TOP_SHIFT,
+    Arithmetic, Code, ENVIRONMENT_16, ENVIRONMENT_32, ENVIRONMENT_WORDS, EXCEPTIONS,
+    Environment as Layout, FOP_SHIFT, Format, NOT_STORED, OPCODE_BITS, Operation, REGISTER_MASK,
+    REGISTERS, TOP_SHIFT,
 };
 use crate::{CF, PF, X86_64, ZF};
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
@@ -635,49 +636,16 @@ fn compare_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, result: u32) {
     e.set_flags(Flags::Each(each));
 }
 
-/// The protected-mode environment's layout (Intel SDM Vol. 1 8.1.10, figures 8-9 and 8-10): the control,
-/// status and tag words, each in a doubleword whose reserved half is all ones in the 32-bit form, then the
-/// instruction pointer, its selector (FOP above it in the 32-bit form), the data pointer and its selector.
-struct Layout {
-    word: u32,
-    ip: u64,
-    selector: u64,
-    data: u64,
-    data_selector: u64,
-    size: u64,
-}
-
-const ENVIRONMENT_32: Layout = Layout {
-    word: size_of::<u32>() as u32,
-    ip: 12,
-    selector: 16,
-    data: 20,
-    data_selector: 24,
-    size: crate::x87::ENVIRONMENT_32_BYTES as u64,
-};
-const ENVIRONMENT_16: Layout = Layout {
-    word: size_of::<u16>() as u32,
-    ip: 6,
-    selector: 8,
-    data: 10,
-    data_selector: 12,
-    size: crate::x87::ENVIRONMENT_16_BYTES as u64,
-};
 /// The bytes of each register in the saved state, ST(0) first.
 const REGISTER_BYTES: u64 = (crate::X87_REGISTER_BITS / u8::BITS) as u64;
-/// What a reserved half of the 32-bit form holds.
-const RESERVED_HALF: i64 = (u16::MAX as i64) << u16::BITS;
 
 impl Layout {
-    fn of(i: &Instruction) -> &'static Layout {
+    /// The form the instruction's operand size chooses.
+    pub(crate) fn of(i: &Instruction) -> &'static Layout {
         match i.iced.memory_size() {
             MemorySize::FpuEnv14 | MemorySize::FpuState94 => &ENVIRONMENT_16,
             _ => &ENVIRONMENT_32,
         }
-    }
-
-    fn wide(&self) -> bool {
-        self.word > u16::BITS / u8::BITS
     }
 }
 
@@ -764,7 +732,7 @@ fn environment_store<E: Emitter<X86_64> + ?Sized>(
     });
     let (words, fdp) = call(e, c, None, None, None);
     let value = e.local(ValType::I64);
-    let reserved = if layout.wide() { RESERVED_HALF } else { 0 };
+    let reserved = i64::from(layout.reserved());
     for k in 0..ENVIRONMENT_WORDS {
         e.sink()
             .local_get(words)

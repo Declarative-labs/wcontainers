@@ -6,7 +6,10 @@ use crate::user_segments::{
     CR0, DUMMY_GDT_BASE, DUMMY_IDT_BASE, DUMMY_TABLE_LIMIT, NO_LOCAL_TABLE, SEGMENTS,
     SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS, USER32_CS,
 };
-use crate::x87::{Code, EXCEPTIONS, REGISTER_MASK, TOP_SHIFT, Unit};
+use crate::x87::{
+    Code, ENVIRONMENT_16, ENVIRONMENT_32, ENVIRONMENT_32_BYTES, EXCEPTIONS, OPCODE_BITS,
+    REGISTER_MASK, TOP_SHIFT, Unit,
+};
 use crate::{
     ALIGNMENT_CHECK, ARITHMETIC_FLAGS, DEFAULT32, DF, FCW_AT_START, Fxsave, ID, MXCSR_WRITABLE, NT,
     Offer, QUIET32, RAX, RBX, RCX, RDX, RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
@@ -239,6 +242,139 @@ pub struct Notes {
     pub step_held: bool,
     /// A far transfer: rip is already its target, and the caller leaves it.
     pub transferred: bool,
+    /// MXCSR's flags were read while they are not kept.
+    pub mxcsr_flags_read_not_kept: bool,
+}
+
+/// An instruction of the Float status route (plan 3.5), which the hardware runs between the inside's two calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatStatus {
+    /// `ldmxcsr` or `vldmxcsr`.
+    LoadMxcsr,
+    /// `stmxcsr` or `vstmxcsr`.
+    StoreMxcsr,
+    /// `fxsave`, or `fxrstor` with `restore`, of the image at `at`, its x87 pointers of 64 bits with `wide`.
+    Image {
+        restore: bool,
+        wide: bool,
+        at: Operand,
+    },
+    /// `fnstenv`, or `fnsave` with `registers`; `fldenv` and `frstor` with `restore`; the 28-byte form with `wide`.
+    Environment {
+        restore: bool,
+        registers: bool,
+        wide: bool,
+        at: Operand,
+    },
+}
+
+/// The Float status route's second call (plan 3.5). `block` holds the hardware's state just after the instruction
+/// but for the x87 pointers and FOP, which are the meaning's from before it (the hardware's hold host addresses and
+/// are never read); its rip is the instruction's own. A save's image gets the pointers, FOP and MXCSR's mask as the
+/// meaning writes them; a load leaves them in the block as the meaning loads them; `ldmxcsr` keeps MXCSR's flags
+/// from then on. A fault is the image's, made unreachable since the hardware reached it.
+pub fn float_status_after(
+    status: FloatStatus,
+    block: &mut X86Block,
+    tracking: &mut bool,
+    memory: &mut impl Memory,
+) -> Result<Notes, Fault> {
+    const FOP: usize = core::mem::offset_of!(Fxsave, fop);
+    const FIP: usize = core::mem::offset_of!(Fxsave, fip);
+    const FDP: usize = core::mem::offset_of!(Fxsave, fdp);
+    const MXCSR_MASK: usize = core::mem::offset_of!(Fxsave, mxcsr_mask);
+    let mut notes = Notes::default();
+    match status {
+        FloatStatus::LoadMxcsr => *tracking = true,
+        FloatStatus::StoreMxcsr => notes.mxcsr_flags_read_not_kept = !*tracking,
+        FloatStatus::Image { restore, wide, at } => {
+            let at = address(block, &at);
+            let pointer = |p: u64| if wide { p } else { p & u64::from(u32::MAX) };
+            let f = &mut block.fxsave;
+            // FOP, then the two pointers, are one run of the image's bytes.
+            let mut run = [0; FDP + size_of::<u64>() - FOP];
+            if restore {
+                memory
+                    .read(at.wrapping_add(FOP as u64), &mut run)
+                    .map_err(Fault::Memory)?;
+                let word = |from: usize| {
+                    u64::from_le_bytes(run[from - FOP..][..size_of::<u64>()].try_into().unwrap())
+                };
+                f.fop = u16::from_le_bytes([run[0], run[1]]);
+                (f.fip, f.fdp) = (pointer(word(FIP)), pointer(word(FDP)));
+            } else {
+                notes.mxcsr_flags_read_not_kept = !*tracking;
+                run[..size_of::<u16>()].copy_from_slice(&f.fop.to_le_bytes());
+                run[FIP - FOP..][..size_of::<u64>()].copy_from_slice(&pointer(f.fip).to_le_bytes());
+                run[FDP - FOP..].copy_from_slice(&pointer(f.fdp).to_le_bytes());
+                memory
+                    .write(at.wrapping_add(FOP as u64), &run)
+                    .map_err(Fault::Memory)?;
+                memory
+                    .write(
+                        at.wrapping_add(MXCSR_MASK as u64),
+                        &MXCSR_WRITABLE.to_le_bytes(),
+                    )
+                    .map_err(Fault::Memory)?;
+            }
+        }
+        FloatStatus::Environment {
+            restore,
+            registers,
+            wide,
+            at,
+        } => {
+            let layout = if wide {
+                &ENVIRONMENT_32
+            } else {
+                &ENVIRONMENT_16
+            };
+            let at = address(block, &at);
+            let word = layout.word as usize;
+            // The instruction pointer, its selector, the data pointer and its selector are one run of words.
+            let first = at.wrapping_add(layout.ip);
+            let mut bytes = [0; ENVIRONMENT_32_BYTES as usize];
+            let run = &mut bytes[..(layout.size - layout.ip) as usize];
+            let field = |offset: u64| (offset - layout.ip) as usize;
+            let f = &mut block.fxsave;
+            if restore {
+                memory.read(first, run).map_err(Fault::Memory)?;
+                let read = |offset: u64| {
+                    let mut bytes = [0; size_of::<u64>()];
+                    bytes[..word].copy_from_slice(&run[field(offset)..][..word]);
+                    u64::from_le_bytes(bytes)
+                };
+                f.fip = read(layout.ip);
+                f.fdp = read(layout.data);
+                f.fop = if wide {
+                    (read(layout.selector) >> u16::BITS) as u16 & ((1 << OPCODE_BITS) - 1)
+                } else {
+                    0
+                };
+            } else {
+                // The selectors are zero: the reference deprecates FCS and FDS.
+                let selector = if wide {
+                    u64::from(f.fop) << u16::BITS
+                } else {
+                    0
+                };
+                for (offset, value) in [
+                    (layout.ip, f.fip),
+                    (layout.selector, selector),
+                    (layout.data, f.fdp),
+                    (layout.data_selector, layout.reserved().into()),
+                ] {
+                    run[field(offset)..][..word].copy_from_slice(&value.to_le_bytes()[..word]);
+                }
+                memory.write(first, run).map_err(Fault::Memory)?;
+                if registers {
+                    // `fnsave` initialises the unit after its store.
+                    (f.fip, f.fdp, f.fop) = (0, 0, 0);
+                }
+            }
+        }
+    }
+    Ok(notes)
 }
 
 /// Answers `question` on `block` for a process told of `offer`'s features. On `Ok` the instruction has finished

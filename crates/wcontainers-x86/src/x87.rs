@@ -561,6 +561,51 @@ pub const ENVIRONMENT_32_BYTES: u32 = 28;
 pub const ENVIRONMENT_16_BYTES: u32 = 14;
 pub const REGISTERS_BYTES: u32 = REGISTERS as u32 * crate::X87_REGISTER_BITS / u8::BITS;
 
+/// The protected-mode environment's layout (Intel SDM Vol. 1 8.1.10, figures 8-9 and 8-10): the control,
+/// status and tag words, each in a doubleword whose reserved half is all ones in the 32-bit form, then the
+/// instruction pointer, its selector (FOP above it in the 32-bit form), the data pointer and its selector.
+pub(crate) struct Environment {
+    pub word: u32,
+    pub ip: u64,
+    pub selector: u64,
+    pub data: u64,
+    pub data_selector: u64,
+    pub size: u64,
+}
+
+pub(crate) const ENVIRONMENT_32: Environment = Environment {
+    word: size_of::<u32>() as u32,
+    ip: 12,
+    selector: 16,
+    data: 20,
+    data_selector: 24,
+    size: ENVIRONMENT_32_BYTES as u64,
+};
+pub(crate) const ENVIRONMENT_16: Environment = Environment {
+    word: size_of::<u16>() as u32,
+    ip: 6,
+    selector: 8,
+    data: 10,
+    data_selector: 12,
+    size: ENVIRONMENT_16_BYTES as u64,
+};
+
+impl Environment {
+    /// The 32-bit form's.
+    pub const fn wide(&self) -> bool {
+        self.word > u16::BITS / u8::BITS
+    }
+
+    /// What a word's reserved half holds.
+    pub const fn reserved(&self) -> u32 {
+        if self.wide() {
+            (u16::MAX as u32) << u16::BITS
+        } else {
+            0
+        }
+    }
+}
+
 /// The words `fnstenv` stores before its pointers: control, status and tag.
 pub const ENVIRONMENT_WORDS: u32 = 3;
 /// Where FOP sits in the environment word the hook takes and gives.
