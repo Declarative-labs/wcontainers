@@ -1,11 +1,12 @@
 //! Compute shaders with atomic operations, append, consume and counter views, storage textures
-//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`), NaN rules (`compare.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
+//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`), NaN rules (`compare.hlsl`) and typed buffers (`texels.hlsl`, and `cs_texels` written as another route hands it to `wcontainers_shaders::typed`) on the WebGPU back end, against real Direct3D 11
 //! running the same shaders on the same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
 #![cfg(windows)]
 
 mod common;
+mod forms;
 
 use common::*;
 use wcontainers_gpu::{
@@ -1815,7 +1816,16 @@ fn direct3d_texels(gpu: &Gpu, views: &[TexelView]) -> Vec<Vec<u8>> {
 /// storage from its view's first byte rounded down to the storage offset alignment, its place and
 /// length in the helpers. The views' registers start at 0 and have no gaps, so Direct3D 12's slots
 /// (the DXIL route's) are the registers.
-fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], dxil: bool) -> Vec<Vec<u8>> {
+/// Where `cs_texels` comes from: fxc's or dxc's build through `convert`, or `typed_texels.wgsl`
+/// through `typed::buffers` and `rewrite`.
+#[derive(Clone, Copy)]
+enum TexelBuild {
+    Dxbc,
+    Dxil,
+    Module,
+}
+
+fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], build: TexelBuild) -> Vec<Vec<u8>> {
     let format_of = |kind| {
         views
             .iter()
@@ -1829,9 +1839,10 @@ fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], dxil: bool) -> Vec<Ve
         storage_formats: format_of(SlotKind::Storage),
         ..Default::default()
     };
-    let c = match dxil {
-        true => convert(Source::Dxil(&bytecode("cs_texels.dxil")), &key, None).unwrap(),
-        false => convert(Source::Dxbc(&bytecode("cs_texels.dxbc")), &key, None).unwrap(),
+    let c = match build {
+        TexelBuild::Dxil => convert(Source::Dxil(&bytecode("cs_texels.dxil")), &key, None).unwrap(),
+        TexelBuild::Dxbc => convert(Source::Dxbc(&bytecode("cs_texels.dxbc")), &key, None).unwrap(),
+        TexelBuild::Module => forms::typed_texels(&key, &forms::TYPED_TEXELS).unwrap(),
     };
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
     let buffers: Vec<_> = views.iter().map(|v| buffer(b, &v.bytes, usage)).collect();
@@ -2069,8 +2080,13 @@ fn typed_buffers_alike(kinds: Kinds) {
         let views = texel_views(&gpu, seed, kinds);
         let formats: Vec<_> = views.iter().map(|v| v.format).collect();
         let reference = direct3d_texels(&gpu, &views);
-        for (dxil, build) in [(false, "dxbc"), (true, "dxil")] {
-            let made = ours_texels(&mut backend, &views, dxil);
+        let builds = [
+            (TexelBuild::Dxbc, "dxbc"),
+            (TexelBuild::Dxil, "dxil"),
+            (TexelBuild::Module, "module"),
+        ];
+        for (from, build) in builds {
+            let made = ours_texels(&mut backend, &views, from);
             let results = &reference[2];
             for (n, (a, o)) in reference.iter().zip(&made).enumerate() {
                 let name = ["u0", "u1", "results"][n];

@@ -74,7 +74,10 @@ measured (WARP reports a YUY2 view's size as ours does, so nothing is built), th
 storage clear of `A8Unorm`, and a pixel shader reading its clip distances on both routes. Run 16
 (run 103, the section below): A17, aliased lines into a multisampled target by Direct3D's
 diamond-exit rule, the Direct3D 11 front's last ask of this track (an interface flag and slow path,
-the stage helper's line route, a drawn test). Not complete: the gap list below.
+the stage helper's line route, a drawn test). Run 17 (run 104, the section below): the NIR track's
+typed buffers of a module (`typed::buffers`), and four uses of unsafe code gone (the owner's rule of
+2026-11-22 evening; the converters' C++ boundary reported, not removable by a binding generator).
+Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -156,6 +159,70 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   offset's own type (`int3(...)` for a 3D texture, was always `int2(...)`), so wgpu's Direct3D 12
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
+
+## For the NIR track: typed buffers of a module (`wcontainers_shaders::typed`)
+
+Built in run 104 (its G9 run 15 ask, "Requests to other tracks"). `typed::buffers(&mut module,
+&mut reflection, &variant, &[TypedBuffer])` writes the functions a program calls for its typed
+buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBufferRoute::Storage`
+(storage buffer of words, no copy) or `Texture` (texture slots only); then call `rewrite` as before.
+- The module has one entry point named `ENTRY_POINT`. Each `TypedBuffer` names: `global`, declared
+  as a storage buffer (`AddressSpace::Storage`, the access the slot is bound with) of any type at
+  the binding the reflection lists for a texture slot (read only) or a storage slot (its type, and
+  on the texture route its space, become the route's: `array<u32>`, atomic where needed, or a 2D
+  sampled texture of the view's kind); `kind`, the scalar kind the program reads and writes (a
+  view of another kind gives its bits); and stand-in functions, each placed before every function
+  calling it, whose bodies are written: `load: fn(index: u32) -> vec4<kind>`, `store: fn(index:
+  u32, value: vec4<kind>)`, `length: fn() -> u32`, and `atomics: Vec<(TypedAtomic, fn)>` with
+  `fn(index: u32, value: kind) -> kind` (compare-exchange `fn(index, value, compare) -> kind`;
+  32-bit one-component integer views only).
+- The format is the view's, from `texel_formats` (texture slots) or `storage_formats` (storage
+  slots) by the binding's slot; `HelperValue::TexelBufferView` of each view joins the reflection's
+  helpers (the view's byte offset and element count, as for DXBC programs).
+- Refusals are the DXBC route's names: `TYPED_BUFFER` (native route), `TYPED_BUFFER_FORMAT`,
+  `TYPED_BUFFER_FORMAT_ABSENT`, `TYPED_BUFFER_ATOMIC_FORMAT`, `TYPED_BUFFER_STORAGE_AS_TEXTURE`; a
+  stand-in of other arguments or result than the function's, or a store into a view not bound
+  writable, is `Malformed`.
+- Tests: `tests/typed.rs` (any machine): `cs_texels` written as such a module
+  (`tests/own/typed_texels.wgsl`, `tests/forms/mod.rs` `typed_texels`) takes the views fxc's build
+  takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
+  and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
+  real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 17 (run 104): typed buffers of a module for the NIR track; unsafe code
+
+Logs and scripts in scratch `graphics-shaders/g6-r104` (the clone `tip` moved there from g6-r103).
+Nothing built on the Mac (rustfmt of single files only); CPU checks on the rented x86-64 machine
+straight from the shared worktree (`x86-run <worktree> --name g6shaders -- "$(cat cpu-cmd.txt)"`).
+- Unsafe code (the owner's rule, brief of 2026-11-22 evening): the cache's view of SPIR-V words as
+  bytes and the test helper's of floats go through zerocopy (`IntoBytes::as_bytes`, the same bytes,
+  so no cache key changes); the `wasm_imports` example is a command (`main`) converting an
+  embedded own shader instead of an exported `unsafe extern "C"` function. 96 lines with the word
+  at the start of the run (the root list said 95), 91 now; the root list and the manifest say 91.
+  Left: the converters' C++ boundary (src/dxbc.rs 7, src/dxil.rs 8), the drawn tests' calls into
+  real Direct3D 11 through the `windows` crate (71 in tests/), and the fuzz test's bounded
+  allocator (5, `unsafe impl GlobalAlloc`). Measured: a `#[cxx::bridge]` (cxx 1, the binding
+  generator that yields safe functions) does not compile under `forbid(unsafe_code)`: "usage of an
+  `unsafe extern` block" and "usage of an `unsafe` block" on the bridged function's line (probe in
+  scratch `g6-r104/probe`, `probe1.log`). For the owner below.
+- Typed buffers of a module (the NIR track's G9 run 15 ask): `typed::buffers`, the section above.
+  `variant::texel`'s functions can now be written into a given function (`TexelBuffer::fill`)
+  instead of appended; nothing else in the routes changed.
+- Drawn on the RTX 3080 (gpu1.log; one GPU job, one test thread; queued 12 minutes behind other
+  tracks' jobs): `typed_buffers_match_direct3d`, `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them`
+  and `typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does` now run the module
+  form beside fxc's and dxc's builds against real Direct3D 11, the default 4 seeds each: 108
+  comparisons (u0's stored elements, u1's words, the results' words), 36 of the module form, none
+  apart; the module form's stores of u0 were within Direct3D's conversion tolerance of real's in
+  0 to 6 components a seed, as the converted builds' are (the test's rule). Windows clippy with
+  warnings denied clean. `tests/typed.rs` passes there too.
+- Checks (x86-64 machine, load 0.3 to 1.2): `cargo fmt --check` clean, clippy with warnings denied
+  clean, every CPU test binary passes (`typed` 2 new), the literal check prints no line of this
+  crate (its one finding, a scalar width written as 4, was taken from naga's scalars). WebAssembly
+  (laptop, wasi-sdk 25, `wasm-r104.sh`): `wasm_imports` (release) builds, 7,059,225 bytes, runs
+  under wasmtime 38.0.4 converting `cs_atomics` (exit 0), and imports 10 WASI functions
+  (environ_get, environ_sizes_get, fd_close, fd_fdstat_get, fd_prestat_dir_name, fd_prestat_get,
+  fd_read, fd_seek, fd_write, proc_exit).
 
 ## G6 run 16 (run 103): aliased lines into a multisampled target (A17)
 
@@ -1483,6 +1550,19 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- Run 104: unsafe code in this crate, 91 lines left (from 96). Asked: the converters' C++ boundary
+  (15 lines in src/dxbc.rs and src/dxil.rs: the calls into dxbc-spirv and dxil-spirv and the reads
+  of the words and reasons they allocate) is inherent to calling C++; cxx, the binding generator
+  that yields safe functions, was measured and its bridge does not compile under
+  `forbid(unsafe_code)` (the lint fires on the bridged function's line), and no safe alternative
+  exists short of rewriting the converters in Rust (two C++ compilers of tens of thousands of
+  lines, which the brief rules out). May this boundary be a marked exception (deny, each use with
+  `#[expect(unsafe_code, reason = "..")]`)? The drawn tests' 71 lines call real Direct3D 11 (the
+  same question the no-unsafe track asked as its first boundary); the fuzz test's allocator (5)
+  could go with a vetted allocator-limit crate if one fits, not looked at yet. Also new: a public
+  entry for typed buffers of a module (`wcontainers_shaders::typed`), the NIR track's ask. No
+  interface change.
+
 - Run 88: a public entry for geometry, hull and domain programs another route brought into the
   common form (`wcontainers_shaders::staged`), which the NIR track's OpenGL geometry and
   tessellation stages wait on; drawn equal to real Direct3D 11 with programs written that way.
@@ -2646,10 +2726,10 @@ G6a run 5's tip):
    Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
    89, A14 in runs 89 and 96, A7's cull distances from geometry shaders in run 90, A20 in run 95).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-3. Besides, as asked: the NIR track's new ask of its G9 run 15 (not started): an entry taking a
-   common-form module's typed buffers (a global named as one, its format from the variant) through
-   `variant::texel`'s storage route, so its route B's texel buffers need no copy into a texture
-   (it takes the interface's texture route meanwhile, a counted slow path); the NIR track's items (the carried SPIR-V reader's three refusals, on its
+   Unsafe code: the owner's ruling on the converters' boundary and the drawn tests' Direct3D calls
+   (New for the owner, run 104); the fuzz test's bounded allocator through a vetted crate if one
+   refuses single large allocations as it does.
+3. Besides, as asked: the NIR track's items (the carried SPIR-V reader's three refusals, on its
    candidate route only; pulled inputs at any byte and naga's HLSL texel offsets done in run 99;
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
    rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
@@ -4237,6 +4317,17 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 104's scripts in scratch `graphics-shaders/g6-r104`: `cpu-cmd.txt` (run 103's
+  `arm-cmd.txt`) runs on the x86-64 machine straight from the shared worktree, `x86-run
+  /Users/thomaseaton/Documents/GitHub/wcontainers-agents --name g6shaders --jobs 24 -- "$(cat
+  cpu-cmd.txt)"` (other tracks' uncommitted edits are in that copy; only this crate's lines of the
+  literal check count). The clone `tip` (branch `shaders-tip`) moved here; update it with `git -C
+  tip fetch -q <worktree> agents && git -C tip reset -q --hard FETCH_HEAD`, then `sync.sh` copies
+  this crate's working files in, and `gpu.sh <log> "<test command>"` runs one GPU job from it.
+  `wasm-r104.sh` (on the laptop as `~/wcontainers-graphics/wasm-r104.sh`, from the copy
+  `src/agents-r104`, refreshed by rsync of the worktree without target and .git) builds and runs
+  `wasm_imports` and lists its imports.
+
 - Run 103's scripts in scratch `graphics-shaders/g6-r103` are run 102's with its folder. The CPU
   checks ran on the rented x86-64 machine (the ARM64 machine's disk was full): `./arm-sync.sh &&
   x86-run <scratch>/g6-r103/tip-arm --jobs 24 -- "$(cat arm-cmd.txt)"` (x86-run is beside arm-run
@@ -4567,6 +4658,11 @@ releases, under `~/wcontainers-graphics/tools`). rustup, the 1.99.0 toolchain, g
 were already there.
 
 ## Dependencies and licences
+
+- Run 104: `zerocopy` 0.8.63 (the workspace's entry, feature `derive`; BSD-2-Clause OR Apache-2.0
+  OR MIT; already in the lock through other crates), for views of words as bytes without unsafe
+  code. It contains unsafe code (its job: layout proofs behind a safe API). Measured and not added:
+  `cxx` 1 (MIT OR Apache-2.0), in the probe only.
 
 - Run 100: build dependency `diffy` 0.5.2 (MIT OR Apache-2.0, crates.io's record; released
   2026-08-31; its one dependency `hashbrown` 0.17.1 was already in the lock), which applies the
