@@ -18,12 +18,12 @@ use iced_x86::code_asm::{
 use linux_raw_sys::general::{
     SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, kernel_sigset_t, sigaltstack,
 };
-use wcontainers_guest_cpu::InsideCall;
 use wcontainers_guest_cpu::position::{Fixup, Held, Resume, Side, Span};
+use wcontainers_guest_cpu::{Guest, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::Fxsave;
 use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, RegisterArea};
-use wcontainers_x86::carry::WITHHELD;
+use wcontainers_x86::carry::{T, U, WITHHELD};
 use wcontainers_x86::cpuid::{AVX_STATE_BYTES, AVX_STATE_OFFSET, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -156,11 +156,24 @@ pub enum Ended {
 const STEPPING_NOT_BUILT: &str =
     "not run natively: TF or AC set, which a host process runs on stepping pieces (not built yet)";
 
-/// Compares a case's native run with the CPU's: `Ok` with how it ended when they agree.
+/// Compares a case's native runs with the CPU's, translated without the count and with it (when the process
+/// asked for exact replay): `Ok` with how the first ended when both agree.
 pub fn compare(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
+) -> Result<(Agreement, Ended), String> {
+    let first = compare_one(reference, case, host, false)?;
+    compare_one(reference, case, host, true)
+        .map_err(|report| format!("with the count: {report}"))?;
+    Ok(first)
+}
+
+fn compare_one(
+    reference: &mut Reference,
+    case: &Case,
+    host: HostMatches,
+    counted: bool,
 ) -> Result<(Agreement, Ended), String> {
     let held_off = u128::from(wcontainers_x86::TF | wcontainers_x86::ALIGNMENT_CHECK);
     if case.state.0[RFLAGS] & held_off != 0 {
@@ -172,7 +185,7 @@ pub fn compare(
         tracking: true,
         ..case.clone()
     };
-    let (mut outcome, ended) = run(reference, case, host)?;
+    let (mut outcome, ended) = run(reference, case, host, counted)?;
     if matches!(ended, Ended::Exit | Ended::Fault | Ended::Lookup) {
         // Seen through a signal frame, as the reference's run is, it is read as the reference's is.
         let seen = outcome.clone();
@@ -222,11 +235,14 @@ fn five_level_only(stop: Stop) -> bool {
     }
 }
 
-/// Runs a case natively: its outcome and how it ended.
+/// Runs a case natively, with the count's adds when `counted`: its outcome and how it ended. With the count, the
+/// guest's count at the stop (the count register less the span's lead) must be the events the instruction
+/// completed.
 pub fn run(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
+    counted: bool,
 ) -> Result<(Outcome, Ended), String> {
     let target = Target {
         host,
@@ -236,7 +252,7 @@ pub fn run(
         case.code.code(),
         CODE,
         LookAhead::None,
-        false,
+        counted,
         &Way::Process,
         &target,
     )
@@ -300,9 +316,26 @@ pub fn run(
         };
         (span, ended)
     } else if let Some(span) = in_piece(rip) {
-        let ended = if signal == SIGSEGV && second_level.contains(&record.address) {
+        // The lookup's two reads: the first level's `mov u, gs:[FIRST_LEVEL + 8 * u]`, the second's
+        // `jmp [u + 8 * t]`.
+        let at = (rip - PIECE) as usize;
+        let reading = Decoder::with_ip(
+            wcontainers_x86::MODE_BITS,
+            &code.bytes[at..],
+            rip,
+            DecoderOptions::NONE,
+        )
+        .decode();
+        let second = reading.mnemonic() == Mnemonic::Jmp
+            && reading.memory_base() == U
+            && reading.memory_index() == T;
+        let first = reading.mnemonic() == Mnemonic::Mov
+            && reading.memory_segment() == Register::GS
+            && reading.memory_index() == U
+            && reading.memory_displacement64() == FIRST_LEVEL as u64;
+        let ended = if signal == SIGSEGV && second && second_level.contains(&record.address) {
             Ended::Lookup
-        } else if signal == SIGSEGV && first_level.contains(&record.address) {
+        } else if signal == SIGSEGV && first && first_level.contains(&record.address) {
             Ended::FarTarget
         } else {
             Ended::Fault
@@ -315,6 +348,18 @@ pub fn run(
         ));
     };
     let state = guest_state(case, &record, &host, &area, span)?;
+    if counted {
+        let count = host.general[usize::from(wcontainers_x86::R10)].wrapping_sub(span.lead.into());
+        let (instruction, _) =
+            <X86_64 as Guest>::decode(case.code.code()).ok_or("no instruction to count")?;
+        let event = wcontainers_guest_cpu::counted(CODE, &<X86_64 as Guest>::flow(&instruction));
+        let done = u64::from(event && span.side == Side::After);
+        if count != done {
+            return Err(format!(
+                "the count is {count} at the stop ({ended:?}), not {done}"
+            ));
+        }
+    }
     let stop = match ended {
         Ended::Exit | Ended::Lookup => Stop::Landed(state.0[RIP] as u64),
         Ended::Fault => X86_64::reference_stop(
