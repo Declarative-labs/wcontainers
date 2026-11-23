@@ -51,6 +51,6 @@ name = "allocations"
 path = "tests/allocations.rs"
 harness = false
 
-# TODO: remove this crate's 6 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 1 use of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -36,6 +36,6 @@ nix = { version = "0.31.3", default-features = false, features = ["fs", "net", "
 # The uapi structures read from and written as bytes.
 zerocopy.workspace = true
 
-# TODO: remove this crate's 30 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 20 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
