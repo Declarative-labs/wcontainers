@@ -836,6 +836,8 @@ intrinsic_of(nir_intrinsic_op op)
       return WC_INTRINSIC_IMAGE_DEREF_ATOMIC;
    case nir_intrinsic_image_deref_atomic_swap:
       return WC_INTRINSIC_IMAGE_DEREF_ATOMIC_SWAP;
+   case nir_intrinsic_load_helper_invocation:
+      return WC_INTRINSIC_LOAD_HELPER_INVOCATION;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
    }

@@ -407,6 +407,7 @@ enum Intrinsic {
     LoadPatchVerticesIn,
     ImageDerefAtomic,
     ImageDerefAtomicSwap,
+    LoadHelperInvocation,
     Unsupported,
 }
 
@@ -3368,6 +3369,22 @@ impl Builder<'_> {
             }
             Intrinsic::LoadSampleId => self.system_value(i, BuiltIn::SampleIndex, Uint)?,
             Intrinsic::LoadSampleMaskIn => self.system_value(i, BuiltIn::SampleMask, Uint)?,
+            // The common form has no helper query: a helper invocation covers no sample.
+            Intrinsic::LoadHelperInvocation if self.stage == ShaderStage::Fragment => {
+                let mask = self.builtin(BuiltIn::SampleMask, TypeInner::Scalar(Scalar::U32));
+                let none = self.scalar_constant(Uint, 0);
+                let e = self.add(Expression::Binary {
+                    op: BinaryOperator::Equal,
+                    left: mask,
+                    right: none,
+                });
+                self.set(i, Value::Expr(e, Bool));
+            }
+            // Only fragment programs run helper invocations.
+            Intrinsic::LoadHelperInvocation => {
+                let e = self.add(Expression::Literal(Literal::Bool(false)));
+                self.set(i, Value::Expr(e, Bool));
+            }
             Intrinsic::LoadLocalInvocationId => {
                 self.system_value(i, BuiltIn::LocalInvocationId, Uint)?;
             }
