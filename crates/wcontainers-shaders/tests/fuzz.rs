@@ -125,7 +125,7 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
                 }
                 1 if at < b.len() => {
                     b[at] = rng.next() as u8;
-                    what.push(format!("byte@{at}={:#x}", b[at]));
+                    what.push(format!("byte@{at}={}", b[at]));
                 }
                 2 => {
                     let at = 32 + rng.below(b.len().saturating_sub(32));
@@ -135,7 +135,7 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
                 3 if at + 4 <= b.len() => {
                     let word = rng.next() as u32;
                     b[at..at + 4].copy_from_slice(&word.to_le_bytes());
-                    what.push(format!("word@{at}={word:#x}"));
+                    what.push(format!("word@{at}={word}"));
                 }
                 _ => {}
             }
@@ -182,48 +182,46 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     }
 }
 
-/// One mutation of a container, as the seeded fuzz writes it: a bit flipped, a byte written, or a
-/// little-endian word written at a byte.
-enum Mutation {
-    Flip(usize, u8),
-    Byte(usize, u8),
-    Word(usize, u32),
+/// Applies to `b` the mutations `what` as the seeded fuzz writes them: `flip@<byte>.<bit>`,
+/// `byte@<byte>=<value>` and `word@<byte>=<little-endian word>`, joined by commas.
+fn mutate(b: &mut [u8], what: &str) {
+    for m in what.split(',') {
+        let (kind, place) = m.split_once('@').unwrap();
+        let (at, value) = place.split_once(['.', '=']).unwrap();
+        let at: usize = at.parse().unwrap();
+        match kind {
+            "flip" => b[at] ^= 1 << value.parse::<u32>().unwrap(),
+            "byte" => b[at] = value.parse().unwrap(),
+            "word" => b[at..at + size_of::<u32>()]
+                .copy_from_slice(&value.parse::<u32>().unwrap().to_le_bytes()),
+            other => panic!("no mutation {other}"),
+        }
+    }
 }
 
 /// Cases of the seeded fuzz (seed 31337, the corpus beside it) whose DXIL module names no entry
-/// point, which ended the process in dxil-spirv's entry point lookups: each is refused.
+/// point, which ended the process in dxil-spirv's entry point lookups, as its log names them: each
+/// is refused.
 #[test]
 fn dxil_naming_no_entry_point_is_refused() {
-    use Mutation::*;
-    let cases: [(&str, &[Mutation]); 3] = [
+    let cases = [
         (
             "hs_line_pow2_point.dxil",
-            &[Byte(2289, 0xa2), Word(2265, 0xbff8_caec)],
+            "byte@2289=162,word@2265=3220753132",
         ),
         (
             "ps_pull.dxil",
-            &[Flip(837, 0), Flip(2898, 4), Word(2367, 0x9bb3_446d)],
+            "flip@837.0,flip@2898.4,word@2367=2612216941",
         ),
         (
             "vs_eval_exact.dxil",
-            &[
-                Word(1024, 0xece5_99d2),
-                Byte(3377, 0x98),
-                Byte(2577, 0xe7),
-                Flip(1210, 2),
-            ],
+            "word@1024=3974470098,byte@3377=152,byte@2577=231,flip@1210.2",
         ),
     ];
     let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
-    for (name, mutations) in cases {
+    for (name, what) in cases {
         let mut b = std::fs::read(own.join(name)).unwrap();
-        for m in mutations {
-            match *m {
-                Flip(at, bit) => b[at] ^= 1 << bit,
-                Byte(at, value) => b[at] = value,
-                Word(at, word) => b[at..at + size_of::<u32>()].copy_from_slice(&word.to_le_bytes()),
-            }
-        }
+        mutate(&mut b, what);
         sign(&mut b);
         match convert(Source::Dxil(&b), &VariantKey::default(), None) {
             Ok(_) => panic!("{name}: converted"),
