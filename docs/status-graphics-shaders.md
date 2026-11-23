@@ -86,7 +86,9 @@ domain shaders, drawn equal to real Direct3D 11. Run 20 (run 107, the section be
 positions moved to Direct3D's centroid on the DXIL route and refused by name in programs run per
 sample (the Direct3D 12 runner's `eval-attrib-3`), A7's indirect draws found served by the fronts.
 Run 21 (run 108, the section below): the NIR track's G9 run 18 ask, flat values from the last
-vertex of each primitive a geometry or tessellation stage makes (`Stages::provoking`).
+vertex of each primitive a geometry or tessellation stage makes (`Stages::provoking`). Run 22 (run
+109, the section below): geometry shaders reading their vertices' clip and cull distances (the
+Direct3D 12 runner's `clip-cull-distance-1-16-gs`, both builds).
 Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
@@ -170,6 +172,12 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
 
+- Since run 109: a geometry program may read its input vertices' `BuiltIn::ClipDistance` (an
+  array by vertex of an array of floats, GLSL's `gl_in[].gl_ClipDistance`); the vertex or domain
+  stage before it must write as many (`stage::DISTANCES_READ` otherwise). Clip distances, input or
+  output, are reflected four a stage value with their real mask (before, one value of one
+  component each, so `Stages` passed on one distance of a staged geometry program's several).
+
 ## For the NIR track: flat values from the last vertex (`Stages::provoking`)
 
 Built in run 108 (its G9 run 18 ask, "Requests to other tracks"; the driver's refusal "flat values
@@ -218,6 +226,43 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 22 (run 109): geometry shaders reading clip and cull distances (the Direct3D 12 runner)
+
+Logs and scripts in scratch `graphics-shaders/g6-r109` (the clone `tip` moved there from g6-r108;
+`compile.log`, `arm1.log`, `arm2.log`, `gpu1.log` to `gpu3-mutant.log`, `mutant.sh`). Nothing built
+on the Mac (rustfmt of single files only).
+- Chosen: the Direct3D 12 front's runner item `clip-cull-distance-1-16-gs` (both builds were
+  `ClipDistance`): a geometry shader reading its vertices' clip and cull distances, which no other
+  track had and which was within a run.
+- Built (03b897de): the geometry stage reads its input distances from the vertex records, which
+  now hold, after the input locations' slots, the clip distances' slots and the cull distances'
+  (four a slot), as many as the geometry shader's input signature names (`stage::read_distances`).
+  The vertex or domain stage's compute form and the replay route's capture program write them; a
+  stage before writing other counts is refused by name (`stage::DISTANCES_READ`,
+  `GeometryDistancesRead`). DXBC route: `lower/geometry.rs` `geometry_inputs`; DXIL route:
+  dxil-spirv's input `ClipDistance` and `CullDistance` are taken (`dxil/geometry.rs`). Distances
+  are now reflected four a stage value with their real mask on the geometry pass (the containers'
+  signatures replace them on both routes, so only the NIR track's staged programs see a change).
+- Tests: own `gs_distances` (tests/own/geometry.hlsl: vs_cull's three cull and one clip distance
+  read, passed on as its cull distances and shown in its colour), fxc gs_5_0 and dxc gs_6_0, both
+  `ok` in the corpus; the runner's `clip-cull-distance-1-16-gs` records are `ok` (both builds). CPU
+  test `geometry_shaders_read_clip_and_cull_distances` (tests/geometry.rs). Drawn on the RTX 3080:
+  two cases added to `geometry_shaders_writing_cull_distances_draw_as_direct3d_does`
+  (tests/geometry_draw.rs; list and indexed strip, both builds, 4 seeds, against real Direct3D 11
+  drawing fxc's builds): 16 comparisons of gs_distances, 0 texels apart in each (667 to 1,703
+  texels drawn; the test's 64 comparisons all passed, gpu1.log). With each input distance read
+  from the next component of its slot (`mutant.sh`) all 16 differ, in 667 to 1,839 texels each,
+  largest 183 to 191 (gpu3-mutant.log), so the test catches a misplaced read.
+- Runs: ARM64 machine (load 30 to 60): rustfmt and clippy with warnings denied clean; every CPU test
+  binary with every corpus (`--include-ignored`): all passed (arm2.log). The literal check exits 1 on
+  three findings in the OpenGL crate's files, none in this crate's. Desktop (RTX 3080, one GPU job,
+  3 cargo jobs): Windows clippy clean; geometry_draw 12 of 12, stage_draw 6 of 6, tessellation_draw
+  10 of 10 passed with `--test-threads 1` (gpu2.log).
+- Not run: WebAssembly, glslang, Chrome (the new modules are compute forms, which neither WebGL 2
+  nor a browser check takes apart from the corpus test's WGSL validation), no drawn test of the
+  replay route reading distances (gs_distances writes cull distances, refused there by name as
+  before; the capture program is built and validated by the CPU test).
 
 ## G6 run 21 (run 108): flat values from the last vertex through the stage helper (the NIR track)
 
@@ -2857,7 +2902,8 @@ The gap list (every item of the pass bar not met):
   but malformed DXIL (fuzz, Known gaps). The Direct3D 12 front's runner items besides (its status,
   "Asked of other tracks"): `DepthGatherComponent`, `SparseFeedback`, a cull distance read by a
   pixel shader (a clip distance read converts with `CLIP_DISTANCE` since run 102; a cull distance
-  needs `LinkedValues` to carry them, an interface field), a DXIL pixel shader's layer and
+  needs `LinkedValues` to carry them, an interface field; a geometry shader reading either converts
+  since run 109), a DXIL pixel shader's layer and
   viewport index, and values that differ without a
   refusal (`min16float` constants, subnormals not flushed; DXIL `frexp` of a NaN, whose `x != 0`
   is dxc's unordered comparison, expected right on WebGPU since A26's run 98 but not run on the
@@ -2904,8 +2950,8 @@ G6a run 5's tip):
   `SampleClamp` 0 (the runner's `sampler-13` and `-15`, both builds, convert since run 93);
   `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
   since run 87, recorded `UnboundedResourceArray` as the corpus has no ranges); a clip or cull distance read as an input
-  (`ClipDistance` 4, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`, DXBC and,
-  since run 65, DXIL; since run 102 `clip-cull-distance-2-2-ps`'s two builds convert with
+  (`ClipDistance` 2, `CullDistance` 3: pixel shaders, DXBC and, since run 65, DXIL; the geometry
+  shader `clip-cull-distance-1-16-gs`'s two builds convert since run 109; since run 102 `clip-cull-distance-2-2-ps`'s two builds convert with
   `CLIP_DISTANCE` and `linked`, a key the corpus does not give, so their records stay). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
   builtin" 4) converts since run 66.
 
@@ -2915,8 +2961,8 @@ G6a run 5's tip):
    now use `LINE_DIAMOND` and lift its known failure; A28's second part closed as measured in run
    102): a cull distance read by a pixel shader needs `LinkedValues` to carry cull distances (an
    interface field breaking four struct literals in the Direct3D 11 and 12 crates; the runner's
-   `clip-cull-distance-1-6-ps` and `-1-8-ps`), a geometry shader reading clip distances as input
-   (`-1-16-gs`); A5's routes on WebGL 2 were finished in runs
+   `clip-cull-distance-1-6-ps` and `-1-8-ps`; a geometry shader reading clip and cull distances
+   as input, `-1-16-gs`, done in run 109); A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; indirect draws through the stages are
    the fronts' read back, run 107; left: a pixel shader reading `SV_PrimitiveID` behind a geometry
@@ -2942,6 +2988,9 @@ G6a run 5's tip):
 
 ## Asked of other tracks
 
+- For the Direct3D 12 front (run 109, its runner): `clip-cull-distance-1-16-gs` (both builds), a
+  geometry shader reading its vertices' clip and cull distances, converts and draws through
+  `Stages::new` as before; nothing changes in the calls. Rerun it.
 - For both Direct3D fronts (run 107): a pixel shader declaring `centroid` on `SV_Position` now
   needs the targets' sample count in its key (`SampleCount` without one, as for evaluations; the
   Direct3D 11 front's retry at one sample and per-draw count already serve it; the Direct3D 12
@@ -4546,6 +4595,9 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 109's scripts in scratch `graphics-shaders/g6-r109` are run 108's with its folder, plus
+  `early-cmd.txt` (clippy and three test binaries) and `mutant.sh`. New own shaders: a temporary
+  `distances.cmd` in the clone as run 108's `provoking.cmd`.
 - Run 108's scripts in scratch `graphics-shaders/g6-r108` are run 107's with its folder. The CPU
   runs go through `arm-run <worktree> --name graphics-shaders --jobs 12 -- "$(cat cpu-cmd.txt)"`
   from the shared worktree (the clone `tip` has no converter submodules, so arm-run of it fails
