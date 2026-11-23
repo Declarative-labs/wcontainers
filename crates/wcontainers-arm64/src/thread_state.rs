@@ -40,11 +40,10 @@ pub type Exclusive = [u64; (size_of::<RegisterPage>()
 impl RegisterPage {
     /// The word at a byte offset of the page.
     pub fn word(&self, offset: u16) -> u64 {
-        let words = size_of::<Self>() / size_of::<u64>();
-        // SAFETY: the page is `#[repr(C)]` words, and the index is checked against their number.
-        let all =
-            unsafe { core::slice::from_raw_parts((self as *const Self).cast::<u64>(), words) };
-        all[usize::from(offset) / size_of::<u64>()]
+        let exclusive = self.exclusive();
+        let mut all = self.withheld.iter().chain(&self.saved).chain(&exclusive);
+        *all.nth(usize::from(offset) / size_of::<u64>())
+            .expect("an offset inside the register page")
     }
 
     /// The exclusive monitor: bytes, address, low and high words.
