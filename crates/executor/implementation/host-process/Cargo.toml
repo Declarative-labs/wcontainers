@@ -1,0 +1,32 @@
+[package]
+name = "wcontainers-executor-host-process"
+description = "The wcontainers executor that runs each guest process as a host process, with no virtual machine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "implementation.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-abi.workspace = true
+# Host calls: memfds, mappings, the zygote's socket, processes and CPU placement.
+rustix = { version = "1.1.6", features = ["fs", "mm", "net", "param", "process", "thread"] }
+# The signal mask around the zygote's fork, and the fork itself, where rustix has no call.
+libc = "0.2.191"
+# Linux's numbers for the zygote's own host calls.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "prctl", "no_std"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Moving, stopping and killing the zygote and its stubs from outside.
+rustix = { version = "1.1.6", features = ["process", "thread"] }
+
+[[test]]
+name = "zygote"
+
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
