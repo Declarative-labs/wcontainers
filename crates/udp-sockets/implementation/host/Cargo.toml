@@ -37,14 +37,19 @@ libc = "0.2.191"
 [dev-dependencies]
 wcontainers-udp-sockets-conformance = { path = "../../conformance" }
 wcontainers-kernel = { path = "../../../kernel" }
+# Counts the allocations of the allocation test (MIT).
+stats_alloc = "0.1.10"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The network namespace of each test.
 nix = { version = "0.31.3", default-features = false, features = ["sched"] }
 # The largest buffer size a test asks for.
 libc = "0.2.191"
-# Counts the allocations of the allocation test (MIT).
-stats_alloc = "0.1.10"
+
+[[test]]
+name = "allocations"
+path = "tests/allocations.rs"
+harness = false
 
 [lints]
 workspace = true

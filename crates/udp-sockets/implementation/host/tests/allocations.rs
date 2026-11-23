@@ -1,5 +1,5 @@
-//! What a wait and a receive allocate, counted over the whole test process, of which this test is the only one.
-#![cfg(target_os = "linux")]
+//! What a wait and a receive allocate, counted over the whole process: a binary without the test harness, whose
+//! threads would allocate beside the check.
 
 mod support;
 
@@ -30,7 +30,6 @@ const WARM_UP: usize = 10;
 
 /// A call that has to wait allocates nothing once its socket has been waited on, and a receive with nothing queued
 /// allocates nothing.
-#[test]
 fn a_warm_wait_and_a_receive_that_would_block_allocate_nothing() {
     let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
     let (socket, sender) = pair(&sockets);
@@ -68,4 +67,11 @@ fn a_warm_wait_and_a_receive_that_would_block_allocate_nothing() {
     let counted = Box::new(u8::MIN);
     assert_eq!(allocations() - before, 1, "the allocator counts");
     drop(counted);
+}
+
+/// Runs the check on Linux, the system whose implementation it measures.
+fn main() {
+    if cfg!(target_os = "linux") {
+        a_warm_wait_and_a_receive_that_would_block_allocate_nothing();
+    }
 }
