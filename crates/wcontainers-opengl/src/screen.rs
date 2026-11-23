@@ -219,8 +219,16 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.indep_blend_func = independent;
     // Attachments of different sizes are fitted by the pass tracker.
     caps.mixed_framebuffer_sizes = true;
-    // The host's cube maps are always seamless, as OpenGL ES's are.
+    // The host's cube maps are always seamless, as OpenGL ES's are; the interface's views include
+    // cube arrays.
     caps.seamless_cube_map = true;
+    caps.cube_map_array = true;
+    // The interface copies between a block-compressed format and a plain one of the same block
+    // size (`copy_texture`).
+    caps.copy_between_compressed_and_plain_formats = true;
+    // Every back end bounds a program's buffer accesses: one past a binding's end reads zero or
+    // a value inside it and writes nothing outside it.
+    caps.robust_buffer_access_behavior = true;
     caps.fragment_shader_texture_lod = true;
     // The base instance is always zero (no `start_instance`), so the instance index is OpenGL's.
     caps.vs_instanceid = true;
@@ -304,19 +312,24 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     };
     // Storage buffers and images in compute programs, within their shared binding range; storage
     // buffers in fragment programs too, which WebGPU reads and writes there (OpenGL's
-    // `ARB_shader_storage_buffer_object` asks for them).
+    // `ARB_shader_storage_buffer_object` asks for them), and images where the back end writes
+    // storage there.
     let buffers = limits
         .storage_buffers_per_stage
         .min(PIPE_MAX_SHADER_BUFFERS);
+    let images = limits
+        .storage_textures_per_stage
+        .min(PIPE_MAX_SHADER_IMAGES)
+        .min(SlotKind::Storage.slots() - buffers);
     if stage == MESA_SHADER_COMPUTE {
         caps.max_shader_buffers = buffers;
-        caps.max_shader_images = limits
-            .storage_textures_per_stage
-            .min(PIPE_MAX_SHADER_IMAGES)
-            .min(SlotKind::Storage.slots() - buffers);
+        caps.max_shader_images = images;
     }
     if stage == MESA_SHADER_FRAGMENT {
         caps.max_shader_buffers = buffers;
+        if ours.has(Features::FRAGMENT_STORAGE_WRITE) {
+            caps.max_shader_images = images;
+        }
     }
     caps.max_const_buffer0_size = limits.max_uniform_buffer_size;
     // One of the stage's uniform buffers holds a converted program's helper constants.
