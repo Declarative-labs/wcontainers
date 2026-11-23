@@ -185,7 +185,16 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
     {
         return E_INVALIDARG;
     }
-    let level = gpu::call(|d| features::feature_level(d.backend().caps()));
+    let level = gpu::call(|d| {
+        let caps = d.backend().caps();
+        for (format, lacks) in features::unmet_format_requirements(caps) {
+            eprintln!(
+                "wcontainers: no feature level 11_0 device: format {format} lacks {lacks:x?} \
+                 (both words, sample counts) of Microsoft's 11_0 table"
+            );
+        }
+        features::feature_level(caps)
+    });
     match level {
         Some(l) if l >= minimum_level as u32 => {}
         _ => return DXGI_ERROR_UNSUPPORTED,

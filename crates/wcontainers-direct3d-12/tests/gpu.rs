@@ -113,6 +113,22 @@ fn picture(device: &mut Device<WebGpu>, scene: &triangle::Scene) -> Vec<u8> {
         .collect()
 }
 
+/// On this adapter the front answers every ability Microsoft's 11_0 format table requires, so
+/// `D3D12CreateDevice` makes its 11_0 device; each format short of one is named.
+#[test]
+fn the_adapter_meets_every_format_requirement_of_11_0() {
+    let backend = webgpu();
+    let caps = backend.caps();
+    let unmet = wcontainers_direct3d_12::features::unmet_format_requirements(caps);
+    for (format, lacks) in &unmet {
+        eprintln!("format {format} lacks {lacks:x?}");
+    }
+    assert!(unmet.is_empty(), "{} formats short of 11_0", unmet.len());
+    assert!(wcontainers_direct3d_12::features::has_abilities_of_11_0(
+        caps
+    ));
+}
+
 #[test]
 fn the_triangle_scene_matches_direct3d_12() {
     let mut device = Device::new(webgpu());

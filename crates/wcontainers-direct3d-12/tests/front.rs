@@ -212,7 +212,10 @@ fn root_signatures_binding_a_register_twice_for_a_stage_are_refused() {
 #[test]
 fn webgpu_reports_11_0_and_tier_1() {
     let caps = record::webgpu_like_caps();
-    assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
+    assert!(has_abilities_of_11_0(&caps));
+    // The recorder holds a few formats only, short of Microsoft's 11_0 table: no device.
+    assert!(!unmet_format_requirements(&caps).is_empty());
+    assert_eq!(feature_level(&caps), None);
     let o = options(&caps);
     assert_eq!(o.resource_binding_tier, 1);
     assert_eq!(o.resource_heap_tier, 2);
@@ -240,12 +243,15 @@ fn webgpu_reports_11_0_and_tier_1() {
     assert_eq!(quality_levels(&caps, 65, 4), Some(0));
     assert_eq!(quality_levels(&caps, 28, 0), None);
     assert_eq!(quality_levels(&caps, 66, 1), None);
+    use wcontainers_directx_graphics_infrastructure::required::level::L10_0;
+    let own = FEATURE_LEVEL_11_0;
     assert_eq!(
-        max_feature_level(&caps, &[0x9100, 0xa000, 0xb000, 0xc000]),
+        highest_of(own, &[0x9100, L10_0, FEATURE_LEVEL_11_0, 0xc000]),
         Some(FEATURE_LEVEL_11_0)
     );
-    assert_eq!(max_feature_level(&caps, &[0xa000, 0x9300]), Some(0xa000));
-    assert_eq!(max_feature_level(&caps, &[0xc200]), None);
+    assert_eq!(highest_of(own, &[L10_0, 0x9300]), Some(L10_0));
+    assert_eq!(highest_of(own, &[0xc200]), None);
+    assert_eq!(max_feature_level(&caps, &[L10_0]), None);
     assert_eq!(
         (root_signature(1), root_signature(2), root_signature(3)),
         (1, 2, ROOT_SIGNATURE_1_1)
@@ -302,8 +308,16 @@ fn atomics_on_typed_storage_views_are_answered_through_a_buffer() {
         atomic_operations(dxgi::R32_FLOAT),
         support2::UAV_ATOMIC_EXCHANGE
     );
-    // No atomics where no storage view is answered.
-    assert_eq!(format_support(&caps, dxgi::R32_FLOAT).support2, 0);
+    // The recorder copies R32_FLOAT out but does not store into it: its storage views go through
+    // a buffer (`StorageFormatThroughBuffer`), with its atomics.
+    assert_eq!(
+        format_support(&caps, dxgi::R32_FLOAT).support2,
+        support2::UAV_TYPED_STORE | support2::UAV_TYPED_LOAD | support2::UAV_ATOMIC_EXCHANGE
+    );
+    // No atomics where no storage view is answered: a format neither stored nor copied out.
+    let mut held = caps.clone();
+    held.formats.uses[Format::R32Float.index()].remove(FormatUse::COPY_OUT);
+    assert_eq!(format_support(&held, dxgi::R32_FLOAT).support2, 0);
     let mut stored = caps.clone();
     stored.formats.uses[Format::R32Float.index()] |= FormatUse::STORAGE_WRITE;
     assert_eq!(
@@ -317,7 +331,7 @@ fn atomics_on_typed_storage_views_are_answered_through_a_buffer() {
 fn resource_tables_give_tier_3_but_not_11_1() {
     let mut caps = record::webgpu_like_caps();
     caps.features |= Features::RESOURCE_TABLES | Features::SUBGROUPS | Features::LOGIC_OP;
-    assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
+    assert!(has_abilities_of_11_0(&caps));
     assert_eq!(options(&caps).resource_binding_tier, 3);
     assert!(options1(&caps).wave_ops);
 }
@@ -329,7 +343,7 @@ fn no_device_without_the_raster_and_blend_abilities_of_11_0() {
     for ability in LEVEL_11_0_FIXED_FUNCTION.iter() {
         let mut caps = record::webgpu_like_caps();
         caps.features.remove(ability);
-        assert_eq!(feature_level(&caps), None, "{ability:?}");
+        assert!(!has_abilities_of_11_0(&caps), "{ability:?}");
     }
 }
 
@@ -340,20 +354,20 @@ fn browsers_without_polygon_mode_or_depth_clamping_get_11_0() {
     let mut caps = record::webgpu_like_caps();
     caps.features
         .remove(Features::POLYGON_MODE | Features::DEPTH_CLAMP);
-    assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
+    assert!(has_abilities_of_11_0(&caps));
 }
 
 #[test]
 fn no_device_without_compute_11_0_sizes_or_d32_s8_targets() {
     let mut caps = record::webgpu_like_caps();
     caps.features.remove(Features::COMPUTE);
-    assert_eq!(feature_level(&caps), None);
+    assert!(!has_abilities_of_11_0(&caps));
     let mut caps = record::webgpu_like_caps();
     caps.limits.max_texture_layers = 256;
-    assert_eq!(feature_level(&caps), None);
+    assert!(!has_abilities_of_11_0(&caps));
     let mut caps = record::webgpu_like_caps();
     caps.formats.uses[Format::Depth32FloatStencil8.index()] = FormatUse::empty();
-    assert_eq!(feature_level(&caps), None);
+    assert!(!has_abilities_of_11_0(&caps));
 }
 
 #[test]

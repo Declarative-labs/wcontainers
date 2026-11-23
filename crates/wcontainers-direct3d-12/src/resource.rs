@@ -5,7 +5,7 @@ use wcontainers_directx_graphics_infrastructure::d3d::{
     SMALL_RESOURCE_PLACEMENT_ALIGNMENT, TEXTURE_DATA_PLACEMENT_ALIGNMENT,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi::{
-    NV12, OPAQUE_420, R8_TYPELESS, R8G8_TYPELESS, R32_TYPELESS, YUY2,
+    NV12, OPAQUE_420, R8_TYPELESS, R8G8_TYPELESS, R10G10B10_XR_BIAS_A2_UNORM, R32_TYPELESS, YUY2,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi_format;
 use wcontainers_gpu::Format;
@@ -458,6 +458,20 @@ impl ResourceDesc {
         match self.format {
             NV12 | OPAQUE_420 => return Ok((Format::R8Unorm, true)),
             YUY2 => return Ok((Format::Rgba8Unorm, true)),
+            // 2D textures held in its bits, copied and mapped with the R10G10B10A2 formats;
+            // Microsoft's 11_0 table gives it no view, target or storage use.
+            R10G10B10_XR_BIAS_A2_UNORM => {
+                if self.dimension != DIMENSION_TEXTURE2D
+                    || self.flags
+                        & (FLAG_RENDER_TARGET | FLAG_DEPTH_STENCIL | FLAG_UNORDERED_ACCESS)
+                        != 0
+                {
+                    return Err(Error::Invalid(
+                        "an R10G10B10_XR_BIAS_A2_UNORM texture other than a 2D one without views",
+                    ));
+                }
+                return Ok((Format::Rgb10a2Unorm, false));
+            }
             _ => {}
         }
         let (format, typeless) =

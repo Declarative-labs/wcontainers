@@ -608,8 +608,18 @@ impl<B: Backend> Device<B> {
             {
                 usage |= TextureUsage::RENDER;
             }
+            // Formats the back end cannot store into are read and written through a buffer of
+            // their texels (`StorageFormatThroughBuffer`).
+            let stores = self
+                .backend
+                .caps()
+                .formats
+                .get(format)
+                .intersects(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE);
             if desc.flags & resource::FLAG_UNORDERED_ACCESS != 0 {
-                usage |= TextureUsage::STORAGE;
+                if stores {
+                    usage |= TextureUsage::STORAGE;
+                }
                 // `ClearUnorderedAccessView*` clears it by a pass where the format renders.
                 if self
                     .backend
