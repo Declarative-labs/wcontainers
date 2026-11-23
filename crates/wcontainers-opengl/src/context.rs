@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
     Backend, ClearValue, ColorTarget, DeviceStatus, EmptyPass, MAX_COLOR_TARGETS, Object,
-    PassTargets, PassTracker, ScissorRect, Target, TextureDimension, TextureViewDesc,
+    PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension, TextureViewDesc,
     ViewDimension,
 };
 
@@ -52,6 +52,49 @@ pub struct Framebuffer<B: Backend> {
     pub views: Vec<B::TextureView>,
     /// The samples of each pixel its targets have.
     pub samples: u32,
+    /// The twins its targets in another format than their textures' draw into, copied into
+    /// before each draw and back after it and after each clear.
+    pub twins: Vec<view::Twin<B>>,
+}
+
+impl<B: Backend> Framebuffer<B> {
+    /// Copies each target's twin into its texture, after the work drawing into them (outside a
+    /// pass: the open one is closed).
+    pub fn copy_back_twins(
+        &self,
+        tracker: &mut PassTracker<B>,
+        backend: &mut B,
+    ) -> Result<(), String> {
+        if self.twins.is_empty() {
+            return Ok(());
+        }
+        tracker
+            .close(backend)
+            .map_err(|e| format!("closing the pass for a target's twin: {e:?}"))?;
+        for twin in &self.twins {
+            twin.copy_back(backend);
+        }
+        Ok(())
+    }
+
+    /// Copies each target's texture into its twin, before work drawing into them (outside a
+    /// pass: the open one is closed).
+    pub fn copy_into_twins(
+        &self,
+        tracker: &mut PassTracker<B>,
+        backend: &mut B,
+    ) -> Result<(), String> {
+        if self.twins.is_empty() {
+            return Ok(());
+        }
+        tracker
+            .close(backend)
+            .map_err(|e| format!("closing the pass for a target's twin: {e:?}"))?;
+        for twin in &self.twins {
+            twin.copy_in(backend);
+        }
+        Ok(())
+    }
 }
 
 /// One context: Gallium's struct first, so that a `pipe_context` pointer is one to it.
@@ -114,6 +157,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
             state: pipe_framebuffer_state::default(),
             views: Vec::new(),
             samples: 1,
+            twins: Vec::new(),
         },
         stages: Stages::default(),
         programs: Programs::default(),
@@ -205,6 +249,9 @@ unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
     let screen = context.screen();
     for view in views {
         screen.retire(Object::TextureView(view));
+    }
+    for twin in std::mem::take(&mut context.framebuffer.twins) {
+        twin.release(|object| screen.retire(object));
     }
     for surface in surfaces(&mut context.framebuffer.state) {
         // SAFETY: the framebuffer holds a reference on each texture.
@@ -350,6 +397,12 @@ unsafe extern "C" fn clear<B: Backend>(
     if let Err(error) = done {
         eprintln!("{}: a clear: {error:?}", DRIVER_NAME.to_string_lossy());
     }
+    if let Err(error) = context
+        .framebuffer
+        .copy_back_twins(&mut context.tracker, &mut backend)
+    {
+        eprintln!("{}: a clear: {error}", DRIVER_NAME.to_string_lossy());
+    }
 }
 
 /// Clears a rectangle of one surface, outside any pass.
@@ -456,13 +509,7 @@ pub fn surface_view<B: Backend>(
     let resource = unsafe { Resource::<B>::of(surface.texture) };
     let (texture, desc) = resource.texture()?;
     let format = crate::format::format(surface.format())?;
-    let reinterprets = desc.reinterpret
-        && backend
-            .caps()
-            .features
-            .contains(wcontainers_gpu::Features::FORMAT_REINTERPRET);
-    let colour = !format.is_depth_stencil() && !desc.format.is_depth_stencil();
-    if colour && format.linear() != desc.format.linear() && !reinterprets {
+    if through_twin(backend, format, desc) {
         crate::state::refuse(format_args!(
             "a target in {format:?} of a texture in {:?}, which the host views only in its own \
              format (not built)",
@@ -491,14 +538,74 @@ pub fn surface_view<B: Backend>(
     Some((view, format))
 }
 
-/// The pass tracker's target of one surface, with the view made for it.
-fn target<B: Backend>(backend: &mut B, surface: &pipe_surface) -> Option<Target<B>> {
+/// Whether a colour target in `format` of a texture `desc` describes is drawn into through a twin:
+/// the host views a texture only in its own format or its sRGB twin unless it reinterprets.
+fn through_twin<B: Backend>(
+    backend: &B,
+    format: wcontainers_gpu::Format,
+    desc: &TextureDesc,
+) -> bool {
+    let reinterprets = desc.reinterpret
+        && backend
+            .caps()
+            .features
+            .contains(wcontainers_gpu::Features::FORMAT_REINTERPRET);
+    let colour = !format.is_depth_stencil() && !desc.format.is_depth_stencil();
+    colour && format.linear() != desc.format.linear() && !reinterprets
+}
+
+/// The pass tracker's target of one surface, with the view made for it; a target in another
+/// format than its texture's draws into a twin, added to `twins`.
+fn target<B: Backend>(
+    backend: &mut B,
+    surface: &pipe_surface,
+    twins: &mut Vec<view::Twin<B>>,
+) -> Option<Target<B>> {
     // SAFETY: a surface holds a live texture.
     let resource = unsafe { Resource::<B>::of(surface.texture) };
     let (texture, desc) = resource.texture()?;
+    let size = |n: u32| (n >> surface.level).max(1);
+    let format = crate::format::format(surface.format())?;
+    if through_twin(backend, format, desc) {
+        let twin = view::Twin::of_target(
+            backend,
+            texture,
+            desc,
+            format,
+            surface.level,
+            surface.first_layer(),
+        )
+        .unwrap_or_else(|why| state::refuse(format_args!("{why} (not built)")));
+        let view = backend
+            .create_view(
+                twin.texture(),
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .ok()?;
+        let target = Target {
+            view,
+            texture: twin.texture().clone(),
+            format,
+            mip: 0,
+            layer: 0,
+            depth_slice: 0,
+            width: size(desc.width),
+            height: size(desc.height),
+            samples: 1,
+        };
+        twins.push(twin);
+        return Some(target);
+    }
     let (view, format) = surface_view(backend, surface)?;
     let three_d = desc.dimension == TextureDimension::D3;
-    let size = |n: u32| (n >> surface.level).max(1);
     Some(Target {
         view,
         texture: texture.clone(),
@@ -535,11 +642,16 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
     let mut views = Vec::new();
     let mut samples = u32::from(state.samples).max(1);
     let colors = usize::from(state.nr_cbufs);
+    // The old twins were copied back after their work.
+    for twin in std::mem::take(&mut context.framebuffer.twins) {
+        twin.release(|object| backend.destroy(object));
+    }
+    let mut twins = Vec::new();
     for (slot, surface) in targets.colors.iter_mut().zip(&state.cbufs[..colors]) {
         if surface.texture.is_null() {
             continue;
         }
-        let Some(made) = target(backend, surface) else {
+        let Some(made) = target(backend, surface, &mut twins) else {
             continue;
         };
         views.push(made.view.clone());
@@ -550,7 +662,7 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
         });
     }
     if !state.zsbuf.texture.is_null()
-        && let Some(made) = target(backend, &state.zsbuf)
+        && let Some(made) = target(backend, &state.zsbuf, &mut twins)
     {
         views.push(made.view.clone());
         samples = made.samples;
@@ -564,6 +676,13 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
         });
     }
     context.framebuffer.samples = samples;
+    context.framebuffer.twins = twins;
+    if let Err(error) = context
+        .framebuffer
+        .copy_into_twins(&mut context.tracker, backend)
+    {
+        eprintln!("{}: framebuffer: {error}", DRIVER_NAME.to_string_lossy());
+    }
     if let Err(error) = context.tracker.set_targets(backend, targets) {
         eprintln!("{}: framebuffer: {error:?}", DRIVER_NAME.to_string_lossy());
     }

@@ -229,8 +229,9 @@ pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut p
 /// A texture of an image's own format and shape that the image is bound through, where the
 /// texture it names is of another format of the same texel size, or is a volume texture of which
 /// the image is one slice (`ReinterpretCopy`): copied into before the work and, for an image the
-/// program writes, back after it, through `buffer`.
-struct Twin<B: Backend> {
+/// program writes, back after it, through `buffer`. A target in another format than its texture's
+/// draws into one the same way ([`Twin::of_target`]).
+pub struct Twin<B: Backend> {
     texture: B::Texture,
     buffer: B::Buffer,
     source: B::Texture,
@@ -665,6 +666,97 @@ impl<B: Backend> Images<B> {
 }
 
 impl<B: Backend> Twin<B> {
+    /// A twin in `format` of one level and layer (a volume texture's depth slice) of `source`,
+    /// whose texture `desc` describes, that a target draws into (`ReinterpretCopy`); why not where
+    /// the formats' texels differ in size or the texture is multisampled (whose texels the host
+    /// does not copy through buffers).
+    pub fn of_target(
+        backend: &mut B,
+        source: &B::Texture,
+        desc: &TextureDesc,
+        format: Format,
+        mip: u32,
+        layer: u32,
+    ) -> Result<Self, String> {
+        let (width, _, bytes) = format.block();
+        let (their_width, _, theirs) = desc.format.block();
+        if bytes != theirs || width != 1 || their_width != 1 {
+            return Err(format!(
+                "a target in {format:?} of a texture in {:?}, of another texel size",
+                desc.format
+            ));
+        }
+        if desc.samples > 1 {
+            return Err(format!(
+                "a multisampled target in {format:?} of a texture in {:?}",
+                desc.format
+            ));
+        }
+        backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        let side = |n: u32| (n >> mip).max(1);
+        let extent = Extent {
+            width: side(desc.width),
+            height: side(desc.height),
+            depth_or_layers: 1,
+        };
+        let row_pitch = extent.width * bytes;
+        let texture = backend
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .map_err(|e| format!("a target's twin: {e:?}"))?;
+        let buffer = backend
+            .create_buffer(&BufferDesc {
+                size: (u64::from(row_pitch) * u64::from(extent.height))
+                    .next_multiple_of(STORAGE_WORD),
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })
+            .map_err(|e| format!("a target's copy: {e:?}"))?;
+        let three_d = desc.dimension == TextureDimension::D3;
+        Ok(Twin {
+            texture,
+            buffer,
+            source: source.clone(),
+            mip,
+            layer: if three_d { 0 } else { layer },
+            slice: if three_d { layer } else { 0 },
+            extent,
+            row_pitch,
+            writable: true,
+        })
+    }
+
+    /// The twin's texture, of one level and layer.
+    pub fn texture(&self) -> &B::Texture {
+        &self.texture
+    }
+
+    /// Copies the source's texels into the twin (outside a pass).
+    pub fn copy_in(&self, backend: &mut B) {
+        self.copy(backend, true);
+    }
+
+    /// Copies the twin's texels back into its source (outside a pass).
+    pub fn copy_back(&self, backend: &mut B) {
+        self.copy(backend, false);
+    }
+
+    /// Gives what the twin made to `release`.
+    pub fn release(self, mut release: impl FnMut(Object<B>)) {
+        release(Object::Texture(self.texture));
+        release(Object::Buffer(self.buffer));
+    }
+
     /// Moves the texels between the twin and its source: into the twin, or back from it.
     fn copy(&self, backend: &mut B, into: bool) {
         let region = |texture, mip, layer, z| TextureRegion {

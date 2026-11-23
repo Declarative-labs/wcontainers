@@ -2282,6 +2282,10 @@ fn draw<B: Backend>(
         None
     };
     let mut scissors = Vec::new();
+    // Targets drawn through twins see their textures as they are now.
+    context
+        .framebuffer
+        .copy_into_twins(&mut context.tracker, backend)?;
     let area = context
         .tracker
         .before_draw(backend, &[])
@@ -2372,7 +2376,9 @@ fn draw<B: Backend>(
             .map_err(|e| format!("closing the pass for a copy: {e:?}"))?;
     }
     images.finish(backend);
-    Ok(())
+    context
+        .framebuffer
+        .copy_back_twins(&mut context.tracker, backend)
 }
 
 /// Whether a topology draws triangles, which have faces.
