@@ -5074,6 +5074,7 @@ dependencies = [
  "fastrand",
  "libc",
  "linux-raw-sys",
+ "nix",
  "rangemap",
  "rustix",
  "wcontainers-abi",
