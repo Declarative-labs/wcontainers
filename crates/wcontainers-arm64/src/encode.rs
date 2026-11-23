@@ -81,6 +81,7 @@ mod name {
     pub const LDADDB: &str = "LDADDB_32_memop";
     pub const CAS: &str = "CAS_C64_comswap";
     pub const BRK: &str = "BRK_EX_exception";
+    pub const SVC: &str = "SVC_EX_exception";
     pub const UDF: &str = "UDF_only_perm_undef";
     pub const ADD_EXTENDED: &str = "ADD_64_addsub_ext";
     pub const SUB_EXTENDED: &str = "SUB_64_addsub_ext";
@@ -135,6 +136,7 @@ written_forms! {
     LDADDB,
     CAS,
     BRK,
+    SVC,
     UDF,
     ADD_EXTENDED,
     SUB_EXTENDED,
@@ -906,7 +908,7 @@ fn moves_of_x0() -> FloatStatusMoves {
     } = *MSR_RT;
     let routed = |word| {
         let instruction = crate::decode_forms::decode(word, msr)?;
-        (<Arm64 as Native>::route(&(), &instruction, &()) == Route::FloatStatus)
+        (<Arm64 as Native>::route(&crate::Way::Machine, &instruction, &()) == Route::FloatStatus)
             .then(|| <Arm64 as Native>::stopping(&instruction, 0) == Stopping::FloatStatusWrite)
     };
     let (mut status, mut control) = (Vec::new(), Vec::new());
@@ -933,8 +935,9 @@ fn moves_of_x0() -> FloatStatusMoves {
         mrs.presented(read_fpsr) && mrs.presented(read_fpcr),
         "the reads of the registers the writes name are presented"
     );
-    let read_routed = crate::decode_forms::decode(read_fpsr, mrs)
-        .is_some_and(|i| <Arm64 as Native>::route(&(), &i, &()) == Route::FloatStatus);
+    let read_routed = crate::decode_forms::decode(read_fpsr, mrs).is_some_and(|i| {
+        <Arm64 as Native>::route(&crate::Way::Machine, &i, &()) == Route::FloatStatus
+    });
     assert!(read_routed, "the read of the status register is routed");
     FloatStatusMoves {
         read_fpsr,

@@ -193,8 +193,8 @@ impl BranchTable {
 pub enum Holds {
     /// The guest address itself.
     Address,
-    /// The address of the guest address's entry slot.
-    EntrySlot,
+    /// The address of the guest address's entry slot in the slot table that starts at `table`.
+    EntrySlot { table: u64 },
 }
 
 /// One word of host code that builds a guest address in a register, written again when the code is loaded for

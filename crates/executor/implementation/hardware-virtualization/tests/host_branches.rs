@@ -174,7 +174,8 @@ mod hosted {
             .map(|i| i.pc)
             .filter(|&pc| {
                 guest(words, pc).is_none_or(|(word, ..)| {
-                    Arm64::route(&(), &decode(word), &()) != Route::Nothing
+                    Arm64::route(&wcontainers_arm64::Way::Machine, &decode(word), &())
+                        != Route::Nothing
                 })
             })
             .collect()

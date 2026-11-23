@@ -658,6 +658,7 @@ fn start(case: &Case) -> (Hardware, RegisterPage) {
     let page = RegisterPage {
         withheld,
         saved: Default::default(),
+        link: 0,
         exclusive_bytes: 0,
         exclusive_address: 0,
         exclusive_low: 0,
@@ -808,7 +809,7 @@ pub fn edge(case: &Case) -> Option<Case> {
         1 => crossing | tag & !(1 << (TAG_LOW - 1)),
         2 => original | tag | 1 << (TAG_LOW - 1),
         _ if matches!(
-            Arm64::route(&(), &i, &()),
+            Arm64::route(&wcontainers_arm64::Way::Machine, &i, &()),
             Route::Aligned | Route::Exclusive
         ) =>
         {

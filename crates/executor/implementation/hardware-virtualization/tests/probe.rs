@@ -114,7 +114,9 @@ mod hosted {
             let mut form_probed = false;
             for _ in 0..words {
                 let case = strategy.new_tree(&mut generator).expect("a case").current();
-                if Arm64::route(&(), &decode(case.word), &()) != Route::Split {
+                if Arm64::route(&wcontainers_arm64::Way::Machine, &decode(case.word), &())
+                    != Route::Split
+                {
                     continue;
                 }
                 let Some(bytes) = access_bytes(&case) else {

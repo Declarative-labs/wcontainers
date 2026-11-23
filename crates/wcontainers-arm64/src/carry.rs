@@ -18,12 +18,13 @@ use crate::instruction::{
 };
 use crate::meaning::Host;
 use crate::mirror::{
-    self, LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_MISSED, LAST_TARGET_TEST, MIRROR,
-    REACH_BITS, SLOT_MOVES, SLOT_SHIFT,
+    LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_MISSED, LAST_TARGET_TEST, SLOT_MOVES,
+    SLOT_SHIFT,
 };
 pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
+use crate::way::{PROCESS_ENTRIES, PROCESS_ENTRY_BYTES, Way};
 use crate::{Arm64, FPCR_BITS, decode};
 use crate::{forms, habits};
 
@@ -40,6 +41,62 @@ const INSTRUCTION: u64 = Arm64::MAX_LENGTH;
 /// A call into the inside: `brk` with the call's code.
 pub fn call_word(call: InsideCall) -> u32 {
     encode::exception(form::BRK, call.code())
+}
+
+/// A call into a host process's floor (docs/native-without-virtual-machine.md section 3.2): one branch in line,
+/// as the machine way's `brk` is one word, to code out of line that keeps the guest's x30 in the register page,
+/// calls the call's entry, and where the floor goes on after the call, takes x30 back and branches back. The
+/// entry's return address names the call, as the machine way's exception address does: the floor reports the call
+/// at the `blr`, and going on after it is going on at the next word.
+fn process_call(code: &mut HostCode, call: InsideCall) {
+    let from = code.offset();
+    code.push(&encode::branch(false, 0).expect("a branch").to_le_bytes());
+    let state = code.snapshot();
+    let back = code.offset();
+    code.defer(move |code| {
+        let after = code.snapshot();
+        code.restore(state.clone());
+        land(code, from);
+        code.push(&store_page(LINK, LINK_SLOT).to_le_bytes());
+        // What x30 holds is the page's word now: the guest's x30, or the register x30 stands in for.
+        let relocated = &state.0.relocated;
+        if !relocated.iter().any(|r| r.guest == LINK) {
+            code.relocate(LINK, held_page(LINK_SLOT));
+        }
+        for r in relocated.iter().filter(|r| r.held == Held::Register(LINK)) {
+            code.relocate(r.guest, held_page(LINK_SLOT));
+        }
+        let entry = PROCESS_ENTRIES + u64::from(call.code()) * PROCESS_ENTRY_BYTES;
+        for word in encode::move_address(LINK, entry) {
+            code.push(&word.to_le_bytes());
+        }
+        code.push(&encode::branch_register(form::BLR, LINK).to_le_bytes());
+        code.push(&load_page(LINK, LINK_SLOT).to_le_bytes());
+        code.restore(state);
+        let to_back = back as i64 - code.offset() as i64;
+        code.push(
+            &encode::branch(false, to_back)
+                .expect("a piece is short")
+                .to_le_bytes(),
+        );
+        code.restore(after);
+    });
+}
+
+/// A call into the inside, as the way makes it.
+pub(crate) fn call(way: Way, code: &mut HostCode, call: InsideCall) {
+    match way {
+        Way::Machine => code.push(&call_word(call).to_le_bytes()),
+        Way::Process => process_call(code, call),
+    }
+}
+
+/// The register page's word that keeps the guest's x30 during a call of the process way.
+const LINK_SLOT: u64 = offset_of!(RegisterPage, link) as u64;
+
+/// The route of an instruction, which is the same in every way of running.
+fn route_of(i: &I) -> Route {
+    Arm64::route(&Way::Machine, i, &())
 }
 /// The low bits of a branch target that an aligned one has clear.
 const ALIGNMENT_BITS: u32 = INSTRUCTION.trailing_zeros();
@@ -124,6 +181,7 @@ fn free_pair(avoid: Registers) -> Register {
 
 /// Host code written for one guest instruction.
 struct Out<'a> {
+    way: Way,
     code: &'a mut HostCode,
     address: u64,
     /// The bases a test before the instruction's loop found aligned.
@@ -149,7 +207,7 @@ pub(crate) fn aligned_bases(part: &[(u64, I)]) -> AlignedBases {
         .fold(Registers::NONE, |w, (_, i)| w.union(touched(i).1));
     let mut bases: Vec<(Register, u32)> = Vec::new();
     for (_, i) in part {
-        if !matches!(Arm64::route(&(), i, &()), Route::Copy | Route::Split) || !one_element(i) {
+        if !matches!(route_of(i), Route::Copy | Route::Split) || !one_element(i) {
             continue;
         }
         let Some(m) = i.memory_access() else {
@@ -201,6 +259,7 @@ pub(crate) fn test_aligned_bases(code: &mut HostCode, aligned: &AlignedBases) ->
 
 /// Code out of line: a test's other way, entered from the branch at `from` in the state it had there.
 struct Tail {
+    way: Way,
     state: (Span, bool),
     from: usize,
     words: Vec<u32>,
@@ -244,7 +303,7 @@ impl Tail {
             code.push(&w.to_le_bytes());
         }
         if let Some(call) = self.call {
-            Arm64::call(&(), code, call);
+            Arm64::call(&self.way, code, call);
         }
         if let Some(back) = self.back {
             let here = code.offset() as i64;
@@ -275,7 +334,7 @@ impl Out<'_> {
     }
 
     fn call(&mut self, call: InsideCall) {
-        Arm64::call(&(), self.code, call);
+        Arm64::call(&self.way, self.code, call);
     }
 
     /// A branch to be pointed at code placed later: written with offset 0, patched by [`Self::land`].
@@ -294,6 +353,7 @@ impl Out<'_> {
         let state = self.code.snapshot();
         let from = self.branch(test);
         let mut t = Tail {
+            way: self.way,
             state,
             from,
             words: Vec::new(),
@@ -402,8 +462,7 @@ fn substitute(word: u32, from: &[Register], to: &[Register]) -> u32 {
         })
         .find(|&w| {
             let i = decode(w);
-            Arm64::route(&(), &i, &()) == Arm64::route(&(), &original, &())
-                && touched(&i) == (swap(uses), swap(defs))
+            route_of(&i) == route_of(&original) && touched(&i) == (swap(uses), swap(defs))
         })
         .unwrap_or_else(|| panic!("no stand-in for x{from:?} in {word:#010x}"))
 }
@@ -416,11 +475,19 @@ struct StandIn {
 }
 
 /// The host code of one guest instruction (docs/native.md section 3.4).
-pub(crate) fn carry(i: &I, word: u32, address: u64, aligned: &AlignedBases, code: &mut HostCode) {
-    let route = Arm64::route(&(), i, &());
+pub(crate) fn carry(
+    way: Way,
+    i: &I,
+    word: u32,
+    address: u64,
+    aligned: &AlignedBases,
+    code: &mut HostCode,
+) {
+    let route = route_of(i);
     let (uses, defs) = touched(i);
     let named = |r: Register| uses.union(defs).has_bit(bit(r));
     let mut out = Out {
+        way,
         code,
         address,
         aligned,
@@ -939,27 +1006,30 @@ fn rebase(out: &mut Out, i: &I) {
 /// the first word being the one a loader links. With `commit` that word is the current instruction's commit
 /// point, so that a stop before it is at the instruction. A target beyond the mirror goes to the inside, which
 /// reports it as its jump's would be.
-pub(crate) fn exit(code: &mut HostCode, target: u64, commit: Option<Resume>) {
-    if target >> REACH_BITS != 0 {
+pub(crate) fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Resume>) {
+    if target >> way.reach_bits() != 0 {
         if let Some(resume) = commit {
             code.after(resume);
         }
-        Arm64::call(&(), code, InsideCall::Exit);
+        Arm64::call(&way, code, InsideCall::Exit);
         return;
     }
-    let moves = address_words(SCRATCH, target, Holds::EntrySlot);
+    let slot = Holds::EntrySlot {
+        table: way.slot_table(),
+    };
+    let moves = address_words(SCRATCH, target, slot);
     let lead = code.lead_after_commit();
     if lead > 0 {
         let settle = encode::add_immediate(COUNT, COUNT, -i64::from(lead)).expect("a lead fits");
         code.settling_exit(&settle.to_le_bytes(), target, commit);
-        note_place(code, SCRATCH, target, Holds::EntrySlot, 0);
+        note_place(code, SCRATCH, target, slot, 0);
         code.push(&moves[0].to_le_bytes());
     } else {
-        note_place(code, SCRATCH, target, Holds::EntrySlot, 0);
+        note_place(code, SCRATCH, target, slot, 0);
         code.exit(&moves[0].to_le_bytes(), target, commit);
     }
     for (part, w) in moves.iter().enumerate().skip(1) {
-        note_place(code, SCRATCH, target, Holds::EntrySlot, part);
+        note_place(code, SCRATCH, target, slot, part);
         code.push(&w.to_le_bytes());
     }
     code.push(&encode::branch_register(form::BR, SCRATCH).to_le_bytes());
@@ -972,7 +1042,7 @@ fn address_words(rd: Register, address: u64, holds: Holds) -> Vec<u32> {
         rd,
         match holds {
             Holds::Address => address,
-            Holds::EntrySlot => mirror::slot(address),
+            Holds::EntrySlot { table } => table | address << SLOT_SHIFT,
         },
     )
 }
@@ -991,9 +1061,10 @@ fn note_place(code: &mut HostCode, rd: Register, address: u64, holds: Holds, par
 /// The guest pages between which translated code moves by its address places alone (section 3.2): from one of
 /// them `adrp`'s furthest page is still at or above zero, and a direct branch's furthest target from anywhere on
 /// it is still under the mirror's reach, so no address the code names wraps or leaves the mirror, and each builds
-/// in as many words.
-pub(crate) fn movable() -> Range<u64> {
-    encode::page_reach(ADRP_PAGE)..(1 << REACH_BITS) - encode::branch_reach() - PAGE_SIZE
+/// in as many words. The trait's `movable` is the machine way's; a process way's translation moves only between
+/// pages of its own.
+pub fn movable(way: Way) -> Range<u64> {
+    encode::page_reach(ADRP_PAGE)..(1 << way.reach_bits()) - encode::branch_reach() - PAGE_SIZE
 }
 
 /// Writes the word at `place` for its address.
@@ -1062,9 +1133,9 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             let target = at.wrapping_add_signed(offset);
             if link {
                 out.build_address(Reg::X(LINK), return_address, Resume::At(target));
-                exit(out.code, target, None);
+                exit(out.way, out.code, target, None);
             } else {
-                exit(out.code, target, Some(Resume::At(target)));
+                exit(out.way, out.code, target, Some(Resume::At(target)));
             }
         }
         I::BranchCond { offset, .. }
@@ -1084,18 +1155,19 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             out.code.after(next);
             let target = at.wrapping_add_signed(offset);
             // The test's own branch goes straight to the target's piece once it is linked.
-            if target >> REACH_BITS == 0 {
+            if target >> out.way.reach_bits() == 0 {
                 let back = encode::retarget(word, -(INSTRUCTION as i64)).expect("a branch");
                 out.code.branch_exit(taken, target, unlinked ^ back, None);
             }
             // The taken side's exit goes out of line; the run goes on at the next instruction.
             let state = out.code.snapshot();
+            let way = out.way;
             out.code.defer(move |code| {
                 let after = code.snapshot();
                 code.restore(state);
                 land(code, taken);
                 code.after(Resume::At(target));
-                exit(code, target, None);
+                exit(way, code, target, None);
                 code.restore(after);
             });
         }
@@ -1128,12 +1200,8 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         out.build_address(Reg::X(LINK), return_address, Resume::Through(held));
         last_target(out, n);
     }
-    out.put(encode::ubfx(
-        SCRATCH,
-        source,
-        REACH_BITS,
-        TAG_LOW - REACH_BITS,
-    ));
+    let reach = out.way.reach_bits();
+    out.put(encode::ubfx(SCRATCH, source, reach, TAG_LOW - reach));
     out.tail(
         encode::compare_branch(true, SCRATCH, 0).expect("fits"),
         |t| {
@@ -1150,11 +1218,11 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     if withheld {
         out.put(load_page(SCRATCH, withheld_slot(n)));
     }
-    out.put(encode::ubfiz(SCRATCH, source, SLOT_SHIFT, REACH_BITS));
+    out.put(encode::ubfiz(SCRATCH, source, SLOT_SHIFT, reach));
     out.put(encode::bfxil(SCRATCH, SCRATCH, SLOT_SHIFT, ALIGNMENT_BITS));
     out.put(
-        encode::eor_immediate(SCRATCH, SCRATCH, MIRROR)
-            .expect("the mirror's base is a logical immediate"),
+        encode::eor_immediate(SCRATCH, SCRATCH, out.way.slot_table())
+            .expect("the slot table's base is a logical immediate"),
     );
     let slot = Resume::Slot(Held::Register(SCRATCH));
     match op {
@@ -1259,7 +1327,13 @@ fn known_targets(before: &[(u64, I)], i: &I) -> Option<(Register, Register, Bran
 /// the target's piece and which until then goes to the jump through the target's slot written after it. Nothing
 /// is read from memory and only branches the translator wrote are taken. False, with nothing written, for any
 /// other jump.
-pub(crate) fn known_jump(before: &[(u64, I)], i: &I, address: u64, code: &mut HostCode) -> bool {
+pub(crate) fn known_jump(
+    way: Way,
+    before: &[(u64, I)],
+    i: &I,
+    address: u64,
+    code: &mut HostCode,
+) -> bool {
     let Some((n, e, table)) = known_targets(before, i) else {
         return false;
     };
@@ -1295,6 +1369,7 @@ pub(crate) fn known_jump(before: &[(u64, I)], i: &I, address: u64, code: &mut Ho
     }
     let aligned = AlignedBases::default();
     let mut out = Out {
+        way,
         code,
         address,
         aligned: &aligned,

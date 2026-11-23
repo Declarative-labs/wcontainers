@@ -5,12 +5,12 @@ use std::ops::Range;
 use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
-use crate::Arm64;
 use crate::carry::{self, AlignedBases, COUNT};
 use crate::encode;
 use crate::exact::Operation;
 use crate::instruction::{Address, Instruction as I, Reg, SystemRegister};
 use crate::meaning::{Control, Hook};
+use crate::{Arm64, Way};
 
 /// The operand the float hook is given for a read of the float status while it is not kept.
 fn read_status() -> i64 {
@@ -53,12 +53,11 @@ fn structure_bytes(structure: u8, registers: u8, element: u8, whole: bool, singl
 }
 
 impl Native for Arm64 {
-    /// One way: the code is the same in every way of running.
-    type Way = ();
+    type Way = Way;
     /// Nothing beyond the instruction: no host's probe or process's offer changes a route.
     type Target = ();
 
-    fn route(_: &(), i: &I, _: &()) -> Route {
+    fn route(_: &Way, i: &I, _: &()) -> Route {
         match *i {
             I::AddSub { .. }
             | I::AddSubCarry { .. }
@@ -215,12 +214,16 @@ impl Native for Arm64 {
         carry::aligned_bases(part)
     }
 
-    fn test_loop_invariant(_: &(), code: &mut HostCode, invariant: &AlignedBases) -> Option<usize> {
+    fn test_loop_invariant(
+        _: &Way,
+        code: &mut HostCode,
+        invariant: &AlignedBases,
+    ) -> Option<usize> {
         carry::test_aligned_bases(code, invariant)
     }
 
     fn carry(
-        _: &(),
+        way: &Way,
         _: &(),
         before: &[(u64, I)],
         i: &I,
@@ -229,11 +232,11 @@ impl Native for Arm64 {
         invariant: &AlignedBases,
         code: &mut HostCode,
     ) {
-        if carry::known_jump(before, i, address, code) {
+        if carry::known_jump(*way, before, i, address, code) {
             return;
         }
         let word = u32::from_le_bytes(bytes.try_into().expect("an instruction is one word"));
-        carry::carry(i, word, address, invariant, code);
+        carry::carry(*way, i, word, address, invariant, code);
     }
 
     fn count(code: &mut HostCode, events: u32) {
@@ -241,12 +244,12 @@ impl Native for Arm64 {
         code.count(&add.to_le_bytes(), events);
     }
 
-    fn call(_: &(), code: &mut HostCode, call: InsideCall) {
-        code.push(&carry::call_word(call).to_le_bytes());
+    fn call(way: &Way, code: &mut HostCode, call: InsideCall) {
+        carry::call(*way, code, call);
     }
 
-    fn exit(_: &(), code: &mut HostCode, target: u64) {
-        carry::exit(code, target, None);
+    fn exit(way: &Way, code: &mut HostCode, target: u64) {
+        carry::exit(*way, code, target, None);
     }
 
     fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {
@@ -267,7 +270,7 @@ impl Native for Arm64 {
     }
 
     fn movable() -> Range<u64> {
-        carry::movable()
+        carry::movable(Way::Machine)
     }
 
     fn write_place(code: &mut [u8], place: &AddressPlace) {
@@ -341,7 +344,8 @@ impl Native for Arm64 {
                 register: SystemRegister::Fpsr,
                 ..
             } => Stopping::FloatStatusRead,
-            _ if Self::route(&(), i, &()) == Route::Trap => Stopping::Illegal,
+            // An instruction's route is the same in every way.
+            _ if Self::route(&Way::Machine, i, &()) == Route::Trap => Stopping::Illegal,
             _ => Stopping::Plain,
         }
     }
