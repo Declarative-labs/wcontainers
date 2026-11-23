@@ -313,12 +313,48 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Verdicts (17:53 UTC, scratch w1/run7/floor-arm.log): all 13 test binaries 3 times with /dev/kvm denied on
     Graviton4, 156 of 156 passed (load 2.9 to 6.6), clippy with warnings denied clean; on the Xeon (17:57 UTC,
     scratch w1/run7/floor-x86.log) 138 of 138 (the floor test builds no tests there), load 17 to 23, clippy clean.
+- W1, run 8 (2026-11-23, 18:00 to 18:40 UTC):
+  - Still nothing from the translator's form or the stop crate (no commit to the translator, ARM64, the VM inside
+    or their status files since run 6; docs/status-translator.md last changed 2026-11-20, docs/status-native.md
+    2026-11-21: those tracks look stopped, see "Asked of other tracks").
+  - Built the bar's "a stop landing at every instruction" item for the stub's own code, on both machines
+    (tests/step.rs, 4 tests on ARM64, 3 on x86-64): the test traces one stub thread (ptrace, the test's tool alone;
+    nix's `ptrace`), steps it from its wait one instruction at a time to learn the turn's path, then runs the turn
+    again once per instruction of it, letting the thread go with the stop delivered exactly there (the step's
+    SIGTRAP replaced by the stop at detach), the pc at every step checked against the first run. Turns: commands
+    with a `clone` among them that report back (all applied or none, the thread made exactly once, it answers, the
+    page's permissions as the count says); commands then a spin (a stop that lands in the wait changes nothing, and
+    the runner's next stop ends it); a thread's end (it ends, or reports `Stopped` before taking its end and ends
+    when told again); on ARM64 an enter into a piece calling a floor entry (the block untouched, the stop's pc with
+    the loaded registers, or the call's save). Each stop sent raises exactly one of the stub's landing counts,
+    read once the thread is back in its wait.
+  - Paths and where their stops landed (the same on every run): ARM64 commands 134 instructions (106 ended the
+    turn, 8 in the publish, 20 in the wait), spin 124 (111, 13 in the wait), end 24 (13 before the end was taken, 8
+    in the wait, 3 in the end), enter and call 164 (72 turn, 69 in the entry or the save, 8 publish, 15 wait);
+    x86-64 commands 128 (101, 8, 19), spin 122 (109, 13), end 25 (14, 8, 3).
+  - The test sees the faults (scratch w1/run8/mutate-step.sh, mutate-step-arm.out): with the stop handler's wait,
+    end or publish window each sent to the turn's path instead, at least one test fails.
+  - Two things about the tool, not the product, found on the way: a thread stepped into a host call that blocks
+    and let go while in it takes a step trap when the call returns (ARM64, Linux 7.0; setting its registers back or
+    resuming it unstepped first does not clear it), so the test's path stops before the futex wait instead of
+    stepping into it (it decodes the instruction at the pc: wcontainers-arm64's decoder, iced-x86 on x86-64); and a
+    stop that lands after the request word is stored is counted after the turn's end can be read, so counts are
+    read once the thread waits again.
+  - Verdicts (18:33 to 18:36 UTC, scratch w1/run8/final-arm.log and final-x86.log, after the last code commit): all
+    14 test binaries 3 times with /dev/kvm denied, each run first proving the device cannot be opened: Graviton4
+    168 of 168 (load 5.0 to 5.8), Xeon 147 of 147 (load 0.5 at the start, 38 at the end from other tracks), clippy
+    with warnings denied clean on both. Not rerun inside Docker's profile or gVisor this run.
+  - No new unsafe code (the step test has none).
 - Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
+- The handler tails' own instructions: after a first stop, trace the thread on through its handler and send a
+  second stop at each instruction there (a stop is blocked in the handler, so each must land just after its
+  unblock, in the window the handler chose; `.Lwchp_wait_resumed` is reached only that way). tests/step.rs's
+  `Traced` does the stepping.
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
 - When the translator's `HostProcess` form lands: match the stand-ins to it (x28's page is the stub's register
   page and the block the hardware's state here; the translator's `RegisterPage` and its saved link must sit where
@@ -356,6 +392,11 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
   fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
   lines; the fetched log does not).
+- Since run 8: `cargo test -p wcontainers-executor-host-process --test step` (knob `WCHP_STEP_STRIDE`, default 1: every
+  instruction; `--nocapture` prints each path's length and where its stops landed); scratch w1/run8/both.sh is run
+  7's writing into run8, mutate-step.sh (sent inline through `arm-run`) breaks the stop handler three ways and runs
+  tests/step.rs after each, each of which must fail. The test needs ptrace of a descendant (Yama's scope 1 allows
+  it; both machines have 1).
 - Since run 7: scratch w1/run7/both.sh <tag> is run 6's writing into run7; mutate.sh (sent inline through `arm-run`)
   breaks the remote copy's floor nine ways and runs tests/floor.rs after each, each of which must fail.
 - Since run 6: scratch w1/run6/both.sh and sandbox-both.sh are run 4 and run 5's, writing into run6; flood.sh and repro.sh rerun the stop flood with either signal ($PIN to pin it), spec.sh runs specarm.c (form I's speculation, `specarm <rounds> <seed> [gadget]`).
@@ -433,6 +474,12 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Asked of other tracks
 
+- For the orchestrator (run 8): the two tracks W1 waits on look stopped. docs/status-translator.md was last changed
+  on 2026-11-20 and docs/status-native.md on 2026-11-21, and no commit has touched the translator, the ARM64 crate
+  or the VM inside's `stop` since run 6. Either start them on the two asks below, or let this track write the ARM64
+  `HostProcess` form itself (the four places of plan 3.2, in crates/wcontainers-arm64 and the translator) and the
+  `stop` crate's split. Until one of those happens, nothing in W1 that runs guest code can be built. The x86 native
+  output has its way P already (crates/wcontainers-x86, `Way::Process`); its executor side is W3's (plan 3.10).
 - Translator and ARM64 (crates/wcontainers-translator, crates/wcontainers-arm64): a form value given to
   `translate_native` and part of the cache key, with variants `Vm`, `HostProcess`, `InProcess`, that changes four
   places only (plan 3.2):
@@ -491,6 +538,9 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 run 8: the stops at every instruction are forced by tracing the thread from the test and stepping it there
+  (exhaustive and replayable, every instruction in turn), not by a seeded delay, which cannot aim at one instruction.
 
 - W1 run 7: the code area is mapped by a command after the stub's start (received like a shared block), not at its
   start, so a stub that never runs code maps none; it is execute-only, one per stub, just under 128 MiB, beside the
@@ -587,6 +637,8 @@ lock file), rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), 
 Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
 LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly (since run 5 also its `errno` feature, for
 ENOSYS), wcontainers-abi; for its tests only, fastrand 2.5.0
-(Apache-2.0 OR MIT) and, on ARM64 since run 7, wcontainers-arm64 (this workspace's, for the floor test's pieces). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
+(Apache-2.0 OR MIT), nix's `ptrace` and `signal` features (since run 8, the step test's tracing), on x86-64 since
+run 8 iced-x86 1.22.0 (MIT; the step test's decoding of the instruction at a pc) and, on ARM64 since run 7,
+wcontainers-arm64 (this workspace's, for the floor test's pieces and since run 8 the step test's decoding). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
 machines; gVisor's runsc 20261109.0 (Apache-2.0) and the busybox image (GPL-2.0, run only as a container base) for the
 sandbox runs.

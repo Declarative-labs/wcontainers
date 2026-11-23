@@ -1393,7 +1393,9 @@ filter. Pass bar, every item on the rented ARM64 machine:
   as a copy taken at one instant gives; a parent that forks twice before the page is copied and a child that forks
   before copying, each process's contents checked against the reference; a shared mapping written by two guest
   processes, checked against the reference; a stop signal landing at every instruction of the floor's entry, resume,
-  wait and handler-tail windows (forced by a seeded delay), and during a resume's queued commands, a `clone` among
+  wait and handler-tail windows (forced by tracing the thread from the test and stepping it to each instruction in
+  turn, W1 run 8, tests/step.rs; the handler tails' own instructions by a second stop are still to build), and
+  during a resume's queued commands, a `clone` among
   them (the thread is made exactly once); a guest that stores to its control pages (each store a SIGSEGV for the
   guest at that address, as on Linux) and writes forged exits, thread ids and registers into its threads' register
   pages, after forking twice: A forks B and C, A writes a page so that B owns it and C borrows from B, then B's
