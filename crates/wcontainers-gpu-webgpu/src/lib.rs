@@ -538,6 +538,7 @@ impl WebGpu {
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+            | wgpu::Features::BGRA8UNORM_STORAGE
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgpu::Features::TIMESTAMP_QUERY
@@ -829,9 +830,19 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> (Caps, FormatTables) 
         };
         // Copies follow WebGPU's rules whatever the adapter has: `depth24plus` is never copied.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-        let u = (ff.allowed_usages - copies) | (guaranteed.allowed_usages & copies);
+        let mut u = (ff.allowed_usages - copies) | (guaranteed.allowed_usages & copies);
+        let mut flags = ff.flags;
+        // `bgra8unorm` is stored into only on a device with its feature, which gives programs
+        // storage writes without a format, whatever the adapter's own flags say.
+        if raw == wgpu::TextureFormat::Bgra8Unorm && !f.contains(wgpu::Features::BGRA8UNORM_STORAGE)
+        {
+            u -= wgpu::TextureUsages::STORAGE_BINDING;
+            flags -= wgpu::TextureFormatFeatureFlags::STORAGE_READ_ONLY
+                | wgpu::TextureFormatFeatureFlags::STORAGE_WRITE_ONLY
+                | wgpu::TextureFormatFeatureFlags::STORAGE_READ_WRITE
+                | wgpu::TextureFormatFeatureFlags::STORAGE_ATOMIC;
+        }
         *allowed = u;
-        let flags = ff.flags;
         let mut uses = FormatUse::empty();
         let depth = format.is_depth_stencil();
         // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
@@ -841,8 +852,10 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> (Caps, FormatTables) 
             raw.sample_type(None, None),
             Some(wgpu::TextureSampleType::Float { .. })
         );
-        let native_resolve =
-            averaged && flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
+        // A resolve writes a texture drawn into, which some adapters' flags leave out.
+        let native_resolve = averaged
+            && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            && flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
         let drawn_resolve = averaged
             && !native_resolve
             && !depth
