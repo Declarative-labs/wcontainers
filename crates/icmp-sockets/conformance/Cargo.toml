@@ -20,12 +20,14 @@ etherparse.workspace = true
 mitsein.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The packet socket that sees what leaves a link, and the errno values of Linux.
+# The packet types of a packet socket and the errno values of Linux.
 libc = "0.2.191"
 # The type number of a segment routing header.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
-# The network namespace of each check, and the clocks of transmit times.
-rustix = { version = "1.1.6", features = ["net", "thread", "time", "linux_4_11"] }
+# The clocks of transmit times.
+rustix = { version = "1.1.6", features = ["net", "time", "linux_4_11"] }
+# The network namespace of each check and the packet socket that sees what leaves a link.
+nix = { version = "0.31.3", default-features = false, features = ["net", "sched", "socket"] }
 
 # TODO: remove this crate's 15 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]

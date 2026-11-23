@@ -9,8 +9,8 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::{NonZeroU16, NonZeroU32};
 use std::future::Future;
 use std::io::Write;
-use std::mem::{size_of, zeroed};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::mem::size_of;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::{Pin, pin};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -48,8 +48,7 @@ pub use wcontainers_readiness_conformance;
 
 /// Moves the calling thread into a new network namespace (root only) with loopback up and every group allowed ICMP echo sockets.
 pub fn enter_network_namespace() {
-    // SAFETY: a new network namespace shares no memory or file with the rest of the process.
-    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a new network namespace needs root");
     ip(LOOPBACK_UP);
     // This thread's namespace is the one /proc/sys/net shows it; the highest group id Linux takes is one below all ones.
@@ -649,37 +648,26 @@ pub fn seen(packet: &[u8]) -> Seen<'_> {
 }
 
 /// A packet socket that sees every packet leaving one link of the namespace, from the moment it is made.
-pub struct Capture(OwnedFd);
+pub struct Capture {
+    socket: OwnedFd,
+    link: NonZeroU32,
+}
 
 impl Capture {
+    /// Sees the packets of every link, of which [`Capture::within`] keeps those of the link named.
     pub fn on(link: &str) -> Self {
-        let all = (libc::ETH_P_ALL as u16).to_be();
-        // SAFETY: socket makes a new descriptor, owned below.
-        let fd = unsafe {
-            libc::socket(
-                libc::AF_PACKET,
-                libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-                i32::from(all),
-            )
-        };
-        assert!(!fd.is_negative(), "a packet socket opens");
-        // SAFETY: the descriptor was just made and nothing else owns it.
-        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        // SAFETY: sockaddr_ll is plain data.
-        let mut address: libc::sockaddr_ll = unsafe { zeroed() };
-        address.sll_family = libc::AF_PACKET as u16;
-        address.sll_protocol = all;
-        address.sll_ifindex = index(link).0.get() as i32;
-        // SAFETY: the address is a sockaddr_ll of its own size.
-        let bound = unsafe {
-            libc::bind(
-                fd.as_raw_fd(),
-                (&address as *const libc::sockaddr_ll).cast(),
-                size_of::<libc::sockaddr_ll>() as u32,
-            )
-        };
-        assert!(!bound.is_negative(), "the packet socket binds to {link}");
-        Self(fd)
+        use nix::sys::socket::{AddressFamily, SockFlag, SockProtocol, SockType};
+        let socket = nix::sys::socket::socket(
+            AddressFamily::Packet,
+            SockType::Datagram,
+            SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC,
+            SockProtocol::EthAll,
+        )
+        .expect("a packet socket opens");
+        Self {
+            socket,
+            link: index(link).0,
+        }
     }
 
     /// Returns the next packet leaving the link that `wanted` takes, if one leaves within the time given.
@@ -687,26 +675,18 @@ impl Capture {
         let start = Instant::now();
         let mut packet = buffer();
         while start.elapsed() < time {
-            // SAFETY: sockaddr_ll is plain data.
-            let mut address: libc::sockaddr_ll = unsafe { zeroed() };
-            let mut length = size_of::<libc::sockaddr_ll>() as u32;
-            // SAFETY: the buffers are writable for the lengths given.
-            let read = unsafe {
-                libc::recvfrom(
-                    self.0.as_raw_fd(),
-                    packet.as_mut_ptr().cast(),
-                    packet.len(),
-                    libc::MSG_DONTWAIT,
-                    (&mut address as *mut libc::sockaddr_ll).cast(),
-                    &mut length,
-                )
-            };
-            if read.is_negative() {
+            let Ok((read, Some(address))) = nix::sys::socket::recvfrom::<nix::sys::socket::LinkAddr>(
+                self.socket.as_raw_fd(),
+                &mut packet,
+            ) else {
                 std::thread::sleep(LOOK_AGAIN_SOON);
                 continue;
-            }
-            let bytes = &packet[..read as usize];
-            if address.sll_pkttype == libc::PACKET_OUTGOING && wanted(bytes) {
+            };
+            let bytes = &packet[..read];
+            if usize::try_from(self.link.get()) == Ok(address.ifindex())
+                && address.pkttype() == libc::PACKET_OUTGOING
+                && wanted(bytes)
+            {
                 return Some(bytes.to_vec());
             }
         }
