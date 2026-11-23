@@ -120,22 +120,27 @@ Never copied, by route:
 - Area: the guest's own use of the thread area's segment: `gs:` operands, `rdgsbase`, `wrgsbase` (and in I `fs:`,
   `rdfsbase`, `wrfsbase`). The meaning forms such an address as the segment base plus the operand's offset part
   (base + index*scale + disp) taken at the operand's own address size, so wrapped to 32 bits under the guest's
-  0x67 before the base is added (x86/operand.rs `address`). An operand becomes `mov t, seg:[guest base]` and,
-  without 0x67, the access on `[t + base + index*scale + disp]` (`lea t, [t + base]` first when it has both a base
-  and an index); with 0x67, `lea u32, [base32 + index32*scale + disp]` (u zero-extended, no flag) and the access on
-  `[t + u]`, so a base at or above 2^32 is kept as the meaning keeps it (the check's gs67.c: GS base 0x300000000,
-  rax 0x100000010, `65 67 8b 00` reads at 0x300000010, where `[t + rax]` faulted at 0x400000010). t is always the
-  access's base, never rsp or rbp (`lea t, [rsp + t]` first for one based on rsp, rbp as the index): an access
-  based on either takes the stack segment, whose fault at a non-canonical address is #SS where the guest's takes
-  #GP; nor is a stand-in for a withheld base ever rbp. A `pop` based on rsp forms its address after the pop, so
-  its size is added there. A bit test with a register offset under 0x67 adds the offset's part modulo 2^32 too,
-  which the 64-bit `[t + u]` no longer wraps: it goes to the inside (Kernel, counted). Native layer 1 found all
-  three against the CPU (status, XN1 run 3). A RIP-relative
-  operand on the area's segment takes the guest address in u (`mov u, imm64`, an address place) and the access on
-  `[t + u]`. A string instruction, `xlat`, `maskmovq` (0F F7), `maskmovdqu` or `vmaskmovdqu` on the area's segment
-  (in I, on any segment override) goes to the inside (Kernel, counted), since its address is implicit in rsi, rdi
-  or rbx and cannot take t (0.00 `gs:` per 1000 instructions, results/shapes86.out); `rd*base r`
-  is `mov r, seg:[guest base]` (the 32-bit form `mov r32`, as `rdfsbase r32` zero-extends); `wr*base` goes to
+  0x67 before the base is added (x86/operand.rs `address`). In the machine and P (the hardware holds the
+  guest's FS base there) such an instruction runs on FS while FS holds the guest's GS base: `rdfsbase u` (the
+  guest's FS base, which the position map then gives as held in u), `mov t, gs:[guest GS base]`, `wrfsbase t`, the
+  guest's own bytes with each 0x65 among its prefixes made 0x64 (every other prefix and their order kept), and
+  `wrfsbase u`; no flag is written. So the access is the CPU's own with the guest's base: under 0x67 each part of
+  an access is wrapped as the CPU wraps it (the ninth check: `fxsave64 gs:[r10d+r9d*4+disp]` at offset
+  0xffffffd6 faults at GS + 0x1d5, where an address rebuilt as `[t + u]` faulted 2^32 higher), a bit test's
+  register offset is added and wrapped by the CPU, a vector index needs no rebuild, an implicit rsi, rdi or rbx
+  (`movs`, `cmps`, `lods`, `xlat`, `maskmovq`, `maskmovdqu`, `vmaskmovdqu` with `gs:`) needs none either, a base of
+  rsp or rbp keeps the guest's fault (#GP, an override naming no stack segment), and the CPU picks the segment
+  among several prefixes as it does for the guest (the ninth check's `2e 65 36` `setg`, whose last prefix ss
+  wins). `stos`, `scas` and `ins` reach es:rdi, which no override changes: copied. An instruction that names a
+  withheld register takes its stand-ins around the window, re-encoded by iced on `fs:` (so its several segment
+  prefixes become the one iced decodes, as the meaning reads them); a RIP-relative operand on the area's segment
+  is `mov t, imm64` (an address place) inside the window and the access on `fs:[t]`, `fs:[t32]` under 0x67. The
+  in-process way (I), where FS is the thread area, keeps the inside for the implicit forms (XN2). A RIP-relative
+  operand with the guest's 0x67 off the area's segment is made on `[t32]` likewise, so the CPU wraps a bit offset
+  added to it (the ninth check: `bt [eip+disp], rax` with rax 2^35 lands). A stop, fault or signal inside the
+  window finds the guest's FS base in u through the position map, and whoever resumes the guest elsewhere puts
+  it back on FS (P's handler and the machine's floor: recorded for their tracks). The `rd*base r`
+  form is `mov r, seg:[guest base]` (the 32-bit form `mov r32`, as `rdfsbase r32` zero-extends); `wr*base` goes to
   the inside (Kernel), which refuses a non-canonical base with general protection as the meaning does, since its
   canonical check would write flags inline. A copied `wrgsbase` would let the guest choose where the lookup reads
   its first level, and a copied `rdgsbase` or `rdfsbase` (in I) would hand it a host address: the static routing
@@ -854,8 +859,10 @@ the meaning is compared.
 
 ## 4. The three memory-access forms (way I only changes them)
 
-The one place is `carry::access(way, operand, code)`; every route that emits a guest access calls it, implicit ones
-included. Guest memory in I is a window at B, the GS base (per guest process), inside a slot of the P/I plan's
+The one place is `carry::access(way, code, written, resume)`: every host instruction that may reach guest memory
+is written through it (a copied instruction's bytes, a rebuilt one, a return's read of its target, a call's push,
+the load of a jump through memory), implicit ones included; a withheld register's slot form reaches the register
+area, not guest memory, and is not one. Guest memory in I is a window at B, the GS base (per guest process), inside a slot of the P/I plan's
 layout (2^36 bytes from 2^32; section 6). The guest's ceiling there is 2^32 in the first build (a larger exact
 window needs the bound in a register, measured at XN2 if asked).
 - None (machine, P): the operand as the guest wrote it (only the area segment's operands rewritten, section 3.1).
@@ -879,7 +886,8 @@ window needs the bound in a register, measured at XN2 if asked).
   check with live flags". The limit is at most 2^32, so a t that passes either is below 2^32 and t32 is t: the cut
   changes nothing a check let through. A guest operand with its own address-size prefix takes `lea t32,
   [operand]`, so t is the meaning's wrapped address; on a segment (`fs:`, `gs:`) the segment base is added after
-  the wrap, as section 3.1 has it: `mov t, fs:[guest base]; lea u32, [base32 + index32*scale + disp]; lea t, [t +
+  the wrap, as the meaning forms it (section 3.1; an access whose parts cross offset 2^32 under 0x67, the ninth
+  check's `fxsave64`, is XN2's to answer in this form): `mov t, fs:[guest base]; lea u32, [base32 + index32*scale + disp]; lea t, [t +
   u]`, then the check on t, so a base at or above 2^32 faults as the meaning does (`lea t32` over the whole
   operand would wrap the base too). A fault on either is the guest's fault at t, from the span.
   Measured earlier (stack exempt): X32 +11.0 to +15.2% wall (Granite Rapids), +10.0 to +25.4% cycles (Zen 4), +14

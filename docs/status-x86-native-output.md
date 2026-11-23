@@ -84,24 +84,41 @@ probes).
   meaning and runs them natively through the inside for a host that differs. The partial-write probes ran on AMD
   (EPYC 9R14): `fstp m80` and `fbstp` leave no partial write there, so such a host routes them Kernel (results
   below).
+  Round 3 run 2 (after the ninth check, the first independent check of XN1): an operand on the guest's `gs:` runs
+  on FS holding the guest's GS base (plan 3.1), so every Kernel route without an answer is gone; every guest access
+  is written through `carry::access`; section 7's shapes that need no executor and the rep string count test are
+  tests; a jump where nothing is mapped ends as the guest's fault in the native program harness (the two Csmith
+  programs). Finding by finding under "Round 3 run 2".
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
 
-## XN1 gap list (round 3, 2026-11-23: every item left, with its cause and owner)
+## XN1 gap list (round 3, 2026-11-23: every item left, with its cause and owner; corrected by run 2 of round 3)
 
-The bar as it stands: native layers 1 (2008 forms, 1,000 a form), 2 (10,000 programs) and 3 (1,000 Csmith
-programs) pass against the CPU on the rented Xeon, way P, counted and uncounted, the count after each system call
-equal to the WebAssembly output's (runs 4, 5, 10); speed meets the bar uncounted (geometric mean 1.145 against the
-host, run 5). These are the layers ARM64's native output passes; no layer is left out. Not built or not run:
+The bar as it stands: native layers 1, 2 and 3 pass against the CPU on the rented Xeon, way P, counted and
+uncounted, the count after each system call equal to the WebAssembly output's (figures under "Round 3 run 2
+results"); speed meets the bar uncounted (geometric mean 1.145 against the host in run 5, 1.110 in the ninth check's
+own measurement). Section 7's shapes that run without an executor are tests now (round 3 run 2, below); the rest
+are listed here with why. Every Kernel-routed form in the machine and P now has an answer: a question for
+`answer`, or (a repeated string under the count) the inside's run of it on the hardware with `string_passes`; the
+only exceptions are item 2's. Not built or not run:
 
 1. Needs an x86 executor that runs a translation. Owner: the native-without-virtual-machine track (its x86 floor,
    or P's executor, crates/executor/implementation/host-process, which has no translation runner yet). Cause: the
-   blobs of the test crate answer only system calls and repeated strings, from the guest's registers.
+   blobs of the test crate answer only system calls and repeated strings, from the guest's registers, in one
+   thread, with no signal delivery to the guest and no control of the guest's page permissions.
    - The X9 real-program set natively (threads, signals, `execve`, our kernel) with the WebAssembly verdicts.
    - Replay against a recorded run, register-group tests (plan 3.1, brief-native.md's last section), hostile-guest
      tests (plan 7), the mirror's memory on busybox and python, links' batches and `int3` traps, P's stub with its
      flags table (plan 3.6: the table is the stub's read-only page, the output's `popfq` reads it there).
+   - Section 7's shapes that need threads, signals, another process or page permissions: code reading and storing
+     into its own bytes (same and sibling thread), writes to code through a shared mapping and through the kernel,
+     the `futex` wait over rewritten, unmapped and re-protected code, a signal handler editing rip, r10, r11, r15
+     and rflags, a jump to the vsyscall page and the vDSO, `int 0x80`, `sysenter` and a far transfer to 0x23 as
+     the kernel delivers them, a stop inside `rep movsb`, `rep stosq` and `repe cmpsb`, an instruction straddling
+     into a page that cannot run code (the blob maps the guest image readable and writable only, so there is no
+     page that the CPU's run and ours both see as not executable), `popf` setting TF before a `ret` and a `jmp r`,
+     and a thread with TF running `rep movsb` and ten one-byte instructions (both on stepping pieces, item 3).
    - The start-up probe that fills `HostMatches` (paging depth, partial writes, undefined results) and the floor's
      entry rule for MXCSR (plan 3.5).
    - The inside's side of the `X87Control` call and of the `x87_unmasked` mode (the call is emitted after every
@@ -109,19 +126,27 @@ host, run 5). These are the layers ARM64's native output passes; no layer is lef
      it, x87_answer.rs (plan 9: the plain-Rust twin of fpu.rs's instruction-level part), is this track's and comes
      with that mode, after XN2; so does the check of a save's FDP and FOP other than zero, which only an unmasked
      exception can set.
+   - The FS window of an operand on the guest's `gs:` (plan 3.1): a stop, fault or signal inside it finds the
+     guest's FS base in u through the position map (guest register 16, `carry::FS_BASE_NUMBER`); P's handler and
+     the machine's floor must take it from there and put it back on FS before resuming the guest elsewhere.
+     Native layer 1's every-offset run checks the map at every host instruction of the window; the handler's
+     side is that track's.
 2. Undefined results on AMD hosts. Owner: the instruction behavior design (docs/status-instruction-design.md:
    each chip recorded with its own pinned behaviors, a start-up probe choosing the set). Cause: measured in run 10
    (EPYC 9R14 against the Xeon's sweep): 9,447 of 15,644 flags-sweep cases differ, in rflags alone, on shifts and
    rotates by more than one, mul, imul, div, idiv, tzcnt and lzcnt (data recorded there, raw in scratch xn1r10/).
    Nothing is built for it here on purpose: no inline flags and no inside answer of these forms. `route` copies
-   them where `HostMatches::undefined_results` is true (the Xeon, the i7-8750H); where it is false it sends them
-   Kernel, for which `native::question` gives no question (`answer` has no twin of these meanings), so AMD hosts
-   cannot run them natively yet and wait on that design. (Partial writes differ on AMD too, `fstp m80` and `fbstp`; the inside's answer for them is
-   built and tested, run 10.)
+   every form of `native::undefined_result` where `HostMatches::undefined_results` is true (the Xeon, the
+   i7-8750H); where it is false it sends all of them Kernel, for which `native::question` gives no question
+   (`answer` has no twin of these meanings), so a host with it false cannot run them natively yet. That one flag
+   also covers and, or, xor, test, the bit tests, bsf and bsr, which the EPYC sweep found equal to the Xeon: which
+   forms a chip's set holds is that design's to say. (Partial writes differ on AMD too, `fstp m80` and `fbstp`;
+   the inside's answer for them is built and tested, run 10.)
 3. Needs ARM64's version first. Owner: the ARM64 native back end (shared trait in gcpu/native.rs).
    - The replay check: `stop_check` in the trait, `InsideCall::Stop`, `stop: Option<u64>` in
-     `translate_native_for`, `Step` and P's stepping pieces. ARM64 has no replay check yet. Natively a stop is the
-     host's signal; the output's only part in it is the count's plain add.
+     `translate_native_for`, `Step` and P's stepping pieces (so every case with TF or AC set, which native layer 1
+     counts as not run, and the rep string test leaves TF out). ARM64 has no replay check yet. Natively a stop is
+     the host's signal; the output's only part in it is the count's plain add.
    - The trait's `retarget` in place of `link` (x86's is built, run 4, and the native blobs use it).
    - Homes for a loop of several parts (search 1.40 against the host): the translator's loop copy would take a set
      of parts.
@@ -135,23 +160,104 @@ host, run 5). These are the layers ARM64's native output passes; no layer is lef
      reference's page fault where the meaning gives general protection, the x86 track's meaning to answer; and the
      x86 track's known meaning differences (`sldt`, `smsw`, `str`, `wrfsbase`, `wrgsbase`, under "Coordination").
 5. Way I (XN2, as written): the eighth check's way I findings (a string with the guest's 0x67 to the inside in
-   both checked forms, the exact form's 0x67 segment operand and `67 d7`, `maskmovq` re-encoded in the window). Fixed
-   in the plan (run 1); their code and tests are XN2's. `carry` refuses the in-process way by an assertion.
+   both checked forms, the exact form's 0x67 segment operand and `67 d7`, `maskmovq` re-encoded in the window), and
+   now the ninth check's crossing of offset 2^32 under 0x67 in the exact form (plan 4). Fixed in the plan; their
+   code and tests are XN2's. `carry::access` refuses the in-process way by an assertion.
+6. Not this track's: the meaning's choice among several segment prefixes (`2e 65 36`: the CPU takes the last,
+   ss; the meaning and iced take gs). Owner: the x86 track. The native output now runs such an instruction's own
+   bytes, so it is the CPU's unless the instruction also names a withheld register (then iced re-encodes it with
+   one prefix, as the meaning reads it). And the native layer 2 harness past about 10,000 programs in one process
+   (the ninth check: "state memory: mmap failed to reserve 0x104000000 bytes", runner.rs 455/461/1850, the
+   WebAssembly runner's reservation, made by the WebAssembly runs that test compares the count with): the cause
+   is not found yet (a reservation kept past its run, or the machine's map limit); seen only by the native test,
+   since no other test runs that many programs in one process. Owner: this track, with the shared runner's
+   owner; 10,000 at a seed is the recorded bar meanwhile.
+
+## Round 3 run 2: the ninth check's findings, finding by finding
+
+- [blocking] 0x67 `gs:` access across offset 2^32 (fxsave64): the plan's rebuild `lea u32, [...]` then `[t + u]`
+  wrapped only the start. Now the instruction runs as the guest wrote it on FS, FS holding the guest's GS base for
+  it (`carry::enter_guest_segment` and `leave_guest_segment`: `rdfsbase u; mov t, gs:[guest GS base]; wrfsbase t;
+  <the guest's bytes, 0x65 made 0x64>; wrfsbase u`), the position map holding the guest's FS base in u meanwhile;
+  the CPU wraps each part. Tests: the check's case and its seed-4 case in tests/native_carry.rs (bytes) and the
+  new layer 1 shapes test (against the CPU), and native layer 1 with the check's seed 31337 at 1,500 a form.
+- [blocking] two Csmith programs at seed 4: both are UB programs whose `main` falls into a `ret` reading the zero
+  stack, so the guest jumps to 0 and Linux kills it with SIGSEGV; the WebAssembly runner gives the same. The native
+  program harness ended with an error at a lookup of an address with no code. A target outside the program's image,
+  where nothing is mapped, now ends the run as the guest's fetch fault (SIGSEGV), as the inside gives it.
+- [blocking] Kernel routes with no answer: with the FS window, strings, `xlat`, `maskmovq`, `maskmovdqu` and
+  `vmaskmovdqu` on `gs:`, bit tests with a register offset on `gs:` under 0x67 and gathers on `gs:` under 0x67 are
+  the Area route (the CPU's own access), and `stos`, `scas` with a `gs:` prefix are copied (es:rdi ignores it).
+  A rep string under the count is the inside's run of it on the hardware with `string_passes` (as the program
+  blobs do), so native layer 1 now counts those runs apart ("run by the inside on the hardware") and fails any
+  other call into the inside whose instruction `native::question` does not answer (`syscall` excepted).
+- [blocking] section 7's shapes and the rep string test: new tests, tests/layer1.rs
+  `the_shapes_of_the_plan_match_the_cpu_natively_x86_64` (ret, jmp r and call r, plain and 66-prefixed, to 2^47,
+  2^48, each of bits 48 to 63 over a valid target, 0xfff0000000401000, 2^63, -1; 66-prefixed direct jmp and call;
+  the base instructions and `mov r, gs`; `rdsspq`, `incsspq`; the implicit `gs:` forms; gs67 both ways;
+  RIP-relative on `gs:` with and without 0x67; the check's fxsave64, setg and bit-test cases), tests/layer2.rs
+  `branches_into_an_instruction_match_the_cpu_natively_x86_64` (a direct jump into a `mov`'s immediate, and a
+  jump through a register to the same) and `repeated_strings_count_as_the_webassembly_output_natively_x86_64`
+  (seeded, `WC_STRINGS_SEED`, `WC_STRINGS_CASES`, `WC_STRINGS_JOBS`; every kind, size, rep and repne, 0x67, DF,
+  rcx 0, 1, 7 and the cap and either side, rdi - rsi 0, 1, an element, 10, the length, -10, past the cap; the
+  check's 91-pass case first). The shapes that need threads, signals or page permissions are on the gap list,
+  item 1, with why.
+- [blocking] one place for a guest access: `carry::access(way, code, written, resume)`; the copied bytes, the
+  rebuilt instructions, the return's read, the calls' pushes and the jump through memory's load go through it. The
+  slot form of a withheld register reaches the register area, not guest memory. Plan 4 names it so.
+- [minor] RIP-relative bit test under 0x67 (Rebase): the access is now on `[t32]` (r11d) with the 0x67 kept, so the
+  CPU wraps the bit offset; the check's case with rax 2^35 and 2^63 is in the shapes test.
+- [minor] layer 2 past 10,000 programs: not fixed, recorded (gap item 6) with the 10,000 bar.
+- [minor] several segment prefixes: the native output now takes the CPU's choice (the guest's bytes); the
+  meaning's is the x86 track's (gap item 6); the check's case is in the shapes test.
+- [minor] one `undefined_results` flag: recorded exactly in gap item 2, and the contradicting line under "For the
+  independent check" corrected; no route changed (the chip sets are the design's).
+- [minor] stale departure note: replaced.
+- [minor] speed figures shifting between runs: recorded beside run 5's under "Measured" (the check's 21:10 UTC run,
+  load 9 to 27: uncounted geometric mean 1.110, worst search 1.395; counted 1.231, worst 1.489).
 
 ## The independent check's findings carried into XN1 (the eighth check)
 
 All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round found nothing new to change:
 - 0x67 strings in way I (blocking): plan 4 sends them to the inside in both checked forms; code at XN2 (way I).
-- A segment operand with the guest's 0x67: unchecked form built (`carry::area_operand`, `lea u32, [base32 +
-  index32*scale + disp]`, then `[t + u]`), tested by tests/native_carry.rs with the check's gs67 case (reaches
-  0x300000010, as the reference) and a seeded sweep of operand shapes against the meaning's address; the exact
-  form and `67 d7` are XN2's.
+- A segment operand with the guest's 0x67: unchecked form built in run 1 as `lea u32, [base32 + index32*scale +
+  disp]` then `[t + u]`, which the ninth check showed wraps only the start of an access; replaced in round 3 run 2
+  by the FS window (the guest's own access on FS holding its GS base), tested by tests/native_carry.rs with the
+  check's gs67 case (reaches 0x300000010, as the reference), its fxsave64 and setg cases (bytes) and a seeded sweep
+  of operand shapes against the meaning's address, and by the shapes test against the CPU; the exact form and
+  `67 d7` are XN2's.
 - `maskmovq`: named beside `maskmovdqu` in plan 3.1, 4 and 7; the machine and P route it Kernel on the area's
   segment (native.rs `implicit`), checked by tests/native_routes.rs; I's re-encoding is XN2's.
 - The rep string count: named as a second implementation of the meaning's rule with its full rule (plan 3.6);
   `string_passes` in the core, tested by `cargo test -p wcontainers-x86 --lib strings` and by native layer 2's
   count after each system call against the WebAssembly output.
 - The unmasked x87 mode's plain-Rust twin: named as new code (x87_answer.rs, plan 3.1 and 9); gap list item 1.
+
+## Round 3 run 2 results (rented x86 machine, Xeon 8488C, 5-level paging, 2026-11-23; logs scratch xn1r11/)
+
+- 21:55 UTC, load 2.6 before: clippy with warnings denied, `--no-deps`, on wcontainers-x86 and -translator-test (all
+  targets): clean. `cargo test -q -p wcontainers-x86`: every test passes.
+- The shapes test: 108 cases as the CPU, 66 known (the 5-level reference: transfers to 2^47 up to 2^56 and the
+  base writes there), 2 known (`wrfsbase` and `wrgsbase` of 2^47, answered by the meaning, which refuses what the
+  5-level CPU takes); 1 s.
+- Native layer 3, the check's seed 4, 300 programs, 48 at once (21:55, load 2.7): 268 compared at three look-aheads
+  with and without the count, 32 did not end in time on Linux, 0 failing (4000130 and 4000302 among the compared).
+- Native layer 1, the check's seed 31337, 2008 forms, 1,500 cases a form, 32 at once (21:56 to 22:10, load up to
+  52 with other tracks' jobs): passes; 3,283 known failures, the same two named kinds; the inside's answer equal
+  to the meaning's in 247,558 runs; the second float status call in 14,744; a repeated string under the count run
+  by the inside on the hardware in 19,913; ended: Exit 2,124,033, Fault 664,510, Answered(Answer) 125,279,
+  Answered(Trap) 93,553, FarTarget 3,712, Lookup 913.
+- The inside's answers and the second call against the meaning (22:10, load 3): 6 tests pass.
+- Native layer 2, the check's seed 77, 10,000 programs, 32 at once (22:11, load 6 to 21): 0 failing, 3,465 faulted,
+  113,606 blob runs.
+- The branch shapes as programs: pass at the three look-aheads, counted and not.
+- The repeated string test, seed 1, 40 cases and the check's (22:20, load 11.7): 0 failing. Control (remote copy
+  only): `string_passes` giving one bulk pass more is caught, 8 of the 40 failing. Seed 2, 1,000 cases and the
+  check's, 32 at once (22:23, load 14): 0 failing, 8 s.
+- Native layer 3, seed 1, 1,000 programs, 48 at once (22:23 to 22:27, load 17 to 42): 852 compared, 148 did not end
+  in time on Linux, 0 failing.
+- The literal check: no finding in a line this run wrote (three in the shapes test named without restating);
+  older findings in carry.rs and the test crate's native.rs remain.
 
 ## XN1 closing run results (rented x86 machine, Xeon 8488C, 2026-11-23; no code changed since run 10)
 
@@ -170,13 +276,16 @@ All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round f
 - Native layer 1 with another seed: the command there with `WC_LAYER1_SEED=<seed>` (5150 was this track's).
 - The copy-through decision against the CPU: native layer 1 runs every form's Copy, Rebase and Area routes on the
   CPU; tests/native_routes.rs checks the route of every decoded form against the plan's rules (`X86_ROUTE_SEED`).
+- The FS window of a `gs:` operand (plan 3.1): tests/native_output.rs `the_area_segment_runs_on_fs_with_the_guests_base`
+  reads it; the dumper below prints it for any piece.
 - The emitted code of a system call, a fault and a stop: scratch run9/dump.rs (sent into the copy as a test file
   of the test crate) prints a benchmark's pieces, host code beside guest; a system call in P is a call into the
   inside (`lea r11, [rip]; jmp gs:[entry + 8*kind]`, carry.rs `call`), a guest fault is the host's own fault on
   the copied access read back through the position map, a stop is the host's signal with the count's plain add
   (carry.rs `count`) as the output's only part.
-- Each gap-list item: the X9 programs have no runner (item 1); `HostMatches` on an AMD host routes the
-  undefined-result forms Copy (item 2); `translate_native_for` has no stop argument (item 3).
+- Each gap-list item: the X9 programs have no runner (item 1); `HostMatches` with `undefined_results` false (an
+  AMD host) routes every form of `native::undefined_result` Kernel, for which `native::question` gives no question
+  (item 2); `translate_native_for` has no stop argument (item 3).
 
 ## What XN1 run 10 changed
 
@@ -764,6 +873,12 @@ WC_LAYER3_JOBS=<j> cargo test ... --test layer3 csmith_programs_match_linux_nati
 Scratch run9/ holds the piece dumper used to read the benchmark's code (dump.rs, sent into the copy as a test
 file) and the withheld-set experiment (withheld.sh, sets.sh, sets.out).
 
+Round 3 run 2's tests (rented x86 machine, seconds each but the strings at 1,000 cases): `cargo test -q -p
+wcontainers-translator-test --test layer1 the_shapes_of_the_plan -- --nocapture`; `... --test layer2
+branches_into_an_instruction`; `WC_STRINGS_CASES=<n> WC_STRINGS_SEED=<s> WC_STRINGS_JOBS=<j> ... --test layer2
+repeated_strings_count -- --nocapture` (summary line "repeated strings natively"). Do not name a shell variable
+STRINGS in a script run under the Nix shell: stdenv sets it to the `strings` tool.
+
 Native layer 1 (one command, on the rented x86 machine, which is its own reference; about 9 minutes without the
 stepping run at 32 jobs): `x86-run <checkout> --name x86-native-output --jobs 32 -- 'WC_LAYER1_CASES=1000
 WC_LAYER1_SEED=5150 WC_LAYER1_JOBS=32 cargo test -q -p wcontainers-translator-test --test layer1
@@ -783,8 +898,9 @@ way.
 
 - `route` takes the process's `Offer` beside the way and the host's matches (plan 9 gives `route(way, i, host)`),
   since a form of a feature the process was not told of takes the Trap route and the offer says which.
-- `route` is a free function of x86/native.rs until the trait of plan 9 is changed; the trait's other methods come
-  with it.
+- An operand on the thread area's segment in the machine and P runs on FS holding the guest's GS base (round 3 run
+  2, the ninth check's 0x67 crossing): the plan's rebuild on `[t + u]` could not wrap each part of an access past
+  offset 2^32 and left the implicit forms with no answer. Plan 3.1 now says this.
 
 ## What run 8 changed (seventh check), finding by finding
 
@@ -1005,6 +1121,12 @@ way.
 
 ## Measured
 
+- Speed again, by the ninth check (rented x86 machine, Xeon 8488C, 2026-11-23 21:10 to 21:12 UTC, pinned to cores
+  0-9, best of 5, load 9 to 27, the code of run 10): uncounted fib 1.258, sieve 1.008, hash 1.015, sort 1.377,
+  interpret 0.982, matrix 1.074, walk 0.881, search 1.395, geometric mean 1.110, worst 1.395 (search); counted
+  geometric mean 1.231, worst 1.489 (search). Single programs move between runs on this shared machine (run 5 had
+  sort 1.20 and interpret 1.23); the bar holds in both.
+
 All on the rented x86 machine (Xeon Platinum 8488C, Sapphire Rapids, 96 processors, Linux 7.0.0-1018-aws, 5-level
 paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 65536), probes copied there with
 `x86-run --ssh`, timings pinned to processor 5.
@@ -1172,6 +1294,11 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
     single step (stepping pieces instead). In I the handler sets the host's FS base before any Rust code and the
     area's again before guest code; its 3.8 swaps FS at entry and exit only.
   - The stub's routines: t is r11 and c is r10, which a host `syscall` overwrites or takes as an argument.
+  - New in round 3 run 2: an operand on the guest's `gs:` runs inside a window where FS holds the guest's GS base
+    (`rdfsbase u` ... `wrfsbase u`, plan 3.1); the position map gives the guest's FS base there as held in u (guest
+    register 16, `carry::FS_BASE_NUMBER`). P's handler and the machine's floor take the guest's FS base from the
+    map at a stop, fault or signal and put it on FS before resuming the guest anywhere else; nothing of ours reads
+    FS there. It needs user FSGSBASE, which the probe already requires in the machine and P.
   - Links in P: the embedder writes the code by the `int3` protocol (plan 3.2); the stub's first thread registers
     `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE` before any guest code; each of a batch's three syncs is a
     command (its 4.2) to a stub thread in a kernel entry, or to one the embedder stops first, which runs
