@@ -31,7 +31,7 @@ rustix = { version = "1.1.6", features = ["net", "process"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 # The Linux uapi constants and structures of sockets.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
-# setsockopt, getsockopt, sendmsg, recvmsg and their control messages, and what linux-raw-sys lacks.
+# Constants linux-raw-sys lacks.
 libc = "0.2.191"
 
 [dev-dependencies]
@@ -43,7 +43,8 @@ wcontainers-kernel = { path = "../../../kernel" }
 nix = { version = "0.31.3", default-features = false, features = ["sched"] }
 # The largest buffer size a test asks for.
 libc = "0.2.191"
+# Counts the allocations of the allocation test (MIT).
+stats_alloc = "0.1.10"
 
-# TODO: remove this crate's 9 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

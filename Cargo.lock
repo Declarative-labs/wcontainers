@@ -5298,6 +5298,7 @@ dependencies = [
  "nix",
  "rustix",
  "socket2",
+ "stats_alloc",
  "wcontainers-abi",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
