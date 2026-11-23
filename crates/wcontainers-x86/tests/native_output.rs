@@ -574,3 +574,26 @@ fn an_access_gives_its_operand() {
     );
     assert_eq!(stopping("0f 05"), Stopping::Syscall);
 }
+
+/// A gather on the area's segment under the guest's 0x67, whose vector index the 32-bit `lea` cannot take, goes to
+/// the inside; without 0x67 it is rebuilt on t.
+#[test]
+fn a_gather_on_the_area_segment() {
+    for way in WAYS {
+        let piece = translate(&bytes("65 67 c4 e2 69 90 04 88"), AT, way, false).expect("a piece");
+        let route = X86_64::route(
+            &way,
+            &decode(&bytes("65 67 c4 e2 69 90 04 88 00 00 00 00 00 00 00 00"))
+                .expect("decodes")
+                .0,
+            &target(),
+        );
+        assert_eq!(route, Route::Kernel, "{}", listing(&piece.bytes));
+        let code = decoded("65 c4 e2 69 90 04 88", way);
+        let gather = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Vpgatherdd)
+            .expect("the gather");
+        assert_eq!(gather.memory_segment(), Register::DS);
+    }
+}

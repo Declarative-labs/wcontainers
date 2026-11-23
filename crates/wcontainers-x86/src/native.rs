@@ -304,6 +304,12 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
         } else {
             overridden && ins.memory_segment() == way.area_segment()
         };
+    // A vector index cannot take part in the 32-bit `lea` the area's operand is rebuilt with.
+    let index = ins.memory_index();
+    let vector_index_on_area = (index.is_xmm() || index.is_ymm())
+        && !in_process
+        && ins.memory_segment() == way.area_segment()
+        && i.address32;
     let gather = matches!(
         m,
         Vgatherdpd
@@ -321,6 +327,7 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
     segment_register
         || far
         || implicit_on_area
+        || vector_index_on_area
         || matches!(
             m,
             Cpuid
