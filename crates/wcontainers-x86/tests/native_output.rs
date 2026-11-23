@@ -450,3 +450,56 @@ fn a_rep_string_is_copied_or_counted_by_the_inside() {
         assert!(!counted.bytes.windows(2).any(|w| w == bytes("f3 a4")));
     }
 }
+
+/// A copied `fldcw` is followed by the flag-free check of the control word the hardware loaded, which calls the
+/// inside only when an exception is unmasked.
+#[test]
+fn fldcw_is_checked_without_flags() {
+    use Mnemonic::*;
+    for way in WAYS {
+        let piece = translate(&bytes("d9 28"), AT, way, false).expect("a piece");
+        let code = host(&piece.bytes);
+        let mnemonics: Vec<_> = code.iter().map(|(_, i)| i.mnemonic()).collect();
+        assert_eq!(
+            &mnemonics[..10],
+            [Fldcw, Fnstcw, Movzx, Not, Mov, Pext, Mov, Mov, Jrcxz, Mov]
+        );
+        let (jrcxz, short) = (
+            code[8].1,
+            code.iter()
+                .find(|(_, i)| i.mnemonic() == Jmp && i.len() == 2),
+        );
+        let (short_at, short) = short.expect("the short jump over the masked side");
+        let masked = jrcxz.near_branch64() as usize;
+        assert_eq!(masked, short_at + 2, "{}", listing(&piece.bytes));
+        let back = code
+            .iter()
+            .find(|(at, _)| *at == masked)
+            .expect("the masked side")
+            .1;
+        assert_eq!(
+            (back.op0_register(), back.op1_register()),
+            (Register::RCX, U)
+        );
+        assert_eq!(short.near_branch64() as usize, masked + back.len());
+        // Nothing is relocated where the inside is called.
+        let calls = code
+            .iter()
+            .filter(|(_, i)| matches!(i.mnemonic(), Int | Lea) && i.op0_register() != COUNT);
+        for (at, _) in calls {
+            let span = piece.span(*at as u32).expect("a span");
+            assert!(span.relocated.is_empty(), "{span:?}");
+        }
+        // No arithmetic flag is written by the check (the SDM leaves x87's C0 to C3 undefined after `fnstcw`).
+        use iced_x86::RflagsBits;
+        let arithmetic = RflagsBits::OF
+            | RflagsBits::SF
+            | RflagsBits::ZF
+            | RflagsBits::AF
+            | RflagsBits::CF
+            | RflagsBits::PF;
+        for (_, i) in &code[1..10] {
+            assert_eq!(i.rflags_modified() & arithmetic, 0, "{i:?}");
+        }
+    }
+}

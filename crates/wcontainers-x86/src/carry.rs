@@ -11,7 +11,7 @@ use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, Route};
 use crate::USER_END;
 use crate::area::{
     ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_GS_BASE, STAND_IN_VALUES, WITHHELD_VALUES,
-    X87_IP,
+    X87_CONTROL, X87_IP,
 };
 use crate::decode::Instruction;
 use crate::native::Way;
@@ -480,12 +480,77 @@ pub fn carry(
         }
     }
     let m = i.iced.mnemonic();
-    if matches!(route, Route::Copy | Route::Rebase | Route::Area)
-        && crate::fpu::written(m)
-        && !crate::fpu::control(m)
-    {
+    let copied = matches!(route, Route::Copy | Route::Rebase | Route::Area);
+    if copied && crate::fpu::written(m) && !crate::fpu::control(m) {
         x87_pointer(way, code, address);
     }
+    if copied && m == Mnemonic::Fldcw {
+        x87_control_check(way, code);
+    }
+}
+
+/// After a copied `fldcw`: the control word the hardware loaded is read back from the area, never the guest's
+/// operand, and a call into the inside made when it unmasks an exception (section 3.1). No flag is written: rcx
+/// is borrowed into u for `jrcxz`.
+fn x87_control_check(way: Way, code: &mut HostCode) {
+    let control = MemoryOperand {
+        displ_size: WORD as u32,
+        segment_prefix: way.area_segment(),
+        ..MemoryOperand::with_base_displ(Register::None, X87_CONTROL as i64)
+    };
+    let rcx = full(crate::operand::RCX);
+    put(
+        code,
+        &Iced::with1(Code::Fnstcw_m2byte, control).expect("a store of the control word"),
+    );
+    put(
+        code,
+        &Iced::with2(Code::Movzx_r32_rm16, T_LOW, control).expect("its load"),
+    );
+    put(code, &Iced::with1(Code::Not_rm32, T_LOW).expect("a not"));
+    // The control word's six masks sit where the status word's six exception flags do (Intel SDM Vol. 1 8.1.5).
+    let masks = u32::from(crate::x87::EXCEPTIONS);
+    put(
+        code,
+        &Iced::with2(Code::Mov_r32_imm32, U_LOW, masks).expect("the masks"),
+    );
+    put(
+        code,
+        &Iced::with3(Code::VEX_Pext_r32_r32_rm32, T_LOW, T_LOW, U_LOW).expect("the unmasked ones"),
+    );
+    put(
+        code,
+        &Iced::with2(Code::Mov_r64_rm64, U, rcx).expect("rcx kept"),
+    );
+    code.relocate(crate::operand::RCX, Held::Register(R15));
+    put(
+        code,
+        &Iced::with2(Code::Mov_r32_rm32, Register::ECX, T_LOW).expect("the test's value"),
+    );
+    let at = code.offset();
+    let skip = |to: u64| Iced::with_branch(Code::Jrcxz_rel8_64, to).expect("a jrcxz");
+    let length = bytes_of(&skip(0), 0).len();
+    let relocated = code.snapshot();
+    let back = Iced::with2(Code::Mov_r64_rm64, rcx, U).expect("rcx back");
+    let back_length = bytes_of(&back, 0).len();
+    // The jrcxz is patched to the masked side once the unmasked side is written.
+    code.push(&bytes_of(&skip((at + length) as u64), at as u64));
+    put(code, &back);
+    code.home(crate::operand::RCX);
+    call(way, code, InsideCall::X87Control);
+    let over = code.offset();
+    let short = |to: u64| Iced::with_branch(Code::Jmp_rel8_64, to).expect("a jump");
+    let short_length = bytes_of(&short(0), 0).len();
+    let after = code.snapshot();
+    let masked = over + short_length;
+    code.push(&bytes_of(
+        &short((masked + back_length) as u64),
+        over as u64,
+    ));
+    code.restore(relocated);
+    code.patch(at, &bytes_of(&skip(masked as u64), at as u64));
+    put(code, &back);
+    code.restore(after);
 }
 
 /// After a copied x87 instruction that is not a control one: its guest address stored as the guest's FIP, the
