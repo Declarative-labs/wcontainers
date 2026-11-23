@@ -4,12 +4,12 @@
 use crate::cpuid::{self, ECX, Registers};
 use crate::user_segments::{
     CR0, DUMMY_GDT_BASE, DUMMY_IDT_BASE, DUMMY_TABLE_LIMIT, NO_LOCAL_TABLE, SEGMENTS,
-    SELECTOR_PRIVILEGE, TASK_STATE,
+    SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
 };
 use crate::x87::{Code, EXCEPTIONS, Unit};
 use crate::{
     ALIGNMENT_CHECK, ARITHMETIC_FLAGS, DEFAULT32, DF, ID, NT, Offer, QUIET32, RAX, RBX, RCX, RDX,
-    RSP, TF, X86Block, XMM_BYTES, ZF,
+    RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
 };
 use wcontainers_guest_cpu::position::{Base, Operand, Segment};
 use zerocopy::IntoBytes;
@@ -94,6 +94,14 @@ pub struct Reciprocal {
     pub source: Place,
 }
 
+/// A segment register as an answer names it: cs and ss always hold Linux's 64-bit user segments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentName {
+    Code,
+    Stack,
+    Kept(SegmentRegister),
+}
+
 /// An instruction of the Kernel route that [`answer`] answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Question {
@@ -110,6 +118,34 @@ pub enum Question {
     Descriptor {
         read: DescriptorRead,
         operand: Place,
+    },
+    /// `mov r/m, sreg`.
+    SegmentRead {
+        from: SegmentName,
+        to: Place,
+    },
+    /// `mov sreg, r/m` of a segment register other than cs, which iced decodes as no instruction.
+    SegmentWrite {
+        to: SegmentName,
+        from: Place,
+    },
+    /// `push` of fs or gs, of this many bytes.
+    SegmentPush {
+        from: SegmentName,
+        bytes: u8,
+    },
+    /// `pop` of fs or gs, of this many bytes.
+    SegmentPop {
+        to: SegmentName,
+        bytes: u8,
+    },
+    /// `lfs`, `lgs` or `lss`: the offset of `offset_bytes` bytes into a general register, then the selector after
+    /// it into `to`.
+    FarPointer {
+        to: SegmentName,
+        number: u8,
+        offset_bytes: u8,
+        at: Operand,
     },
 }
 
@@ -132,6 +168,8 @@ pub struct Notes {
     pub trap_flag_set: bool,
     /// `popf` asked for alignment checking, which is never held.
     pub alignment_check_not_provided: bool,
+    /// A `mov` to ss: a trap is held back over the next instruction.
+    pub step_held: bool,
 }
 
 /// Answers `question` on `block` for a process told of `offer`'s features. On `Ok` the instruction has finished
@@ -190,6 +228,59 @@ pub fn answer(
             notes.alignment_check_not_provided = value & ALIGNMENT_CHECK != 0;
         }
         Question::Descriptor { read, operand } => descriptor(block, memory, read, operand)?,
+        Question::SegmentRead { from, to } => {
+            let value = selector(block, from).into();
+            match to {
+                Place::General { number, bits } => set_general(block, number, bits, value),
+                Place::Memory(at) => memory
+                    .write(address(block, &at), &(value as u16).to_le_bytes())
+                    .map_err(Fault::Memory)?,
+                Place::Vector(_) => return Err(Fault::GeneralProtection),
+            }
+        }
+        Question::SegmentWrite { to, from } => {
+            let value = match from {
+                Place::General { number, .. } => block.gpr[usize::from(number)] as u16,
+                Place::Memory(at) => read_selector(memory, address(block, &at))?,
+                Place::Vector(_) => return Err(Fault::GeneralProtection),
+            };
+            load_segment(block, to, value)?;
+            notes.step_held = to == SegmentName::Stack;
+        }
+        Question::SegmentPush { from, bytes } => {
+            let value = u64::from(selector(block, from)).to_le_bytes();
+            let at = block.gpr[general(RSP)].wrapping_sub(bytes.into());
+            memory
+                .write(at, &value[..usize::from(bytes)])
+                .map_err(Fault::Memory)?;
+            block.gpr[general(RSP)] = at;
+        }
+        Question::SegmentPop { to, bytes } => {
+            let from = block.gpr[general(RSP)];
+            let value = read_selector(memory, from)?;
+            load_segment(block, to, value)?;
+            block.gpr[general(RSP)] = from.wrapping_add(bytes.into());
+        }
+        Question::FarPointer {
+            to,
+            number,
+            offset_bytes,
+            at,
+        } => {
+            let at = address(block, &at);
+            let mut offset = [0; size_of::<u64>()];
+            memory
+                .read(at, &mut offset[..usize::from(offset_bytes)])
+                .map_err(Fault::Memory)?;
+            let value = read_selector(memory, at.wrapping_add(offset_bytes.into()))?;
+            load_segment(block, to, value)?;
+            set_general(
+                block,
+                number,
+                offset_bytes * u8::BITS as u8,
+                u64::from_le_bytes(offset),
+            );
+        }
     }
     Ok(notes)
 }
@@ -219,6 +310,46 @@ pub fn address(block: &X86Block, operand: &Operand) -> u64 {
         Some(Segment::Gs) => block.gs_base,
         None => 0,
     })
+}
+
+/// The selector in a segment register.
+fn selector(block: &X86Block, name: SegmentName) -> u16 {
+    match name {
+        SegmentName::Code => USER_CS,
+        SegmentName::Stack => USER_DS,
+        SegmentName::Kept(r) => block.selectors[r as usize],
+    }
+}
+
+/// The 16 bits of a selector at `at`, the only ones the CPU reads of its slot.
+fn read_selector(memory: &mut impl Memory, at: u64) -> Result<u16, Fault> {
+    let mut word = [0; size_of::<u16>()];
+    memory.read(at, &mut word).map_err(Fault::Memory)?;
+    Ok(u16::from_le_bytes(word))
+}
+
+/// Loads a segment register with `value`, or general protection where Linux's tables give user mode no segment
+/// it may load there: a null selector or a readable segment for ds, es, fs and gs, the data segment at privilege
+/// level 3 alone for ss. Loading fs or gs makes its base 0, every user segment's base, and Intel's for a null
+/// selector.
+fn load_segment(block: &mut X86Block, name: SegmentName, value: u16) -> Result<(), Fault> {
+    let names = |selector: u16| value & !SELECTOR_PRIVILEGE == selector & !SELECTOR_PRIVILEGE;
+    let allowed = match name {
+        SegmentName::Stack => value == USER_DS,
+        _ => names(0) || SEGMENTS.iter().any(|segment| names(segment.selector)),
+    };
+    if !allowed {
+        return Err(Fault::GeneralProtection);
+    }
+    if let SegmentName::Kept(r) = name {
+        block.selectors[r as usize] = value;
+        match r {
+            SegmentRegister::Fs => block.fs_base = 0,
+            SegmentRegister::Gs => block.gs_base = 0,
+            SegmentRegister::Ds | SegmentRegister::Es => {}
+        }
+    }
+    Ok(())
 }
 
 /// A mask of the low `bits` bits.
@@ -403,13 +534,7 @@ fn descriptor(
     }
     let selector = match operand {
         Place::General { number, .. } => block.gpr[usize::from(number)] as u16,
-        Place::Memory(at) => {
-            let mut word = [0; size_of::<u16>()];
-            memory
-                .read(address(block, &at), &mut word)
-                .map_err(Fault::Memory)?;
-            u16::from_le_bytes(word)
-        }
+        Place::Memory(at) => read_selector(memory, address(block, &at))?,
         Place::Vector(_) => return Err(Fault::GeneralProtection),
     };
     let named = SEGMENTS.iter().find(|segment| {

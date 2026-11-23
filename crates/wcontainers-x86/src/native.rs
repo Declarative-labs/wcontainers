@@ -7,14 +7,14 @@ use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand, Segment};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
-use crate::answer::{DescriptorRead, Place, Question, Reciprocal, VectorEncoding};
+use crate::answer::{DescriptorRead, Place, Question, Reciprocal, SegmentName, VectorEncoding};
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
 use crate::meaning::{is_string, written};
 use crate::operand::{RSP, W32, W64, general};
 use crate::x87::{Code, Operation};
-use crate::{Offer, USER_END, X86_64, carry};
+use crate::{Offer, SegmentRegister, USER_END, X86_64, carry};
 
 /// How translated code reaches guest memory, the thread area and the inside; part of the cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -311,7 +311,49 @@ pub fn question(i: &Instruction) -> Option<Question> {
                 operand: place(i, 1)?,
             }
         }
+        Mov if segment(ins.op_register(1)).is_some() => Question::SegmentRead {
+            from: segment(ins.op_register(1))?,
+            to: place(i, 0)?,
+        },
+        Mov if segment(ins.op_register(0)).is_some() => Question::SegmentWrite {
+            to: segment(ins.op_register(0))?,
+            from: place(i, 1)?,
+        },
+        Push => Question::SegmentPush {
+            from: segment(ins.op_register(0))?,
+            bytes: crate::operand::stack_bytes(i) as u8,
+        },
+        Pop => Question::SegmentPop {
+            to: segment(ins.op_register(0))?,
+            bytes: crate::operand::stack_bytes(i) as u8,
+        },
+        Lfs | Lgs | Lss => {
+            let (number, bits) = general_destination()?;
+            Question::FarPointer {
+                to: match m {
+                    Lfs => SegmentName::Kept(SegmentRegister::Fs),
+                    Lgs => SegmentName::Kept(SegmentRegister::Gs),
+                    _ => SegmentName::Stack,
+                },
+                number,
+                offset_bytes: bits / u8::BITS as u8,
+                at: operand(i)?,
+            }
+        }
         _ => crate::fpu::transcendental_code(i).map(Question::X87)?,
+    })
+}
+
+/// The segment register `r` is, where it is one.
+fn segment(r: Register) -> Option<SegmentName> {
+    Some(match r {
+        Register::CS => SegmentName::Code,
+        Register::SS => SegmentName::Stack,
+        Register::DS => SegmentName::Kept(SegmentRegister::Ds),
+        Register::ES => SegmentName::Kept(SegmentRegister::Es),
+        Register::FS => SegmentName::Kept(SegmentRegister::Fs),
+        Register::GS => SegmentName::Kept(SegmentRegister::Gs),
+        _ => return None,
     })
 }
 
