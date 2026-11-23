@@ -209,6 +209,9 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_shader_buffer_size =
         c_uint::try_from(limits.max_storage_buffer_size).unwrap_or(c_uint::MAX);
     caps.draw_indirect = true;
+    // Stores to images declared without a format, in the bound image's format: a program is
+    // converted for the formats of the images bound where it declares none (`image_formats`).
+    caps.image_store_formatted = true;
     caps.texture_multisample =
         ours.has(Features::MULTISAMPLE_READ) && ours.has(Features::SAMPLE_MASK);
     // Programs run per sample: st/mesa makes the per-sample variant of a fragment program itself,

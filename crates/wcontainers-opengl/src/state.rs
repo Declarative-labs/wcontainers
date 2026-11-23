@@ -361,6 +361,9 @@ pub struct Shader {
     pub reads_sample_positions: bool,
     /// A fragment program that reads its first target's texels, from a copy of it each draw.
     pub fetches_target: bool,
+    /// The image units it declares images at without a format, a bit each, converted for the
+    /// bound images' formats.
+    pub formatless_images: u64,
 }
 
 fn factor(f: pipe_blendfactor) -> BlendFactor {
@@ -1014,12 +1017,14 @@ fn create_shader(
     }
     let reads_sample_positions = nir.reads_sample_positions();
     let fetches_target = nir.fetches_target();
+    let formatless_images = nir.formatless_images();
     object(Shader {
         stage,
         nir,
         streamed,
         reads_sample_positions,
         fetches_target,
+        formatless_images,
     })
 }
 

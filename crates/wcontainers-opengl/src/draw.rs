@@ -8,13 +8,13 @@ use std::ffi::c_uint;
 use wcontainers_gpu::{
     AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
     BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DOMAIN_PATCHES_BINDING,
-    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, Filter, FormatKind, FormatUse,
-    HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource, Interpolation,
-    MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, PassTracker, Program, ProvokingVertex,
-    RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind, STORAGE_WORD, SamplerDesc,
-    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageSet,
-    StepMode, Topology, VariantKey, VertexBinding, VertexFormat, VertexLayoutDesc, Viewport,
-    WriteMode, cut_scissors, helper_binding,
+    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, Filter, Format, FormatKind,
+    FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource,
+    Interpolation, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, PassTracker, Program,
+    ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind, STORAGE_WORD,
+    SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage,
+    StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding, VertexFormat,
+    VertexLayoutDesc, Viewport, WriteMode, cut_scissors, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
@@ -114,6 +114,9 @@ pub(crate) struct Variant {
     /// The targets' samples, for a fragment program that reads where its samples are or its
     /// target's texels; zero otherwise.
     samples: u32,
+    /// The formats of the images bound where the program declares images without a format, by
+    /// unit.
+    image_formats: Vec<(u32, Format)>,
 }
 
 impl Variant {
@@ -124,6 +127,7 @@ impl Variant {
             swizzles: swizzles(bound),
             nearest: nearest_samplers(bound),
             border: border_in_program(bound),
+            image_formats: image_formats(bound),
             ..Variant::default()
         };
         let swizzled = !variant.swizzles.is_empty();
@@ -531,6 +535,7 @@ fn convert<B: Backend>(
     let rewrites = VariantKey {
         pulled: variant.pulled.clone(),
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        storage_formats: storage_slots(&bindings, &variant.image_formats),
         ..VariantKey::default()
     };
     let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
@@ -1766,6 +1771,7 @@ fn draw<B: Backend>(
         } else {
             0
         },
+        image_formats: image_formats(context.stages.get(Stage::Fragment)),
         ..Variant::default()
     };
     if fragment.second_source.is_some() {
@@ -1803,6 +1809,7 @@ fn draw<B: Backend>(
         points_in: 0,
         tessellator: None,
         samples: 0,
+        image_formats: Vec::new(),
     };
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
@@ -3359,6 +3366,20 @@ fn pulled_inputs<B: Backend>(
     (pulled, paths)
 }
 
+/// `formats`, by image unit, by the storage slots the route binds those units at.
+fn storage_slots(bindings: &[ReflectedBinding], formats: &[(u32, Format)]) -> Vec<(u32, Format)> {
+    bindings
+        .iter()
+        .filter(|b| b.added.is_none() && b.kind == SlotKind::Storage)
+        .flat_map(|b| {
+            formats
+                .iter()
+                .filter(|&&(unit, _)| (b.register..b.register + b.count).contains(&unit))
+                .map(|&(unit, format)| (b.slot() + unit - b.register, format))
+        })
+        .collect()
+}
+
 /// The samplers bound with a stage's integer textures, by unit.
 fn nearest_samplers<B: Backend>(stage: &state::StageState<B>) -> Vec<NearestSampler> {
     stage
@@ -3417,6 +3438,25 @@ fn target_kinds(framebuffer: &pipe_framebuffer_state) -> outputs::Targets {
                 _ => naga::ScalarKind::Float,
             };
             Some((i as u32, kind))
+        })
+        .collect()
+}
+
+/// The formats of the images of textures bound at the units where a stage's program declares
+/// images without a format.
+fn image_formats<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, Format)> {
+    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+    let Some(shader) = (unsafe { stage.shader.as_ref() }) else {
+        return Vec::new();
+    };
+    (0..u64::BITS)
+        .filter(|unit| shader.formatless_images & (1 << unit) != 0)
+        .filter_map(|unit| {
+            let image = bound_image(stage, unit).ok()?;
+            if views_buffer::<B>(image) {
+                return None;
+            }
+            Some((unit, crate::format::format(image.format)?))
         })
         .collect()
 }
