@@ -515,6 +515,133 @@ fn near_clip_plane(case: &Case, x: u32, y: u32) -> bool {
     })
 }
 
+/// Bits of subpixel precision of Direct3D's rasteriser, whose grid every vertex is snapped to, those
+/// clipping makes among them.
+const SUBPIXEL_BITS: i32 = 8;
+
+/// `gs_clip`'s three clip distances at a vertex at (x, y) of primitive `primitive`.
+fn gs_clip_distances(x: f32, y: f32, primitive: usize) -> [f32; 3] {
+    let more = match primitive % 4 {
+        1 => -1.0,
+        _ => x - y + 0.5113,
+    };
+    [x + 0.3037, 0.4129 - y, more]
+}
+
+/// How far, in pixels, texel (x, y)'s centre lies from the nearest part a `gs_clip` triangle keeps
+/// of an edge one of its planes cuts. Direct3D snaps the vertices clipping makes on such an edge to
+/// its subpixel grid, which moves the kept part by up to half a step; the program's clip test takes
+/// the distance at the centre, so a centre within a step of that part may be drawn on one side
+/// only.
+fn from_clipped_edge(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u32) -> Option<f32> {
+    if case.gs != "gs_clip" {
+        return None;
+    }
+    let floats = COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>();
+    let vertex = |i: u32| -> usize {
+        let place = case.first + i;
+        match case.indexed {
+            Some(base) => {
+                let at = std::mem::size_of::<u16>() * place as usize;
+                let index = u16::from_le_bytes([indices[at], indices[at + 1]]);
+                (i32::from(index) + base) as usize
+            }
+            None => place as usize,
+        }
+    };
+    let half = SIZE as f32 / 2.0;
+    let centre = (x as f32 + 0.5, y as f32 + 0.5);
+    let places = primitive_places(case, 3, indices);
+    let mut nearest: Option<f32> = None;
+    for instance in 0..case.instances {
+        for (primitive, corners) in places.iter().enumerate() {
+            let at = |k: u32| {
+                let v = vertex(k) * floats;
+                let (cx, cy) = (vertices[v] + instance as f32 * 0.25, vertices[v + 1]);
+                (
+                    ((cx + 1.0) * half, (1.0 - cy) * half),
+                    gs_clip_distances(cx, cy, primitive),
+                )
+            };
+            for e in 0..3 {
+                let ((a, da), (b, db)) = (at(corners[e]), at(corners[(e + 1) % 3]));
+                // The part of the edge every plane keeps, as parameters from a to b.
+                let (mut low, mut high, mut cut) = (0.0f32, 1.0f32, false);
+                for (p, q) in da.iter().zip(&db) {
+                    if (*p < 0.0) == (*q < 0.0) {
+                        if *p < 0.0 {
+                            high = -1.0;
+                        }
+                        continue;
+                    }
+                    cut = true;
+                    let t = p / (p - q);
+                    if *p < 0.0 {
+                        low = low.max(t);
+                    } else {
+                        high = high.min(t);
+                    }
+                }
+                let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+                let length = ex.hypot(ey);
+                let along = ((centre.0 - a.0) * ex + (centre.1 - a.1) * ey) / (length * length);
+                if !cut || low > high || along < low || along > high {
+                    continue;
+                }
+                let across = (ex * (centre.1 - a.1) - ey * (centre.0 - a.0)).abs() / length;
+                nearest = Some(nearest.map_or(across, |n| n.min(across)));
+            }
+        }
+    }
+    nearest
+}
+
+/// Prints the first texels `picture` draws apart from `reference`, each with how far it lies from
+/// a clipped edge ([`from_clipped_edge`]), and how many of those apart by more than `allowed` lie
+/// within a subpixel step of one.
+fn print_apart(
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+    reference: &[u8],
+    picture: &[u8],
+    allowed: u64,
+) {
+    let edge =
+        |i: usize| from_clipped_edge(case, vertices, indices, i as u32 % SIZE, i as u32 / SIZE);
+    let apart: Vec<(usize, &[u8], &[u8])> = reference
+        .chunks(4)
+        .zip(picture.chunks(4))
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| (i, a, b))
+        .collect();
+    for &(i, a, b) in apart.iter().take(16) {
+        let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
+        let near = edge(i).map_or(String::new(), |d| format!(" ({d} px from a clipped edge)"));
+        eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}{near}");
+    }
+    let beyond: Vec<usize> = apart
+        .iter()
+        .filter(|(_, a, b)| {
+            a.iter()
+                .zip(*b)
+                .any(|(p, q)| u64::from(p.abs_diff(*q)) > allowed)
+        })
+        .map(|(i, _, _)| *i)
+        .collect();
+    let step = 2.0f32.powi(-SUBPIXEL_BITS);
+    let at_edge = beyond
+        .iter()
+        .filter(|&&i| edge(i).is_some_and(|d| d <= step))
+        .count();
+    eprintln!(
+        "  {} texels apart by more than {allowed}, {at_edge} of them within a subpixel step of a \
+         clipped edge",
+        beyond.len()
+    );
+}
+
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
     match t {
         InputTopology::PointList => D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
@@ -3036,16 +3163,7 @@ fn geometry_shaders_draw_as_direct3d_does() {
             let empty = drawn == 0 && (planes == 0 || count > 0);
             if empty || largest > allowed {
                 // The first texels apart, where and what each drew, to find the cause.
-                let apart = reference
-                    .chunks(4)
-                    .zip(picture.chunks(4))
-                    .enumerate()
-                    .filter(|(_, (a, b))| a != b)
-                    .take(16);
-                for (i, (a, b)) in apart {
-                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
-                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
-                }
+                print_apart(case, &vertices, &indices, &reference, &picture, allowed);
                 let soft = on_warp(case, &vertices, &indices, None);
                 eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
@@ -3475,16 +3593,8 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
             // nothing either.
             let empty = drawn == 0 && (planes == 0 || count > 0);
             if empty || largest > allowed {
-                let apart = reference
-                    .chunks(4)
-                    .zip(picture.chunks(4))
-                    .enumerate()
-                    .filter(|(_, (a, b))| a != b)
-                    .take(16);
-                for (i, (a, b)) in apart {
-                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
-                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
-                }
+                // The first texels apart, where and what each drew, to find the cause.
+                print_apart(case, &vertices, &indices, &reference, &picture, allowed);
                 let soft = on_warp(case, &vertices, &indices, None);
                 eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
