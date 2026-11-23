@@ -318,6 +318,10 @@ struct wc_stream_output {
    uint8_t components;
 };
 
+/* A streamed point size (which the common form keeps as a built-in the stage helper does not
+ * stream) also written at a location no output takes, which the stream names instead. */
+void wc_nir_stream_point_size_at_a_location(struct nir_shader *nir);
+
 /* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
  * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,
  * or UINT32_MAX when one is a value the route places neither at a location nor as the position. */

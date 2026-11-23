@@ -1881,6 +1881,53 @@ wc_nir_uniform_blocks_as_words(nir_shader *nir)
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
 }
 
+static bool
+point_size_also_at(nir_builder *b, nir_intrinsic_instr *intr, void *location)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_PSIZ)
+      return false;
+   nir_intrinsic_instr *copy = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(copy);
+   semantics.location = *(const unsigned *)location;
+   nir_intrinsic_set_io_semantics(copy, semantics);
+   b->cursor = nir_after_instr(&intr->instr);
+   nir_builder_instr_insert(b, &copy->instr);
+   /* The stream's entry is the copy's. */
+   nir_intrinsic_set_io_xfb(intr, (nir_io_xfb){0});
+   return true;
+}
+
+void
+wc_nir_stream_point_size_at_a_location(struct nir_shader *nir)
+{
+   nir_xfb_info *xfb = nir->xfb_info;
+   if (!xfb)
+      return;
+   bool streamed = false;
+   for (unsigned i = 0; i < xfb->output_count; i++)
+      streamed |= xfb->outputs[i].location == VARYING_SLOT_PSIZ;
+   if (!streamed)
+      return;
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   /* The generic locations, which end where the written outputs' bits do. */
+   const unsigned end = sizeof(nir->info.outputs_written) * CHAR_BIT;
+   unsigned location = VARYING_SLOT_VAR0;
+   while (location < end && (nir->info.outputs_written & BITFIELD64_BIT(location)))
+      location++;
+   /* Every location taken: the stream stays the point size's, which the route refuses. */
+   if (location == end)
+      return;
+   nir_shader_intrinsics_pass(nir, point_size_also_at, nir_metadata_control_flow, &location);
+   for (unsigned i = 0; i < xfb->output_count; i++) {
+      if (xfb->outputs[i].location == VARYING_SLOT_PSIZ)
+         xfb->outputs[i].location = location;
+   }
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_out);
+}
+
 uint32_t
 wc_nir_stream_outputs(const nir_shader *nir, struct wc_stream_output *outputs, uint32_t capacity,
                       uint32_t *strides, uint32_t buffers)

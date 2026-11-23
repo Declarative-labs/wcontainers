@@ -220,6 +220,7 @@ unsafe extern "C" {
         samplers: *const NearestSampler,
         count: usize,
     );
+    fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -424,6 +425,13 @@ impl Nir {
     pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }
+    }
+
+    /// A streamed point size (a built-in the common form keeps and the stage helper does not
+    /// stream) also written at a location no output takes, which the stream then names.
+    pub fn stream_point_size_at_a_location(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_stream_point_size_at_a_location(self.0) }
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the

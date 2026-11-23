@@ -1015,6 +1015,7 @@ fn create_shader(
         stage,
         Stage::Vertex | Stage::Geometry | Stage::TessEvaluation
     ) {
+        nir.stream_point_size_at_a_location();
         streamed = match nir.stream_outputs::<STREAM_BUFFERS>() {
             Some((outputs, _)) if outputs.is_empty() => Ok(None),
             Some((outputs, strides)) => Ok(Some(stream::declaration(&outputs, strides))),
