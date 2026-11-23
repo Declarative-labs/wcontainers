@@ -255,6 +255,10 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Verdicts after the change (17:07 to 17:09 UTC, scratch w1/run6/coalesce-arm.log and coalesce-x86.log): all 46
     tests of the 12 test binaries 3 times with /dev/kvm denied, 138 of 138 on Graviton4 (load 3.4 to 4.6) and on
     the Xeon (load 27 to 30 from other tracks), clippy with warnings denied clean on both.
+  - Sandboxes after the change (17:09 to 17:12 UTC, scratch w1/run6/sb-arm.out and sb-x86.out, run 5's
+    sandbox.sh): inside Docker's default profile every test binary passes on both machines; under gVisor the same
+    four tests fail as in run 5, for the reasons recorded there and in plan 6, and nothing else. Under gVisor the
+    stop binary now takes 71 s on Graviton4 against run 5's 369 s.
   - Form I's bounds-check bypass on ARM64, measured as a host program of I's own sequences (scratch
     w1/run6/specarm.c, plan 11 and 3.2): twelve access shapes, each behind I's own check and behind a slow check,
     cut and uncut. Behind the slow check the uncut control read the outside byte in about 98% of tries for the nine
@@ -300,6 +304,7 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
   fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
   lines; the fetched log does not).
+- Since run 6: scratch w1/run6/both.sh and sandbox-both.sh are run 4 and run 5's, writing into run6; flood.sh and repro.sh rerun the stop flood with either signal ($PIN to pin it), spec.sh runs specarm.c (form I's speculation, `specarm <rounds> <seed> [gadget]`).
 - Since run 5: scratch w1/run5/sandbox-both.sh <tag> runs clippy, then sandbox.sh on both machines: every test
   binary inside Docker's default profile and under gVisor (downloads runsc 20261109.0 into
   /work/target/nwvm/gvisor, checked against its sha512), writing <tag>-arm.out and <tag>-x86.out; summary.py <log>
