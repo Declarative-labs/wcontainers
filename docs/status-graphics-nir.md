@@ -5,6 +5,59 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 15 (2026-11-22, the third run of this batch): desktop OpenGL 3.3 core now starts on our
+driver. KHR-GL33 still passes no case: every case dies at its start in glcts, calling a function
+pointer that is null (below); llvmpipe passes the same case with the same `opengl32.dll`.
+
+Found this run: the driver never reported desktop 3.0. `NV_conditional_render` (a 3.0
+requirement) was off because `render_condition` was not built, so the "desktop 3.0" of the runs
+before was wrong: desktop contexts stopped below 3.0. Read from Mesa's `compute_version` and a
+diagnostic run with `MESA_GL_VERSION_OVERRIDE=3.3`, whose extension list lacked only that and
+the compatibility-only `NV_primitive_restart` (logs `g9r15-gl33-extensions.*`).
+
+Done this run (commits fd6fa4a8, 1c6cdf31, f14a9f9d, 3b5dcf58, 38ea343f):
+- Texel buffers (`samplerBuffer`), read through a 2D texture of the view's format,
+  `TEXEL_BUFFER_TEXTURE_WIDTH` texels a row (the interface's `TexelBufferRoute::Texture` form).
+  Route B makes the texture global a `texture_2d`, a load a `textureLoad` at (i mod W, i / W)
+  that reads zero at or past the length, and the size the length, from its own helper block
+  member `HelperValue::TexelBufferView` (the shaders crate's rewrites extend that block). The
+  driver copies the view's range into the texture before each work that binds it
+  (`TexelBufferAsTexture`, counted on every copy), and writes the length. Image buffers and
+  texel buffers in geometry programs are refused by name.
+- Dual-source blending: the bridge carries a fragment output's blend source (Mesa's
+  `dual_source_blend_index`; it was refused), route B gives target 0's two outputs `blend_src` 0
+  and 1, the screen reports one dual-source target where the back end has `DUAL_SOURCE_BLEND`.
+  The driver's own second source (the blend constant's alpha, `BlendInShader`) is not used for a
+  block that blends with the program's second source.
+- Timer queries (`TIMESTAMP`, `TIME_ELAPSED`) and `get_timestamp` from the interface's
+  timestamps, each written between passes; the driver's wgpu instance now asks for timestamps in
+  nanoseconds (`WebGpu::INSTANCE_FLAGS`), which `TIMESTAMPS` needs on Direct3D 12.
+- `PRIMITIVES_GENERATED` counts: the stage helper's made word of stream 0 where it ran with
+  stream output, the draw's ranges counted on the host otherwise; refused by name for a draw with
+  restart (its indices would need reading) and for a geometry program without stream output.
+  Several counts run at once now (the context keeps a list).
+- Render conditions (`render_condition`): draws, clears and blits that take the condition wait
+  for the occlusion answer (`PredicationWait`) and are skipped when it equals the condition; the
+  blitter is given the condition to lift for blits that ignore it.
+- Primitive restart at any index (`NV_primitive_restart`): rewritten on the host as restart in a
+  list is (`RestartRewrite`); strips holding the largest value are drawn as lists.
+- The packed 10-10-10-2 vertex formats the interface lacks (signed normalized, scaled, blue
+  first: seven Gallium formats), fetched as one word (`Uint32x1`) and unpacked in the vertex
+  program, whose entry point becomes a function a new entry point calls with the unpacked
+  values (`packed.rs`, `VertexFormatConverted` counted each draw). This lifts run 12's 96
+  refusals in the ES lists.
+- Screen: GLSL 3.30 for the core profile (the compatibility profile keeps 1.30), texture
+  swizzles (programs already apply them), depth clamp where the back end has it.
+
+Not yet found: KHR-GL33's null function. glcts's first frame calls address 0 (lldb, no glcts
+symbols: `logs/g9r15-gl33-renderer.log`); not our driver's code; the same with the version
+forced to 4.5; llvmpipe passes `KHR-GL33.info.renderer`. Next: a glcts built with symbols, or
+an extension-by-extension `MESA_EXTENSION_OVERRIDE` bisection, to name the entry point.
+
+Not built and seen to matter for desktop 3.2: multisampled 2D arrays (the screen makes none, so
+`glTexImage3DMultisample` gets no sample count); the interface's `VariantKey::texture_layers` is
+the model (a texture per layer).
+
 G9 run 14 (2026-11-22): the driver has a geometry stage. The screen reports it where the back end
 runs compute work, so OpenGL ES 3.1 contexts now have `OES_geometry_shader`; the version is still
 ES 3.1 (ES 3.2 needs tessellation and the rest of item 4 below), so KHR-GLES32, KHR-GL33 and
@@ -630,6 +683,9 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 run 15: nothing new; the driver now also uses Gallium's `util_blitter` render condition
+  fields (`u_blitter.h`, MIT, already linked).
+
 - G9 run 12: nothing new. The driver now also calls Gallium's `u_default_get_sample_position`
   (`src/gallium/auxiliary/util/u_sample_positions.c`, Alyssa Rosenzweig, SPDX MIT), in
   `libgallium` already linked; the new Mesa patch changes Mesa's own MIT files
@@ -757,6 +813,12 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
 
 ## Departures from the plan
 
+- G9 run 15: texel buffers take the interface's texture route (a copy per bind), not its storage
+  route: the shaders crate's storage route decodes formats only inside its own DXBC and DXIL
+  routes, and route B has no entry to it. A copy per bind is a counted slow path; a copy only
+  when the buffer changed is not built.
+- G9 run 15: the packed 10-10-10-2 vertex formats are unpacked in the vertex program by the
+  driver (`packed.rs`), until the interface has them (Requests).
 - G9 run 12: every storage buffer of a compute program is read-write in route B's module, so one
   buffer bound at a read-only and a written block of one dispatch is valid on WebGPU (OpenGL and
   Vulkan allow it). Its cost against read-only bindings is not measured.
@@ -974,8 +1036,11 @@ None.
 
 - Interface track (G9 run 12): the 10-10-10-2 vertex formats OpenGL ES 3.0 requires that
   `VertexFormat` lacks: signed normalized, and signed and unsigned integers read as floats
-  (Gallium's R10G10B10A2_SNORM, _SSCALED, _USCALED; 96 refusals in dEQP-GLES3 and KHR-GLES31).
-  The driver refuses them by name until then.
+  (Gallium's R10G10B10A2_SNORM, _SSCALED, _USCALED). Since G9 run 15 the driver unpacks them in
+  the program (`VertexFormatConverted`); native formats would remove that.
+- Shaders track (G9 run 15): an entry that takes a common-form module's typed buffers (a global
+  named as one, with its format from the variant) through `variant::texel`'s storage route, so
+  route B's texel buffers need no copy into a texture.
 - WebGPU back end (G9 run 12, a finding): a multisampled resolve of an integer format reaches
   wgpu and loses the device ("R16Uint is not resolvable"); the driver now checks
   `FormatUse::RESOLVE` first, as every front must.
