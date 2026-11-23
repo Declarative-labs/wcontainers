@@ -25,7 +25,9 @@ use wcontainers_internet_protocol::{
     TransmitEvent, TransmitReport, TransmitReportKey, TransmitReportRequest,
     WirelessAcknowledgement,
 };
-use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{in6_addr, storage};
+use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{
+    StorageBytes, in6_addr, kernel_storage, storage, storage_bytes,
+};
 use wcontainers_internet_protocol_linux_socket_options::datagram::exchange::NO_ARRIVAL_INTERFACE;
 use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::{
     AnycastMemberships, set_multicast_group,
@@ -67,6 +69,7 @@ use wcontainers_tcp_sockets::{
     TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
     TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
+use zerocopy::{FromZeros, IntoBytes};
 
 mod state;
 
@@ -659,12 +662,48 @@ fn vrf_index(vrf: TcpKeyVrf) -> Result<Option<c_int>, HostError> {
 
 /// The `TCP_AO_*` fields that name a key: its peer, prefix, interface flag and index, and identifiers.
 struct AuthenticationKeyName {
-    address: uapi::__kernel_sockaddr_storage,
+    address: StorageBytes,
     prefix: u8,
     flags: u8,
     interface: i32,
     send: u8,
     receive: u8,
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_ao_getsockopt`, which `TCP_AO_GET_KEYS` reads a key's name from and writes the key into.
+    #[derive(IntoBytes)]
+    struct KeyQuery mirrors uapi::tcp_ao_getsockopt {
+        addr: StorageBytes,
+        alg_name: [libc::c_char; 64],
+        key: [u8; 80],
+        nkeys: u32,
+        /// `is_current`, `is_rnext` and `get_all`, left clear to ask for the named key alone.
+        _bitfield_1: [u8; 2],
+        sndid: u8,
+        rcvid: u8,
+        prefix: u8,
+        maclen: u8,
+        keyflags: u8,
+        keylen: u8,
+        ifindex: i32,
+        pkt_good: u64,
+        pkt_bad: u64,
+    }
+}
+
+/// Asks `TCP_AO_GET_KEYS` for the one key of the name.
+fn key_query(name: &AuthenticationKeyName) -> KeyQuery {
+    KeyQuery {
+        addr: name.address,
+        prefix: name.prefix,
+        keyflags: name.flags,
+        ifindex: name.interface,
+        sndid: name.send,
+        rcvid: name.receive,
+        nkeys: ONE_KEY,
+        ..KeyQuery::new_zeroed()
+    }
 }
 
 fn authentication_key_name(
@@ -676,7 +715,10 @@ fn authentication_key_name(
         None => (u8::MIN, DEFAULT_VRF_INDEX),
     };
     Ok(AuthenticationKeyName {
-        address: storage(key_address(family, identity.peer.address)),
+        address: storage_bytes(SocketAddr::new(
+            key_address(family, identity.peer.address),
+            u16::MIN,
+        )),
         prefix: identity.peer.length.0,
         flags,
         interface,
@@ -695,7 +737,7 @@ fn add_authentication_key(
 ) -> Result<(), HostError> {
     let name = authentication_key_name(family, &addition.identity)?;
     let mut request = uapi::tcp_ao_add {
-        addr: name.address,
+        addr: kernel_storage(&name.address),
         alg_name: std::array::from_fn(|_| libc::c_char::default()),
         ifindex: name.interface,
         _bitfield_align_1: [],
@@ -735,7 +777,9 @@ fn add_authentication_key(
     request.set_set_current(u32::from(current));
     request.set_set_rnext(u32::from(next));
     match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, &request) {
-        Err(HostError::Errno(libc::EEXIST)) if holds_authentication_key(socket, &request) => {
+        Err(HostError::Errno(libc::EEXIST))
+            if holds_authentication_key(socket, &name, &request) =>
+        {
             if current || next {
                 change_authentication_options(socket, |options| {
                     options.set_set_current(u32::from(current));
@@ -752,24 +796,19 @@ fn add_authentication_key(
 }
 
 /// Tells whether the socket holds the key the request adds, as `TCP_AO_GET_KEYS` gives the key with its name.
-fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) -> bool {
-    // SAFETY: tcp_ao_getsockopt is plain data.
-    let mut held: uapi::tcp_ao_getsockopt = unsafe { std::mem::zeroed() };
-    held.addr = request.addr;
-    held.prefix = request.prefix;
-    held.keyflags = request.keyflags & uapi::TCP_AO_KEYF_IFINDEX as u8;
-    held.ifindex = request.ifindex;
-    held.sndid = request.sndid;
-    held.rcvid = request.rcvid;
-    held.nkeys = ONE_KEY;
-    // SAFETY: the structure is plain data, read and written as its bytes.
-    let bytes = unsafe {
-        std::slice::from_raw_parts_mut(
-            std::ptr::from_mut(&mut held).cast::<u8>(),
-            size_of::<uapi::tcp_ao_getsockopt>(),
-        )
-    };
-    options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_AO_GET_KEYS, bytes).is_ok()
+fn holds_authentication_key(
+    socket: BorrowedFd<'_>,
+    name: &AuthenticationKeyName,
+    request: &uapi::tcp_ao_add,
+) -> bool {
+    let mut held = key_query(name);
+    options::get_bytes(
+        socket,
+        uapi::SOL_TCP,
+        uapi::TCP_AO_GET_KEYS,
+        held.as_mut_bytes(),
+    )
+    .is_ok()
         && held.nkeys == ONE_KEY
         && held.alg_name == request.alg_name
         && held.maclen == request.maclen
@@ -788,7 +827,7 @@ fn remove_authentication_key(
 ) -> Result<(), HostError> {
     let name = authentication_key_name(family, &removal.identity)?;
     let mut request = uapi::tcp_ao_del {
-        addr: name.address,
+        addr: kernel_storage(&name.address),
         ifindex: name.interface,
         _bitfield_align_1: [],
         _bitfield_1: Default::default(),

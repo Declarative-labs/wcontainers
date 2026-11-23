@@ -34,6 +34,8 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioc
 libc = "0.2.191"
 # The attributes of a transmit report's statistics.
 netlink-packet-core = "0.9.0"
+# The uapi structures read from and written as bytes.
+zerocopy.workspace = true
 
 [dev-dependencies]
 wcontainers-tcp-sockets-conformance = { path = "../../conformance" }
