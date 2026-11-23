@@ -5,6 +5,105 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 17 (2026-11-22, the fifth run of this batch): the driver has tessellation stages, run
+by the stage helper through route B's hull and domain forms (the shaders track's
+`wcontainers_shaders::staged`). OpenGL ES 3.1 contexts now report `OES_tessellation_shader`, so
+dEQP-GLES31's and KHR-GLES31's tessellation cases run (they were NotSupported). ES 3.2 and 4.x
+are still not reported, so KHR-GLES32 and KHR-GL46 still start no context (below).
+
+Done this run (03dca74c, de82a18c, b1acd7b0, d5cf328b, 491a4ca1, 7ad7c122, a308cf39):
+- `Stage::TessControl` and `Stage::TessEvaluation`: create, bind, delete, `set_patch_vertices`;
+  the blitter saves and restores both; the screen reports both stages where the back end runs
+  compute work, 30 patch values (the least OpenGL 4.0 and `OES_tessellation_shader` allow), and
+  the levels as patch inputs of the evaluation program (`glsl_tess_levels_as_inputs`).
+- A draw through tessellation (`run_tessellated`, `TessellationAsCompute`): the vertex program
+  with every input fetched, the control program converted for the draw's patch size and the
+  evaluation program's tessellator (`convert_control`, `direct::hull`), the tessellator; then
+  the evaluation program (`convert_evaluation`, `direct::domain`, with the position's transform,
+  which the bridge now applies to evaluation programs too) draws the tessellated points with the
+  fragment program, an indexed indirect draw without vertex streams, the patches and points in
+  the helper set. With stream output active the evaluation program's output is streamed
+  (`tessellated_with`, `run_after_domain`); its reflection's outputs are its vertex form's.
+- Route B reads a control point at a constant index past the input patch as zero (OpenGL leaves
+  it undefined; the program's arrays are as long as the most points a patch may have).
+- Storage buffers in fragment programs (WebGPU reads and writes them there): this turns on
+  `ARB_shader_storage_buffer_object`, without which Mesa answers `GL_MAX_TESS_CONTROL_SHADER_
+  STORAGE_BLOCKS` with `GL_INVALID_ENUM` (get_hash_params.py ties the query to that extension),
+  which failed every one of dEQP-GLES31's 812 tessellation-stage builtin_functions cases.
+- Refused by name, not built: a geometry program behind tessellation, an evaluation program
+  without a control program (default levels), patches from indices in memory or of 8 bits,
+  helper constants in a control program or behind tessellation, primitives counted through
+  tessellation without stream output, a control program reading outputs after `barrier()`.
+- Asked of the WebGPU back end ("Requests to other tracks"): block-compressed textures whose
+  first level is not a whole number of blocks, held decoded as it already does without
+  `texture-compression-bc`, rather than a second decoder in this driver (KHR-GL33's 198
+  packed_pixels crashes, and likely its 80 pixelstoragemodes failures).
+
+The table, EVERY LIST WHOLE AT ONE COMMIT, 491a4ca1 (desktop, RTX 3080, one GPU job, 8 glcts at
+once, other tracks' jobs queued beside), 21:15:10 to 21:53:28 (Pacific):
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64%.
+- dEQP-GLES3: 44,768; Pass 44,027, Warn 5, Fail 174, Crash 69, Skip 493: 44,032 of 44,275, 99.45%.
+- dEQP-GLES31: 37,802; Pass 18,415, Fail 1,367, Crash 683, Flake 2, Skip 17,335: 18,415 of
+  20,467, 89.97% (run 15: 16,827 of 17,696). 2,771 more cases run, the tessellation stages'.
+  Its failures by cause: tessellation-stage builtin_functions 812 (the query above; fixed in
+  a308cf39, check below), program_interface_query referenced_by with tessellation stages 166 and
+  layout_binding.negative 54 and builtin_constants 52 (not yet read), image atomics 296 and 32,
+  image buffers 250 (`a texel buffer`, image_load_store.buffer 125), `gl_HelperInvocation` 160,
+  a geometry program behind tessellation 160, flat values from a staged stage's last vertex 122,
+  device loss 128 (texture_buffer 45 among them, not read), one slice of a volume texture as an
+  image 52, border on a comparison sampler 48, layered geometry output 36, the route's
+  invalid modules with indices past an array 30 (7ad7c122 should lift them, check below).
+- KHR-GLES2: 473; Pass 438, Skip 35: 100.00%.
+- KHR-GLES3: 6,498; Pass 6,191, Fail 3, Crash 73, Skip 231: 6,191 of 6,267, 98.79%.
+- KHR-GLES31: 4,101; Pass 2,843, Fail 490, Crash 156, Skip 612: 2,843 of 3,489, 81.48% (run 15:
+  2,818 of 2,885). Its tessellation_shader group now runs; refusals: primitives counted through
+  tessellation without stream output 204, texel buffers 16, adjacency without a geometry program
+  16, layered geometry output 10, control program barriers 6.
+- KHR-GL33: 9,886; Pass 8,988, Fail 147, Crash 229, Skip 522: 8,988 of 9,364, 95.98% (as run 16).
+- KHR-GLES32 (1,405) and KHR-GL46 (19,714): no context of their version (ES 3.2 needs
+  `KHR_blend_equation_advanced`, `KHR_robustness`, `OES_sample_variables`, image atomics,
+  images in fragment programs, `OES_texture_cube_map_array`, `OES_primitive_bounding_box`,
+  `ARB_texture_stencil8` and ASTC beside tessellation, Mesa's compute_version_es2; 4.0 needs
+  `ARB_gpu_shader5` and `ARB_gpu_shader_fp64` among others).
+- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted
+  as run and failed: 97,876 of 102,735, 95.27%, above the 92.9% floor (without KHR-GLES32:
+  97,876 of 101,330, 96.59%). Not yet the bar: not every failure has a reason, NotSupported is
+  not yet checked group by group, and bgfx's and Godot's renderers, the RTX 3080's own OpenGL
+  and the independent check are not done. G9's second part (4.6) has not started.
+- Results: scratch `results/g9r17/full/<list>/results.csv` (the two 3.1 lists), the job's output
+  `logs/g9r17-full.log`; the tessellation groups alone `results/g9r17/tess-2/`,
+  `logs/g9r17-tess-{1,2,3}.log`.
+
+The check of a308cf39 (fragment storage buffers) and 7ad7c122 (missing control points), the two
+3.1 lists WHOLE (desktop, RTX 3080, one GPU job, 8 glcts at once), 22:13:10 to 22:27:03 (Pacific):
+- dEQP-GLES31: Pass 18,578, Fail 165, Crash 683, Flake 3, Skip 18,373: 18,578 of 19,429, 95.62%.
+  The 812 builtin_functions failures and the 30 invalid modules are gone. 1,038 cases more are
+  NotSupported than at 491a4ca1: with the query answered, cases asking for storage blocks in
+  vertex programs (which the screen does not report) now find none, where they failed before;
+  to confirm group by group in the NotSupported check.
+- KHR-GLES31: Pass 2,862, Fail 16, Crash 156, Skip 1,067: 2,862 of 3,034, 94.33%. Its 16 invalid
+  modules ("Index 2 is out of bounds") remain, not yet read.
+- The bar's measure with these two lists at a308cf39 and the other five at 491a4ca1 (two
+  commits): 98,058 of 101,242, 96.86%, KHR-GLES32 counted as run and failed (98.22% without
+  it). Results `results/g9r17/full/` (491a4ca1) and the job's output `logs/g9r17-gles31.log`.
+
+Next, in order:
+1. Read the new dEQP-GLES31 failures (program_interface_query referenced_by, layout_binding
+   negative, builtin_constants of tessellation) and KHR-GLES31's tessellation crashes
+   (tessellation_control_to_tessellation_evaluation 75, vertex 13).
+2. Primitives counted through tessellation and geometry without stream output: run the helper
+   with an empty declaration and no buffers bound, which still counts what it made (KHR-GLES31
+   204).
+3. A geometry program behind tessellation (`tessellated_with` with the geometry form,
+   `run_after_domain` with its sets); default levels for an evaluation program alone.
+4. Run 16's items: multisampled 2D arrays (`VariantKey::texture_layers`; KHR-GL33
+   texture_swizzle's 2DMSArray cases), image buffers through `wcontainers_shaders::typed`
+   (delivered by the shaders track), image atomics, `gl_HelperInvocation`, layered geometry
+   output, then ES 3.2's requirements so that KHR-GLES32 starts; the BC request above.
+5. The NotSupported check, the comparison with the RTX 3080's own OpenGL, bgfx and Godot, the
+   independent check; then 4.6.
+
 G9 run 16 (2026-11-22, the fourth run of this batch): KHR-GL33 now runs whole, 95.98% at
 37d0d53e. On the bar's
 measure (KHR-GLES32 counted as run and failed) the floor is passed for the first time, from
@@ -1182,6 +1281,14 @@ None.
 
 ## Requests to other tracks
 
+- WebGPU back end (G9 run 17): a block-compressed texture whose first level is not a whole number
+  of blocks. The interface's `TextureDesc` allows any size, and OpenGL makes such textures (a
+  7 by 7 `GL_COMPRESSED_RG_RGTC2`), but `create_texture` hands it to wgpu, which refuses it
+  ("Width 7 is not a multiple of Bc5RgUnorm's block width (4)") and loses the device: KHR-GL33's
+  packed_pixels has 198 such crashes. The back end already holds BC textures decoded with their
+  blocks on the host (`blocks.rs`, `BlockDecoded`) on a device without `texture-compression-bc`;
+  asked: take the same path for a texture whose level 0 is not a whole number of blocks, so
+  that no front writes a second decoder. Until then the driver's textures of that shape fail.
 - Interface track (G9 run 12): the 10-10-10-2 vertex formats OpenGL ES 3.0 requires that
   `VertexFormat` lacks: signed normalized, and signed and unsigned integers read as floats
   (Gallium's R10G10B10A2_SNORM, _SSCALED, _USCALED). Since G9 run 15 the driver unpacks them in
@@ -1194,8 +1301,8 @@ None.
   `FormatUse::RESOLVE` first, as every front must.
 
 - Shaders track (G9 run 12; DELIVERED as `wcontainers_shaders::staged` in its runs 88 to 99, used
-  by route B's geometry form since G9 run 13; its 17-byte pulled inputs and 3D texel offsets also
-  lift this driver's refusals of those, still to be removed here): a public entry point for the
+  by route B's geometry form since G9 run 13, its hull and domain forms since G9 run 17; its
+  17-byte pulled inputs lifted this driver's refusal in G9 run 14): a public entry point for the
   stage helper's geometry and tessellation forms taken from a naga module, as `lower/geometry.rs`
   and `lower/hull.rs` already make them for the DXBC and DXIL routes (`pub(crate)` today, and fed
   from dxbc-spirv's IR). The NIR route would hand over the program as a naga module whose entry
