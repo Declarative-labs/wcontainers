@@ -64,7 +64,13 @@ pub(crate) type ShaderId = usize;
 
 /// A tessellated draw's stage helper by its vertex, control, evaluation and geometry programs and
 /// variants (no geometry program: zero), and whether it has a stream stage.
-type TessellatedKey = ([(ShaderId, Variant); 4], bool);
+type TessellatedKey = ([(ShaderId, Variant); TESSELLATED_GEOMETRY + 1], bool);
+
+/// The stages a draw through tessellation runs before a geometry program, in that order.
+const TESSELLATED: &[Stage] = &[Stage::Vertex, Stage::TessControl, Stage::TessEvaluation];
+
+/// Where a [`TessellatedKey`] holds the geometry program, after the tessellated stages.
+const TESSELLATED_GEOMETRY: usize = TESSELLATED.len();
 
 /// A vertex program's stage helper by it and the geometry program after it (none: zero), their
 /// variants, and whether the stream stage was added to count what the draw made.
@@ -2458,7 +2464,7 @@ fn run_stages<B: Backend>(
 fn run_tessellated<B: Backend>(
     context: &mut Context<B>,
     backend: &mut B,
-    [(vs, vertex), (tcs, control), (tes, evaluation)]: [(&Shader, &Variant); 3],
+    [(vs, vertex), (tcs, control), (tes, evaluation)]: [(&Shader, &Variant); TESSELLATED.len()],
     geometry: Option<(&Shader, &Variant)>,
     elements: &state::Elements<B>,
     (info, d): (&pipe_draw_info, &pipe_draw_start_count_bias),
@@ -2523,7 +2529,7 @@ fn run_tessellated<B: Backend>(
     );
     let [built_vertex, built_control, built_evaluation] =
         [&key.0[0], &key.0[1], &key.0[2]].map(|k| &programs.built[k]);
-    let built_geometry = geometry.map(|_| &programs.built[&key.0[3]]);
+    let built_geometry = geometry.map(|_| &programs.built[&key.0[TESSELLATED_GEOMETRY]]);
     if built_control.helper_size != 0 || built_geometry.is_some_and(|g| g.helper_size != 0) {
         return refused(format_args!(
             "helper constants in a control or geometry program (not built)"

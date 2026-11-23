@@ -1672,11 +1672,12 @@ G9 run 19: exit 1 at 31ede8c6 (x86-64 machine, from a git bundle; 418 findings i
 workspace, most of them other crates'; the clone, its build and the bundle deleted after; output
 in scratch `logs/g9r19-literals.out`). In wcontainers-nir and wcontainers-opengl, 15: the 7 of run
 12, this run's one (the refusal in `bound_image`, returned through `to_string`: made a plain
-message in the next commit, not run again after), and 7 that earlier runs of this batch left,
-not yet fixed: `staged_value`'s "output" and "input" (direct.rs), `TessellatedKey`'s 4 and
-`run_tessellated`'s two 3s (draw.rs), the refusals "patches from indices in memory or of 8 bits"
-(draw.rs) and "a pass-through without a position" (position.rs), and `GEOMETRY_OUTPUT_VERTICES`
-restating another crate's 256 (screen.rs).
+message in 5b44e71d), and 7 that earlier runs of this batch left. Of those, 4 are fixed in the
+commit after it (not run again after): `staged_value`'s "output" and "input" (two messages now),
+`TessellatedKey`'s 4 and `run_tessellated`'s two 3s (from `TESSELLATED`, the stages before a
+geometry program). Left: the refusals "patches from indices in memory or of 8 bits" (draw.rs) and
+"a pass-through without a position" (position.rs), not yet read why the check takes them, and
+`GEOMETRY_OUTPUT_VERTICES` restating another crate's 256 (screen.rs).
 
 G9 run 12: exit 1 at 317f65fe with b7e3bb83's change (x86-64 machine, from a git bundle; marks 0; the clone, its build
 and the bundle deleted after; output in scratch `logs/g9r12-literals.out`): the 7 findings of run

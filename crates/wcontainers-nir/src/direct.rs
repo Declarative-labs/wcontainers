@@ -4361,10 +4361,14 @@ impl Builder<'_> {
             FlatBuiltIn::TessLevelInner if tessellation => {
                 Place::BuiltIn(StagedBuiltIn::InnerFactors)
             }
+            other if output => {
+                return Err(unsupported(format_args!(
+                    "a {form:?} program's output of the built-in {other:?}"
+                )));
+            }
             other => {
                 return Err(unsupported(format_args!(
-                    "a {form:?} program's {} of the built-in {other:?}",
-                    if output { "output" } else { "input" }
+                    "a {form:?} program's input of the built-in {other:?}"
                 )));
             }
         };
