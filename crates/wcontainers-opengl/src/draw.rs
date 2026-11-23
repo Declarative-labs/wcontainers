@@ -55,6 +55,8 @@ pub(crate) struct Built<B: Backend> {
     layered: Vec<u32>,
     /// The kind of value each texture binding samples.
     sampled_kinds: Vec<(u32, naga::ScalarKind)>,
+    /// The kind of value each input a vertex program reads from its streams is, by location.
+    input_kinds: Vec<(u32, naga::ScalarKind)>,
     /// A vertex program converted for the stage helper: its module, with its outputs.
     converted: Option<Converted>,
     /// An evaluation program's tessellator, which its control program is converted with.
@@ -399,6 +401,67 @@ fn input_interpolation(module: &naga::Module) -> Vec<Interpolated> {
     found
 }
 
+/// The scalar kind of each input of a module's entry point at a location.
+fn input_kinds(module: &naga::Module) -> Vec<(u32, naga::ScalarKind)> {
+    let mut found = Vec::new();
+    for entry in &module.entry_points {
+        for argument in &entry.function.arguments {
+            if let Some(naga::Binding::Location { location, .. }) = argument.binding
+                && let Some(scalar) = module.types[argument.ty].inner.scalar()
+            {
+                found.push((location, scalar.kind));
+            }
+        }
+    }
+    found
+}
+
+/// The kind of value a vertex format holds as a program reads it.
+fn vertex_kind(format: VertexFormat) -> naga::ScalarKind {
+    use VertexFormat::*;
+    match format {
+        Uint8x1 | Uint8x2 | Uint8x3 | Uint8x4 | Uint16x1 | Uint16x2 | Uint16x3 | Uint16x4
+        | Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 | Uint10_10_10_2 => naga::ScalarKind::Uint,
+        Sint8x1 | Sint8x2 | Sint8x3 | Sint8x4 | Sint16x1 | Sint16x2 | Sint16x3 | Sint16x4
+        | Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => naga::ScalarKind::Sint,
+        _ => naga::ScalarKind::Float,
+    }
+}
+
+/// `vertex` with each input whose stream holds another kind of value than the program reads
+/// fetched in the program, which keeps its bits as the declared kind (OpenGL leaves what such a
+/// program reads undefined; the host refuses the pipeline).
+fn fit_input_kinds<B: Backend>(
+    programs: &mut Programs<B>,
+    backend: &mut B,
+    shader: &Shader,
+    vertex: Variant,
+    elements: &state::Elements<B>,
+) -> Result<Variant, String> {
+    let built = programs.built_for(backend, shader, &vertex)?;
+    let taken = |location: u32| {
+        vertex.pulled.iter().any(|&(l, _)| l == location)
+            || vertex.packed.iter().any(|&(l, _)| l == location)
+    };
+    let mismatched: Vec<(u32, VertexFormat)> = built
+        .input_kinds
+        .iter()
+        .filter(|&&(location, _)| !taken(location))
+        .filter_map(|&(location, kind)| {
+            let format = elements.format(location)?;
+            (vertex_kind(format) != kind).then_some((location, format))
+        })
+        .collect();
+    if mismatched.is_empty() {
+        return Ok(vertex);
+    }
+    backend.slow_paths().hit(SlowPath::VertexPulledInShader);
+    let mut pulled = vertex.pulled.clone();
+    pulled.extend(mismatched);
+    pulled.sort_unstable_by_key(|&(location, _)| location);
+    Ok(Variant { pulled, ..vertex })
+}
+
 /// A vertex program's outputs interpolated as the fragment program's inputs at the same
 /// locations: the host requires the two to agree, where OpenGL's fragment stage alone decides.
 fn meet_inputs(module: &mut naga::Module, inputs: &[Interpolated]) {
@@ -619,6 +682,11 @@ fn convert<B: Backend>(
         pulled,
         layered,
         sampled_kinds: sampled,
+        input_kinds: if stage.shader_stage() == ShaderStage::Vertex {
+            input_kinds(&module.module)
+        } else {
+            Vec::new()
+        },
         converted,
         tessellator: None,
     })
@@ -669,6 +737,7 @@ fn convert_geometry<B: Backend>(
         pulled: Vec::new(),
         layered: layered_textures(&compute.module),
         sampled_kinds: sampled_kinds(&compute.module),
+        input_kinds: Vec::new(),
         converted: Some(converted),
         tessellator: None,
     })
@@ -709,6 +778,7 @@ fn convert_control<B: Backend>(
         pulled: Vec::new(),
         layered: layered_textures(&compute.module),
         sampled_kinds: sampled_kinds(&compute.module),
+        input_kinds: Vec::new(),
         converted: Some(converted),
         tessellator: None,
     })
@@ -765,6 +835,7 @@ fn convert_evaluation<B: Backend>(
         pulled: Vec::new(),
         layered: layered_textures(&drawn.module),
         sampled_kinds: sampled_kinds(&drawn.module),
+        input_kinds: Vec::new(),
         converted: Some(converted),
         tessellator: Some(tessellator),
     })
@@ -1917,6 +1988,8 @@ fn draw<B: Backend>(
         samples: 0,
         image_formats: Vec::new(),
     };
+    // SAFETY: as above.
+    let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
     let geometry = Variant {
