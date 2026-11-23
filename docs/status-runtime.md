@@ -5,6 +5,36 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections sa
 -kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
 and crates/executor/implementation/unicorn.
 
+## J5c, first run (2026-11-23, from 13:00 UTC): J5 closed on the tree as it stands
+
+The stop flag (a6f6b928, root list bb7653f2):
+- `StopFlag::entered(&self, flag: &'static AtomicU32)` is now a safe fn that keeps the executor's flag word
+  as a `&'static AtomicU32` (what the executor's `flag` already hands out, under its own marked unsafe), so
+  `raise` needs no unsafe either. The crate inherits the workspace's lints (`forbid(unsafe_code)`) and left
+  the root Cargo.toml's list. Measured on the ARM64 machine (load 25 to 33): fmt and clippy with warnings
+  denied, all targets, `--no-deps`, on single-kernel and the runtime suite: clean; `cargo check
+  --all-targets` of the executors wasmtime and unicorn (with and without `runtime`), the test policy and
+  hardware virtualization inside: no error; single-kernel's tests 15 passed.
+- For the wasmtime executor's owner: its call at implementation.rs line 2410, `unsafe {
+  self.stop_flag.entered(flag) };`, is now a call of a safe fn, and rustc warns `unused_unsafe` there. The
+  fix is to drop the `unsafe { }` and its SAFETY line (its `flag` fn keeps the one marked use). Not this
+  track's file, so not done here.
+
+For the translator track (found in this run, blocks every back end run that saves):
+- 69639b37 (2026-11-22, "the translator runs on threads whose stack holds its deepest function") made
+  `on_translator_threads` (crates/wcontainers-translator/src/code.rs) keep ONE rayon pool for the process in
+  a `OnceLock`. A save in the test driver copies the process with fork, which carries only the saving
+  thread: in the copy the `OnceLock` is set but none of the pool's threads exist, so the copy's first
+  translation waits for ever. Seen on the ARM64 machine at 0314e263: outside.rs at full hung with every
+  thread asleep for over 20 minutes; the forked copy's one translating thread was in
+  `rayon_core::registry::Registry::in_worker_cross` under `translate_within` (code.rs:494), from the
+  executor's `compiled` (implementation.rs:372); the parent was in `driver::copied_run` reading the copy's
+  pipe, every other test waiting on the driver's `SAVING` lock (gdb stacks: scratch j5c/arm/tip-hang). The
+  executor's own pool already copes with fork (a copy builds its own). A pool per process (built anew when
+  `std::process::id()` differs from the one that built it, the old one leaked) fixes it: scratch
+  j5c/translator-pool.patch, never committed, is how this run measured the rest of the bar. With it,
+  outside.rs at full: 8 passed in 2.2 s, each time (ARM64 machine, load 14).
+
 ## JR, third run (2026-11-23): nothing it waits on has changed; nothing built or run
 
 - At 04f5e469 the kernel is as the second run found it: crates/kernel/implementation/linux/executing.rs
