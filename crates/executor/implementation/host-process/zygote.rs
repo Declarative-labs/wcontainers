@@ -149,10 +149,12 @@ pub enum ZygoteEnd {
     FilterRefused = 10,
     /// A stub's stop handler or one of its threads' signal stacks was refused.
     SignalsRefused = 11,
+    /// A stub's own code faulted ("stub fault").
+    StubFault = 12,
 }
 
 impl ZygoteEnd {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::EmbedderGone,
         Self::PagesRefused,
         Self::RestartableSequencesNotUnregistered,
@@ -165,6 +167,7 @@ impl ZygoteEnd {
         Self::DescriptorsNotPlaced,
         Self::FilterRefused,
         Self::SignalsRefused,
+        Self::StubFault,
     ];
 
     fn from_status(status: u32) -> Option<Self> {

@@ -234,6 +234,11 @@ fn stops_landing_anywhere_never_lose_repeat_or_split_a_turn() {
         "a window was never hit"
     );
     assert!(landed.in_turn + landed.in_publish + landed.in_wait + landed.in_end <= sent);
+    // Threads that ended are listed by the host until they are reaped, a moment after their exit-clear word.
+    let until = std::time::Instant::now() + Duration::from_secs(1);
+    while host_thread_count(&stub) != 2 && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(host_thread_count(&stub), 2);
     // Thread 1 is told to end under stops too.
     let stopping = AtomicBool::new(true);

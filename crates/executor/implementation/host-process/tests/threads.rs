@@ -118,7 +118,13 @@ fn new_threads_take_turns_on_their_own_pages_and_signal_stacks() {
                 .expect("wait")
         );
     }
-    assert_eq!(host_threads(&stub), vec![stub.reported_thread_id(0)]);
+    // The host clears the word once the thread has left its memory, and lists it until it is reaped, a moment later.
+    let alone = vec![stub.reported_thread_id(0)];
+    let until = std::time::Instant::now() + Duration::from_secs(1);
+    while host_threads(&stub) != alone && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(host_threads(&stub), alone);
     stub.end(0).expect("the last thread ends the stub");
     assert_eq!(zygote.reap(stub.process()).expect("reap"), Ended::Exited(0));
 }
@@ -137,6 +143,10 @@ fn an_index_is_reused_only_after_its_thread_is_gone() {
     assert_eq!(new_thread(&zygote, &mut stub), 1);
     assert_eq!(done(&zygote, &stub, 1, &[]), 0);
     assert_eq!(done(&zygote, &stub, 2, &[]), 0);
+    let until = std::time::Instant::now() + Duration::from_secs(1);
+    while host_threads(&stub).len() != 4 && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(host_threads(&stub).len(), 4);
     assert!(matches!(kill_and_reap(&zygote, &stub), Ended::Killed(_)));
 }

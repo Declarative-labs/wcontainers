@@ -22,6 +22,10 @@ pub mod control {
     pub const RESUME: usize = 8;
     /// How many commands the turn carries.
     pub const COMMAND_COUNT: usize = 16;
+    /// The address a [`super::Resume::Load`] or [`super::Resume::Store`] touches.
+    pub const TOUCH_ADDRESS: usize = 24;
+    /// The word a [`super::Resume::Store`] writes.
+    pub const TOUCH_VALUE: usize = 32;
     /// The first command; each is [`COMMAND_SIZE`] bytes.
     pub const COMMANDS: usize = 64;
     /// A command's bytes: its kind with its permissions above bit 32, an address, a length and a file offset.
@@ -53,6 +57,8 @@ pub mod register {
     pub const STOPS_IN_PUBLISH: usize = 40;
     pub const STOPS_IN_WAIT: usize = 48;
     pub const STOPS_IN_END: usize = 56;
+    /// More of what the exit reports, where its kind says so.
+    pub const EXIT_DETAIL: usize = 64;
 }
 
 /// What a turn does after its commands.
@@ -65,6 +71,10 @@ pub enum Resume {
     ExitThread = 2,
     /// Runs our own code until a stop ends the turn, standing in for guest code.
     Spin = 3,
+    /// Loads the word at the control page's touch address, standing in for a guest's read.
+    Load = 4,
+    /// Stores the control page's touch value at its touch address, standing in for a guest's write.
+    Store = 5,
 }
 
 /// A change to a stub's view of its memory, applied by the thread taking the turn before anything else.
@@ -172,6 +182,10 @@ pub enum ExitKind {
     BadTurn = 3,
     /// The stop signal ended the turn after its commands; the value is the count of commands applied.
     Stopped = 4,
+    /// A touch faulted; the value is the address the host reported, the detail its signal and, above bit 32, code.
+    Fault = 5,
+    /// A load was done; the value is the word loaded.
+    Loaded = 6,
 }
 
 impl ExitKind {
@@ -181,6 +195,8 @@ impl ExitKind {
             Self::CommandRefused,
             Self::BadTurn,
             Self::Stopped,
+            Self::Fault,
+            Self::Loaded,
         ]
         .into_iter()
         .find(|kind| *kind as u64 == word)

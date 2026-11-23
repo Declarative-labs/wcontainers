@@ -77,6 +77,20 @@ pub enum TurnEnd {
         /// The commands applied.
         commands_applied: u64,
     },
+    /// The turn's touch faulted.
+    Fault {
+        /// The address the host reported.
+        address: u64,
+        /// The host's signal.
+        signal: u32,
+        /// The signal's code (`SEGV_MAPERR`, `SEGV_ACCERR`, ...).
+        code: u32,
+    },
+    /// The turn's load was done.
+    Loaded {
+        /// The word loaded.
+        value: u64,
+    },
     /// The stub reported an exit it has no name for.
     Forged,
     /// The stub's process ended: its socket hung up.
@@ -234,6 +248,33 @@ impl Stub {
         self.wait(thread, turn)
     }
 
+    /// Gives a thread a turn that loads the word at `address`, as guest code would, and waits for its end.
+    pub fn load(&self, thread: usize, address: usize) -> Result<TurnEnd, Errno> {
+        self.touch(thread, address, 0, Resume::Load)
+    }
+
+    /// Gives a thread a turn that stores `value` at `address`, as guest code would, and waits for its end.
+    pub fn store(&self, thread: usize, address: usize, value: u64) -> Result<TurnEnd, Errno> {
+        self.touch(thread, address, value, Resume::Store)
+    }
+
+    fn touch(
+        &self,
+        thread: usize,
+        address: usize,
+        value: u64,
+        resume: Resume,
+    ) -> Result<TurnEnd, Errno> {
+        self.pages
+            .control64(thread, control::TOUCH_ADDRESS)
+            .store(address as u64, Ordering::Relaxed);
+        self.pages
+            .control64(thread, control::TOUCH_VALUE)
+            .store(value, Ordering::Relaxed);
+        let turn = self.give(thread, &[], resume)?;
+        self.wait(thread, turn)
+    }
+
     /// Gives a thread a turn without waiting for it; the turn's number, for [`Self::wait`].
     pub fn begin(&self, thread: usize, commands: &[Command], resume: Resume) -> Result<u32, Errno> {
         self.give(thread, commands, resume)
@@ -350,6 +391,18 @@ impl Stub {
             Some(ExitKind::Stopped) => TurnEnd::Stopped {
                 commands_applied: value,
             },
+            Some(ExitKind::Fault) => {
+                let detail = self
+                    .pages
+                    .register64(thread, register::EXIT_DETAIL)
+                    .load(Ordering::Relaxed);
+                TurnEnd::Fault {
+                    address: value,
+                    signal: detail as u32,
+                    code: (detail >> 32) as u32,
+                }
+            }
+            Some(ExitKind::Loaded) => TurnEnd::Loaded { value },
             None => TurnEnd::Forged,
         }
     }
