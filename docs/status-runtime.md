@@ -20,6 +20,11 @@ and crates/executor/implementation/unicorn.
 - Not rerun: every commit since the second run's checks (7b9b90a3) is another track's doc, so the inputs of
   this track's suite and comparisons are unchanged. Nothing of this track's was uncommitted at the start.
 - What comes next is unchanged: the "Not done" list of the second run below.
+- Fourth run (2026-11-23, at 07a5dc8c, origin/agents and origin/main the same): the same again. executing.rs
+  still has `unimplemented!` at line 471 (`KernelRunner::run`) and `unsafe fn` at 195 and 225; nothing under
+  crates/kernel, crates/system or crates/runtime/interface.rs changed or is uncommitted; the kernel track is on
+  KF (literals and the check's findings), and brief-kernel.md has no new direction about the runner or the
+  `Send` bound. rustfmt --check of every file of single-kernel and of the suite: no diff. Nothing built or run.
 
 ## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
 
