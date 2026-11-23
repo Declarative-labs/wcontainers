@@ -3,7 +3,7 @@
 //! damage are seeded: `WCONTAINERS_CACHE_SEED` (default 1), `WCONTAINERS_CACHE_CUTS` (how many places,
 //! default 10) and `WCONTAINERS_CACHE_DAMAGES` (damaged copies of each record, default 20).
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use wcontainers_gpu::{CompareFn, DepthStencilDesc, Format, Topology, VariantKey};
@@ -234,10 +234,6 @@ fn damaged_records(mut decode: impl FnMut(&str, u64, &[u8]) -> bool) {
 
 /// A damaged record decodes to a conversion or an error, never a panic that reaches the caller.
 #[test]
-#[cfg_attr(
-    target_arch = "wasm32",
-    ignore = "a panic aborts there: damaged_records_decode_without_a_panic, gap A16"
-)]
 fn damaged_records_decode_to_a_conversion_or_an_error() {
     damaged_records(|name, case, damaged| {
         std::panic::catch_unwind(|| cache::decode(key(0), damaged))
@@ -247,25 +243,36 @@ fn damaged_records_decode_to_a_conversion_or_an_error() {
 }
 
 thread_local! {
-    /// The panics on this thread, contained or not.
-    static PANICS: Cell<usize> = const { Cell::new(0) };
+    /// Where each panic on this thread was raised, contained or not.
+    static PANICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A damaged record decodes without any panic, even one the conversion contains: where panics abort
-/// (WebAssembly) a panic ends the instance.
+/// (WebAssembly) a panic ends the instance. Every damaged copy is decoded; the failure lists each
+/// case that panicked and how often each place panicked.
 #[test]
-#[ignore = "known failure, gap A16: naga's validator indexes a damaged module unchecked"]
 fn damaged_records_decode_without_a_panic() {
-    let report = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        PANICS.with(|p| p.set(p.get() + 1));
-        report(info);
+    std::panic::set_hook(Box::new(|info| {
+        let at = info.location().map_or_else(String::new, |l| l.to_string());
+        PANICS.with_borrow_mut(|p| p.push(at));
     }));
+    let mut cases = Vec::new();
+    let mut places = BTreeMap::<String, usize>::new();
     damaged_records(|name, case, damaged| {
         let result = cache::decode(key(0), damaged);
-        assert_eq!(PANICS.get(), 0, "{name} case {case}: decode panicked");
+        for at in PANICS.take() {
+            cases.push(format!("{name} case {case} at {at}"));
+            *places.entry(at).or_default() += 1;
+        }
         result.is_ok()
     });
+    let _ = std::panic::take_hook();
+    assert!(
+        cases.is_empty(),
+        "{} decodes panicked, by place {places:?}; first {:?}",
+        cases.len(),
+        &cases[..cases.len().min(20)]
+    );
 }
 
 #[test]
