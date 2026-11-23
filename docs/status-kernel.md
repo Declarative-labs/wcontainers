@@ -42,8 +42,16 @@ crates/runtime/implementation/single-kernel.
   `no_std` kernel); 515 to 4095 come back `Ok` as 41 and 58 do. Carried: the FUSE notice wait (next
   work), the bind departure (For the orchestrator). The single-kernel runtime's `disconnect`
   (another track's file) still closes in order rather than resetting.
-- The whole suite and the whole LTP comparison at ba9f009e: started on the ARM64 machine at 01:54
-  UTC (scratch kernel/kc3/whole.sh, job kernel/20261123-015423-2251934).
+- The whole suite at ba9f009e (ARM64, 01:54 to 03:24 UTC, load 7 to 23, 8 test threads; scratch
+  kernel/kc3/whole.sh, log kc3/attach1.log, job kernel/20261123-015423-2251934): 386 passed, 35
+  failed, exactly the known ARM list (kc3/fails3.txt is the same as kc2/fails2.txt); the one more
+  passing is the new outside test.
+- The whole LTP comparison at ba9f009e (same job, 03:24 to 04:52 UTC, load 6 to 12, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-ba9f009e.tsv, comparison kc3/ltp-compare.log): by
+  line 4169 of 4226 match the reference and 57 differ, the same count as at 91d85e31, the K6c bar,
+  and two better than at 0ce16ef9 (4167). Against 0ce16ef9's verdicts 2 differ, getrusage04 and
+  ADSP072, which now pass (the two timings the first run explained). So the verdicts are no worse
+  than before the merges.
 
 ## KC, second run: the independent check's findings
 
@@ -568,8 +576,9 @@ this cause and no other. 13 tests:
 ## Where things stand
 
 KC, third run: the kernel builds again against the owner's runner interface (2b546ee0), and every
-finding of KC's second check is fixed or recorded (see "KC, third run"). KC goes back to its
-independent check once the whole suite and LTP comparison at ba9f009e are read.
+finding of KC's second check is fixed or recorded (see "KC, third run"). The whole suite fails
+only the ARM list and the LTP verdicts match the K6c bar (4169 of 4226). KC goes back to its
+independent check.
 
 KC, second run: every finding of KC's independent check is fixed or recorded (see "KC, second
 run"); `Kernel: Sync` now holds because everything sharing the kernel's records is touched under
