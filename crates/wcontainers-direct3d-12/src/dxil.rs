@@ -132,8 +132,19 @@ pub fn declared(code: &[u8]) -> Declared {
     of(crate::cache::dxil_views(code))
 }
 
+/// Whether a module of views `lists` declares a shader resource or unordered access view array
+/// without a length, which takes the rest of the root signature's range
+/// (`VariantKey::register_ranges`).
+pub(crate) fn declares_unbounded_array(lists: &DxilViews) -> bool {
+    [&lists.views, &lists.storage]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|v| v.count == RANGE_WITHOUT_SIZE)
+}
+
 /// `declared`, from the views of a module.
-fn of(lists: Option<DxilViews>) -> Declared {
+pub(crate) fn of(lists: Option<DxilViews>) -> Declared {
     let Some(lists) = lists else {
         return (None, None);
     };

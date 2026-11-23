@@ -18,6 +18,7 @@ use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
 use std::ops::Range;
 use wcontainers_gpu::{Filter, SlotKind, ViewComponent};
+use wcontainers_shaders::container::DxilViews;
 
 /// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range
 /// (`ReflectedBinding::slot`).
@@ -71,11 +72,12 @@ pub(super) struct Formats<B: Backend> {
 fn declared(
     code: &[u8],
     ranges: &[(SlotKind, u32, Range<u32>)],
+    dxil: Option<DxilViews>,
 ) -> (Vec<TypedView>, Vec<Range<u32>>) {
     let views = crate::dxbc::typed_views(code, ranges);
     let arrays = crate::dxbc::multisampled_arrays(code, ranges);
     let (dxil_views, dxil_arrays) = match views.is_none() || arrays.is_none() {
-        true => crate::dxil::declared(code),
+        true => crate::dxil::of(dxil),
         false => (None, None),
     };
     (
@@ -97,11 +99,20 @@ pub(super) fn typed_key(
     visibility: u32,
 ) -> (VariantKey, u64) {
     let mut key = VariantKey::default();
+    // A DXIL program's views, read once (no DXBC program chunk).
+    let dxil = match crate::dxbc::typed_views(code, &[]) {
+        Some(_) => None,
+        None => crate::cache::dxil_views(code),
+    };
     // Arrays declared without a length take the rest of the root signature's range.
-    if crate::dxbc::declares_unbounded_array(code) {
+    if crate::dxbc::declares_unbounded_array(code)
+        || dxil
+            .as_ref()
+            .is_some_and(crate::dxil::declares_unbounded_array)
+    {
         key.register_ranges = root.register_ranges(visibility);
     }
-    let (views, arrays) = declared(code, &key.register_ranges);
+    let (views, arrays) = declared(code, &key.register_ranges, dxil);
     for v in &views {
         let format = match v.kind {
             Kind::Float => Format::R32Float,
